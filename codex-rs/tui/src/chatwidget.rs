@@ -1270,6 +1270,59 @@ impl ChatWidget<'_> {
             } else {
                 // It's a subcommand
                 match first_arg {
+                    "local" => {
+                        // Connect to local Chrome instance
+                        browser_manager.set_enabled_sync(true);
+                        
+                        // Update the config to use local Chrome connection
+                        let browser_manager_local = browser_manager.clone();
+                        tokio::spawn(async move {
+                            // First, update config to try connecting to default port
+                            {
+                                let mut config = browser_manager_local.config.write().await;
+                                config.connect_port = Some(9222);  // Default Chrome debug port
+                                config.headless = false;
+                                config.persist_profile = true;
+                            }
+                            
+                            // Try to connect
+                            match browser_manager_local.start().await {
+                                Ok(_) => {
+                                    tracing::info!("Connected to local Chrome instance");
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Failed to connect to local Chrome on port 9222: {}. Trying to launch Chrome with debug port...", e);
+                                    
+                                    // Try launching Chrome with debug port
+                                    #[cfg(target_os = "macos")]
+                                    {
+                                        let _ = tokio::process::Command::new("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+                                            .arg("--remote-debugging-port=9222")
+                                            .arg("--user-data-dir=/tmp/coder-chrome-profile")
+                                            .spawn();
+                                    }
+                                    
+                                    #[cfg(target_os = "linux")]
+                                    {
+                                        let _ = tokio::process::Command::new("google-chrome")
+                                            .arg("--remote-debugging-port=9222")
+                                            .arg("--user-data-dir=/tmp/coder-chrome-profile")
+                                            .spawn();
+                                    }
+                                    
+                                    // Wait a bit for Chrome to start
+                                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                                    
+                                    // Try connecting again
+                                    if let Err(e) = browser_manager_local.start().await {
+                                        tracing::error!("Failed to connect to Chrome after launching: {}", e);
+                                    }
+                                }
+                            }
+                        });
+                        
+                        "Connecting to local Chrome instance (port 9222)...\nIf Chrome is not running with --remote-debugging-port=9222, it will be launched.".to_string()
+                    }
                     "off" => {
                         // Disable browser mode
                         browser_manager.set_enabled_sync(false);

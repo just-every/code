@@ -1,10 +1,34 @@
 use crate::{config::BrowserConfig, page::Page, BrowserError, Result};
 use chromiumoxide::{Browser, BrowserConfig as CdpConfig};
+use chromiumoxide::cdp::browser_protocol::{emulation, network};
 use futures::StreamExt;
+use reqwest::Client;
+use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::{sleep, Duration, Instant};
 use tracing::{debug, info, warn};
+
+#[derive(Deserialize)]
+struct JsonVersion {
+    #[serde(rename = "webSocketDebuggerUrl")]
+    web_socket_debugger_url: String,
+}
+
+async fn discover_ws_via_port(port: u16) -> Result<String> {
+    let url = format!("http://127.0.0.1:{}/json/version", port);
+    let resp = Client::new().get(&url).send().await
+        .map_err(|e| BrowserError::CdpError(format!("Failed to connect to Chrome debug port: {}", e)))?;
+    
+    if !resp.status().is_success() {
+        return Err(BrowserError::CdpError(format!("Chrome /json/version returned {}", resp.status())));
+    }
+    
+    let body: JsonVersion = resp.json().await
+        .map_err(|e| BrowserError::CdpError(format!("Failed to parse Chrome debug response: {}", e)))?;
+    
+    Ok(body.web_socket_debugger_url)
+}
 
 pub struct BrowserManager {
     pub config: Arc<RwLock<BrowserConfig>>,
@@ -14,6 +38,7 @@ pub struct BrowserManager {
     idle_monitor_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     assets: Arc<Mutex<Option<Arc<crate::assets::AssetManager>>>>,
     user_data_dir: Arc<Mutex<Option<String>>>,
+    cleanup_profile_on_drop: Arc<Mutex<bool>>,
 }
 
 impl BrowserManager {
@@ -26,6 +51,7 @@ impl BrowserManager {
             idle_monitor_handle: Arc::new(Mutex::new(None)),
             assets: Arc::new(Mutex::new(None)),
             user_data_dir: Arc::new(Mutex::new(None)),
+            cleanup_profile_on_drop: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -35,37 +61,94 @@ impl BrowserManager {
             return Ok(());
         }
 
-        info!("Starting browser");
+        let config = self.config.read().await.clone();
         
-        // Use timestamp to ensure unique directory for each browser instance
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        let user_data_path = format!("/tmp/coder-browser-{}-{}", std::process::id(), timestamp);
-        
-        // Ensure the directory doesn't exist before starting
-        if tokio::fs::metadata(&user_data_path).await.is_ok() {
-            if let Err(e) = tokio::fs::remove_dir_all(&user_data_path).await {
-                warn!("Failed to cleanup existing browser directory {}: {}", user_data_path, e);
+        // 1) Attach to a live Chrome, if requested
+        if let Some(ws) = config.connect_ws.clone() {
+            info!("Connecting to Chrome via WebSocket: {}", ws);
+            let (browser, mut handler) = Browser::connect(ws).await?;
+            tokio::spawn(async move {
+                while let Some(_evt) = handler.next().await {}
+            });
+            *browser_guard = Some(browser);
+            *self.cleanup_profile_on_drop.lock().await = false;
+            
+            self.start_idle_monitor().await;
+            self.update_activity().await;
+            return Ok(());
+        }
+
+        if let Some(port) = config.connect_port {
+            info!("Discovering Chrome via debug port: {}", port);
+            match discover_ws_via_port(port).await {
+                Ok(ws) => {
+                    info!("Connecting to Chrome via discovered WebSocket: {}", ws);
+                    let (browser, mut handler) = Browser::connect(ws).await?;
+                    tokio::spawn(async move {
+                        while let Some(_evt) = handler.next().await {}
+                    });
+                    *browser_guard = Some(browser);
+                    *self.cleanup_profile_on_drop.lock().await = false;
+                    
+                    self.start_idle_monitor().await;
+                    self.update_activity().await;
+                    return Ok(());
+                }
+                Err(e) => {
+                    warn!("Failed to connect to Chrome on port {}: {}. Will launch new instance.", port, e);
+                    // Fall through to launch
+                }
             }
         }
-        
-        let (browser, mut handler) = Browser::launch(
-            CdpConfig::builder()
-                .window_size(1024, 768)
-                .user_data_dir(&user_data_path)
-                .arg("--disable-web-security")
-                .arg("--disable-features=VizDisplayCompositor")
-                .arg("--disable-dev-shm-usage")
-                .arg("--no-sandbox")
-                .arg("--disable-gpu")
-                .build()
-                .map_err(|e| BrowserError::CdpError(e.to_string()))?
-        )
-        .await?;
 
-        let _handle = tokio::spawn(async move {
+        // 2) Otherwise: launch a browser
+        info!("Launching new browser instance");
+        
+        let mut builder = CdpConfig::builder();
+        
+        // Use persistent profile if specified, otherwise temp
+        let user_data_path = if let Some(dir) = &config.user_data_dir {
+            builder = builder.user_data_dir(dir.clone());
+            dir.to_string_lossy().to_string()
+        } else {
+            // Create temp profile
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+            let temp_path = format!("/tmp/coder-browser-{}-{}", std::process::id(), timestamp);
+            
+            // Ensure the directory doesn't exist before starting
+            if tokio::fs::metadata(&temp_path).await.is_ok() {
+                if let Err(e) = tokio::fs::remove_dir_all(&temp_path).await {
+                    warn!("Failed to cleanup existing browser directory {}: {}", temp_path, e);
+                }
+            }
+            
+            builder = builder.user_data_dir(&temp_path);
+            temp_path
+        };
+        
+        // Configure viewport
+        builder = builder
+            .window_size(config.viewport.width, config.viewport.height);
+        
+        // Set headless mode based on config
+        if config.headless {
+            builder = builder.headless_mode(chromiumoxide::browser::HeadlessMode::New);
+        }
+        
+        // Add less automation-screamy flags
+        builder = builder
+            .arg("--disable-blink-features=AutomationControlled")
+            .arg("--disable-features=VizDisplayCompositor");
+        
+        let browser_config = builder.build()
+            .map_err(|e| BrowserError::CdpError(e.to_string()))?;
+            
+        let (browser, mut handler) = Browser::launch(browser_config).await?;
+        
+        tokio::spawn(async move {
             while let Some(event) = handler.next().await {
                 debug!("Browser event: {:?}", event);
             }
@@ -76,8 +159,12 @@ impl BrowserManager {
         // Store the user data directory path for cleanup
         {
             let mut user_data_guard = self.user_data_dir.lock().await;
-            *user_data_guard = Some(user_data_path);
+            *user_data_guard = Some(user_data_path.clone());
         }
+        
+        // Determine if we should cleanup on drop
+        let should_cleanup = config.user_data_dir.is_none() || !config.persist_profile;
+        *self.cleanup_profile_on_drop.lock().await = should_cleanup;
         
         self.start_idle_monitor().await;
         self.update_activity().await;
@@ -97,22 +184,25 @@ impl BrowserManager {
             browser.close().await?;
         }
         
-        // Cleanup user data directory synchronously to ensure it completes
-        let mut user_data_guard = self.user_data_dir.lock().await;
-        if let Some(user_data_path) = user_data_guard.take() {
-            // Give Chrome a moment to fully release the profile
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            
-            if let Err(e) = tokio::fs::remove_dir_all(&user_data_path).await {
-                warn!("Failed to cleanup browser user data directory {}: {}", user_data_path, e);
-                // Try a more aggressive cleanup on macOS
-                #[cfg(target_os = "macos")]
-                {
-                    let _ = tokio::process::Command::new("rm")
-                        .arg("-rf")
-                        .arg(&user_data_path)
-                        .output()
-                        .await;
+        // Only cleanup user data directory if we should
+        let should_cleanup = *self.cleanup_profile_on_drop.lock().await;
+        if should_cleanup {
+            let mut user_data_guard = self.user_data_dir.lock().await;
+            if let Some(user_data_path) = user_data_guard.take() {
+                // Give Chrome a moment to fully release the profile
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                
+                if let Err(e) = tokio::fs::remove_dir_all(&user_data_path).await {
+                    warn!("Failed to cleanup browser user data directory {}: {}", user_data_path, e);
+                    // Try a more aggressive cleanup on macOS
+                    #[cfg(target_os = "macos")]
+                    {
+                        let _ = tokio::process::Command::new("rm")
+                            .arg("-rf")
+                            .arg(&user_data_path)
+                            .output()
+                            .await;
+                    }
                 }
             }
         }
@@ -135,20 +225,11 @@ impl BrowserManager {
             .ok_or(BrowserError::NotInitialized)?;
 
         let cdp_page = browser.new_page("about:blank").await?;
+        
+        // Apply page overrides (UA, locale, timezone, viewport, etc.)
+        self.apply_page_overrides(&cdp_page).await?;
+        
         let config = self.config.read().await;
-        
-        // Set viewport dimensions using CDP protocol
-        use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
-        let params = SetDeviceMetricsOverrideParams::builder()
-            .width(config.viewport.width as i64)
-            .height(config.viewport.height as i64)
-            .device_scale_factor(config.viewport.device_scale_factor)
-            .mobile(config.viewport.mobile)
-            .build()
-            .map_err(|e| BrowserError::CdpError(e))?;
-        
-        cdp_page.execute(params).await?;
-
         let page = Arc::new(Page::new(cdp_page, config.clone()));
         *page_guard = Some(Arc::clone(&page));
 
@@ -220,6 +301,59 @@ impl BrowserManager {
             viewport: config.viewport.clone(),
             fullpage: config.fullpage,
         }
+    }
+
+    /// Apply "human" environment: UA / Accept-Language / Timezone / Locale / DPR+Viewport
+    pub async fn apply_page_overrides(
+        &self,
+        page: &chromiumoxide::Page,
+    ) -> Result<()> {
+        let config = self.config.read().await;
+        
+        // Enable Network domain before setting headers
+        page.execute(network::EnableParams::default()).await?;
+
+        // SetUserAgentOverrideParams can handle both user agent and accept-language
+        if config.user_agent.is_some() || config.accept_language.is_some() {
+            let mut params_builder = network::SetUserAgentOverrideParams::builder();
+            
+            if let Some(ua) = &config.user_agent {
+                params_builder = params_builder.user_agent(ua);
+            }
+            
+            if let Some(al) = &config.accept_language {
+                params_builder = params_builder.accept_language(al);
+            }
+            
+            let params = params_builder
+                .build()
+                .map_err(|e| BrowserError::CdpError(e))?;
+            page.execute(params).await?;
+        }
+
+        if let Some(tz) = &config.timezone {
+            page.execute(emulation::SetTimezoneOverrideParams {
+                timezone_id: tz.clone(),
+            }).await?;
+        }
+
+        if let Some(locale) = &config.locale {
+            let params = emulation::SetLocaleOverrideParams::builder()
+                .locale(locale)
+                .build();
+            page.execute(params).await?;
+        }
+
+        let params = emulation::SetDeviceMetricsOverrideParams::builder()
+            .width(config.viewport.width as i64)
+            .height(config.viewport.height as i64)
+            .device_scale_factor(config.viewport.device_scale_factor)
+            .mobile(config.viewport.mobile)
+            .build()
+            .map_err(|e| BrowserError::CdpError(e))?;
+        page.execute(params).await?;
+
+        Ok(())
     }
 
     async fn ensure_browser(&self) -> Result<()> {
