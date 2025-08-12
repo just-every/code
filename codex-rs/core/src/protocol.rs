@@ -431,6 +431,9 @@ pub enum EventMsg {
 
     /// Browser screenshot has been captured and is ready for display
     BrowserScreenshotUpdate(BrowserScreenshotUpdateEvent),
+    
+    /// Agent status has been updated
+    AgentStatusUpdate(AgentStatusUpdateEvent),
 
     /// Notification that the agent is shutting down.
     ShutdownComplete,
@@ -715,6 +718,24 @@ pub struct BrowserScreenshotUpdateEvent {
     pub screenshot_path: PathBuf,
     /// Current URL of the browser
     pub url: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AgentStatusUpdateEvent {
+    /// List of currently active agents
+    pub agents: Vec<AgentInfo>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AgentInfo {
+    /// Unique identifier for the agent
+    pub id: String,
+    /// Display name for the agent
+    pub name: String,
+    /// Current status of the agent
+    pub status: String,
+    /// Optional model being used
+    pub model: Option<String>,
 }
 
 /// User's decision in response to an ExecApprovalRequest.

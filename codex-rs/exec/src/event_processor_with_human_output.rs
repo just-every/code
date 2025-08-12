@@ -517,6 +517,9 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::BrowserScreenshotUpdate(_) => {
                 // Currently ignored in exec output.
             }
+            EventMsg::AgentStatusUpdate(_) => {
+                // Currently ignored in exec output.
+            }
             EventMsg::ShutdownComplete => return CodexStatus::Shutdown,
         }
         CodexStatus::Running

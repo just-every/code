@@ -17,6 +17,7 @@ use codex_core::protocol::AgentReasoningRawContentEvent;
 use codex_core::protocol::ApplyPatchApprovalRequestEvent;
 use codex_core::protocol::BackgroundEventEvent;
 use codex_core::protocol::BrowserScreenshotUpdateEvent;
+use codex_core::protocol::AgentStatusUpdateEvent;
 use codex_core::protocol::ErrorEvent;
 use codex_core::protocol::Event;
 use codex_core::protocol::EventMsg;
@@ -546,32 +547,6 @@ impl ChatWidget<'_> {
         let processed = crate::slash_command::process_slash_command_message(&actual_text);
         match processed {
             crate::slash_command::ProcessedCommand::ExpandedPrompt(expanded) => {
-                // Check if this is a multi-agent command
-                if actual_text.starts_with("/plan") || actual_text.starts_with("/solve") || actual_text.starts_with("/code") {
-                    // Track as active agents
-                    self.active_agents.clear(); // Clear any previous agents
-                    
-                    // Determine agent names based on the command
-                    let agent_names = if actual_text.starts_with("/plan") {
-                        vec!["Planning Agent", "Research Agent", "Implementation Agent"]
-                    } else if actual_text.starts_with("/solve") {
-                        vec!["Analysis Agent", "Solution Agent", "Verification Agent"]
-                    } else {
-                        vec!["Code Analysis", "Implementation", "Testing"]
-                    };
-                    
-                    // Add agents with pending status
-                    for name in agent_names {
-                        self.active_agents.push(AgentInfo {
-                            name: name.to_string(),
-                            status: AgentStatus::Pending,
-                            started_at: None,
-                        });
-                    }
-                    
-                    self.request_redraw();
-                }
-                
                 // Replace the slash command with the expanded prompt for the LLM
                 actual_text = expanded;
             }
@@ -872,16 +847,6 @@ impl ChatWidget<'_> {
                 // Replace composer with single-line spinner while waiting.
                 self.bottom_pane
                     .update_status_text("waiting for model".to_string());
-                
-                // Update first pending agent to running
-                for agent in &mut self.active_agents {
-                    if agent.status == AgentStatus::Pending {
-                        agent.status = AgentStatus::Running;
-                        agent.started_at = Some(std::time::Instant::now());
-                        break;
-                    }
-                }
-                
                 self.request_redraw();
             }
             EventMsg::TaskComplete(TaskCompleteEvent {
@@ -889,17 +854,6 @@ impl ChatWidget<'_> {
             }) => {
                 self.bottom_pane.set_task_running(false);
                 self.bottom_pane.clear_live_ring();
-                
-                // Mark all running agents as completed
-                for agent in &mut self.active_agents {
-                    if agent.status == AgentStatus::Running {
-                        agent.status = AgentStatus::Completed;
-                    }
-                }
-                
-                // Clear agents after a short delay (they'll remain visible for now)
-                // In a real implementation, you might want to keep them visible for a bit
-                
                 self.request_redraw();
             }
             EventMsg::TokenCount(token_usage) => {
@@ -921,14 +875,6 @@ impl ChatWidget<'_> {
                 self.answer_buffer.clear();
                 self.reasoning_buffer.clear();
                 self.content_buffer.clear();
-                
-                // Mark any running agents as failed
-                for agent in &mut self.active_agents {
-                    if agent.status == AgentStatus::Running {
-                        agent.status = AgentStatus::Failed;
-                    }
-                }
-                
                 self.request_redraw();
             }
             EventMsg::PlanUpdate(update) => {
@@ -1047,32 +993,6 @@ impl ChatWidget<'_> {
                 invocation,
             }) => {
                 self.finalize_active_stream();
-                
-                // Check if this is the Task tool being invoked
-                if invocation.tool == "Task" || invocation.tool == "run_task" {
-                    // Parse the task description from arguments if available
-                    let task_name = if let Some(args) = &invocation.arguments {
-                        if let Some(desc) = args.get("description").and_then(|v| v.as_str()) {
-                            desc.to_string()
-                        } else if let Some(task) = args.get("task").and_then(|v| v.as_str()) {
-                            // Take first few words of task as name
-                            task.split_whitespace().take(3).collect::<Vec<_>>().join(" ")
-                        } else {
-                            "Task".to_string()
-                        }
-                    } else {
-                        "Task".to_string()
-                    };
-                    
-                    // Add new agent for this task
-                    self.active_agents.push(AgentInfo {
-                        name: task_name,
-                        status: AgentStatus::Pending,
-                        started_at: None,
-                    });
-                    self.request_redraw();
-                }
-                
                 self.add_to_history(HistoryCell::new_active_mcp_tool_call(invocation));
             }
             EventMsg::McpToolCallEnd(McpToolCallEndEvent {
@@ -1081,28 +1001,6 @@ impl ChatWidget<'_> {
                 invocation,
                 result,
             }) => {
-                // Check if this is the Task tool completion
-                if invocation.tool == "Task" || invocation.tool == "run_task" {
-                    // Find and update the corresponding agent
-                    for agent in &mut self.active_agents {
-                        if agent.status == AgentStatus::Pending || agent.status == AgentStatus::Running {
-                            // Mark as completed or failed based on result
-                            let is_error = result
-                                .as_ref()
-                                .map(|r| r.is_error.unwrap_or(false))
-                                .unwrap_or(false);
-                            
-                            agent.status = if is_error {
-                                AgentStatus::Failed
-                            } else {
-                                AgentStatus::Completed
-                            };
-                            break;
-                        }
-                    }
-                    self.request_redraw();
-                }
-                
                 self.add_to_history(HistoryCell::new_completed_mcp_tool_call(
                     80,
                     invocation,
@@ -1133,33 +1031,28 @@ impl ChatWidget<'_> {
             }
             EventMsg::BackgroundEvent(BackgroundEventEvent { message }) => {
                 info!("BackgroundEvent: {message}");
-                
-                // Parse agent status from background events
-                // Format: "N agents running" or "N agent(s) running"
-                if message.contains("agent") && message.contains("running") {
-                    // Extract the number of agents
-                    if let Some(num_str) = message.split_whitespace().next() {
-                        if let Ok(num_agents) = num_str.parse::<usize>() {
-                            // Update agent list if needed
-                            if num_agents > 0 && self.active_agents.is_empty() {
-                                // Create placeholder agents
-                                self.active_agents.clear();
-                                for i in 1..=num_agents {
-                                    self.active_agents.push(AgentInfo {
-                                        name: format!("Agent {}", i),
-                                        status: AgentStatus::Running,
-                                        started_at: Some(std::time::Instant::now()),
-                                    });
-                                }
-                                self.request_redraw();
-                            } else if num_agents == 0 {
-                                // Clear agents when none are running
-                                self.active_agents.clear();
-                                self.request_redraw();
-                            }
-                        }
-                    }
+            }
+            EventMsg::AgentStatusUpdate(AgentStatusUpdateEvent { agents }) => {
+                // Update the active agents list from the event
+                self.active_agents.clear();
+                for agent in agents {
+                    self.active_agents.push(AgentInfo {
+                        name: agent.name.clone(),
+                        status: match agent.status.as_str() {
+                            "pending" => AgentStatus::Pending,
+                            "running" => AgentStatus::Running,
+                            "completed" => AgentStatus::Completed,
+                            "failed" => AgentStatus::Failed,
+                            _ => AgentStatus::Pending,
+                        },
+                        started_at: if agent.status == "running" {
+                            Some(std::time::Instant::now())
+                        } else {
+                            None
+                        },
+                    });
                 }
+                self.request_redraw();
             }
             EventMsg::BrowserScreenshotUpdate(BrowserScreenshotUpdateEvent { screenshot_path, url }) => {
                 tracing::info!("Received browser screenshot update: {} at URL: {}", screenshot_path.display(), url);

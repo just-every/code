@@ -87,6 +87,7 @@ use crate::protocol::ApplyPatchApprovalRequestEvent;
 use crate::protocol::AskForApproval;
 use crate::protocol::BackgroundEventEvent;
 use crate::protocol::BrowserScreenshotUpdateEvent;
+use crate::protocol::AgentStatusUpdateEvent;
 use crate::protocol::ErrorEvent;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
@@ -2020,16 +2021,10 @@ async fn handle_run_agent(
                 }
             }
             
-            // Send status update showing agents are running
+            // Send agent status update event
+            drop(manager); // Release the write lock first
             if agent_ids.len() > 0 {
-                let status_msg = format!("🤖 {} agent{} running", agent_ids.len(), if agent_ids.len() > 1 { "s" } else { "" });
-                let event = Event {
-                    id: "agent-status".to_string(),
-                    msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
-                        message: status_msg,
-                    }),
-                };
-                let _ = sess.tx_event.send(event).await;
+                send_agent_status_update(sess).await;
             }
             
             let response = if let Some(batch_id) = batch_id {
@@ -2899,6 +2894,41 @@ async fn capture_browser_screenshot(sess: &Session) -> Option<(PathBuf, String)>
         tracing::debug!("No browser manager available for screenshot capture");
     }
     None
+}
+
+/// Send agent status update event to the TUI
+async fn send_agent_status_update(sess: &Session) {
+    let manager = AGENT_MANAGER.read().await;
+    
+    // Collect all active agents (not completed/failed/cancelled)
+    let agents: Vec<crate::protocol::AgentInfo> = manager.get_all_agents()
+        .filter(|agent| !matches!(agent.status, AgentStatus::Completed | AgentStatus::Failed | AgentStatus::Cancelled))
+        .map(|agent| crate::protocol::AgentInfo {
+            id: agent.id.clone(),
+            name: agent.prompt.chars().take(50).collect::<String>(), // First 50 chars as name
+            status: match agent.status {
+                AgentStatus::Pending => "pending".to_string(),
+                AgentStatus::Running => "running".to_string(),
+                AgentStatus::Completed => "completed".to_string(),
+                AgentStatus::Failed => "failed".to_string(),
+                AgentStatus::Cancelled => "cancelled".to_string(),
+            },
+            model: Some(agent.model.clone()),
+        })
+        .collect();
+    
+    let event = Event {
+        id: "agent_status".to_string(),
+        msg: EventMsg::AgentStatusUpdate(AgentStatusUpdateEvent { agents }),
+    };
+    
+    // Send event asynchronously
+    let tx_event = sess.tx_event.clone();
+    tokio::spawn(async move {
+        if let Err(e) = tx_event.send(event).await {
+            tracing::error!("Failed to send agent status update event: {}", e);
+        }
+    });
 }
 
 /// Add a screenshot to pending screenshots for the next model request

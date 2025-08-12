@@ -160,6 +160,10 @@ impl AgentManager {
     pub fn get_agent(&self, agent_id: &str) -> Option<Agent> {
         self.agents.get(agent_id).cloned()
     }
+    
+    pub fn get_all_agents(&self) -> impl Iterator<Item = &Agent> {
+        self.agents.values()
+    }
 
     pub fn list_agents(
         &self, 
