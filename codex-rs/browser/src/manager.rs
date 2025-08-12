@@ -323,12 +323,57 @@ impl BrowserManager {
         // try to use the current active tab instead of creating a new one
         let cdp_page = if config.connect_port.is_some() || config.connect_ws.is_some() {
             // Try to get existing pages
-            let pages = browser.pages().await?;
+            let mut pages = browser.pages().await?;
             
             if !pages.is_empty() {
-                // Use the first page (or the active one if we can determine it)
-                info!("Using existing Chrome tab instead of creating new one");
-                pages.into_iter().next().unwrap()
+                // Try to find the active/visible tab
+                // We'll check each page to see if it's visible/focused
+                let mut active_page = None;
+                
+                for page in &pages {
+                    // Check if this page is visible by evaluating document.visibilityState
+                    // and document.hasFocus()
+                    let is_visible = page.evaluate(
+                        "(() => { 
+                            return {
+                                visible: document.visibilityState === 'visible',
+                                focused: document.hasFocus(),
+                                url: window.location.href
+                            };
+                        })()"
+                    ).await;
+                    
+                    if let Ok(result) = is_visible {
+                        if let Ok(obj) = result.into_value::<serde_json::Value>() {
+                            let visible = obj.get("visible").and_then(|v| v.as_bool()).unwrap_or(false);
+                            let focused = obj.get("focused").and_then(|v| v.as_bool()).unwrap_or(false);
+                            let url = obj.get("url").and_then(|v| v.as_str()).unwrap_or("unknown");
+                            
+                            debug!("Tab check - URL: {}, Visible: {}, Focused: {}", url, visible, focused);
+                            
+                            // Prefer focused tab, then visible tab
+                            if focused {
+                                info!("Found focused tab: {}", url);
+                                active_page = Some(page.clone());
+                                break;
+                            } else if visible && active_page.is_none() {
+                                info!("Found visible tab: {}", url);
+                                active_page = Some(page.clone());
+                            }
+                        }
+                    }
+                }
+                
+                // Use the active page if found, otherwise fall back to the last page
+                // (which is often the most recently used)
+                if let Some(page) = active_page {
+                    info!("Using active/visible Chrome tab");
+                    page
+                } else {
+                    // Use the last page as it's often the most recent
+                    info!("No active tab found, using most recent tab");
+                    pages.pop().unwrap()
+                }
             } else {
                 // No existing pages, create a new one
                 info!("No existing tabs found, creating new tab");
