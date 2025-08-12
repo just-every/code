@@ -108,6 +108,8 @@ pub(crate) struct ChatWidget<'a> {
     scroll_offset: u16,
     // Agent tracking for multi-agent tasks
     active_agents: Vec<AgentInfo>,
+    agents_ready_to_start: bool,
+    last_agent_prompt: Option<String>,
 }
 
 struct UserMessage {
@@ -250,8 +252,8 @@ impl ChatWidget<'_> {
             .map(|lock| lock.is_some())
             .unwrap_or(false);
         
-        // Check if there are active agents
-        let has_active_agents = !self.active_agents.is_empty();
+        // Check if there are active agents or if agents are ready to start
+        let has_active_agents = !self.active_agents.is_empty() || self.agents_ready_to_start;
         
         let bottom_height = 6u16.max(self.bottom_pane.desired_height(area.width)).min(15);
 
@@ -420,6 +422,8 @@ impl ChatWidget<'_> {
             cached_cell_size: std::cell::OnceCell::new(),
             scroll_offset: 0,
             active_agents: Vec::new(),
+            agents_ready_to_start: false,
+            last_agent_prompt: None,
         }
     }
 
@@ -549,6 +553,10 @@ impl ChatWidget<'_> {
             crate::slash_command::ProcessedCommand::ExpandedPrompt(expanded) => {
                 // Replace the slash command with the expanded prompt for the LLM
                 actual_text = expanded;
+                // Set agents ready to start since this is a multi-agent command
+                self.agents_ready_to_start = true;
+                self.last_agent_prompt = Some(original_text.clone());
+                self.request_redraw();
             }
             crate::slash_command::ProcessedCommand::RegularCommand(cmd, _args) => {
                 // This is a regular slash command, dispatch it normally
@@ -1051,6 +1059,10 @@ impl ChatWidget<'_> {
                             None
                         },
                     });
+                }
+                // Reset ready to start flag when we get actual agent updates
+                if !self.active_agents.is_empty() {
+                    self.agents_ready_to_start = false;
                 }
                 self.request_redraw();
             }
@@ -1702,7 +1714,7 @@ impl ChatWidget<'_> {
         let has_browser_screenshot = self.latest_browser_screenshot.lock()
             .map(|lock| lock.is_some())
             .unwrap_or(false);
-        let has_active_agents = !self.active_agents.is_empty();
+        let has_active_agents = !self.active_agents.is_empty() || self.agents_ready_to_start;
         
         // Add same horizontal padding as the Message input (2 chars on each side)
         let horizontal_padding = 2u16;
@@ -1773,11 +1785,17 @@ impl ChatWidget<'_> {
         // Display agent statuses
         let mut lines = vec![];
         
-        if self.active_agents.is_empty() {
+        if self.agents_ready_to_start && self.active_agents.is_empty() {
+            // Show "Ready to start" message when agents are expected
+            lines.push(RLine::from(vec![
+                Span::styled("Ready to start", Style::default().fg(crate::colors::info()).add_modifier(Modifier::ITALIC)),
+            ]));
+        } else if self.active_agents.is_empty() {
             lines.push(RLine::from(vec![
                 Span::styled("No active agents", Style::default().fg(crate::colors::text_dim())),
             ]));
         } else {
+            // Show agent names/models at top
             for agent in &self.active_agents {
                 let status_color = match agent.status {
                     AgentStatus::Pending => crate::colors::warning(),
@@ -1788,17 +1806,45 @@ impl ChatWidget<'_> {
                 
                 let status_text = match agent.status {
                     AgentStatus::Pending => "pending",
-                    AgentStatus::Running => "running",
+                    AgentStatus::Running => "running", 
                     AgentStatus::Completed => "completed",
                     AgentStatus::Failed => "failed",
                 };
                 
+                // Truncate name to fit nicely
+                let display_name = if agent.name.len() > 30 {
+                    format!("{}...", &agent.name[..27])
+                } else {
+                    agent.name.clone()
+                };
+                
                 lines.push(RLine::from(vec![
-                    Span::styled(&agent.name, Style::default().fg(crate::colors::text()).add_modifier(Modifier::BOLD)),
-                    Span::styled(": ", Style::default().fg(crate::colors::text_dim())),
+                    Span::styled(display_name, Style::default().fg(crate::colors::text()).add_modifier(Modifier::BOLD)),
+                    Span::styled(" - ", Style::default().fg(crate::colors::text_dim())),
                     Span::styled(status_text, Style::default().fg(status_color)),
                 ]));
             }
+        }
+        
+        // Add prompt display at bottom if available
+        if let Some(ref prompt) = self.last_agent_prompt {
+            if !lines.is_empty() {
+                lines.push(RLine::from("")); // Empty line separator
+            }
+            lines.push(RLine::from(vec![
+                Span::styled("Prompt: ", Style::default().fg(crate::colors::text_dim()).add_modifier(Modifier::ITALIC)),
+            ]));
+            
+            // Wrap long prompts
+            let prompt_text = if prompt.len() > 60 {
+                format!("{}...", &prompt[..57])
+            } else {
+                prompt.clone()
+            };
+            
+            lines.push(RLine::from(vec![
+                Span::styled(prompt_text, Style::default().fg(crate::colors::text_dim())),
+            ]));
         }
         
         let agent_paragraph = Paragraph::new(lines);
