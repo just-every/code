@@ -86,3 +86,6 @@ CHANGELOG.ignore.md
 # nix related
 .direnv
 .envrc
+
+# git worktrees
+branches/

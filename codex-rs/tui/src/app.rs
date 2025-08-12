@@ -504,6 +504,26 @@ impl App<'_> {
                     // Request a redraw to apply the new theme
                     self.schedule_redraw();
                 }
+                AppEvent::PreviewTheme(new_theme) => {
+                    // Switch the theme immediately for preview (no history event)
+                    crate::theme::switch_theme(new_theme);
+                    
+                    // Clear terminal with new theme colors
+                    let theme_bg = crate::colors::background();
+                    let theme_fg = crate::colors::text();
+                    let _ = crossterm::execute!(
+                        std::io::stdout(),
+                        crossterm::style::SetColors(crossterm::style::Colors::new(theme_fg.into(), theme_bg.into())),
+                        crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+                        crossterm::cursor::MoveTo(0, 0),
+                        crossterm::terminal::SetTitle("Coder"),
+                        crossterm::terminal::EnableLineWrap
+                    );
+                    
+                    // Don't update config or add to history for previews
+                    // Request a redraw to apply the new theme
+                    self.schedule_redraw();
+                }
                 AppEvent::OnboardingAuthComplete(result) => {
                     if let AppState::Onboarding { screen } = &mut self.app_state {
                         screen.on_auth_complete(result);

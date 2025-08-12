@@ -300,6 +300,11 @@ impl HistoryCell {
                 // Fixed height for animation area
                 18u16  // 16 for animation + 2 for borders
             }
+            HistoryCell::BackgroundEvent { view: _ } => {
+                // For background events (LLM responses), use proper word wrapping
+                let processed_lines = self.get_processed_lines(width);
+                processed_lines.len() as u16
+            }
             _ => {
                 Paragraph::new(Text::from(self.plain_lines()))
                     .wrap(Wrap { trim: false })
@@ -960,6 +965,27 @@ impl HistoryCell {
             view: TextBlock::new(vec![line]),
         }
     }
+
+    /// Get processed lines with proper word wrapping and markdown support
+    pub(crate) fn get_processed_lines(&self, width: u16) -> Vec<Line<'static>> {
+        match self {
+            HistoryCell::BackgroundEvent { view } => {
+                // Convert the TextBlock lines back to text for processing
+                let text = view.lines.iter()
+                    .map(|line| {
+                        line.spans.iter()
+                            .map(|span| span.content.as_ref())
+                            .collect::<String>()
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                
+                // Process with markdown support and word wrapping
+                crate::text_processing::process_markdown_text(&text, width)
+            }
+            _ => self.plain_lines(),
+        }
+    }
 }
 
 impl WidgetRef for &HistoryCell {
@@ -994,6 +1020,15 @@ impl WidgetRef for &HistoryCell {
                         1.0  // Full progress = static final state
                     );
                 }
+            }
+            HistoryCell::BackgroundEvent { .. } => {
+                // Use processed lines with markdown support and proper word wrapping
+                let processed_lines = self.get_processed_lines(area.width);
+                Paragraph::new(Text::from(processed_lines))
+                    .style(Style::default()
+                        .fg(crate::colors::text())
+                        .bg(crate::colors::background()))
+                    .render(area, buf);
             }
             _ => {
                 // Apply theme background and text color to the paragraph

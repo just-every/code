@@ -41,8 +41,11 @@ pub(crate) enum AppEvent {
     /// Update the reasoning effort level
     UpdateReasoningEffort(ReasoningEffort),
     
-    /// Update the theme
+    /// Update the theme (with history event)
     UpdateTheme(ThemeName),
+    
+    /// Preview theme (no history event)
+    PreviewTheme(ThemeName),
 
     /// Kick off an asynchronous file search for the given query (text after
     /// the `@`). Previous searches may be cancelled by the app layer so there

@@ -37,7 +37,6 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
-use ratatui::style::Modifier;
 use ratatui::text::Line;
 use ratatui::widgets::Widget;
 use ratatui::widgets::WidgetRef;
@@ -1092,7 +1091,14 @@ impl ChatWidget<'_> {
                 
                 // Update the latest screenshot and URL for display
                 if let Ok(mut latest) = self.latest_browser_screenshot.lock() {
-                    *latest = Some((screenshot_path, url));
+                    let old_url = latest.as_ref().map(|(_, u)| u.clone());
+                    *latest = Some((screenshot_path.clone(), url.clone()));
+                    if old_url.as_ref() != Some(&url) {
+                        tracing::info!("Browser URL changed from {:?} to {}", old_url, url);
+                    }
+                    tracing::debug!("Updated browser screenshot display with path: {} and URL: {}", screenshot_path.display(), url);
+                } else {
+                    tracing::warn!("Failed to acquire lock for browser screenshot update");
                 }
                 
                 // Request a redraw to update the display immediately
@@ -1759,124 +1765,31 @@ impl ChatWidget<'_> {
         }
     }
     
-    /// Render the browser panel (left side when both panels are shown)
+    /// Render the browser panel (screenshot with URL in title)
     fn render_browser_panel(&self, area: Rect, buf: &mut Buffer) {
         use ratatui::style::Style;
-        use ratatui::widgets::{Block, Borders, Paragraph, Widget};
-        use ratatui::text::{Line as RLine, Span};
+        use ratatui::widgets::{Block, Borders, Widget};
         
         if let Ok(screenshot_lock) = self.latest_browser_screenshot.lock() {
-            if let Some((_screenshot_path, url)) = &*screenshot_lock {
-                // When using full width, split for info and screenshot
-                // When in half-width, just show info
-                let use_full_width = area.width > 80;
+            if let Some((screenshot_path, url)) = &*screenshot_lock {
+                // Browser screenshot with URL in title
+                let screenshot_block = Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" {} ", url))  // URL in the title
+                    .border_style(Style::default().fg(crate::colors::border()));
                 
-                if use_full_width {
-                    // Split into info and screenshot
-                    let chunks = Layout::horizontal([
-                        Constraint::Percentage(50),
-                        Constraint::Percentage(50),
-                    ])
-                    .areas::<2>(area);
-                    
-                    let info_area = chunks[0];
-                    let screenshot_area = chunks[1];
-                    
-                    // Info panel
-                    let info_block = Block::default()
-                        .borders(Borders::ALL)
-                        .title(" Browser ")
-                        .border_style(Style::default().fg(crate::colors::border()));
-                    
-                    let inner_info = info_block.inner(info_area);
-                    info_block.render(info_area, buf);
-                    
-                    // Display URL and browser status
-                    let mut lines = vec![];
-                    lines.push(RLine::from(vec![
-                        Span::styled("URL: ", Style::default().fg(crate::colors::text_dim())),
-                        Span::styled(url.clone(), Style::default().fg(crate::colors::text()).add_modifier(Modifier::BOLD)),
-                    ]));
-                    
-                    if self.browser_manager.is_enabled_sync() {
-                        lines.push(RLine::from(vec![
-                            Span::styled("Status: ", Style::default().fg(crate::colors::text_dim())),
-                            Span::styled("Active", Style::default().fg(crate::colors::success())),
-                        ]));
-                    } else {
-                        lines.push(RLine::from(vec![
-                            Span::styled("Status: ", Style::default().fg(crate::colors::text_dim())),
-                            Span::styled("Inactive", Style::default().fg(crate::colors::warning())),
-                        ]));
-                    }
-                    
-                    let info_paragraph = Paragraph::new(lines);
-                    info_paragraph.render(inner_info, buf);
-                    
-                    // Screenshot panel
-                    let screenshot_block = Block::default()
-                        .borders(Borders::ALL)
-                        .title(" Preview ")
-                        .border_style(Style::default().fg(crate::colors::border()));
-                    
-                    let inner_screenshot = screenshot_block.inner(screenshot_area);
-                    screenshot_block.render(screenshot_area, buf);
-                    
-                    // Render the screenshot (using existing method)
-                    if let Some((screenshot_path, _)) = &*screenshot_lock {
-                        self.render_screenshot_highlevel(screenshot_path, inner_screenshot, buf);
-                    }
-                } else {
-                    // Just show browser info in limited space
-                    let info_block = Block::default()
-                        .borders(Borders::ALL)
-                        .title(" Browser ")
-                        .border_style(Style::default().fg(crate::colors::border()));
-                    
-                    let inner_info = info_block.inner(area);
-                    info_block.render(area, buf);
-                    
-                    let mut lines = vec![];
-                    // Truncate URL if needed
-                    let max_url_len = area.width.saturating_sub(10) as usize;
-                    let display_url = if url.len() > max_url_len {
-                        format!("{}...", &url[..max_url_len.saturating_sub(3)])
-                    } else {
-                        url.clone()
-                    };
-                    
-                    lines.push(RLine::from(vec![
-                        Span::styled("URL: ", Style::default().fg(crate::colors::text_dim())),
-                        Span::styled(display_url, Style::default().fg(crate::colors::text())),
-                    ]));
-                    
-                    let status = if self.browser_manager.is_enabled_sync() {
-                        "Active"
-                    } else {
-                        "Inactive"
-                    };
-                    
-                    lines.push(RLine::from(vec![
-                        Span::styled("Status: ", Style::default().fg(crate::colors::text_dim())),
-                        Span::styled(status, Style::default().fg(
-                            if self.browser_manager.is_enabled_sync() {
-                                crate::colors::success()
-                            } else {
-                                crate::colors::warning()
-                            }
-                        )),
-                    ]));
-                    
-                    let info_paragraph = Paragraph::new(lines);
-                    info_paragraph.render(inner_info, buf);
-                }
+                let inner_screenshot = screenshot_block.inner(area);
+                screenshot_block.render(area, buf);
+                
+                // Render the screenshot
+                self.render_screenshot_highlevel(screenshot_path, inner_screenshot, buf);
             }
         }
     }
     
     /// Render the agent status panel in the HUD
     fn render_agent_panel(&self, area: Rect, buf: &mut Buffer) {
-        use ratatui::style::Style;
+        use ratatui::style::{Style, Modifier};
         use ratatui::widgets::{Block, Borders, Paragraph, Widget};
         use ratatui::text::{Line as RLine, Span};
         

@@ -47,6 +47,7 @@ mod status_indicator_widget;
 mod terminal_info;
 mod text_block;
 mod text_formatting;
+mod text_processing;
 mod theme;
 mod tui;
 mod user_approval_widget;

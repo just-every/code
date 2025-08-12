@@ -242,6 +242,14 @@ impl Page {
             .ok_or(BrowserError::PageNotLoaded)
     }
 
+    /// Get the current URL directly from the browser (not cached)
+    pub async fn get_current_url(&self) -> Result<String> {
+        match self.cdp_page.url().await? {
+            Some(url) => Ok(url),
+            None => Err(BrowserError::PageNotLoaded)
+        }
+    }
+
     pub async fn update_viewport(&self, viewport: ViewportConfig) -> Result<()> {
         let params = SetDeviceMetricsOverrideParams::builder()
             .width(viewport.width as i64)

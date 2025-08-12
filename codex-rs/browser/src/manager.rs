@@ -202,7 +202,7 @@ impl BrowserManager {
     pub async fn get_current_url(&self) -> Option<String> {
         let page_guard = self.page.lock().await;
         if let Some(page) = page_guard.as_ref() {
-            page.get_url().await.ok()
+            page.get_current_url().await.ok()
         } else {
             None
         }
@@ -404,8 +404,8 @@ impl BrowserManager {
             crate::page::ScreenshotMode::Viewport
         };
         
-        // Get current URL
-        let current_url = page.get_url().await.unwrap_or_else(|_| "about:blank".to_string());
+        // Get current URL directly from the browser (not cached)
+        let current_url = page.get_current_url().await.unwrap_or_else(|_| "about:blank".to_string());
         
         // Capture screenshots
         let screenshots = page.screenshot(mode).await?;

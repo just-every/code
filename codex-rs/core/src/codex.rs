@@ -2877,19 +2877,26 @@ async fn capture_browser_screenshot(sess: &Session) -> Option<(PathBuf, String)>
             // Get current URL first
             let url = browser_manager.get_current_url().await
                 .unwrap_or_else(|| "Browser".to_string());
+            tracing::debug!("Attempting to capture screenshot at URL: {}", url);
             
             match browser_manager.capture_screenshot().await {
                 Ok(screenshots) => {
                     if let Some(first_screenshot) = screenshots.first() {
                         tracing::info!("Captured browser screenshot: {} at URL: {}", first_screenshot.display(), url);
                         return Some((first_screenshot.clone(), url));
+                    } else {
+                        tracing::warn!("Screenshot capture returned empty results at URL: {}", url);
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to capture browser screenshot: {}", e);
+                    tracing::warn!("Failed to capture browser screenshot at URL {}: {}", url, e);
                 }
             }
+        } else {
+            tracing::debug!("Browser manager is not enabled, skipping screenshot capture");
         }
+    } else {
+        tracing::debug!("No browser manager available for screenshot capture");
     }
     None
 }
@@ -2990,9 +2997,13 @@ async fn handle_browser_open(
                 // Navigate to the URL
                 match browser_manager.goto(url).await {
                     Ok(_) => {
+                        tracing::info!("Browser navigation to {} completed successfully", url);
                         // Capture screenshot after navigation
-                        if let Some((screenshot_path, url)) = capture_browser_screenshot(sess).await {
-                            add_pending_screenshot(sess, screenshot_path, url);
+                        if let Some((screenshot_path, updated_url)) = capture_browser_screenshot(sess).await {
+                            tracing::info!("Screenshot captured after navigation: {} at URL: {}", screenshot_path.display(), updated_url);
+                            add_pending_screenshot(sess, screenshot_path, updated_url);
+                        } else {
+                            tracing::warn!("Failed to capture screenshot after navigation to {}", url);
                         }
                         
                         ResponseInputItem::FunctionCallOutput {
