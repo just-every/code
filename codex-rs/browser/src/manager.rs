@@ -262,10 +262,19 @@ impl BrowserManager {
         let mut page_guard = self.page.lock().await;
         *page_guard = None;
         
+        let config = self.config.read().await;
+        let is_external_chrome = config.connect_port.is_some() || config.connect_ws.is_some();
+        drop(config);
+        
         let mut browser_guard = self.browser.lock().await;
         if let Some(mut browser) = browser_guard.take() {
-            info!("Stopping browser");
-            browser.close().await?;
+            if is_external_chrome {
+                info!("Disconnecting from external Chrome (not closing it)");
+                // Just drop the connection, don't close the browser
+            } else {
+                info!("Stopping browser we launched");
+                browser.close().await?;
+            }
         }
         
         // Only cleanup user data directory if we should
@@ -308,12 +317,31 @@ impl BrowserManager {
             .as_ref()
             .ok_or(BrowserError::NotInitialized)?;
 
-        let cdp_page = browser.new_page("about:blank").await?;
+        let config = self.config.read().await;
+        
+        // If we're connected to an existing Chrome (via connect_port or connect_ws),
+        // try to use the current active tab instead of creating a new one
+        let cdp_page = if config.connect_port.is_some() || config.connect_ws.is_some() {
+            // Try to get existing pages
+            let pages = browser.pages().await?;
+            
+            if !pages.is_empty() {
+                // Use the first page (or the active one if we can determine it)
+                info!("Using existing Chrome tab instead of creating new one");
+                pages.into_iter().next().unwrap()
+            } else {
+                // No existing pages, create a new one
+                info!("No existing tabs found, creating new tab");
+                browser.new_page("about:blank").await?
+            }
+        } else {
+            // We launched Chrome ourselves, create a new page
+            browser.new_page("about:blank").await?
+        };
         
         // Apply page overrides (UA, locale, timezone, viewport, etc.)
         self.apply_page_overrides(&cdp_page).await?;
         
-        let config = self.config.read().await;
         let page = Arc::new(Page::new(cdp_page, config.clone()));
         *page_guard = Some(Arc::clone(&page));
 
@@ -533,7 +561,14 @@ impl BrowserManager {
     async fn start_idle_monitor(&self) {
         let config = self.config.read().await;
         let idle_timeout = Duration::from_millis(config.idle_timeout_ms);
+        let is_external_chrome = config.connect_port.is_some() || config.connect_ws.is_some();
         drop(config);
+        
+        // Don't start idle monitor for external Chrome connections
+        if is_external_chrome {
+            info!("Skipping idle monitor for external Chrome connection");
+            return;
+        }
 
         let browser = Arc::clone(&self.browser);
         let last_activity = Arc::clone(&self.last_activity);
