@@ -30,6 +30,71 @@ async fn discover_ws_via_port(port: u16) -> Result<String> {
     Ok(body.web_socket_debugger_url)
 }
 
+/// Scan for Chrome processes with debug ports and verify accessibility
+async fn scan_for_chrome_debug_port() -> Option<u16> {
+    use std::process::Command;
+    
+    // Use ps to find Chrome processes with remote-debugging-port
+    let output = Command::new("ps")
+        .args(&["aux"])
+        .output()
+        .ok()?;
+    
+    let ps_output = String::from_utf8_lossy(&output.stdout);
+    
+    // Find all Chrome processes with debug ports
+    let mut found_ports = Vec::new();
+    for line in ps_output.lines() {
+        // Look for Chrome/Chromium processes with remote-debugging-port
+        if (line.contains("chrome") || line.contains("Chrome") || line.contains("chromium")) 
+            && line.contains("--remote-debugging-port=") {
+            
+            // Extract the port number
+            if let Some(port_str) = line.split("--remote-debugging-port=").nth(1) {
+                // Take everything up to the next space or end of line
+                let port_str = port_str.split_whitespace().next().unwrap_or(port_str);
+                
+                // Parse the port number
+                if let Ok(port) = port_str.parse::<u16>() {
+                    // Skip port 0 (means random port, not accessible)
+                    if port > 0 {
+                        found_ports.push(port);
+                    }
+                }
+            }
+        }
+    }
+    
+    // Remove duplicates
+    found_ports.sort_unstable();
+    found_ports.dedup();
+    
+    info!("Found {} Chrome process(es) with debug ports: {:?}", found_ports.len(), found_ports);
+    
+    // Test each found port to see if it's accessible
+    for port in found_ports {
+        let url = format!("http://127.0.0.1:{}/json/version", port);
+        let client = Client::builder()
+            .timeout(Duration::from_millis(500))
+            .build()
+            .ok()?;
+            
+        if let Ok(resp) = client.get(&url).send().await {
+            if resp.status().is_success() {
+                info!("Verified Chrome debug port at {} is accessible", port);
+                return Some(port);
+            } else {
+                debug!("Chrome port {} returned status: {}", port, resp.status());
+            }
+        } else {
+            debug!("Could not connect to Chrome port {}", port);
+        }
+    }
+    
+    warn!("No accessible Chrome debug ports found");
+    None
+}
+
 pub struct BrowserManager {
     pub config: Arc<RwLock<BrowserConfig>>,
     browser: Arc<Mutex<Option<Browser>>>,
@@ -79,24 +144,43 @@ impl BrowserManager {
         }
 
         if let Some(port) = config.connect_port {
-            info!("Discovering Chrome via debug port: {}", port);
-            match discover_ws_via_port(port).await {
-                Ok(ws) => {
-                    info!("Connecting to Chrome via discovered WebSocket: {}", ws);
-                    let (browser, mut handler) = Browser::connect(ws).await?;
-                    tokio::spawn(async move {
-                        while let Some(_evt) = handler.next().await {}
-                    });
-                    *browser_guard = Some(browser);
-                    *self.cleanup_profile_on_drop.lock().await = false;
-                    
-                    self.start_idle_monitor().await;
-                    self.update_activity().await;
-                    return Ok(());
+            // If port is 0, auto-scan for Chrome debug ports
+            let actual_port = if port == 0 {
+                info!("Auto-scanning for Chrome debug ports...");
+                match scan_for_chrome_debug_port().await {
+                    Some(found_port) => {
+                        info!("Auto-detected Chrome on port {}", found_port);
+                        found_port
+                    }
+                    None => {
+                        warn!("No Chrome debug ports found during auto-scan. Will launch new instance.");
+                        0  // Signal to fall through to launch
+                    }
                 }
-                Err(e) => {
-                    warn!("Failed to connect to Chrome on port {}: {}. Will launch new instance.", port, e);
-                    // Fall through to launch
+            } else {
+                port
+            };
+            
+            if actual_port > 0 {
+                info!("Discovering Chrome via debug port: {}", actual_port);
+                match discover_ws_via_port(actual_port).await {
+                    Ok(ws) => {
+                        info!("Connecting to Chrome via discovered WebSocket: {}", ws);
+                        let (browser, mut handler) = Browser::connect(ws).await?;
+                        tokio::spawn(async move {
+                            while let Some(_evt) = handler.next().await {}
+                        });
+                        *browser_guard = Some(browser);
+                        *self.cleanup_profile_on_drop.lock().await = false;
+                        
+                        self.start_idle_monitor().await;
+                        self.update_activity().await;
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        warn!("Failed to connect to Chrome on port {}: {}. Will launch new instance.", actual_port, e);
+                        // Fall through to launch
+                    }
                 }
             }
         }
@@ -313,13 +397,11 @@ impl BrowserManager {
         // Enable Network domain before setting headers
         page.execute(network::EnableParams::default()).await?;
 
-        // SetUserAgentOverrideParams can handle both user agent and accept-language
-        if config.user_agent.is_some() || config.accept_language.is_some() {
-            let mut params_builder = network::SetUserAgentOverrideParams::builder();
-            
-            if let Some(ua) = &config.user_agent {
-                params_builder = params_builder.user_agent(ua);
-            }
+        // SetUserAgentOverrideParams requires user_agent to be set
+        // Only call it if we have a user_agent (accept_language is optional)
+        if let Some(ua) = &config.user_agent {
+            let mut params_builder = network::SetUserAgentOverrideParams::builder()
+                .user_agent(ua);
             
             if let Some(al) = &config.accept_language {
                 params_builder = params_builder.accept_language(al);
