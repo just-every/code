@@ -59,7 +59,7 @@ use crate::history_cell::PatchEventType;
 use crate::live_wrap::RowBuilder;
 use crate::text_block::TextBlock;
 use crate::user_approval_widget::ApprovalRequest;
-use codex_browser::BrowserManager;
+use codex_browser::{BrowserManager, config::BrowserConfig};
 use codex_file_search::FileMatch;
 use ratatui::style::Stylize;
 
@@ -351,10 +351,11 @@ impl ChatWidget<'_> {
             }
         });
 
-        // Use the global browser manager singleton to ensure consistency
-        // between TUI and core session
-        let browser_manager = tokio::runtime::Handle::current()
-            .block_on(codex_browser::global::get_or_create_browser_manager());
+        // Initialize browser manager - will be synced with core session later
+        // We can't use the global async function here because we're in a sync context
+        // The core session will use the same global manager when browser tools are invoked
+        let browser_config = codex_browser::config::BrowserConfig::default();
+        let browser_manager = Arc::new(BrowserManager::new(browser_config));
         
         // Add initial animated welcome message to history
         let mut history_cells = Vec::new();
