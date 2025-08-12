@@ -1047,6 +1047,32 @@ impl ChatWidget<'_> {
                 invocation,
             }) => {
                 self.finalize_active_stream();
+                
+                // Check if this is the Task tool being invoked
+                if invocation.tool == "Task" || invocation.tool == "run_task" {
+                    // Parse the task description from arguments if available
+                    let task_name = if let Some(args) = &invocation.arguments {
+                        if let Some(desc) = args.get("description").and_then(|v| v.as_str()) {
+                            desc.to_string()
+                        } else if let Some(task) = args.get("task").and_then(|v| v.as_str()) {
+                            // Take first few words of task as name
+                            task.split_whitespace().take(3).collect::<Vec<_>>().join(" ")
+                        } else {
+                            "Task".to_string()
+                        }
+                    } else {
+                        "Task".to_string()
+                    };
+                    
+                    // Add new agent for this task
+                    self.active_agents.push(AgentInfo {
+                        name: task_name,
+                        status: AgentStatus::Pending,
+                        started_at: None,
+                    });
+                    self.request_redraw();
+                }
+                
                 self.add_to_history(HistoryCell::new_active_mcp_tool_call(invocation));
             }
             EventMsg::McpToolCallEnd(McpToolCallEndEvent {
@@ -1055,6 +1081,28 @@ impl ChatWidget<'_> {
                 invocation,
                 result,
             }) => {
+                // Check if this is the Task tool completion
+                if invocation.tool == "Task" || invocation.tool == "run_task" {
+                    // Find and update the corresponding agent
+                    for agent in &mut self.active_agents {
+                        if agent.status == AgentStatus::Pending || agent.status == AgentStatus::Running {
+                            // Mark as completed or failed based on result
+                            let is_error = result
+                                .as_ref()
+                                .map(|r| r.is_error.unwrap_or(false))
+                                .unwrap_or(false);
+                            
+                            agent.status = if is_error {
+                                AgentStatus::Failed
+                            } else {
+                                AgentStatus::Completed
+                            };
+                            break;
+                        }
+                    }
+                    self.request_redraw();
+                }
+                
                 self.add_to_history(HistoryCell::new_completed_mcp_tool_call(
                     80,
                     invocation,
@@ -1085,6 +1133,33 @@ impl ChatWidget<'_> {
             }
             EventMsg::BackgroundEvent(BackgroundEventEvent { message }) => {
                 info!("BackgroundEvent: {message}");
+                
+                // Parse agent status from background events
+                // Format: "N agents running" or "N agent(s) running"
+                if message.contains("agent") && message.contains("running") {
+                    // Extract the number of agents
+                    if let Some(num_str) = message.split_whitespace().next() {
+                        if let Ok(num_agents) = num_str.parse::<usize>() {
+                            // Update agent list if needed
+                            if num_agents > 0 && self.active_agents.is_empty() {
+                                // Create placeholder agents
+                                self.active_agents.clear();
+                                for i in 1..=num_agents {
+                                    self.active_agents.push(AgentInfo {
+                                        name: format!("Agent {}", i),
+                                        status: AgentStatus::Running,
+                                        started_at: Some(std::time::Instant::now()),
+                                    });
+                                }
+                                self.request_redraw();
+                            } else if num_agents == 0 {
+                                // Clear agents when none are running
+                                self.active_agents.clear();
+                                self.request_redraw();
+                            }
+                        }
+                    }
+                }
             }
             EventMsg::BrowserScreenshotUpdate(BrowserScreenshotUpdateEvent { screenshot_path, url }) => {
                 tracing::info!("Received browser screenshot update: {} at URL: {}", screenshot_path.display(), url);
