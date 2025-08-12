@@ -47,7 +47,7 @@ impl ThemeSelectionView {
             (ThemeName::LightPorcelain, "Light - Porcelain", "Refined porcelain tones"),
             (ThemeName::LightSandbar, "Light - Sandbar", "Warm sandy beach colors"),
             (ThemeName::LightGlacier, "Light - Glacier", "Cool glacier blues"),
-            (ThemeName::DarkPaperLightPro, "Light - Paper Light Pro", "Premium paper-like"),
+            (ThemeName::DarkPaperLightPro, "Light - Paper Pro", "Premium paper-like"),
             // Dark themes (below)
             (ThemeName::DarkCarbonNight, "Dark - Carbon Night", "Sleek modern dark theme"),
             (ThemeName::DarkShinobiDusk, "Dark - Shinobi Dusk", "Japanese-inspired twilight"),
