@@ -1272,15 +1272,26 @@ impl ChatWidget<'_> {
                 match first_arg {
                     "local" => {
                         // Connect to local Chrome instance
+                        // Check if there's a port specified after "local"
+                        let port = if parts.len() > 2 {
+                            // Try to parse the port number
+                            parts[2].parse::<u16>().ok()
+                        } else {
+                            None
+                        };
+                        
                         browser_manager.set_enabled_sync(true);
                         
                         // Update the config to use local Chrome connection
                         let browser_manager_local = browser_manager.clone();
+                        let port_display = port.map_or("auto-detected".to_string(), |p| p.to_string());
+                        
                         tokio::spawn(async move {
-                            // First, update config to try connecting to default port
+                            // Configure for local Chrome connection
                             {
                                 let mut config = browser_manager_local.config.write().await;
-                                config.connect_port = Some(9222);  // Default Chrome debug port
+                                // Use specified port, or 0 for auto-scan
+                                config.connect_port = Some(port.unwrap_or(0));
                                 config.headless = false;
                                 config.persist_profile = true;
                             }
@@ -1291,13 +1302,16 @@ impl ChatWidget<'_> {
                                     tracing::info!("Connected to local Chrome instance");
                                 }
                                 Err(e) => {
-                                    tracing::warn!("Failed to connect to local Chrome on port 9222: {}. Trying to launch Chrome with debug port...", e);
+                                    tracing::warn!("Failed to connect to local Chrome: {}. Trying to launch Chrome with debug port...", e);
+                                    
+                                    // Determine which port to use for launching
+                                    let launch_port = port.unwrap_or(9222);
                                     
                                     // Try launching Chrome with debug port
                                     #[cfg(target_os = "macos")]
                                     {
                                         let _ = tokio::process::Command::new("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
-                                            .arg("--remote-debugging-port=9222")
+                                            .arg(format!("--remote-debugging-port={}", launch_port))
                                             .arg("--user-data-dir=/tmp/coder-chrome-profile")
                                             .spawn();
                                     }
@@ -1305,7 +1319,7 @@ impl ChatWidget<'_> {
                                     #[cfg(target_os = "linux")]
                                     {
                                         let _ = tokio::process::Command::new("google-chrome")
-                                            .arg("--remote-debugging-port=9222")
+                                            .arg(format!("--remote-debugging-port={}", launch_port))
                                             .arg("--user-data-dir=/tmp/coder-chrome-profile")
                                             .spawn();
                                     }
@@ -1321,7 +1335,11 @@ impl ChatWidget<'_> {
                             }
                         });
                         
-                        "Connecting to local Chrome instance (port 9222)...\nIf Chrome is not running with --remote-debugging-port=9222, it will be launched.".to_string()
+                        if port.is_some() {
+                            format!("Connecting to local Chrome instance on port {}...\nIf Chrome is not running with debug port, it will be launched.", port_display)
+                        } else {
+                            "Auto-scanning for local Chrome instance with debug port...\nIf no Chrome found, it will be launched on port 9222.".to_string()
+                        }
                     }
                     "off" => {
                         // Disable browser mode
