@@ -69,10 +69,11 @@ impl ChatComposerHistory {
         }
     }
     
-    /// Reset navigation state (used when clearing input with double-Esc)
+    /// Reset navigation state (used when clearing input with double-Esc or when text is edited)
     pub fn reset_navigation(&mut self) {
         self.history_cursor = None;
         self.last_history_text = None;
+        self.original_text = None;
     }
 
     /// Should Up/Down key presses be interpreted as history navigation given
@@ -114,13 +115,6 @@ impl ChatComposerHistory {
         }
 
         false
-    }
-    
-    /// Reset history navigation state when text is edited manually
-    pub fn reset_navigation(&mut self) {
-        self.history_cursor = None;
-        self.last_history_text = None;
-        self.original_text = None;
     }
 
     /// Handle <Up>. Returns true when the key was consumed and the caller

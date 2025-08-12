@@ -1862,70 +1862,39 @@ impl WidgetRef for &ChatWidget<'_> {
             self.render_browser_hud(hud_area, buf);
         }
         
-        // Add horizontal padding to match the bottom pane (3 chars on each side)
-        let horizontal_padding = 3u16;
-        let padded_history_area = Rect {
-            x: history_area.x + horizontal_padding,
+        // Create a unified scrollable container for all chat content
+        // Use consistent padding throughout
+        let padding = 3u16;
+        let content_area = Rect {
+            x: history_area.x + padding,
             y: history_area.y,
-            width: history_area.width.saturating_sub(horizontal_padding * 2),
+            width: history_area.width.saturating_sub(padding * 2),
             height: history_area.height,
         };
         
-        // Calculate total height of all history cells with padded width
-        let mut total_height = 0u16;
-        let mut cell_heights = Vec::new();
+        // Collect all content items into a single list
+        let mut all_content: Vec<&HistoryCell> = Vec::new();
         
+        // Add all history cells
         for cell in &self.history_cells {
-            let h = cell.desired_height(padded_history_area.width);
-            cell_heights.push(h);
-            total_height += h;
+            all_content.push(cell);
         }
         
-        // Add active cell height if present
+        // Add active/streaming cell if present
         if let Some(cell) = &self.active_history_cell {
-            let h = cell.desired_height(padded_history_area.width);
-            cell_heights.push(h);
+            all_content.push(cell);
+        }
+        
+        // Calculate total content height
+        let mut total_height = 0u16;
+        let mut item_heights = Vec::new();
+        for item in &all_content {
+            let h = item.desired_height(content_area.width);
+            item_heights.push(h);
             total_height += h;
         }
         
-        // Add a small top padding for better visual spacing
-        let top_padding = 2u16;
-        
-        // Start rendering from bottom if total height is less than area height
-        let start_y = if total_height < padded_history_area.height.saturating_sub(top_padding) {
-            // Align to bottom with top padding
-            padded_history_area.y + top_padding.max(padded_history_area.height - total_height)
-        } else {
-            // Scroll: show most recent messages at bottom
-            padded_history_area.y + top_padding
-        };
-        
-        // Render history cells from bottom alignment
-        let mut y_offset = if total_height < padded_history_area.height {
-            // All content fits, but still apply scroll_offset if user scrolled up
-            self.scroll_offset.min(total_height.saturating_sub(1))
-        } else {
-            // When scrolling, skip older messages that don't fit, plus any user scroll offset
-            total_height
-                .saturating_sub(padded_history_area.height)
-                .saturating_add(self.scroll_offset)
-                .min(total_height.saturating_sub(1))
-        };
-        
-        let mut current_y = start_y;
-        let mut cell_idx = 0;
-        
-        // Skip cells that are scrolled off the top
-        for (i, _cell) in self.history_cells.iter().enumerate() {
-            if y_offset >= cell_heights[i] {
-                y_offset = y_offset.saturating_sub(cell_heights[i]);
-                cell_idx += 1;
-            } else {
-                break;
-            }
-        }
-        
-        // Check if we have any animation cells that need redrawing
+        // Check for active animations
         let has_active_animation = self.history_cells.iter().any(|cell| {
             if let HistoryCell::AnimatedWelcome { start_time, completed } = cell {
                 let elapsed = start_time.elapsed();
@@ -1936,52 +1905,67 @@ impl WidgetRef for &ChatWidget<'_> {
             }
         });
         
-        // Request redraw if we have active animations
         if has_active_animation {
             self.app_event_tx.send(AppEvent::RequestRedraw);
         }
         
-        // Render visible history cells
-        for (i, cell) in self.history_cells.iter().enumerate().skip(cell_idx) {
-            if current_y >= padded_history_area.y + padded_history_area.height {
+        // Calculate scroll position
+        // When content fits: align to top
+        // When scrolling: show newest at bottom with scroll offset
+        let scroll_pos = if total_height <= content_area.height {
+            // All content fits - no scrolling needed, but respect user scroll
+            self.scroll_offset.min(total_height.saturating_sub(1))
+        } else {
+            // Content overflows - calculate scroll to show newest at bottom
+            total_height
+                .saturating_sub(content_area.height)
+                .saturating_add(self.scroll_offset)
+                .min(total_height.saturating_sub(1))
+        };
+        
+        // Render the scrollable content
+        let mut y_pos = 0u16;
+        let mut rendered_height = 0u16;
+        
+        for (idx, item) in all_content.iter().enumerate() {
+            let item_height = item_heights[idx];
+            
+            // Skip items above the viewport
+            if y_pos + item_height <= scroll_pos {
+                y_pos += item_height;
+                continue;
+            }
+            
+            // Stop if we've filled the viewport
+            if rendered_height >= content_area.height {
                 break;
             }
             
-            let cell_height = cell_heights[i];
-            let visible_height = (padded_history_area.y + padded_history_area.height).saturating_sub(current_y);
+            // Calculate the visible portion of this item
+            let skip_top = if y_pos < scroll_pos {
+                scroll_pos - y_pos
+            } else {
+                0
+            };
+            
+            let visible_height = item_height
+                .saturating_sub(skip_top)
+                .min(content_area.height - rendered_height);
             
             if visible_height > 0 {
-                let cell_area = Rect {
-                    x: padded_history_area.x,
-                    y: current_y,
-                    width: padded_history_area.width,
-                    height: visible_height.min(cell_height),
+                let item_area = Rect {
+                    x: content_area.x,
+                    y: content_area.y + rendered_height,
+                    width: content_area.width,
+                    height: visible_height,
                 };
                 
-                // If we're partially scrolled, adjust the rendering
-                if y_offset > 0 && i == cell_idx {
-                    // This cell is partially scrolled off
-                    // We need to render it with an offset
-                    // For now, just render what's visible
-                }
-                
-                cell.render_ref(cell_area, buf);
-                current_y += cell_height.saturating_sub(y_offset);
-                y_offset = 0; // Only first cell can be partially scrolled
+                // Render the item
+                item.render_ref(item_area, buf);
+                rendered_height += visible_height;
             }
-        }
-        
-        // Render active cell if present and there's room
-        if let Some(cell) = &self.active_history_cell {
-            if current_y < padded_history_area.y + padded_history_area.height {
-                let cell_area = Rect {
-                    x: padded_history_area.x,
-                    y: current_y,
-                    width: padded_history_area.width,
-                    height: (padded_history_area.y + padded_history_area.height).saturating_sub(current_y),
-                };
-                cell.render_ref(cell_area, buf);
-            }
+            
+            y_pos += item_height;
         }
         
         // Render the bottom pane directly without a border for now
