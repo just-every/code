@@ -106,11 +106,28 @@ pub(crate) struct ChatWidget<'a> {
     cached_cell_size: std::cell::OnceCell<(u16, u16)>,
     // Scroll offset from bottom (0 = at bottom, positive = scrolled up)
     scroll_offset: u16,
+    // Agent tracking for multi-agent tasks
+    active_agents: Vec<AgentInfo>,
 }
 
 struct UserMessage {
     text: String,
     image_paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+struct AgentInfo {
+    name: String,
+    status: AgentStatus,
+    started_at: Option<std::time::Instant>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum AgentStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,9 +250,12 @@ impl ChatWidget<'_> {
             .map(|lock| lock.is_some())
             .unwrap_or(false);
         
+        // Check if there are active agents
+        let has_active_agents = !self.active_agents.is_empty();
+        
         let bottom_height = 6u16.max(self.bottom_pane.desired_height(area.width)).min(15);
 
-        if has_browser_screenshot {
+        if has_browser_screenshot || has_active_agents {
             // match HUD padding used in render_browser_hud()
             let horizontal_padding = 2u16;
             let padded_area = Rect {
@@ -399,6 +419,7 @@ impl ChatWidget<'_> {
             cached_picker: RefCell::new(None),
             cached_cell_size: std::cell::OnceCell::new(),
             scroll_offset: 0,
+            active_agents: Vec::new(),
         }
     }
 
@@ -526,6 +547,32 @@ impl ChatWidget<'_> {
         let processed = crate::slash_command::process_slash_command_message(&actual_text);
         match processed {
             crate::slash_command::ProcessedCommand::ExpandedPrompt(expanded) => {
+                // Check if this is a multi-agent command
+                if actual_text.starts_with("/plan") || actual_text.starts_with("/solve") || actual_text.starts_with("/code") {
+                    // Track as active agents
+                    self.active_agents.clear(); // Clear any previous agents
+                    
+                    // Determine agent names based on the command
+                    let agent_names = if actual_text.starts_with("/plan") {
+                        vec!["Planning Agent", "Research Agent", "Implementation Agent"]
+                    } else if actual_text.starts_with("/solve") {
+                        vec!["Analysis Agent", "Solution Agent", "Verification Agent"]
+                    } else {
+                        vec!["Code Analysis", "Implementation", "Testing"]
+                    };
+                    
+                    // Add agents with pending status
+                    for name in agent_names {
+                        self.active_agents.push(AgentInfo {
+                            name: name.to_string(),
+                            status: AgentStatus::Pending,
+                            started_at: None,
+                        });
+                    }
+                    
+                    self.request_redraw();
+                }
+                
                 // Replace the slash command with the expanded prompt for the LLM
                 actual_text = expanded;
             }
@@ -826,6 +873,16 @@ impl ChatWidget<'_> {
                 // Replace composer with single-line spinner while waiting.
                 self.bottom_pane
                     .update_status_text("waiting for model".to_string());
+                
+                // Update first pending agent to running
+                for agent in &mut self.active_agents {
+                    if agent.status == AgentStatus::Pending {
+                        agent.status = AgentStatus::Running;
+                        agent.started_at = Some(std::time::Instant::now());
+                        break;
+                    }
+                }
+                
                 self.request_redraw();
             }
             EventMsg::TaskComplete(TaskCompleteEvent {
@@ -833,6 +890,17 @@ impl ChatWidget<'_> {
             }) => {
                 self.bottom_pane.set_task_running(false);
                 self.bottom_pane.clear_live_ring();
+                
+                // Mark all running agents as completed
+                for agent in &mut self.active_agents {
+                    if agent.status == AgentStatus::Running {
+                        agent.status = AgentStatus::Completed;
+                    }
+                }
+                
+                // Clear agents after a short delay (they'll remain visible for now)
+                // In a real implementation, you might want to keep them visible for a bit
+                
                 self.request_redraw();
             }
             EventMsg::TokenCount(token_usage) => {
@@ -854,6 +922,14 @@ impl ChatWidget<'_> {
                 self.answer_buffer.clear();
                 self.reasoning_buffer.clear();
                 self.content_buffer.clear();
+                
+                // Mark any running agents as failed
+                for agent in &mut self.active_agents {
+                    if agent.status == AgentStatus::Running {
+                        agent.status = AgentStatus::Failed;
+                    }
+                }
+                
                 self.request_redraw();
             }
             EventMsg::PlanUpdate(update) => {
@@ -1645,12 +1721,14 @@ fn render_screenshot_highlevel(&self, path: &PathBuf, area: Rect, buf: &mut Buff
 }
 
 impl ChatWidget<'_> {
-    /// Helper function to create a top-right positioned rect with proper aspect ratio
-    fn render_browser_hud(&self, area: Rect, buf: &mut Buffer) {
-        use ratatui::style::Style;
-        use ratatui::widgets::{Block, Borders, Paragraph, Widget};
-        use ratatui::text::{Line as RLine, Span};
+    /// Render the combined HUD with browser and/or agent panels based on what's active
+    fn render_hud(&self, area: Rect, buf: &mut Buffer) {
         
+        // Check what's active
+        let has_browser_screenshot = self.latest_browser_screenshot.lock()
+            .map(|lock| lock.is_some())
+            .unwrap_or(false);
+        let has_active_agents = !self.active_agents.is_empty();
         
         // Add same horizontal padding as the Message input (2 chars on each side)
         let horizontal_padding = 2u16;
@@ -1660,64 +1738,190 @@ impl ChatWidget<'_> {
             width: area.width.saturating_sub(horizontal_padding * 2),
             height: area.height,
         };
-
+        
+        // Determine layout based on what's active
+        if has_browser_screenshot && has_active_agents {
+            // Both panels: 50/50 split
+            let chunks = Layout::horizontal([
+                Constraint::Percentage(50),
+                Constraint::Percentage(50),
+            ])
+            .areas::<2>(padded_area);
+            
+            self.render_browser_panel(chunks[0], buf);
+            self.render_agent_panel(chunks[1], buf);
+        } else if has_browser_screenshot {
+            // Only browser: use full width
+            self.render_browser_panel(padded_area, buf);
+        } else if has_active_agents {
+            // Only agents: use full width
+            self.render_agent_panel(padded_area, buf);
+        }
+    }
+    
+    /// Render the browser panel (left side when both panels are shown)
+    fn render_browser_panel(&self, area: Rect, buf: &mut Buffer) {
+        use ratatui::style::Style;
+        use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+        use ratatui::text::{Line as RLine, Span};
+        
         if let Ok(screenshot_lock) = self.latest_browser_screenshot.lock() {
-            if let Some((screenshot_path, url)) = &*screenshot_lock {
-                // Split the HUD into two parts: left for info, right for screenshot (50% width)
-                let chunks = Layout::horizontal([
-                    Constraint::Percentage(50),
-                    Constraint::Percentage(50),
-                ])
-                .areas::<2>(padded_area);
+            if let Some((_screenshot_path, url)) = &*screenshot_lock {
+                // When using full width, split for info and screenshot
+                // When in half-width, just show info
+                let use_full_width = area.width > 80;
                 
-                let info_area = chunks[0];
-                let screenshot_area = chunks[1];
-                
-                // Left side: Browser info and URL
-                let info_block = Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Browser ")
-                    .border_style(Style::default().fg(crate::colors::border()));
-                
-                let inner_info = info_block.inner(info_area);
-                info_block.render(info_area, buf);
-                
-                // Display URL and browser status
-                let mut lines = vec![];
-                lines.push(RLine::from(vec![
-                    Span::styled("URL: ", Style::default().fg(crate::colors::text_dim())),
-                    Span::styled(url.clone(), Style::default().fg(crate::colors::text()).add_modifier(Modifier::BOLD)),
-                ]));
-                
-                // Add browser status information
-                if self.browser_manager.is_enabled_sync() {
+                if use_full_width {
+                    // Split into info and screenshot
+                    let chunks = Layout::horizontal([
+                        Constraint::Percentage(50),
+                        Constraint::Percentage(50),
+                    ])
+                    .areas::<2>(area);
+                    
+                    let info_area = chunks[0];
+                    let screenshot_area = chunks[1];
+                    
+                    // Info panel
+                    let info_block = Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Browser ")
+                        .border_style(Style::default().fg(crate::colors::border()));
+                    
+                    let inner_info = info_block.inner(info_area);
+                    info_block.render(info_area, buf);
+                    
+                    // Display URL and browser status
+                    let mut lines = vec![];
                     lines.push(RLine::from(vec![
-                        Span::styled("Status: ", Style::default().fg(crate::colors::text_dim())),
-                        Span::styled("Active", Style::default().fg(crate::colors::success())),
+                        Span::styled("URL: ", Style::default().fg(crate::colors::text_dim())),
+                        Span::styled(url.clone(), Style::default().fg(crate::colors::text()).add_modifier(Modifier::BOLD)),
                     ]));
+                    
+                    if self.browser_manager.is_enabled_sync() {
+                        lines.push(RLine::from(vec![
+                            Span::styled("Status: ", Style::default().fg(crate::colors::text_dim())),
+                            Span::styled("Active", Style::default().fg(crate::colors::success())),
+                        ]));
+                    } else {
+                        lines.push(RLine::from(vec![
+                            Span::styled("Status: ", Style::default().fg(crate::colors::text_dim())),
+                            Span::styled("Inactive", Style::default().fg(crate::colors::warning())),
+                        ]));
+                    }
+                    
+                    let info_paragraph = Paragraph::new(lines);
+                    info_paragraph.render(inner_info, buf);
+                    
+                    // Screenshot panel
+                    let screenshot_block = Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Preview ")
+                        .border_style(Style::default().fg(crate::colors::border()));
+                    
+                    let inner_screenshot = screenshot_block.inner(screenshot_area);
+                    screenshot_block.render(screenshot_area, buf);
+                    
+                    // Render the screenshot (using existing method)
+                    if let Some((screenshot_path, _)) = &*screenshot_lock {
+                        self.render_screenshot_highlevel(screenshot_path, inner_screenshot, buf);
+                    }
                 } else {
+                    // Just show browser info in limited space
+                    let info_block = Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Browser ")
+                        .border_style(Style::default().fg(crate::colors::border()));
+                    
+                    let inner_info = info_block.inner(area);
+                    info_block.render(area, buf);
+                    
+                    let mut lines = vec![];
+                    // Truncate URL if needed
+                    let max_url_len = area.width.saturating_sub(10) as usize;
+                    let display_url = if url.len() > max_url_len {
+                        format!("{}...", &url[..max_url_len.saturating_sub(3)])
+                    } else {
+                        url.clone()
+                    };
+                    
+                    lines.push(RLine::from(vec![
+                        Span::styled("URL: ", Style::default().fg(crate::colors::text_dim())),
+                        Span::styled(display_url, Style::default().fg(crate::colors::text())),
+                    ]));
+                    
+                    let status = if self.browser_manager.is_enabled_sync() {
+                        "Active"
+                    } else {
+                        "Inactive"
+                    };
+                    
                     lines.push(RLine::from(vec![
                         Span::styled("Status: ", Style::default().fg(crate::colors::text_dim())),
-                        Span::styled("Inactive", Style::default().fg(crate::colors::warning())),
+                        Span::styled(status, Style::default().fg(
+                            if self.browser_manager.is_enabled_sync() {
+                                crate::colors::success()
+                            } else {
+                                crate::colors::warning()
+                            }
+                        )),
                     ]));
+                    
+                    let info_paragraph = Paragraph::new(lines);
+                    info_paragraph.render(inner_info, buf);
                 }
-                
-                let info_paragraph = Paragraph::new(lines);
-                info_paragraph.render(inner_info, buf);
-                
-                // Right side: Screenshot with border
-                let screenshot_block = Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Preview ")
-                    .border_style(Style::default().fg(crate::colors::border()));
-                
-                let inner_screenshot = screenshot_block.inner(screenshot_area);
-                screenshot_block.render(screenshot_area, buf);
-                
-                // Render the screenshot
-                self.render_screenshot_highlevel(screenshot_path, inner_screenshot, buf);
             }
         }
+    }
+    
+    /// Render the agent status panel in the HUD
+    fn render_agent_panel(&self, area: Rect, buf: &mut Buffer) {
+        use ratatui::style::Style;
+        use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+        use ratatui::text::{Line as RLine, Span};
+        
+        // Agent status block
+        let agent_block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Agents ")
+            .border_style(Style::default().fg(crate::colors::border()));
+        
+        let inner_agent = agent_block.inner(area);
+        agent_block.render(area, buf);
+        
+        // Display agent statuses
+        let mut lines = vec![];
+        
+        if self.active_agents.is_empty() {
+            lines.push(RLine::from(vec![
+                Span::styled("No active agents", Style::default().fg(crate::colors::text_dim())),
+            ]));
+        } else {
+            for agent in &self.active_agents {
+                let status_color = match agent.status {
+                    AgentStatus::Pending => crate::colors::warning(),
+                    AgentStatus::Running => crate::colors::info(),
+                    AgentStatus::Completed => crate::colors::success(),
+                    AgentStatus::Failed => crate::colors::error(),
+                };
+                
+                let status_text = match agent.status {
+                    AgentStatus::Pending => "pending",
+                    AgentStatus::Running => "running",
+                    AgentStatus::Completed => "completed",
+                    AgentStatus::Failed => "failed",
+                };
+                
+                lines.push(RLine::from(vec![
+                    Span::styled(&agent.name, Style::default().fg(crate::colors::text()).add_modifier(Modifier::BOLD)),
+                    Span::styled(": ", Style::default().fg(crate::colors::text_dim())),
+                    Span::styled(status_text, Style::default().fg(status_color)),
+                ]));
+            }
+        }
+        
+        let agent_paragraph = Paragraph::new(lines);
+        agent_paragraph.render(inner_agent, buf);
     }
     
     fn begin_stream(&mut self, kind: StreamKind) {
@@ -1855,9 +2059,9 @@ impl WidgetRef for &ChatWidget<'_> {
         // Render status bar
         self.render_status_bar(status_bar_area, buf);
         
-        // Render browser HUD if present
+        // Render HUD if present (browser and/or agents)
         if let Some(hud_area) = hud_area {
-            self.render_browser_hud(hud_area, buf);
+            self.render_hud(hud_area, buf);
         }
         
         // Add horizontal padding to match the bottom pane (3 chars on each side)
