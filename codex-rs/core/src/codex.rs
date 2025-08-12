@@ -2905,7 +2905,7 @@ async fn send_agent_status_update(sess: &Session) {
         .filter(|agent| !matches!(agent.status, AgentStatus::Completed | AgentStatus::Failed | AgentStatus::Cancelled))
         .map(|agent| crate::protocol::AgentInfo {
             id: agent.id.clone(),
-            name: agent.prompt.chars().take(50).collect::<String>(), // First 50 chars as name
+            name: agent.model.clone(), // Use model name as the display name
             status: match agent.status {
                 AgentStatus::Pending => "pending".to_string(),
                 AgentStatus::Running => "running".to_string(),

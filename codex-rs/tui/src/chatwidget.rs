@@ -547,16 +547,20 @@ impl ChatWidget<'_> {
         let original_text = text.clone();
         let mut actual_text = text;
         
+        // Check for multi-agent commands first (before processing slash commands)
+        let original_trimmed = original_text.trim();
+        if original_trimmed.starts_with("/plan ") || original_trimmed.starts_with("/solve ") || original_trimmed.starts_with("/code ") {
+            self.agents_ready_to_start = true;
+            self.last_agent_prompt = Some(original_text.clone());
+            self.request_redraw();
+        }
+
         // Process slash commands and expand them if needed
-        let processed = crate::slash_command::process_slash_command_message(&actual_text);
+        let processed = crate::slash_command::process_slash_command_message(&original_text);
         match processed {
             crate::slash_command::ProcessedCommand::ExpandedPrompt(expanded) => {
                 // Replace the slash command with the expanded prompt for the LLM
                 actual_text = expanded;
-                // Set agents ready to start since this is a multi-agent command
-                self.agents_ready_to_start = true;
-                self.last_agent_prompt = Some(original_text.clone());
-                self.request_redraw();
             }
             crate::slash_command::ProcessedCommand::RegularCommand(cmd, _args) => {
                 // This is a regular slash command, dispatch it normally
