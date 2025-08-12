@@ -391,6 +391,21 @@ impl BottomPane<'_> {
         self.live_ring = None;
     }
 
+    /// Ensure input focus is maintained, especially after redraws or content updates
+    pub(crate) fn ensure_input_focus(&mut self) {
+        // Only ensure focus if there's no active modal view
+        if self.active_view.is_none() {
+            self.has_input_focus = true;
+            // Reset any transient state that might affect focus
+            // Clear any temporary status overlays that might interfere
+            if !self.is_task_running {
+                self.live_status = None;
+            }
+            // Ensure composer knows it has focus
+            self.composer.set_ctrl_c_quit_hint(self.ctrl_c_quit_hint, self.has_input_focus);
+        }
+    }
+
     // Removed restart_live_status_with_text – no longer used by the current streaming UI.
 }
 

@@ -60,6 +60,7 @@ pub(crate) struct ChatComposer {
     token_usage_info: Option<TokenUsageInfo>,
     has_focus: bool,
     has_chat_history: bool,
+    last_esc_time: Option<std::time::Instant>,
 }
 
 /// Popup state – at most one can be visible at any time.
@@ -91,6 +92,7 @@ impl ChatComposer {
             token_usage_info: None,
             has_focus: has_input_focus,
             has_chat_history: false,
+            last_esc_time: None,
         }
     }
 
@@ -298,8 +300,11 @@ impl ChatComposer {
                     // Get the full command text before clearing
                     let command_text = self.textarea.text().to_string();
                     
+                    // Record the exact slash command that was typed
+                    self.history.record_local_submission(&command_text);
+                    
                     // Send command to the app layer with full text.
-                    self.app_event_tx.send(AppEvent::DispatchCommand(*cmd, command_text));
+                    self.app_event_tx.send(AppEvent::DispatchCommand(*cmd, command_text.clone()));
 
                     // Clear textarea so no residual text remains.
                     self.textarea.set_text("");
@@ -511,6 +516,31 @@ impl ChatComposer {
     fn handle_key_event_without_popup(&mut self, key_event: KeyEvent) -> (InputResult, bool) {
         match key_event {
             // -------------------------------------------------------------
+            // Handle Esc key for double-press clearing
+            // -------------------------------------------------------------
+            KeyEvent {
+                code: KeyCode::Esc, ..
+            } => {
+                // Check if this is a double-Esc press
+                const DOUBLE_ESC_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(500);
+                let now = std::time::Instant::now();
+                
+                if let Some(last_time) = self.last_esc_time {
+                    if now.duration_since(last_time) < DOUBLE_ESC_THRESHOLD && !self.textarea.is_empty() {
+                        // Double-Esc detected, clear the input field
+                        self.textarea.set_text("");
+                        self.pending_pastes.clear();
+                        self.last_esc_time = None;
+                        self.history.reset_navigation();
+                        return (InputResult::None, true);
+                    }
+                }
+                
+                // Single Esc - just record the time
+                self.last_esc_time = Some(now);
+                (InputResult::None, false)
+            }
+            // -------------------------------------------------------------
             // History navigation (Up / Down) – only when the composer is not
             // empty or when the cursor is at the correct position, to avoid
             // interfering with normal cursor movement.
@@ -541,6 +571,9 @@ impl ChatComposer {
                 modifiers: KeyModifiers::NONE,
                 ..
             } => {
+                // Record the exact text that was typed (before replacement)
+                let original_text = self.textarea.text().to_string();
+                
                 let mut text = self.textarea.text().to_string();
                 self.textarea.set_text("");
 
@@ -555,7 +588,7 @@ impl ChatComposer {
                 if text.is_empty() {
                     (InputResult::None, true)
                 } else {
-                    self.history.record_local_submission(&text);
+                    self.history.record_local_submission(&original_text);
                     (InputResult::Submitted(text), true)
                 }
             }

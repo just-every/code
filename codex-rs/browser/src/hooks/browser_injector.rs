@@ -50,7 +50,7 @@ impl BrowserInjector {
         let ttl_ms = 300000;
         let images = self.asset_manager.store_screenshots(screenshots, ttl_ms).await?;
 
-        let current_url = page.get_url().await.unwrap_or_else(|_| "about:blank".to_string());
+        let current_url = page.get_current_url().await.unwrap_or_else(|_| "about:blank".to_string());
         
         let system_hint = format!(
             "A fresh screenshot of the active page ({}) is attached; use browser.* tools to navigate or capture more.",

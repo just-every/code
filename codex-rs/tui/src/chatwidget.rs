@@ -37,7 +37,6 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
-use ratatui::style::Modifier;
 use ratatui::text::Line;
 use ratatui::widgets::Widget;
 use ratatui::widgets::WidgetRef;
@@ -509,6 +508,8 @@ impl ChatWidget<'_> {
             matches!(cell, HistoryCell::UserPrompt { .. })
         });
         self.bottom_pane.set_has_chat_history(has_conversation);
+        // Ensure input focus is maintained when new content arrives
+        self.bottom_pane.ensure_input_focus();
         // Request redraw to show new history
         self.app_event_tx.send(AppEvent::RequestRedraw);
     }
@@ -1014,7 +1015,14 @@ impl ChatWidget<'_> {
                 
                 // Update the latest screenshot and URL for display
                 if let Ok(mut latest) = self.latest_browser_screenshot.lock() {
-                    *latest = Some((screenshot_path, url));
+                    let old_url = latest.as_ref().map(|(_, u)| u.clone());
+                    *latest = Some((screenshot_path.clone(), url.clone()));
+                    if old_url.as_ref() != Some(&url) {
+                        tracing::info!("Browser URL changed from {:?} to {}", old_url, url);
+                    }
+                    tracing::debug!("Updated browser screenshot display with path: {} and URL: {}", screenshot_path.display(), url);
+                } else {
+                    tracing::warn!("Failed to acquire lock for browser screenshot update");
                 }
                 
                 // Request a redraw to update the display immediately
@@ -1661,31 +1669,39 @@ impl ChatWidget<'_> {
 
         if let Ok(screenshot_lock) = self.latest_browser_screenshot.lock() {
             if let Some((screenshot_path, url)) = &*screenshot_lock {
-                // Split the HUD into two parts: left for info, right for screenshot (50% width)
+                // Split the HUD into two parts: left for preview, right for status (50% width)
                 let chunks = Layout::horizontal([
                     Constraint::Percentage(50),
                     Constraint::Percentage(50),
                 ])
                 .areas::<2>(padded_area);
                 
-                let info_area = chunks[0];
-                let screenshot_area = chunks[1];
+                let screenshot_area = chunks[0];  // Preview on the left
+                let info_area = chunks[1];        // Status on the right
                 
-                // Left side: Browser info and URL
+                // Left side: Screenshot with URL in title
+                let screenshot_block = Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" {} ", url))  // URL in the title
+                    .border_style(Style::default().fg(crate::colors::border()));
+                
+                let inner_screenshot = screenshot_block.inner(screenshot_area);
+                screenshot_block.render(screenshot_area, buf);
+                
+                // Render the screenshot
+                self.render_screenshot_highlevel(screenshot_path, inner_screenshot, buf);
+                
+                // Right side: Browser status
                 let info_block = Block::default()
                     .borders(Borders::ALL)
-                    .title(" Browser ")
+                    .title(" Browser Status ")
                     .border_style(Style::default().fg(crate::colors::border()));
                 
                 let inner_info = info_block.inner(info_area);
                 info_block.render(info_area, buf);
                 
-                // Display URL and browser status
+                // Display browser status information
                 let mut lines = vec![];
-                lines.push(RLine::from(vec![
-                    Span::styled("URL: ", Style::default().fg(crate::colors::text_dim())),
-                    Span::styled(url.clone(), Style::default().fg(crate::colors::text()).add_modifier(Modifier::BOLD)),
-                ]));
                 
                 // Add browser status information
                 if self.browser_manager.is_enabled_sync() {
@@ -1702,18 +1718,6 @@ impl ChatWidget<'_> {
                 
                 let info_paragraph = Paragraph::new(lines);
                 info_paragraph.render(inner_info, buf);
-                
-                // Right side: Screenshot with border
-                let screenshot_block = Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Preview ")
-                    .border_style(Style::default().fg(crate::colors::border()));
-                
-                let inner_screenshot = screenshot_block.inner(screenshot_area);
-                screenshot_block.render(screenshot_area, buf);
-                
-                // Render the screenshot
-                self.render_screenshot_highlevel(screenshot_path, inner_screenshot, buf);
             }
         }
     }
@@ -1765,6 +1769,8 @@ impl ChatWidget<'_> {
             for line in lines {
                 self.history_cells.push(HistoryCell::new_text_line(line));
             }
+            // Ensure input focus is maintained when adding streamed content
+            self.bottom_pane.ensure_input_focus();
             self.app_event_tx.send(AppEvent::RequestRedraw);
         }
 
@@ -1812,6 +1818,8 @@ impl ChatWidget<'_> {
             for line in lines {
                 self.history_cells.push(HistoryCell::new_text_line(line));
             }
+            // Ensure input focus is maintained when adding streamed content
+            self.bottom_pane.ensure_input_focus();
             self.app_event_tx.send(AppEvent::RequestRedraw);
         }
 
