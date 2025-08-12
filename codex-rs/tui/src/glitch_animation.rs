@@ -11,6 +11,16 @@ pub fn render_intro_animation(
     render_intro_outline_fill(area, buf, t)
 }
 
+// Render the outline-fill animation with alpha blending for fade-out
+pub fn render_intro_animation_with_alpha(
+    area: Rect,
+    buf: &mut Buffer,
+    t: f32,
+    alpha: f32,
+) {
+    render_intro_outline_fill_with_alpha(area, buf, t, alpha)
+}
+
 // Outline fill animation - inline, no borders
 pub fn render_intro_outline_fill(
     area: Rect,
@@ -42,6 +52,44 @@ pub fn render_intro_outline_fill(
 
     let lines = mask_to_outline_fill_lines(
         &mask, &border, reveal_x_outline, reveal_x_fill, shine_x, shine_band, fade, frame, scale,
+    );
+
+    Paragraph::new(lines).alignment(Alignment::Left).render(r, buf);
+}
+
+// Outline fill animation with alpha blending - inline, no borders
+pub fn render_intro_outline_fill_with_alpha(
+    area: Rect,
+    buf: &mut Buffer,
+    t: f32,
+    alpha: f32,
+) {
+    if area.width < 40 || area.height < 10 { return; }
+
+    let t = t.clamp(0.0, 1.0);
+    let alpha = alpha.clamp(0.0, 1.0);
+    let outline_p = smoothstep(0.00, 0.60, t); // outline draws L->R
+    let fill_p    = smoothstep(0.35, 0.95, t); // interior fills L->R
+    let fade      = smoothstep(0.90, 1.00, t); // vibrant -> muted gray
+    let scan_p    = smoothstep(0.55, 0.85, t); // scanline sweep
+    let frame     = (t * 60.0) as u32;
+
+    // Build scaled mask + border map
+    let (scale, mask, w, h) = scaled_mask("CODER", area.width.saturating_sub(2), area.height.saturating_sub(2));
+    let border = compute_border(&mask);
+
+    // Use area directly for inline rendering
+    let mut r = area;
+    r.height = h.min(area.height as usize) as u16;
+    r.width = w.min(area.width as usize) as u16;
+
+    let reveal_x_outline = (w as f32 * outline_p).round() as isize;
+    let reveal_x_fill    = (w as f32 * fill_p).round() as isize;
+    let shine_x          = (w as f32 * scan_p).round() as isize;
+    let shine_band       = scale.max(2) as isize;
+
+    let lines = mask_to_outline_fill_lines_with_alpha(
+        &mask, &border, reveal_x_outline, reveal_x_fill, shine_x, shine_band, fade, frame, scale, alpha,
     );
 
     Paragraph::new(lines).alignment(Alignment::Left).render(r, buf);
@@ -101,6 +149,94 @@ fn mask_to_outline_fill_lines(
         out.push(Line::from(spans));
     }
     out
+}
+
+fn mask_to_outline_fill_lines_with_alpha(
+    mask: &Vec<Vec<bool>>,
+    border: &Vec<Vec<bool>>,
+    reveal_x_outline: isize,
+    reveal_x_fill: isize,
+    shine_x: isize,
+    shine_band: isize,
+    fade: f32,
+    frame: u32,
+    scale: usize,
+    alpha: f32,
+) -> Vec<Line<'static>> {
+    let h = mask.len();
+    let w = mask[0].len();
+    let mut out = Vec::with_capacity(h);
+
+    for y in 0..h {
+        let mut spans: Vec<Span> = Vec::with_capacity(w);
+        for x in 0..w {
+            let xi = x as isize;
+
+            // precedence: filled interior > outline > empty
+            let mut ch = ' ';
+            let mut color = Color::Reset;
+
+            // Interior fill (█) once revealed
+            if mask[y][x] && xi <= reveal_x_fill {
+                let base = gradient_multi(x as f32 / (w.max(1) as f32));
+                let dx = (xi - shine_x).abs();
+                let shine = (1.0 - (dx as f32 / (shine_band as f32 + 0.001)).clamp(0.0, 1.0)).powf(1.6);
+                let bright = bump_rgb(base, shine * 0.30);
+                let mut final_color = mix_rgb(bright, Color::Rgb(145,150,160), fade);
+                
+                // Apply alpha blending to background color
+                final_color = blend_to_background(final_color, alpha);
+                color = final_color;
+                ch = '█';
+            }
+            // Outline (▓) for border pixels
+            else if border[y][x] && xi <= reveal_x_outline.max(reveal_x_fill) {
+                let base = gradient_multi(x as f32 / (w.max(1) as f32));
+                // marching ants along diagonals
+                let period = (2*scale_or(scale, 4)) as usize; // ~scale-based speed/size
+                let on = ((x + y + (frame as usize)) % period) < (period/2);
+                let c = if on { bump_rgb(base, 0.22) } else { base };
+                let mut final_color = mix_rgb(c, Color::Rgb(160,165,172), fade*0.8);
+                
+                // Apply alpha blending to background color
+                final_color = blend_to_background(final_color, alpha);
+                color = final_color;
+                ch = '▓';
+            }
+
+            spans.push(Span::styled(
+                ch.to_string(),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ));
+        }
+        out.push(Line::from(spans));
+    }
+    out
+}
+
+// Helper function to blend colors towards background
+fn blend_to_background(color: Color, alpha: f32) -> Color {
+    if alpha >= 1.0 {
+        return color;
+    }
+    if alpha <= 0.0 {
+        return crate::colors::background();
+    }
+    
+    let bg = crate::colors::background();
+    
+    match (color, bg) {
+        (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) => {
+            let r = (r1 as f32 * alpha + r2 as f32 * (1.0 - alpha)) as u8;
+            let g = (g1 as f32 * alpha + g2 as f32 * (1.0 - alpha)) as u8;
+            let b = (b1 as f32 * alpha + b2 as f32 * (1.0 - alpha)) as u8;
+            Color::Rgb(r, g, b)
+        }
+        _ => {
+            // For non-RGB colors, just use alpha to decide between foreground and background
+            if alpha > 0.5 { color } else { bg }
+        }
+    }
 }
 
 /* ---------------- border computation ---------------- */

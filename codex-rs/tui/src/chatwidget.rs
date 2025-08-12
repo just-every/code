@@ -361,6 +361,8 @@ impl ChatWidget<'_> {
         history_cells.push(HistoryCell::AnimatedWelcome {
             start_time: std::time::Instant::now(),
             completed: std::cell::Cell::new(false),
+            fade_start: std::cell::Cell::new(None),
+            faded_out: std::cell::Cell::new(false),
         });
 
         // Initialize image protocol for rendering screenshots
@@ -499,6 +501,22 @@ impl ChatWidget<'_> {
     }
 
     fn add_to_history(&mut self, cell: HistoryCell) {
+        // If this is the first user prompt, start fade-out animation for AnimatedWelcome
+        if matches!(cell, HistoryCell::UserPrompt { .. }) {
+            let has_existing_user_prompts = self.history_cells.iter().any(|cell| {
+                matches!(cell, HistoryCell::UserPrompt { .. })
+            });
+            
+            if !has_existing_user_prompts {
+                // This is the first user prompt - start fade-out
+                for history_cell in &mut self.history_cells {
+                    if let HistoryCell::AnimatedWelcome { fade_start, .. } = history_cell {
+                        fade_start.set(Some(std::time::Instant::now()));
+                    }
+                }
+            }
+        }
+        
         // Store in memory instead of sending to scrollback
         self.history_cells.push(cell);
         // Auto-scroll to bottom when new content arrives
@@ -510,8 +528,42 @@ impl ChatWidget<'_> {
         self.bottom_pane.set_has_chat_history(has_conversation);
         // Ensure input focus is maintained when new content arrives
         self.bottom_pane.ensure_input_focus();
+        // Clean up any faded-out animations
+        self.process_animation_cleanup();
         // Request redraw to show new history
         self.app_event_tx.send(AppEvent::RequestRedraw);
+    }
+
+    /// Clean up faded-out animation cells
+    fn process_animation_cleanup(&mut self) {
+        self.history_cells.retain(|cell| {
+            if let HistoryCell::AnimatedWelcome { faded_out, .. } = cell {
+                !faded_out.get()
+            } else {
+                true
+            }
+        });
+    }
+
+    /// Calculate the total height of all content items for scrolling bounds
+    fn calculate_total_content_height(&self, width: u16) -> u16 {
+        let mut all_content = Vec::new();
+        
+        // Add history cells
+        for cell in &self.history_cells {
+            all_content.push(cell);
+        }
+        
+        // Note: Streaming content height is calculated separately in the main render loop
+        
+        // Calculate total height
+        let mut total_height = 0u16;
+        for item in &all_content {
+            let h = item.desired_height(width);
+            total_height += h;
+        }
+        
+        total_height
     }
 
     fn submit_user_message(&mut self, user_message: UserMessage) {
@@ -728,7 +780,7 @@ impl ChatWidget<'_> {
         
         match mouse_event.kind {
             MouseEventKind::ScrollUp => {
-                // Scroll up in chat history (increase offset from bottom)
+                // For now, just scroll up without bounds checking - the render logic will clamp it
                 self.scroll_offset = self.scroll_offset.saturating_add(3);
                 self.app_event_tx.send(AppEvent::RequestRedraw);
             }
@@ -737,8 +789,9 @@ impl ChatWidget<'_> {
                 if self.scroll_offset >= 3 {
                     self.scroll_offset = self.scroll_offset.saturating_sub(3);
                     self.app_event_tx.send(AppEvent::RequestRedraw);
-                } else {
+                } else if self.scroll_offset > 0 {
                     self.scroll_offset = 0;
+                    self.app_event_tx.send(AppEvent::RequestRedraw);
                 }
             }
             _ => {
@@ -1774,15 +1827,8 @@ impl ChatWidget<'_> {
             self.app_event_tx.send(AppEvent::RequestRedraw);
         }
 
-        // Update the live ring overlay lines (text-only, newest at bottom).
-        let rows = self
-            .live_builder
-            .display_rows()
-            .into_iter()
-            .map(|r| ratatui::text::Line::from(r.text))
-            .collect::<Vec<_>>();
-        self.bottom_pane
-            .set_live_ring_rows(self.live_max_rows, rows);
+        // Clear the live ring since streaming content is now in the main scrollable area
+        self.bottom_pane.clear_live_ring();
     }
 
     fn finalize_stream(&mut self, kind: StreamKind) {
@@ -1885,6 +1931,22 @@ impl WidgetRef for &ChatWidget<'_> {
             all_content.push(cell);
         }
         
+        // Add live streaming content if present
+        let streaming_lines = self.live_builder.display_rows()
+            .into_iter()
+            .map(|r| ratatui::text::Line::from(r.text))
+            .collect::<Vec<_>>();
+        
+        let streaming_cell = if !streaming_lines.is_empty() {
+            Some(HistoryCell::new_streaming_content(streaming_lines))
+        } else {
+            None
+        };
+        
+        if let Some(ref cell) = streaming_cell {
+            all_content.push(cell);
+        }
+        
         // Calculate total content height
         let mut total_height = 0u16;
         let mut item_heights = Vec::new();
@@ -1894,78 +1956,97 @@ impl WidgetRef for &ChatWidget<'_> {
             total_height += h;
         }
         
-        // Check for active animations
+        // Check for active animations and clean up faded-out cells
         let has_active_animation = self.history_cells.iter().any(|cell| {
-            if let HistoryCell::AnimatedWelcome { start_time, completed } = cell {
-                let elapsed = start_time.elapsed();
-                let animation_duration = std::time::Duration::from_secs(2);
-                elapsed < animation_duration && !completed.get()
+            if let HistoryCell::AnimatedWelcome { start_time, completed, fade_start, faded_out } = cell {
+                // Check for initial animation
+                if !completed.get() {
+                    let elapsed = start_time.elapsed();
+                    let animation_duration = std::time::Duration::from_secs(2);
+                    return elapsed < animation_duration;
+                }
+                
+                // Check for fade animation
+                if let Some(fade_time) = fade_start.get() {
+                    if !faded_out.get() {
+                        let fade_elapsed = fade_time.elapsed();
+                        let fade_duration = std::time::Duration::from_millis(800);
+                        return fade_elapsed < fade_duration;
+                    }
+                }
+                
+                false
             } else {
                 false
             }
         });
         
+        // Note: Faded-out AnimatedWelcome cells are cleaned up in process_animation_cleanup
+        
         if has_active_animation {
             self.app_event_tx.send(AppEvent::RequestRedraw);
         }
         
-        // Calculate scroll position
-        // When content fits: align to top
-        // When scrolling: show newest at bottom with scroll offset
-        let scroll_pos = if total_height <= content_area.height {
-            // All content fits - no scrolling needed, but respect user scroll
-            self.scroll_offset.min(total_height.saturating_sub(1))
+        // Calculate scroll position and vertical alignment
+        let (start_y, scroll_pos) = if total_height <= content_area.height {
+            // Content fits - align to bottom of container
+            let start_y = content_area.y + content_area.height.saturating_sub(total_height);
+            (start_y, 0u16) // No scrolling needed
         } else {
-            // Content overflows - calculate scroll to show newest at bottom
-            total_height
-                .saturating_sub(content_area.height)
-                .saturating_add(self.scroll_offset)
-                .min(total_height.saturating_sub(1))
+            // Content overflows - calculate scroll position
+            // scroll_offset of 0 = show newest at bottom
+            // scroll_offset > 0 = scroll up to see older content
+            let max_scroll = total_height.saturating_sub(content_area.height);
+            // Clamp scroll_offset to valid range (can't mutate in render, so just clamp for display)
+            let clamped_scroll_offset = self.scroll_offset.min(max_scroll);
+            (content_area.y, clamped_scroll_offset)
         };
         
         // Render the scrollable content
-        let mut y_pos = 0u16;
-        let mut rendered_height = 0u16;
+        let mut content_y = 0u16; // Position within the content
+        let mut screen_y = start_y; // Position on screen
         
         for (idx, item) in all_content.iter().enumerate() {
             let item_height = item_heights[idx];
             
-            // Skip items above the viewport
-            if y_pos + item_height <= scroll_pos {
-                y_pos += item_height;
+            // Skip items that are scrolled off the top
+            if content_y + item_height <= scroll_pos {
+                content_y += item_height;
                 continue;
             }
             
-            // Stop if we've filled the viewport
-            if rendered_height >= content_area.height {
+            // Stop if we've gone past the bottom of the screen
+            if screen_y >= content_area.y + content_area.height {
                 break;
             }
             
-            // Calculate the visible portion of this item
-            let skip_top = if y_pos < scroll_pos {
-                scroll_pos - y_pos
+            // Calculate how much of this item to skip from the top
+            let skip_top = if content_y < scroll_pos {
+                scroll_pos - content_y
             } else {
                 0
             };
             
+            // Calculate how much height is available for this item
+            let available_height = (content_area.y + content_area.height).saturating_sub(screen_y);
             let visible_height = item_height
                 .saturating_sub(skip_top)
-                .min(content_area.height - rendered_height);
+                .min(available_height);
             
             if visible_height > 0 {
                 let item_area = Rect {
                     x: content_area.x,
-                    y: content_area.y + rendered_height,
+                    y: screen_y,
                     width: content_area.width,
                     height: visible_height,
                 };
                 
                 // Render the item
                 item.render_ref(item_area, buf);
-                rendered_height += visible_height;
+                screen_y += visible_height;
             }
             
-            y_pos += item_height;
+            content_y += item_height;
         }
         
         // Render the bottom pane directly without a border for now

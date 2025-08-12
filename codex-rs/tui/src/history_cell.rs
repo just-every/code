@@ -80,6 +80,8 @@ pub(crate) enum HistoryCell {
     AnimatedWelcome { 
         start_time: std::time::Instant,
         completed: std::cell::Cell<bool>,
+        fade_start: std::cell::Cell<Option<std::time::Instant>>,
+        faded_out: std::cell::Cell<bool>,
     },
     
     /// Welcome message.
@@ -296,9 +298,14 @@ impl HistoryCell {
 
     pub(crate) fn desired_height(&self, width: u16) -> u16 {
         match self {
-            HistoryCell::AnimatedWelcome { .. } => {
-                // Fixed height for animation area
-                18u16  // 16 for animation + 2 for borders
+            HistoryCell::AnimatedWelcome { faded_out, .. } => {
+                // If faded out, take no space
+                if faded_out.get() {
+                    0u16
+                } else {
+                    // Fixed height for animation area
+                    18u16  // 16 for animation + 2 for borders
+                }
             }
             HistoryCell::BackgroundEvent { view: _ } => {
                 // For background events (LLM responses), use proper word wrapping
@@ -965,6 +972,13 @@ impl HistoryCell {
             view: TextBlock::new(vec![line]),
         }
     }
+    
+    /// Create a streaming content cell for live model output
+    pub(crate) fn new_streaming_content(lines: Vec<Line<'static>>) -> Self {
+        HistoryCell::BackgroundEvent {
+            view: TextBlock::new(lines),
+        }
+    }
 
     /// Get processed lines with proper word wrapping and markdown support
     pub(crate) fn get_processed_lines(&self, width: u16) -> Vec<Line<'static>> {
@@ -991,34 +1005,58 @@ impl HistoryCell {
 impl WidgetRef for &HistoryCell {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         match self {
-            HistoryCell::AnimatedWelcome { start_time, completed } => {
-                let elapsed = start_time.elapsed();
-                let animation_duration = std::time::Duration::from_secs(2);  // 2 seconds total
+            HistoryCell::AnimatedWelcome { start_time, completed, fade_start, faded_out } => {
+                let fade_duration = std::time::Duration::from_millis(800); // 0.8 seconds fade
                 
-                if elapsed < animation_duration && !completed.get() {
-                    // Calculate animation progress
-                    let progress = elapsed.as_secs_f32() / animation_duration.as_secs_f32();
-                    
-                    // Render the animation (randomly chooses between neon and bracket build)
-                    crate::glitch_animation::render_intro_animation(
-                        area,
-                        buf,
-                        progress
-                    );
-                    
-                    // Request redraw for animation
-                    // Note: We can't send events from here directly, but the ChatWidget
-                    // will check for animation cells and request redraws
+                // Check if we're in fade-out phase
+                if let Some(fade_time) = fade_start.get() {
+                    let fade_elapsed = fade_time.elapsed();
+                    if fade_elapsed < fade_duration && !faded_out.get() {
+                        // Fade-out animation
+                        let fade_progress = fade_elapsed.as_secs_f32() / fade_duration.as_secs_f32();
+                        let alpha = 1.0 - fade_progress; // From 1.0 to 0.0
+                        
+                        crate::glitch_animation::render_intro_animation_with_alpha(
+                            area,
+                            buf,
+                            1.0, // Full animation progress (static state)
+                            alpha
+                        );
+                    } else {
+                        // Fade-out complete - mark as faded out
+                        faded_out.set(true);
+                        // Don't render anything (invisible)
+                    }
                 } else {
-                    // Animation complete - mark it and render final static state
-                    completed.set(true);
+                    // Normal animation phase
+                    let elapsed = start_time.elapsed();
+                    let animation_duration = std::time::Duration::from_secs(2);  // 2 seconds total
                     
-                    // Render the final static state
-                    crate::glitch_animation::render_intro_animation(
-                        area,
-                        buf,
-                        1.0  // Full progress = static final state
-                    );
+                    if elapsed < animation_duration && !completed.get() {
+                        // Calculate animation progress
+                        let progress = elapsed.as_secs_f32() / animation_duration.as_secs_f32();
+                        
+                        // Render the animation (randomly chooses between neon and bracket build)
+                        crate::glitch_animation::render_intro_animation(
+                            area,
+                            buf,
+                            progress
+                        );
+                        
+                        // Request redraw for animation
+                        // Note: We can't send events from here directly, but the ChatWidget
+                        // will check for animation cells and request redraws
+                    } else {
+                        // Animation complete - mark it and render final static state
+                        completed.set(true);
+                        
+                        // Render the final static state
+                        crate::glitch_animation::render_intro_animation(
+                            area,
+                            buf,
+                            1.0  // Full progress = static final state
+                        );
+                    }
                 }
             }
             HistoryCell::BackgroundEvent { .. } => {
