@@ -524,7 +524,7 @@ impl ChatComposer {
                     .should_handle_navigation(self.textarea.text(), self.textarea.cursor())
                 {
                     let replace_text = match key_event.code {
-                        KeyCode::Up => self.history.navigate_up(&self.app_event_tx),
+                        KeyCode::Up => self.history.navigate_up(self.textarea.text(), &self.app_event_tx),
                         KeyCode::Down => self.history.navigate_down(&self.app_event_tx),
                         _ => unreachable!(),
                     };
@@ -565,6 +565,8 @@ impl ChatComposer {
 
     /// Handle generic Input events that modify the textarea content.
     fn handle_input_basic(&mut self, input: KeyEvent) -> (InputResult, bool) {
+        let text_before = self.textarea.text().to_string();
+        
         // Special handling for backspace on placeholders
         if let KeyEvent {
             code: KeyCode::Backspace,
@@ -572,6 +574,8 @@ impl ChatComposer {
         } = input
         {
             if self.try_remove_placeholder_at_cursor() {
+                // Text was modified, reset history navigation
+                self.history.reset_navigation();
                 return (InputResult::None, true);
             }
         }
@@ -579,6 +583,11 @@ impl ChatComposer {
         // Normal input handling
         self.textarea.input(input);
         let text_after = self.textarea.text();
+
+        // If text changed, reset history navigation state
+        if text_before != text_after {
+            self.history.reset_navigation();
+        }
 
         // Check if any placeholders were removed and remove their corresponding pending pastes
         self.pending_pastes
@@ -1150,7 +1159,7 @@ mod tests {
         assert!(composer.textarea.is_empty(), "composer should be cleared");
 
         match rx.try_recv() {
-            Ok(AppEvent::DispatchCommand(cmd)) => {
+            Ok(AppEvent::DispatchCommand(cmd, _)) => {
                 assert_eq!(cmd.command(), "mention");
                 composer.insert_str("@");
             }
