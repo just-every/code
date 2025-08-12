@@ -116,11 +116,7 @@ fn parse_markdown_tokens(text: &str) -> Vec<MarkdownToken> {
             // Save any accumulated text
             if !current_text.is_empty() {
                 // Split by whitespace to handle word boundaries properly
-                let words = current_text.split_whitespace();
-                for (i, word) in words.enumerate() {
-                    if i > 0 {
-                        tokens.push(MarkdownToken::Text(" ".to_string()));
-                    }
+                for word in current_text.split_whitespace() {
                     tokens.push(MarkdownToken::Text(word.to_string()));
                 }
                 current_text.clear();
@@ -141,11 +137,7 @@ fn parse_markdown_tokens(text: &str) -> Vec<MarkdownToken> {
             
             if found_closing && !bold_text.is_empty() {
                 // Split bold text by whitespace too
-                let words = bold_text.split_whitespace();
-                for (i, word) in words.enumerate() {
-                    if i > 0 {
-                        tokens.push(MarkdownToken::Bold(" ".to_string()));
-                    }
+                for word in bold_text.split_whitespace() {
                     tokens.push(MarkdownToken::Bold(word.to_string()));
                 }
             } else {
@@ -160,11 +152,7 @@ fn parse_markdown_tokens(text: &str) -> Vec<MarkdownToken> {
     
     // Handle remaining text
     if !current_text.is_empty() {
-        let words = current_text.split_whitespace();
-        for (i, word) in words.enumerate() {
-            if i > 0 {
-                tokens.push(MarkdownToken::Text(" ".to_string()));
-            }
+        for word in current_text.split_whitespace() {
             tokens.push(MarkdownToken::Text(word.to_string()));
         }
     }
@@ -179,9 +167,9 @@ mod tests {
     #[test]
     fn test_bold_parsing() {
         let tokens = parse_markdown_tokens("Hello **world** and **bold text** here");
-        assert_eq!(tokens.len(), 7); // "Hello", " ", "world", " ", "and", " ", "bold", " ", "text", " ", "here"
+        assert_eq!(tokens.len(), 6); // "Hello", "world", "and", "bold", "text", "here"
         
-        match &tokens[2] {
+        match &tokens[1] {
             MarkdownToken::Bold(text) => assert_eq!(text, "world"),
             _ => panic!("Expected bold token"),
         }
