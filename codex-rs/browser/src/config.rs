@@ -57,6 +57,10 @@ pub struct BrowserConfig {
     
     #[serde(default)]
     pub user_agent: Option<String>,      // leave None to let Chrome decide
+    
+    /// Prevent external Chrome from stealing focus when connecting via CDP (default: true)
+    #[serde(default = "default_prevent_focus_steal")]
+    pub prevent_focus_steal: bool,
 }
 
 impl Default for BrowserConfig {
@@ -78,6 +82,7 @@ impl Default for BrowserConfig {
             timezone: Some("Australia/Brisbane".into()),
             accept_language: Some("en-AU,en;q=0.9".into()),
             user_agent: None,
+            prevent_focus_steal: default_prevent_focus_steal(),
         }
     }
 }
@@ -138,5 +143,9 @@ fn default_format() -> ImageFormat {
 }
 
 fn default_persist_profile() -> bool {
+    true
+}
+
+fn default_prevent_focus_steal() -> bool {
     true
 }

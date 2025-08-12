@@ -59,7 +59,7 @@ use crate::history_cell::PatchEventType;
 use crate::live_wrap::RowBuilder;
 use crate::text_block::TextBlock;
 use crate::user_approval_widget::ApprovalRequest;
-use codex_browser::{BrowserManager, config::BrowserConfig};
+use codex_browser::BrowserManager;
 use codex_file_search::FileMatch;
 use ratatui::style::Stylize;
 
@@ -1254,6 +1254,26 @@ impl ChatWidget<'_> {
                 let browser_manager_open = browser_manager.clone();
                 let url_for_goto = full_url.clone();
                 tokio::spawn(async move {
+                    // Ensure global manager is configured similarly for consistency
+                    let global_manager = codex_browser::global::get_or_create_browser_manager().await;
+                    
+                    // Copy configuration from TUI manager to global manager
+                    {
+                        let tui_config = browser_manager_open.get_config().await;
+                        let mut global_config = global_manager.config.write().await;
+                        
+                        // Copy key settings to maintain consistency
+                        global_config.connect_port = tui_config.connect_port;
+                        global_config.connect_ws = tui_config.connect_ws.clone();
+                        global_config.headless = tui_config.headless;
+                        global_config.persist_profile = tui_config.persist_profile;
+                        global_config.enabled = true;
+                    }
+                    
+                    // Start global manager with synced config
+                    let _ = global_manager.start().await;
+                    
+                    // Navigate using TUI manager (for now - could switch to global later)
                     match browser_manager_open.goto(&url_for_goto).await {
                         Ok(result) => {
                             tracing::info!("Browser opened to: {} (title: {:?})", result.url, result.title);
@@ -1288,19 +1308,34 @@ impl ChatWidget<'_> {
                         let port_display = port.map_or("auto-detected".to_string(), |p| p.to_string());
                         
                         tokio::spawn(async move {
-                            // Configure for local Chrome connection
+                            // CRITICAL: Use the global browser manager for everything to avoid dual instances
+                            let global_manager = codex_browser::global::get_or_create_browser_manager().await;
+                            
+                            // Configure the global manager for local Chrome connection
+                            {
+                                let mut global_config = global_manager.config.write().await;
+                                global_config.connect_port = Some(port.unwrap_or(0));
+                                global_config.headless = false;
+                                global_config.persist_profile = true;
+                                global_config.enabled = true;
+                            }
+                            
+                            // Also sync the TUI manager to the same config to keep UI consistent
                             {
                                 let mut config = browser_manager_local.config.write().await;
-                                // Use specified port, or 0 for auto-scan
                                 config.connect_port = Some(port.unwrap_or(0));
                                 config.headless = false;
                                 config.persist_profile = true;
                             }
                             
-                            // Try to connect
-                            match browser_manager_local.start().await {
+                            // Connect using the global manager (this will be used by LLM tools)
+                            match global_manager.start().await {
                                 Ok(_) => {
-                                    tracing::info!("Connected to local Chrome instance");
+                                    tracing::info!("Connected to local Chrome instance via global manager");
+                                    tracing::info!("All browser operations (TUI and LLM tools) will use external Chrome");
+                                    
+                                    // Also start the local manager for UI consistency
+                                    let _ = browser_manager_local.start().await;
                                 }
                                 Err(e) => {
                                     tracing::warn!("Failed to connect to local Chrome: {}. Trying to launch Chrome with debug port...", e);

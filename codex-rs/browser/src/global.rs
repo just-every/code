@@ -32,3 +32,9 @@ pub async fn get_browser_manager() -> Option<Arc<BrowserManager>> {
 pub async fn clear_browser_manager() {
     *GLOBAL_BROWSER_MANAGER.write().await = None;
 }
+
+/// Set the global browser manager configuration (used by TUI to sync with global state)
+pub async fn set_global_browser_manager(manager: Arc<BrowserManager>) {
+    let mut guard = GLOBAL_BROWSER_MANAGER.write().await;
+    *guard = Some(manager);
+}

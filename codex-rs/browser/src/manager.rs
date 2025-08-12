@@ -508,6 +508,40 @@ impl BrowserManager {
             .map_err(|e| BrowserError::CdpError(e))?;
         page.execute(params).await?;
 
+        // For external Chrome connections, try to prevent focus stealing
+        let is_external_chrome = config.connect_port.is_some() || config.connect_ws.is_some();
+        if is_external_chrome && config.prevent_focus_steal {
+            debug!("Configuring external Chrome to reduce focus stealing");
+            
+            // Try to inject JavaScript that prevents focus events from bubbling
+            // This helps reduce the likelihood of the browser taking focus
+            let focus_prevention_script = r#"
+                try {
+                    // Override focus methods to be less aggressive
+                    const originalFocus = window.focus;
+                    window.focus = function() {
+                        // Only focus if document is already visible to avoid stealing focus
+                        if (document.visibilityState === 'visible') {
+                            originalFocus.call(this);
+                        }
+                    };
+                    
+                    // Prevent focus events from bubbling up
+                    document.addEventListener('focus', function(e) {
+                        e.stopImmediatePropagation();
+                    }, true);
+                    
+                    console.log('Focus prevention installed');
+                } catch (e) {
+                    console.warn('Could not install focus prevention:', e);
+                }
+            "#;
+            
+            if let Err(e) = page.evaluate(focus_prevention_script).await {
+                debug!("Could not install focus prevention script: {}", e);
+            }
+        }
+
         Ok(())
     }
 
