@@ -291,7 +291,7 @@ impl ChatWidget<'_> {
             hud_height = hud_height.saturating_sub(1);
 
             // keep within vertical budget (status+bottom+≥1 row history)
-            let available = area.height.saturating_sub(3 + bottom_height + 1);
+            let available = area.height.saturating_sub(3 + bottom_height + 1) / 2;
             hud_height = hud_height.clamp(4, available);
 
             return Layout::vertical([
