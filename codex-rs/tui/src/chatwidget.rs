@@ -5390,6 +5390,16 @@ impl WidgetRef for &ChatWidget<'_> {
             height: history_area.height,
         };
 
+        // Proactively clear the content area to prevent stale characters from remaining
+        // when scrolling causes shorter lines to be drawn over longer ones.
+        // We do this by filling the area with spaces styled with the theme background.
+        let clear_style = Style::default().bg(crate::colors::background());
+        for y in content_area.top()..content_area.bottom() {
+            for x in content_area.left()..content_area.right() {
+                buf.get_mut(x, y).set_char(' ').set_style(clear_style);
+            }
+        }
+
         // Collect all content items into a single list
         let mut all_content: Vec<&dyn HistoryCell> = Vec::new();
         for cell in self.history_cells.iter() {
