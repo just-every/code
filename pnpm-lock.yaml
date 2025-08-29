@@ -17,6 +17,8 @@ importers:
         specifier: ^3.5.3
         version: 3.5.3
 
+  codex-cli: {}
+
 packages:
 
   prettier@3.5.3:
