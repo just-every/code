@@ -3673,13 +3673,30 @@ async fn handle_web_fetch(
 }
 
 fn to_exec_params(params: ShellToolCallParams, sess: &Session) -> ExecParams {
+    // Detect and wrap pipe commands
+    let command = detect_and_wrap_pipe_commands(params.command);
+    
     ExecParams {
-        command: params.command,
+        command,
         cwd: sess.resolve_path(params.workdir.clone()),
         timeout_ms: params.timeout_ms,
         env: create_env(&sess.shell_environment_policy),
         with_escalated_permissions: params.with_escalated_permissions,
         justification: params.justification,
+    }
+}
+/// Detects if a command contains pipe characters and wraps it with bash -c if needed
+fn detect_and_wrap_pipe_commands(command: Vec<String>) -> Vec<String> {
+    // Check if any argument contains a pipe character
+    let has_pipe = command.iter().any(|arg| arg.contains('|'));
+    
+    if has_pipe {
+        // Join all arguments into a single command string and wrap with bash -c
+        let command_str = command.join(" ");
+        vec!["bash".to_string(), "-c".to_string(), command_str]
+    } else {
+        // Return original command if no pipes detected
+        command
     }
 }
 
