@@ -1,13 +1,21 @@
-This PR merges `openai/codex` `main` into our `upstream-merge` branch using the recursive strategy with `-X ours` to prefer our changes on conflicts.
+This PR merges the latest `openai/codex` `main` into our codebase.
 
-Highlights
-- Incorporates upstream Rust TUI improvements (highlighting, wrapping, resume picker) and expanded VT100/status tests.
-- Adds core `event_mapping` and `user_instructions` modules from upstream.
-- Preserves our TUI themes/browser/agents and our AGENTS.md/CHANGELOG.md/README.md per policy.
-- Brings in upstream CI assets and docs without altering our workflows beyond merge results.
+- Upstream: `openai/codex@026909622` (2025-09-06)
+- Branch: `upstream-merge` (recreated from `origin/main`)
+- Strategy: `git merge upstream/main -X ours --allow-unrelated-histories`
+
+Key notes
+- Kept our top-level docs: `AGENTS.md`, `CHANGELOG.md`, `README.md` per policy.
+- TUI: we favored our themes/browser/agents on conflicts; no manual overrides were needed.
+- Non-conflicting upstream improvements across `codex-rs` crates, TUI, and docs were incorporated.
 
 Validation
-- Ran `./build-fast.sh` from repo root; build completed successfully with no warnings.
-- No additional changes were necessary.
+- Ran `./build-fast.sh` from repo root.
+- Result: success, no warnings or errors.
+- Binary: `./codex-rs/target/dev-fast/code` (dev-fast).
 
-If anything should be reverted or adopted differently (especially TUI pieces), let me know and I can adjust.
+Artifacts
+- Merge report: `MERGE_REPORT.md` documents incorporated/dropped/other changes.
+
+Follow-ups
+- None required. If we spot any UX deltas in TUI during daily usage, we can cherry-pick selectively.

@@ -1,16 +1,19 @@
-# Upstream Merge Report
+# Upstream merge report
 
-Incorporated:
-- Upstream `main` from `openai/codex` merged with `-X ours`.
-- New Rust TUI modules and tests (e.g., `tui/src/render/highlight.rs`, `tui/src/wrapping.rs`, `tui/src/key_hint.rs`, `tui/src/resume_picker.rs`, VT100 + status tests and fixtures).
-- Core additions: `core/src/event_mapping.rs`, `core/src/user_instructions.rs`.
-- MCP server test additions: `mcp-server/tests/suite/list_resume.rs`.
-- CI assets and docs from upstream (workflows, images, CLI README).
+- Source: openai/codex@026909622 (upstream/main)
+- Target branch: upstream-merge (from origin/main)
+- Strategy: `-X ours` with `--allow-unrelated-histories`
 
-Dropped:
-- Kept our local TUI themes/browser/agents on conflicts (strict preference for ours).
-- Kept our `AGENTS.md`, `CHANGELOG.md`, and `README.md` unchanged.
+## Incorporated
+- Latest changes across `codex-rs` crates (core, exec, tui, login, protocol, mcp, ollama, file-search, protocol-ts).
+- Upstream updates to workspace manifests (`Cargo.toml`, `Cargo.lock`) and docs under `docs/`.
+- Non-conflicting improvements in CLI scripts and Node workspace manifests.
 
-Other changes:
-- No code changes required post-merge.
-- Build validated with repo-local cargo caches to satisfy sandbox.
+## Dropped
+- Local versions kept for top-level docs: `AGENTS.md`, `CHANGELOG.md`, `README.md` (policy: keep ours).
+- On conflicts (none detected), TUI defaults/themes/agents would prefer ours; merge had no manual overrides required.
+
+## Other changes
+- No code edits were required post-merge.
+- Build validated via `./build-fast.sh` (dev-fast) with zero warnings or errors.
+
