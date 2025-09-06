@@ -1,0 +1,6 @@
+---
+source: insta/tests/test_binary.rs
+expression: "b\"test\".to_vec()"
+extension: txt
+snapshot_kind: binary
+---

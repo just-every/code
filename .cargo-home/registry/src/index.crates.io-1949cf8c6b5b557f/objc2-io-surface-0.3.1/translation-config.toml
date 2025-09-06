@@ -1,0 +1,114 @@
+framework = "IOSurface"
+crate = "objc2-io-surface"
+required-crates = []
+custom-lib-rs = true
+macos = "10.6"
+maccatalyst = "13.0"
+# NOTE: IOSurface.tbd in the iOS SDK does contain some $ld$previous$
+# directives, but they only work when using Swift's auto-linking, not when
+# telling the linker to link the framework directly via the commandline (as
+# Rust does).
+ios = "11.0"
+tvos = "11.0"
+visionos = "1.0"
+
+# Needs xpc_object_t
+fn.IOSurfaceCreateXPCObject.skipped = true
+fn.IOSurfaceLookupFromXPCObject.skipped = true
+
+# Needs task_id_token_t
+fn.IOSurfaceSetOwnershipIdentity.skipped = true
+
+# Defined in other crates too, so needs manual definition
+typedef.IOSurfaceRef.renamed = "IOSurfaceRef" # TODO: Merge IOSurface and IOSurfaceRef somehow
+typedef.IOSurfaceRef.skipped = true
+struct.__IOSurface.skipped = true
+external.IOSurfaceRef.module = "IOSurface.IOSurfaceRef"
+
+##
+## Safety
+##
+
+# IOSurfaceRef
+fn.IOSurfaceCreate.unsafe = true # CFDictionary can contain anything
+fn.IOSurfaceLookup.unsafe = false
+fn.IOSurfaceGetID.unsafe = false
+fn.IOSurfaceGetAllocSize.unsafe = false
+fn.IOSurfaceGetWidth.unsafe = false
+fn.IOSurfaceGetHeight.unsafe = false
+fn.IOSurfaceGetBytesPerElement.unsafe = false
+fn.IOSurfaceGetBytesPerRow.unsafe = false
+fn.IOSurfaceGetBaseAddress.unsafe = false
+fn.IOSurfaceGetElementWidth.unsafe = false
+fn.IOSurfaceGetElementHeight.unsafe = false
+fn.IOSurfaceGetPixelFormat.unsafe = false
+fn.IOSurfaceGetSeed.unsafe = false
+fn.IOSurfaceGetPlaneCount.unsafe = false
+# Handles index out of bounds
+fn.IOSurfaceGetWidthOfPlane.unsafe = false
+fn.IOSurfaceGetHeightOfPlane.unsafe = false
+fn.IOSurfaceGetBytesPerElementOfPlane.unsafe = false
+fn.IOSurfaceGetBytesPerRowOfPlane.unsafe = false
+fn.IOSurfaceGetBaseAddressOfPlane.unsafe = false
+fn.IOSurfaceGetElementWidthOfPlane.unsafe = false
+fn.IOSurfaceGetElementHeightOfPlane.unsafe = false
+fn.IOSurfaceGetNumberOfComponentsOfPlane.unsafe = false
+fn.IOSurfaceGetNameOfComponentOfPlane.unsafe = false
+fn.IOSurfaceGetTypeOfComponentOfPlane.unsafe = false
+fn.IOSurfaceGetRangeOfComponentOfPlane.unsafe = false
+fn.IOSurfaceGetBitDepthOfComponentOfPlane.unsafe = false
+fn.IOSurfaceGetBitOffsetOfComponentOfPlane.unsafe = false
+fn.IOSurfaceGetSubsampling.unsafe = false
+fn.IOSurfaceSetValue.unsafe = true # CFType can be anything, while there is probably an implicit type for each value (?)
+fn.IOSurfaceCopyValue.unsafe = false
+fn.IOSurfaceRemoveValue.unsafe = false
+fn.IOSurfaceSetValues.unsafe = true # CFDictionary can contain anything (not just CFType)
+fn.IOSurfaceCopyAllValues.unsafe = false
+fn.IOSurfaceRemoveAllValues.unsafe = false
+fn.IOSurfaceCreateMachPort.unsafe = false
+fn.IOSurfaceLookupFromMachPort.unsafe = false
+fn.IOSurfaceGetPropertyMaximum.unsafe = false
+fn.IOSurfaceGetPropertyAlignment.unsafe = false
+fn.IOSurfaceAlignProperty.unsafe = false
+fn.IOSurfaceIncrementUseCount.unsafe = false
+fn.IOSurfaceDecrementUseCount.unsafe = false
+fn.IOSurfaceGetUseCount.unsafe = false
+fn.IOSurfaceIsInUse.unsafe = false
+fn.IOSurfaceAllowsPixelSizeCasting.unsafe = false
+
+# ObjC
+class.IOSurface.methods."initWithProperties:".unsafe = false
+class.IOSurface.methods."lockWithOptions:seed:".unsafe = false
+class.IOSurface.methods."unlockWithOptions:seed:".unsafe = false
+class.IOSurface.methods.allocationSize.unsafe = false
+class.IOSurface.methods.width.unsafe = false
+class.IOSurface.methods.height.unsafe = false
+class.IOSurface.methods.baseAddress.unsafe = false
+class.IOSurface.methods.pixelFormat.unsafe = false
+class.IOSurface.methods.bytesPerRow.unsafe = false
+class.IOSurface.methods.bytesPerElement.unsafe = false
+class.IOSurface.methods.elementWidth.unsafe = false
+class.IOSurface.methods.elementHeight.unsafe = false
+class.IOSurface.methods.surfaceID.unsafe = false
+class.IOSurface.methods.seed.unsafe = false
+class.IOSurface.methods.planeCount.unsafe = false
+class.IOSurface.methods."widthOfPlaneAtIndex:".unsafe = false
+class.IOSurface.methods."heightOfPlaneAtIndex:".unsafe = false
+class.IOSurface.methods."bytesPerRowOfPlaneAtIndex:".unsafe = false
+class.IOSurface.methods."bytesPerElementOfPlaneAtIndex:".unsafe = false
+class.IOSurface.methods."elementWidthOfPlaneAtIndex:".unsafe = false
+class.IOSurface.methods."elementHeightOfPlaneAtIndex:".unsafe = false
+class.IOSurface.methods."baseAddressOfPlaneAtIndex:".unsafe = false
+class.IOSurface.methods."setAttachment:forKey:".unsafe = true # Unsure if AnyObject is safe here?
+class.IOSurface.methods."attachmentForKey:".unsafe = false
+class.IOSurface.methods."removeAttachmentForKey:".unsafe = false
+class.IOSurface.methods."setAllAttachments:".unsafe = false
+class.IOSurface.methods.allAttachments.unsafe = false
+class.IOSurface.methods.removeAllAttachments.unsafe = false
+class.IOSurface.methods.isInUse.unsafe = false
+class.IOSurface.methods.incrementUseCount.unsafe = false
+class.IOSurface.methods.decrementUseCount.unsafe = false
+class.IOSurface.methods.localUseCount.unsafe = false
+class.IOSurface.methods.allowsPixelSizeCasting.unsafe = false
+class.IOSurface.methods.init.unsafe = false
+class.IOSurface.methods.new.unsafe = false

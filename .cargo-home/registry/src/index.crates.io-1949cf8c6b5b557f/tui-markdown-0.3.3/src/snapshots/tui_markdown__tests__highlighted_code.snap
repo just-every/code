@@ -1,0 +1,9 @@
+---
+source: tui-markdown/src/lib.rs
+expression: highlighted_code
+---
+```rust
+fn main() {
+    println!("Hello, highlighted code!");
+}
+```
