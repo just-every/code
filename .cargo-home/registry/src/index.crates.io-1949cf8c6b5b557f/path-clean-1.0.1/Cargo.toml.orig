@@ -1,0 +1,20 @@
+[package]
+name = "path-clean"
+description = "A Rust implementation of cleanname or path.Clean"
+version = "1.0.1"
+authors = ["Dan Reeves <hey@danreev.es>"]
+repository = "https://github.com/danreeves/path-clean"
+documentation = "https://docs.rs/path-clean"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+keywords = ["path", "clean"]
+exclude = ["scripts/*"]
+
+[dependencies]
+
+[dev-dependencies]
+criterion = "0.2"
+
+[[bench]]
+name = "clean_benchmark"
+harness = false

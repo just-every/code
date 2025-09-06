@@ -219,6 +219,19 @@ impl TextArea {
             KeyEventKind::Press => { /* handle below */ }
         }
         match event {
+            // macOS-like shortcuts: Command (SUPER) and Option (ALT)
+            // Cmd+Left / Cmd+Right -> move to beginning/end of line
+            KeyEvent { code: KeyCode::Left, modifiers: KeyModifiers::SUPER, .. } => {
+                self.move_cursor_to_beginning_of_line(false);
+            }
+            KeyEvent { code: KeyCode::Right, modifiers: KeyModifiers::SUPER, .. } => {
+                self.move_cursor_to_end_of_line(false);
+            }
+            // Cmd+Backspace or Cmd+Delete -> delete entire current line content
+            KeyEvent { code: KeyCode::Backspace, modifiers: KeyModifiers::SUPER, .. }
+            | KeyEvent { code: KeyCode::Delete, modifiers: KeyModifiers::SUPER, .. } => {
+                self.delete_entire_line();
+            }
             // Some terminals (or configurations) send Control key chords as
             // C0 control characters without reporting the CONTROL modifier.
             // Handle common fallbacks for Ctrl-B/Ctrl-F here so they don't get
@@ -255,6 +268,12 @@ impl TextArea {
             },
             KeyEvent {
                 code: KeyCode::Backspace,
+                modifiers: KeyModifiers::ALT,
+                ..
+            }
+            // Some terminals report Option+Delete as Delete (forward) with ALT
+            | KeyEvent {
+                code: KeyCode::Delete,
                 modifiers: KeyModifiers::ALT,
                 ..
             } => self.delete_backward_word(),
@@ -471,6 +490,18 @@ impl TextArea {
         } else {
             self.replace_range(bol..self.cursor_pos, "");
         }
+    }
+
+    /// Delete the entire current line's contents (from BOL up to but not including the newline).
+    /// Leaves the newline in place so the line remains, now empty.
+    pub fn delete_entire_line(&mut self) {
+        let bol = self.beginning_of_current_line();
+        let eol = self.end_of_current_line();
+        if bol < eol {
+            self.replace_range(bol..eol, "");
+        }
+        // Place cursor at beginning of now-empty line
+        self.set_cursor(bol);
     }
 
     /// Move the cursor left by a single grapheme cluster.

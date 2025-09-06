@@ -1,0 +1,68 @@
+version: "3.8"
+
+volumes:
+  postgres-data:
+  redis-data:
+  redis-cluster-data:
+  rabbitmq-data:
+
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Use the VARIANT arg to pick a Debian OS version: buster, bullseye, bookworm
+        # Use bullseye when on local on arm64/Apple Silicon.
+        VARIANT: bookworm
+    env_file:
+      # Ensure that the variables in .env match the same variables in devcontainer.json
+      - .env
+    # Security Opt and cap_add for C++ based debuggers to work.
+    # See `runArgs`: https://github.com/Microsoft/vscode-docs/blob/main/docs/remote/devcontainerjson-reference.md
+    # security_opt:
+    #   - seccomp:unconfined
+    # cap_add:
+    #   - SYS_PTRACE
+
+    volumes:
+      - ..:/workspace:cached
+
+    # Overrides default command so things don't shut down after the process ends.
+    command: sleep infinity
+    # Runs app on the same network as the database container, allows "forwardPorts" in devcontainer.json function.
+    #network_mode: service:postgres
+
+    # Uncomment the next line to use a non-root user for all processes.
+    # user: vscode
+
+    # Use "forwardPorts" in **devcontainer.json** to forward an app port locally.
+    # (Adding the "ports" property to this file will not forward from a Codespace.)
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    env_file:
+      - postgres.env
+
+  redis:
+    image: redis:7.2-alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+
+  redis-cluster:
+    image: grokzen/redis-cluster:7.0.10
+    restart: unless-stopped
+    volumes:
+      - redis-cluster-data:/redis-data
+
+  rabbitmq:
+    image: rabbitmq:3.12-alpine
+    env_file:
+      - rabbitmq.env
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
