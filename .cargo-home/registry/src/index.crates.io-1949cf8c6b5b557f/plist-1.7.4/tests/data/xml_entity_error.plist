@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+&#32;&amp;
+<!-- &#32; is allowed, as it is a whitespace, but &amp; is not, so we expect to fail at position 174, not 169 -->
+</plist>

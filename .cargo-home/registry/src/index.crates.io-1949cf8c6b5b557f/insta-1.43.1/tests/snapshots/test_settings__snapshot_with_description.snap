@@ -1,0 +1,10 @@
+---
+source: insta/tests/test_settings.rs
+description: The snapshot is three integers
+expression: "vec![1, 2, 3]"
+---
+[
+    1,
+    2,
+    3,
+]
