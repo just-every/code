@@ -120,3 +120,4 @@ branches/
 .code/
 
 # trigger: test non-notes change (no [skip ci])
+.github/auto/*
