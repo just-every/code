@@ -1,0 +1,41 @@
+[package]
+name = "clipboard-win"
+version = "5.4.1"
+authors = ["Douman <douman@gmx.se>"]
+description = "Provides simple way to interact with Windows clipboard."
+license = "BSL-1.0"
+
+keywords = ["Windows", "winapi", "clipboard"]
+categories = ["os::windows-apis"]
+
+repository = "https://github.com/DoumanAsh/clipboard-win"
+documentation = "https://docs.rs/crate/clipboard-win"
+
+readme = "README.md"
+edition = "2018"
+
+include = [
+    "**/*.rs",
+    "Cargo.toml",
+    "README.md"
+]
+
+[package.metadata.docs.rs]
+default-target = "x86_64-pc-windows-msvc"
+features = ["monitor"]
+
+[target.'cfg(windows)'.dependencies]
+error-code = "3"
+
+[target.'cfg(windows)'.dependencies.windows-win]
+version = "3"
+optional = true
+
+[features]
+std = ["error-code/std"]
+# Enables clipboard monitoring code
+monitor = ["windows-win"]
+
+[[test]]
+name = "monitor"
+required-features = ["monitor"]

@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+Thumbs.db
+
+# Windows
+[Dd]esktop.ini
+
+# cargo
+target/
+Cargo.lock
+
+# IDEA
+.idea/
+*.iml
+
+# Sublime Text
+*.sublime-workspace
+
+# VS Code
+.vscode/

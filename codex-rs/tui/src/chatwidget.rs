@@ -1409,6 +1409,17 @@ impl ChatWidget<'_> {
             layout_scroll::page_down(self);
             return;
         }
+        // Home/End jump to top/bottom of the main history view
+        if let crossterm::event::KeyEvent { code: crossterm::event::KeyCode::Home, kind: KeyEventKind::Press | KeyEventKind::Repeat, .. } = key_event {
+            layout_scroll::jump_top(self);
+            // After jumping to top, make the next Down continue scrolling history
+            self.bottom_pane.mark_next_down_scrolls_history();
+            return;
+        }
+        if let crossterm::event::KeyEvent { code: crossterm::event::KeyCode::End, kind: KeyEventKind::Press | KeyEventKind::Repeat, .. } = key_event {
+            layout_scroll::jump_bottom(self);
+            return;
+        }
 
         match self.bottom_pane.handle_key_event(key_event) {
             InputResult::Submitted(text) => {

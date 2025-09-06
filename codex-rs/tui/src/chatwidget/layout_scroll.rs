@@ -40,6 +40,29 @@ pub(super) fn page_down(chat: &mut ChatWidget<'_>) {
     chat.height_manager.borrow_mut().record_event(crate::height_manager::HeightEvent::UserScroll);
 }
 
+// Jump to the very top of history (oldest content visible)
+pub(super) fn jump_top(chat: &mut ChatWidget<'_>) {
+    let max = chat.layout.last_max_scroll.get();
+    chat.layout.scroll_offset = max;
+    chat.bottom_pane.set_compact_compose(true);
+    flash_scrollbar(chat);
+    chat.app_event_tx.send(crate::app_event::AppEvent::RequestRedraw);
+    chat.height_manager
+        .borrow_mut()
+        .record_event(crate::height_manager::HeightEvent::UserScroll);
+}
+
+// Jump to the very bottom of history (newest content at bottom)
+pub(super) fn jump_bottom(chat: &mut ChatWidget<'_>) {
+    chat.layout.scroll_offset = 0;
+    chat.bottom_pane.set_compact_compose(false);
+    flash_scrollbar(chat);
+    chat.app_event_tx.send(crate::app_event::AppEvent::RequestRedraw);
+    chat.height_manager
+        .borrow_mut()
+        .record_event(crate::height_manager::HeightEvent::UserScroll);
+}
+
 pub(super) fn mouse_scroll(chat: &mut ChatWidget<'_>, up: bool) {
     if up {
         let new_offset = chat

@@ -1,0 +1,14 @@
+---
+source: tui-markdown/src/lib.rs
+expression: highlighted_code_indented
+---
+```rust
+fn main() {
+    // This is a comment
+    HelloWorldBuilder::new()
+        .with_text("Hello, highlighted code!")
+        .build()
+        .show();
+                
+}
+```
