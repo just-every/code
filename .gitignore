@@ -120,3 +120,9 @@ branches/
 .code/
 
 # trigger: test non-notes change (no [skip ci])
+# Local cargo home used by build in sandbox
+.cargo-home/
+
+# CI automation artifacts (not source)
+.github/auto/AGENT_STDOUT.txt
+.github/auto/openai-proxy.js

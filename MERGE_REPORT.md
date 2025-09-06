@@ -13,15 +13,14 @@
   - `codex-rs/core/src/event_mapping.rs`, `user_instructions.rs`.
 - MCP Server tests: `codex-rs/mcp-server/tests/suite/list_resume.rs`.
 - Scripts: `codex-rs/scripts/create_github_release`.
-- GitHub materials and workflows (added, no manual overrides required):
-  - `.github/workflows/{ci,cla,codespell,rust-ci,rust-release}.yml`, images, labels, templates.
+- GitHub materials (images, labels, templates). Note: workflows were not retained in this branch; see Dropped.
 - CLI docs: `codex-cli/README.md`.
 
 ## Dropped / Prefer-ours
 
 - `AGENTS.md`, `CHANGELOG.md`, `README.md`: kept our versions when conflicts arose.
 - TUI customizations (themes/browser/agents): retained our implementation; upstream changes incorporated only when non-conflicting.
-- Workflow conflicts: policy prefers ours; no manual conflict resolution needed.
+- Upstream GitHub workflows: omitted from this branch due to GitHub token policy (PAT without `workflow` scope rejects pushes that add or modify workflows). Maintainers can re-add on merge.
 
 ## Other Changes
 
@@ -32,4 +31,3 @@
 ## Build Status
 
 - Result: PASS — `./build-fast.sh` completed successfully.
-
