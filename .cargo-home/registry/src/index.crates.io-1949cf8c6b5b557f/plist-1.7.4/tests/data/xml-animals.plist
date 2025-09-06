@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>AnimalColors</key>
+	<dict>
+		<key>lamb</key>
+		<string>black</string>
+		<key>pig</key>
+		<string>pink</string>
+		<key>worm</key>
+		<string>pink</string>
+	</dict>
+	<key>AnimalSmells</key>
+	<dict>
+		<key>lamb</key>
+		<string>lambish</string>
+		<key>pig</key>
+		<string>piggish</string>
+		<key>worm</key>
+		<string>wormy</string>
+	</dict>
+	<key>AnimalSounds</key>
+	<dict>
+		<key>Lisa</key>
+		<string>Why is the worm talking like a lamb?</string>
+		<key>lamb</key>
+		<string>baa</string>
+		<key>pig</key>
+		<string>oink</string>
+		<key>worm</key>
+		<string>baa</string>
+	</dict>
+</dict>
+</plist>

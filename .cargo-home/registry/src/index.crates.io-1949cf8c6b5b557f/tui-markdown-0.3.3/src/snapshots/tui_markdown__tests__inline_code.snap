@@ -1,0 +1,5 @@
+---
+source: tui-markdown/src/lib.rs
+expression: text
+---
+Example of Inline code
