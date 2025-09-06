@@ -1,0 +1,109 @@
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+env:
+  CARGO_TARGET_WASM32_WASIP1_RUNNER: "/home/runner/.wasmtime/bin/wasmtime --dir /tmp/"
+  CARGO_TARGET_WASM32_WASIP2_RUNNER: "/home/runner/.wasmtime/bin/wasmtime --dir /tmp/"
+  RUSTFLAGS: "-D warnings"
+  RUSTDOCFLAGS: "-D warnings"
+
+name: CI
+jobs:
+  deny:
+    name: Cargo deny
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: EmbarkStudios/cargo-deny-action@v2
+    timeout-minutes: 10
+
+  build_and_test:
+    strategy:
+      fail-fast: false
+      matrix:
+        rust-version:
+          - nightly
+          - stable
+          - "1.63"
+        platform:
+          - name: "Linux"
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - name: "Windows"
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - name: "MacOS"
+            os: macos-latest
+            target: aarch64-apple-darwin
+        include:
+          - rust-version: "nightly"
+            test-flags: --tests
+            platform:
+              name: "WASI P1"
+              os: ubuntu-latest
+              target: wasm32-wasip1
+          - rust-version: "nightly"
+            test-flags: --tests
+            platform:
+              name: "WASI P2"
+              os: ubuntu-latest
+              target: wasm32-wasip2
+    name: Platform Test (${{ matrix.platform.name }} / ${{ matrix.rust-version }})
+    runs-on: ${{ matrix.platform.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust-version }}
+          targets: ${{ matrix.platform.target }}
+      - name: Generating the Cargo.lock
+        run: cargo generate-lockfile
+      - name: Downgrading once_cell
+        if: matrix.rust-version == 1.63
+        run: cargo update -p once_cell --precise 1.20.3
+      - name: Install Wasmtime
+        if: ${{ startsWith(matrix.platform.target, 'wasm32-wasi') }}
+        run: curl https://wasmtime.dev/install.sh -sSf | bash
+      - name: Build
+        run: cargo build --target ${{ matrix.platform.target }} ${{ matrix.rust-version == 'nightly' && '--features nightly' || '' }}
+      - name: Test
+        run: cargo test --target ${{ matrix.platform.target }} ${{ matrix.rust-version == 'nightly' && '--features nightly' || '' }} ${{ matrix.test-flags }}
+  wasm:
+    name: WASM Test Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Build
+        run: cargo build --target wasm32-unknown-unknown
+  lint:
+    name: Clippy, fmt, and docs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Check formatting
+        run: cargo fmt --check
+      - name: Check documentation
+        run: cargo doc --all --no-deps
+      - name: Check for clippy lints
+        run: cargo clippy

@@ -1,0 +1,146 @@
+---
+source: tui-markdown/src/lib.rs
+expression: unhiglighted_code
+---
+Text {
+    lines: [
+        Line {
+            spans: [
+                Span {
+                    content: "```rust",
+                    style: Style {
+                        fg: None,
+                        bg: None,
+                        underline_color: None,
+                        add_modifier: NONE,
+                        sub_modifier: NONE,
+                    },
+                },
+            ],
+            style: Style {
+                fg: Some(
+                    White,
+                ),
+                bg: Some(
+                    Black,
+                ),
+                underline_color: None,
+                add_modifier: NONE,
+                sub_modifier: NONE,
+            },
+            alignment: None,
+        },
+        Line {
+            spans: [
+                Span {
+                    content: "fn main() {",
+                    style: Style {
+                        fg: None,
+                        bg: None,
+                        underline_color: None,
+                        add_modifier: NONE,
+                        sub_modifier: NONE,
+                    },
+                },
+            ],
+            style: Style {
+                fg: Some(
+                    White,
+                ),
+                bg: Some(
+                    Black,
+                ),
+                underline_color: None,
+                add_modifier: NONE,
+                sub_modifier: NONE,
+            },
+            alignment: None,
+        },
+        Line {
+            spans: [
+                Span {
+                    content: "    println!(\"Hello, unhighlighted code!\");",
+                    style: Style {
+                        fg: None,
+                        bg: None,
+                        underline_color: None,
+                        add_modifier: NONE,
+                        sub_modifier: NONE,
+                    },
+                },
+            ],
+            style: Style {
+                fg: Some(
+                    White,
+                ),
+                bg: Some(
+                    Black,
+                ),
+                underline_color: None,
+                add_modifier: NONE,
+                sub_modifier: NONE,
+            },
+            alignment: None,
+        },
+        Line {
+            spans: [
+                Span {
+                    content: "}",
+                    style: Style {
+                        fg: None,
+                        bg: None,
+                        underline_color: None,
+                        add_modifier: NONE,
+                        sub_modifier: NONE,
+                    },
+                },
+            ],
+            style: Style {
+                fg: Some(
+                    White,
+                ),
+                bg: Some(
+                    Black,
+                ),
+                underline_color: None,
+                add_modifier: NONE,
+                sub_modifier: NONE,
+            },
+            alignment: None,
+        },
+        Line {
+            spans: [
+                Span {
+                    content: "```",
+                    style: Style {
+                        fg: None,
+                        bg: None,
+                        underline_color: None,
+                        add_modifier: NONE,
+                        sub_modifier: NONE,
+                    },
+                },
+            ],
+            style: Style {
+                fg: Some(
+                    White,
+                ),
+                bg: Some(
+                    Black,
+                ),
+                underline_color: None,
+                add_modifier: NONE,
+                sub_modifier: NONE,
+            },
+            alignment: None,
+        },
+    ],
+    style: Style {
+        fg: None,
+        bg: None,
+        underline_color: None,
+        add_modifier: NONE,
+        sub_modifier: NONE,
+    },
+    alignment: None,
+}
