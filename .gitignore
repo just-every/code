@@ -119,4 +119,11 @@ branches/
 .coder/
 .code/
 
+# local Rust toolchain caches (kept inside repo for sandboxed builds)
+.cargo-home/
+.rustup-home/
+
+# automation artifacts (exclude secret-bearing agent logs)
+.github/auto/AGENT_STDOUT.txt
+
 # trigger: test non-notes change (no [skip ci])
