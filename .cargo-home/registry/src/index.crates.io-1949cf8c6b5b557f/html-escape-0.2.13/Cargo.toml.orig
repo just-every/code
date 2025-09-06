@@ -1,0 +1,28 @@
+[package]
+name = "html-escape"
+version = "0.2.13"
+authors = ["Magic Len <len@magiclen.org>"]
+edition = "2021"
+repository = "https://github.com/magiclen/html-escape"
+homepage = "https://magiclen.org/html-escape"
+keywords = ["html", "escape", "unescape", "encode", "decode"]
+categories = ["no-std", "encoding"]
+description = "This library is for encoding/escaping special characters in HTML and decoding/unescaping HTML entities as well."
+readme = "README.md"
+license = "MIT"
+include = ["src/**/*", "Cargo.toml", "README.md", "LICENSE", "benches/encode.rs"]
+
+[dependencies]
+utf8-width = "0.1"
+
+[dev-dependencies]
+bencher = "0.1.5"
+
+[features]
+default = ["std"]
+std = []
+
+[[bench]]
+name = "encode"
+required-features = ["std"]
+harness = false
