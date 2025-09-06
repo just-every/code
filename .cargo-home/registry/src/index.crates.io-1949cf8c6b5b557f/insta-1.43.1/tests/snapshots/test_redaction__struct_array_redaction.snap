@@ -1,0 +1,10 @@
+---
+source: insta/tests/test_redaction.rs
+expression: "vec![checkout]"
+---
+- _id: "[checkout_id]"
+  products:
+    - _id: "[product_id]"
+      product_name: "[product_name]"
+    - _id: "[product_id]"
+      product_name: "[product_name]"

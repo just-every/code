@@ -1,0 +1,104 @@
+[package]
+name = "chromiumoxide"
+version = "0.7.0"
+rust-version = "1.70"
+authors = ["Matthias Seitz <matthias.seitz@outlook.de>"]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+homepage = "https://github.com/mattsse/chromiumoxide"
+repository = "https://github.com/mattsse/chromiumoxide"
+description = "Library for interacting with a chrome instance with the chrome devtools protocol"
+keywords = ["chrome", "chromedriver", "puppeteer", "automation"]
+categories = ["web-programming", "api-bindings", "development-tools::testing"]
+
+[dependencies]
+async-tungstenite = "0.27.0"
+serde = { version = "1", features = ["derive"] }
+async-std = { version = "1.5", features = [
+    "attributes",
+    "unstable",
+], optional = true }
+futures = "0.3"
+chromiumoxide_types = { path = "chromiumoxide_types", version = "0.7" }
+chromiumoxide_cdp = { path = "chromiumoxide_cdp", version = "0.7" }
+chromiumoxide_fetcher = { path = "chromiumoxide_fetcher", version = "0.7", default-features = false, optional = true }
+serde_json = "1"
+which = "6"
+thiserror = "1"
+url = "2"
+base64 = "0.22"
+fnv = "1"
+futures-timer = "3"
+cfg-if = "1"
+tokio = { version = "1", features = [
+    "rt",
+    "rt-multi-thread",
+    "time",
+    "fs",
+    "macros",
+    "process",
+], optional = true }
+tracing = "0.1"
+pin-project-lite = "0.2"
+dunce = "1"
+bytes = { version = "1", features = ["serde"], optional = true }
+reqwest = { version = "0.12", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
+
+[dev-dependencies]
+quote = "1"
+proc-macro2 = "1"
+chrono = "0.4.1"
+tracing-subscriber = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "time", "macros"] }
+
+[features]
+default = ["async-std-runtime", "bytes"]
+async-std-runtime = ["async-std", "async-tungstenite/async-std-runtime"]
+tokio-runtime = ["tokio", "async-tungstenite/tokio-runtime"]
+fetcher = []
+bytes = ["dep:bytes"]
+serde0 = []
+
+# Temporary features until cargo weak dependencies bug is fixed
+# See https://github.com/rust-lang/cargo/issues/10801
+_fetcher-rustls-async-std = ["fetcher", "chromiumoxide_fetcher/_rustls-async-std"]
+_fetcher-rusttls-tokio = ["fetcher", "chromiumoxide_fetcher/_rustls-tokio"]
+_fetcher-native-async-std = ["fetcher", "chromiumoxide_fetcher/_native-async-std"]
+_fetcher-native-tokio = ["fetcher", "chromiumoxide_fetcher/_native-tokio"]
+
+[[example]]
+name = "wiki-tokio"
+required-features = ["tokio-runtime"]
+
+[[example]]
+name = "iframe-workaround"
+required-features = ["tokio-runtime", "tokio"]
+
+[[example]]
+name = "storage-cookie"
+required-features = ["tokio-runtime"]
+
+
+[[example]]
+name = "httpfuture"
+required-features = ["tokio-runtime"]
+
+[[example]]
+name = "fetcher"
+required-features = ["_fetcher-native-async-std"]
+
+[[example]]
+name = "fetcher-tokio"
+required-features = ["tokio-runtime", "_fetcher-native-tokio"]
+
+[workspace]
+members = [
+    "chromiumoxide_pdl",
+    "chromiumoxide_types",
+    "chromiumoxide_cdp",
+    "chromiumoxide_fetcher",
+]

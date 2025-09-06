@@ -624,6 +624,12 @@ impl App<'_> {
                         widget.register_pasted_image(placeholder, path);
                     }
                 }
+                AppEvent::CancelRunningTask => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        // Mirror Esc/interrupt behavior: stop the running task immediately.
+                        let _ = widget.on_ctrl_c();
+                    }
+                }
                 AppEvent::CodexEvent(event) => {
                     self.dispatch_codex_event(event);
                 }
