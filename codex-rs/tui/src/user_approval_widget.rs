@@ -298,6 +298,12 @@ impl UserApprovalWidget<'_> {
         lines.push(Line::from(""));
         self.app_event_tx.send(AppEvent::InsertHistory(lines));
 
+        // If the user explicitly aborted, immediately cancel the running task in the UI
+        // so spinners/status stop without requiring a second Ctrl+C.
+        if matches!(decision, ReviewDecision::Abort) {
+            self.app_event_tx.send(AppEvent::CancelRunningTask);
+        }
+
         let op = match &self.approval_request {
             ApprovalRequest::Exec { id, .. } => Op::ExecApproval {
                 id: id.clone(),

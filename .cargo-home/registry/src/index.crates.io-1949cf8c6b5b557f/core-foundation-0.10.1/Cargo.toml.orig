@@ -1,0 +1,35 @@
+[package]
+name = "core-foundation"
+description = "Bindings to Core Foundation for macOS"
+version = "0.10.1"
+
+categories = ["os::macos-apis"]
+keywords = ["macos", "framework", "objc"]
+
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+default-target = "x86_64-apple-darwin"
+
+[lints]
+workspace = true
+
+[dependencies]
+core-foundation-sys.workspace = true
+
+libc = "0.2"
+uuid = { version = "1", optional = true }
+
+[features]
+default = ["link"]
+
+mac_os_10_7_support = ["core-foundation-sys/mac_os_10_7_support"] # backwards compatibility
+mac_os_10_8_features = ["core-foundation-sys/mac_os_10_8_features"] # enables new features
+with-uuid = ["dep:uuid"]
+# Disable to manually link. Enabled by default.
+link = ["core-foundation-sys/link"]

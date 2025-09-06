@@ -137,5 +137,10 @@ pub(crate) enum AppEvent {
     /// Register an image placeholder inserted by the composer with its backing path
     /// so ChatWidget can resolve it to a LocalImage on submit.
     RegisterPastedImage { placeholder: String, path: PathBuf },
+
+    /// Immediately cancel any running task in the UI (equivalent to Esc/interrupt).
+    /// This is used by the approval modal when a user explicitly declines with
+    /// an abort decision so the bottom status and running indicators stop at once.
+    CancelRunningTask,
     
 }
