@@ -1,0 +1,5 @@
+---
+source: insta/tests/test_inline.rs
+expression: "\"Testing-thread-2\""
+---
+Testing-thread-2

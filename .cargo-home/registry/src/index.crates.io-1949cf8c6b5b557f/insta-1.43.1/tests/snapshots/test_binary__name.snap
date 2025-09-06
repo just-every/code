@@ -1,0 +1,6 @@
+---
+source: insta/tests/test_binary.rs
+expression: "b\"null\".to_vec()"
+extension: json
+snapshot_kind: binary
+---

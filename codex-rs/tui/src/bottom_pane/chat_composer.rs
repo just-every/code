@@ -1072,16 +1072,15 @@ impl ChatComposer {
                 (InputResult::None, false)
             }
             // -------------------------------------------------------------
-            // Up/Down key handling - check modifiers to determine action
+            // Up/Down key handling - prefer history when appropriate
             // -------------------------------------------------------------
             KeyEvent {
                 code: KeyCode::Up | KeyCode::Down,
                 modifiers,
                 ..
             } => {
-                // Check if Shift is held for history navigation
+                // First, if Shift is held, always attempt history navigation.
                 if modifiers.contains(KeyModifiers::SHIFT) {
-                    // History navigation with Shift+Up/Down
                     if self
                         .history
                         .should_handle_navigation(self.textarea.text(), self.textarea.cursor())
@@ -1099,47 +1098,70 @@ impl ChatComposer {
                             return (InputResult::None, true);
                         }
                     }
-                    // If history navigation didn't happen, just ignore the key
-                    (InputResult::None, false)
-                } else {
-                    // No Shift modifier — move cursor within the input first.
-                    // Only when already at the top-left/bottom-right should Up/Down scroll chat.
-                    if self.textarea.is_empty() {
-                        return match key_event.code {
-                            KeyCode::Up => (InputResult::ScrollUp, false),
-                            KeyCode::Down => (InputResult::ScrollDown, false),
-                            _ => (InputResult::None, false),
-                        };
-                    }
+                    // If history navigation didn't happen, ignore the key.
+                    return (InputResult::None, false);
+                }
 
-                    let before = self.textarea.cursor();
-                    let len = self.textarea.text().len();
-                    match key_event.code {
-                        KeyCode::Up => {
-                            if before == 0 {
-                                (InputResult::ScrollUp, false)
-                            } else {
-                                // Move up a visual/logical line; if already on first line, TextArea moves to start.
-                                self.textarea.input(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-                                (InputResult::None, true)
-                            }
-                        }
-                        KeyCode::Down => {
-                            // If sticky is set, prefer chat ScrollDown once
-                            if self.next_down_scrolls_history {
-                                self.next_down_scrolls_history = false;
-                                return (InputResult::ScrollDown, false);
-                            }
-                            if before == len {
-                                (InputResult::ScrollDown, false)
-                            } else {
-                                // Move down a visual/logical line; if already on last line, TextArea moves to end.
-                                self.textarea.input(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-                                (InputResult::None, true)
-                            }
-                        }
-                        _ => (InputResult::None, false),
+                // No Shift modifier — prefer history navigation when appropriate
+                if self
+                    .history
+                    .should_handle_navigation(self.textarea.text(), self.textarea.cursor())
+                {
+                    let replace_text = match key_event.code {
+                        KeyCode::Up => self
+                            .history
+                            .navigate_up(self.textarea.text(), &self.app_event_tx),
+                        KeyCode::Down => self.history.navigate_down(&self.app_event_tx),
+                        _ => None,
+                    };
+                    if let Some(text) = replace_text {
+                        self.textarea.set_text(&text);
+                        self.textarea.set_cursor(0);
+                        return (InputResult::None, true);
                     }
+                    // If we're actively browsing but had no replacement (e.g., waiting on async fetch),
+                    // consume the key to avoid inadvertently scrolling the chat.
+                    if self.history.is_browsing() {
+                        return (InputResult::None, false);
+                    }
+                }
+
+                // Fallback: move cursor within input or scroll chat at boundaries.
+                if self.textarea.is_empty() {
+                    return match key_event.code {
+                        KeyCode::Up => (InputResult::ScrollUp, false),
+                        KeyCode::Down => (InputResult::ScrollDown, false),
+                        _ => (InputResult::None, false),
+                    };
+                }
+
+                let before = self.textarea.cursor();
+                let len = self.textarea.text().len();
+                match key_event.code {
+                    KeyCode::Up => {
+                        if before == 0 {
+                            (InputResult::ScrollUp, false)
+                        } else {
+                            // Move up a visual/logical line; if already on first line, TextArea moves to start.
+                            self.textarea.input(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+                            (InputResult::None, true)
+                        }
+                    }
+                    KeyCode::Down => {
+                        // If sticky is set, prefer chat ScrollDown once
+                        if self.next_down_scrolls_history {
+                            self.next_down_scrolls_history = false;
+                            return (InputResult::ScrollDown, false);
+                        }
+                        if before == len {
+                            (InputResult::ScrollDown, false)
+                        } else {
+                            // Move down a visual/logical line; if already on last line, TextArea moves to end.
+                            self.textarea.input(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+                            (InputResult::None, true)
+                        }
+                    }
+                    _ => (InputResult::None, false),
                 }
             }
             KeyEvent {
