@@ -1,0 +1,6 @@
+---
+source: tests/test_redaction.rs
+expression: "&User {\n        id: 44,\n        username: \"julius_csv\".to_string(),\n        email: Email(\"julius@example.com\".to_string()),\n        extra: \"\".to_string(),\n    }"
+---
+id,username,email,extra
+[id],julius_csv,julius@example.com,

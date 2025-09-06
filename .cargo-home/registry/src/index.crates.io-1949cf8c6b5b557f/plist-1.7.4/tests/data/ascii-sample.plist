@@ -1,0 +1,9 @@
+/* Sample from GNUStep: http://wiki.gnustep.org/index.php?title=Property_Lists */
+{
+   KeyName1 = /* embedded comment */ Value1;
+   AnotherKeyName = "Value2";
+   // This should be ignored. Ignored = "Not in here"
+   Something = ( "ArrayItem1", "ArrayItem2", "ArrayItem3" );
+   Key4 = 0.10;  // Line Comment
+   KeyFive = { Dictionary2Key1 = "Something"; AnotherKey = "Somethingelse"; };
+}

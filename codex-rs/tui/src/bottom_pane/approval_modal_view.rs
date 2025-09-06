@@ -5,6 +5,7 @@ use ratatui::widgets::WidgetRef;
 
 use crate::app_event_sender::AppEventSender;
 use crate::user_approval_widget::ApprovalRequest;
+use codex_core::protocol::ReviewDecision;
 use crate::user_approval_widget::UserApprovalWidget;
 
 use super::BottomPane;
@@ -18,7 +19,7 @@ pub(crate) struct ApprovalModalView<'a> {
     app_event_tx: AppEventSender,
 }
 
-impl ApprovalModalView<'_> {
+impl<'a> ApprovalModalView<'a> {
     pub fn new(request: ApprovalRequest, app_event_tx: AppEventSender) -> Self {
         Self {
             current: UserApprovalWidget::new(request, app_event_tx.clone()),
@@ -31,25 +32,40 @@ impl ApprovalModalView<'_> {
         self.queue.push(req);
     }
 
-    /// Advance to next request if the current one is finished.
-    fn maybe_advance(&mut self) {
+    /// Advance to next request if the current one is finished. If the
+    /// current decision was Abort and there are no further queued
+    /// approvals, immediately clear the running status so the user can
+    /// continue without needing an extra Ctrl-C.
+    fn maybe_advance(&mut self, pane: &mut BottomPane<'a>) {
         if self.current.is_complete() {
+            let last = self.current.last_decision();
             if let Some(req) = self.queue.pop() {
-            self.current = UserApprovalWidget::new(req, self.app_event_tx.clone());
-        }
+                self.current = UserApprovalWidget::new(req, self.app_event_tx.clone());
+            } else if matches!(last, Some(ReviewDecision::Abort)) {
+                // Locally drop the running indicator so the UI becomes idle
+                // immediately after an Abort decision. Core also receives the
+                // decision and will perform cleanup on its side.
+                pane.set_task_running(false);
+                pane.clear_ctrl_c_quit_hint();
+                pane.update_status_text(String::new());
+            }
         }
     }
 }
 
 impl<'a> BottomPaneView<'a> for ApprovalModalView<'a> {
-    fn handle_key_event(&mut self, _pane: &mut BottomPane<'a>, key_event: KeyEvent) {
+    fn handle_key_event(&mut self, pane: &mut BottomPane<'a>, key_event: KeyEvent) {
         self.current.handle_key_event(key_event);
-        self.maybe_advance();
+        self.maybe_advance(pane);
     }
 
-    fn on_ctrl_c(&mut self, _pane: &mut BottomPane<'a>) -> CancellationEvent {
+    fn on_ctrl_c(&mut self, pane: &mut BottomPane<'a>) -> CancellationEvent {
         self.current.on_ctrl_c();
         self.queue.clear();
+        // Mirror Abort behavior for immediate UX: clear running state now.
+        pane.set_task_running(false);
+        pane.clear_ctrl_c_quit_hint();
+        pane.update_status_text(String::new());
         CancellationEvent::Handled
     }
 

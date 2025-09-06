@@ -1,0 +1,7 @@
+---
+source: tests/glob_submodule/mod.rs
+expression: "&contents"
+input_file: tests/inputs-nested/a/file.txt
+---
+Hello A
+

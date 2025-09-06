@@ -107,6 +107,11 @@ pub(crate) struct UserApprovalWidget<'a> {
     /// Set to `true` once a decision has been sent – the parent view can then
     /// remove this widget from its queue.
     done: bool,
+
+    /// Most recent decision sent to the core (if any). Used by the
+    /// container view to optionally adjust UI state immediately for
+    /// Abort decisions without waiting for backend signals.
+    last_decision: Option<ReviewDecision>,
 }
 
 impl UserApprovalWidget<'_> {
@@ -165,6 +170,7 @@ impl UserApprovalWidget<'_> {
             confirmation_prompt,
             selected_option: 0,
             done: false,
+            last_decision: None,
         }
     }
 
@@ -234,6 +240,7 @@ impl UserApprovalWidget<'_> {
     }
 
     fn send_decision_with_feedback(&mut self, decision: ReviewDecision, feedback: String) {
+        self.last_decision = Some(decision);
         let mut lines: Vec<Line<'static>> = Vec::new();
         match &self.approval_request {
             ApprovalRequest::Exec { command, .. } => {
@@ -317,6 +324,11 @@ impl UserApprovalWidget<'_> {
     /// longer needs to be displayed.
     pub(crate) fn is_complete(&self) -> bool {
         self.done
+    }
+
+    /// Returns the most recent decision made by the user, if any.
+    pub(crate) fn last_decision(&self) -> Option<ReviewDecision> {
+        self.last_decision
     }
 
     pub(crate) fn desired_height(&self, width: u16) -> u16 {
