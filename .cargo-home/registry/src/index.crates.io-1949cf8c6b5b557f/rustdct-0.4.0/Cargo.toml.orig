@@ -1,0 +1,20 @@
+[package]
+name = "rustdct"
+version = "0.4.0"
+authors = ["Elliott Mahler <join.together at gmail>"]
+
+description = "Compute Discrete Cosine Transforms (DCT) of any size in O(nlogn) time, in pure Rust."
+
+repository = "https://github.com/ejmahler/rust_dct"
+documentation = "https://docs.rs/rustdct/"
+readme = "README.md"
+
+keywords = ["dct", "mdct", "discrete", "cosine", "transform"]
+categories = ["algorithms", "compression", "multimedia::encoding", "science"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+rustfft = "^3"
+
+[dev-dependencies]
+rand = "~0.4"

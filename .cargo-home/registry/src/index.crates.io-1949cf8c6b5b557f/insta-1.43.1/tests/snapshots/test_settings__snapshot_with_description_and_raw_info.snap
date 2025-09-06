@@ -1,0 +1,18 @@
+---
+source: insta/tests/test_settings.rs
+description: The snapshot is four integers
+expression: "vec![1, 2, 3, 4]"
+info:
+  env:
+    - ENVIRONMENT
+    - production
+  cmdline:
+    - my-tool
+    - run
+---
+[
+    1,
+    2,
+    3,
+    4,
+]

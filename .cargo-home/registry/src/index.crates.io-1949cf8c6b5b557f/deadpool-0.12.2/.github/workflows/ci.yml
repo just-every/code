@@ -1,0 +1,284 @@
+name: CI
+
+on:
+  push:
+    branches: [ "master" ]
+    tags: [ "deadpool-*" ]
+  pull_request:
+    branches: [ "master" ]
+
+env:
+  RUST_BACKTRACE: 1
+
+jobs:
+
+  ##########################
+  # Linting and formatting #
+  ##########################
+
+  clippy:
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - deadpool-runtime
+          - deadpool-sync
+          - deadpool
+          - deadpool-diesel
+          - deadpool-lapin
+          - deadpool-memcached
+          - deadpool-postgres
+          - deadpool-r2d2
+          - deadpool-redis
+          - deadpool-sqlite
+          # Examples
+          - example-postgres-actix-web
+          - example-postgres-benchmark
+          - example-postgres-hyper
+          - example-redis-actix-web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          components: clippy
+
+      - run: cargo clippy -p ${{ matrix.crate }} --no-deps --all-features -- -D warnings
+
+  rustfmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          components: rustfmt
+
+      - run: cargo fmt --all --check
+
+
+
+
+  ###########
+  # Testing #
+  ###########
+
+  check-deadpool:
+    name: Check deadpool
+    strategy:
+      fail-fast: false
+      matrix:
+        feature1:
+          - managed
+          - unmanaged
+        feature2:
+          - rt_tokio_1
+          - rt_async-std_1
+          - serde
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+
+      - run: cargo check -p deadpool
+          --no-default-features
+          --features ${{ matrix.feature1 }},${{ matrix.feature2 }}
+
+  check-integration:
+    name: Check integration
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - diesel
+          - lapin
+          - postgres
+          - redis
+          - sqlite
+        feature:
+          - rt_tokio_1
+          - rt_async-std_1
+          - serde
+        include: # additional inclusions for matrix
+          - crate: diesel
+            feature: mysql
+          - crate: diesel
+            feature: postgres
+          - crate: diesel
+            feature: sqlite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+
+      # We don't use `--no-default-features` here as integration crates don't
+      # work with it at all.
+      - run: cargo check -p deadpool-${{ matrix.crate }}
+          --features ${{ matrix.feature }}
+
+  check-integration-wasm:
+    name: Check integration (WebAssembly)
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - postgres
+        feature:
+          - --features rt_tokio_1
+          - --features serde --features rt_tokio_1
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          target: wasm32-unknown-unknown
+
+      - run: cargo check -p deadpool-${{ matrix.crate }}
+          --no-default-features
+          ${{ matrix.feature }}
+          --target wasm32-unknown-unknown
+
+  msrv:
+    name: MSRV
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { crate: deadpool-runtime, msrv: '1.75.0' }
+          - { crate: deadpool-sync, msrv: '1.75.0' }
+          - { crate: deadpool, msrv: '1.75.0' }
+          # Disable Diesel MSRV check as it keeps failing for no obvious reason.
+          #- { crate: deadpool-diesel, msrv: '1.78.0' }
+          - { crate: deadpool-lapin, msrv: '1.75.0' }
+          - { crate: deadpool-postgres, msrv: '1.75.0' }
+          - { crate: deadpool-redis, msrv: '1.75.0' }
+          - { crate: deadpool-sqlite, msrv: '1.77.0' }
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: nightly
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: ${{ matrix.msrv }}
+          override: true
+
+      - run: cargo +nightly update -Z minimal-versions
+
+      - run: cargo check -p ${{ matrix.crate }} --all-features
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - deadpool-runtime
+          - deadpool-sync
+          - deadpool
+          - deadpool-diesel
+          - deadpool-lapin
+          - deadpool-postgres
+          - deadpool-redis
+          - deadpool-sqlite
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15.3-alpine
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_USER: deadpool
+          POSTGRES_PASSWORD: deadpool
+          POSTGRES_DB: deadpool
+        # Health checks to wait until Postgres has started.
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis-sentinel:
+        image: 'bitnami/redis-sentinel:latest'
+        env:
+          ALLOW_EMPTY_PASSWORD: yes
+        ports:
+          - 26379:26379
+      redis:
+        image: redis:7.0-alpine
+        ports:
+          - 6379:6379
+      redis-cluster:
+        image: grokzen/redis-cluster:7.0.10
+        ports:
+          - 7000-7005:7000-7005
+      rabbitmq:
+        image: rabbitmq:3.11-alpine
+        ports:
+          - 5672:5672
+        env:
+          RABBITMQ_DEFAULT_USER: deadpool
+          RABBITMQ_DEFAULT_PASS: deadpool
+          RABBITMQ_DEFAULT_VHOST: deadpool
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+
+      - run: cargo test -p ${{ matrix.crate }} --all-features
+        env:
+          PG__HOST: 127.0.0.1
+          PG__PORT: 5432
+          PG__USER: deadpool
+          PG__PASSWORD: deadpool
+          PG__DBNAME: deadpool
+          REDIS__URL: redis://127.0.0.1/
+          REDIS_SENTINEL__URLS: redis://127.0.0.1:26379
+          REDIS_SENTINEL__SERVER_TYPE: "master"
+          REDIS_SENTINEL__MASTER_NAME: "mymaster"
+          REDIS_CLUSTER__URLS: redis://127.0.0.1:7000,redis://127.0.0.1:7001
+          AMQP__URL: amqp://deadpool:deadpool@127.0.0.1/deadpool
+
+
+
+
+  ############
+  # Building #
+  ############
+
+  rustdoc:
+    name: Docs
+    strategy:
+      matrix:
+        crate:
+          - deadpool-runtime
+          - deadpool-sync
+          - deadpool
+          - deadpool-diesel
+          - deadpool-lapin
+          - deadpool-postgres
+          - deadpool-redis
+          - deadpool-sqlite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+
+      - run: cargo doc -p ${{ matrix.crate }} --no-deps --all-features
