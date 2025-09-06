@@ -1,0 +1,12 @@
+---
+source: insta/tests/test_redaction.rs
+expression: "&complex_obj"
+---
+id: "[id]"
+items:
+  - one
+  - two
+  - three
+metadata:
+  count: 42
+  version: 123

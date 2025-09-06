@@ -1,0 +1,43 @@
+[package]
+name = "markup5ever_rcdom"
+version = "0.5.3-unofficial"
+authors = [ "The html5ever Project Developers" ]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/servo/html5ever"
+description = "Basic, unsupported DOM structure for use by tests in html5ever/xml5ever"
+readme = "README.md"
+documentation = "https://docs.rs/markup5ever_rcdom"
+categories = [ "parser-implementations", "web-programming" ]
+edition = "2021"
+publish = true
+exclude = ["tests", "*-tests"]
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+tendril = "0.4"
+html5ever = { version = "0.31", path = "../html5ever" }
+markup5ever = { version = "0.16", path = "../markup5ever" }
+xml5ever = { version = "0.22", path = "../xml5ever" }
+
+[dev-dependencies]
+libtest-mimic = "0.8.1"
+serde_json = "1.0"
+env_logger = "0.10"
+
+[[test]]
+name = "html-tokenizer"
+harness = false
+
+[[test]]
+name = "html-tree-builder"
+harness = false
+
+[[test]]
+name = "xml-tree-builder"
+harness = false
+
+[[test]]
+name = "xml-tokenizer"
+harness = false

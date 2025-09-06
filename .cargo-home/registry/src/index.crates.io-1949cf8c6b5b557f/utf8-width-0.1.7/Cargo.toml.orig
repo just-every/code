@@ -1,0 +1,22 @@
+[package]
+name = "utf8-width"
+version = "0.1.7"
+authors = ["Magic Len <len@magiclen.org>"]
+edition = "2021"
+rust-version = "1.56"
+repository = "https://github.com/magiclen/utf8-width"
+homepage = "https://magiclen.org/utf8-width"
+keywords = ["utf-8", "width", "length", "character"]
+categories = ["no-std", "encoding"]
+description = "To determine the width of a UTF-8 character by providing its first byte."
+license = "MIT"
+include = ["src/**/*", "Cargo.toml", "README.md", "LICENSE", "benches/bench.rs"]
+
+[dependencies]
+
+[dev-dependencies]
+bencher = "0.1.5"
+
+[[bench]]
+name = "bench"
+harness = false
