@@ -126,7 +126,7 @@ fi
 # Ensure Cargo writes inside the workspace when running under sandboxes that
 # make $HOME read-only (e.g. CI workspace-write). Allow explicit overrides.
 if [ -z "${CARGO_HOME:-}" ]; then
-  export CARGO_HOME="${REPO_ROOT}/.cargo-home"
+  export CARGO_HOME="${SCRIPT_DIR}/.cargo-home"
 fi
 if [ -z "${CARGO_TARGET_DIR:-}" ]; then
   export CARGO_TARGET_DIR="${SCRIPT_DIR}/codex-rs/target"
