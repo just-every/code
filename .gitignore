@@ -42,6 +42,7 @@ codex-cli/bin/*-windows-*
 # Rust build artifacts
 /codex-rs/target/
 **/*.rs.bk
+/.cargo-home/
 
 # Release and CI scratch
 /.code-bin/
