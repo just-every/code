@@ -1,0 +1,38 @@
+[package]
+name = "io-uring"
+version = "0.7.10"
+authors = ["quininer <quininer@live.com>"]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/tokio-rs/io-uring"
+homepage = "https://github.com/tokio-rs/io-uring"
+documentation = "https://docs.rs/io-uring"
+description = "The low-level `io_uring` userspace interface for Rust"
+categories = [ "asynchronous", "network-programming", "filesystem" ]
+rust-version = "1.63"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[workspace]
+exclude = []
+members = [ "io-uring-test", "io-uring-bench" ]
+
+[features]
+overwrite = [ "bindgen" ]
+direct-syscall = [ "sc" ]
+io_safety = []
+
+[dependencies]
+bitflags = "2"
+cfg-if = "1"
+
+libc = { version = "0.2.98", default-features = false }
+sc = { version = "0.2", optional = true }
+
+[build-dependencies]
+bindgen = { version = "0.69", optional = true }
+
+[dev-dependencies]
+anyhow = "1"
+socket2 = "0.5"
+slab = "0.4"

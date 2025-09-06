@@ -1,0 +1,4 @@
+/target
+/download
+Cargo.lock
+.idea/

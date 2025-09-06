@@ -1,0 +1,8 @@
+version: 2
+updates:
+  # Check for updates of github actions every month; we don't check for rust
+  # packages because that's mostly a nuisance, and covered by cargo update.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: monthly

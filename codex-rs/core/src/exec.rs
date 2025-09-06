@@ -181,9 +181,14 @@ fn is_likely_sandbox_denied(sandbox_type: SandboxType, exit_code: i32) -> bool {
     }
 
     // Quick rejects: well-known non-sandbox shell exit codes
-    // 127: command not found, 2: misuse of shell builtins
-    if exit_code == 127 {
-        return false;
+    // 1: generic error (e.g., rg/grep no matches)
+    // 2: misuse of shell builtins / general usage error
+    // 126: command found but is not executable
+    // 127: command not found
+    // These are common and should not be treated as sandbox denials.
+    match exit_code {
+        1 | 2 | 126 | 127 => return false,
+        _ => {}
     }
 
     // For all other cases, we assume the sandbox is the cause
