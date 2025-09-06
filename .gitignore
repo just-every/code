@@ -57,6 +57,7 @@ actions-runner/
 
 # caches
 .cache/
+.cargo-home/
 .turbo/
 .parcel-cache/
 .eslintcache
