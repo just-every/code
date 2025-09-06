@@ -1,0 +1,5 @@
+target
+*.log
+*.rs.rustfmt
+.gdb_history
+.idea/

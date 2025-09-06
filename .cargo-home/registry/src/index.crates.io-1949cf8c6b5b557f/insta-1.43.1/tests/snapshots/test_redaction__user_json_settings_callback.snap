@@ -1,0 +1,10 @@
+---
+source: insta/tests/test_redaction.rs
+expression: "&User\n{\n    id: 1234, username: \"jason_doe\".to_string(), email:\n    Email(\"jason@example.com\".to_string()), extra: \"extra here\".to_string(),\n}"
+---
+{
+  "id": "[id]",
+  "username": "jason_doe",
+  "email": "jason@example.com",
+  "extra": "extra here"
+}
