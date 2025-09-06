@@ -1,0 +1,5 @@
+---
+source: insta/tests/test_advanced.rs
+expression: "&value"
+---
+2
