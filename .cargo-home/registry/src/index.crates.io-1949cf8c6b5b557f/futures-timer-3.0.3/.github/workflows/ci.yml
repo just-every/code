@@ -1,0 +1,72 @@
+name: CI
+on: [push, pull_request]
+
+# env:
+#   RUSTFLAGS: -Dwarnings
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust:
+          - stable
+    steps:
+      - uses: actions/checkout@master
+      - name: Install Rust
+        run: rustup update ${{ matrix.rust }} && rustup default ${{ matrix.rust }}
+      - name: cargo test
+        run: cargo test
+      - name: cargo doc
+        run: cargo doc --no-deps
+
+  style:
+    name: Style
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        component:
+          - rustfmt
+    steps:
+      - uses: actions/checkout@master
+      - name: Install Rust
+        shell: bash
+        run: rustup update stable && rustup default stable
+      - name: Install component
+        shell: bash
+        run: rustup component add ${{ matrix.component }}
+      - name: cargo fmt
+        if: matrix.component == 'rustfmt'
+        run: cargo fmt -- --check
+
+  publish_docs:
+    name: Publish Documentation
+    needs: [style, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@master
+      - name: Install Rust
+        run: rustup update stable && rustup default stable
+      - name: Build documentation
+        run: cargo doc --no-deps --all-features
+      - name: Publish documentation
+        run: |
+          cd target/doc
+          git init
+          git add .
+          git -c user.name='ci' -c user.email='ci' commit -m 'Deploy futures-timer API documentation'
+          git push -f -q https://git:${{ secrets.github_token }}@github.com/${{ github.repository }} HEAD:gh-pages
+        if: github.event_name == 'push' && github.event.ref == 'refs/heads/master' && github.repository == 'async-rs/futures-timer'
+
+  check_wasm:
+    name: Check Wasm
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@master
+      - name: Install Rust and add wasm target
+        run: rustup update stable && rustup target add wasm32-unknown-unknown
+      - name: cargo check
+        run: cargo check --target wasm32-unknown-unknown --features wasm-bindgen

@@ -1,0 +1,7 @@
+---
+source: insta/tests/test_basic.rs
+expression: "vec![1, 2, 3]"
+---
+- 1
+- 2
+- 3
