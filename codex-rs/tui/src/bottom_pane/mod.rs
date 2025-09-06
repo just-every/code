@@ -32,6 +32,7 @@ pub mod resume_selection_view;
 mod textarea;
 mod theme_selection_view;
 mod verbosity_selection_view;
+mod help_overlay;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CancellationEvent {
@@ -395,6 +396,15 @@ impl BottomPane<'_> {
     /// Show the theme selection UI
     pub fn show_theme_selection(&mut self, current_theme: ThemeName) {
         let view = ThemeSelectionView::new(current_theme, self.app_event_tx.clone());
+        self.active_view = Some(Box::new(view));
+        // Status shown in composer title now
+        self.status_view_active = false;
+        self.request_redraw()
+    }
+
+    /// Show the help/keys overlay
+    pub fn show_help_overlay(&mut self) {
+        let view = help_overlay::HelpOverlayView::new();
         self.active_view = Some(Box::new(view));
         // Status shown in composer title now
         self.status_view_active = false;

@@ -1,0 +1,6 @@
+---
+source: tests/test_glob.rs
+expression: "&contents"
+input_file: tests/inputs/hello.txt
+---
+"Contents of hello"

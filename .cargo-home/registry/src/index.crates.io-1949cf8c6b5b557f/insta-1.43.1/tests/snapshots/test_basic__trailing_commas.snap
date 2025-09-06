@@ -1,0 +1,5 @@
+---
+source: insta/tests/test_basic.rs
+expression: "\"Testing\""
+---
+Testing

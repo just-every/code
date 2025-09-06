@@ -1,0 +1,8 @@
+---
+source: insta/tests/test_redaction.rs
+expression: "&MyPoint { x: 1.0 / 3.0, y: 6.0 / 3.0, }"
+---
+{
+  "x": 0.3333,
+  "y": 2.0
+}

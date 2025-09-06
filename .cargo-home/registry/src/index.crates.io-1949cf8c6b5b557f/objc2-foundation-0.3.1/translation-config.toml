@@ -1,0 +1,472 @@
+framework = "Foundation"
+crate = "objc2-foundation"
+required-crates = ["objc2"]
+custom-lib-rs = true
+macos = "10.0"
+maccatalyst = "13.0"
+ios = "2.0"
+tvos = "9.0"
+watchos = "2.0"
+visionos = "1.0"
+gnustep = true
+
+# FIXME: Avoid the need for this
+external.NSImage.module = "AppKit.NSImage"
+external.NSPortMessage.module = "Foundation.NSPortMessage"
+
+# ns_consumed / NS_RELEASES_ARGUMENT / cf_consumed / CF_CONSUMED
+fn.CFBridgingRelease.skipped = true
+fn.CFBridgingRetain.skipped = true
+fn.NSMakeCollectable.skipped = true
+fn.NSFreeMapTable.skipped = true
+protocol.NSKeyedUnarchiverDelegate.methods."unarchiver:didDecodeObject:".skipped = true
+
+# ns_consumes_self / NS_REPLACES_RECEIVER
+class.NSObject.methods."awakeAfterUsingCoder:".skipped = true
+
+# Uses `NSArray<void (^)(void)>`, which is difficult to handle
+class.NSBlockOperation.methods.executionBlocks.skipped = true
+
+# These use `Class<NSItemProvider...>`, which is unsupported
+class.NSItemProvider.methods."registerObjectOfClass:visibility:loadHandler:".skipped = true
+class.NSItemProvider.methods."canLoadObjectOfClass:".skipped = true
+class.NSItemProvider.methods."loadObjectOfClass:completionHandler:".skipped = true
+
+# Has `error:` parameter, but returns NSInteger (where 0 means error)
+class.NSJSONSerialization.methods."writeJSONObject:toStream:options:error:".skipped = true
+class.NSPropertyListSerialization.methods."writePropertyList:toStream:format:options:error:".skipped = true
+
+# Not supported on clang 11.0.0
+class.NSBundle.methods."localizedAttributedStringForKey:value:table:".skipped = true
+
+# Root class, defined in `objc2` for now
+class.NSProxy.skipped = true
+
+# Defined in `objc2` instead
+struct._NSZone.skipped = true
+typedef.NSZone.skipped = true
+
+# Contains bitfields
+struct.NSDecimal.skipped = true
+
+# Uses `c_ulong` which means we need to specify the encoding manually.
+struct.NSFastEnumerationState.skipped = true
+
+# Overridden fmt::Debug because it's prettier
+class.NSData.derives = "PartialEq, Eq, Hash"
+class.NSError.derives = "PartialEq, Eq, Hash"
+class.NSException.derives = "PartialEq, Eq, Hash"
+class.NSProcessInfo.derives = "PartialEq, Eq, Hash"
+class.NSString.derives = "PartialEq, Eq, Hash"
+class.NSUUID.derives = "PartialEq, Eq, Hash"
+class.NSArray.derives = "PartialEq, Eq, Hash"
+class.NSMutableArray.derives = "PartialEq, Eq, Hash"
+class.NSDictionary.derives = "PartialEq, Eq, Hash"
+class.NSMutableDictionary.derives = "PartialEq, Eq, Hash"
+class.NSSet.derives = "PartialEq, Eq, Hash"
+class.NSMutableSet.derives = "PartialEq, Eq, Hash"
+class.NSCountedSet.derives = "PartialEq, Eq, Hash"
+
+# Overridden to use more performant implementation for `PartialEq`
+class.NSValue.derives = ""
+class.NSNumber.derives = ""
+
+# Returns `nil` on Apple and GNUStep throws an exception on all other messages
+# to this invalid instance.
+class.NSValue.methods.init.skipped = true
+class.NSValue.methods.new.skipped = true
+class.NSNumber.methods.init.skipped = true
+class.NSNumber.methods.new.skipped = true
+
+# These protocol impls would return the wrong types
+class.NSSimpleCString.skipped-protocols = ["NSCopying", "NSMutableCopying"]
+class.NSConstantString.skipped-protocols = ["NSCopying", "NSMutableCopying"]
+class.NSPurgeableData.skipped-protocols = ["NSCopying", "NSMutableCopying"]
+class.NSCountedSet.skipped-protocols = ["NSCopying", "NSMutableCopying"]
+
+# Custom implementation for now
+struct._NSRange.skipped = true
+typedef.NSRange.skipped = true
+enum.NSComparisonResult.skipped = true
+
+# Different definitions on 32-bit
+typedef.NSPoint.skipped = true
+struct._NSPoint.skipped = true
+typedef.NSSize.skipped = true
+struct._NSSize.skipped = true
+typedef.NSRect.skipped = true
+struct._NSRect.skipped = true
+
+# References CGRectEdge
+enum.NSRectEdge.use-value = true
+
+# Needs us to consider Swift availability for variant naming algorithm to work properly
+enum.NSRectEdge.skipped = true
+
+# We do a custom implementation of these
+protocol.NSCopying.skipped = true
+protocol.NSMutableCopying.skipped = true
+
+# Manual definitions
+class.NSException.methods.raise.skipped = true
+class.NSData.methods.bytes.skipped = true
+class.NSMutableData.methods.length.skipped = true
+class.NSError.methods.new.skipped = true
+class.NSException.methods.new.skipped = true
+class.NSUUID.methods."initWithUUIDBytes:".skipped = true
+class.NSUUID.methods."getUUIDBytes:".skipped = true
+
+# Wrong type on GNUStep
+class.NSMutableData.methods.mutableBytes.skipped = true
+
+# Uses va_list
+class.NSAttributedString.methods."initWithFormat:options:locale:arguments:".skipped = true
+class.NSException.methods."raise:format:arguments:".skipped = true
+class.NSExpression.methods."expressionWithFormat:arguments:".skipped = true
+class.NSPredicate.methods."predicateWithFormat:arguments:".skipped = true
+class.NSString.methods."initWithFormat:arguments:".skipped = true
+class.NSString.methods."initWithFormat:locale:arguments:".skipped = true
+class.NSString.methods."initWithValidatedFormat:validFormatSpecifiers:arguments:error:".skipped = true
+class.NSString.methods."initWithValidatedFormat:validFormatSpecifiers:locale:arguments:error:".skipped = true
+class.NSAttributedString.methods."initWithFormat:options:locale:context:arguments:".skipped = true
+class.NSMutableAttributedString.methods."initWithFormat:options:locale:context:arguments:".skipped = true
+fn.NSLogv.skipped = true
+
+# Our implementation of superclass methods currently place them in the wrong
+# module, so we do this hack for now.
+class.NSMutableAttributedString.methods."initWithURL:options:documentAttributes:error:".skipped = true
+class.NSMutableAttributedString.methods."initWithData:options:documentAttributes:error:".skipped = true
+class.NSMutableAttributedString.methods."initWithRTF:documentAttributes:".skipped = true
+class.NSMutableAttributedString.methods."initWithRTFD:documentAttributes:".skipped = true
+class.NSMutableAttributedString.methods."initWithHTML:documentAttributes:".skipped = true
+class.NSMutableAttributedString.methods."initWithHTML:baseURL:documentAttributes:".skipped = true
+class.NSMutableAttributedString.methods."initWithDocFormat:documentAttributes:".skipped = true
+class.NSMutableAttributedString.methods."initWithHTML:options:documentAttributes:".skipped = true
+class.NSMutableAttributedString.methods."initWithRTFDFileWrapper:documentAttributes:".skipped = true
+class.NSMutableAttributedString.methods."initWithURL:documentAttributes:".skipped = true
+class.NSMutableAttributedString.methods."initWithPath:documentAttributes:".skipped = true
+
+# Marked as API_UNAVAILABLE in a category, so we hit the duplicate checking
+class.NSLocale.methods.init.skipped = true
+class.NSLocale.methods.new.skipped = true
+class.NSNotification.methods.init.skipped = true
+class.NSNotification.methods.new.skipped = true
+
+# Uses NSImage, which is only available in AppKit
+class.NSUserNotification.methods.contentImage.skipped = true
+class.NSUserNotification.methods."setContentImage:".skipped = true
+
+# Outlier that really should have been part of the original enum
+const.NSProprietaryStringEncoding.skipped = true
+
+# Has the wrong generic parameter
+class.NSDictionary.methods."initWithContentsOfURL:error:".skipped = true
+class.NSDictionary.methods."dictionaryWithContentsOfURL:error:".skipped = true
+
+# This duplicates the method and protocol. The added type information is not
+# enough to make it safe anyhow, we need to do manual work here anyhow.
+class.NSDictionary.categories.NSGenericFastEnumeration.skipped = true
+
+# Uses constants from CoreFoundation or similar frameworks
+enum.NSAppleEventSendOptions.use-value = true
+enum.NSCalendarUnit.use-value = true
+enum.NSDateFormatterStyle.use-value = true
+enum.NSISO8601DateFormatOptions.use-value = true
+enum.NSLocaleLanguageDirection.use-value = true
+enum.NSNumberFormatterStyle.use-value = true
+enum.NSNumberFormatterPadPosition.use-value = true
+enum.NSNumberFormatterRoundingMode.use-value = true
+enum.NSPropertyListMutabilityOptions.use-value = true
+enum.NSPropertyListFormat.use-value = true
+const.NS_UnknownByteOrder.skipped = true
+const.NS_LittleEndian.skipped = true
+const.NS_BigEndian.skipped = true
+
+# Wrong type (should be `c_double`).
+const.NSTimeIntervalSince1970.skipped = true
+
+# Uses stuff from different frameworks / system libraries
+class.NSOperationQueue.methods.underlyingQueue.skipped = true
+class.NSOperationQueue.methods."setUnderlyingQueue:".skipped = true
+class.NSURLCredential.methods."initWithIdentity:certificates:persistence:".skipped = true
+class.NSURLCredential.methods."credentialWithIdentity:certificates:persistence:".skipped = true
+class.NSURLCredential.methods."initWithTrust:".skipped = true
+class.NSURLCredential.methods."credentialForTrust:".skipped = true
+class.NSURLCredential.methods.identity.skipped = true
+class.NSURLProtectionSpace.methods.serverTrust.skipped = true
+class.NSURLSessionConfiguration.methods.TLSMinimumSupportedProtocol.skipped = true
+class.NSURLSessionConfiguration.methods."setTLSMinimumSupportedProtocol:".skipped = true
+class.NSURLSessionConfiguration.methods.TLSMaximumSupportedProtocol.skipped = true
+class.NSURLSessionConfiguration.methods."setTLSMaximumSupportedProtocol:".skipped = true
+class.NSURLSessionConfiguration.methods.TLSMinimumSupportedProtocolVersion.skipped = true
+class.NSURLSessionConfiguration.methods."setTLSMinimumSupportedProtocolVersion:".skipped = true
+class.NSURLSessionConfiguration.methods.TLSMaximumSupportedProtocolVersion.skipped = true
+class.NSURLSessionConfiguration.methods."setTLSMaximumSupportedProtocolVersion:".skipped = true
+class.NSXPCConnection.methods.auditSessionIdentifier.skipped = true
+class.NSXPCInterface.methods."setXPCType:forSelector:argumentIndex:ofReply:".skipped = true
+class.NSXPCInterface.methods."XPCTypeForSelector:argumentIndex:ofReply:".skipped = true
+class.NSXPCCoder.methods."encodeXPCObject:forKey:".skipped = true
+class.NSXPCCoder.methods."decodeXPCObjectOfType:forKey:".skipped = true
+
+# Dependent on target endianness
+fn.NSSwapBigDoubleToHost.skipped = true
+fn.NSSwapBigFloatToHost.skipped = true
+fn.NSSwapHostDoubleToBig.skipped = true
+fn.NSSwapHostFloatToBig.skipped = true
+fn.NSSwapLittleDoubleToHost.skipped = true
+fn.NSSwapLittleFloatToHost.skipped = true
+fn.NSSwapHostDoubleToLittle.skipped = true
+fn.NSSwapHostFloatToLittle.skipped = true
+
+###
+### Counterparts
+###
+
+class.NSArray.counterpart = "MutableSubclass(Foundation.NSArray.NSMutableArray)"
+class.NSMutableArray.counterpart = "ImmutableSuperclass(Foundation.NSArray.NSArray)"
+
+class.NSString.counterpart = "MutableSubclass(Foundation.NSString.NSMutableString)"
+class.NSMutableString.counterpart = "ImmutableSuperclass(Foundation.NSString.NSString)"
+
+class.NSAttributedString.counterpart = "MutableSubclass(Foundation.NSAttributedString.NSMutableAttributedString)"
+class.NSMutableAttributedString.counterpart = "ImmutableSuperclass(Foundation.NSAttributedString.NSAttributedString)"
+
+class.NSData.counterpart = "MutableSubclass(Foundation.NSData.NSMutableData)"
+class.NSMutableData.counterpart = "ImmutableSuperclass(Foundation.NSData.NSData)"
+
+# Auto traits can be deduced as if the dictionary was implemented as `(NSArray<KeyType>, NSArray<ObjectType>)`.
+class.NSDictionary.counterpart = "MutableSubclass(Foundation.NSDictionary.NSMutableDictionary)"
+class.NSMutableDictionary.counterpart = "ImmutableSuperclass(Foundation.NSDictionary.NSDictionary)"
+
+# Auto traits can be viewed as if the set was implemented with `NSArray`.
+class.NSSet.counterpart = "MutableSubclass(Foundation.NSSet.NSMutableSet)"
+class.NSMutableSet.counterpart = "ImmutableSuperclass(Foundation.NSSet.NSSet)"
+
+class.NSCharacterSet.counterpart = "MutableSubclass(Foundation.NSCharacterSet.NSMutableCharacterSet)"
+class.NSMutableCharacterSet.counterpart = "ImmutableSuperclass(Foundation.NSCharacterSet.NSCharacterSet)"
+
+# Auto traits can be viewed as if the set was implemented with `NSArray`.
+class.NSOrderedSet.counterpart = "MutableSubclass(Foundation.NSOrderedSet.NSMutableOrderedSet)"
+class.NSMutableOrderedSet.counterpart = "ImmutableSuperclass(Foundation.NSOrderedSet.NSOrderedSet)"
+
+class.NSIndexSet.counterpart = "MutableSubclass(Foundation.NSIndexSet.NSMutableIndexSet)"
+class.NSMutableIndexSet.counterpart = "ImmutableSuperclass(Foundation.NSIndexSet.NSIndexSet)"
+
+class.NSURLRequest.counterpart = "MutableSubclass(Foundation.NSURLRequest.NSMutableURLRequest)"
+class.NSMutableURLRequest.counterpart = "ImmutableSuperclass(Foundation.NSURLRequest.NSURLRequest)"
+
+# NOTE: `NSEnumerator` and subclasses should be interior mutable because
+# regardless of what kind the items it contains are, the enumerator itself is.
+#
+# However, instances of this are only safe for others to create if
+# they're ready to pass ownership to the enumerator, or if they somehow
+# add a lifetime parameter (to prevent the original collection from
+# being modified).
+#
+# So e.g. `Retained<NSMutableArray<T>> -> Retained<NSEnumerator<T>>` is safe,
+# as is `&Retained<NSArray<T: IsCloneable>> -> Retained<NSEnumerator<T>>`, and
+# so is `&'a NSArray<T: IsCloneable> -> Retained<NSEnumerator<T>> + 'a`.
+#
+# The implementation can be viewed as-if the enumerator internally retains a
+# `NSMutableArray<ObjectType>`, and removed an element from that on each
+# iteration.
+# class.NSEnumerator.senable = false
+
+###
+### Safety
+###
+
+class.NSArray.methods.init.unsafe = false
+class.NSArray.methods.new.unsafe = false
+class.NSArray.methods.count.unsafe = false
+class.NSArray.methods."objectAtIndex:".unsafe = false
+class.NSArray.methods.firstObject.unsafe = false
+class.NSArray.methods.lastObject.unsafe = false
+class.NSMutableArray.methods.init.unsafe = false
+class.NSMutableArray.methods.new.unsafe = false
+class.NSMutableArray.methods."initWithCapacity:".unsafe = false
+class.NSMutableArray.methods."insertObject:atIndex:".unsafe = false
+class.NSMutableArray.methods."removeObjectAtIndex:".unsafe = false
+class.NSMutableArray.methods."removeObject:".unsafe = false
+class.NSMutableArray.methods."addObject:".unsafe = false
+class.NSMutableArray.methods.removeLastObject.unsafe = false
+class.NSMutableArray.methods."replaceObjectAtIndex:withObject:".unsafe = false
+class.NSMutableArray.methods.removeAllObjects.unsafe = false
+# The array may not be mutated while enumerating.
+class.NSArray.methods.objectEnumerator.unsafe = true
+class.NSArray.methods.reverseObjectEnumerator.unsafe = true
+
+class.NSString.methods.init.unsafe = false
+class.NSString.methods.new.unsafe = false
+class.NSString.methods."compare:".unsafe = false
+class.NSString.methods."hasPrefix:".unsafe = false
+class.NSString.methods."hasSuffix:".unsafe = false
+# The other string is non-null, and won't be retained
+class.NSString.methods."stringByAppendingString:".unsafe = false
+class.NSString.methods."stringByAppendingPathComponent:".unsafe = false
+# Assuming `NSStringEncoding` can be made safe
+class.NSString.methods."lengthOfBytesUsingEncoding:".unsafe = false
+class.NSString.methods.length.unsafe = false
+# Safe to call, but the returned pointer may not be safe to use
+class.NSString.methods.UTF8String.unsafe = false
+class.NSString.methods."initWithString:".unsafe = false
+class.NSString.methods."stringWithString:".unsafe = false
+class.NSMutableString.methods.init.unsafe = false
+class.NSMutableString.methods.new.unsafe = false
+class.NSMutableString.methods."initWithCapacity:".unsafe = false
+class.NSMutableString.methods."stringWithCapacity:".unsafe = false
+class.NSMutableString.methods."initWithString:".unsafe = false
+class.NSMutableString.methods."stringWithString:".unsafe = false
+class.NSMutableString.methods."appendString:".unsafe = false
+class.NSMutableString.methods."setString:".unsafe = false
+fn.NSStringFromClass.unsafe = false
+
+class.NSAttributedString.methods.init.unsafe = false
+class.NSAttributedString.methods.new.unsafe = false
+class.NSAttributedString.methods."initWithString:".unsafe = false
+class.NSAttributedString.methods."initWithAttributedString:".unsafe = false
+class.NSAttributedString.methods.string.unsafe = false
+class.NSAttributedString.methods.length.unsafe = false
+class.NSMutableAttributedString.methods.init.unsafe = false
+class.NSMutableAttributedString.methods.new.unsafe = false
+class.NSMutableAttributedString.methods."initWithString:".unsafe = false
+class.NSMutableAttributedString.methods."initWithAttributedString:".unsafe = false
+class.NSMutableAttributedString.methods."setAttributedString:".unsafe = false
+
+class.NSBundle.methods.mainBundle.unsafe = false
+class.NSBundle.methods.infoDictionary.unsafe = false
+
+class.NSData.methods.init.unsafe = false
+class.NSData.methods.new.unsafe = false
+class.NSData.methods."initWithData:".unsafe = false
+class.NSData.methods."dataWithData:".unsafe = false
+class.NSData.methods.length.unsafe = false
+class.NSData.methods.bytes.unsafe = false
+class.NSMutableData.methods.init.unsafe = false
+class.NSMutableData.methods.new.unsafe = false
+class.NSMutableData.methods."dataWithData:".unsafe = false
+class.NSMutableData.methods."initWithCapacity:".unsafe = false
+class.NSMutableData.methods."dataWithCapacity:".unsafe = false
+class.NSMutableData.methods."setLength:".unsafe = false
+class.NSMutableData.methods.mutableBytes.unsafe = false
+
+class.NSDictionary.methods.init.unsafe = false
+class.NSDictionary.methods.new.unsafe = false
+class.NSDictionary.methods.count.unsafe = false
+class.NSDictionary.methods."objectForKey:".unsafe = false
+class.NSDictionary.methods.allValues.unsafe = false
+class.NSDictionary.methods.allKeys.unsafe = false
+class.NSMutableDictionary.methods.init.unsafe = false
+class.NSMutableDictionary.methods.new.unsafe = false
+class.NSMutableDictionary.methods."initWithCapacity:".unsafe = false
+class.NSMutableDictionary.methods."removeObjectForKey:".unsafe = false
+class.NSMutableDictionary.methods.removeAllObjects.unsafe = false
+# The dictionary may not be mutated while enumerating.
+class.NSDictionary.methods.keyEnumerator.unsafe = true
+class.NSDictionary.methods.objectEnumerator.unsafe = true
+
+# Enumerators are safe to use, we move unsoundness to their creation.
+class.NSEnumerator.methods.nextObject.unsafe = false
+class.NSEnumerator.methods.allObjects.unsafe = false
+
+class.NSError.methods.domain.unsafe = false
+class.NSError.methods.code.unsafe = false
+class.NSError.methods.userInfo.unsafe = false
+class.NSError.methods.localizedDescription.unsafe = false
+
+class.NSException.methods.name.unsafe = false
+class.NSException.methods.reason.unsafe = false
+class.NSException.methods.userInfo.unsafe = false
+
+class.NSLock.methods.init.unsafe = false
+class.NSLock.methods.new.unsafe = false
+class.NSLock.methods.name.unsafe = false
+class.NSLock.methods."setName:".unsafe = false
+
+class.NSUUID.methods.UUID.unsafe = false
+class.NSUUID.methods.init.unsafe = false
+class.NSUUID.methods.new.unsafe = false
+class.NSUUID.methods."initWithUUIDString:".unsafe = false
+class.NSUUID.methods.UUIDString.unsafe = false
+
+class.NSThread.methods.init.unsafe = false
+class.NSThread.methods.new.unsafe = false
+class.NSThread.methods.currentThread.unsafe = false
+class.NSThread.methods.mainThread.unsafe = false
+class.NSThread.methods.name.unsafe = false
+class.NSThread.methods.isMultiThreaded.unsafe = false
+class.NSThread.methods.isMainThread.unsafe = false
+
+class.NSProcessInfo.methods.processInfo.unsafe = false
+class.NSProcessInfo.methods.processName.unsafe = false
+class.NSProcessInfo.methods.operatingSystemVersion.unsafe = false
+
+class.NSSet.methods.init.unsafe = false
+class.NSSet.methods.new.unsafe = false
+class.NSSet.methods.count.unsafe = false
+class.NSSet.methods.anyObject.unsafe = false
+class.NSSet.methods."member:".unsafe = false
+class.NSSet.methods.allObjects.unsafe = false
+class.NSSet.methods."containsObject:".unsafe = false
+class.NSSet.methods."isSubsetOfSet:".unsafe = false
+class.NSSet.methods."intersectsSet:".unsafe = false
+class.NSMutableSet.methods.init.unsafe = false
+class.NSMutableSet.methods.new.unsafe = false
+class.NSMutableSet.methods."initWithCapacity:".unsafe = false
+class.NSMutableSet.methods."addObject:".unsafe = false
+class.NSMutableSet.methods."removeObject:".unsafe = false
+class.NSMutableSet.methods.removeAllObjects.unsafe = false
+# The set may not be mutated while enumerating.
+class.NSSet.methods.objectEnumerator.unsafe = true
+
+class.NSValue.methods.objCType.unsafe = false
+class.NSValue.methods."isEqualToValue:".unsafe = false
+
+class.NSNumber.methods."initWithChar:".unsafe = false
+class.NSNumber.methods."initWithUnsignedChar:".unsafe = false
+class.NSNumber.methods."initWithShort:".unsafe = false
+class.NSNumber.methods."initWithUnsignedShort:".unsafe = false
+class.NSNumber.methods."initWithInt:".unsafe = false
+class.NSNumber.methods."initWithUnsignedInt:".unsafe = false
+class.NSNumber.methods."initWithLong:".unsafe = false
+class.NSNumber.methods."initWithUnsignedLong:".unsafe = false
+class.NSNumber.methods."initWithLongLong:".unsafe = false
+class.NSNumber.methods."initWithUnsignedLongLong:".unsafe = false
+class.NSNumber.methods."initWithFloat:".unsafe = false
+class.NSNumber.methods."initWithDouble:".unsafe = false
+class.NSNumber.methods."initWithBool:".unsafe = false
+class.NSNumber.methods."initWithInteger:".unsafe = false
+class.NSNumber.methods."initWithUnsignedInteger:".unsafe = false
+class.NSNumber.methods."numberWithChar:".unsafe = false
+class.NSNumber.methods."numberWithUnsignedChar:".unsafe = false
+class.NSNumber.methods."numberWithShort:".unsafe = false
+class.NSNumber.methods."numberWithUnsignedShort:".unsafe = false
+class.NSNumber.methods."numberWithInt:".unsafe = false
+class.NSNumber.methods."numberWithUnsignedInt:".unsafe = false
+class.NSNumber.methods."numberWithLong:".unsafe = false
+class.NSNumber.methods."numberWithUnsignedLong:".unsafe = false
+class.NSNumber.methods."numberWithLongLong:".unsafe = false
+class.NSNumber.methods."numberWithUnsignedLongLong:".unsafe = false
+class.NSNumber.methods."numberWithFloat:".unsafe = false
+class.NSNumber.methods."numberWithDouble:".unsafe = false
+class.NSNumber.methods."numberWithBool:".unsafe = false
+class.NSNumber.methods."numberWithInteger:".unsafe = false
+class.NSNumber.methods."numberWithUnsignedInteger:".unsafe = false
+class.NSNumber.methods."compare:".unsafe = false
+class.NSNumber.methods."isEqualToNumber:".unsafe = false
+class.NSNumber.methods.charValue.unsafe = false
+class.NSNumber.methods.unsignedCharValue.unsafe = false
+class.NSNumber.methods.shortValue.unsafe = false
+class.NSNumber.methods.unsignedShortValue.unsafe = false
+class.NSNumber.methods.intValue.unsafe = false
+class.NSNumber.methods.unsignedIntValue.unsafe = false
+class.NSNumber.methods.longValue.unsafe = false
+class.NSNumber.methods.unsignedLongValue.unsafe = false
+class.NSNumber.methods.longLongValue.unsafe = false
+class.NSNumber.methods.unsignedLongLongValue.unsafe = false
+class.NSNumber.methods.floatValue.unsafe = false
+class.NSNumber.methods.doubleValue.unsafe = false
+class.NSNumber.methods.boolValue.unsafe = false
+class.NSNumber.methods.integerValue.unsafe = false
+class.NSNumber.methods.unsignedIntegerValue.unsafe = false
+class.NSNumber.methods.stringValue.unsafe = false

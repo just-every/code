@@ -1,0 +1,7 @@
+---
+source: tests/test_glob.rs
+expression: "&contents"
+input_file: tests/inputs-nested/b/file.txt
+---
+Hello B
+

@@ -4127,6 +4127,11 @@ impl ChatWidget<'_> {
         self.invalidate_height_cache();
         self.request_redraw();
     }
+
+    pub(crate) fn show_help_overlay(&mut self) {
+        self.bottom_pane.show_help_overlay();
+        self.request_redraw();
+    }
     
     pub(crate) fn is_reasoning_shown(&self) -> bool {
         // Check if any reasoning cell exists and if it's expanded
