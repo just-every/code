@@ -253,11 +253,32 @@ impl TextArea {
             } if modifiers == (KeyModifiers::CONTROL | KeyModifiers::ALT) => {
                 self.delete_backward_word()
             },
+            // Option/Alt+Backspace: delete previous word. Some terminals add SHIFT,
+            // so match on contains(ALT) rather than equality.
             KeyEvent {
                 code: KeyCode::Backspace,
-                modifiers: KeyModifiers::ALT,
+                modifiers,
                 ..
-            } => self.delete_backward_word(),
+            } if modifiers.contains(KeyModifiers::ALT) => self.delete_backward_word(),
+            // Option/Alt+Delete: also delete previous word on macOS terminals that
+            // report Delete for the Option+Delete chord.
+            KeyEvent {
+                code: KeyCode::Delete,
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::ALT) => self.delete_backward_word(),
+            // Cmd/Super+Backspace: delete to beginning of line (common macOS behavior)
+            KeyEvent {
+                code: KeyCode::Backspace,
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::SUPER) => self.kill_to_beginning_of_line(),
+            // Cmd/Super+Delete (or Fn+Backspace with Cmd): delete to end of line
+            KeyEvent {
+                code: KeyCode::Delete,
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::SUPER) => self.kill_to_end_of_line(),
             KeyEvent {
                 code: KeyCode::Backspace,
                 modifiers: KeyModifiers::NONE,
@@ -290,16 +311,16 @@ impl TextArea {
             // Many terminals map Option (macOS) to Alt. Some send Alt|Shift, so match contains(ALT).
             KeyEvent {
                 code: KeyCode::Char('b'),
-                modifiers: KeyModifiers::ALT,
+                modifiers,
                 ..
-            } => {
+            } if modifiers.contains(KeyModifiers::ALT) => {
                 self.set_cursor(self.beginning_of_previous_word());
             }
             KeyEvent {
                 code: KeyCode::Char('f'),
-                modifiers: KeyModifiers::ALT,
+                modifiers,
                 ..
-            } => {
+            } if modifiers.contains(KeyModifiers::ALT) => {
                 self.set_cursor(self.end_of_next_word());
             }
             KeyEvent {
@@ -351,10 +372,12 @@ impl TextArea {
             // Option/Right -> Alt+Right (next word end)
             KeyEvent {
                 code: KeyCode::Left,
-                modifiers: KeyModifiers::ALT,
+                modifiers,
                 ..
+            } if modifiers.contains(KeyModifiers::ALT) => {
+                self.set_cursor(self.beginning_of_previous_word());
             }
-            | KeyEvent {
+            KeyEvent {
                 code: KeyCode::Left,
                 modifiers: KeyModifiers::CONTROL,
                 ..
@@ -363,10 +386,12 @@ impl TextArea {
             }
             KeyEvent {
                 code: KeyCode::Right,
-                modifiers: KeyModifiers::ALT,
+                modifiers,
                 ..
+            } if modifiers.contains(KeyModifiers::ALT) => {
+                self.set_cursor(self.end_of_next_word());
             }
-            | KeyEvent {
+            KeyEvent {
                 code: KeyCode::Right,
                 modifiers: KeyModifiers::CONTROL,
                 ..
