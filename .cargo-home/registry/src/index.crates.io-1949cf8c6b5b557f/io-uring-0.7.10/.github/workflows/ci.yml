@@ -1,0 +1,176 @@
+name: ci
+
+on: [push, pull_request]
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test API
+        run: cargo test --target ${{ matrix.target }}
+      - name: Test
+        run: cargo run --package io-uring-test --features io-uring-test/ci --target ${{ matrix.target }}
+
+  check-bench:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Bench
+        run: cargo bench --package io-uring-bench
+
+  check-tier1:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+
+      matrix:
+        toolchain:
+          - stable
+          - "1.63"
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-gnu
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          target: ${{ matrix.target }}
+          components: clippy
+          override: true
+      - name: Lint
+        run: cargo clippy --target ${{ matrix.target }}
+
+  check-tier2:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+
+      matrix:
+        toolchain:
+          - stable
+        target:
+          - riscv64gc-unknown-linux-gnu
+          - loongarch64-unknown-linux-gnu
+          - powerpc64-unknown-linux-gnu
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          target: ${{ matrix.target }}
+          components: clippy
+          override: true
+      - name: Lint
+        run: cargo clippy --target ${{ matrix.target }}
+
+  check-other:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+
+      matrix:
+        toolchain:
+          - stable
+          - "1.63"
+        target:
+          - i686-unknown-linux-gnu
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          target: ${{ matrix.target }}
+          components: clippy
+          override: true
+      - name: Lint
+        env:
+          RUSTFLAGS: --cfg=io_uring_skip_arch_check
+        run: cargo clippy --target ${{ matrix.target }}
+
+  check-own:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+
+      matrix:
+        toolchain:
+          - stable
+        target:
+          - x86_64-unknown-linux-gnu
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          target: ${{ matrix.target }}
+          components: clippy
+          override: true
+      - name: Lint
+        env:
+          RUSTFLAGS: --cfg=io_uring_use_own_sys
+          IO_URING_OWN_SYS_BINDING: sys_x86_64.rs
+        run: cargo check --target ${{ matrix.target }}
+
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: "rustfmt --check"
+        run: |
+          if ! rustfmt --check --edition 2018 $(find . -name '*.rs' -print); then
+            printf "Please run \`rustfmt --edition 2018 \$(find . -name '*.rs' -print)\` to fix rustfmt errors.\n" >&2
+            exit 1
+          fi
+
+  get-latest-kernel-version:
+    runs-on: ubuntu-latest
+    outputs:
+      kernel_version: ${{ steps.fetch.outputs.kernel_version }}
+    steps:
+      - name: Fetch latest stable kernel
+        id: fetch
+        run: |
+          KERNEL_VERSION=$(curl -s https://www.kernel.org/releases.json | jq -r '.latest_stable.version')
+          echo "kernel_version=$KERNEL_VERSION" >> $GITHUB_OUTPUT
+
+  test-io-uring-on-specific-kernel-versions:
+    name: Test io_uring on Linux ${{ matrix.kernel_version }}
+    needs: [get-latest-kernel-version]
+    strategy:
+      matrix:
+        kernel_version:
+          # A latest stable kernel version
+          - ${{ needs.get-latest-kernel-version.outputs.kernel_version }}
+    uses: ./.github/workflows/kernel-version-test.yml
+    with:
+      kernel_version: ${{ matrix.kernel_version }}

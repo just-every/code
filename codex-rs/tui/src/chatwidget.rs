@@ -2051,16 +2051,43 @@ impl ChatWidget<'_> {
     }
 
     pub(crate) fn handle_mouse_event(&mut self, mouse_event: crossterm::event::MouseEvent) {
-        use crossterm::event::KeyModifiers;
-        use crossterm::event::MouseEventKind;
+        use crossterm::event::{KeyModifiers, MouseEventKind};
 
-        // Check if Shift is held - if so, let the terminal handle selection
-        if mouse_event.modifiers.contains(KeyModifiers::SHIFT) {
-            // Don't handle any mouse events when Shift is held
-            // This allows the terminal's native text selection to work
+        let shift_held = mouse_event.modifiers.contains(KeyModifiers::SHIFT);
+
+        // Auto-scroll when selecting with Shift+drag near viewport edges. This keeps
+        // terminal-native selection usable in terminals (e.g., Warp) that don't
+        // auto-scroll on selection while mouse capture is enabled.
+        if shift_held {
+            match mouse_event.kind {
+                MouseEventKind::Drag(..) | MouseEventKind::Moved => {
+                    // Determine proximity to terminal edges by row position
+                    if let Ok((_, height)) = crossterm::terminal::size() {
+                        let row = mouse_event.row;
+                        // Define a small edge band for triggering scroll
+                        let top_band: u16 = 1; // rows 0..=1
+                        let bottom_band: u16 = 1; // last 2 rows
+
+                        // Scroll up when dragging near the top edge
+                        if row <= top_band {
+                            layout_scroll::mouse_scroll(self, true);
+                            return;
+                        }
+                        // Scroll down when dragging near the bottom edge
+                        if row + bottom_band >= height.saturating_sub(1) {
+                            layout_scroll::mouse_scroll(self, false);
+                            return;
+                        }
+                    }
+                }
+                // Let the terminal handle other Shift+mouse behaviors (e.g., wheel)
+                _ => {}
+            }
+            // Always let the terminal own Shift-based selection otherwise
             return;
         }
 
+        // Default mouse handling (no-Shift): support wheel scrolling in history
         match mouse_event.kind {
             MouseEventKind::ScrollUp => layout_scroll::mouse_scroll(self, true),
             MouseEventKind::ScrollDown => layout_scroll::mouse_scroll(self, false),

@@ -1,0 +1,17 @@
+language: c
+
+compiler:
+  - gcc
+  - clang
+
+install: true
+
+branches:
+  except:
+    - 5.9.6
+
+before_script:
+  - autoreconf -fi
+
+script:
+  - ./configure && make && make all-test
