@@ -1,3 +1,0 @@
-[features]
-# For backwards compatibility.
-ObjC = ["objc2"]
