@@ -1,5 +1,0 @@
-**/target/
-**/.idea/
-**/.vscode/
-**/*.rs.bk
-**/Cargo.lock
