@@ -180,14 +180,15 @@ fn is_likely_sandbox_denied(sandbox_type: SandboxType, exit_code: i32) -> bool {
         return false;
     }
 
-    // Quick rejects: well-known non-sandbox shell exit codes
-    // 127: command not found, 2: misuse of shell builtins
-    if exit_code == 127 {
-        return false;
-    }
-
-    // For all other cases, we assume the sandbox is the cause
-    true
+    // Be conservative: only treat 126 ("command invoked cannot execute") as a
+    // likely sandbox denial. Common non‑zero codes like 1/2/127 should NOT be
+    // interpreted as sandbox denial:
+    //   - 1: generic failure (e.g., grep no matches, tests failed)
+    //   - 2: misuse of shell builtins / generic CLI usage error
+    //   - 127: command not found
+    // These happen frequently during normal workflows and should flow back to
+    // the model without prompting for escalation.
+    exit_code == 126
 }
 
 #[derive(Debug)]
