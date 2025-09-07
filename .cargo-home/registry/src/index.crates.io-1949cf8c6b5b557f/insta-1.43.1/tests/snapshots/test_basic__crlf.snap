@@ -1,7 +1,0 @@
----
-source: insta/tests/test_basic.rs
-expression: "\"foo\\r\\nbar\\r\\nbaz\""
----
-foo
-bar
-baz
