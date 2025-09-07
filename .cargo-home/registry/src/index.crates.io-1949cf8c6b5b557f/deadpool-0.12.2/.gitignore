@@ -1,6 +1,0 @@
-.vscode
-*.swp
-/target
-**/*.rs.bk
-Cargo.lock
-.env
