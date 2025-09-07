@@ -42,7 +42,6 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         full_auto,
         dangerously_bypass_approvals_and_sandbox,
         cwd,
-        debug,
         skip_git_repo_check,
         color,
         last_message_file,
@@ -148,9 +147,9 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         codex_linux_sandbox_exe,
         base_instructions: None,
         include_plan_tool: None,
-        disable_response_storage: oss.then_some(true),
+        include_apply_patch_tool: None,
+        include_view_image_tool: None,
         show_raw_agent_reasoning: oss.then_some(true),
-        debug: Some(debug),
         tools_web_search_request: None,
     };
     // Parse `-c` overrides.
@@ -190,7 +189,7 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
 
     let conversation_manager = ConversationManager::new(AuthManager::shared(
         config.codex_home.clone(),
-        codex_login::AuthMode::ApiKey,
+        config.preferred_auth_method,
         config.responses_originator_header.clone(),
     ));
     let NewConversation {

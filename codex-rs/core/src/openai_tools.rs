@@ -5,18 +5,13 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 
-use crate::agent_tool::create_cancel_agent_tool;
-use crate::agent_tool::create_check_agent_status_tool;
-use crate::agent_tool::create_get_agent_result_tool;
-use crate::agent_tool::create_list_agents_tool;
-use crate::agent_tool::create_run_agent_tool;
-use crate::agent_tool::create_wait_for_agent_tool;
 use crate::model_family::ModelFamily;
 use crate::plan_tool::PLAN_TOOL;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
 use crate::tool_apply_patch::ApplyPatchToolType;
-// apply_patch tools are not currently surfaced; keep imports out to avoid warnings.
+use crate::tool_apply_patch::create_apply_patch_freeform_tool;
+use crate::tool_apply_patch::create_apply_patch_json_tool;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ResponsesApiTool {
@@ -45,7 +40,6 @@ pub struct FreeformToolFormat {
 
 /// When serialized as JSON, this produces a valid "Tool" in the OpenAI
 /// Responses API.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(tag = "type")]
 pub(crate) enum OpenAiTool {
@@ -53,24 +47,12 @@ pub(crate) enum OpenAiTool {
     Function(ResponsesApiTool),
     #[serde(rename = "local_shell")]
     LocalShell {},
-    /// Native Responses API web search tool. Optional fields like `filters`
-    /// are serialized alongside the type discriminator.
+    // TODO: Understand why we get an error on web_search although the API docs say it's supported.
+    // https://platform.openai.com/docs/guides/tools-web-search?api-mode=responses#:~:text=%7B%20type%3A%20%22web_search%22%20%7D%2C
     #[serde(rename = "web_search")]
-    WebSearch(WebSearchTool),
+    WebSearch {},
     #[serde(rename = "custom")]
     Freeform(FreeformTool),
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Default)]
-pub struct WebSearchTool {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub filters: Option<WebSearchFilters>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Default)]
-pub struct WebSearchFilters {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub allowed_domains: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -85,15 +67,11 @@ pub enum ConfigShellToolType {
 pub(crate) struct ToolsConfig {
     pub shell_type: ConfigShellToolType,
     pub plan_tool: bool,
-    #[allow(dead_code)]
     pub apply_patch_tool_type: Option<ApplyPatchToolType>,
     pub web_search_request: bool,
-    #[allow(dead_code)]
     pub include_view_image_tool: bool,
-    pub web_search_allowed_domains: Option<Vec<String>>,
 }
 
-#[allow(dead_code)]
 pub(crate) struct ToolsConfigParams<'a> {
     pub(crate) model_family: &'a ModelFamily,
     pub(crate) approval_policy: AskForApproval,
@@ -106,20 +84,18 @@ pub(crate) struct ToolsConfigParams<'a> {
 }
 
 impl ToolsConfig {
-    pub fn new(
-        model_family: &ModelFamily,
-        approval_policy: AskForApproval,
-        sandbox_policy: SandboxPolicy,
-        include_plan_tool: bool,
-        include_apply_patch_tool: bool,
-        include_web_search_request: bool,
-        _use_streamable_shell_tool: bool,
-        include_view_image_tool: bool,
-    ) -> Self {
-        // Our fork does not yet enable the experimental streamable shell tool
-        // in the tool selection phase. Default to the existing behaviors.
-        let use_streamable_shell_tool = false;
-        let mut shell_type = if use_streamable_shell_tool {
+    pub fn new(params: &ToolsConfigParams) -> Self {
+        let ToolsConfigParams {
+            model_family,
+            approval_policy,
+            sandbox_policy,
+            include_plan_tool,
+            include_apply_patch_tool,
+            include_web_search_request,
+            use_streamable_shell_tool,
+            include_view_image_tool,
+        } = params;
+        let mut shell_type = if *use_streamable_shell_tool {
             ConfigShellToolType::StreamableShell
         } else if model_family.uses_local_shell_tool {
             ConfigShellToolType::LocalShell
@@ -132,35 +108,25 @@ impl ToolsConfig {
             }
         }
 
-        let apply_patch_tool_type = if include_apply_patch_tool {
-            model_family.apply_patch_tool_type.clone()
-        } else {
-            None
+        let apply_patch_tool_type = match model_family.apply_patch_tool_type {
+            Some(ApplyPatchToolType::Freeform) => Some(ApplyPatchToolType::Freeform),
+            Some(ApplyPatchToolType::Function) => Some(ApplyPatchToolType::Function),
+            None => {
+                if *include_apply_patch_tool {
+                    Some(ApplyPatchToolType::Freeform)
+                } else {
+                    None
+                }
+            }
         };
 
         Self {
             shell_type,
-            plan_tool: include_plan_tool,
+            plan_tool: *include_plan_tool,
             apply_patch_tool_type,
-            web_search_request: include_web_search_request,
-            include_view_image_tool,
-            web_search_allowed_domains: None,
+            web_search_request: *include_web_search_request,
+            include_view_image_tool: *include_view_image_tool,
         }
-    }
-
-    // Compatibility constructor used by some tests/upstream calls.
-    #[allow(dead_code)]
-    pub fn new_from_params(p: &ToolsConfigParams) -> Self {
-        Self::new(
-            p.model_family,
-            p.approval_policy,
-            p.sandbox_policy.clone(),
-            p.include_plan_tool,
-            p.include_apply_patch_tool,
-            p.include_web_search_request,
-            p.use_streamable_shell_tool,
-            p.include_view_image_tool,
-        )
     }
 }
 
@@ -216,15 +182,15 @@ fn create_shell_tool() -> OpenAiTool {
         },
     );
     properties.insert(
-        "timeout".to_string(),
+        "timeout_ms".to_string(),
         JsonSchema::Number {
-            description: Some("The timeout for the command in milliseconds (default: 120000 ms = 120s)".to_string()),
+            description: Some("The timeout for the command in milliseconds".to_string()),
         },
     );
 
     OpenAiTool::Function(ResponsesApiTool {
         name: "shell".to_string(),
-        description: "Runs a shell command and returns its output. Default timeout: 120000 ms (120s). Override via the `timeout` parameter.".to_string(),
+        description: "Runs a shell command and returns its output".to_string(),
         strict: false,
         parameters: JsonSchema::Object {
             properties,
@@ -252,7 +218,7 @@ fn create_shell_tool_for_sandbox(sandbox_policy: &SandboxPolicy) -> OpenAiTool {
     properties.insert(
         "timeout_ms".to_string(),
         JsonSchema::Number {
-            description: Some("The timeout for the command in milliseconds (default: 120000 ms = 120s)".to_string()),
+            description: Some("The timeout for the command in milliseconds".to_string()),
         },
     );
 
@@ -277,14 +243,6 @@ fn create_shell_tool_for_sandbox(sandbox_policy: &SandboxPolicy) -> OpenAiTool {
             writable_roots,
             ..
         } => {
-            let roots_str = if writable_roots.is_empty() {
-                "    - (none)\n".to_string()
-            } else {
-                writable_roots
-                    .iter()
-                    .map(|p| format!("    - {}\n", p.display()))
-                    .collect()
-            };
             format!(
                 r#"
 The shell tool is used to execute shell commands.
@@ -300,10 +258,8 @@ The shell tool is used to execute shell commands.
     - cargo test
 - When invoking a command that will require escalated privileges:
   - Provide the with_escalated_permissions parameter with the boolean value true
-  - Include a short, 1 sentence explanation for why we need to run with_escalated_permissions in the justification parameter.
-
-Default timeout: 120000 ms (120s). Override via the `timeout` parameter."#,
-                roots_str,
+  - Include a short, 1 sentence explanation for why we need to run with_escalated_permissions in the justification parameter."#,
+                writable_roots.iter().map(|wr| format!("        - {}", wr.to_string_lossy())).collect::<Vec<String>>().join("\n"),
                 if !network_access {
                     "\n    - Commands that require network access\n"
                 } else {
@@ -312,7 +268,7 @@ Default timeout: 120000 ms (120s). Override via the `timeout` parameter."#,
             )
         }
         SandboxPolicy::DangerFullAccess => {
-            "Runs a shell command and returns its output. Default timeout: 120000 ms (120s). Override via the `timeout` parameter.".to_string()
+            "Runs a shell command and returns its output.".to_string()
         }
         SandboxPolicy::ReadOnly => {
             r#"
@@ -329,9 +285,7 @@ The shell tool is used to execute shell commands.
     - cargo test
 - When invoking a command that will require escalated privileges:
   - Provide the with_escalated_permissions parameter with the boolean value true
-  - Include a short, 1 sentence explanation for why we need to run with_escalated_permissions in the justification parameter
-
-Default timeout: 120000 ms (120s). Override via the `timeout` parameter."#.to_string()
+  - Include a short, 1 sentence explanation for why we need to run with_escalated_permissions in the justification parameter"#.to_string()
         }
     };
 
@@ -345,6 +299,35 @@ Default timeout: 120000 ms (120s). Override via the `timeout` parameter."#.to_st
             additional_properties: Some(false),
         },
     })
+}
+
+fn create_view_image_tool() -> OpenAiTool {
+    // Support only local filesystem path.
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "path".to_string(),
+        JsonSchema::String {
+            description: Some("Local filesystem path to an image file".to_string()),
+        },
+    );
+
+    OpenAiTool::Function(ResponsesApiTool {
+        name: "view_image".to_string(),
+        description:
+            "Attach a local image (by filesystem path) to the conversation context for this turn."
+                .to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["path".to_string()]),
+            additional_properties: Some(false),
+        },
+    })
+}
+/// TODO(dylan): deprecate once we get rid of json tool
+#[derive(Serialize, Deserialize)]
+pub(crate) struct ApplyPatchToolArgs {
+    pub(crate) input: String,
 }
 
 /// Returns JSON values that are compatible with Function Calling in the
@@ -448,11 +431,11 @@ fn sanitize_json_schema(value: &mut JsonValue) {
         }
         JsonValue::Object(map) => {
             // First, recursively sanitize known nested schema holders
-            if let Some(props) = map.get_mut("properties") {
-                if let Some(props_map) = props.as_object_mut() {
-                    for (_k, v) in props_map.iter_mut() {
-                        sanitize_json_schema(v);
-                    }
+            if let Some(props) = map.get_mut("properties")
+                && let Some(props_map) = props.as_object_mut()
+            {
+                for (_k, v) in props_map.iter_mut() {
+                    sanitize_json_schema(v);
                 }
             }
             if let Some(items) = map.get_mut("items") {
@@ -472,18 +455,18 @@ fn sanitize_json_schema(value: &mut JsonValue) {
                 .map(|s| s.to_string());
 
             // If type is an array (union), pick first supported; else leave to inference
-            if ty.is_none() {
-                if let Some(JsonValue::Array(types)) = map.get("type") {
-                    for t in types {
-                        if let Some(tt) = t.as_str() {
-                            if matches!(
-                                tt,
-                                "object" | "array" | "string" | "number" | "integer" | "boolean"
-                            ) {
-                                ty = Some(tt.to_string());
-                                break;
-                            }
-                        }
+            if ty.is_none()
+                && let Some(JsonValue::Array(types)) = map.get("type")
+            {
+                for t in types {
+                    if let Some(tt) = t.as_str()
+                        && matches!(
+                            tt,
+                            "object" | "array" | "string" | "number" | "integer" | "boolean"
+                        )
+                    {
+                        ty = Some(tt.to_string());
+                        break;
                     }
                 }
             }
@@ -548,7 +531,6 @@ fn sanitize_json_schema(value: &mut JsonValue) {
 pub(crate) fn get_openai_tools(
     config: &ToolsConfig,
     mcp_tools: Option<HashMap<String, mcp_types::Tool>>,
-    browser_enabled: bool,
 ) -> Vec<OpenAiTool> {
     let mut tools: Vec<OpenAiTool> = Vec::new();
 
@@ -576,50 +558,25 @@ pub(crate) fn get_openai_tools(
         tools.push(PLAN_TOOL.clone());
     }
 
-    // Add browser tools only when browser is enabled
-    if browser_enabled {
-        tools.push(create_browser_open_tool());
-        tools.push(create_browser_close_tool());
-        tools.push(create_browser_status_tool());
-        tools.push(create_browser_click_tool());
-        tools.push(create_browser_move_tool());
-        tools.push(create_browser_type_tool());
-        tools.push(create_browser_key_tool());
-        tools.push(create_browser_javascript_tool());
-        tools.push(create_browser_scroll_tool());
-        tools.push(create_browser_history_tool());
-        tools.push(create_browser_inspect_tool());
-        tools.push(create_browser_console_tool());
-        tools.push(create_browser_cleanup_tool());
-        tools.push(create_browser_cdp_tool());
-    } else {
-        // Only include browser_open and browser_status when browser is disabled
-        tools.push(create_browser_open_tool());
-        tools.push(create_browser_status_tool());
+    if let Some(apply_patch_tool_type) = &config.apply_patch_tool_type {
+        match apply_patch_tool_type {
+            ApplyPatchToolType::Freeform => {
+                tools.push(create_apply_patch_freeform_tool());
+            }
+            ApplyPatchToolType::Function => {
+                tools.push(create_apply_patch_json_tool());
+            }
+        }
     }
-
-    // Add agent management tools for calling external LLMs asynchronously
-    tools.push(create_run_agent_tool());
-    tools.push(create_check_agent_status_tool());
-    tools.push(create_get_agent_result_tool());
-    tools.push(create_cancel_agent_tool());
-    tools.push(create_wait_for_agent_tool());
-    tools.push(create_list_agents_tool());
 
     if config.web_search_request {
-        let tool = match &config.web_search_allowed_domains {
-            Some(domains) if !domains.is_empty() => OpenAiTool::WebSearch(WebSearchTool {
-                filters: Some(WebSearchFilters {
-                    allowed_domains: Some(domains.clone()),
-                }),
-            }),
-            _ => OpenAiTool::WebSearch(WebSearchTool::default()),
-        };
-        tools.push(tool);
+        tools.push(OpenAiTool::WebSearch {});
     }
 
-    // Always include web_fetch tool
-    tools.push(create_web_fetch_tool());
+    // Include the view_image tool so the agent can attach images to context.
+    if config.include_view_image_tool {
+        tools.push(create_view_image_tool());
+    }
 
     if let Some(mcp_tools) = mcp_tools {
         // Ensure deterministic ordering to maximize prompt cache hits.
@@ -641,7 +598,6 @@ pub(crate) fn get_openai_tools(
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use crate::model_family::find_family_for_model;
     use mcp_types::ToolInputSchema;
@@ -655,7 +611,7 @@ mod tests {
             .map(|tool| match tool {
                 OpenAiTool::Function(ResponsesApiTool { name, .. }) => name,
                 OpenAiTool::LocalShell {} => "local_shell",
-                OpenAiTool::WebSearch(_) => "web_search",
+                OpenAiTool::WebSearch {} => "web_search",
                 OpenAiTool::Freeform(FreeformTool { name, .. }) => name,
             })
             .collect::<Vec<_>>();
@@ -677,84 +633,58 @@ mod tests {
     fn test_get_openai_tools() {
         let model_family = find_family_for_model("codex-mini-latest")
             .expect("codex-mini-latest should be a valid model family");
-        let config = ToolsConfig::new(
-            &model_family,
-            AskForApproval::Never,
-            SandboxPolicy::ReadOnly,
-            true,
-            false,
-            true,
-            /*use_experimental_streamable_shell_tool*/ false,
-            false,
-        );
-        let tools = get_openai_tools(&config, Some(HashMap::new()), false);
+        let config = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::ReadOnly,
+            include_plan_tool: true,
+            include_apply_patch_tool: false,
+            include_web_search_request: true,
+            use_streamable_shell_tool: false,
+            include_view_image_tool: true,
+        });
+        let tools = get_openai_tools(&config, Some(HashMap::new()));
 
         assert_eq_tool_names(
             &tools,
-            &[
-                "local_shell",
-                "update_plan",
-                "browser_open",
-                "browser_status",
-                "agent_run",
-                "agent_check",
-                "agent_result",
-                "agent_cancel",
-                "agent_wait",
-                "agent_list",
-                "web_search",
-                "web_fetch",
-            ],
+            &["local_shell", "update_plan", "web_search", "view_image"],
         );
     }
 
     #[test]
     fn test_get_openai_tools_default_shell() {
         let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
-        let config = ToolsConfig::new(
-            &model_family,
-            AskForApproval::Never,
-            SandboxPolicy::ReadOnly,
-            true,
-            false,
-            true,
-            /*use_experimental_streamable_shell_tool*/ false,
-            false,
-        );
-        let tools = get_openai_tools(&config, Some(HashMap::new()), false);
+        let config = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::ReadOnly,
+            include_plan_tool: true,
+            include_apply_patch_tool: false,
+            include_web_search_request: true,
+            use_streamable_shell_tool: false,
+            include_view_image_tool: true,
+        });
+        let tools = get_openai_tools(&config, Some(HashMap::new()));
 
         assert_eq_tool_names(
             &tools,
-            &[
-                "shell",
-                "update_plan",
-                "browser_open",
-                "browser_status",
-                "agent_run",
-                "agent_check",
-                "agent_result",
-                "agent_cancel",
-                "agent_wait",
-                "agent_list",
-                "web_search",
-                "web_fetch",
-            ],
+            &["shell", "update_plan", "web_search", "view_image"],
         );
     }
 
     #[test]
     fn test_get_openai_tools_mcp_tools() {
         let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
-        let config = ToolsConfig::new(
-            &model_family,
-            AskForApproval::Never,
-            SandboxPolicy::ReadOnly,
-            false,
-            false,
-            true,
-            /*use_experimental_streamable_shell_tool*/ false,
-            false,
-        );
+        let config = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::ReadOnly,
+            include_plan_tool: false,
+            include_apply_patch_tool: false,
+            include_web_search_request: true,
+            use_streamable_shell_tool: false,
+            include_view_image_tool: true,
+        });
         let tools = get_openai_tools(
             &config,
             Some(HashMap::from([(
@@ -791,23 +721,14 @@ mod tests {
                     description: Some("Do something cool".to_string()),
                 },
             )])),
-            false,
         );
 
         assert_eq_tool_names(
             &tools,
             &[
                 "shell",
-                "browser_open",
-                "browser_status",
-                "agent_run",
-                "agent_check",
-                "agent_result",
-                "agent_cancel",
-                "agent_wait",
-                "agent_list",
                 "web_search",
-                "web_fetch",
+                "view_image",
                 "test_server/do_something_cool",
             ],
         );
@@ -859,22 +780,84 @@ mod tests {
     #[test]
     fn test_get_openai_tools_mcp_tools_sorted_by_name() {
         let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
-        let config = ToolsConfig::new(
-            &model_family,
-            AskForApproval::Never,
-            SandboxPolicy::ReadOnly,
-            false,
-            false,
-            true,
-            /*use_experimental_streamable_shell_tool*/ false,
-            false,
+        let config = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::ReadOnly,
+            include_plan_tool: false,
+            include_apply_patch_tool: false,
+            include_web_search_request: false,
+            use_streamable_shell_tool: false,
+            include_view_image_tool: true,
+        });
+
+        // Intentionally construct a map with keys that would sort alphabetically.
+        let tools_map: HashMap<String, mcp_types::Tool> = HashMap::from([
+            (
+                "test_server/do".to_string(),
+                mcp_types::Tool {
+                    name: "a".to_string(),
+                    input_schema: ToolInputSchema {
+                        properties: Some(serde_json::json!({})),
+                        required: None,
+                        r#type: "object".to_string(),
+                    },
+                    output_schema: None,
+                    title: None,
+                    annotations: None,
+                    description: Some("a".to_string()),
+                },
+            ),
+            (
+                "test_server/something".to_string(),
+                mcp_types::Tool {
+                    name: "b".to_string(),
+                    input_schema: ToolInputSchema {
+                        properties: Some(serde_json::json!({})),
+                        required: None,
+                        r#type: "object".to_string(),
+                    },
+                    output_schema: None,
+                    title: None,
+                    annotations: None,
+                    description: Some("b".to_string()),
+                },
+            ),
+            (
+                "test_server/cool".to_string(),
+                mcp_types::Tool {
+                    name: "c".to_string(),
+                    input_schema: ToolInputSchema {
+                        properties: Some(serde_json::json!({})),
+                        required: None,
+                        r#type: "object".to_string(),
+                    },
+                    output_schema: None,
+                    title: None,
+                    annotations: None,
+                    description: Some("c".to_string()),
+                },
+            ),
+        ]);
+
+        let tools = get_openai_tools(&config, Some(tools_map));
+        // Expect shell first, followed by MCP tools sorted by fully-qualified name.
+        assert_eq_tool_names(
+            &tools,
+            &[
+                "shell",
+                "view_image",
+                "test_server/cool",
+                "test_server/do",
+                "test_server/something",
+            ],
         );
     }
 
     #[test]
     fn test_mcp_tool_property_missing_type_defaults_to_string() {
         let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
-        let config = ToolsConfig::new_from_params(&ToolsConfigParams {
+        let config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             approval_policy: AskForApproval::Never,
             sandbox_policy: SandboxPolicy::ReadOnly,
@@ -906,25 +889,11 @@ mod tests {
                     description: Some("Search docs".to_string()),
                 },
             )])),
-            false,
         );
 
         assert_eq_tool_names(
             &tools,
-            &[
-                "shell",
-                "browser_open",
-                "browser_status",
-                "agent_run",
-                "agent_check",
-                "agent_result",
-                "agent_cancel",
-                "agent_wait",
-                "agent_list",
-                "web_search",
-                "web_fetch",
-                "dash/search",
-            ],
+            &["shell", "web_search", "view_image", "dash/search"],
         );
 
         assert_eq!(
@@ -950,16 +919,16 @@ mod tests {
     #[test]
     fn test_mcp_tool_integer_normalized_to_number() {
         let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
-        let config = ToolsConfig::new(
-            &model_family,
-            AskForApproval::Never,
-            SandboxPolicy::ReadOnly,
-            false,
-            false,
-            true,
-            /*use_experimental_streamable_shell_tool*/ false,
-            false,
-        );
+        let config = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::ReadOnly,
+            include_plan_tool: false,
+            include_apply_patch_tool: false,
+            include_web_search_request: true,
+            use_streamable_shell_tool: false,
+            include_view_image_tool: true,
+        });
 
         let tools = get_openai_tools(
             &config,
@@ -980,25 +949,11 @@ mod tests {
                     description: Some("Pagination".to_string()),
                 },
             )])),
-            false,
         );
 
         assert_eq_tool_names(
             &tools,
-            &[
-                "shell",
-                "browser_open",
-                "browser_status",
-                "agent_run",
-                "agent_check",
-                "agent_result",
-                "agent_cancel",
-                "agent_wait",
-                "agent_list",
-                "web_search",
-                "web_fetch",
-                "dash/paginate",
-            ],
+            &["shell", "web_search", "view_image", "dash/paginate"],
         );
         assert_eq!(
             tools[3],
@@ -1021,16 +976,16 @@ mod tests {
     #[test]
     fn test_mcp_tool_array_without_items_gets_default_string_items() {
         let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
-        let config = ToolsConfig::new(
-            &model_family,
-            AskForApproval::Never,
-            SandboxPolicy::ReadOnly,
-            false,
-            false,
-            true,
-            /*use_experimental_streamable_shell_tool*/ false,
-            false,
-        );
+        let config = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::ReadOnly,
+            include_plan_tool: false,
+            include_apply_patch_tool: false,
+            include_web_search_request: true,
+            use_streamable_shell_tool: false,
+            include_view_image_tool: true,
+        });
 
         let tools = get_openai_tools(
             &config,
@@ -1051,26 +1006,9 @@ mod tests {
                     description: Some("Tags".to_string()),
                 },
             )])),
-            false,
         );
 
-        assert_eq_tool_names(
-            &tools,
-            &[
-                "shell",
-                "browser_open",
-                "browser_status",
-                "agent_run",
-                "agent_check",
-                "agent_result",
-                "agent_cancel",
-                "agent_wait",
-                "agent_list",
-                "web_search",
-                "web_fetch",
-                "dash/tags",
-            ],
-        );
+        assert_eq_tool_names(&tools, &["shell", "web_search", "view_image", "dash/tags"]);
         assert_eq!(
             tools[3],
             OpenAiTool::Function(ResponsesApiTool {
@@ -1095,16 +1033,16 @@ mod tests {
     #[test]
     fn test_mcp_tool_anyof_defaults_to_string() {
         let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
-        let config = ToolsConfig::new(
-            &model_family,
-            AskForApproval::Never,
-            SandboxPolicy::ReadOnly,
-            false,
-            false,
-            true,
-            /*use_experimental_streamable_shell_tool*/ false,
-            false,
-        );
+        let config = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::ReadOnly,
+            include_plan_tool: false,
+            include_apply_patch_tool: false,
+            include_web_search_request: true,
+            use_streamable_shell_tool: false,
+            include_view_image_tool: true,
+        });
 
         let tools = get_openai_tools(
             &config,
@@ -1125,26 +1063,9 @@ mod tests {
                     description: Some("AnyOf Value".to_string()),
                 },
             )])),
-            false,
         );
 
-        assert_eq_tool_names(
-            &tools,
-            &[
-                "shell",
-                "browser_open",
-                "browser_status",
-                "agent_run",
-                "agent_check",
-                "agent_result",
-                "agent_cancel",
-                "agent_wait",
-                "agent_list",
-                "web_search",
-                "web_fetch",
-                "dash/value",
-            ],
-        );
+        assert_eq_tool_names(&tools, &["shell", "web_search", "view_image", "dash/value"]);
         assert_eq!(
             tools[3],
             OpenAiTool::Function(ResponsesApiTool {
@@ -1242,387 +1163,4 @@ The shell tool is used to execute shell commands.
 
         assert_eq!(description, "Runs a shell command and returns its output.");
     }
-}
-
-fn create_browser_open_tool() -> OpenAiTool {
-    let mut properties = BTreeMap::new();
-    properties.insert(
-        "url".to_string(),
-        JsonSchema::String {
-            description: Some("The URL to navigate to (e.g., https://example.com)".to_string()),
-        },
-    );
-
-    OpenAiTool::Function(ResponsesApiTool {
-        name: "browser_open".to_string(),
-        description: "Opens a browser window and navigates to the specified URL. Screenshots will be automatically attached to subsequent messages.".to_string(),
-        strict: false,
-        parameters: JsonSchema::Object {
-            properties,
-            required: Some(vec!["url".to_string()]),
-            additional_properties: Some(false),
-        },
-    })
-}
-
-fn create_browser_close_tool() -> OpenAiTool {
-    let properties = BTreeMap::new();
-
-    OpenAiTool::Function(ResponsesApiTool {
-        name: "browser_close".to_string(),
-        description: "Closes the browser window and disables screenshot capture.".to_string(),
-        strict: false,
-        parameters: JsonSchema::Object {
-            properties,
-            required: Some(vec![]),
-            additional_properties: Some(false),
-        },
-    })
-}
-
-fn create_browser_status_tool() -> OpenAiTool {
-    let properties = BTreeMap::new();
-
-    OpenAiTool::Function(ResponsesApiTool {
-        name: "browser_status".to_string(),
-        description: "Gets the current browser status including whether it's enabled, current URL, and viewport settings.".to_string(),
-        strict: false,
-        parameters: JsonSchema::Object {
-            properties,
-            required: Some(vec![]),
-            additional_properties: Some(false),
-        },
-    })
-}
-
-fn create_browser_click_tool() -> OpenAiTool {
-    let mut properties = BTreeMap::new();
-    properties.insert(
-        "type".to_string(),
-        JsonSchema::String {
-            description: Some("Optional type of mouse event: 'click' (default), 'mousedown', or 'mouseup'. Use mousedown, browser_move, mouseup sequence to drag.".to_string()),
-        },
-    );
-    properties.insert(
-        "x".to_string(),
-        JsonSchema::Number {
-            description: Some("Optional absolute X coordinate to click. If provided (with y), the cursor will first move to (x,y).".to_string()),
-        },
-    );
-    properties.insert(
-        "y".to_string(),
-        JsonSchema::Number {
-            description: Some("Optional absolute Y coordinate to click. If provided (with x), the cursor will first move to (x,y).".to_string()),
-        },
-    );
-
-    OpenAiTool::Function(ResponsesApiTool {
-        name: "browser_click".to_string(),
-        description: "Performs a mouse action. By default acts at the current cursor; if x,y are provided, moves there (briefly waits for animation) then clicks.".to_string(),
-        strict: false,
-        parameters: JsonSchema::Object {
-            properties,
-            required: Some(vec![]),
-            additional_properties: Some(false),
-        },
-    })
-}
-
-fn create_browser_move_tool() -> OpenAiTool {
-    let mut properties = BTreeMap::new();
-    properties.insert(
-        "x".to_string(),
-        JsonSchema::Number {
-            description: Some(
-                "The absolute X coordinate to move the mouse to (use with y)".to_string(),
-            ),
-        },
-    );
-    properties.insert(
-        "y".to_string(),
-        JsonSchema::Number {
-            description: Some(
-                "The absolute Y coordinate to move the mouse to (use with x)".to_string(),
-            ),
-        },
-    );
-    properties.insert(
-        "dx".to_string(),
-        JsonSchema::Number {
-            description: Some(
-                "Relative (+/-) X movement in CSS pixels from current mouse position (use with dy)"
-                    .to_string(),
-            ),
-        },
-    );
-    properties.insert(
-        "dy".to_string(),
-        JsonSchema::Number {
-            description: Some(
-                "Relative (+/-) Y movement in CSS pixels from current mouse position (use with dx)"
-                    .to_string(),
-            ),
-        },
-    );
-
-    OpenAiTool::Function(ResponsesApiTool {
-        name: "browser_move".to_string(),
-        description: "Move your mouse [as shown as a blue cursor in your screenshot] to new coordinates in the browser window (x,y - top left origin) or by relative offset to your current mouse position (dx,dy). If the mouse is close to where it should be then dx,dy may be easier to judge. Always confirm your mouse is where you expected it to be in the next screenshot after a move, otherwise try again.".to_string(),
-        strict: false,
-        parameters: JsonSchema::Object {
-            properties,
-            required: Some(vec![]),
-            additional_properties: Some(false),
-        },
-    })
-}
-
-fn create_browser_type_tool() -> OpenAiTool {
-    let mut properties = BTreeMap::new();
-    properties.insert(
-        "text".to_string(),
-        JsonSchema::String {
-            description: Some("The text to type into the currently focused element".to_string()),
-        },
-    );
-
-    OpenAiTool::Function(ResponsesApiTool {
-        name: "browser_type".to_string(),
-        description: "Types text into the currently focused element in the browser.".to_string(),
-        strict: false,
-        parameters: JsonSchema::Object {
-            properties,
-            required: Some(vec!["text".to_string()]),
-            additional_properties: Some(false),
-        },
-    })
-}
-
-fn create_browser_key_tool() -> OpenAiTool {
-    let mut properties = BTreeMap::new();
-    properties.insert(
-        "key".to_string(),
-        JsonSchema::String {
-            description: Some("The key to press (e.g., 'Enter', 'Tab', 'Escape', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Backspace', 'Delete')".to_string()),
-        },
-    );
-
-    OpenAiTool::Function(ResponsesApiTool {
-        name: "browser_key".to_string(),
-        description:
-            "Presses a keyboard key in the browser (e.g., Enter, Tab, Escape, arrow keys)."
-                .to_string(),
-        strict: false,
-        parameters: JsonSchema::Object {
-            properties,
-            required: Some(vec!["key".to_string()]),
-            additional_properties: Some(false),
-        },
-    })
-}
-
-fn create_browser_javascript_tool() -> OpenAiTool {
-    let mut properties = BTreeMap::new();
-    properties.insert(
-        "code".to_string(),
-        JsonSchema::String {
-            description: Some("The JavaScript code to execute in the browser context".to_string()),
-        },
-    );
-
-    OpenAiTool::Function(ResponsesApiTool {
-        name: "browser_javascript".to_string(),
-        description: "Executes JavaScript code in the browser and returns the result. The code is wrapped to automatically capture return values and console.log output.".to_string(),
-        strict: false,
-        parameters: JsonSchema::Object {
-            properties,
-            required: Some(vec!["code".to_string()]),
-            additional_properties: Some(false),
-        },
-    })
-}
-
-fn create_browser_scroll_tool() -> OpenAiTool {
-    let mut properties = BTreeMap::new();
-    properties.insert(
-        "dx".to_string(),
-        JsonSchema::Number {
-            description: Some("Horizontal scroll delta in pixels (positive = right)".to_string()),
-        },
-    );
-    properties.insert(
-        "dy".to_string(),
-        JsonSchema::Number {
-            description: Some("Vertical scroll delta in pixels (positive = down)".to_string()),
-        },
-    );
-
-    OpenAiTool::Function(ResponsesApiTool {
-        name: "browser_scroll".to_string(),
-        description: "Scrolls the page by the specified CSS pixel deltas.".to_string(),
-        strict: false,
-        parameters: JsonSchema::Object {
-            properties,
-            required: Some(vec![]),
-            additional_properties: Some(false),
-        },
-    })
-}
-
-fn create_browser_history_tool() -> OpenAiTool {
-    let mut properties = BTreeMap::new();
-    properties.insert(
-        "direction".to_string(),
-        JsonSchema::String {
-            description: Some("History direction: 'back' or 'forward'".to_string()),
-        },
-    );
-
-    OpenAiTool::Function(ResponsesApiTool {
-        name: "browser_history".to_string(),
-        description: "Navigates browser history backward or forward.".to_string(),
-        strict: false,
-        parameters: JsonSchema::Object {
-            properties,
-            required: Some(vec!["direction".to_string()]),
-            additional_properties: Some(false),
-        },
-    })
-}
-
-fn create_browser_inspect_tool() -> OpenAiTool {
-    let mut properties = BTreeMap::new();
-    properties.insert(
-        "x".to_string(),
-        JsonSchema::Number {
-            description: Some("Optional absolute X coordinate to inspect.".to_string()),
-        },
-    );
-    properties.insert(
-        "y".to_string(),
-        JsonSchema::Number {
-            description: Some("Optional absolute Y coordinate to inspect.".to_string()),
-        },
-    );
-    properties.insert(
-        "id".to_string(),
-        JsonSchema::String {
-            description: Some("Optional element id attribute value. If provided, looks up '#id' and inspects that element.".to_string()),
-        },
-    );
-
-    OpenAiTool::Function(ResponsesApiTool {
-        name: "browser_inspect".to_string(),
-        description: "Inspects a DOM element by coordinates or id, returns attributes, outerHTML, box model, and matched styles.".to_string(),
-        strict: false,
-        parameters: JsonSchema::Object {
-            properties,
-            required: Some(vec![]),
-            additional_properties: Some(false),
-        },
-    })
-}
-
-fn create_browser_console_tool() -> OpenAiTool {
-    let mut properties = BTreeMap::new();
-    properties.insert(
-        "lines".to_string(),
-        JsonSchema::Number {
-            description: Some("Optional: Number of recent console lines to return (default: all available)".to_string()),
-        },
-    );
-
-    OpenAiTool::Function(ResponsesApiTool {
-        name: "browser_console".to_string(),
-        description: "Captures and returns the console output from the browser, including logs, warnings, and errors.".to_string(),
-        strict: false,
-        parameters: JsonSchema::Object {
-            properties,
-            required: Some(vec![]),
-            additional_properties: Some(false),
-        },
-    })
-}
-
-fn create_browser_cleanup_tool() -> OpenAiTool {
-    OpenAiTool::Function(ResponsesApiTool {
-        name: "browser_cleanup".to_string(),
-        description: "Cleans up injected artifacts (cursor overlays, highlights) and resets viewport metrics without closing the browser.".to_string(),
-        strict: false,
-        parameters: JsonSchema::Object {
-            properties: BTreeMap::new(),
-            required: Some(vec![]),
-            additional_properties: Some(false),
-        },
-    })
-}
-
-fn create_browser_cdp_tool() -> OpenAiTool {
-    let mut properties = BTreeMap::new();
-    properties.insert(
-        "method".to_string(),
-        JsonSchema::String {
-            description: Some("CDP method name, e.g. 'Page.navigate' or 'Input.dispatchKeyEvent'".to_string()),
-        },
-    );
-    properties.insert(
-        "params".to_string(),
-        JsonSchema::Object {
-            properties: BTreeMap::new(),
-            required: None,
-            additional_properties: Some(true),
-        },
-    );
-    properties.insert(
-        "target".to_string(),
-        JsonSchema::String {
-            description: Some("Target for the command: 'page' (default) or 'browser'".to_string()),
-        },
-    );
-
-    OpenAiTool::Function(ResponsesApiTool {
-        name: "browser_cdp".to_string(),
-        description: "Executes an arbitrary Chrome DevTools Protocol command with a JSON payload against the active page session.".to_string(),
-        strict: false,
-        parameters: JsonSchema::Object {
-            properties,
-            required: Some(vec!["method".to_string()]),
-            additional_properties: Some(false),
-        },
-    })
-}
-
-fn create_web_fetch_tool() -> OpenAiTool {
-    let mut properties = BTreeMap::new();
-    properties.insert(
-        "url".to_string(),
-        JsonSchema::String {
-            description: Some("The URL to fetch (e.g., https://example.com)".to_string()),
-        },
-    );
-    properties.insert(
-        "timeout_ms".to_string(),
-        JsonSchema::Number {
-            description: Some("Optional timeout in milliseconds for the HTTP request".to_string()),
-        },
-    );
-
-    // Optional mode: auto (default), browser (use internal browser/CDP), http (raw HTTP only)
-    properties.insert(
-        "mode".to_string(),
-        JsonSchema::String {
-            description: Some("Optional: 'auto' (default) falls back to the internal browser on challenges; 'browser' forces CDP-based fetch; 'http' disables browser fallback.".to_string()),
-        },
-    );
-
-    OpenAiTool::Function(ResponsesApiTool {
-        name: "web_fetch".to_string(),
-        description: "Fetches a webpage over HTTP(S) and converts the HTML to Markdown using htmd.".to_string(),
-        strict: false,
-        parameters: JsonSchema::Object {
-            properties,
-            required: Some(vec!["url".to_string()]),
-            additional_properties: Some(false),
-        },
-    })
 }

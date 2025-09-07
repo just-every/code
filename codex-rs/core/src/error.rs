@@ -54,7 +54,7 @@ pub enum CodexErr {
     #[error("session configured event was not the first event in the stream")]
     SessionConfiguredNotFirstEvent,
 
-    /// Returned by run_command_stream when the spawned child process timed out (default 120s).
+    /// Returned by run_command_stream when the spawned child process timed out (10s).
     #[error("timeout waiting for child process to exit")]
     Timeout,
 
@@ -134,8 +134,9 @@ pub struct UsageLimitReachedError {
 impl std::fmt::Display for UsageLimitReachedError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Base message differs slightly for legacy ChatGPT Plus plan users.
-        let is_plus = matches!(&self.plan_type, Some(p) if p == "plus");
-        if is_plus {
+        if let Some(plan_type) = &self.plan_type
+            && plan_type == "plus"
+        {
             write!(
                 f,
                 "You've hit your usage limit. Upgrade to Pro (https://openai.com/chatgpt/pricing) or try again"

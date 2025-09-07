@@ -109,21 +109,17 @@ pub(crate) async fn append_entry(text: &str, session_id: &Uuid, config: &Config)
     tokio::task::spawn_blocking(move || -> Result<()> {
         // Retry a few times to avoid indefinite blocking when contended.
         for _ in 0..MAX_RETRIES {
-            match fs2::FileExt::try_lock_exclusive(&history_file) {
+            match history_file.try_lock() {
                 Ok(()) => {
                     // While holding the exclusive lock, write the full line.
                     history_file.write_all(line.as_bytes())?;
                     history_file.flush()?;
-                    let _ = fs2::FileExt::unlock(&history_file);
                     return Ok(());
                 }
-                Err(e) => {
-                    if e.kind() == std::io::ErrorKind::WouldBlock {
-                        std::thread::sleep(RETRY_SLEEP);
-                        continue;
-                    }
-                    return Err(e.into());
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    std::thread::sleep(RETRY_SLEEP);
                 }
+                Err(e) => return Err(e.into()),
             }
         }
 
@@ -135,33 +131,6 @@ pub(crate) async fn append_entry(text: &str, session_id: &Uuid, config: &Config)
     .await??;
 
     Ok(())
-}
-
-/// Attempt to acquire an exclusive advisory lock on `file`, retrying up to 10
-/// times if the lock is currently held by another process. This prevents a
-/// potential indefinite wait while still giving other writers some time to
-/// finish their operation.
-#[allow(dead_code)]
-async fn acquire_exclusive_lock_with_retry(file: &File) -> Result<()> {
-    use tokio::time::sleep;
-
-    for _ in 0..MAX_RETRIES {
-        match fs2::FileExt::try_lock_exclusive(file) {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                if e.kind() == std::io::ErrorKind::WouldBlock {
-                    sleep(RETRY_SLEEP).await;
-                } else {
-                    return Err(e);
-                }
-            }
-        }
-    }
-
-    Err(std::io::Error::new(
-        std::io::ErrorKind::WouldBlock,
-        "could not acquire exclusive lock on history file after multiple attempts",
-    ))
 }
 
 /// Asynchronously fetch the history file's *identifier* (inode on Unix) and
@@ -242,7 +211,9 @@ pub(crate) fn lookup(log_id: u64, offset: usize, config: &Config) -> Option<Hist
     // Open & lock file for reading using a shared lock.
     // Retry a few times to avoid indefinite blocking.
     for _ in 0..MAX_RETRIES {
-        match fs2::FileExt::try_lock_shared(&file) {
+        let lock_result = file.try_lock_shared();
+
+        match lock_result {
             Ok(()) => {
                 let reader = BufReader::new(&file);
                 for (idx, line_res) in reader.lines().enumerate() {
@@ -250,32 +221,27 @@ pub(crate) fn lookup(log_id: u64, offset: usize, config: &Config) -> Option<Hist
                         Ok(l) => l,
                         Err(e) => {
                             tracing::warn!(error = %e, "failed to read line from history file");
-                            let _ = fs2::FileExt::unlock(&file);
                             return None;
                         }
                     };
 
                     if idx == offset {
-                        let res = match serde_json::from_str::<HistoryEntry>(&line) {
-                            Ok(entry) => Some(entry),
+                        match serde_json::from_str::<HistoryEntry>(&line) {
+                            Ok(entry) => return Some(entry),
                             Err(e) => {
                                 tracing::warn!(error = %e, "failed to parse history entry");
-                                None
+                                return None;
                             }
-                        };
-                        let _ = fs2::FileExt::unlock(&file);
-                        return res;
+                        }
                     }
                 }
-                let _ = fs2::FileExt::unlock(&file);
                 // Not found at requested offset.
                 return None;
             }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                std::thread::sleep(RETRY_SLEEP);
+            }
             Err(e) => {
-                if e.kind() == std::io::ErrorKind::WouldBlock {
-                    std::thread::sleep(RETRY_SLEEP);
-                    continue;
-                }
                 tracing::warn!(error = %e, "failed to acquire shared lock on history file");
                 return None;
             }
@@ -290,28 +256,6 @@ pub(crate) fn lookup(log_id: u64, offset: usize, config: &Config) -> Option<Hist
 pub(crate) fn lookup(log_id: u64, offset: usize, config: &Config) -> Option<HistoryEntry> {
     let _ = (log_id, offset, config);
     None
-}
-
-#[cfg(unix)]
-#[allow(dead_code)]
-fn acquire_shared_lock_with_retry(file: &File) -> Result<()> {
-    for _ in 0..MAX_RETRIES {
-        match fs2::FileExt::try_lock_shared(file) {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                if e.kind() == std::io::ErrorKind::WouldBlock {
-                    std::thread::sleep(RETRY_SLEEP);
-                } else {
-                    return Err(e);
-                }
-            }
-        }
-    }
-
-    Err(std::io::Error::new(
-        std::io::ErrorKind::WouldBlock,
-        "could not acquire shared lock on history file after multiple attempts",
-    ))
 }
 
 /// On Unix systems ensure the file permissions are `0o600` (rw-------). If the

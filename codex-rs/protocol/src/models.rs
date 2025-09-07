@@ -33,27 +33,22 @@ pub enum ResponseInputItem {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentItem {
-    InputText {
-        text: String,
-    },
-    InputImage {
-        image_url: String,
-        detail: Option<String>,
-    },
-    OutputText {
-        text: String,
-    },
+    InputText { text: String },
+    InputImage { image_url: String },
+    OutputText { text: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseItem {
     Message {
+        #[serde(skip_serializing)]
         id: Option<String>,
         role: String,
         content: Vec<ContentItem>,
     },
     Reasoning {
+        #[serde(default)]
         id: String,
         summary: Vec<ReasoningItemReasoningSummary>,
         #[serde(default, skip_serializing_if = "should_serialize_reasoning_content")]
@@ -62,6 +57,7 @@ pub enum ResponseItem {
     },
     LocalShellCall {
         /// Set when using the chat completions API.
+        #[serde(skip_serializing)]
         id: Option<String>,
         /// Set when using the Responses API.
         call_id: Option<String>,
@@ -69,6 +65,7 @@ pub enum ResponseItem {
         action: LocalShellAction,
     },
     FunctionCall {
+        #[serde(skip_serializing)]
         id: Option<String>,
         name: String,
         // The Responses API returns the function call arguments as a *string* that contains
@@ -89,7 +86,7 @@ pub enum ResponseItem {
         output: FunctionCallOutputPayload,
     },
     CustomToolCall {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(skip_serializing)]
         id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         status: Option<String>,
@@ -111,7 +108,7 @@ pub enum ResponseItem {
     //   "action": {"type":"search","query":"weather: San Francisco, CA"}
     // }
     WebSearchCall {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(skip_serializing)]
         id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         status: Option<String>,
@@ -210,48 +207,35 @@ pub enum ReasoningItemContent {
 
 impl From<Vec<InputItem>> for ResponseInputItem {
     fn from(items: Vec<InputItem>) -> Self {
-        let mut content_items = Vec::new();
-
-        for item in items {
-            match item {
-                InputItem::Text { text } => {
-                    content_items.push(ContentItem::InputText { text });
-                }
-                InputItem::Image { image_url } => {
-                    content_items.push(ContentItem::InputImage {
-                        image_url,
-                        detail: None,
-                    });
-                }
-                InputItem::LocalImage { path } => match std::fs::read(&path) {
-                    Ok(bytes) => {
-                        let mime = mime_guess::from_path(&path)
-                            .first()
-                            .map(|m| m.essence_str().to_owned())
-                            .unwrap_or_else(|| "application/octet-stream".to_string());
-                        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-                        content_items.push(ContentItem::InputImage {
-                            image_url: format!("data:{mime};base64,{encoded}"),
-                            detail: None,
-                        });
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            "Skipping image {} – could not read file: {}",
-                            path.display(),
-                            err
-                        );
-                    }
-                },
-                // Ephemeral image handling lives in codex-core where the
-                // ephemeral InputItem variant is defined. The protocol layer
-                // intentionally does not model ephemerals.
-            }
-        }
-
         Self::Message {
             role: "user".to_string(),
-            content: content_items,
+            content: items
+                .into_iter()
+                .filter_map(|c| match c {
+                    InputItem::Text { text } => Some(ContentItem::InputText { text }),
+                    InputItem::Image { image_url } => Some(ContentItem::InputImage { image_url }),
+                    InputItem::LocalImage { path } => match std::fs::read(&path) {
+                        Ok(bytes) => {
+                            let mime = mime_guess::from_path(&path)
+                                .first()
+                                .map(|m| m.essence_str().to_owned())
+                                .unwrap_or_else(|| "application/octet-stream".to_string());
+                            let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+                            Some(ContentItem::InputImage {
+                                image_url: format!("data:{mime};base64,{encoded}"),
+                            })
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                "Skipping image {} – could not read file: {}",
+                                path.display(),
+                                err
+                            );
+                            None
+                        }
+                    },
+                })
+                .collect::<Vec<ContentItem>>(),
         }
     }
 }
@@ -329,9 +313,10 @@ impl std::ops::Deref for FunctionCallOutputPayload {
     }
 }
 
+// (Moved event mapping logic into codex-core to avoid coupling protocol to UI-facing events.)
+
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]

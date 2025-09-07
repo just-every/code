@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use std::sync::Mutex as StdMutex;
 
 use tokio::sync::broadcast;
@@ -58,27 +57,27 @@ impl ExecCommandSession {
 impl Drop for ExecCommandSession {
     fn drop(&mut self) {
         // Best-effort: terminate child first so blocking tasks can complete.
-        if let Ok(mut killer_opt) = self.killer.lock() {
-            if let Some(mut killer) = killer_opt.take() {
-                let _ = killer.kill();
-            }
+        if let Ok(mut killer_opt) = self.killer.lock()
+            && let Some(mut killer) = killer_opt.take()
+        {
+            let _ = killer.kill();
         }
 
         // Abort background tasks; they may already have exited after kill.
-        if let Ok(mut h) = self.reader_handle.lock() {
-            if let Some(handle) = h.take() {
-                handle.abort();
-            }
+        if let Ok(mut h) = self.reader_handle.lock()
+            && let Some(handle) = h.take()
+        {
+            handle.abort();
         }
-        if let Ok(mut h) = self.writer_handle.lock() {
-            if let Some(handle) = h.take() {
-                handle.abort();
-            }
+        if let Ok(mut h) = self.writer_handle.lock()
+            && let Some(handle) = h.take()
+        {
+            handle.abort();
         }
-        if let Ok(mut h) = self.wait_handle.lock() {
-            if let Some(handle) = h.take() {
-                handle.abort();
-            }
+        if let Ok(mut h) = self.wait_handle.lock()
+            && let Some(handle) = h.take()
+        {
+            handle.abort();
         }
     }
 }
