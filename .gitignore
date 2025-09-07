@@ -120,3 +120,5 @@ branches/
 .code/
 
 # trigger: test non-notes change (no [skip ci])
+/.cargo-home/
+/.cargo-cache/
