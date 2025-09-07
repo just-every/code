@@ -492,34 +492,81 @@ pub fn apply_hunks(
     stdout: &mut impl std::io::Write,
     stderr: &mut impl std::io::Write,
 ) -> Result<(), ApplyPatchError> {
-    let _existing_paths: Vec<&Path> = hunks
-        .iter()
-        .filter_map(|hunk| match hunk {
-            Hunk::AddFile { .. } => {
-                // The file is being added, so it doesn't exist yet.
-                None
-            }
-            Hunk::DeleteFile { path } => Some(path.as_path()),
-            Hunk::UpdateFile {
-                path, move_path, ..
-            } => match move_path {
-                Some(move_path) => {
-                    if std::fs::metadata(move_path)
-                        .map(|m| m.is_file())
-                        .unwrap_or(false)
-                    {
-                        Some(move_path.as_path())
-                    } else {
-                        None
+    // Determine a safe base directory for resolving relative paths.
+    // Prefer the git repository toplevel if available (works in worktrees),
+    // otherwise fall back to the current working directory.
+    fn repo_root_or_cwd() -> PathBuf {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        // Try "git rev-parse --show-toplevel" first
+        if let Ok(output) = std::process::Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+        {
+            if output.status.success() {
+                if let Ok(s) = String::from_utf8(output.stdout) {
+                    let p = PathBuf::from(s.trim());
+                    if !s.trim().is_empty() && p.is_dir() {
+                        return p;
                     }
                 }
-                None => Some(path.as_path()),
+            }
+        }
+        cwd
+    }
+
+    fn resolve_path_safely(base: &Path, p: &Path) -> PathBuf {
+        use std::path::Component;
+        if p.is_absolute() {
+            // Preserve absolute paths as-is for backward compatibility.
+            return p.to_path_buf();
+        }
+        let mut out = base.to_path_buf();
+        let base_depth = out.components().count();
+        for comp in p.components() {
+            match comp {
+                Component::CurDir => {}
+                Component::Normal(seg) => out.push(seg),
+                Component::ParentDir => {
+                    // Do not traverse above the base directory boundary.
+                    if out.components().count() > base_depth {
+                        let _ = out.pop();
+                    }
+                }
+                // RootDir/Prefix shouldn't appear for relative `p`; ignore defensively.
+                _ => {}
+            }
+        }
+        out
+    }
+
+    let base = repo_root_or_cwd();
+
+    // Resolve all hunk paths against the base and clamp any `..` so edits stay within it.
+    let resolved_hunks: Vec<Hunk> = hunks
+        .iter()
+        .cloned()
+        .map(|h| match h {
+            Hunk::AddFile { path, contents } => Hunk::AddFile {
+                path: resolve_path_safely(&base, &path),
+                contents,
+            },
+            Hunk::DeleteFile { path } => Hunk::DeleteFile {
+                path: resolve_path_safely(&base, &path),
+            },
+            Hunk::UpdateFile {
+                path,
+                move_path,
+                chunks,
+            } => Hunk::UpdateFile {
+                path: resolve_path_safely(&base, &path),
+                move_path: move_path.map(|mp| resolve_path_safely(&base, &mp)),
+                chunks,
             },
         })
-        .collect::<Vec<&Path>>();
+        .collect();
 
     // Delegate to a helper that applies each hunk to the filesystem.
-    match apply_hunks_to_files(hunks) {
+    match apply_hunks_to_files(&resolved_hunks) {
         Ok(affected) => {
             print_summary(&affected, stdout).map_err(ApplyPatchError::from)?;
             Ok(())
