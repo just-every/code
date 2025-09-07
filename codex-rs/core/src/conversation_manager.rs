@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::AuthManager;
 use crate::CodexAuth;
+use codex_protocol::mcp_protocol::AuthMode;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -34,18 +35,28 @@ pub struct NewConversation {
     pub session_configured: SessionConfiguredEvent,
 }
 
+impl std::fmt::Debug for NewConversation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NewConversation")
+            .field("conversation_id", &self.conversation_id)
+            .field("conversation", &"<omitted>")
+            .field("session_configured", &"<omitted>")
+            .finish()
+    }
+}
+
 /// [`ConversationManager`] is responsible for creating conversations and
 /// maintaining them in memory.
 pub struct ConversationManager {
     conversations: Arc<RwLock<HashMap<Uuid, Arc<CodexConversation>>>>,
-    auth_manager: Arc<AuthManager>,
+    _auth_manager: Arc<AuthManager>,
 }
 
 impl ConversationManager {
     pub fn new(auth_manager: Arc<AuthManager>) -> Self {
         Self {
             conversations: Arc::new(RwLock::new(HashMap::new())),
-            auth_manager,
+            _auth_manager: auth_manager,
         }
     }
 
@@ -56,30 +67,26 @@ impl ConversationManager {
     }
 
     pub async fn new_conversation(&self, config: Config) -> CodexResult<NewConversation> {
-        self.spawn_conversation(config, self.auth_manager.clone())
-            .await
+        // Build auth from codex_home using API key mode by default.
+        let auth = CodexAuth::from_codex_home(
+            &config.codex_home,
+            AuthMode::ApiKey,
+            &config.responses_originator_header,
+        )?;
+        self.spawn_conversation(config, auth).await
     }
 
     async fn spawn_conversation(
         &self,
         config: Config,
-        auth_manager: Arc<AuthManager>,
+        auth: Option<CodexAuth>,
     ) -> CodexResult<NewConversation> {
-        // TO BE REFACTORED: use the config experimental_resume field until we have a mainstream way.
-        if let Some(resume_path) = config.experimental_resume.as_ref() {
-            let initial_history = RolloutRecorder::get_rollout_history(resume_path).await?;
-            let CodexSpawnOk {
-                codex,
-                session_id: conversation_id,
-            } = Codex::spawn(config, auth_manager, initial_history).await?;
-            self.finalize_spawn(codex, conversation_id).await
-        } else {
-            let CodexSpawnOk {
-                codex,
-                session_id: conversation_id,
-            } = { Codex::spawn(config, auth_manager, InitialHistory::New).await? };
-            self.finalize_spawn(codex, conversation_id).await
-        }
+        let CodexSpawnOk {
+            codex,
+            init_id: _,
+            session_id: conversation_id,
+        } = Codex::spawn(config, auth).await?;
+        self.finalize_spawn(codex, conversation_id).await
     }
 
     async fn finalize_spawn(
@@ -92,10 +99,7 @@ impl ConversationManager {
         // history.
         let event = codex.next_event().await?;
         let session_configured = match event {
-            Event {
-                id,
-                msg: EventMsg::SessionConfigured(session_configured),
-            } if id == INITIAL_SUBMIT_ID => session_configured,
+            Event { id, msg: EventMsg::SessionConfigured(session_configured), .. } if id == INITIAL_SUBMIT_ID => session_configured,
             _ => {
                 return Err(CodexErr::SessionConfiguredNotFirstEvent);
             }
@@ -129,13 +133,14 @@ impl ConversationManager {
         &self,
         config: Config,
         rollout_path: PathBuf,
-        auth_manager: Arc<AuthManager>,
+        _auth_manager: Arc<AuthManager>,
     ) -> CodexResult<NewConversation> {
-        let initial_history = RolloutRecorder::get_rollout_history(&rollout_path).await?;
+        let _initial_history = RolloutRecorder::get_rollout_history(&rollout_path).await?;
         let CodexSpawnOk {
             codex,
+            init_id: _,
             session_id: conversation_id,
-        } = Codex::spawn(config, auth_manager, initial_history).await?;
+        } = Codex::spawn(config, None).await?;
         self.finalize_spawn(codex, conversation_id).await
     }
 
@@ -154,15 +159,15 @@ impl ConversationManager {
         config: Config,
     ) -> CodexResult<NewConversation> {
         // Compute the prefix up to the cut point.
-        let history =
+        let _truncated_history =
             truncate_after_dropping_last_messages(conversation_history, num_messages_to_drop);
 
         // Spawn a new conversation with the computed initial history.
-        let auth_manager = self.auth_manager.clone();
         let CodexSpawnOk {
             codex,
+            init_id: _,
             session_id: conversation_id,
-        } = Codex::spawn(config, auth_manager, history).await?;
+        } = Codex::spawn(config, None).await?;
 
         self.finalize_spawn(codex, conversation_id).await
     }
@@ -179,14 +184,14 @@ fn truncate_after_dropping_last_messages(items: Vec<ResponseItem>, n: usize) -> 
     let mut count = 0usize;
     let mut cut_index = 0usize;
     for (idx, item) in items.iter().enumerate().rev() {
-        if let ResponseItem::Message { role, .. } = item
-            && role == "user"
-        {
-            count += 1;
-            if count == n {
-                // Cut everything from this user message to the end.
-                cut_index = idx;
-                break;
+        if let ResponseItem::Message { role, .. } = item {
+            if role == "user" {
+                count += 1;
+                if count == n {
+                    // Cut everything from this user message to the end.
+                    cut_index = idx;
+                    break;
+                }
             }
         }
     }

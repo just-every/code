@@ -58,6 +58,7 @@ enum Subcommand {
     Logout(LogoutCommand),
 
     /// Experimental: run Codex as an MCP server.
+    #[cfg(feature = "mcp")]
     Mcp,
 
     /// Run the Protocol stream via stdin/stdout
@@ -174,6 +175,7 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
             prepend_config_flags(&mut exec_cli.config_overrides, cli.config_overrides);
             codex_exec::run_main(exec_cli, codex_linux_sandbox_exe).await?;
         }
+        #[cfg(feature = "mcp")]
         Some(Subcommand::Mcp) => {
             codex_mcp_server::run_main(codex_linux_sandbox_exe, cli.config_overrides).await?;
         }

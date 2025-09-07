@@ -1,14 +1,15 @@
 use std::io::BufRead;
 use std::path::Path;
-use std::sync::OnceLock;
+// use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::AuthManager;
 use bytes::Bytes;
 use codex_protocol::mcp_protocol::AuthMode;
+use codex_protocol::models::ResponseItem;
 use eventsource_stream::Eventsource;
 use futures::prelude::*;
-use regex_lite::Regex;
+// use regex_lite::Regex;
 use reqwest::StatusCode;
 use serde::Deserialize;
 use serde::Serialize;
@@ -28,9 +29,12 @@ use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
 use crate::client_common::ResponsesApiRequest;
 use crate::client_common::create_reasoning_param_for_request;
-use crate::client_common::create_text_param_for_request;
 use crate::config::Config;
+use crate::config_types::ReasoningEffort as ReasoningEffortConfig;
+use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
+use crate::config_types::TextVerbosity as TextVerbosityConfig;
 use crate::default_client::create_client;
+use crate::debug_logger::DebugLogger;
 use crate::error::CodexErr;
 use crate::error::Result;
 use crate::error::UsageLimitReachedError;
@@ -38,14 +42,11 @@ use crate::flags::CODEX_RS_SSE_FIXTURE;
 use crate::model_family::ModelFamily;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
-use crate::openai_model_info::get_model_info;
 use crate::openai_tools::create_tools_json_for_responses_api;
 use crate::protocol::TokenUsage;
 use crate::util::backoff;
-use codex_protocol::config_types::ReasoningEffort as ReasoningEffortConfig;
-use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
-use codex_protocol::models::ResponseItem;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 #[derive(Debug, Deserialize)]
 struct ErrorResponse {
@@ -64,6 +65,10 @@ struct Error {
     resets_in_seconds: Option<u64>,
 }
 
+fn try_parse_retry_after(err: &Error) -> Option<std::time::Duration> {
+    err.resets_in_seconds.map(std::time::Duration::from_secs)
+}
+
 #[derive(Debug, Clone)]
 pub struct ModelClient {
     config: Arc<Config>,
@@ -73,6 +78,8 @@ pub struct ModelClient {
     session_id: Uuid,
     effort: ReasoningEffortConfig,
     summary: ReasoningSummaryConfig,
+    verbosity: TextVerbosityConfig,
+    debug_logger: Arc<Mutex<DebugLogger>>,
 }
 
 impl ModelClient {
@@ -82,7 +89,9 @@ impl ModelClient {
         provider: ModelProviderInfo,
         effort: ReasoningEffortConfig,
         summary: ReasoningSummaryConfig,
+        verbosity: TextVerbosityConfig,
         session_id: Uuid,
+        debug_logger: Arc<Mutex<DebugLogger>>,
     ) -> Self {
         let client = create_client(&config.responses_originator_header);
 
@@ -94,13 +103,20 @@ impl ModelClient {
             session_id,
             effort,
             summary,
+            verbosity,
+            debug_logger,
         }
     }
 
-    pub fn get_model_context_window(&self) -> Option<u64> {
-        self.config
-            .model_context_window
-            .or_else(|| get_model_info(&self.config.model_family).map(|info| info.context_window))
+    /// Get the reasoning effort configuration
+    pub fn get_reasoning_effort(&self) -> ReasoningEffortConfig {
+        self.effort
+    }
+
+    /// Get the text verbosity configuration
+    #[allow(dead_code)]
+    pub fn get_text_verbosity(&self) -> TextVerbosityConfig {
+        self.verbosity
     }
 
     /// Dispatches to either the Responses or Chat implementation depending on
@@ -116,6 +132,7 @@ impl ModelClient {
                     &self.config.model_family,
                     &self.client,
                     &self.provider,
+                    &self.debug_logger,
                 )
                 .await?;
 
@@ -157,15 +174,39 @@ impl ModelClient {
 
         let auth_manager = self.auth_manager.clone();
 
+        let auth_mode = auth_manager
+            .as_ref()
+            .and_then(|m| m.auth())
+            .as_ref()
+            .map(|a| a.mode);
+
+        let store = prompt.store && auth_mode != Some(AuthMode::ChatGPT);
+
         let full_instructions = prompt.get_full_instructions(&self.config.model_family);
-        let tools_json = create_tools_json_for_responses_api(&prompt.tools)?;
+        let mut tools_json = create_tools_json_for_responses_api(&prompt.tools)?;
+        // ChatGPT backend currently expects the preview tool name.
+        if auth_mode == Some(AuthMode::ChatGPT) {
+            for tool in &mut tools_json {
+                if let Some(map) = tool.as_object_mut() {
+                    if map.get("type").and_then(|v| v.as_str()) == Some("web_search") {
+                        map.insert(
+                            "type".to_string(),
+                            serde_json::Value::String("web_search_preview".to_string()),
+                        );
+                    }
+                }
+            }
+        }
+
         let reasoning = create_reasoning_param_for_request(
             &self.config.model_family,
             self.effort,
             self.summary,
         );
 
-        let include: Vec<String> = if reasoning.is_some() {
+        // Request encrypted COT if we are not storing responses,
+        // otherwise reasoning items will be referenced by ID
+        let include: Vec<String> = if !store && reasoning.is_some() {
             vec!["reasoning.encrypted_content".to_string()]
         } else {
             vec![]
@@ -173,17 +214,13 @@ impl ModelClient {
 
         let input_with_instructions = prompt.get_formatted_input();
 
-        // Only include `text.verbosity` for GPT-5 family models
-        let text = if self.config.model_family.family == "gpt-5" {
-            create_text_param_for_request(self.config.model_verbosity)
-        } else {
-            if self.config.model_verbosity.is_some() {
-                warn!(
-                    "model_verbosity is set but ignored for non-gpt-5 model family: {}",
-                    self.config.model_family.family
-                );
-            }
+        // Create text parameter with verbosity (not supported with ChatGPT auth)
+        let text = if auth_mode == Some(AuthMode::ChatGPT) {
             None
+        } else {
+            Some(crate::client_common::Text {
+                verbosity: self.verbosity.into(),
+            })
         };
 
         let payload = ResponsesApiRequest {
@@ -192,17 +229,32 @@ impl ModelClient {
             input: &input_with_instructions,
             tools: &tools_json,
             tool_choice: "auto",
-            parallel_tool_calls: false,
+            parallel_tool_calls: true,
             reasoning,
-            store: false,
+            text,
+            store,
             stream: true,
             include,
             prompt_cache_key: Some(self.session_id.to_string()),
-            text,
         };
 
         let mut attempt = 0;
         let max_retries = self.provider.request_max_retries();
+
+        // Compute endpoint with the latest available auth (may be None at this point).
+        let endpoint = self
+            .provider
+            .get_full_url(&auth_manager.as_ref().and_then(|m| m.auth()));
+        trace!("POST to {}: {}", endpoint, serde_json::to_string(&payload)?);
+
+        // Start logging the request and get a request_id to track the response
+        let request_id = if let Ok(logger) = self.debug_logger.lock() {
+            logger
+                .start_request_log(&endpoint, &serde_json::to_value(&payload)?)
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
 
         loop {
             attempt += 1;
@@ -227,11 +279,13 @@ impl ModelClient {
                 .header(reqwest::header::ACCEPT, "text/event-stream")
                 .json(&payload);
 
-            if let Some(auth) = auth.as_ref()
-                && auth.mode == AuthMode::ChatGPT
-                && let Some(account_id) = auth.get_account_id()
-            {
-                req_builder = req_builder.header("chatgpt-account-id", account_id);
+            // Avoid unstable `let` chains: expand into nested conditionals.
+            if let Some(auth) = auth.as_ref() {
+                if auth.mode == AuthMode::ChatGPT {
+                    if let Some(account_id) = auth.get_account_id() {
+                        req_builder = req_builder.header("chatgpt-account-id", account_id);
+                    }
+                }
             }
 
             let res = req_builder.send().await;
@@ -248,14 +302,33 @@ impl ModelClient {
 
             match res {
                 Ok(resp) if resp.status().is_success() => {
+                    // Log successful response initiation
+                    if let Ok(logger) = self.debug_logger.lock() {
+                        let _ = logger.append_response_event(
+                            &request_id,
+                            "stream_initiated",
+                            &serde_json::json!({
+                                "status": "success",
+                                "status_code": resp.status().as_u16(),
+                                "x_request_id": resp.headers()
+                                    .get("x-request-id")
+                                    .and_then(|v| v.to_str().ok())
+                                    .unwrap_or_default()
+                            }),
+                        );
+                    }
                     let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent>>(1600);
 
                     // spawn task to process SSE
                     let stream = resp.bytes_stream().map_err(CodexErr::Reqwest);
+                    let debug_logger = Arc::clone(&self.debug_logger);
+                    let request_id_clone = request_id.clone();
                     tokio::spawn(process_sse(
                         stream,
                         tx_event,
                         self.provider.stream_idle_timeout(),
+                        debug_logger,
+                        request_id_clone,
                     ));
 
                     return Ok(ResponseStream { rx_event });
@@ -270,11 +343,10 @@ impl ModelClient {
                         .and_then(|v| v.to_str().ok())
                         .and_then(|s| s.parse::<u64>().ok());
 
-                    if status == StatusCode::UNAUTHORIZED
-                        && let Some(manager) = auth_manager.as_ref()
-                        && manager.auth().is_some()
-                    {
-                        let _ = manager.refresh_token().await;
+                    if status == StatusCode::UNAUTHORIZED {
+                        if let Some(a) = auth.as_ref() {
+                            let _ = a.refresh_token().await;
+                        }
                     }
 
                     // The OpenAI Responses endpoint returns structured JSON bodies even for 4xx/5xx
@@ -290,6 +362,18 @@ impl ModelClient {
                     {
                         // Surface the error body to callers. Use `unwrap_or_default` per Clippy.
                         let body = res.text().await.unwrap_or_default();
+                        // Log error response
+                        if let Ok(logger) = self.debug_logger.lock() {
+                            let _ = logger.append_response_event(
+                                &request_id,
+                                "error",
+                                &serde_json::json!({
+                                    "status": status.as_u16(),
+                                    "body": body
+                                }),
+                            );
+                            let _ = logger.end_request_log(&request_id);
+                        }
                         return Err(CodexErr::UnexpectedStatus(status, body));
                     }
 
@@ -329,6 +413,10 @@ impl ModelClient {
                 }
                 Err(e) => {
                     if attempt > max_retries {
+                        // Log network error
+                        if let Ok(logger) = self.debug_logger.lock() {
+                            let _ = logger.log_error(&endpoint, &format!("Network error: {}", e));
+                        }
                         return Err(e.into());
                     }
                     let delay = backoff(attempt);
@@ -343,25 +431,20 @@ impl ModelClient {
     }
 
     /// Returns the currently configured model slug.
+    #[allow(dead_code)]
     pub fn get_model(&self) -> String {
         self.config.model.clone()
     }
 
     /// Returns the currently configured model family.
+    #[allow(dead_code)]
     pub fn get_model_family(&self) -> ModelFamily {
         self.config.model_family.clone()
     }
 
-    /// Returns the current reasoning effort setting.
-    pub fn get_reasoning_effort(&self) -> ReasoningEffortConfig {
-        self.effort
-    }
+    // duplicate of earlier helpers removed during merge cleanup
 
-    /// Returns the current reasoning summary setting.
-    pub fn get_reasoning_summary(&self) -> ReasoningSummaryConfig {
-        self.summary
-    }
-
+    #[allow(dead_code)]
     pub fn get_auth_manager(&self) -> Option<Arc<AuthManager>> {
         self.auth_manager.clone()
     }
@@ -374,6 +457,15 @@ struct SseEvent {
     response: Option<Value>,
     item: Option<Value>,
     delta: Option<String>,
+    // Present on delta events from the Responses API; used to correlate
+    // streaming chunks with the final OutputItemDone.
+    item_id: Option<String>,
+    // Optional ordering metadata from the Responses API; used to filter
+    // duplicates and out‑of‑order reasoning deltas.
+    sequence_number: Option<u64>,
+    output_index: Option<u32>,
+    content_index: Option<u32>,
+    summary_index: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -398,15 +490,9 @@ impl From<ResponseCompletedUsage> for TokenUsage {
     fn from(val: ResponseCompletedUsage) -> Self {
         TokenUsage {
             input_tokens: val.input_tokens,
-            cached_input_tokens: val
-                .input_tokens_details
-                .map(|d| d.cached_tokens)
-                .unwrap_or(0),
+            cached_input_tokens: val.input_tokens_details.map(|d| d.cached_tokens),
             output_tokens: val.output_tokens,
-            reasoning_output_tokens: val
-                .output_tokens_details
-                .map(|d| d.reasoning_tokens)
-                .unwrap_or(0),
+            reasoning_output_tokens: val.output_tokens_details.map(|d| d.reasoning_tokens),
             total_tokens: val.total_tokens,
         }
     }
@@ -426,6 +512,8 @@ async fn process_sse<S>(
     stream: S,
     tx_event: mpsc::Sender<Result<ResponseEvent>>,
     idle_timeout: Duration,
+    debug_logger: Arc<Mutex<DebugLogger>>,
+    request_id: String,
 ) where
     S: Stream<Item = Result<Bytes>> + Unpin,
 {
@@ -435,6 +523,19 @@ async fn process_sse<S>(
     // The response id returned from the "complete" message.
     let mut response_completed: Option<ResponseCompleted> = None;
     let mut response_error: Option<CodexErr> = None;
+    // Track the current item_id to include with delta events
+    let mut current_item_id: Option<String> = None;
+
+    // Monotonic sequence guards to drop duplicate/out‑of‑order deltas.
+    // Keys are item_id strings.
+    use std::collections::HashMap;
+    // Track last sequence_number per (item_id, output_index[, content_index])
+    // Default indices to 0 when absent for robustness across providers.
+    let mut last_seq_reasoning_summary: HashMap<(String, u32, u32), u64> = HashMap::new();
+    let mut last_seq_reasoning_content: HashMap<(String, u32, u32), u64> = HashMap::new();
+    // Best-effort duplicate text guard when sequence_number is unavailable.
+    let mut last_text_reasoning_summary: HashMap<(String, u32, u32), String> = HashMap::new();
+    let mut last_text_reasoning_content: HashMap<(String, u32, u32), String> = HashMap::new();
 
     loop {
         let sse = match timeout(idle_timeout, stream.next()).await {
@@ -466,6 +567,10 @@ async fn process_sse<S>(
                             .await;
                     }
                 }
+                // Mark the request log as complete
+                if let Ok(logger) = debug_logger.lock() {
+                    let _ = logger.end_request_log(&request_id);
+                }
                 return;
             }
             Err(_) => {
@@ -481,6 +586,13 @@ async fn process_sse<S>(
 
         let raw = sse.data.clone();
         trace!("SSE event: {}", raw);
+
+        // Log the raw SSE event data
+        if let Ok(logger) = debug_logger.lock() {
+            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&sse.data) {
+                let _ = logger.append_response_event(&request_id, "sse_event", &json_value);
+            }
+        }
 
         let event: SseEvent = match serde_json::from_str(&sse.data) {
             Ok(event) => event,
@@ -511,36 +623,153 @@ async fn process_sse<S>(
             // drop the duplicated list inside `response.completed`.
             "response.output_item.done" => {
                 let Some(item_val) = event.item else { continue };
-                let Ok(item) = serde_json::from_value::<ResponseItem>(item_val) else {
+                // Special-case: web_search_call completion -> synthesize a completion event
+                if item_val
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| s == "web_search_call")
+                {
+                    let call_id = item_val
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let query = item_val
+                        .get("action")
+                        .and_then(|a| a.get("query"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let ev = ResponseEvent::WebSearchCallCompleted { call_id, query };
+                    if tx_event.send(Ok(ev)).await.is_err() {
+                        return;
+                    }
+                }
+                let Ok(item) = serde_json::from_value::<ResponseItem>(item_val.clone()) else {
                     debug!("failed to parse ResponseItem from output_item.done");
                     continue;
                 };
 
-                let event = ResponseEvent::OutputItemDone(item);
+                // Extract item_id if present
+                if let Some(id) = item_val.get("id").and_then(|v| v.as_str()) {
+                    current_item_id = Some(id.to_string());
+                } else {
+                    // Check within the parsed item structure
+                    match &item {
+                        ResponseItem::Message { id, .. }
+                        | ResponseItem::FunctionCall { id, .. }
+                        | ResponseItem::LocalShellCall { id, .. } => {
+                            if let Some(item_id) = id {
+                                current_item_id = Some(item_id.clone());
+                            }
+                        }
+                        ResponseItem::Reasoning { id, .. } => {
+                            current_item_id = Some(id.clone());
+                        }
+                        _ => {}
+                    }
+                }
+
+                let event = ResponseEvent::OutputItemDone { item, sequence_number: event.sequence_number, output_index: event.output_index };
                 if tx_event.send(Ok(event)).await.is_err() {
                     return;
                 }
             }
             "response.output_text.delta" => {
                 if let Some(delta) = event.delta {
-                    let event = ResponseEvent::OutputTextDelta(delta);
-                    if tx_event.send(Ok(event)).await.is_err() {
+                    // Prefer the explicit item_id from the SSE event; fall back to last seen.
+                    if let Some(ref id) = event.item_id {
+                        current_item_id = Some(id.clone());
+                    }
+                    tracing::debug!("sse.delta output_text id={:?} len={}", current_item_id, delta.len());
+                    let ev = ResponseEvent::OutputTextDelta {
+                        delta,
+                        item_id: event.item_id.or_else(|| current_item_id.clone()),
+                        sequence_number: event.sequence_number,
+                        output_index: event.output_index,
+                    };
+                    if tx_event.send(Ok(ev)).await.is_err() {
                         return;
                     }
                 }
             }
             "response.reasoning_summary_text.delta" => {
                 if let Some(delta) = event.delta {
-                    let event = ResponseEvent::ReasoningSummaryDelta(delta);
-                    if tx_event.send(Ok(event)).await.is_err() {
+                    if let Some(ref id) = event.item_id {
+                        current_item_id = Some(id.clone());
+                    }
+                    // Compose key using item_id + output_index
+                    let out_idx: u32 = event.output_index.unwrap_or(0);
+                    let sum_idx: u32 = event.summary_index.unwrap_or(0);
+                    if let Some(ref id) = current_item_id {
+                        // Drop duplicates/out‑of‑order by sequence_number when available
+                        if let Some(sn) = event.sequence_number {
+                            let last = last_seq_reasoning_summary.entry((id.clone(), out_idx, sum_idx)).or_insert(0);
+                            if *last >= sn { continue; }
+                            *last = sn;
+                        } else {
+                            // Best-effort: drop exact duplicate text for same key when seq is missing
+                            let key = (id.clone(), out_idx, sum_idx);
+                            if last_text_reasoning_summary.get(&key).map_or(false, |prev| prev == &delta) {
+                                continue;
+                            }
+                            last_text_reasoning_summary.insert(key, delta.clone());
+                        }
+                    }
+                    tracing::debug!(
+                        "sse.delta reasoning_summary id={:?} out_idx={} sum_idx={} len={} seq={:?}",
+                        current_item_id, out_idx, sum_idx,
+                        delta.len(),
+                        event.sequence_number
+                    );
+                    let ev = ResponseEvent::ReasoningSummaryDelta {
+                        delta,
+                        item_id: event.item_id.or_else(|| current_item_id.clone()),
+                        sequence_number: event.sequence_number,
+                        output_index: event.output_index,
+                        summary_index: event.summary_index,
+                    };
+                    if tx_event.send(Ok(ev)).await.is_err() {
                         return;
                     }
                 }
             }
             "response.reasoning_text.delta" => {
                 if let Some(delta) = event.delta {
-                    let event = ResponseEvent::ReasoningContentDelta(delta);
-                    if tx_event.send(Ok(event)).await.is_err() {
+                    if let Some(ref id) = event.item_id {
+                        current_item_id = Some(id.clone());
+                    }
+                    // Compose key using item_id + output_index + content_index
+                    let out_idx: u32 = event.output_index.unwrap_or(0);
+                    let content_idx: u32 = event.content_index.unwrap_or(0);
+                    if let Some(ref id) = current_item_id {
+                        // Drop duplicates/out‑of‑order by sequence_number when available
+                        if let Some(sn) = event.sequence_number {
+                            let last = last_seq_reasoning_content.entry((id.clone(), out_idx, content_idx)).or_insert(0);
+                            if *last >= sn { continue; }
+                            *last = sn;
+                        } else {
+                            // Best-effort: drop exact duplicate text for same key when seq is missing
+                            let key = (id.clone(), out_idx, content_idx);
+                            if last_text_reasoning_content.get(&key).map_or(false, |prev| prev == &delta) {
+                                continue;
+                            }
+                            last_text_reasoning_content.insert(key, delta.clone());
+                        }
+                    }
+                    tracing::debug!(
+                        "sse.delta reasoning_content id={:?} out_idx={} content_idx={} len={} seq={:?}",
+                        current_item_id, out_idx, content_idx,
+                        delta.len(),
+                        event.sequence_number
+                    );
+                    let ev = ResponseEvent::ReasoningContentDelta {
+                        delta,
+                        item_id: event.item_id.or_else(|| current_item_id.clone()),
+                        sequence_number: event.sequence_number,
+                        output_index: event.output_index,
+                        content_index: event.content_index,
+                    };
+                    if tx_event.send(Ok(ev)).await.is_err() {
                         return;
                     }
                 }
@@ -592,21 +821,23 @@ async fn process_sse<S>(
             | "response.custom_tool_call_input.delta"
             | "response.custom_tool_call_input.done" // also emitted as response.output_item.done
             | "response.in_progress"
-            | "response.output_text.done" => {}
-            "response.output_item.added" => {
-                if let Some(item) = event.item.as_ref() {
-                    // Detect web_search_call begin and forward a synthetic event upstream.
-                    if let Some(ty) = item.get("type").and_then(|v| v.as_str())
-                        && ty == "web_search_call"
-                    {
-                        let call_id = item
-                            .get("id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let ev = ResponseEvent::WebSearchCallBegin { call_id };
-                        if tx_event.send(Ok(ev)).await.is_err() {
-                            return;
+            | "response.output_item.added"
+            | "response.output_text.done" => {
+                if event.kind == "response.output_item.added" {
+                    if let Some(item) = event.item.as_ref() {
+                        // Detect web_search_call begin and forward a synthetic event upstream.
+                        if let Some(ty) = item.get("type").and_then(|v| v.as_str()) {
+                            if ty == "web_search_call" {
+                                let call_id = item
+                                    .get("id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let ev = ResponseEvent::WebSearchCallBegin { call_id };
+                                if tx_event.send(Ok(ev)).await.is_err() {
+                                    return;
+                                }
+                            }
                         }
                     }
                 }
@@ -642,47 +873,21 @@ async fn stream_from_fixture(
 
     let rdr = std::io::Cursor::new(content);
     let stream = ReaderStream::new(rdr).map_err(CodexErr::Io);
+    // Create a dummy debug logger for testing
+    let debug_logger = Arc::new(Mutex::new(DebugLogger::new(false).unwrap()));
     tokio::spawn(process_sse(
         stream,
         tx_event,
         provider.stream_idle_timeout(),
+        debug_logger,
+        String::new(), // Empty request_id for test fixture
     ));
     Ok(ResponseStream { rx_event })
 }
 
-fn rate_limit_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-
-    #[expect(clippy::unwrap_used)]
-    RE.get_or_init(|| Regex::new(r"Please try again in (\d+(?:\.\d+)?)(s|ms)").unwrap())
-}
-
-fn try_parse_retry_after(err: &Error) -> Option<Duration> {
-    if err.code != Some("rate_limit_exceeded".to_string()) {
-        return None;
-    }
-
-    // parse the Please try again in 1.898s format using regex
-    let re = rate_limit_regex();
-    if let Some(message) = &err.message
-        && let Some(captures) = re.captures(message)
-    {
-        let seconds = captures.get(1);
-        let unit = captures.get(2);
-
-        if let (Some(value), Some(unit)) = (seconds, unit) {
-            let value = value.as_str().parse::<f64>().ok()?;
-            let unit = unit.as_str();
-
-            if unit == "s" {
-                return Some(Duration::from_secs_f64(value));
-            } else if unit == "ms" {
-                return Some(Duration::from_millis(value as u64));
-            }
-        }
-    }
-    None
-}
+// Note: legacy helpers for parsing Retry-After headers and rate-limit messages
+// were removed during merge cleanup. If needed in the future, pick them from
+// upstream and integrate with our error handling path.
 
 #[cfg(test)]
 mod tests {
@@ -710,7 +915,14 @@ mod tests {
         let reader = builder.build();
         let stream = ReaderStream::new(reader).map_err(CodexErr::Io);
         let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent>>(16);
-        tokio::spawn(process_sse(stream, tx, provider.stream_idle_timeout()));
+        let debug_logger = Arc::new(Mutex::new(DebugLogger::new(false).unwrap()));
+        tokio::spawn(process_sse(
+            stream,
+            tx,
+            provider.stream_idle_timeout(),
+            debug_logger,
+            String::new(),
+        ));
 
         let mut events = Vec::new();
         while let Some(ev) = rx.recv().await {
@@ -740,7 +952,14 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent>>(8);
         let stream = ReaderStream::new(std::io::Cursor::new(body)).map_err(CodexErr::Io);
-        tokio::spawn(process_sse(stream, tx, provider.stream_idle_timeout()));
+        let debug_logger = Arc::new(Mutex::new(DebugLogger::new(false).unwrap()));
+        tokio::spawn(process_sse(
+            stream,
+            tx,
+            provider.stream_idle_timeout(),
+            debug_logger,
+            String::new(),
+        ));
 
         let mut out = Vec::new();
         while let Some(ev) = rx.recv().await {

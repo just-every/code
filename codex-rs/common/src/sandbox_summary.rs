@@ -9,6 +9,7 @@ pub fn summarize_sandbox_policy(sandbox_policy: &SandboxPolicy) -> String {
             network_access,
             exclude_tmpdir_env_var,
             exclude_slash_tmp,
+            allow_git_writes,
         } => {
             let mut summary = "workspace-write".to_string();
 
@@ -27,6 +28,9 @@ pub fn summarize_sandbox_policy(sandbox_policy: &SandboxPolicy) -> String {
             );
 
             summary.push_str(&format!(" [{}]", writable_entries.join(", ")));
+            if *allow_git_writes {
+                summary.push_str(" (git writes enabled)");
+            }
             if *network_access {
                 summary.push_str(" (network access enabled)");
             }

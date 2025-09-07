@@ -147,8 +147,8 @@ impl McpConnectionManager {
                                 elicitation: Some(json!({})),
                             },
                             client_info: Implementation {
-                                name: "codex-mcp-client".to_owned(),
-                                version: env!("CARGO_PKG_VERSION").to_owned(),
+                                name: "code-mcp-client".to_owned(),
+                                version: codex_version::version().to_owned(),
                                 title: Some("Codex".into()),
                             },
                             protocol_version: mcp_types::MCP_SCHEMA_VERSION.to_owned(),

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::io::Read;
@@ -238,6 +239,13 @@ impl SessionManager {
             output,
         })
     }
+
+    /// Kill all running exec sessions by dropping their session objects.
+    /// This is invoked on user interrupts to ensure no child processes remain.
+    pub async fn kill_all(&self) {
+        let mut sessions = self.sessions.lock().await;
+        sessions.clear(); // dropping ExecCommandSession triggers ChildKiller::kill in Drop
+    }
 }
 
 /// Spawn PTY and child process per spawn_exec_command_session logic.
@@ -377,20 +385,20 @@ fn truncate_middle(s: &str, max_bytes: usize) -> (String, Option<u64>) {
     // Given a left/right budget, prefer newline boundaries; otherwise fall back
     // to UTF-8 char boundaries.
     fn pick_prefix_end(s: &str, left_budget: usize) -> usize {
-        if let Some(head) = s.get(..left_budget)
-            && let Some(i) = head.rfind('\n')
-        {
-            return i + 1; // keep the newline so suffix starts on a fresh line
+        if let Some(head) = s.get(..left_budget) {
+            if let Some(i) = head.rfind('\n') {
+                return i + 1; // keep the newline so suffix starts on a fresh line
+            }
         }
         truncate_on_boundary(s, left_budget).len()
     }
 
     fn pick_suffix_start(s: &str, right_budget: usize) -> usize {
         let start_tail = s.len().saturating_sub(right_budget);
-        if let Some(tail) = s.get(start_tail..)
-            && let Some(i) = tail.find('\n')
-        {
-            return start_tail + i + 1; // start after newline
+        if let Some(tail) = s.get(start_tail..) {
+            if let Some(i) = tail.find('\n') {
+                return start_tail + i + 1; // start after newline
+            }
         }
         // Fall back to a char boundary at or after start_tail.
         let mut idx = start_tail.min(s.len());
@@ -570,13 +578,12 @@ PY"#
     fn extract_monotonic_numbers(s: &str) -> Vec<i64> {
         s.lines()
             .filter_map(|line| {
-                if !line.is_empty()
-                    && line.chars().all(|c| c.is_ascii_digit())
-                    && let Ok(n) = line.parse::<i64>()
-                {
-                    // Our generator increments by 100; ignore spurious fragments.
-                    if n % 100 == 0 {
-                        return Some(n);
+                if !line.is_empty() && line.chars().all(|c| c.is_ascii_digit()) {
+                    if let Ok(n) = line.parse::<i64>() {
+                        // Our generator increments by 100; ignore spurious fragments.
+                        if n % 100 == 0 {
+                            return Some(n);
+                        }
                     }
                 }
                 None

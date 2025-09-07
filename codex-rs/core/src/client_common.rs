@@ -1,11 +1,13 @@
+use crate::config_types::ReasoningEffort as ReasoningEffortConfig;
+use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
+use crate::config_types::TextVerbosity as TextVerbosityConfig;
+use crate::environment_context::EnvironmentContext;
 use crate::error::Result;
 use crate::model_family::ModelFamily;
 use crate::openai_tools::OpenAiTool;
 use crate::protocol::TokenUsage;
 use codex_apply_patch::APPLY_PATCH_TOOL_INSTRUCTIONS;
-use codex_protocol::config_types::ReasoningEffort as ReasoningEffortConfig;
-use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
-use codex_protocol::config_types::Verbosity as VerbosityConfig;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use futures::Stream;
 use serde::Serialize;
@@ -19,15 +21,40 @@ use tokio::sync::mpsc;
 /// with this content.
 const BASE_INSTRUCTIONS: &str = include_str!("../prompt.md");
 
+/// Additional prompt for Code. Can not edit Codex instructions.
+const ADDITIONAL_INSTRUCTIONS: &str = include_str!("../prompt_coder.md");
+
+/// wraps environment context message in a tag for the model to parse more easily.
+const ENVIRONMENT_CONTEXT_START: &str = "<environment_context>\n\n";
+const ENVIRONMENT_CONTEXT_END: &str = "\n\n</environment_context>";
+
+/// wraps user instructions message in a tag for the model to parse more easily.
+const USER_INSTRUCTIONS_START: &str = "<user_instructions>\n\n";
+const USER_INSTRUCTIONS_END: &str = "\n\n</user_instructions>";
+
 /// API request payload for a single model turn
 #[derive(Default, Debug, Clone)]
 pub struct Prompt {
     /// Conversation context input items.
     pub input: Vec<ResponseItem>,
 
+    /// Whether to store response on server side (disable_response_storage = !store).
+    pub store: bool,
+
+    /// Model instructions that are appended to the base instructions.
+    pub user_instructions: Option<String>,
+
+    /// A list of key-value pairs that will be added as a developer message
+    /// for the model to use
+    pub environment_context: Option<EnvironmentContext>,
+
     /// Tools available to the model, including additional tools sourced from
     /// external MCP servers.
     pub(crate) tools: Vec<OpenAiTool>,
+
+    /// Status items to be added at the end of the input
+    /// These are generated fresh for each request (screenshots, system status)
+    pub status_items: Vec<ResponseItem>,
 
     /// Optional override for the built-in BASE_INSTRUCTIONS.
     pub base_instructions_override: Option<String>,
@@ -57,25 +84,121 @@ impl Prompt {
         Cow::Owned(sections.join("\n"))
     }
 
+    fn get_formatted_user_instructions(&self) -> Option<String> {
+        self.user_instructions
+            .as_ref()
+            .map(|ui| format!("{USER_INSTRUCTIONS_START}{ui}{USER_INSTRUCTIONS_END}"))
+    }
+
+    fn get_formatted_environment_context(&self) -> Option<String> {
+        self.environment_context
+            .as_ref()
+            .map(|ec| {
+                let ec_str = serde_json::to_string_pretty(ec).unwrap_or_else(|_| format!("{:?}", ec));
+                format!("{ENVIRONMENT_CONTEXT_START}{ec_str}{ENVIRONMENT_CONTEXT_END}")
+            })
+    }
+
     pub(crate) fn get_formatted_input(&self) -> Vec<ResponseItem> {
-        self.input.clone()
+        let mut input_with_instructions =
+            Vec::with_capacity(self.input.len() + self.status_items.len() + 3);
+        input_with_instructions.push(ResponseItem::Message {
+            id: None,
+            role: "developer".to_string(),
+            content: vec![ContentItem::InputText {
+                text: ADDITIONAL_INSTRUCTIONS.to_string(),
+            }],
+        });
+        if let Some(ec) = self.get_formatted_environment_context() {
+            input_with_instructions.push(ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText { text: ec }],
+            });
+        }
+        if let Some(ui) = self.get_formatted_user_instructions() {
+            input_with_instructions.push(ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText { text: ui }],
+            });
+        }
+        // Deduplicate function call outputs before adding to input
+        let mut seen_call_ids = std::collections::HashSet::new();
+        for item in &self.input {
+            match item {
+                ResponseItem::FunctionCallOutput { call_id, .. } => {
+                    if !seen_call_ids.insert(call_id.clone()) {
+                        // Skip duplicate function call output
+                        tracing::debug!(
+                            "Filtering duplicate FunctionCallOutput with call_id: {} from input",
+                            call_id
+                        );
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+            input_with_instructions.push(item.clone());
+        }
+
+        // Add status items at the end so they're fresh for each request
+        input_with_instructions.extend(self.status_items.clone());
+        
+        // Limit screenshots to maximum 5 (keep first and last 4)
+        limit_screenshots_in_input(&mut input_with_instructions);
+        
+        input_with_instructions
+    }
+
+    /// Creates a formatted user instructions message from a string
+    #[allow(dead_code)]
+    pub(crate) fn format_user_instructions_message(ui: &str) -> ResponseItem {
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: format!("{USER_INSTRUCTIONS_START}{ui}{USER_INSTRUCTIONS_END}"),
+            }],
+        }
     }
 }
 
 #[derive(Debug)]
 pub enum ResponseEvent {
     Created,
-    OutputItemDone(ResponseItem),
+    OutputItemDone { item: ResponseItem, sequence_number: Option<u64>, output_index: Option<u32> },
     Completed {
         response_id: String,
         token_usage: Option<TokenUsage>,
     },
-    OutputTextDelta(String),
-    ReasoningSummaryDelta(String),
-    ReasoningContentDelta(String),
+    OutputTextDelta {
+        delta: String,
+        item_id: Option<String>,
+        sequence_number: Option<u64>,
+        output_index: Option<u32>,
+    },
+    ReasoningSummaryDelta {
+        delta: String,
+        item_id: Option<String>,
+        sequence_number: Option<u64>,
+        output_index: Option<u32>,
+        summary_index: Option<u32>,
+    },
+    ReasoningContentDelta {
+        delta: String,
+        item_id: Option<String>,
+        sequence_number: Option<u64>,
+        output_index: Option<u32>,
+        content_index: Option<u32>,
+    },
     ReasoningSummaryPartAdded,
     WebSearchCallBegin {
         call_id: String,
+    },
+    WebSearchCallCompleted {
+        call_id: String,
+        query: Option<String>,
     },
 }
 
@@ -85,30 +208,95 @@ pub(crate) struct Reasoning {
     pub(crate) summary: ReasoningSummaryConfig,
 }
 
-/// Controls under the `text` field in the Responses API for GPT-5.
-#[derive(Debug, Serialize, Default, Clone, Copy)]
-pub(crate) struct TextControls {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) verbosity: Option<OpenAiVerbosity>,
+/// Text configuration for verbosity level in OpenAI API responses.
+#[derive(Debug, Serialize)]
+pub(crate) struct Text {
+    pub(crate) verbosity: OpenAiTextVerbosity,
 }
 
+/// OpenAI text verbosity level for serialization.
 #[derive(Debug, Serialize, Default, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum OpenAiVerbosity {
+pub(crate) enum OpenAiTextVerbosity {
     Low,
     #[default]
     Medium,
     High,
 }
 
-impl From<VerbosityConfig> for OpenAiVerbosity {
-    fn from(v: VerbosityConfig) -> Self {
-        match v {
-            VerbosityConfig::Low => OpenAiVerbosity::Low,
-            VerbosityConfig::Medium => OpenAiVerbosity::Medium,
-            VerbosityConfig::High => OpenAiVerbosity::High,
+impl From<TextVerbosityConfig> for OpenAiTextVerbosity {
+    fn from(verbosity: TextVerbosityConfig) -> Self {
+        match verbosity {
+            TextVerbosityConfig::Low => OpenAiTextVerbosity::Low,
+            TextVerbosityConfig::Medium => OpenAiTextVerbosity::Medium,
+            TextVerbosityConfig::High => OpenAiTextVerbosity::High,
         }
     }
+}
+
+/// Limits the number of screenshots in the input to a maximum of 5.
+/// Keeps the first screenshot and the last 4 screenshots.
+/// Replaces removed screenshots with a placeholder message.
+fn limit_screenshots_in_input(input: &mut Vec<ResponseItem>) {
+    // Find all screenshot positions
+    let mut screenshot_positions = Vec::new();
+    
+    for (idx, item) in input.iter().enumerate() {
+        if let ResponseItem::Message { content, .. } = item {
+            let has_screenshot = content
+                .iter()
+                .any(|c| matches!(c, ContentItem::InputImage { .. }));
+            if has_screenshot {
+                screenshot_positions.push(idx);
+            }
+        }
+    }
+    
+    // If we have 5 or fewer screenshots, no action needed
+    if screenshot_positions.len() <= 5 {
+        return;
+    }
+    
+    // Determine which screenshots to keep
+    let mut positions_to_keep = std::collections::HashSet::new();
+    
+    // Keep the first screenshot
+    if let Some(&first) = screenshot_positions.first() {
+        positions_to_keep.insert(first);
+    }
+    
+    // Keep the last 4 screenshots
+    let last_four_start = screenshot_positions.len().saturating_sub(4);
+    for &pos in &screenshot_positions[last_four_start..] {
+        positions_to_keep.insert(pos);
+    }
+    
+    // Replace screenshots that should be removed
+    for &pos in &screenshot_positions {
+        if !positions_to_keep.contains(&pos) {
+            if let Some(ResponseItem::Message { content, .. }) = input.get_mut(pos) {
+                // Replace image content with placeholder message
+                let mut new_content = Vec::new();
+                for item in content.iter() {
+                    match item {
+                        ContentItem::InputImage { .. } => {
+                            new_content.push(ContentItem::InputText {
+                                text: "[screenshot no longer available]".to_string(),
+                            });
+                        }
+                        other => new_content.push(other.clone()),
+                    }
+                }
+                *content = new_content;
+            }
+        }
+    }
+    
+    tracing::debug!(
+        "Limited screenshots from {} to {} (kept first and last 4)",
+        screenshot_positions.len(),
+        positions_to_keep.len()
+    );
 }
 
 /// Request object that is serialized as JSON and POST'ed when using the
@@ -125,13 +313,14 @@ pub(crate) struct ResponsesApiRequest<'a> {
     pub(crate) tool_choice: &'static str,
     pub(crate) parallel_tool_calls: bool,
     pub(crate) reasoning: Option<Reasoning>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) text: Option<Text>,
+    /// true when using the Responses API.
     pub(crate) store: bool,
     pub(crate) stream: bool,
     pub(crate) include: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) prompt_cache_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) text: Option<TextControls>,
 }
 
 pub(crate) fn create_reasoning_param_for_request(
@@ -146,13 +335,7 @@ pub(crate) fn create_reasoning_param_for_request(
     }
 }
 
-pub(crate) fn create_text_param_for_request(
-    verbosity: Option<VerbosityConfig>,
-) -> Option<TextControls> {
-    verbosity.map(|v| TextControls {
-        verbosity: Some(v.into()),
-    })
-}
+// Removed legacy TextControls helper; use `Text` with `OpenAiTextVerbosity` instead.
 
 pub struct ResponseStream {
     pub(crate) rx_event: mpsc::Receiver<Result<ResponseEvent>>,
@@ -195,13 +378,11 @@ mod tests {
             tool_choice: "auto",
             parallel_tool_calls: false,
             reasoning: None,
-            store: false,
+            store: true,
             stream: true,
             include: vec![],
             prompt_cache_key: None,
-            text: Some(TextControls {
-                verbosity: Some(OpenAiVerbosity::Low),
-            }),
+            text: Some(Text { verbosity: OpenAiTextVerbosity::Low }),
         };
 
         let v = serde_json::to_value(&req).expect("json");
@@ -225,7 +406,7 @@ mod tests {
             tool_choice: "auto",
             parallel_tool_calls: false,
             reasoning: None,
-            store: false,
+            store: true,
             stream: true,
             include: vec![],
             prompt_cache_key: None,

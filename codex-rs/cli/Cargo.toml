@@ -24,7 +24,7 @@ codex-common = { path = "../common", features = ["cli"] }
 codex-core = { path = "../core" }
 codex-exec = { path = "../exec" }
 codex-login = { path = "../login" }
-codex-mcp-server = { path = "../mcp-server" }
+codex-mcp-server = { path = "../mcp-server", optional = true }
 codex-protocol = { path = "../protocol" }
 codex-tui = { path = "../tui" }
 codex-version = { path = "../codex-version" }
@@ -41,3 +41,8 @@ tokio = { version = "1", features = [
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 codex-protocol-ts = { path = "../protocol-ts" }
+
+[features]
+default = []
+# Optional MCP server integration (off by default to keep build surface minimal)
+mcp = ["codex-mcp-server"]

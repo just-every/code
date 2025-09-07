@@ -8,9 +8,11 @@ use crate::shell::Shell;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::ENVIRONMENT_CONTEXT_CLOSE_TAG;
-use codex_protocol::protocol::ENVIRONMENT_CONTEXT_OPEN_TAG;
 use std::path::PathBuf;
+
+/// wraps environment context message in a tag for the model to parse more easily.
+pub(crate) const ENVIRONMENT_CONTEXT_START: &str = "<environment_context>";
+pub(crate) const ENVIRONMENT_CONTEXT_END: &str = "</environment_context>";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, DeriveDisplay)]
 #[serde(rename_all = "kebab-case")]
@@ -77,7 +79,7 @@ impl EnvironmentContext {
     /// </environment_context>
     /// ```
     pub fn serialize_to_xml(self) -> String {
-        let mut lines = vec![ENVIRONMENT_CONTEXT_OPEN_TAG.to_string()];
+        let mut lines = vec![ENVIRONMENT_CONTEXT_START.to_string()];
         if let Some(cwd) = self.cwd {
             lines.push(format!("  <cwd>{}</cwd>", cwd.to_string_lossy()));
         }
@@ -94,12 +96,12 @@ impl EnvironmentContext {
                 "  <network_access>{network_access}</network_access>"
             ));
         }
-        if let Some(shell) = self.shell
-            && let Some(shell_name) = shell.name()
-        {
-            lines.push(format!("  <shell>{shell_name}</shell>"));
+        if let Some(shell) = self.shell {
+            if let Some(shell_name) = shell.name() {
+                lines.push(format!("  <shell>{}</shell>", shell_name));
+            }
         }
-        lines.push(ENVIRONMENT_CONTEXT_CLOSE_TAG.to_string());
+        lines.push(ENVIRONMENT_CONTEXT_END.to_string());
         lines.join("\n")
     }
 }

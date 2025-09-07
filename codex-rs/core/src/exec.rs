@@ -26,8 +26,12 @@ use crate::protocol::SandboxPolicy;
 use crate::seatbelt::spawn_command_under_seatbelt;
 use crate::spawn::StdioPolicy;
 use crate::spawn::spawn_child_async;
+use serde_bytes::ByteBuf;
 
-const DEFAULT_TIMEOUT_MS: u64 = 10_000;
+// Note: legacy stream caps were removed in favor of streaming all bytes and
+// truncating at the consumer where appropriate. (CI cache test touch)
+
+const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 
 // Hardcode these since it does not seem worth including the libc crate just
 // for these.
@@ -264,7 +268,7 @@ async fn exec(
 /// Consumes the output of a child process, truncating it so it is suitable for
 /// use as the output of a `shell` tool call. Also enforces specified timeout.
 async fn consume_truncated_output(
-    mut child: Child,
+    child: Child,
     timeout: Duration,
     stdout_stream: Option<StdoutStream>,
 ) -> Result<RawExecToolCallOutput> {
@@ -272,12 +276,14 @@ async fn consume_truncated_output(
     // above, therefore `take()` should normally return `Some`.  If it doesn't
     // we treat it as an exceptional I/O error
 
-    let stdout_reader = child.stdout.take().ok_or_else(|| {
+    let mut killer = KillOnDrop::new(child);
+
+    let stdout_reader = killer.as_mut().stdout.take().ok_or_else(|| {
         CodexErr::Io(io::Error::other(
             "stdout pipe was unexpectedly not available",
         ))
     })?;
-    let stderr_reader = child.stderr.take().ok_or_else(|| {
+    let stderr_reader = killer.as_mut().stderr.take().ok_or_else(|| {
         CodexErr::Io(io::Error::other(
             "stderr pipe was unexpectedly not available",
         ))
@@ -299,23 +305,27 @@ async fn consume_truncated_output(
     ));
 
     let exit_status = tokio::select! {
-        result = tokio::time::timeout(timeout, child.wait()) => {
+        result = tokio::time::timeout(timeout, killer.as_mut().wait()) => {
             match result {
                 Ok(Ok(exit_status)) => exit_status,
                 Ok(e) => e?,
                 Err(_) => {
                     // timeout
-                    child.start_kill()?;
+                    killer.as_mut().start_kill()?;
                     // Debatable whether `child.wait().await` should be called here.
                     synthetic_exit_status(EXIT_CODE_SIGNAL_BASE + TIMEOUT_CODE)
                 }
             }
         }
         _ = tokio::signal::ctrl_c() => {
-            child.start_kill()?;
+            killer.as_mut().start_kill()?;
             synthetic_exit_status(EXIT_CODE_SIGNAL_BASE + SIGKILL_CODE)
         }
     };
+
+    // Disarm killer now that we've observed process termination status to
+    // avoid re-sending a kill signal during Drop.
+    killer.disarm();
 
     let stdout = stdout_handle.await??;
     let stderr = stderr_handle.await??;
@@ -357,9 +367,8 @@ async fn read_capped<R: AsyncRead + Unpin + Send + 'static>(
             break;
         }
 
-        if let Some(stream) = &stream
-            && emitted_deltas < MAX_EXEC_OUTPUT_DELTAS_PER_CALL
-        {
+        if let Some(stream) = &stream {
+            if emitted_deltas < MAX_EXEC_OUTPUT_DELTAS_PER_CALL {
             let chunk = tmp[..n].to_vec();
             let msg = EventMsg::ExecCommandOutputDelta(ExecCommandOutputDeltaEvent {
                 call_id: stream.call_id.clone(),
@@ -368,15 +377,13 @@ async fn read_capped<R: AsyncRead + Unpin + Send + 'static>(
                 } else {
                     ExecOutputStream::Stdout
                 },
-                chunk,
+                chunk: ByteBuf::from(chunk),
             });
-            let event = Event {
-                id: stream.sub_id.clone(),
-                msg,
-            };
+            let event = Event { id: stream.sub_id.clone(), event_seq: 0, msg, order: None };
             #[allow(clippy::let_unit_value)]
             let _ = stream.tx_event.send(event).await;
             emitted_deltas += 1;
+            }
         }
 
         if let Some(tx) = &aggregate_tx {
@@ -399,6 +406,27 @@ fn synthetic_exit_status(code: i32) -> ExitStatus {
     std::process::ExitStatus::from_raw(code)
 }
 
+/// Guard that ensures a spawned child process is terminated if the owning
+/// future is dropped before the child has exited. This prevents orphaned
+/// processes when a running turn is interrupted (e.g., user presses Esc or
+/// Ctrl+C) and the task executing the command is aborted.
+struct KillOnDrop {
+    child: Option<Child>,
+}
+
+impl KillOnDrop {
+    fn new(child: Child) -> Self { Self { child: Some(child) } }
+    fn as_mut(&mut self) -> &mut Child { self.child.as_mut().expect("child present") }
+    fn disarm(&mut self) { self.child = None; }
+}
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.start_kill();
+        }
+    }
+}
 #[cfg(windows)]
 fn synthetic_exit_status(code: i32) -> ExitStatus {
     use std::os::windows::process::ExitStatusExt;

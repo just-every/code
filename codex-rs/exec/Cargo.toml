@@ -4,7 +4,7 @@ name = "codex-exec"
 version = { workspace = true }
 
 [[bin]]
-name = "codex-exec"
+name = "code-exec"
 path = "src/main.rs"
 
 [lib]
@@ -28,6 +28,7 @@ codex-core = { path = "../core" }
 codex-login = { path = "../login" }
 codex-ollama = { path = "../ollama" }
 codex-protocol = { path = "../protocol" }
+codex-version = { path = "../codex-version" }
 owo-colors = "4.2.0"
 serde_json = "1"
 shlex = "1.3.0"

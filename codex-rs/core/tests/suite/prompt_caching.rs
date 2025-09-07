@@ -289,17 +289,20 @@ async fn prefixes_context_and_instructions_once_and_consistently_across_requests
 
     let expected_env_msg = serde_json::json!({
         "type": "message",
+        "id": serde_json::Value::Null,
         "role": "user",
         "content": [ { "type": "input_text", "text": expected_env_text } ]
     });
     let expected_ui_msg = serde_json::json!({
         "type": "message",
+        "id": serde_json::Value::Null,
         "role": "user",
         "content": [ { "type": "input_text", "text": expected_ui_text } ]
     });
 
     let expected_user_message_1 = serde_json::json!({
         "type": "message",
+        "id": serde_json::Value::Null,
         "role": "user",
         "content": [ { "type": "input_text", "text": "hello 1" } ]
     });
@@ -311,6 +314,7 @@ async fn prefixes_context_and_instructions_once_and_consistently_across_requests
 
     let expected_user_message_2 = serde_json::json!({
         "type": "message",
+        "id": serde_json::Value::Null,
         "role": "user",
         "content": [ { "type": "input_text", "text": "hello 2" } ]
     });
@@ -420,6 +424,7 @@ async fn overrides_turn_context_but_keeps_cached_prefix_and_key_constant() {
     // as the prefix of the second request, ensuring cache hit potential.
     let expected_user_message_2 = serde_json::json!({
         "type": "message",
+        "id": serde_json::Value::Null,
         "role": "user",
         "content": [ { "type": "input_text", "text": "hello 2" } ]
     });
@@ -433,6 +438,7 @@ async fn overrides_turn_context_but_keeps_cached_prefix_and_key_constant() {
 </environment_context>"#;
     let expected_env_msg_2 = serde_json::json!({
         "type": "message",
+        "id": serde_json::Value::Null,
         "role": "user",
         "content": [ { "type": "input_text", "text": expected_env_text_2 } ]
     });
@@ -537,6 +543,7 @@ async fn per_turn_overrides_keep_cached_prefix_and_key_constant() {
     // as the prefix of the second request.
     let expected_user_message_2 = serde_json::json!({
         "type": "message",
+        "id": serde_json::Value::Null,
         "role": "user",
         "content": [ { "type": "input_text", "text": "hello 2" } ]
     });
