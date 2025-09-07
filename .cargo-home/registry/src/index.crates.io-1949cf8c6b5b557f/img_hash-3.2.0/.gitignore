@@ -1,6 +1,0 @@
-*~
-*.swp
-target/
-Cargo.lock
-.idea/
-img_hash.iml
