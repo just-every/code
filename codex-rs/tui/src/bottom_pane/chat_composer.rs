@@ -1450,7 +1450,7 @@ impl WidgetRef for ChatComposer {
                 }
 
                 // Helper to build hint spans based on inclusion flags
-                let build_hints = |include_reasoning: bool, include_diff: bool| -> Vec<Span> {
+                let build_hints = |include_reasoning: bool, include_diff: bool, include_help: bool| -> Vec<Span> {
                     let mut spans: Vec<Span> = Vec::new();
                     if !self.ctrl_c_quit_hint {
                         if self.show_reasoning_hint && include_reasoning {
@@ -1464,6 +1464,11 @@ impl WidgetRef for ChatComposer {
                             spans.push(Span::from("Ctrl+D").style(key_hint_style));
                             spans.push(Span::from(" diff viewer").style(label_style));
                         }
+                        if include_help {
+                            if !spans.is_empty() { spans.push(Span::from("  •  ").style(label_style)); }
+                            spans.push(Span::from("Ctrl+H").style(key_hint_style));
+                            spans.push(Span::from(" Display Command Help").style(label_style));
+                        }
                         // Always show quit at the end of the command hints
                         if !spans.is_empty() { spans.push(Span::from("  •  ").style(label_style)); }
                         spans.push(Span::from("Ctrl+C").style(key_hint_style));
@@ -1475,7 +1480,8 @@ impl WidgetRef for ChatComposer {
                 // Start with all hints included
                 let mut include_reasoning = true;
                 let mut include_diff = true;
-                let mut hint_spans = build_hints(include_reasoning, include_diff);
+                let mut include_help = true;
+                let mut hint_spans = build_hints(include_reasoning, include_diff, include_help);
 
                 // Measure function for spans length
                 let measure = |spans: &Vec<Span>| -> usize {
@@ -1496,14 +1502,11 @@ impl WidgetRef for ChatComposer {
 
                 // Elide hints in order until content fits
                 while left_len + combined_len(&hint_spans, &token_spans) + trailing_pad > total_width {
-                    if include_reasoning {
-                        include_reasoning = false;
-                    } else if include_diff {
-                        include_diff = false;
-                    } else {
-                        break;
-                    }
-                    hint_spans = build_hints(include_reasoning, include_diff);
+                    if include_reasoning { include_reasoning = false; }
+                    else if include_diff { include_diff = false; }
+                    else if include_help { include_help = false; }
+                    else { break; }
+                    hint_spans = build_hints(include_reasoning, include_diff, include_help);
                 }
 
                 // Compose final right spans: hints, optional separator, then tokens

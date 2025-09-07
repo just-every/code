@@ -23,6 +23,7 @@ mod file_search_popup;
 mod paste_burst;
 mod live_ring_widget;
 mod popup_consts;
+mod help_view;
 mod reasoning_selection_view;
 mod scroll_state;
 mod selection_popup_common;
@@ -405,6 +406,15 @@ impl BottomPane<'_> {
     pub fn show_chrome_selection(&mut self, port: Option<u16>) {
         use chrome_selection_view::ChromeSelectionView;
         let view = ChromeSelectionView::new(self.app_event_tx.clone(), port);
+        self.active_view = Some(Box::new(view));
+        // Status shown in composer title now
+        self.status_view_active = false;
+        self.request_redraw()
+    }
+
+    /// Show the keyboard help overlay
+    pub fn show_help_overlay(&mut self) {
+        let view = help_view::HelpView::new();
         self.active_view = Some(Box::new(view));
         // Status shown in composer title now
         self.status_view_active = false;

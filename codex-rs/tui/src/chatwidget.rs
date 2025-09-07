@@ -1499,6 +1499,10 @@ impl ChatWidget<'_> {
 
     fn toggle_agents_hud(&mut self) { layout_scroll::toggle_agents_hud(self); }
 
+    pub(crate) fn show_help_overlay(&mut self) {
+        self.bottom_pane.show_help_overlay();
+    }
+
     // dispatch_command() removed — command routing is handled at the App layer via AppEvent::DispatchCommand
 
     pub(crate) fn handle_paste(&mut self, text: String) {

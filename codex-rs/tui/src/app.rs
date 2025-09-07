@@ -601,6 +601,17 @@ impl App<'_> {
                                 widget.toggle_diffs_popup();
                             }
                         }
+                        KeyEvent {
+                            code: KeyCode::Char('h'),
+                            modifiers: crossterm::event::KeyModifiers::CONTROL,
+                            kind: KeyEventKind::Press,
+                            ..
+                        } => {
+                            // Show help overlay with key summary
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                widget.show_help_overlay();
+                            }
+                        }
                         // (Ctrl+Y disabled): Previously cycled syntax themes; now intentionally no-op
                         KeyEvent {
                             kind: KeyEventKind::Press | KeyEventKind::Repeat,
