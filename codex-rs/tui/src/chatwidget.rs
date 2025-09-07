@@ -1392,7 +1392,7 @@ impl ChatWidget<'_> {
             return;
         }
         if let KeyEvent {
-            code: crossterm::event::KeyCode::Char('a'),
+            code: crossterm::event::KeyCode::Char('g'),
             modifiers: crossterm::event::KeyModifiers::CONTROL,
             kind: KeyEventKind::Press | KeyEventKind::Repeat,
             ..
