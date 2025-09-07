@@ -585,7 +585,7 @@ impl ChatWidget<'_> {
                     use ratatui::text::Line as RLine;
                     let mut lines: Vec<RLine<'static>> = Vec::new();
                     crate::markdown::append_markdown(&text, &mut lines, &self.config);
-                    let key = self.next_internal_key();
+                    let key = self.next_replay_key();
                     let _ = self.history_insert_with_key_global(Box::new(crate::history_cell::PlainHistoryCell {
                         lines,
                         kind: crate::history_cell::HistoryCellType::Notice,
@@ -593,7 +593,7 @@ impl ChatWidget<'_> {
                     return;
                 }
                 if role == "user" {
-                    let key = self.next_internal_key();
+                    let key = self.next_replay_key();
                     let _ = self.history_insert_with_key_global(Box::new(crate::history_cell::new_user_prompt(text)), key);
                 } else {
                     // Build a PlainHistoryCell with Assistant kind; header line hidden by renderer
@@ -601,19 +601,19 @@ impl ChatWidget<'_> {
                     let mut lines = Vec::new();
                     lines.push(ratatui::text::Line::from("assistant"));
                     for l in text.lines() { lines.push(ratatui::text::Line::from(l.to_string())); }
-                    let key = self.next_internal_key();
+                    let key = self.next_replay_key();
                     let _ = self.history_insert_with_key_global(Box::new(PlainHistoryCell { lines, kind: HistoryCellType::Assistant }), key);
                 }
             }
             ResponseItem::Reasoning { summary, .. } => {
+                // Render static reasoning summaries as collapsed reasoning cells anchored to req=0
                 for s in summary {
                     let codex_protocol::models::ReasoningItemReasoningSummary::SummaryText { text } = s;
-                    // Reasoning cell – use the existing reasoning output styling
-                    let sink = crate::streaming::controller::AppEventHistorySink(self.app_event_tx.clone());
-                    streaming::begin(self, StreamKind::Reasoning, None);
-                    let _ = self.stream.apply_final_reasoning(&text, &sink);
-                    // finalize immediately for static replay
-                    self.stream.finalize(crate::streaming::StreamKind::Reasoning, true, &sink);
+                    let mut lines: Vec<ratatui::text::Line<'static>> = Vec::new();
+                    crate::markdown::append_markdown(&text, &mut lines, &self.config);
+                    let cell = history_cell::CollapsibleReasoningCell::new_with_id(lines, None);
+                    let key = self.next_replay_key();
+                    let _ = self.history_insert_with_key_global(Box::new(cell), key);
                 }
             }
             ResponseItem::FunctionCallOutput { output, .. } => {
@@ -624,7 +624,7 @@ impl ChatWidget<'_> {
                         content = s.to_string();
                     }
                 }
-                let key = self.next_internal_key();
+                let key = self.next_replay_key();
                 let _ = self.history_insert_with_key_global(Box::new(crate::history_cell::new_background_event(content)), key);
             }
             _ => {
@@ -676,6 +676,14 @@ impl ChatWidget<'_> {
         let s = self.stream_state.next_seq;
         self.stream_state.next_seq = self.stream_state.next_seq.saturating_add(1);
         s
+    }
+
+    // Stable ordering for replayed history (resume): force all replay inserts
+    // into request 0 so new, live content from the provider (req>=1) always
+    // appears after prior transcript items.
+    fn next_replay_key(&mut self) -> OrderKey {
+        self.internal_seq = self.internal_seq.saturating_add(1);
+        OrderKey { req: 0, out: 0, seq: self.internal_seq }
     }
 
     // Removed order-adjustment helpers; ordering now uses stable order keys on insert.
