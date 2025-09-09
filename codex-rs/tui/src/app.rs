@@ -256,6 +256,7 @@ impl App<'_> {
                 show_order_overlay,
             );
             chat_widget.enable_perf(enable_perf);
+            chat_widget.apply_spinner_from_config();
             // Check for initial animations after widget is created
             chat_widget.check_for_initial_animations();
             AppState::Chat {
@@ -1024,6 +1025,19 @@ impl App<'_> {
                     self.clear_on_first_frame = true;
                     self.schedule_redraw();
                 }
+                AppEvent::UpdateSpinner(name) => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.set_spinner(name);
+                    }
+                    // Redraw to reflect spinner name in UI immediately
+                    self.schedule_redraw();
+                }
+                AppEvent::PreviewSpinner(name) => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.preview_spinner(name);
+                    }
+                    self.schedule_redraw();
+                }
                 AppEvent::ComposerExpanded => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.on_composer_expanded();
@@ -1060,6 +1074,7 @@ impl App<'_> {
                         show_order_overlay,
                     );
                     w.enable_perf(enable_perf);
+                    w.apply_spinner_from_config();
                     self.app_state = AppState::Chat { widget: Box::new(w) }
                 }
                 AppEvent::StartFileSearch(query) => {
@@ -1139,6 +1154,7 @@ impl App<'_> {
                         self.show_order_overlay,
                     );
                     new_widget.enable_perf(self.timing_enabled);
+                    new_widget.apply_spinner_from_config();
                     // Ensure any initial animations or status are set up on the fresh widget
                     new_widget.check_for_initial_animations();
 

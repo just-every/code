@@ -399,6 +399,33 @@ pub fn set_tui_theme_name(codex_home: &Path, theme: ThemeName) -> anyhow::Result
     Ok(())
 }
 
+/// Persist the spinner preset under `[tui].spinner = "<name>"`.
+pub fn set_tui_spinner_name(codex_home: &Path, spinner: &str) -> anyhow::Result<()> {
+    let config_path = codex_home.join(CONFIG_TOML_FILE);
+
+    // Parse existing config if present; otherwise start a new document.
+    let mut doc = match std::fs::read_to_string(config_path.clone()) {
+        Ok(s) => s.parse::<DocumentMut>()?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentMut::new(),
+        Err(e) => return Err(e.into()),
+    };
+
+    // Write `[tui].spinner = "…"`
+    doc["tui"]["spinner"] = toml_edit::value(spinner);
+
+    // ensure codex_home exists
+    std::fs::create_dir_all(codex_home)?;
+
+    // create a tmp_file
+    let tmp_file = NamedTempFile::new_in(codex_home)?;
+    std::fs::write(tmp_file.path(), doc.to_string())?;
+
+    // atomically move the tmp file into config.toml
+    tmp_file.persist(config_path)?;
+
+    Ok(())
+}
+
 /// Persist the GitHub workflow check preference under `[github].check_workflows_on_push`.
 pub fn set_github_check_on_push(codex_home: &Path, enabled: bool) -> anyhow::Result<()> {
     let config_path = codex_home.join(CONFIG_TOML_FILE);

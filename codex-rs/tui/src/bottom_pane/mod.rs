@@ -115,6 +115,11 @@ impl BottomPane<'_> {
         self.composer.set_has_chat_history(has_history);
     }
 
+    pub(crate) fn set_spinner(&mut self, name: String) {
+        self.composer.set_spinner(name);
+        self.request_redraw();
+    }
+
     pub fn desired_height(&self, width: u16) -> u16 {
         let ring_h = self
             .live_ring
@@ -408,9 +413,9 @@ impl BottomPane<'_> {
         self.request_redraw()
     }
 
-    /// Show the theme selection UI
-    pub fn show_theme_selection(&mut self, current_theme: ThemeName) {
-        let view = ThemeSelectionView::new(current_theme, self.app_event_tx.clone());
+    /// Show the theme selection UI (with spinner selector)
+    pub fn show_theme_selection(&mut self, current_theme: ThemeName, spinner_name: String) {
+        let view = ThemeSelectionView::new(current_theme, spinner_name, self.app_event_tx.clone());
         self.active_view = Some(Box::new(view));
         // Status shown in composer title now
         self.status_view_active = false;

@@ -138,6 +138,11 @@ pub struct Tui {
     /// Streaming/animation behavior for assistant/reasoning output
     #[serde(default)]
     pub stream: StreamConfig,
+
+    /// Name of the loading spinner preset (e.g., "diamond", "dots").
+    /// When unset, defaults to "diamond".
+    #[serde(default)]
+    pub spinner: Option<String>,
 }
 
 /// Streaming behavior configuration for the TUI.
