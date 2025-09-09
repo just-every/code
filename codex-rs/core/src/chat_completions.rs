@@ -284,12 +284,27 @@ pub(crate) async fn stream_chat_completions(
     }
 
     let tools_json = create_tools_json_for_chat_completions_api(&prompt.tools)?;
-    let payload = json!({
+    let mut payload = json!({
         "model": model_family.slug,
         "messages": messages,
         "stream": true,
         "tools": tools_json,
     });
+
+    // If an Ollama context override is present, propagate it. Some Ollama
+    // builds honor `num_ctx` directly in OpenAI-compatible Chat Completions,
+    // and others accept it under an `options` object – include both.
+    if let Ok(val) = std::env::var("CODEX_OLLAMA_NUM_CTX") {
+        if let Ok(n) = val.parse::<u64>() {
+            if let Some(obj) = payload.as_object_mut() {
+                obj.insert("num_ctx".to_string(), json!(n));
+                // Also set options.num_ctx for native-style compatibility.
+                let mut options = serde_json::Map::new();
+                options.insert("num_ctx".to_string(), json!(n));
+                obj.entry("options").or_insert(json!(options));
+            }
+        }
+    }
 
     let endpoint = provider.get_full_url(&None);
     debug!(

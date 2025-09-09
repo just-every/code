@@ -218,6 +218,64 @@ impl OllamaClient {
         ))
     }
 
+    /// Query Ollama for model metadata and attempt to extract the maximum
+    /// context length supported by the given model. Returns Ok(Some(n)) when
+    /// detected, Ok(None) when the server responds but no recognizable field
+    /// is present, and Err on transport errors.
+    pub async fn fetch_model_max_context(&self, model: &str) -> io::Result<Option<u64>> {
+        // Always use the native endpoint for model metadata.
+        let url = format!("{}/api/show", self.host_root.trim_end_matches('/'));
+        let resp = self
+            .client
+            .post(url)
+            .json(&serde_json::json!({ "model": model }))
+            .send()
+            .await
+            .map_err(io::Error::other)?;
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
+
+        let val = resp.json::<JsonValue>().await.map_err(io::Error::other)?;
+
+        // Try a few known locations/keys that different Ollama versions expose.
+        // Prefer numeric values; fall back to parsing strings if needed.
+        fn get_u64(v: &JsonValue, key: &str) -> Option<u64> {
+            v.get(key)
+                .and_then(|x| x.as_u64())
+                .or_else(|| v.get(key).and_then(|x| x.as_str()).and_then(|s| s.parse::<u64>().ok()))
+        }
+
+        // 1) Top-level `details.context_length` (observed in newer builds)
+        if let Some(details) = val.get("details").and_then(|d| d.as_object()) {
+            if let Some(n) = get_u64(&JsonValue::Object(details.clone()), "context_length") {
+                return Ok(Some(n));
+            }
+        }
+
+        // 2) `model_info.context_length` (some builds)
+        if let Some(model_info) = val.get("model_info").and_then(|d| d.as_object()) {
+            if let Some(n) = get_u64(&JsonValue::Object(model_info.clone()), "context_length") {
+                return Ok(Some(n));
+            }
+            // Some variants may use `ctx` or `num_ctx` in model_info
+            if let Some(n) = get_u64(&JsonValue::Object(model_info.clone()), "num_ctx")
+                .or_else(|| get_u64(&JsonValue::Object(model_info.clone()), "ctx"))
+            {
+                return Ok(Some(n));
+            }
+        }
+
+        // 3) A few other top-level fallbacks that have been seen in the wild
+        if let Some(n) = get_u64(&val, "context_length")
+            .or_else(|| get_u64(&val, "num_ctx"))
+            .or_else(|| get_u64(&val, "ctx"))
+        {
+            return Ok(Some(n));
+        }
+
+        Ok(None)
+    }
     /// Low-level constructor given a raw host root, e.g. "http://localhost:11434".
     #[cfg(test)]
     fn from_host_root(host_root: impl Into<String>) -> Self {
