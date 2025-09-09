@@ -2846,7 +2846,21 @@ impl ChatWidget<'_> {
                 // Track last message for potential dedup heuristics.
                 self.last_assistant_message = Some(message);
                 // Do not mark closed here; the final insert path manages closed ids and replacement.
-                self.maybe_hide_spinner();
+                // If nothing else is running, proactively clear the footer status so
+                // lingering "responding/thinking" text disappears immediately.
+                let any_tools_running = !self.exec.running_commands.is_empty()
+                    || !self.tools_state.running_custom_tools.is_empty()
+                    || !self.tools_state.running_web_search.is_empty();
+                let any_streaming = self.stream.is_write_cycle_active();
+                let any_agents_active =
+                    !self.active_agents.is_empty() || self.agents_ready_to_start;
+                let any_tasks_active = !self.active_task_ids.is_empty();
+                if !(any_tools_running || any_streaming || any_agents_active || any_tasks_active) {
+                    self.bottom_pane.update_status_text(String::new());
+                    self.bottom_pane.set_task_running(false);
+                } else {
+                    self.maybe_hide_spinner();
+                }
             }
             EventMsg::ReplayHistory(ev) => {
                 // Render prior transcript items statically without executing tools
