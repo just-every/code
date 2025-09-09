@@ -4136,7 +4136,7 @@ impl ChatWidget<'_> {
         // Global
         lines.push(kv("Ctrl+H", "Help overlay"));
         lines.push(kv("Ctrl+R", "Toggle reasoning"));
-        // Removed Ctrl+T per request
+        lines.push(kv("Ctrl+T", "Toggle terminal mode (alternate screen)"));
         lines.push(kv("Ctrl+D", "Diff viewer"));
         lines.push(kv("Esc", "Edit previous message / close popups"));
         // Task control shortcuts

@@ -107,6 +107,11 @@ pub(crate) struct App<'a> {
     /// If true, enable lightweight timing collection and report on exit.
     timing_enabled: bool,
     timing: TimingStats,
+
+    /// When false, we have left the terminal's alternate screen and paused
+    /// all ratatui drawing so the user can scroll/select in the regular
+    /// terminal buffer. Toggle with Ctrl+T.
+    alt_screen_enabled: bool,
 }
 
 /// Aggregate parameters needed to create a `ChatWidget`, as creation may be
@@ -287,6 +292,7 @@ impl App<'_> {
             last_esc_time: None,
             timing_enabled: enable_perf,
             timing: TimingStats::default(),
+            alt_screen_enabled: true,
         }
     }
 
@@ -388,7 +394,11 @@ impl App<'_> {
                 AppEvent::Redraw => {
                     if self.timing_enabled { self.timing.on_redraw_begin(); }
                     let t0 = Instant::now();
-                    std::io::stdout().sync_update(|_| self.draw_next_frame(terminal))??;
+                    // When alternate screen is disabled, skip ratatui drawing to keep the
+                    // regular terminal buffer visible and scrollable.
+                    if self.alt_screen_enabled {
+                        std::io::stdout().sync_update(|_| self.draw_next_frame(terminal))??;
+                    }
                     if self.timing_enabled { self.timing.on_redraw_end(t0); }
                 }
                 AppEvent::StartCommitAnimation => {
@@ -588,24 +598,29 @@ impl App<'_> {
                                 }
                             }
                         }
-                        KeyEvent {
-                            code: KeyCode::Char('r') | KeyCode::Char('t'),
-                            modifiers: crossterm::event::KeyModifiers::CONTROL,
-                            kind: KeyEventKind::Press,
-                            ..
-                        }
-                        | KeyEvent {
-                            code: KeyCode::Char('r') | KeyCode::Char('t'),
-                            modifiers: crossterm::event::KeyModifiers::CONTROL,
-                            kind: KeyEventKind::Repeat,
-                            ..
-                        } => {
-                            // Toggle reasoning/thinking visibility (Ctrl+R or Ctrl+T)
+                        KeyEvent { code: KeyCode::Char('r'), modifiers: crossterm::event::KeyModifiers::CONTROL, kind: KeyEventKind::Press | KeyEventKind::Repeat, .. } => {
+                            // Toggle reasoning/thinking visibility (Ctrl+R)
                             match &mut self.app_state {
-                                AppState::Chat { widget } => {
-                                    widget.toggle_reasoning_visibility();
-                                }
+                                AppState::Chat { widget } => { widget.toggle_reasoning_visibility(); }
                                 AppState::Onboarding { .. } => {}
+                            }
+                        }
+                        KeyEvent { code: KeyCode::Char('t'), modifiers: crossterm::event::KeyModifiers::CONTROL, kind: KeyEventKind::Press, .. } => {
+                            // Toggle alternate screen mode (Ctrl+T)
+                            use std::io::stdout;
+                            if self.alt_screen_enabled {
+                                // Leave alternate screen and disable mouse capture so the
+                                // terminal scrollback and selection work normally.
+                                let _ = crossterm::execute!(stdout(), crossterm::event::DisableMouseCapture);
+                                let _ = crossterm::execute!(stdout(), crossterm::terminal::LeaveAlternateScreen);
+                                self.alt_screen_enabled = false;
+                            } else {
+                                // Re-enter alternate screen and request a full redraw.
+                                let _ = crossterm::execute!(stdout(), crossterm::terminal::EnterAlternateScreen);
+                                // Ensure the next frame clears the back buffer so we repaint cleanly.
+                                self.clear_on_first_frame = true;
+                                self.alt_screen_enabled = true;
+                                self.app_event_tx.send(AppEvent::RequestRedraw);
                             }
                         }
                         KeyEvent {
