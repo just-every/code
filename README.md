@@ -43,17 +43,29 @@ npx -y @just-every/code
 
 ```bash
 npm install -g @just-every/code
-code // or `coder` if you're using VS Code
+coder   # preferred on Windows (no conflicts)
+# Or: code  # only if no other `code` exists on PATH
 ```
 
-Note: If another tool already provides a `code` command (e.g. VS Code), our CLI is also installed as `coder`. Use `coder` to avoid conflicts.
+Note: On systems where another tool already provides a `code` command
+(e.g. VS Code or Cursor), we intentionally skip creating the `code` alias
+to avoid hijacking that tool. Use `coder` instead.
+
+#### Windows: VS Code/Cursor conflict
+- If `code` launches VS Code/Cursor, that’s expected. Use `coder` for this app.
+- If `coder` is not found after a global install, ensure your Node global bin
+  directory is on PATH:
+  - PowerShell: `npm bin -g` then confirm that folder appears in `echo $env:Path`
+  - CMD: `npm bin -g` then check with `echo %PATH%`
+  - Locate the shim: `where coder`
+- No global install needed: `npx -y @just-every/code` runs the CLI directly.
 
 **Authenticate** (one of the following):
 - **Sign in with ChatGPT** (Plus/Pro/Team; uses models available to your plan)
-  - Run `code` and pick "Sign in with ChatGPT"
+  - Run `coder` and pick "Sign in with ChatGPT"
   - Stores creds locally at `~/.coder/auth.json` (also reads legacy `~/.codex/auth.json`)
 - **API key** (usage-based)
-  - Set `export OPENAI_API_KEY=xyz` and run `code`
+  - Set `export OPENAI_API_KEY=xyz` and run `coder`
 
 ### Install Claude & Gemini (optional)
 
