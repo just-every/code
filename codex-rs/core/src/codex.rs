@@ -2363,14 +2363,34 @@ async fn run_turn(
                                 "[EPHEMERAL:RETRY_HINT]\nPrevious attempt aborted mid-stream. Continue without repeating.\n",
                             );
                             if !sp.partial_reasoning_summary.is_empty() {
-                                let preview = &sp.partial_reasoning_summary;
-                                let preview = if preview.len() > 800 { &preview[preview.len()-800..] } else { preview };
-                                hint.push_str(&format!("Last reasoning summary fragment:\n{}\n\n", preview));
+                                let s = &sp.partial_reasoning_summary;
+                                // Take the last 800 characters, respecting UTF-8 boundaries
+                                let start_idx = if s.chars().count() > 800 {
+                                    s.char_indices()
+                                        .rev()
+                                        .nth(800 - 1)
+                                        .map(|(i, _)| i)
+                                        .unwrap_or(0)
+                                } else {
+                                    0
+                                };
+                                let tail = &s[start_idx..];
+                                hint.push_str(&format!("Last reasoning summary fragment:\n{}\n\n", tail));
                             }
                             if !sp.partial_assistant_text.is_empty() {
-                                let preview = &sp.partial_assistant_text;
-                                let preview = if preview.len() > 800 { &preview[preview.len()-800..] } else { preview };
-                                hint.push_str(&format!("Last assistant text fragment:\n{}\n", preview));
+                                let s = &sp.partial_assistant_text;
+                                // Take the last 800 characters, respecting UTF-8 boundaries
+                                let start_idx = if s.chars().count() > 800 {
+                                    s.char_indices()
+                                        .rev()
+                                        .nth(800 - 1)
+                                        .map(|(i, _)| i)
+                                        .unwrap_or(0)
+                                } else {
+                                    0
+                                };
+                                let tail = &s[start_idx..];
+                                hint.push_str(&format!("Last assistant text fragment:\n{}\n", tail));
                             }
                             attempt_input.push(ResponseItem::Message {
                                 id: None,
