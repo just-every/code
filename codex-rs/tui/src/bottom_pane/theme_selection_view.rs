@@ -24,13 +24,14 @@ use super::bottom_pane_view::BottomPaneView;
 pub(crate) struct ThemeSelectionView {
     original_theme: ThemeName, // Theme to restore on cancel
     current_theme: ThemeName,  // Currently displayed theme
+    current_spinner: String,   // Spinner preset name
     selected_index: usize,
     app_event_tx: AppEventSender,
     is_complete: bool,
 }
 
 impl ThemeSelectionView {
-    pub fn new(current_theme: ThemeName, app_event_tx: AppEventSender) -> Self {
+    pub fn new(current_theme: ThemeName, spinner_name: String, app_event_tx: AppEventSender) -> Self {
         let themes = Self::get_theme_options();
         let selected_index = themes
             .iter()
@@ -40,6 +41,7 @@ impl ThemeSelectionView {
         Self {
             original_theme: current_theme,
             current_theme,
+            current_spinner: spinner_name,
             selected_index,
             app_event_tx,
             is_complete: false,
@@ -149,6 +151,8 @@ impl ThemeSelectionView {
         // Confirm the selection - this will add it to history
         self.app_event_tx
             .send(AppEvent::UpdateTheme(self.current_theme));
+        self.app_event_tx
+            .send(AppEvent::UpdateSpinner(self.current_spinner.clone()));
     }
 
     fn cancel_selection(&mut self) {
@@ -157,6 +161,32 @@ impl ThemeSelectionView {
             self.app_event_tx
                 .send(AppEvent::PreviewTheme(self.original_theme));
         }
+    }
+
+    fn move_spinner_left(&mut self) {
+        let list = crate::spinners::list();
+        if list.is_empty() { return; }
+        let idx = list
+            .iter()
+            .position(|n| n.eq_ignore_ascii_case(&self.current_spinner))
+            .unwrap_or(0);
+        let new_idx = if idx == 0 { list.len() - 1 } else { idx - 1 };
+        self.current_spinner = list[new_idx].to_string();
+        self.app_event_tx
+            .send(AppEvent::PreviewSpinner(self.current_spinner.clone()));
+    }
+
+    fn move_spinner_right(&mut self) {
+        let list = crate::spinners::list();
+        if list.is_empty() { return; }
+        let idx = list
+            .iter()
+            .position(|n| n.eq_ignore_ascii_case(&self.current_spinner))
+            .unwrap_or(0);
+        let new_idx = (idx + 1) % list.len();
+        self.current_spinner = list[new_idx].to_string();
+        self.app_event_tx
+            .send(AppEvent::PreviewSpinner(self.current_spinner.clone()));
     }
 }
 
@@ -183,6 +213,20 @@ impl<'a> BottomPaneView<'a> for ThemeSelectionView {
                 ..
             } => {
                 self.move_selection_down();
+            }
+            KeyEvent {
+                code: KeyCode::Left,
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => {
+                self.move_spinner_left();
+            }
+            KeyEvent {
+                code: KeyCode::Right,
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => {
+                self.move_spinner_right();
             }
             KeyEvent {
                 code: KeyCode::Enter,
@@ -241,6 +285,34 @@ impl<'a> BottomPaneView<'a> for ThemeSelectionView {
                         .add_modifier(Modifier::BOLD),
                 ),
             ]),
+            // Spinner selector row
+            {
+                let s = &self.current_spinner;
+                let preview = {
+                    let sp = crate::spinners::get(s);
+                    // Show up to first 6 frames for a quick glance preview
+                    let mut out = String::new();
+                    let count = sp.frames.len().min(6);
+                    for (i, f) in sp.frames.iter().take(count).enumerate() {
+                        if i > 0 { out.push(' '); }
+                        out.push_str(f);
+                    }
+                    out
+                };
+                Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled("Spinner:", Style::default().fg(theme.text_dim)),
+                    Span::raw(" "),
+                    Span::styled(
+                        format!("{}", s),
+                        Style::default().fg(theme.keyword).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw("  "),
+                    Span::styled(preview, Style::default().fg(theme.info)),
+                    Span::raw("  "),
+                    Span::styled("←/→ to change", Style::default().fg(theme.text_dim)),
+                ])
+            },
             Line::from(" "),
         ];
 
@@ -303,6 +375,13 @@ impl<'a> BottomPaneView<'a> for ThemeSelectionView {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(" preview • ", Style::default().fg(theme.text_dim)),
+            Span::styled(
+                "←→",
+                Style::default()
+                    .fg(theme.keyword)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" change spinner • ", Style::default().fg(theme.text_dim)),
             Span::styled(
                 "Enter",
                 Style::default()

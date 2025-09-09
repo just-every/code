@@ -437,6 +437,15 @@ impl ChatWidget<'_> {
     pub(crate) fn enable_perf(&mut self, enable: bool) {
         self.perf_state.enabled = enable;
     }
+    pub(crate) fn apply_spinner_from_config(&mut self) {
+        let name = self
+            .config
+            .tui
+            .spinner
+            .clone()
+            .unwrap_or_else(|| crate::spinners::default_name().to_string());
+        self.bottom_pane.set_spinner(name);
+    }
     pub(crate) fn perf_summary(&self) -> String {
         self.perf_state.stats.borrow().summary()
     }
@@ -4464,8 +4473,37 @@ impl ChatWidget<'_> {
     }
 
     pub(crate) fn show_theme_selection(&mut self) {
+        let spinner = self
+            .config
+            .tui
+            .spinner
+            .clone()
+            .unwrap_or_else(|| crate::spinners::default_name().to_string());
         self.bottom_pane
-            .show_theme_selection(self.config.tui.theme.name);
+            .show_theme_selection(self.config.tui.theme.name, spinner);
+    }
+
+    pub(crate) fn set_spinner(&mut self, name: String) {
+        // Update config and persist
+        self.config.tui.spinner = Some(name.clone());
+        // Apply to composer immediately
+        self.bottom_pane.set_spinner(name.clone());
+        // Persist to config.toml
+        if let Ok(home) = codex_core::config::find_codex_home() {
+            if let Err(e) = codex_core::config::set_tui_spinner_name(&home, &name) {
+                tracing::warn!("Failed to persist spinner to config.toml: {}", e);
+            }
+        }
+        // Announce in history
+        let msg = format!("✓ Spinner changed to {}", name);
+        self.history_push(history_cell::new_background_event(msg));
+        self.request_redraw();
+    }
+
+    pub(crate) fn preview_spinner(&mut self, name: String) {
+        // Do not persist; just apply to composer for preview
+        self.bottom_pane.set_spinner(name);
+        self.request_redraw();
     }
 
     // Ctrl+Y syntax cycling disabled intentionally.

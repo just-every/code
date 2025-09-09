@@ -128,6 +128,9 @@ pub(crate) struct ChatComposer {
     next_down_scrolls_history: bool,
     // Detect and coalesce paste bursts for smoother UX
     paste_burst: PasteBurst,
+    // Spinner preset configuration
+    spinner_name: String,
+    spinner_interval_ms: u64,
 }
 
 /// Popup state – at most one can be visible at any time.
@@ -145,6 +148,8 @@ impl ChatComposer {
         using_chatgpt_auth: bool,
     ) -> Self {
         let use_shift_enter_hint = enhanced_keys_supported;
+        let default_spinner = crate::spinners::default_name().to_string();
+        let spinner_meta = crate::spinners::get(&default_spinner);
 
         Self {
             textarea: TextArea::new(),
@@ -176,7 +181,15 @@ impl ChatComposer {
             reasoning_shown: false,
             next_down_scrolls_history: false,
             paste_burst: PasteBurst::default(),
+            spinner_name: default_spinner,
+            spinner_interval_ms: spinner_meta.interval_ms,
         }
+    }
+
+    pub fn set_spinner(&mut self, name: String) {
+        let s = crate::spinners::get(&name);
+        self.spinner_name = s.name.to_string();
+        self.spinner_interval_ms = s.interval_ms;
     }
 
     pub fn set_has_chat_history(&mut self, has_history: bool) {
@@ -193,9 +206,12 @@ impl ChatComposer {
                 let animation_flag_clone = Arc::clone(&animation_flag);
                 let app_event_tx_clone = self.app_event_tx.clone();
 
+                let interval = self.spinner_interval_ms.max(30);
                 thread::spawn(move || {
                     while animation_flag_clone.load(Ordering::Relaxed) {
-                        thread::sleep(Duration::from_millis(200)); // Slower animation
+                        // Schedule slightly faster than frame interval for smoother updates
+                        let sleep_ms = std::cmp::max(16u64, interval / 2);
+                        thread::sleep(Duration::from_millis(sleep_ms));
                         app_event_tx_clone.send(crate::app_event::AppEvent::RequestRedraw);
                     }
                 });
@@ -1625,56 +1641,20 @@ impl WidgetRef for ChatComposer {
 
         if self.is_task_running {
             use std::time::{SystemTime, UNIX_EPOCH};
-
-            // Call this when a task starts; store it on self (e.g. self.task_seed)
-            fn make_task_seed() -> u64 {
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos() as u64
-            }
-
-            // Mix bits so low bits aren't parity-biased
-            fn mix(mut x: u64) -> u64 {
-                x ^= x >> 30;
-                x = x.wrapping_mul(0xbf58476d1ce4e5b9);
-                x ^= x >> 27;
-                x = x.wrapping_mul(0x94d049bb133111eb);
-                x ^ (x >> 31)
-            }
-
-            // Generate a per-render seed; good enough for varied spinners
-            let seed = make_task_seed();
-            let r = (mix(seed) % 200) as u64;
-
-            // 1% ✨, 49.5% star, 49.5% diamond-family
-            let selected_spinner: &[char] = if r < 2 {
-                &['✨']
-            } else if r < 101 {
-                &['✧', '✦', '✧']
-            } else {
-                match r % 3 {
-                    0 => &['✶'],
-                    1 => &['◇'],
-                    _ => &['◆'],
-                }
-            };
-
+            let meta = crate::spinners::get(&self.spinner_name);
+            let frames = meta.frames;
+            let interval = meta.interval_ms.max(30);
             let frame_idx = (SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis()
-                / 150) as usize;
-
-            let spinner = selected_spinner[frame_idx % selected_spinner.len()];
+                / (interval as u128)) as usize;
+            let spinner_str = frames[frame_idx % frames.len()];
 
             // Create centered title with spinner and spaces
             let title_line = Line::from(vec![
                 Span::raw(" "), // Space before spinner
-                Span::styled(
-                    spinner.to_string(),
-                    Style::default().fg(crate::colors::info()),
-                ),
+                Span::styled(spinner_str.to_string(), Style::default().fg(crate::colors::info())),
                 Span::styled(
                     format!(" {}... ", self.status_message),
                     Style::default().fg(crate::colors::info()),

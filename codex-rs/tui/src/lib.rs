@@ -64,6 +64,7 @@ mod terminal_info;
 mod text_formatting;
 mod text_processing;
 mod theme;
+mod spinners;
 mod tui;
 mod user_approval_widget;
 mod height_manager;
