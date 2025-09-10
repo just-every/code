@@ -176,11 +176,21 @@ impl App<'_> {
                         if let Ok(event) = crossterm::event::read() {
                             match event {
                                 crossterm::event::Event::Key(key_event) => {
-                                    // Forward only Press/Repeat; skip Release to avoid doubled chars on Windows.
+                                    // Forward ALL key events.
+                                    //
+                                    // Rationale: Some Windows terminals (e.g., legacy consoles
+                                    // or MSYS/mintty environments) have been observed to emit
+                                    // only `KeyEventKind::Release` events when keyboard
+                                    // enhancement flags are unsupported. Filtering to
+                                    // Press/Repeat here causes input to be dropped entirely,
+                                    // making the UI appear frozen (see issue #130).
+                                    //
+                                    // We still update `last_key_time` only for Press/Repeat so
+                                    // the hot-typing heuristic remains accurate.
                                     if matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                                         last_key_time = Instant::now();
-                                        app_event_tx.send(AppEvent::KeyEvent(key_event));
                                     }
+                                    app_event_tx.send(AppEvent::KeyEvent(key_event));
                                 }
                                 crossterm::event::Event::Resize(_, _) => {
                                     app_event_tx.send(AppEvent::RequestRedraw);
