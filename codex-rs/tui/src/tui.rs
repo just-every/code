@@ -99,12 +99,13 @@ pub fn init(config: &Config) -> Result<(Tui, TerminalInfo)> {
     let terminal_info = query_terminal_info();
 
     enable_raw_mode()?;
-    // Enable keyboard enhancement flags only when supported. On some Windows 10
-    // consoles/environments, attempting to push these flags can interfere with
-    // input delivery (reported as a freeze where keypresses don’t register).
-    // We already normalize key kinds when enhancement is unsupported elsewhere,
-    // so it’s safe to skip enabling here.
-    if supports_keyboard_enhancement().unwrap_or(false) {
+    // Enable keyboard enhancement flags only when supported and safe.
+    // On Windows 10, pushing these flags can cause input to stop being
+    // delivered (appearing as a CLI freeze). Default to disabled on Windows
+    // unless explicitly opted-in via CODE_ENABLE_ENHANCED_KEYS=1.
+    let force_enhanced = std::env::var("CODE_ENABLE_ENHANCED_KEYS").map(|v| v == "1").unwrap_or(false);
+    let allow_enhanced = if cfg!(windows) { force_enhanced } else { true };
+    if allow_enhanced && supports_keyboard_enhancement().unwrap_or(false) {
         let _ = execute!(
             stdout(),
             PushKeyboardEnhancementFlags(
@@ -114,7 +115,12 @@ pub fn init(config: &Config) -> Result<(Tui, TerminalInfo)> {
             )
         );
     } else {
-        tracing::info!("Keyboard enhancement flags not supported; skipping enable.");
+        let reason = if cfg!(windows) && !force_enhanced {
+            "disabled on Windows (set CODE_ENABLE_ENHANCED_KEYS=1 to force)"
+        } else {
+            "not supported"
+        };
+        tracing::info!("Keyboard enhancement flags {} – skipping enable.", reason);
     }
     set_panic_hook();
 
