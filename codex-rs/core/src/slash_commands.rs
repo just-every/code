@@ -18,6 +18,7 @@ pub fn get_enabled_agents(agents: &[AgentConfig]) -> Vec<String> {
 fn get_default_models() -> Vec<String> {
     vec![
         "claude".to_string(),
+        "qwen".to_string(),
         "gemini".to_string(),
         "codex".to_string(),
     ]

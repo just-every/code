@@ -605,6 +605,13 @@ async fn execute_model_with_permissions(
                 cmd.args(&["--dangerously-skip-permissions", "-p", prompt]);
             }
         }
+        "qwen" => {
+            if read_only {
+                cmd.args(&["-m", "qwen2.5-coder", "-p", prompt]);
+            } else {
+                cmd.args(&["-m", "qwen2.5-coder", "-y", "-p", prompt]);
+            }
+        }
         "gemini" => {
             if read_only {
                 cmd.args(&["-m", "gemini-2.5-pro", "-p", prompt]);
@@ -654,6 +661,13 @@ async fn execute_model_with_permissions(
         }
         if let Some(anthropic_base) = env.get("ANTHROPIC_BASE_URL").cloned() {
             env.entry("CLAUDE_BASE_URL".to_string()).or_insert(anthropic_base);
+        }
+        // Qwen/DashScope convenience: support either var name.
+        if let Some(qwen_key) = env.get("QWEN_API_KEY").cloned() {
+            env.entry("DASHSCOPE_API_KEY".to_string()).or_insert(qwen_key);
+        }
+        if let Some(dash_key) = env.get("DASHSCOPE_API_KEY").cloned() {
+            env.entry("QWEN_API_KEY".to_string()).or_insert(dash_key);
         }
         // Reduce startup overhead for Claude CLI: disable auto-updater/telemetry.
         env.entry("DISABLE_AUTOUPDATER".to_string()).or_insert("1".to_string());
@@ -710,6 +724,11 @@ async fn execute_model_with_permissions(
                 }
                 args.push("-p".to_string());
                 args.push(prompt.to_string());
+            }
+            "qwen" => {
+                args.extend(["-m".to_string(), "qwen2.5-coder".to_string()]);
+                if !read_only { args.push("-y".to_string()); }
+                args.extend(["-p".to_string(), prompt.to_string()]);
             }
             "gemini" => {
                 args.extend(["-m".to_string(), "gemini-2.5-pro".to_string()]);
@@ -811,7 +830,7 @@ pub fn create_run_agent_tool() -> OpenAiTool {
         "model".to_string(),
         JsonSchema::String {
             description: Some(
-                "Model: 'claude', 'gemini', or 'code' (or array of models for batch execution)"
+                "Model: 'claude', 'gemini', 'qwen', or 'code' (or array of models for batch execution)"
                     .to_string(),
             ),
         },

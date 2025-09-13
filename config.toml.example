@@ -36,6 +36,22 @@ description = "Google Gemini AI assistant in read-only mode"
 args = []
 
 [[agents]]
+name = "qwen"
+command = "qwen"
+enabled = true
+read-only = false
+description = "Qwen Coder assistant (DashScope)"
+args = ["-y"]
+
+[[agents]]
+name = "qwen-safe"
+command = "qwen"
+enabled = true
+read-only = true
+description = "Qwen Coder assistant in read-only mode"
+args = []
+
+[[agents]]
 name = "codex"
 command = "codex"
 enabled = true
