@@ -16,7 +16,7 @@ Usage examples:
 Flags:
   --auth chatgpt|api-key|auto   Default: auto (prefer ChatGPT if tokens exist)
   --model <slug>                Default: gpt-4o-mini
-  --tests <csv>                 One or more of: base,json-schema,tools-web-search,tools-web-search-preview,store
+  --tests <csv>                 One or more of: base,json-schema,tools-web-search,store
                                 Default: base,json-schema
   --stream true|false           Use streaming SSE (true) or JSON (false). Default: false
   --store true|false            Force store flag; default depends on test case
@@ -121,12 +121,7 @@ function makePayload(kind, model, stream, store, variant) {
   input.push({ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Say ok.' }] });
   let tools = undefined;
   if (variant === 'tools-web-search') {
-    tools = [ { type: 'web_search' } ];
-    if (kind === 'chatgpt') {
-      // Match Codex behavior: convert to preview tool for ChatGPT backend
-      tools = [ { type: 'web_search' } ];
-    }
-  } else if (variant === 'tools-web-search-preview') {
+    // Use the supported Responses tool type; no preview variant.
     tools = [ { type: 'web_search' } ];
   }
   let text = undefined;
@@ -296,7 +291,6 @@ async function main() {
   if (tests.has('base')) cases.push({ name: 'base', variant: 'base' });
   if (tests.has('json-schema')) cases.push({ name: 'json-schema', variant: 'json-schema' });
   if (tests.has('tools-web-search')) cases.push({ name: 'tools-web-search', variant: 'tools-web-search' });
-  if (tests.has('tools-web-search-preview')) cases.push({ name: 'tools-web-search-preview', variant: 'tools-web-search-preview' });
   if (tests.has('store')) cases.push({ name: 'store=true', variant: 'base', store: true });
   if (tests.has('spinner')) cases.push({ name: 'spinner(json-schema)', variant: 'spinner' });
 
