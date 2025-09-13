@@ -324,6 +324,8 @@ async fn read_head_and_flags(
                     saw_user_event = true;
                 }
             }
+            // Skip variants not displayed in list summaries.
+            RolloutItem::Compacted(_) | RolloutItem::TurnContext(_) => {}
         }
     }
 

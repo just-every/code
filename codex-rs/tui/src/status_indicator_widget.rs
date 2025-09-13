@@ -181,6 +181,7 @@ mod tests {
     use ratatui::backend::TestBackend;
     use tokio::sync::mpsc::unbounded_channel;
 
+    // no extra tests added from upstream for elapsed formatting; our widget uses simple seconds
     #[test]
     fn renders_with_working_header() {
         let (tx_raw, _rx) = unbounded_channel::<AppEvent>();

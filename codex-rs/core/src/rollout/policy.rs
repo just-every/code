@@ -13,6 +13,8 @@ pub(crate) fn is_persisted_response_item(item: &RolloutItem) -> bool {
         }
         // Always persist session meta
         RolloutItem::SessionMeta(_) => true,
+        // Do not persist variants not used by this fork.
+        RolloutItem::Compacted(_) | RolloutItem::TurnContext(_) => false,
     }
 }
 
@@ -37,9 +39,9 @@ pub(crate) fn should_persist_response_item(item: &ResponseItem) -> bool {
 pub(crate) fn should_persist_event_msg(ev: &EventMsg) -> bool {
     match ev {
         EventMsg::AgentMessage(_)
-        | EventMsg::AgentReasoning(_)
-        | EventMsg::AgentReasoningRawContent(_)
-        | EventMsg::TokenCount(_) => true,
+            | EventMsg::AgentReasoning(_)
+            | EventMsg::AgentReasoningRawContent(_)
+            | EventMsg::TokenCount(_) => true,
         _ => false,
     }
 }

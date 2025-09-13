@@ -280,7 +280,12 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::PlanUpdate(_)
                     | EventMsg::BrowserScreenshotUpdate(_)
                     | EventMsg::AgentStatusUpdate(_)
+                    | EventMsg::TurnAborted(_)
+                    | EventMsg::ConversationPath(_)
+                    | EventMsg::UserMessage(_)
                     | EventMsg::ShutdownComplete
+                    | EventMsg::EnteredReviewMode(_)
+                    | EventMsg::ExitedReviewMode(_)
                     | EventMsg::CustomToolCallBegin(_)
                     | EventMsg::CustomToolCallEnd(_) => {
                         // For now, we do not do anything extra for these

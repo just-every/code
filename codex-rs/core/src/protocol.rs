@@ -491,8 +491,23 @@ pub enum EventMsg {
     /// Agent status has been updated
     AgentStatusUpdate(AgentStatusUpdateEvent),
 
+    /// User/system input message (what was sent to the model)
+    UserMessage(codex_protocol::protocol::UserMessageEvent),
+
     /// Notification that the agent is shutting down.
     ShutdownComplete,
+
+    /// The system aborted the current turn (e.g., due to interruption).
+    TurnAborted(codex_protocol::protocol::TurnAbortedEvent),
+
+    /// Response to a conversation path request.
+    ConversationPath(codex_protocol::protocol::ConversationPathResponseEvent),
+
+    /// Entered review mode with the provided request.
+    EnteredReviewMode(codex_protocol::protocol::ReviewRequest),
+
+    /// Exited review mode with an optional final result to apply.
+    ExitedReviewMode(Option<codex_protocol::protocol::ReviewOutputEvent>),
 
     /// Replay a previously recorded transcript into the UI.
     /// Used after resuming from a rollout file so the user sees the full

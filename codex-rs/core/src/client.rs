@@ -30,6 +30,7 @@ use crate::client_common::ResponseStream;
 use crate::client_common::ResponsesApiRequest;
 use crate::client_common::create_reasoning_param_for_request;
 use crate::config::Config;
+use crate::openai_model_info::get_model_info;
 use crate::config_types::ReasoningEffort as ReasoningEffortConfig;
 use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use crate::config_types::TextVerbosity as TextVerbosityConfig;
@@ -119,6 +120,12 @@ impl ModelClient {
         self.verbosity
     }
 
+    pub fn get_auto_compact_token_limit(&self) -> Option<i64> {
+        self.config.model_auto_compact_token_limit.or_else(|| {
+            get_model_info(&self.config.model_family).and_then(|info| info.auto_compact_token_limit)
+        })
+    }
+
     /// Dispatches to either the Responses or Chat implementation depending on
     /// the provider config.  Public callers always invoke `stream()` – the
     /// specialised helpers are private to avoid accidental misuse.
@@ -188,7 +195,7 @@ impl ModelClient {
 
         let reasoning = create_reasoning_param_for_request(
             &self.config.model_family,
-            self.effort,
+            Some(self.effort),
             self.summary,
         );
 
@@ -215,6 +222,15 @@ impl ModelClient {
             })
         };
 
+        // In general, we want to explicitly send `store: false` when using the Responses API,
+        // but in practice, the Azure Responses API rejects `store: false`:
+        //
+        // - If store = false and id is sent an error is thrown that ID is not found
+        // - If store = false and id is not sent an error is thrown that ID is required
+        //
+        // For Azure, we send `store: true` and preserve reasoning item IDs.
+        let azure_workaround = self.provider.is_azure_responses_endpoint();
+
         let payload = ResponsesApiRequest {
             model: &self.config.model,
             instructions: &full_instructions,
@@ -224,12 +240,18 @@ impl ModelClient {
             parallel_tool_calls: true,
             reasoning,
             text,
-            store,
+            store: azure_workaround,
             stream: true,
             include,
             // Use a stable per-process cache key (session id). With store=false this is inert.
             prompt_cache_key: Some(self.session_id.to_string()),
         };
+
+        let mut payload_json = serde_json::to_value(&payload)?;
+        if azure_workaround {
+            attach_item_ids(&mut payload_json, &input_with_instructions);
+        }
+        let payload_body = serde_json::to_string(&payload_json)?;
 
         let mut attempt = 0;
         let max_retries = self.provider.request_max_retries();
@@ -258,7 +280,7 @@ impl ModelClient {
             trace!(
                 "POST to {}: {}",
                 self.provider.get_full_url(&auth),
-                serde_json::to_string(&payload)?
+                payload_body.as_str()
             );
 
             let mut req_builder = self
@@ -269,11 +291,7 @@ impl ModelClient {
             req_builder = req_builder
                 .header("OpenAI-Beta", "responses=v1")
                 .header(reqwest::header::ACCEPT, "text/event-stream")
-                .json(&payload);
-            // Only include a session_id for ChatGPT auth where the backend expects it
-            if auth_mode == Some(AuthMode::ChatGPT) {
-                req_builder = req_builder.header("session_id", self.session_id.to_string());
-            }
+                .json(&payload_json);
 
             // Avoid unstable `let` chains: expand into nested conditionals.
             if let Some(auth) = auth.as_ref() {
@@ -560,6 +578,33 @@ struct ResponseCompletedInputTokensDetails {
 #[derive(Debug, Deserialize)]
 struct ResponseCompletedOutputTokensDetails {
     reasoning_tokens: u64,
+}
+
+fn attach_item_ids(payload_json: &mut Value, original_items: &[ResponseItem]) {
+    let Some(input_value) = payload_json.get_mut("input") else {
+        return;
+    };
+    let serde_json::Value::Array(items) = input_value else {
+        return;
+    };
+
+    for (value, item) in items.iter_mut().zip(original_items.iter()) {
+        if let ResponseItem::Reasoning { id, .. }
+        | ResponseItem::Message { id: Some(id), .. }
+        | ResponseItem::WebSearchCall { id: Some(id), .. }
+        | ResponseItem::FunctionCall { id: Some(id), .. }
+        | ResponseItem::LocalShellCall { id: Some(id), .. }
+        | ResponseItem::CustomToolCall { id: Some(id), .. } = item
+        {
+            if id.is_empty() {
+                continue;
+            }
+
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert("id".to_string(), Value::String(id.clone()));
+            }
+        }
+    }
 }
 
 async fn process_sse<S>(

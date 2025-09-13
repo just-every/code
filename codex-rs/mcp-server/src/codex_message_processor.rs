@@ -8,8 +8,6 @@ use codex_core::ConversationManager;
 use codex_core::NewConversation;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
-use codex_core::config::ConfigToml;
-use codex_core::config::load_config_as_toml;
 use codex_core::git_info::git_diff_to_remote;
 use codex_core::protocol::ApplyPatchApprovalRequestEvent;
 use codex_core::protocol::Event;
@@ -42,7 +40,6 @@ use codex_protocol::mcp_protocol::ConversationId;
 use codex_protocol::mcp_protocol::EXEC_COMMAND_APPROVAL_METHOD;
 use codex_protocol::mcp_protocol::ExecCommandApprovalParams;
 use codex_protocol::mcp_protocol::ExecCommandApprovalResponse;
-use codex_protocol::mcp_protocol::GetConfigTomlResponse;
 use codex_protocol::mcp_protocol::InputItem as WireInputItem;
 use codex_protocol::mcp_protocol::InterruptConversationParams;
 use codex_protocol::mcp_protocol::InterruptConversationResponse;
@@ -150,68 +147,12 @@ impl CodexMessageProcessor {
             ClientRequest::GitDiffToRemote { request_id, params } => {
                 self.git_diff_to_origin(request_id, params.cwd).await;
             }
-            ClientRequest::GetConfigToml { request_id } => {
-                self.get_config_toml(request_id).await;
-            }
+            _ => { /* ignore unsupported methods */ }
         }
     }
 
-    async fn get_config_toml(&self, request_id: RequestId) {
-        let toml_value = match load_config_as_toml(&self._config.codex_home) {
-            Ok(val) => val,
-            Err(err) => {
-                let error = JSONRPCErrorError {
-                    code: INTERNAL_ERROR_CODE,
-                    message: format!("failed to load config.toml: {err}"),
-                    data: None,
-                };
-                self.outgoing.send_error(request_id, error).await;
-                return;
-            }
-        };
-
-        let cfg: ConfigToml = match toml_value.try_into() {
-            Ok(cfg) => cfg,
-            Err(err) => {
-                let error = JSONRPCErrorError {
-                    code: INTERNAL_ERROR_CODE,
-                    message: format!("failed to parse config.toml: {err}"),
-                    data: None,
-                };
-                self.outgoing.send_error(request_id, error).await;
-                return;
-            }
-        };
-
-        let profiles: HashMap<String, codex_protocol::config_types::ConfigProfile> = cfg
-            .profiles
-            .into_iter()
-            .map(|(k, v)| {
-                (
-                    k,
-                    // Define this explicitly here to avoid the need to
-                    // implement `From<codex_core::config_profile::ConfigProfile>`
-                    // for the `ConfigProfile` type and introduce a dependency on codex_core
-                    codex_protocol::config_types::ConfigProfile {
-                        model: v.model,
-                        approval_policy: v.approval_policy.map(map_ask_for_approval_to_wire),
-                        model_reasoning_effort: v.model_reasoning_effort.map(map_reasoning_effort_to_wire),
-                    },
-                )
-            })
-            .collect();
-
-        let response = GetConfigTomlResponse {
-            approval_policy: cfg.approval_policy.map(map_ask_for_approval_to_wire),
-            sandbox_mode: cfg.sandbox_mode,
-            model_reasoning_effort: cfg.model_reasoning_effort.map(map_reasoning_effort_to_wire),
-            profile: cfg.profile,
-            profiles: Some(profiles),
-        };
-
-        self.outgoing.send_response(request_id, response).await;
-    }
-
+    // Upstream added utility endpoints (user info, set default model, one-off exec).
+    // Our fork does not expose them via this server; omit to preserve behavior.
     async fn process_new_conversation(&self, request_id: RequestId, params: NewConversationParams) {
         let config = match derive_config_from_params(params, self.codex_linux_sandbox_exe.clone()) {
             Ok(config) => config,
@@ -236,6 +177,9 @@ impl CodexMessageProcessor {
                 let response = NewConversationResponse {
                     conversation_id: ConversationId(conversation_id),
                     model: session_configured.model,
+                    reasoning_effort: None,
+                    // We do not expose the underlying rollout file path in this fork; provide the sessions root.
+                    rollout_path: self._config.codex_home.join("sessions"),
                 };
                 self.outgoing.send_response(request_id, response).await;
             }
@@ -589,6 +533,7 @@ fn derive_config_from_params(
     } = params;
         let overrides = ConfigOverrides {
         model,
+        review_model: None,
         config_profile: profile,
         cwd: cwd.map(PathBuf::from),
         approval_policy: approval_policy.map(map_ask_for_approval_from_wire),
@@ -708,25 +653,4 @@ fn map_ask_for_approval_from_wire(a: codex_protocol::protocol::AskForApproval) -
     }
 }
 
-fn map_ask_for_approval_to_wire(a: core_protocol::AskForApproval) -> codex_protocol::protocol::AskForApproval {
-    match a {
-        core_protocol::AskForApproval::UnlessTrusted => codex_protocol::protocol::AskForApproval::UnlessTrusted,
-        core_protocol::AskForApproval::OnFailure => codex_protocol::protocol::AskForApproval::OnFailure,
-        core_protocol::AskForApproval::OnRequest => codex_protocol::protocol::AskForApproval::OnRequest,
-        core_protocol::AskForApproval::Never => codex_protocol::protocol::AskForApproval::Never,
-    }
-}
-
-fn map_reasoning_effort_to_wire(
-    e: codex_core::config_types::ReasoningEffort,
-) -> codex_protocol::config_types::ReasoningEffort {
-    use codex_core::config_types::ReasoningEffort as CoreRE;
-    use codex_protocol::config_types::ReasoningEffort as WireRE;
-    match e {
-        CoreRE::Minimal => WireRE::Minimal,
-        CoreRE::Low => WireRE::Low,
-        CoreRE::Medium => WireRE::Medium,
-        CoreRE::High => WireRE::High,
-        CoreRE::None => WireRE::Medium,
-    }
-}
+// Unused legacy mappers removed to avoid warnings.

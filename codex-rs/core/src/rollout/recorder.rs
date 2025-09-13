@@ -250,6 +250,11 @@ impl RolloutRecorder {
                     RolloutItem::EventMsg(_ev) => {
                         items.push(RolloutItem::EventMsg(_ev));
                     }
+                    // Ignore variants not used by this fork when resuming.
+                    RolloutItem::Compacted(_)
+                    | RolloutItem::TurnContext(_) => {
+                        // Skip
+                    }
                 },
                 Err(e) => {
                     warn!("failed to parse rollout line: {v:?}, error: {e}");

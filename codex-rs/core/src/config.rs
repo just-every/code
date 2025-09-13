@@ -35,6 +35,8 @@ use toml_edit::DocumentMut;
 use toml_edit::Item as TomlItem;
 
 const OPENAI_DEFAULT_MODEL: &str = "gpt-5";
+const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5";
+pub const SWIFTFOX_MEDIUM_MODEL: &str = "swiftfox-medium";
 
 /// Maximum number of bytes of the documentation that will be embedded. Larger
 /// files are *silently truncated* to this size so we do not take up too much of
@@ -51,6 +53,9 @@ pub struct Config {
     /// Optional override of model selection.
     pub model: String,
 
+    /// Model used specifically for review sessions. Defaults to "gpt-5".
+    pub review_model: String,
+
     pub model_family: ModelFamily,
 
     /// Size of the context window for the model, in tokens.
@@ -58,6 +63,9 @@ pub struct Config {
 
     /// Maximum number of output tokens.
     pub model_max_output_tokens: Option<u64>,
+
+    /// Token usage threshold triggering auto-compaction of conversation history.
+    pub model_auto_compact_token_limit: Option<i64>,
 
     /// Key into the model_providers map that specifies which provider to use.
     pub model_provider_id: String,
@@ -891,6 +899,8 @@ fn apply_toml_override(root: &mut TomlValue, path: &str, value: TomlValue) {
 pub struct ConfigToml {
     /// Optional override of model selection.
     pub model: Option<String>,
+    /// Review model override used by the `/review` feature.
+    pub review_model: Option<String>,
 
     /// Provider to use from the model_providers map.
     pub model_provider: Option<String>,
@@ -900,6 +910,9 @@ pub struct ConfigToml {
 
     /// Maximum number of output tokens.
     pub model_max_output_tokens: Option<u64>,
+
+    /// Token usage threshold triggering auto-compaction of conversation history.
+    pub model_auto_compact_token_limit: Option<i64>,
 
     /// Default approval policy for executing commands.
     pub approval_policy: Option<AskForApproval>,
@@ -1116,6 +1129,7 @@ impl ConfigToml {
 #[derive(Default, Debug, Clone)]
 pub struct ConfigOverrides {
     pub model: Option<String>,
+    pub review_model: Option<String>,
     pub cwd: Option<PathBuf>,
     pub approval_policy: Option<AskForApproval>,
     pub sandbox_mode: Option<SandboxMode>,
@@ -1143,6 +1157,7 @@ impl Config {
         // Destructure ConfigOverrides fully to ensure all overrides are applied.
         let ConfigOverrides {
             model,
+            review_model: override_review_model,
             cwd,
             approval_policy,
             sandbox_mode,
@@ -1314,6 +1329,11 @@ impl Config {
                 .as_ref()
                 .map(|info| info.max_output_tokens)
         });
+        let model_auto_compact_token_limit = cfg.model_auto_compact_token_limit.or_else(|| {
+            openai_model_info
+                .as_ref()
+                .and_then(|info| info.auto_compact_token_limit)
+        });
 
         let experimental_resume = cfg.experimental_resume;
 
@@ -1335,11 +1355,18 @@ impl Config {
             .responses_originator_header_internal_override
             .unwrap_or(DEFAULT_RESPONSES_ORIGINATOR_HEADER.to_owned());
 
+        // Default review model when not set in config; allow CLI override to take precedence.
+        let review_model = override_review_model
+            .or(cfg.review_model)
+            .unwrap_or_else(default_review_model);
+
         let config = Self {
             model,
+            review_model,
             model_family,
             model_context_window,
             model_max_output_tokens,
+            model_auto_compact_token_limit,
             model_provider_id,
             model_provider,
             cwd: resolved_cwd,
@@ -1477,6 +1504,10 @@ impl Config {
 
 fn default_model() -> String {
     OPENAI_DEFAULT_MODEL.to_string()
+}
+
+fn default_review_model() -> String {
+    OPENAI_DEFAULT_REVIEW_MODEL.to_string()
 }
 
 /// Returns the path to the Code/Codex configuration directory, which can be
@@ -1626,6 +1657,7 @@ exclude_slash_tmp = true
         );
     }
 
+    
     struct PrecedenceTestFixture {
         cwd: TempDir,
         codex_home: TempDir,
@@ -1769,9 +1801,11 @@ model_verbosity = "high"
         assert_eq!(
             Config {
                 model: "o3".to_string(),
+                review_model: "gpt-5".to_string(),
                 model_family: find_family_for_model("o3").expect("known model slug"),
                 model_context_window: Some(200_000),
                 model_max_output_tokens: Some(100_000),
+                model_auto_compact_token_limit: None,
                 model_provider_id: "openai".to_string(),
                 model_provider: fixture.openai_provider.clone(),
                 approval_policy: AskForApproval::Never,
@@ -1827,9 +1861,11 @@ model_verbosity = "high"
         )?;
         let expected_gpt3_profile_config = Config {
             model: "gpt-3.5-turbo".to_string(),
+            review_model: "gpt-5".to_string(),
             model_family: find_family_for_model("gpt-3.5-turbo").expect("known model slug"),
             model_context_window: Some(16_385),
             model_max_output_tokens: Some(4_096),
+            model_auto_compact_token_limit: None,
             model_provider_id: "openai-chat-completions".to_string(),
             model_provider: fixture.openai_chat_completions_provider.clone(),
             approval_policy: AskForApproval::UnlessTrusted,
@@ -1900,9 +1936,11 @@ model_verbosity = "high"
         )?;
         let expected_zdr_profile_config = Config {
             model: "o3".to_string(),
+            review_model: "gpt-5".to_string(),
             model_family: find_family_for_model("o3").expect("known model slug"),
             model_context_window: Some(200_000),
             model_max_output_tokens: Some(100_000),
+            model_auto_compact_token_limit: None,
             model_provider_id: "openai".to_string(),
             model_provider: fixture.openai_provider.clone(),
             approval_policy: AskForApproval::OnFailure,
@@ -1959,9 +1997,11 @@ model_verbosity = "high"
         )?;
         let expected_gpt5_profile_config = Config {
             model: "gpt-5".to_string(),
+            review_model: "gpt-5".to_string(),
             model_family: find_family_for_model("gpt-5").expect("known model slug"),
             model_context_window: Some(400_000),
             model_max_output_tokens: Some(128_000),
+            model_auto_compact_token_limit: None,
             model_provider_id: "openai".to_string(),
             model_provider: fixture.openai_provider.clone(),
             approval_policy: AskForApproval::OnFailure,
