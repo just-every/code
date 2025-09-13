@@ -4197,6 +4197,7 @@ impl ChatWidget<'_> {
         } else {
             to_check.push(("claude".to_string(), "claude".to_string(), false));
             to_check.push(("gemini".to_string(), "gemini".to_string(), false));
+            to_check.push(("qwen".to_string(), "qwen".to_string(), false));
             to_check.push(("code".to_string(), "code".to_string(), true));
         }
 

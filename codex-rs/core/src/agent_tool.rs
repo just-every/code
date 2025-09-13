@@ -612,6 +612,14 @@ async fn execute_model_with_permissions(
                 cmd.args(&["-m", "gemini-2.5-pro", "-y", "-p", prompt]);
             }
         }
+        "qwen" => {
+            // Qwen coder: follow Gemini CLI UX, but do not pin a model.
+            if read_only {
+                cmd.args(&["-p", prompt]);
+            } else {
+                cmd.args(&["-y", "-p", prompt]);
+            }
+        }
         "codex" | "code" => {
             if read_only {
                 cmd.args(&["-s", "read-only", "-a", "never", "exec", "--skip-git-repo-check", prompt]);
@@ -716,6 +724,11 @@ async fn execute_model_with_permissions(
                 if !read_only { args.push("-y".to_string()); }
                 args.extend(["-p".to_string(), prompt.to_string()]);
             }
+            "qwen" => {
+                // Do not specify a model to allow latest default.
+                if !read_only { args.push("-y".to_string()); }
+                args.extend(["-p".to_string(), prompt.to_string()]);
+            }
             "codex" | "code" => {
                 args.extend(["-s".to_string(), if read_only { "read-only" } else { "workspace-write" }.to_string()]);
                 args.extend(["-a".to_string(), "never".to_string(), "exec".to_string(), "--skip-git-repo-check".to_string(), prompt.to_string()]);
@@ -810,8 +823,8 @@ pub fn create_run_agent_tool() -> OpenAiTool {
     properties.insert(
         "model".to_string(),
         JsonSchema::String {
-            description: Some(
-                "Model: 'claude', 'gemini', or 'code' (or array of models for batch execution)"
+        description: Some(
+                "Model: 'claude', 'gemini', 'qwen', or 'code' (or array of models for batch execution)"
                     .to_string(),
             ),
         },
