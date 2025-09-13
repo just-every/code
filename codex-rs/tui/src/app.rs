@@ -759,23 +759,19 @@ impl App<'_> {
                             }
                         }
                         SlashCommand::New => {
-                            // Clear the current conversation and start fresh
-                            if let AppState::Chat { widget } = &mut self.app_state {
-                                widget.new_conversation(self.enhanced_keys_supported);
-                            } else {
-                        // If we're not in chat state, create a new chat widget
-                        let mut new_widget = ChatWidget::new(
-                            self.config.clone(),
-                            self.app_event_tx.clone(),
-                            None,
-                            Vec::new(),
-                            self.enhanced_keys_supported,
-                            self.terminal_info.clone(),
-                            self.show_order_overlay,
-                        );
-                        new_widget.enable_perf(self.timing_enabled);
-                        self.app_state = AppState::Chat { widget: Box::new(new_widget) };
-                            }
+                            // Start a brand new conversation (core session) with no carried history.
+                            // Replace the chat widget entirely, mirroring SwitchCwd flow but without import.
+                            let mut new_widget = ChatWidget::new(
+                                self.config.clone(),
+                                self.app_event_tx.clone(),
+                                None,
+                                Vec::new(),
+                                self.enhanced_keys_supported,
+                                self.terminal_info.clone(),
+                                self.show_order_overlay,
+                            );
+                            new_widget.enable_perf(self.timing_enabled);
+                            self.app_state = AppState::Chat { widget: Box::new(new_widget) };
                             self.app_event_tx.send(AppEvent::RequestRedraw);
                         }
                         SlashCommand::Init => {

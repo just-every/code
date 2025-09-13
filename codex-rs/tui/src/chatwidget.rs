@@ -8039,40 +8039,8 @@ impl ChatWidget<'_> {
 
     
 
-    /// Clear the conversation and start fresh with a new welcome animation
-    pub(crate) fn new_conversation(&mut self, enhanced_keys_supported: bool) {
-        // Clear all history cells
-        self.history_cells.clear();
-        self.cell_order_seq.clear();
-
-        // Reset various state
-        self.active_exec_cell = None;
-        self.clear_token_usage();
-
-        // Add a new animated welcome cell at the top of the next request so
-        // upcoming output appears below it.
-        self.history_push_top_next_req(history_cell::new_animated_welcome());
-        self.reasoning_index.clear();
-        self.stream_order_seq.clear();
-        self.synthetic_system_req = None;
-        self.system_cell_by_id.clear();
-
-        // Reset the bottom pane with a new composer
-        // (This effectively clears the text input)
-        self.bottom_pane = BottomPane::new(BottomPaneParams {
-            app_event_tx: self.app_event_tx.clone(),
-            has_input_focus: true,
-            enhanced_keys_supported,
-            using_chatgpt_auth: self.config.using_chatgpt_auth,
-        });
-        self.access_status_idx = None;
-        self.pending_access_note = None;
-        // Re-apply access indicator for new composer
-        self.apply_access_mode_indicator_from_config();
-
-        // Request redraw for the new animation
-        self.mark_needs_redraw();
-    }
+    // (Removed) Legacy in-place reset method. The /new command now creates a fresh
+    // ChatWidget (new core session) to ensure the agent context is fully reset.
 
     pub fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
         // Hide the terminal cursor whenever a top‑level overlay is active so the
