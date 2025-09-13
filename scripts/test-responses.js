@@ -16,7 +16,7 @@ Usage examples:
 Flags:
   --auth chatgpt|api-key|auto   Default: auto (prefer ChatGPT if tokens exist)
   --model <slug>                Default: gpt-4o-mini
-  --tests <csv>                 One or more of: base,json-schema,tools-web-search,tools-web-search-preview,store
+  --tests <csv>                 One or more of: base,json-schema,tools-web-search,store
                                 Default: base,json-schema
   --stream true|false           Use streaming SSE (true) or JSON (false). Default: false
   --store true|false            Force store flag; default depends on test case
@@ -120,13 +120,8 @@ function makePayload(kind, model, stream, store, variant) {
   // Primary user message
   input.push({ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Say ok.' }] });
   let tools = undefined;
-  if (variant === 'tools-web-search') {
-    tools = [ { type: 'web_search' } ];
-    if (kind === 'chatgpt') {
-      // Match Codex behavior: convert to preview tool for ChatGPT backend
-      tools = [ { type: 'web_search' } ];
-    }
-  } else if (variant === 'tools-web-search-preview') {
+  if (variant === 'tools-web-search' || variant === 'tools-web-search-preview') {
+    // Use the supported Responses tool id. Kept identical for ChatGPT/API-key.
     tools = [ { type: 'web_search' } ];
   }
   let text = undefined;
