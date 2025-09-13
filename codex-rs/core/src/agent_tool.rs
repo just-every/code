@@ -518,7 +518,8 @@ async fn execute_model_with_permissions(
     working_dir: Option<PathBuf>,
     config: Option<AgentConfig>,
 ) -> Result<String, String> {
-    // Helper: cross‑platform check whether an executable is available in PATH.
+    // Helper: cross‑platform check whether an executable is available in PATH
+    // and is directly spawnable by std::process::Command (no shell wrappers).
     fn command_exists(cmd: &str) -> bool {
         // Absolute/relative path with separators: check directly (files only).
         if cmd.contains(std::path::MAIN_SEPARATOR) || cmd.contains('/') || cmd.contains('\\') {
@@ -527,7 +528,17 @@ async fn execute_model_with_permissions(
 
         #[cfg(target_os = "windows")]
         {
-            return which::which(cmd).map(|p| p.is_file()).unwrap_or(false);
+            // On Windows, ensure we only accept spawnable extensions. PowerShell
+            // scripts like .ps1 are not directly spawnable via Command::new.
+            if let Ok(p) = which::which(cmd) {
+                if !p.is_file() { return false; }
+                match p.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) {
+                    Some(ext) if matches!(ext.as_str(), "exe" | "com" | "cmd" | "bat") => true,
+                    _ => false,
+                }
+            } else {
+                false
+            }
         }
 
         #[cfg(not(target_os = "windows"))]
@@ -747,7 +758,15 @@ async fn execute_model_with_permissions(
                 .wait_with_output()
                 .await
                 .map_err(|e| format!("Failed to read output: {}", e))?,
-            Err(e) => return Err(format!("Failed to spawn sandboxed agent: {}", e)),
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    return Err(format!(
+                        "Required agent '{}' is not installed or not in PATH",
+                        command
+                    ));
+                }
+                return Err(format!("Failed to spawn sandboxed agent: {}", e));
+            }
         }
     } else {
         // Read-only path: use prior behavior
