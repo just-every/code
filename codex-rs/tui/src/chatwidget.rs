@@ -5159,8 +5159,11 @@ impl ChatWidget<'_> {
                 if content_lines.is_empty() {
                     continue;
                 }
+                // Skip the synthetic header line ("user") and capture only
+                // the actual message content for editing/submit.
                 let full_text: String = content_lines
                     .iter()
+                    .skip(1)
                     .map(|l| {
                         l.spans
                             .iter()
@@ -5170,12 +5173,17 @@ impl ChatWidget<'_> {
                     .collect::<Vec<_>>()
                     .join("\n");
 
-                // Build a concise name from first line
-                let mut first = content_lines[0]
-                    .spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect::<String>();
+                // Build a concise name from the first content line (skip header)
+                let mut first = content_lines
+                    .get(1)
+                    .map(|line| {
+                        line
+                            .spans
+                            .iter()
+                            .map(|s| s.content.as_ref())
+                            .collect::<String>()
+                    })
+                    .unwrap_or_default();
                 const MAX: usize = 64;
                 if first.chars().count() > MAX {
                     first = first.chars().take(MAX).collect::<String>() + "…";
