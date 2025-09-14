@@ -254,11 +254,32 @@ pub async fn copy_uncommitted_to_worktree(src_root: &Path, worktree_path: &Path)
         if rel.starts_with(".git/") { continue; }
         let from = src_root.join(&rel);
         let to = worktree_path.join(&rel);
+        let meta = match tokio::fs::metadata(&from).await { Ok(m) => m, Err(_) => continue };
+        if !meta.is_file() { continue; }
         if let Some(parent) = to.parent() { tokio::fs::create_dir_all(parent).await.map_err(|e| format!("Failed to create dir {}: {}", parent.display(), e))?; }
         // Use copy for files; skip if it's a directory (shouldn't appear from ls-files)
         match tokio::fs::copy(&from, &to).await {
             Ok(_) => count += 1,
             Err(e) => return Err(format!("Failed to copy {} -> {}: {}", from.display(), to.display(), e)),
+        }
+    }
+
+    let include_submods = std::env::var("CODEX_BRANCH_INCLUDE_SUBMODULES").ok().map(|v| v.to_ascii_lowercase()).map(|v| v == "1" || v == "true" || v == "yes").unwrap_or(false);
+    if include_submods {
+        if let Ok(out) = Command::new("git").current_dir(src_root).args(["submodule", "status", "--recursive"]).output().await {
+            if out.status.success() {
+                let text = String::from_utf8_lossy(&out.stdout);
+                for line in text.lines() {
+                    let line = line.trim();
+                    if !line.starts_with('+') { continue; }
+                    let rest = &line[1..];
+                    let mut parts = rest.split_whitespace();
+                    let sha = match parts.next() { Some(s) => s, None => continue };
+                    let path = match parts.next() { Some(p) => p, None => continue };
+                    let spec = format!("160000,{},{}", sha, path);
+                    let _ = Command::new("git").current_dir(worktree_path).args(["update-index", "--add", "--cacheinfo", &spec]).output().await;
+                }
+            }
         }
     }
     Ok(count)
