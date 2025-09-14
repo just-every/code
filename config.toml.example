@@ -36,6 +36,29 @@ description = "Google Gemini AI assistant in read-only mode"
 args = []
 
 [[agents]]
+name = "qwen"
+command = "qwen"
+enabled = true
+read-only = false
+description = "Qwen Coder assistant (tracks latest default model)"
+# No default -m: let the CLI choose its current default model
+# To pin a model explicitly, export QWEN_MODEL or add here, e.g.:
+# args = ["-m", "qwen3-coder", "-y"]
+args = ["-y"]
+# Optional environment variables (either name works; mirrored automatically):
+# env = { QWEN_API_KEY = "your-key", DASHSCOPE_API_KEY = "your-key" }
+
+[[agents]]
+name = "qwen-safe"
+command = "qwen"
+enabled = true
+read-only = true
+description = "Qwen Coder assistant in read-only mode"
+# No -y in read-only; omit -m to track latest default. To pin:
+# args = ["-m", "qwen3-coder"]
+args = []
+
+[[agents]]
 name = "codex"
 command = "codex"
 enabled = true
