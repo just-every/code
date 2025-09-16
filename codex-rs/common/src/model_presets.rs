@@ -56,6 +56,28 @@ pub fn builtin_model_presets() -> &'static [ModelPreset] {
             model: "gpt-5-high-new",
             effort: ReasoningEffort::Medium,
         },
+        // GPT-5 Codex tuned variants
+        ModelPreset {
+            id: "gpt-5-codex-low",
+            label: "gpt-5 codex low",
+            description: "— GPT-5 Codex tuned for coding; faster responses with lower reasoning depth",
+            model: "gpt-5-codex-low",
+            effort: ReasoningEffort::Low,
+        },
+        ModelPreset {
+            id: "gpt-5-codex-medium",
+            label: "gpt-5 codex medium",
+            description: "— GPT-5 Codex default; balanced coding performance and reasoning",
+            model: "gpt-5-codex-medium",
+            effort: ReasoningEffort::Medium,
+        },
+        ModelPreset {
+            id: "gpt-5-codex-high",
+            label: "gpt-5 codex high",
+            description: "— GPT-5 Codex with maximum reasoning for complex coding tasks",
+            model: "gpt-5-codex-high",
+            effort: ReasoningEffort::High,
+        },
     ];
     PRESETS
 }
