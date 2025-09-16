@@ -2410,10 +2410,10 @@ async fn run_turn(
 
                             let compact_prompt = Prompt {
                                 input: compact_turn_input,
-                                user_instructions: None,
+                                user_instructions: Some(SUMMARIZATION_PROMPT.to_string()),
                                 store: !sess.disable_response_storage,
                                 tools: Vec::new(),
-                                base_instructions_override: Some(SUMMARIZATION_PROMPT.to_string()),
+                                base_instructions_override: sess.base_instructions.clone(),
                                 environment_context: None,
                                 status_items: Vec::new(),
                                 text_format: None,
@@ -2798,16 +2798,16 @@ async fn run_compact_agent(
         // Build status items (screenshots, system status) fresh for each attempt
         let status_items = build_turn_status_items(&sess).await;
 
-        let prompt = Prompt {
-            input: turn_input.clone(),
-            user_instructions: None,
-            store: !sess.disable_response_storage,
-            environment_context: None,
-            tools: Vec::new(),
-            base_instructions_override: Some(compact_instructions.clone()),
-            status_items, // Include status items with this request
-            text_format: None,
-        };
+    let prompt = Prompt {
+        input: turn_input.clone(),
+        user_instructions: Some(compact_instructions.clone()),
+        store: !sess.disable_response_storage,
+        environment_context: None,
+        tools: Vec::new(),
+        base_instructions_override: sess.base_instructions.clone(),
+        status_items, // Include status items with this request
+        text_format: None,
+    };
 
         let attempt_result = drain_to_completed(&sess, &sub_id, &prompt).await;
 
