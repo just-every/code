@@ -3720,17 +3720,25 @@ impl ChatWidget<'_> {
                 self.on_error(message);
             }
             EventMsg::PlanUpdate(update) => {
-                // Insert plan updates at the time they occur. If the provider
-                // supplied OrderMeta, honor it. Otherwise, derive a key within
-                // the current (last-seen) request — do NOT advance to the next
-                // request when a prompt is already queued, since these belong
-                // to the in-flight turn.
-                let key = self.near_time_key_current_req(event.order.as_ref());
-                let _ = self.history_insert_with_key_global(
-                    Box::new(history_cell::new_plan_update(update)),
-                    key,
-                );
-                // If we inserted during streaming, keep the reasoning ellipsis visible.
+                // Coalesce plan updates: if a prior Plan block exists, replace it in-place
+                // instead of inserting another duplicate block. If the new content is
+                // identical to the previous, skip any changes.
+                let new_cell = history_cell::new_plan_update(update);
+                if let Some(idx) = self
+                    .history_cells
+                    .iter()
+                    .rposition(|c| c.kind() == crate::history_cell::HistoryCellType::PlanUpdate)
+                {
+                    // If identical, avoid churn; otherwise, replace in-place to keep only one Plan.
+                    if self.history_cells[idx].display_lines() != new_cell.display_lines() {
+                        self.history_replace_at(idx, Box::new(new_cell));
+                    }
+                } else {
+                    // No existing Plan block: insert at the appropriate near-time position.
+                    let key = self.near_time_key_current_req(event.order.as_ref());
+                    let _ = self.history_insert_with_key_global(Box::new(new_cell), key);
+                }
+                // If we inserted or replaced during streaming, keep the reasoning ellipsis visible.
                 self.restore_reasoning_in_progress_if_streaming();
             }
             EventMsg::ExecApprovalRequest(ev) => {
