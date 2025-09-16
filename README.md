@@ -173,13 +173,14 @@ Code supports MCP for extended capabilities:
 - **API integrations**: Connect to external services
 - **Custom tools**: Build your own extensions
 
-Configure MCP in `~/.codex/config.toml`:
+Configure MCP in `~/.codex/config.toml` (TOML map form):
 
 ```toml
-[[mcp_servers]]
-name = "filesystem"
+[mcp_servers.filesystem]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/project"]
+# env = { "API_KEY" = "value" }
+# startup_timeout_ms = 10_000
 ```
 
 &ensp;

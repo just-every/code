@@ -111,8 +111,8 @@ persistence = "save-all"
 max-bytes = 10485760  # 10MB
 
 # MCP Server Configuration
-# Example MCP server configurations
-[mcp-servers.example-server]
+# Example MCP server configuration (TOML map form)
+[mcp_servers.example-server]
 command = "npx"
 args = ["-y", "@example/mcp-server"]
 env = { API_KEY = "your-api-key" }
