@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use serde_json::Value;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -26,8 +27,10 @@ pub fn list_sessions_for_cwd(cwd: &Path, codex_home: &Path) -> Vec<ResumeCandida
         return v.into_iter().take(200).collect();
     }
 
-    // No index found for this directory
-    Vec::new()
+    // Fallback: scan sessions directory for matching files (first-line only)
+    let mut v = fallback_scan_sessions(cwd, codex_home);
+    v.sort_by(|a, b| b.sort_key.cmp(&a.sort_key));
+    v.into_iter().take(200).collect()
 }
 
 #[derive(Deserialize)]
@@ -108,4 +111,106 @@ fn super_sanitize_dir_index_path(codex_home: &Path, cwd: &Path) -> PathBuf {
     p
 }
 
-// Removed fallback slow scan; the fast per-directory index is authoritative.
+/// Fallback: recursively scan ~/.codex/sessions for rollout files.
+/// Only reads the first line of each .jsonl to match on cwd.
+fn fallback_scan_sessions(cwd: &Path, codex_home: &Path) -> Vec<ResumeCandidate> {
+    let mut out: Vec<ResumeCandidate> = Vec::new();
+    let sessions_root = {
+        let mut p = codex_home.to_path_buf();
+        p.push("sessions");
+        p
+    };
+    if !sessions_root.exists() {
+        return out;
+    }
+
+    let cwd_str = cwd.to_string_lossy().to_string();
+
+    // Simple DFS without extra deps
+    let mut stack: Vec<PathBuf> = vec![sessions_root];
+    // Bound the total files inspected to avoid heavy IO on huge trees
+    let mut files_seen: usize = 0;
+    const FILE_SCAN_LIMIT: usize = 5000;
+
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = fs::read_dir(&dir) else { continue };
+        for ent in rd.flatten() {
+            let path = ent.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if files_seen >= FILE_SCAN_LIMIT {
+                break;
+            }
+            files_seen += 1;
+            if !matches!(path.extension().and_then(|s| s.to_str()), Some("jsonl")) {
+                continue;
+            }
+            // Open and read only the first line
+            let Ok(f) = fs::File::open(&path) else { continue };
+            let mut reader = BufReader::new(f);
+            let mut first = String::new();
+            if reader.read_line(&mut first).is_err() { continue; }
+            if first.trim().is_empty() { continue; }
+            let Ok(v): Result<Value, _> = serde_json::from_str(&first) else { continue };
+            // Expect a rollout line with { timestamp, type, payload }
+            let t = v.get("type").and_then(|s| s.as_str()).unwrap_or("");
+            if t != "session_meta" { continue; }
+            let Some(payload) = v.get("payload") else { continue };
+            let Some(line_cwd) = payload.get("cwd").and_then(|c| c.as_str()) else { continue };
+            if line_cwd != cwd_str { continue; }
+
+            // Extract created timestamp, prefer payload.timestamp from SessionMeta
+            let created_ts = payload
+                .get("timestamp")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string());
+
+            // Modified timestamp from file metadata
+            let modified_ts = fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|st| {
+                    // Format as RFC3339 string
+                    let dt: chrono::DateTime<chrono::Utc> = st.into();
+                    Some(dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+                });
+
+            // Count messages: number of non-empty lines minus the first meta line
+            let message_count = match fs::read_to_string(&path) {
+                Ok(text) => {
+                    let mut n = 0usize;
+                    for (i, l) in text.lines().enumerate() {
+                        if i == 0 { continue; }
+                        if l.trim().is_empty() { continue; }
+                        n = n.saturating_add(1);
+                    }
+                    n
+                }
+                Err(_) => 0,
+            };
+
+            // Optional branch from payload.git.branch
+            let branch = payload
+                .get("git")
+                .and_then(|g| g.get("branch"))
+                .and_then(|b| b.as_str())
+                .map(|s| s.to_string());
+
+            let sort_key = modified_ts.clone().unwrap_or_default();
+            out.push(ResumeCandidate {
+                path: path.clone(),
+                subtitle: None,
+                sort_key,
+                created_ts,
+                modified_ts,
+                message_count,
+                branch,
+                snippet: None,
+            });
+        }
+    }
+
+    out
+}
