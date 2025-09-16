@@ -383,7 +383,8 @@ impl ChatComposer {
         // Calculate hint/popup height
         let hint_height = match &self.active_popup {
             ActivePopup::None => 1u16,
-            ActivePopup::Command(c) => c.calculate_required_height(),
+            // Account for the 2-space left indent inside the popup renderer.
+            ActivePopup::Command(c) => c.calculate_required_height(width.saturating_sub(2)),
             ActivePopup::File(c) => c.calculate_required_height(),
         };
 
@@ -405,7 +406,7 @@ impl ChatComposer {
             1
         } else {
             match &self.active_popup {
-                ActivePopup::Command(popup) => popup.calculate_required_height(),
+                ActivePopup::Command(popup) => popup.calculate_required_height(area.width.saturating_sub(2)),
                 ActivePopup::File(popup) => popup.calculate_required_height(),
                 ActivePopup::None => 1,
             }
@@ -1474,7 +1475,7 @@ impl ChatComposer {
 impl WidgetRef for ChatComposer {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         let popup_height = match &self.active_popup {
-            ActivePopup::Command(popup) => popup.calculate_required_height(),
+            ActivePopup::Command(popup) => popup.calculate_required_height(area.width.saturating_sub(2)),
             ActivePopup::File(popup) => popup.calculate_required_height(),
             ActivePopup::None => 1,
         };

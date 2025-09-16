@@ -11,6 +11,7 @@ use ratatui::widgets::Table;
 use ratatui::widgets::Widget;
 
 use super::scroll_state::ScrollState;
+use unicode_width::UnicodeWidthStr;
 
 /// A generic representation of a display row for selection popups.
 pub(crate) struct GenericDisplayRow {
@@ -119,4 +120,65 @@ pub(crate) fn render_rows(
         .style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()));
 
     table.render(area, buf);
+}
+
+/// Estimate the required height (in terminal rows) to render up to
+/// `max_results` rows for the provided `rows_all`, taking wrapping into
+/// account for the given content `width` and the current `state` window.
+///
+/// This mirrors the selection windowing logic in `render_rows` so that the
+/// composer can allocate an appropriate hint/popup height prior to render.
+pub(crate) fn measure_rows_height(
+    rows_all: &[GenericDisplayRow],
+    state: &ScrollState,
+    max_results: usize,
+    width: u16,
+) -> u16 {
+    // Empty -> one line placeholder ("no matches").
+    if rows_all.is_empty() {
+        return 1;
+    }
+
+    // Prevent division by zero; treat zero-width as a single-column layout.
+    let content_width = width.max(1) as usize;
+
+    let visible_rows = max_results.min(rows_all.len());
+
+    // Compute starting index like in render_rows to keep scroll behavior aligned.
+    let mut start_idx = state.scroll_top.min(rows_all.len().saturating_sub(1));
+    if let Some(sel) = state.selected_idx {
+        if sel < start_idx {
+            start_idx = sel;
+        } else if visible_rows > 0 {
+            let bottom = start_idx + visible_rows - 1;
+            if sel > bottom {
+                start_idx = sel + 1 - visible_rows;
+            }
+        }
+    }
+
+    // Sum the wrapped line count for the visible window.
+    let mut total_lines: usize = 0;
+    for row in rows_all
+        .iter()
+        .enumerate()
+        .skip(start_idx)
+        .take(visible_rows)
+    {
+        let (_i, GenericDisplayRow { name, description, .. }) = row;
+
+        // Compute the display string width: name [+ two spaces + description].
+        let mut line_width = UnicodeWidthStr::width(name.as_str());
+
+        if let Some(desc) = description.as_ref() {
+            // Two spaces between name and description, like in render_rows.
+            line_width += 2 + UnicodeWidthStr::width(desc.as_str());
+        }
+
+        // Wrapped height = ceil(line_width / content_width), minimum 1.
+        let wrapped = if line_width == 0 { 1 } else { (line_width + content_width - 1) / content_width };
+        total_lines += wrapped.max(1);
+    }
+
+    total_lines.min(u16::MAX as usize) as u16
 }
