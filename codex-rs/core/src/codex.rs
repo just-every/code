@@ -4,6 +4,8 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::ffi::OsString;
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -36,6 +38,7 @@ use tracing::info;
 use tracing::trace;
 use tracing::warn;
 use uuid::Uuid;
+use crate::bash::{try_parse_bash, try_parse_word_only_commands_sequence};
 use crate::CodexAuth;
 use crate::agent_tool::AgentStatusUpdatePayload;
 use crate::protocol::WebSearchBeginEvent;
@@ -53,6 +56,355 @@ pub(crate) const INITIAL_SUBMIT_ID: &str = "";
 #[derive(Clone, Default)]
 struct ConfirmGuardRuntime {
     patterns: Vec<ConfirmGuardPatternRuntime>,
+}
+
+fn extract_single_simple_command(argv: &[String]) -> Option<Vec<String>> {
+    if argv.len() == 3 {
+        let interpreter = std::path::Path::new(&argv[0])
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        let flag = argv[1].as_str();
+        if matches!(interpreter, "bash" | "sh") && matches!(flag, "-lc" | "-c") {
+            if let Some(tree) = try_parse_bash(&argv[2])
+                && let Some(commands) = try_parse_word_only_commands_sequence(&tree, &argv[2])
+                && commands.len() == 1
+            {
+                return Some(commands[0].clone());
+            }
+            return None;
+        }
+    }
+    Some(argv.to_vec())
+}
+
+fn is_env_assignment(token: &str) -> bool {
+    if !token.contains('=') || token.starts_with('-') {
+        return false;
+    }
+    let mut parts = token.splitn(2, '=');
+    let key = parts.next().unwrap_or("");
+    if key.is_empty() {
+        return false;
+    }
+    let first = key.as_bytes()[0];
+    if !(first == b'_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+    key.bytes()
+        .all(|b| b == b'_' || b.is_ascii_alphanumeric())
+}
+
+fn locate_program<'a>(tokens: &'a [String]) -> Option<(usize, &'a str)> {
+    let mut idx = 0usize;
+    let mut saw_env_prefix = false;
+    while idx < tokens.len() {
+        let token = tokens[idx].as_str();
+        if token.is_empty() {
+            idx += 1;
+            continue;
+        }
+        if is_env_assignment(token) {
+            idx += 1;
+            continue;
+        }
+        if token == "env" && !saw_env_prefix {
+            saw_env_prefix = true;
+            idx += 1;
+            continue;
+        }
+        if saw_env_prefix && token.starts_with('-') {
+            idx += 1;
+            continue;
+        }
+        return Some((idx, token));
+    }
+    None
+}
+
+fn match_exec_allow_rule<'a>(
+    tokens: &[String],
+    rules: &'a [ExecAllowRule],
+) -> Option<&'a ExecAllowRule> {
+    let (program_idx, program) = locate_program(tokens)?;
+    let program_base = std::path::Path::new(program)
+        .file_name()
+        .and_then(|s| s.to_str());
+    let sub = tokens.get(program_idx + 1).map(|s| s.as_str());
+
+    rules.iter().find(|rule| {
+        let rule_program = rule.program.as_str();
+        let rule_base = std::path::Path::new(rule_program)
+            .file_name()
+            .and_then(|s| s.to_str());
+
+        let program_matches = rule_program == program
+            || program_base.map(|b| b == rule_program).unwrap_or(false)
+            || rule_base.map(|b| b == program).unwrap_or(false)
+            || match (rule_base, program_base) {
+                (Some(rb), Some(pb)) => rb == pb,
+                _ => false,
+            };
+
+        if !program_matches {
+            return false;
+        }
+
+        match &rule.subcommand {
+            ExecAllowSubcommand::Any => true,
+            ExecAllowSubcommand::Exact(expected) => {
+                sub.map(|actual| actual == expected.as_str()).unwrap_or(false)
+            }
+            ExecAllowSubcommand::Prefix(prefix) => {
+                sub.map(|actual| actual.starts_with(prefix)).unwrap_or(false)
+            }
+        }
+    })
+}
+
+fn command_paths_within_workspace(
+    tokens: &[String],
+    sandbox_policy: &SandboxPolicy,
+    cwd: &std::path::Path,
+) -> bool {
+    let roots = sandbox_policy.get_writable_roots_with_cwd(cwd);
+    if roots.is_empty() {
+        return true;
+    }
+
+    let cwd_canonical = match canonicalize_allowing_missing(cwd) {
+        Some(path) => path,
+        None => return false,
+    };
+
+    for token in tokens {
+        let trimmed = token.as_str();
+        if matches!(trimmed, "|" | "&&" | "||" | ";") {
+            continue;
+        }
+        if is_env_assignment(trimmed) {
+            continue;
+        }
+
+        let candidates = candidate_paths_from_token(trimmed);
+        if candidates.is_empty() {
+            continue;
+        }
+
+        for candidate in candidates {
+            let path = Path::new(&candidate);
+            let absolute = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                cwd_canonical.join(path)
+            };
+
+            let resolved = match canonicalize_allowing_missing(&absolute) {
+                Some(path) => path,
+                None => return false,
+            };
+
+            if !roots.iter().any(|root| root.is_path_writable(&resolved)) {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
+fn candidate_paths_from_token(token: &str) -> Vec<String> {
+    if token.is_empty() {
+        return Vec::new();
+    }
+
+    let mut candidates = Vec::new();
+
+    let mut push_candidate = |value: &str| {
+        if let Some(cleaned) = normalize_path_candidate(value) {
+            candidates.push(cleaned);
+        }
+    };
+
+    if let Some(eq_idx) = token.find('=') {
+        let value = &token[(eq_idx + 1)..];
+        push_candidate(value);
+    }
+
+    if token.starts_with('-') {
+        if token.contains('=') {
+            // Already handled the suffix after '=' above.
+        } else {
+            let trimmed = token.trim_start_matches('-');
+            if let Some(idx) = trimmed.find('/') {
+                push_candidate(&trimmed[idx..]);
+            } else if let Some(idx) = trimmed.find('\\') {
+                push_candidate(&trimmed[idx..]);
+            } else if trimmed.starts_with("./")
+                || trimmed.starts_with("../")
+                || trimmed.starts_with(".\\")
+                || trimmed.starts_with("..\\")
+            {
+                push_candidate(trimmed);
+            }
+        }
+    } else if !token.contains('=') {
+        push_candidate(token);
+    }
+
+    candidates
+}
+
+fn normalize_path_candidate(value: &str) -> Option<String> {
+    if value.is_empty() {
+        return None;
+    }
+
+    let trimmed = value.trim_matches(|c| matches!(c, '"' | '\''));
+    if trimmed.is_empty() {
+        return None;
+    }
+    if matches!(trimmed, "." | "..") {
+        return Some(trimmed.to_string());
+    }
+
+    let path = Path::new(trimmed);
+    if path.is_absolute()
+        || trimmed.starts_with("./")
+        || trimmed.starts_with("../")
+        || trimmed.starts_with(".\\")
+        || trimmed.starts_with("..\\")
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+    {
+        Some(trimmed.to_string())
+    } else {
+        None
+    }
+}
+
+fn canonicalize_allowing_missing(path: &Path) -> Option<PathBuf> {
+    match path.canonicalize() {
+        Ok(value) => Some(normalize_path(&value)),
+        Err(_) => {
+            let mut suffix = Vec::<OsString>::new();
+            let mut current = path;
+
+            loop {
+                match current.canonicalize() {
+                    Ok(mut canonical_parent) => {
+                        for component in suffix.iter().rev() {
+                            canonical_parent.push(component);
+                        }
+                        return Some(normalize_path(&canonical_parent));
+                    }
+                    Err(_) => {
+                        let parent = current.parent()?;
+                        if let Some(name) = current.file_name() {
+                            suffix.push(name.to_os_string());
+                        }
+                        current = parent;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => out.push(prefix.as_os_str()),
+            Component::RootDir => {
+                out.push(component.as_os_str());
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    // If we cannot pop (we are at root), keep the path at root.
+                    continue;
+                }
+            }
+            Component::Normal(part) => out.push(part),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod exec_allow_tests {
+    use super::*;
+    use crate::protocol::SandboxPolicy;
+    use tempfile::tempdir;
+
+    fn workspace_policy(workspace: &Path) -> SandboxPolicy {
+        SandboxPolicy::WorkspaceWrite {
+            writable_roots: vec![workspace.to_path_buf()],
+            network_access: false,
+            exclude_tmpdir_env_var: true,
+            exclude_slash_tmp: true,
+            allow_git_writes: true,
+        }
+    }
+
+    #[test]
+    fn allows_paths_within_workspace() {
+        let dir = tempdir().expect("tempdir");
+        let workspace = dir.path();
+        std::fs::create_dir_all(workspace.join("src")).expect("create src");
+
+        let tokens = vec![
+            "uv".to_string(),
+            "run".to_string(),
+            "tests".to_string(),
+            "source=src/lib.rs".to_string(),
+        ];
+
+        assert!(command_paths_within_workspace(
+            &tokens,
+            &workspace_policy(workspace),
+            workspace,
+        ));
+    }
+
+    #[test]
+    fn rejects_parent_dir_escape() {
+        let dir = tempdir().expect("tempdir");
+        let workspace = dir.path();
+
+        let tokens = vec![
+            "uv".to_string(),
+            "run".to_string(),
+            "tests".to_string(),
+            "source=../codex/test_file.x".to_string(),
+        ];
+
+        assert!(!command_paths_within_workspace(
+            &tokens,
+            &workspace_policy(workspace),
+            workspace,
+        ));
+    }
+
+    #[test]
+    fn rejects_flag_embedded_absolute_paths() {
+        let dir = tempdir().expect("tempdir");
+        let workspace = dir.path();
+
+        let tokens = vec![
+            "uv".to_string(),
+            "run".to_string(),
+            "tests".to_string(),
+            "--target=/etc/passwd".to_string(),
+        ];
+
+        assert!(!command_paths_within_workspace(
+            &tokens,
+            &workspace_policy(workspace),
+            workspace,
+        ));
+    }
 }
 
 #[derive(Clone)]
@@ -454,8 +806,8 @@ use crate::client::ModelClient;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::environment_context::EnvironmentContext;
+use crate::config::{persist_model_selection, Config, ExecAllowRule, ExecAllowSubcommand};
 use crate::user_instructions::UserInstructions;
-use crate::config::{persist_model_selection, Config};
 use crate::config_types::ShellEnvironmentPolicy;
 use crate::conversation_history::ConversationHistory;
 use crate::error::CodexErr;
@@ -712,6 +1064,7 @@ pub(crate) struct Session {
     /// Track the last screenshot path and hash to detect changes
     last_screenshot_info: Mutex<Option<(PathBuf, Vec<u8>, Vec<u8>)>>, // (path, phash, dhash)
     confirm_guard: ConfirmGuardRuntime,
+    exec_allow: Vec<ExecAllowRule>,
 }
 
 #[derive(Debug, Clone)]
@@ -2046,6 +2399,7 @@ async fn submission_loop(
                     last_system_status: Mutex::new(None),
                     last_screenshot_info: Mutex::new(None),
                     confirm_guard: ConfirmGuardRuntime::from_config(&config.confirm_guard),
+                    exec_allow: config.exec_allow.clone(),
                 }));
                 let mut replay_history_items: Option<Vec<ResponseItem>> = None;
 
@@ -5746,67 +6100,100 @@ async fn handle_container_exec_with_params(
         MaybeApplyPatchVerified::NotApplyPatch => None,
     };
 
-    let (params, safety, command_for_display) = match &apply_patch_exec {
-        Some(ApplyPatchExec {
-            action: ApplyPatchAction { patch, cwd, .. },
-            user_explicitly_approved_this_action,
-        }) => {
-            let path_to_codex = std::env::current_exe()
-                .ok()
-                .map(|p| p.to_string_lossy().to_string());
-            let Some(path_to_codex) = path_to_codex else {
-                return ResponseInputItem::FunctionCallOutput {
-                    call_id,
-                    output: FunctionCallOutputPayload {
-                        content: "failed to determine path to codex executable".to_string(),
-                        success: None,
-                    },
-                };
+    let (params, safety, command_for_display) = if let Some(ApplyPatchExec {
+        action: ApplyPatchAction { patch, cwd, .. },
+        user_explicitly_approved_this_action,
+    }) = &apply_patch_exec
+    {
+        let path_to_codex = std::env::current_exe()
+            .ok()
+            .map(|p| p.to_string_lossy().to_string());
+        let Some(path_to_codex) = path_to_codex else {
+            return ResponseInputItem::FunctionCallOutput {
+                call_id,
+                output: FunctionCallOutputPayload {
+                    content: "failed to determine path to codex executable".to_string(),
+                    success: None,
+                },
             };
+        };
 
-            let params = ExecParams {
-                command: vec![
-                    path_to_codex,
-                    CODEX_APPLY_PATCH_ARG1.to_string(),
-                    patch.clone(),
-                ],
-                cwd: cwd.clone(),
-                timeout_ms: params.timeout_ms,
-                env: HashMap::new(),
-                with_escalated_permissions: params.with_escalated_permissions,
-                justification: params.justification.clone(),
-            };
-            let safety = if *user_explicitly_approved_this_action {
-                SafetyCheck::AutoApprove {
-                    sandbox_type: SandboxType::None,
+        let params = ExecParams {
+            command: vec![
+                path_to_codex,
+                CODEX_APPLY_PATCH_ARG1.to_string(),
+                patch.clone(),
+            ],
+            cwd: cwd.clone(),
+            timeout_ms: params.timeout_ms,
+            env: HashMap::new(),
+            with_escalated_permissions: params.with_escalated_permissions,
+            justification: params.justification.clone(),
+        };
+        let safety = if *user_explicitly_approved_this_action {
+            SafetyCheck::AutoApprove {
+                sandbox_type: SandboxType::None,
+            }
+        } else {
+            assess_safety_for_untrusted_command(
+                sess.approval_policy,
+                &sess.sandbox_policy,
+                params.with_escalated_permissions.unwrap_or(false),
+            )
+        };
+        let command_for_display = vec!["apply_patch".to_string(), patch.clone()];
+        (params, safety, command_for_display)
+    } else {
+        let mut bypass_sandbox = false;
+        let mut timeout_ms = params.timeout_ms;
+        if let Some(tokens) = extract_single_simple_command(&params.command) {
+            tracing::trace!(rules = ?sess.exec_allow, "exec_allow_rules");
+            tracing::trace!(?tokens, "exec_allow_candidate");
+            if let Some(rule) = match_exec_allow_rule(&tokens, &sess.exec_allow) {
+                tracing::trace!(pattern = %rule.program, ?rule.subcommand, "exec_allow_rule_match");
+                if !rule.project_only
+                    || command_paths_within_workspace(
+                        &tokens,
+                        &sess.sandbox_policy,
+                        &params.cwd,
+                    )
+                {
+                    if timeout_ms.is_none() {
+                        if let Some(timeout) = rule.timeout_ms {
+                            timeout_ms = Some(timeout);
+                        }
+                    }
+                    tracing::trace!("exec_allow_bypass_granted");
+                    bypass_sandbox = true;
                 }
             } else {
-                assess_safety_for_untrusted_command(
-                    sess.approval_policy,
-                    &sess.sandbox_policy,
-                    params.with_escalated_permissions.unwrap_or(false),
-                )
-            };
-            (
-                params,
-                safety,
-                vec!["apply_patch".to_string(), patch.clone()],
+                tracing::trace!("exec_allow_no_rule_match");
+            }
+        }
+
+        let safety = if bypass_sandbox {
+            SafetyCheck::AutoApprove {
+                sandbox_type: SandboxType::None,
+            }
+        } else {
+            let state = sess.state.lock().unwrap();
+            assess_command_safety(
+                &params.command,
+                sess.approval_policy,
+                &sess.sandbox_policy,
+                &state.approved_commands,
+                params.with_escalated_permissions.unwrap_or(false),
             )
-        }
-        None => {
-            let safety = {
-                let state = sess.state.lock().unwrap();
-                assess_command_safety(
-                    &params.command,
-                    sess.approval_policy,
-                    &sess.sandbox_policy,
-                    &state.approved_commands,
-                    params.with_escalated_permissions.unwrap_or(false),
-                )
-            };
-            let command_for_display = params.command.clone();
-            (params, safety, command_for_display)
-        }
+        };
+        let command_for_display = params.command.clone();
+        (
+            ExecParams {
+                timeout_ms,
+                ..params
+            },
+            safety,
+            command_for_display,
+        )
     };
 
     let sandbox_type = match safety {

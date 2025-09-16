@@ -96,6 +96,18 @@ network-access = true
 exclude-tmpdir-env-var = false
 exclude-slash-tmp = false
 
+# Commands matching these patterns may bypass the sandbox entirely.
+# Each entry compares the program name (and optional first subcommand).
+# Example: allow `uv run` and `docker compose` to run with full host access.
+[[exec_allow]]
+pattern = "uv run"
+project_only = true  # require file arguments to stay under the workspace roots
+timeout_ms = 600000  # optional default timeout (10 minutes)
+
+[[exec_allow]]
+pattern = "docker compose"
+project_only = true
+
 # Shell Environment Configuration
 [shell-environment-policy]
 inherit = "all"

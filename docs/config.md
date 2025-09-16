@@ -331,6 +331,30 @@ This is reasonable to use if Codex is running in an environment that provides it
 
 Though using this option may also be necessary if you try to use Codex in environments where its native sandboxing mechanisms are unsupported, such as older Linux kernels or on Windows.
 
+## exec_allow
+
+Use `exec_allow` to whitelist specific commands that should run **outside** the sandbox. This is useful for tooling such as `uv run`, `docker compose`, or other launchers that need full filesystem or network access.
+
+- Each entry is specified as a table in an array (`[[exec_allow]]`).
+- `pattern` matches the program name and an optional first subcommand. Matching is case sensitive, but we automatically compare basenames, so `pattern = "docker"` matches either `docker` or `/usr/local/bin/docker`.
+- `*` as the second token matches any subcommand, while `:<asterisk>` (for example `pattern = "cargo fmt:*"`) matches subcommands with that prefix.
+- `project_only` (default: `true`) ensures any path arguments stay under the sandbox's writable roots. If a command violates that condition it falls back to the regular sandbox instead of running unrestricted.
+- `timeout_ms` provides a default timeout that is used whenever the tool call does not set one explicitly.
+- Only simple commands are eligible. Scripts such as `bash -lc 'build && deploy'` must collapse to a single command with no pipes or connectors to bypass the sandbox.
+
+Example:
+
+```toml
+[[exec_allow]]
+pattern = "uv run"
+project_only = true
+timeout_ms = 600000  # 10 minutes
+
+[[exec_allow]]
+pattern = "docker compose"
+project_only = true
+```
+
 ## Approval presets
 
 Codex provides three main Approval Presets:
@@ -628,6 +652,7 @@ notifications = [ "agent-turn-complete", "approval-requested" ]
 | `sandbox_workspace_write.network_access` | boolean | Allow network in workspace‑write (default: false). |
 | `sandbox_workspace_write.exclude_tmpdir_env_var` | boolean | Exclude `$TMPDIR` from writable roots (default: false). |
 | `sandbox_workspace_write.exclude_slash_tmp` | boolean | Exclude `/tmp` from writable roots (default: false). |
+| `exec_allow` | array<table> | Command whitelist for bypassing the sandbox (`pattern`, `project_only`, `timeout_ms`). |
 | `disable_response_storage` | boolean | Required for ZDR orgs. |
 | `notify` | array<string> | External program for notifications. |
 | `instructions` | string | Currently ignored; use `experimental_instructions_file` or `AGENTS.md`. |
