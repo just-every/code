@@ -2106,7 +2106,7 @@ mod tests {
             true,
             sender,
             false,
-            "Ask Codex to do anything".to_string(),
+            "Ask Code to do anything".to_string(),
             false,
         );
 
