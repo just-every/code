@@ -1642,7 +1642,7 @@ impl WidgetRef for ChatComposer {
                         }
                         // Always show help at the end of the command hints
                         if !spans.is_empty() { spans.push(Span::from("  •  ").style(label_style)); }
-                        spans.push(Span::from("Ctrl+H").style(key_hint_style));
+                        spans.push(Span::from("F1").style(key_hint_style));
                         spans.push(Span::from(" help").style(label_style));
                     }
                     spans
