@@ -331,6 +331,24 @@ This is reasonable to use if Codex is running in an environment that provides it
 
 Though using this option may also be necessary if you try to use Codex in environments where its native sandboxing mechanisms are unsupported, such as older Linux kernels or on Windows.
 
+## confirm_guard
+
+`confirm_guard` adds friction for risky commands by requiring the agent to resend them with a `confirm:` prefix. The regex runs against the full command string, so you can target specific subcommands or arguments. After the agent resubmits with the prefix, Codex executes the command automatically—no human prompt is shown—so pair this with an approval policy if you need manual review.
+
+Example adding an extra confirmation step for common Git mutations:
+
+```toml
+[confirm_guard]
+patterns = [
+  { regex = "^\\s*(git\\s+commit)(\\b|$)" },
+  { regex = "^\\s*(git\\s+push)(\\b|$)" },
+  { regex = "^\\s*(git\\s+merge)(\\b|$)" },
+  { regex = "^\\s*(git\\s+rebase)(\\b|$)" },
+  { regex = "^\\s*(git\\s+reset)(\\b|$)" },
+  { regex = "^\\s*(git\\s+clean)(\\b|$)" }
+]
+```
+
 ## exec_allow
 
 Use `exec_allow` to whitelist specific commands that should run **outside** the sandbox. This is useful for tooling such as `uv run`, `docker compose`, or other launchers that need full filesystem or network access.
@@ -656,6 +674,7 @@ notifications = [ "agent-turn-complete", "approval-requested" ]
 | `sandbox_workspace_write.network_access` | boolean | Allow network in workspace‑write (default: false). |
 | `sandbox_workspace_write.exclude_tmpdir_env_var` | boolean | Exclude `$TMPDIR` from writable roots (default: false). |
 | `sandbox_workspace_write.exclude_slash_tmp` | boolean | Exclude `/tmp` from writable roots (default: false). |
+| `confirm_guard` | table | Regex patterns that require approval before executing a command. |
 | `exec_allow` | array<table> | Command whitelist for bypassing the sandbox (`pattern`, `project_only`, `timeout_ms`). |
 | `disable_response_storage` | boolean | Required for ZDR orgs. |
 | `notify` | array<string> | External program for notifications. |

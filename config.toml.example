@@ -110,6 +110,17 @@ inject_ssl_cert_file = true  # auto-set SSL_CERT_FILE so TLS tooling (gh) keeps 
 pattern = "docker compose"
 project_only = true
 
+[confirm_guard]
+patterns = [
+  # Add a confirm: resend step before performing repository mutations.
+  { regex = "^\\s*(git\\s+commit)(\\b|$)" },
+  { regex = "^\\s*(git\\s+push)(\\b|$)" },
+  { regex = "^\\s*(git\\s+merge)(\\b|$)" },
+  { regex = "^\\s*(git\\s+rebase)(\\b|$)" },
+  { regex = "^\\s*(git\\s+reset)(\\b|$)" },
+  { regex = "^\\s*(git\\s+clean)(\\b|$)" }
+]
+
 # Shell Environment Configuration
 [shell-environment-policy]
 inherit = "all"
