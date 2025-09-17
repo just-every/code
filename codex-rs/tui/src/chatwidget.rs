@@ -5297,7 +5297,7 @@ impl ChatWidget<'_> {
         ));
 
         // Global
-        lines.push(kv("Ctrl+H", "Help overlay"));
+        lines.push(kv("F1", "Help overlay"));
         lines.push(kv("Ctrl+R", "Toggle reasoning"));
         lines.push(kv("Ctrl+T", "Toggle screen"));
         lines.push(kv("Ctrl+D", "Diff viewer"));
