@@ -179,6 +179,25 @@ impl ChatComposer {
         }
     }
 
+    /// Returns true if the input starts with a slash command and the cursor
+    /// is positioned within the command head (i.e., before the first
+    /// whitespace on the first line). Used to decide whether to keep the
+    /// slash-command popup active and to suppress file completion.
+    fn is_cursor_in_slash_command_head(&self) -> bool {
+        let text = self.textarea.text();
+        if text.is_empty() { return false; }
+        let cursor = self.textarea.cursor();
+        let first_line_end = text.find('\n').unwrap_or(text.len());
+        let first_line = &text[..first_line_end];
+        if !first_line.starts_with('/') { return false; }
+        let head_end = first_line
+            .char_indices()
+            .find(|(_, c)| c.is_whitespace())
+            .map(|(i, _)| i)
+            .unwrap_or(first_line_end);
+        cursor <= head_end
+    }
+
     pub fn set_has_chat_history(&mut self, has_history: bool) {
         self.has_chat_history = has_history;
     }
@@ -1168,11 +1187,10 @@ impl ChatComposer {
             // Tab-press file search when not using @ or ./ and not in slash cmd
             // -------------------------------------------------------------
             KeyEvent { code: KeyCode::Tab, .. } => {
-                // Do not trigger if composing a slash command
-                let first_line = self.textarea.text().lines().next().unwrap_or("");
-                let starts_with_slash_cmd = first_line.trim_start().starts_with('/');
-
-                if starts_with_slash_cmd {
+                // Suppress Tab completion only while the cursor is within the
+                // slash command head (before the first space). Allow Tab-based
+                // file search in the arguments of /plan, /solve, etc.
+                if self.is_cursor_in_slash_command_head() {
                     return (InputResult::None, false);
                 }
 
@@ -1383,16 +1401,20 @@ impl ChatComposer {
     fn sync_command_popup(&mut self) {
         let first_line = self.textarea.text().lines().next().unwrap_or("");
         let input_starts_with_slash = first_line.starts_with('/');
+        // Keep the slash popup only while the cursor is within the command head
+        // (before the first space). This allows @-file completion for arguments
+        // in commands like "/plan" and "/solve".
+        let in_slash_head = self.is_cursor_in_slash_command_head();
         match &mut self.active_popup {
             ActivePopup::Command(popup) => {
-                if input_starts_with_slash {
+                if input_starts_with_slash && in_slash_head {
                     popup.on_composer_text_change(first_line.to_string());
                 } else {
                     self.active_popup = ActivePopup::None;
                 }
             }
             _ => {
-                if input_starts_with_slash {
+                if input_starts_with_slash && in_slash_head {
                     let mut command_popup = CommandPopup::new_with_filter(self.using_chatgpt_auth);
                     // Load saved subagent commands to include in autocomplete (exclude built-ins)
                     if let Ok(cfg) = codex_core::config::Config::load_with_cli_overrides(vec![], codex_core::config::ConfigOverrides::default()) {
