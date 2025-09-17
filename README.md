@@ -20,7 +20,7 @@
   - 🧠 **Reasoning Control** - /reasoning for dynamic effort adjustment
   - 🔌 **MCP support** – Extend with filesystem, DBs, APIs, or your own tools.
   - 🔒 **Safety modes** – Read-only, approvals, and workspace sandboxing.
-  - 🔁 **Backwards compatible** – Supports `~/.codex/*` or default `~/.coder/*`
+  - 🔁 **Backwards compatible** – Supports `~/.codex/*` (if present) or defaults to `~/.code/*`
 
 &ensp;
 | <img src="docs/screenshots/simple.png" alt="Simple interface" width="100%"><br>Simple interface | <img src="docs/screenshots/diff.png" alt="Unified diff viewer" width="100%"><br>Unified diffs |
@@ -51,7 +51,7 @@ Note: If another tool already provides a `code` command (e.g. VS Code), our CLI 
 **Authenticate** (one of the following):
 - **Sign in with ChatGPT** (Plus/Pro/Team; uses models available to your plan)
   - Run `code` and pick "Sign in with ChatGPT"
-  - Stores creds locally at `~/.coder/auth.json` (also reads legacy `~/.codex/auth.json`)
+  - Stores creds locally at `~/.code/auth.json` (also reads legacy `~/.codex/auth.json`)
 - **API key** (usage-based)
   - Set `export OPENAI_API_KEY=xyz` and run `code`
 
