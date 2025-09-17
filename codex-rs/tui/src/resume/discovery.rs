@@ -2,6 +2,7 @@ use serde::Deserialize;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 /// One candidate session for the picker
 pub struct ResumeCandidate {
@@ -26,8 +27,10 @@ pub fn list_sessions_for_cwd(cwd: &Path, codex_home: &Path) -> Vec<ResumeCandida
         return v.into_iter().take(200).collect();
     }
 
-    // No index found for this directory
-    Vec::new()
+    // Fallback: scan ~/.codex/sessions when index is missing
+    let mut v = fallback_scan_sessions(codex_home, cwd);
+    v.sort_by(|a, b| b.sort_key.cmp(&a.sort_key));
+    v.into_iter().take(200).collect()
 }
 
 #[derive(Deserialize)]
@@ -82,8 +85,10 @@ fn read_dir_index(codex_home: &Path, cwd: &Path) -> Option<Vec<ResumeCandidate>>
     for (path, a) in map.into_iter() {
         if a.count == 0 { continue; }
         let subtitle = a.snippet.clone();
+        // Ensure absolute rollout path for reliability
+        let p = make_absolute_rollout_path(&path, codex_home);
         out.push(ResumeCandidate {
-            path: PathBuf::from(path),
+            path: p,
             subtitle: subtitle.clone(),
             sort_key: a.modified.clone().unwrap_or_default(),
             created_ts: a.created,
@@ -108,4 +113,152 @@ fn super_sanitize_dir_index_path(codex_home: &Path, cwd: &Path) -> PathBuf {
     p
 }
 
-// Removed fallback slow scan; the fast per-directory index is authoritative.
+// Helper: make rollout path absolute if it looks relative by joining with codex_home/sessions.
+fn make_absolute_rollout_path(path: &str, codex_home: &Path) -> PathBuf {
+    let p = PathBuf::from(path);
+    if p.is_absolute() {
+        return p;
+    }
+    let mut root = codex_home.to_path_buf();
+    root.push("sessions");
+    root.join(p)
+}
+
+// Fallback scan implemented conservatively: walk sessions/YYYY/MM/DD ordering newest first,
+// read only the first non-empty JSONL line, and match cwd exactly.
+fn fallback_scan_sessions(codex_home: &Path, cwd: &Path) -> Vec<ResumeCandidate> {
+    let mut root = codex_home.to_path_buf();
+    root.push("sessions");
+    if !root.exists() {
+        return Vec::new();
+    }
+
+    let mut out: Vec<ResumeCandidate> = Vec::new();
+    let mut scanned_files: usize = 0;
+    const MAX_SCAN_FILES: usize = 100;
+
+    // Collect dirs sorted desc by name interpreted as year/month/day
+    fn collect_dirs_desc<T: Ord + Copy, F: Fn(&str) -> Option<T>>(parent: &Path, parse: F) -> Vec<(T, PathBuf)> {
+        let mut v: Vec<(T, PathBuf)> = Vec::new();
+        if let Ok(mut rd) = fs::read_dir(parent) {
+            while let Some(Ok(e)) = rd.next() {
+                if let Ok(ft) = e.file_type() {
+                    if ft.is_dir() {
+                        if let Some(name) = e.file_name().to_str() {
+                            if let Some(val) = parse(name) {
+                                v.push((val, e.path()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        v.sort_by(|a, b| b.0.cmp(&a.0));
+        v
+    }
+
+    // Collect files in a dir; filter to rollout-*.jsonl and parse ts/uuid for stable sort.
+    fn collect_day_files(parent: &Path) -> Vec<(String, Uuid, String, PathBuf)> {
+        let mut v: Vec<(String, Uuid, String, PathBuf)> = Vec::new();
+        if let Ok(mut rd) = fs::read_dir(parent) {
+            while let Some(Ok(e)) = rd.next() {
+                if let Ok(ft) = e.file_type() {
+                    if ft.is_file() {
+                        if let Some(name_str) = e.file_name().to_str() {
+                            if name_str.starts_with("rollout-") && name_str.ends_with(".jsonl") {
+                                if let Some((ts, id)) = parse_timestamp_uuid_from_filename(name_str) {
+                                    v.push((ts, id, name_str.to_string(), e.path()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Sort (ts desc, uuid desc)
+        v.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+        v
+    }
+
+    let years = collect_dirs_desc(&root, |s| s.parse::<u16>().ok());
+    'outer: for (_y, yp) in years {
+        let months = collect_dirs_desc(&yp, |s| s.parse::<u8>().ok());
+        for (_m, mp) in months {
+            let days = collect_dirs_desc(&mp, |s| s.parse::<u8>().ok());
+            for (_d, dp) in days {
+                let files = collect_day_files(&dp);
+                for (_ts, _id, _name, p) in files {
+                    scanned_files += 1;
+                    if scanned_files > MAX_SCAN_FILES {
+                        break 'outer;
+                    }
+                    if let Some(candidate) = try_make_candidate(&p, cwd) {
+                        out.push(candidate);
+                    }
+                }
+            }
+        }
+    }
+
+    out
+}
+
+fn try_make_candidate(path: &Path, cwd: &Path) -> Option<ResumeCandidate> {
+    // Open and read first non-empty line
+    let f = fs::File::open(path).ok()?;
+    let reader = BufReader::new(f);
+    let mut first: Option<String> = None;
+    for line in reader.lines() {
+        match line {
+            Ok(l) if !l.trim().is_empty() => {
+                first = Some(l);
+                break;
+            }
+            _ => continue,
+        }
+    }
+    let Some(line) = first else { return None };
+    let v: serde_json::Value = serde_json::from_str(&line).ok()?;
+    let rl: codex_protocol::protocol::RolloutLine = serde_json::from_value(v).ok()?;
+    let (created_ts, branch, meta_cwd) = match rl.item {
+        codex_protocol::protocol::RolloutItem::SessionMeta(m) => {
+            let created = m.meta.timestamp;
+            let br = m.git.and_then(|g| g.branch);
+            (created, br, m.meta.cwd)
+        }
+        _ => return None,
+    };
+    if meta_cwd != cwd { return None; }
+
+    let modified_ts = file_modified_rfc3339(path).or_else(|| Some(created_ts.clone()));
+    Some(ResumeCandidate {
+        path: path.to_path_buf(),
+        subtitle: None,
+        sort_key: modified_ts.clone().unwrap_or_default(),
+        created_ts: Some(created_ts),
+        modified_ts,
+        message_count: 0,
+        branch,
+        snippet: None,
+    })
+}
+
+fn file_modified_rfc3339(path: &Path) -> Option<String> {
+    use chrono::{DateTime, SecondsFormat, Utc};
+    let meta = fs::metadata(path).ok()?;
+    let mtime = meta.modified().ok()?;
+    let dt: DateTime<Utc> = DateTime::<Utc>::from(mtime);
+    Some(dt.to_rfc3339_opts(SecondsFormat::Secs, true))
+}
+
+fn parse_timestamp_uuid_from_filename(name: &str) -> Option<(String, Uuid)> {
+    // Expected: rollout-YYYY-MM-DDThh-mm-ss-<uuid>.jsonl
+    let core = name.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
+    // scan from right for '-' where suffix is UUID
+    let (sep_idx, uuid) = core
+        .match_indices('-')
+        .rev()
+        .find_map(|(i, _)| Uuid::parse_str(&core[i + 1..]).ok().map(|u| (i, u)))?;
+    let ts_str = &core[..sep_idx];
+    Some((ts_str.to_string(), uuid))
+}
