@@ -1086,6 +1086,31 @@ impl App<'_> {
                                 widget.add_status_output();
                             }
                         }
+                        SlashCommand::Auth => {
+                            // Show the authentication picker regardless of env vars.
+                            let chat_widget_args = ChatWidgetArgs {
+                                config: self.config.clone(),
+                                initial_prompt: None,
+                                initial_images: Vec::new(),
+                                enhanced_keys_supported: self.enhanced_keys_supported,
+                                terminal_info: self.terminal_info.clone(),
+                                show_order_overlay: self.show_order_overlay,
+                                enable_perf: self.timing_enabled,
+                            };
+                            let login_status = get_login_status(&self.config);
+                            self.app_state = AppState::Onboarding {
+                                screen: OnboardingScreen::new(OnboardingScreenArgs {
+                                    event_tx: self.app_event_tx.clone(),
+                                    chat_widget_args,
+                                    codex_home: self.config.codex_home.clone(),
+                                    cwd: self.config.cwd.clone(),
+                                    show_trust_screen: false,
+                                    show_login_screen: true,
+                                    login_status,
+                                }),
+                            };
+                            self.schedule_redraw();
+                        }
                         SlashCommand::Agents => {
                             if let AppState::Chat { widget } = &mut self.app_state {
                                 widget.handle_agents_command(command_args);

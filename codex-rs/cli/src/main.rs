@@ -59,6 +59,9 @@ enum Subcommand {
     /// Manage login.
     Login(LoginCommand),
 
+    /// Manage authentication (alias for login).
+    Auth(LoginCommand),
+
     /// Remove stored authentication credentials.
     Logout(LogoutCommand),
 
@@ -247,6 +250,24 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
             codex_tui::run_main(interactive, codex_linux_sandbox_exe).await?;
         }
         Some(Subcommand::Login(mut login_cli)) => {
+            prepend_config_flags(
+                &mut login_cli.config_overrides,
+                root_config_overrides.clone(),
+            );
+            match login_cli.action {
+                Some(LoginSubcommand::Status) => {
+                    run_login_status(login_cli.config_overrides).await;
+                }
+                None => {
+                    if let Some(api_key) = login_cli.api_key {
+                        run_login_with_api_key(login_cli.config_overrides, api_key).await;
+                    } else {
+                        run_login_with_chatgpt(login_cli.config_overrides).await;
+                    }
+                }
+            }
+        }
+        Some(Subcommand::Auth(mut login_cli)) => {
             prepend_config_flags(
                 &mut login_cli.config_overrides,
                 root_config_overrides.clone(),
