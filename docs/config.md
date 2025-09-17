@@ -333,20 +333,14 @@ Though using this option may also be necessary if you try to use Codex in enviro
 
 ## confirm_guard
 
-`confirm_guard` adds friction for risky commands by requiring the agent to resend them with a `confirm:` prefix. The regex runs against the full command string, so you can target specific subcommands or arguments. After the agent resubmits with the prefix, Codex executes the command automatically—no human prompt is shown—so pair this with an approval policy if you need manual review.
+`confirm_guard` adds friction for risky commands by requiring the agent to resend them with a `confirm:` prefix. The regex runs against the full command string, so you can target specific subcommands or arguments. Set `require_approval = true` on any pattern to escalate it into a human approval gate instead of an automatic confirm resend.
 
-Example adding an extra confirmation step for common Git mutations:
+Example enforcing human approval for common Git mutations:
 
 ```toml
-[confirm_guard]
-patterns = [
-  { regex = "^\\s*(git\\s+commit)(\\b|$)" },
-  { regex = "^\\s*(git\\s+push)(\\b|$)" },
-  { regex = "^\\s*(git\\s+merge)(\\b|$)" },
-  { regex = "^\\s*(git\\s+rebase)(\\b|$)" },
-  { regex = "^\\s*(git\\s+reset)(\\b|$)" },
-  { regex = "^\\s*(git\\s+clean)(\\b|$)" }
-]
+[[confirm_guard.patterns]]
+regex = "^\\s*(git\\s+(commit|push|merge|rebase|reset|clean|cherry-pick|revert|tag))(\\b|$)"
+require_approval = true
 ```
 
 ## exec_allow

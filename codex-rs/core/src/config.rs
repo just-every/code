@@ -2032,6 +2032,28 @@ exclude_slash_tmp = true
     }
 
     #[test]
+    fn test_confirm_guard_patterns_require_approval_parsing() {
+        let toml = r#"
+[confirm_guard]
+
+[[confirm_guard.patterns]]
+regex = "^git push"
+require_approval = true
+
+[[confirm_guard.patterns]]
+regex = "^git status"
+"#;
+
+        let cfg = toml::from_str::<ConfigToml>(toml).expect("confirm_guard TOML should parse");
+        let guard = cfg
+            .confirm_guard
+            .expect("confirm_guard should be present");
+        assert_eq!(2, guard.patterns.len());
+        assert!(guard.patterns[0].require_approval);
+        assert!(!guard.patterns[1].require_approval);
+    }
+
+    #[test]
     fn exec_allow_confirm_flag_parses() {
         let toml_confirm = r#"
 [[exec_allow]]

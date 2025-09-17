@@ -510,6 +510,7 @@ struct ConfirmGuardPatternRuntime {
     regex: regex_lite::Regex,
     message: Option<String>,
     raw: String,
+    require_approval: bool,
 }
 
 impl ConfirmGuardRuntime {
@@ -521,6 +522,7 @@ impl ConfirmGuardRuntime {
                     regex,
                     message: pattern.message.clone(),
                     raw: pattern.regex.clone(),
+                    require_approval: pattern.require_approval,
                 }),
                 Err(err) => {
                     tracing::warn!("Skipping confirm guard pattern `{}`: {err}", pattern.regex);
@@ -539,8 +541,49 @@ impl ConfirmGuardRuntime {
     }
 }
 
+#[cfg(test)]
+mod confirm_guard_tests {
+    use super::*;
+    use crate::config_types::{ConfirmGuardConfig, ConfirmGuardPattern};
+
+    #[test]
+    fn confirm_guard_runtime_respects_require_approval_flag() {
+        let config = ConfirmGuardConfig {
+            patterns: vec![ConfirmGuardPattern {
+                regex: "^git push".to_string(),
+                message: None,
+                require_approval: true,
+            }],
+        };
+        let runtime = ConfirmGuardRuntime::from_config(&config);
+        let pattern = runtime
+            .matched_pattern("git push")
+            .expect("pattern should match");
+        assert!(pattern.requires_approval());
+        assert!(pattern.approval_reason().contains("requires explicit user approval"));
+    }
+
+    #[test]
+    fn confirm_guard_runtime_defaults_to_confirm_resend() {
+        let config = ConfirmGuardConfig {
+            patterns: vec![ConfirmGuardPattern {
+                regex: "^git status".to_string(),
+                message: None,
+                require_approval: false,
+            }],
+        };
+        let runtime = ConfirmGuardRuntime::from_config(&config);
+        let pattern = runtime
+            .matched_pattern("git status")
+            .expect("pattern should match");
+        assert!(!pattern.requires_approval());
+        let guidance = pattern.confirm_guidance("original", "git status", "[]");
+        assert!(guidance.contains("confirm:"));
+    }
+}
+
 impl ConfirmGuardPatternRuntime {
-    fn guidance(&self, original_label: &str, original_value: &str, suggested: &str) -> String {
+    fn confirm_guidance(&self, original_label: &str, original_value: &str, suggested: &str) -> String {
         let header = self
             .message
             .clone()
@@ -551,6 +594,29 @@ impl ConfirmGuardPatternRuntime {
                 )
             });
         format!("{header}\n\n{original_label}: {original_value}\nresend_exact_argv: {suggested}")
+    }
+
+    fn approval_reason(&self) -> String {
+        self.message.clone().unwrap_or_else(|| {
+            format!(
+                "Command matches confirm guard pattern `{}` and requires explicit user approval before running.",
+                self.raw
+            )
+        })
+    }
+
+    fn denial_message(&self, original_label: &str, original_value: &str) -> String {
+        format!(
+            "Command denied by confirm guard pattern `{}`. {}\n\n{}: {}",
+            self.raw,
+            self.approval_reason(),
+            original_label,
+            original_value
+        )
+    }
+
+    fn requires_approval(&self) -> bool {
+        self.require_approval
     }
 }
 
@@ -5802,50 +5868,84 @@ async fn handle_container_exec_with_params(
     if let Some((script_index, script)) = extract_shell_script_from_wrapper(&params.command) {
         let trimmed = script.trim_start();
         let confirm_prefixes = ["confirm:", "CONFIRM:"];
-        let has_confirm_prefix = confirm_prefixes
+        let mut has_confirm_prefix = confirm_prefixes
             .iter()
             .any(|p| trimmed.starts_with(p));
+        let mut skip_confirm_checks = false;
 
-        // If no confirm prefix and it looks like a sensitive git command, reject with guidance.
+        // If no confirm prefix and it looks like a sensitive git command, either request approval
+        // or block with guidance depending on the guard configuration.
         if !has_confirm_prefix {
             if let Some(pattern) = if sess.confirm_guard.is_empty() {
                 None
             } else {
                 sess.confirm_guard.matched_pattern(trimmed)
             } {
-                let mut argv_confirm = params.command.clone();
-                argv_confirm[script_index] = format!("confirm: {}", script.trim_start());
-                let suggested = serde_json::to_string(&argv_confirm)
-                    .unwrap_or_else(|_| "<failed to serialize suggested argv>".to_string());
-                let guidance = pattern.guidance("original_script", &script, &suggested);
+                if pattern.requires_approval() {
+                    let reason = pattern.approval_reason();
+                    let rx_approve = sess
+                        .request_command_approval(
+                            sub_id.clone(),
+                            call_id.clone(),
+                            params.command.clone(),
+                            params.cwd.clone(),
+                            Some(reason),
+                        )
+                        .await;
 
-                sess
-                    .notify_background_event(&sub_id, format!("Command guard: {}", guidance))
-                    .await;
+                    match rx_approve.await.unwrap_or_default() {
+                        ReviewDecision::Approved => (),
+                        ReviewDecision::ApprovedForSession => {
+                            sess.add_approved_command(params.command.clone());
+                        }
+                        ReviewDecision::Denied | ReviewDecision::Abort => {
+                            let message = pattern.denial_message("original_script", &script);
+                            return ResponseInputItem::FunctionCallOutput {
+                                call_id,
+                                output: FunctionCallOutputPayload { content: message, success: Some(false) },
+                            };
+                        }
+                    }
 
-                return ResponseInputItem::FunctionCallOutput {
-                    call_id,
-                    output: FunctionCallOutputPayload { content: guidance, success: None },
-                };
+                    has_confirm_prefix = true;
+                    skip_confirm_checks = true;
+                } else {
+                    let mut argv_confirm = params.command.clone();
+                    argv_confirm[script_index] = format!("confirm: {}", script.trim_start());
+                    let suggested = serde_json::to_string(&argv_confirm)
+                        .unwrap_or_else(|_| "<failed to serialize suggested argv>".to_string());
+                    let guidance = pattern.confirm_guidance("original_script", &script, &suggested);
+
+                    sess
+                        .notify_background_event(&sub_id, format!("Command guard: {}", guidance))
+                        .await;
+
+                    return ResponseInputItem::FunctionCallOutput {
+                        call_id,
+                        output: FunctionCallOutputPayload { content: guidance, success: None },
+                    };
+                }
             }
 
-            if let Some(kind) = detect_sensitive_git(trimmed) {
-                // Provide the exact argv the model should resend with the confirm prefix.
-                let mut argv_confirm = params.command.clone();
-                argv_confirm[script_index] = format!("confirm: {}", script.trim_start());
-                let suggested = serde_json::to_string(&argv_confirm)
-                    .unwrap_or_else(|_| "<failed to serialize suggested argv>".to_string());
+            if !skip_confirm_checks {
+                if let Some(kind) = detect_sensitive_git(trimmed) {
+                    // Provide the exact argv the model should resend with the confirm prefix.
+                    let mut argv_confirm = params.command.clone();
+                    argv_confirm[script_index] = format!("confirm: {}", script.trim_start());
+                    let suggested = serde_json::to_string(&argv_confirm)
+                        .unwrap_or_else(|_| "<failed to serialize suggested argv>".to_string());
 
-                let guidance = guidance_for_sensitive_git(kind, "original_script", &script, &suggested);
+                    let guidance = guidance_for_sensitive_git(kind, "original_script", &script, &suggested);
 
-                sess
-                    .notify_background_event(&sub_id, format!("Command guard: {}", guidance.clone()))
-                    .await;
+                    sess
+                        .notify_background_event(&sub_id, format!("Command guard: {}", guidance.clone()))
+                        .await;
 
-                return ResponseInputItem::FunctionCallOutput {
-                    call_id,
-                    output: FunctionCallOutputPayload { content: guidance, success: None },
-                };
+                    return ResponseInputItem::FunctionCallOutput {
+                        call_id,
+                        output: FunctionCallOutputPayload { content: guidance, success: None },
+                    };
+                }
             }
         }
 
@@ -6037,48 +6137,49 @@ async fn handle_container_exec_with_params(
     // If no shell wrapper, perform a lightweight argv inspection for sensitive git commands.
     if extract_shell_script_from_wrapper(&params.command).is_none() {
         let joined = params.command.join(" ");
+        let mut skip_confirm_checks = false;
         if !sess.confirm_guard.is_empty() {
             if let Some(pattern) = sess.confirm_guard.matched_pattern(&joined) {
-                let suggested = serde_json::to_string(&vec![
-                    "bash".to_string(),
-                    "-lc".to_string(),
-                    format!("confirm: {}", joined),
-                ])
-                .unwrap_or_else(|_| "<failed to serialize suggested argv>".to_string());
-                let guidance = pattern.guidance(
-                    "original_argv",
-                    &format!("{:?}", params.command),
-                    &suggested,
-                );
+                if pattern.requires_approval() {
+                    let reason = pattern.approval_reason();
+                    let rx_approve = sess
+                        .request_command_approval(
+                            sub_id.clone(),
+                            call_id.clone(),
+                            params.command.clone(),
+                            params.cwd.clone(),
+                            Some(reason),
+                        )
+                        .await;
 
-                sess
-                    .notify_background_event(&sub_id, format!("Command guard: {}", guidance.clone()))
-                    .await;
-
-                return ResponseInputItem::FunctionCallOutput {
-                    call_id,
-                    output: FunctionCallOutputPayload { content: guidance, success: None },
-                };
-            }
-        }
-
-        if let Some(analysis) = analyze_command(&params.command) {
-            if analysis.disposition == DryRunDisposition::Mutating {
-                let needs_dry_run = {
-                    let state = sess.state.lock().unwrap();
-                    !state.dry_run_guard.has_recent_dry_run(analysis.key)
-                };
-                if needs_dry_run {
-                    let resend = vec![
+                    match rx_approve.await.unwrap_or_default() {
+                        ReviewDecision::Approved => (),
+                        ReviewDecision::ApprovedForSession => {
+                            sess.add_approved_command(params.command.clone());
+                        }
+                        ReviewDecision::Denied | ReviewDecision::Abort => {
+                            let message = pattern.denial_message(
+                                "original_argv",
+                                &format!("{:?}", params.command),
+                            );
+                            return ResponseInputItem::FunctionCallOutput {
+                                call_id,
+                                output: FunctionCallOutputPayload { content: message, success: Some(false) },
+                            };
+                        }
+                    }
+                    skip_confirm_checks = true;
+                } else {
+                    let suggested = serde_json::to_string(&vec![
                         "bash".to_string(),
                         "-lc".to_string(),
                         format!("confirm: {}", joined),
-                    ];
-                    let guidance = guidance_for_dry_run_guard(
-                        &analysis,
+                    ])
+                    .unwrap_or_else(|_| "<failed to serialize suggested argv>".to_string());
+                    let guidance = pattern.confirm_guidance(
                         "original_argv",
                         &format!("{:?}", params.command),
-                        resend,
+                        &suggested,
                     );
 
                     sess
@@ -6089,6 +6190,39 @@ async fn handle_container_exec_with_params(
                         call_id,
                         output: FunctionCallOutputPayload { content: guidance, success: None },
                     };
+                }
+            }
+        }
+
+        if !skip_confirm_checks {
+            if let Some(analysis) = analyze_command(&params.command) {
+                if analysis.disposition == DryRunDisposition::Mutating {
+                    let needs_dry_run = {
+                        let state = sess.state.lock().unwrap();
+                        !state.dry_run_guard.has_recent_dry_run(analysis.key)
+                    };
+                    if needs_dry_run {
+                        let resend = vec![
+                            "bash".to_string(),
+                            "-lc".to_string(),
+                            format!("confirm: {}", joined),
+                        ];
+                        let guidance = guidance_for_dry_run_guard(
+                            &analysis,
+                            "original_argv",
+                            &format!("{:?}", params.command),
+                            resend,
+                        );
+
+                        sess
+                            .notify_background_event(&sub_id, format!("Command guard: {}", guidance.clone()))
+                            .await;
+
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id,
+                            output: FunctionCallOutputPayload { content: guidance, success: None },
+                        };
+                    }
                 }
             }
         }
