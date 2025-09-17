@@ -405,6 +405,45 @@ mod exec_allow_tests {
             workspace,
         ));
     }
+
+    #[test]
+    fn match_exec_allow_honors_confirm_flag() {
+        let rule = ExecAllowRule {
+            program: "gh".to_string(),
+            subcommand: ExecAllowSubcommand::Any,
+            project_only: false,
+            timeout_ms: Some(600_000),
+            require_confirmation: true,
+        };
+
+        let matched = match_exec_allow_rule(
+            &vec!["gh".into(), "auth".into(), "status".into()],
+            &vec![rule],
+        )
+        .expect("rule should match");
+
+        assert!(matched.require_confirmation);
+        assert_eq!(Some(600_000), matched.timeout_ms);
+    }
+
+    #[test]
+    fn match_exec_allow_defaults_to_no_confirmation() {
+        let rule = ExecAllowRule {
+            program: "docker".to_string(),
+            subcommand: ExecAllowSubcommand::Any,
+            project_only: true,
+            timeout_ms: None,
+            require_confirmation: false,
+        };
+
+        let matched = match_exec_allow_rule(
+            &vec!["docker".into(), "compose".into()],
+            &vec![rule],
+        )
+        .expect("rule should match");
+
+        assert!(!matched.require_confirmation);
+    }
 }
 
 #[derive(Clone)]
@@ -6145,6 +6184,7 @@ async fn handle_container_exec_with_params(
         (params, safety, command_for_display)
     } else {
         let mut bypass_sandbox = false;
+        let mut require_confirmation = false;
         let mut timeout_ms = params.timeout_ms;
         if let Some(tokens) = extract_single_simple_command(&params.command) {
             tracing::trace!(rules = ?sess.exec_allow, "exec_allow_rules");
@@ -6165,6 +6205,9 @@ async fn handle_container_exec_with_params(
                     }
                     tracing::trace!("exec_allow_bypass_granted");
                     bypass_sandbox = true;
+                    if rule.require_confirmation {
+                        require_confirmation = true;
+                    }
                 }
             } else {
                 tracing::trace!("exec_allow_no_rule_match");
@@ -6172,8 +6215,12 @@ async fn handle_container_exec_with_params(
         }
 
         let safety = if bypass_sandbox {
-            SafetyCheck::AutoApprove {
-                sandbox_type: SandboxType::None,
+            if require_confirmation {
+                SafetyCheck::AskUser
+            } else {
+                SafetyCheck::AutoApprove {
+                    sandbox_type: SandboxType::None,
+                }
             }
         } else {
             let state = sess.state.lock().unwrap();

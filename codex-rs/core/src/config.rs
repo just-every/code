@@ -62,6 +62,8 @@ pub struct ExecAllowRuleToml {
     pub project_only: Option<bool>,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub confirm: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +79,7 @@ pub struct ExecAllowRule {
     pub subcommand: ExecAllowSubcommand,
     pub project_only: bool,
     pub timeout_ms: Option<u64>,
+    pub require_confirmation: bool,
 }
 
 fn parse_exec_allow_rules(items: Vec<ExecAllowRuleToml>) -> Vec<ExecAllowRule> {
@@ -108,6 +111,7 @@ fn parse_exec_allow_rules(items: Vec<ExecAllowRuleToml>) -> Vec<ExecAllowRule> {
             subcommand: matcher,
             project_only: item.project_only.unwrap_or(true),
             timeout_ms: item.timeout_ms,
+            require_confirmation: item.confirm.unwrap_or(false),
         });
     }
     out
@@ -2021,6 +2025,41 @@ exclude_slash_tmp = true
             },
             sandbox_workspace_write_cfg.derive_sandbox_policy(sandbox_mode_override)
         );
+    }
+
+    #[test]
+    fn exec_allow_confirm_flag_parses() {
+        let toml_confirm = r#"
+[[exec_allow]]
+pattern = "gh"
+project_only = false
+timeout_ms = 600000
+confirm = true
+"#;
+
+        let parsed_confirm = toml::from_str::<ConfigToml>(toml_confirm)
+            .expect("exec_allow confirm TOML should parse");
+        let rules_confirm = parse_exec_allow_rules(parsed_confirm.exec_allow.unwrap());
+        assert_eq!(1, rules_confirm.len());
+        let rule = &rules_confirm[0];
+        assert!(rule.require_confirmation);
+        assert!(!rule.project_only);
+        assert_eq!(Some(600_000), rule.timeout_ms);
+
+        let toml_default = r#"
+[[exec_allow]]
+pattern = "uv run"
+project_only = true
+"#;
+
+        let parsed_default = toml::from_str::<ConfigToml>(toml_default)
+            .expect("exec_allow default TOML should parse");
+        let rules_default = parse_exec_allow_rules(parsed_default.exec_allow.unwrap());
+        assert_eq!(1, rules_default.len());
+        let default_rule = &rules_default[0];
+        assert!(!default_rule.require_confirmation);
+        assert!(default_rule.project_only);
+        assert_eq!(None, default_rule.timeout_ms);
     }
 
     #[test]

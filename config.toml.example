@@ -103,6 +103,7 @@ exclude-slash-tmp = false
 pattern = "uv run"
 project_only = true  # require file arguments to stay under the workspace roots
 timeout_ms = 600000  # optional default timeout (10 minutes)
+confirm = true       # still prompt before bypassing the sandbox
 
 [[exec_allow]]
 pattern = "docker compose"

@@ -340,6 +340,7 @@ Use `exec_allow` to whitelist specific commands that should run **outside** the 
 - `*` as the second token matches any subcommand, while `:<asterisk>` (for example `pattern = "cargo fmt:*"`) matches subcommands with that prefix.
 - `project_only` (default: `true`) ensures any path arguments stay under the sandbox's writable roots. If a command violates that condition it falls back to the regular sandbox instead of running unrestricted.
 - `timeout_ms` provides a default timeout that is used whenever the tool call does not set one explicitly.
+- `confirm` (default: `false`) keeps the whitelist in place but still asks the user for approval before the command escapes the sandbox.
 - Only simple commands are eligible. Scripts such as `bash -lc 'build && deploy'` must collapse to a single command with no pipes or connectors to bypass the sandbox.
 
 Example:
@@ -349,6 +350,7 @@ Example:
 pattern = "uv run"
 project_only = true
 timeout_ms = 600000  # 10 minutes
+confirm = true
 
 [[exec_allow]]
 pattern = "docker compose"
