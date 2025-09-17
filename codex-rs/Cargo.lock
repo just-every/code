@@ -1207,6 +1207,7 @@ dependencies = [
  "once_cell",
  "path-clean",
  "pretty_assertions",
+ "pulldown-cmark 0.11.3",
  "rand 0.9.2",
  "ratatui",
  "ratatui-image",
@@ -4127,6 +4128,19 @@ dependencies = [
 
 [[package]]
 name = "pulldown-cmark"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "679341d22c78c6c649893cbd6c3278dcbe9fc4faa62fea3a9296ae2b50c14625"
+dependencies = [
+ "bitflags 2.9.1",
+ "getopts",
+ "memchr",
+ "pulldown-cmark-escape",
+ "unicase",
+]
+
+[[package]]
+name = "pulldown-cmark"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e8bbe1a966bd2f362681a44f6edce3c2310ac21e4d5067a6e7ec396297a6ea0"
@@ -6152,7 +6166,7 @@ dependencies = [
  "ansi-to-tui",
  "itertools 0.14.0",
  "pretty_assertions",
- "pulldown-cmark",
+ "pulldown-cmark 0.13.0",
  "ratatui",
  "rstest",
  "syntect",
