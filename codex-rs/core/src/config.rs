@@ -64,6 +64,8 @@ pub struct ExecAllowRuleToml {
     pub timeout_ms: Option<u64>,
     #[serde(default)]
     pub confirm: Option<bool>,
+    #[serde(default)]
+    pub inject_ssl_cert_file: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +82,7 @@ pub struct ExecAllowRule {
     pub project_only: bool,
     pub timeout_ms: Option<u64>,
     pub require_confirmation: bool,
+    pub inject_ssl_cert_file: bool,
 }
 
 fn parse_exec_allow_rules(items: Vec<ExecAllowRuleToml>) -> Vec<ExecAllowRule> {
@@ -112,6 +115,7 @@ fn parse_exec_allow_rules(items: Vec<ExecAllowRuleToml>) -> Vec<ExecAllowRule> {
             project_only: item.project_only.unwrap_or(true),
             timeout_ms: item.timeout_ms,
             require_confirmation: item.confirm.unwrap_or(false),
+            inject_ssl_cert_file: item.inject_ssl_cert_file.unwrap_or(false),
         });
     }
     out
@@ -2035,6 +2039,7 @@ pattern = "gh"
 project_only = false
 timeout_ms = 600000
 confirm = true
+inject_ssl_cert_file = true
 "#;
 
         let parsed_confirm = toml::from_str::<ConfigToml>(toml_confirm)
@@ -2045,6 +2050,7 @@ confirm = true
         assert!(rule.require_confirmation);
         assert!(!rule.project_only);
         assert_eq!(Some(600_000), rule.timeout_ms);
+        assert!(rule.inject_ssl_cert_file);
 
         let toml_default = r#"
 [[exec_allow]]
@@ -2060,6 +2066,7 @@ project_only = true
         assert!(!default_rule.require_confirmation);
         assert!(default_rule.project_only);
         assert_eq!(None, default_rule.timeout_ms);
+        assert!(!default_rule.inject_ssl_cert_file);
     }
 
     #[test]

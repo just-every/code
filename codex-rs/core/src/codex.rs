@@ -332,11 +332,44 @@ fn normalize_path(path: &Path) -> PathBuf {
     out
 }
 
+fn default_ssl_cert_file_from_env() -> Option<String> {
+    if let Ok(path) = std::env::var("CODEX_DEFAULT_SSL_CERT_FILE") {
+        if !path.is_empty() && Path::new(&path).exists() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn maybe_inject_default_ssl_cert_bundle(env: &mut HashMap<String, String>) {
+    if env.contains_key("SSL_CERT_FILE") || env.contains_key("SSL_CERT_DIR") {
+        return;
+    }
+
+    if let Some(path) = default_ssl_cert_file_from_env()
+        .or_else(|| {
+            const CANDIDATES: &[&str] = &[
+                "/etc/ssl/cert.pem",
+                "/usr/local/etc/openssl@3/cert.pem",
+                "/opt/homebrew/etc/openssl@3/cert.pem",
+                "/etc/ssl/certs/ca-certificates.crt",
+            ];
+            CANDIDATES
+                .iter()
+                .find(|candidate| Path::new(candidate).exists())
+                .map(|p| p.to_string())
+        })
+    {
+        env.insert("SSL_CERT_FILE".to_string(), path);
+    }
+}
+
 #[cfg(test)]
 mod exec_allow_tests {
     use super::*;
     use crate::protocol::SandboxPolicy;
-    use tempfile::tempdir;
+    use std::collections::HashMap;
+    use tempfile::{tempdir, NamedTempFile};
 
     fn workspace_policy(workspace: &Path) -> SandboxPolicy {
         SandboxPolicy::WorkspaceWrite {
@@ -414,6 +447,7 @@ mod exec_allow_tests {
             project_only: false,
             timeout_ms: Some(600_000),
             require_confirmation: true,
+            inject_ssl_cert_file: false,
         };
 
         let matched = match_exec_allow_rule(
@@ -434,6 +468,7 @@ mod exec_allow_tests {
             project_only: true,
             timeout_ms: None,
             require_confirmation: false,
+            inject_ssl_cert_file: false,
         };
 
         let matched = match_exec_allow_rule(
@@ -443,6 +478,30 @@ mod exec_allow_tests {
         .expect("rule should match");
 
         assert!(!matched.require_confirmation);
+    }
+
+    #[test]
+    fn injects_default_ssl_cert_when_flag_set() {
+        let temp = NamedTempFile::new().expect("tempfile");
+        let prev = std::env::var("CODEX_DEFAULT_SSL_CERT_FILE").ok();
+        std::env::set_var(
+            "CODEX_DEFAULT_SSL_CERT_FILE",
+            temp.path().to_str().expect("path str"),
+        );
+
+        let mut env = HashMap::new();
+        maybe_inject_default_ssl_cert_bundle(&mut env);
+
+        assert_eq!(
+            env.get("SSL_CERT_FILE"),
+            Some(&temp.path().to_string_lossy().to_string())
+        );
+
+        if let Some(prev) = prev {
+            std::env::set_var("CODEX_DEFAULT_SSL_CERT_FILE", prev);
+        } else {
+            std::env::remove_var("CODEX_DEFAULT_SSL_CERT_FILE");
+        }
     }
 }
 
@@ -6205,6 +6264,9 @@ async fn handle_container_exec_with_params(
                     }
                     tracing::trace!("exec_allow_bypass_granted");
                     bypass_sandbox = true;
+                    if rule.inject_ssl_cert_file {
+                        maybe_inject_default_ssl_cert_bundle(&mut params.env);
+                    }
                     if rule.require_confirmation {
                         require_confirmation = true;
                     }

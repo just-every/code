@@ -104,6 +104,7 @@ pattern = "uv run"
 project_only = true  # require file arguments to stay under the workspace roots
 timeout_ms = 600000  # optional default timeout (10 minutes)
 confirm = true       # still prompt before bypassing the sandbox
+inject_ssl_cert_file = true  # auto-set SSL_CERT_FILE so TLS tooling (gh) keeps working
 
 [[exec_allow]]
 pattern = "docker compose"
