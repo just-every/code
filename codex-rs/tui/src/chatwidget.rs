@@ -9,6 +9,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use std::time::Instant;
 
 use ratatui::style::Modifier;
 use ratatui::style::Style;
@@ -216,6 +217,8 @@ pub(crate) struct ChatWidget<'a> {
     agent_task: Option<String>,
     overall_task_status: String,
     active_plan_title: Option<String>,
+    /// Runtime timing per-agent (by id) to improve visibility in the HUD
+    agent_runtime: HashMap<String, AgentRuntime>,
     // Sparkline data for showing agent activity (using RefCell for interior mutability)
     // Each tuple is (value, is_completed) where is_completed indicates if any agent was complete at that time
     sparkline_data: std::cell::RefCell<Vec<(u64, bool)>>,
@@ -339,6 +342,16 @@ struct PendingJumpBack {
     removed_cells: Vec<Box<dyn HistoryCell>>, // cells removed from the end (from selected user message onward)
 }
 
+#[derive(Debug, Clone, Default)]
+struct AgentRuntime {
+    /// First time this agent entered Running
+    started_at: Option<Instant>,
+    /// Time of the latest status update we observed
+    last_update: Option<Instant>,
+    /// Time the agent reached a terminal state (Completed/Failed)
+    completed_at: Option<Instant>,
+}
+
 // ---------- Stable ordering & routing helpers ----------
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct OrderKey {
@@ -383,10 +396,19 @@ use self::perf::PerfStats;
 
 #[derive(Debug, Clone)]
 struct AgentInfo {
+    // Stable id to correlate updates
+    id: String,
+    // Display name
     name: String,
+    // Current status
     status: AgentStatus,
+    // Optional model name
+    model: Option<String>,
+    // Final success message when completed
     result: Option<String>,
+    // Final error message when failed
     error: Option<String>,
+    // Most recent progress line from core
     last_progress: Option<String>,
 }
 
@@ -484,6 +506,19 @@ enum SystemPlacement {
 }
 
 impl ChatWidget<'_> {
+    fn fmt_short_duration(&self, d: Duration) -> String {
+        let s = d.as_secs();
+        let h = s / 3600;
+        let m = (s % 3600) / 60;
+        let sec = s % 60;
+        if h > 0 {
+            format!("{}h{}m", h, m)
+        } else if m > 0 {
+            format!("{}m{}s", m, sec)
+        } else {
+            format!("{}s", sec)
+        }
+    }
     fn is_branch_worktree_path(path: &std::path::Path) -> bool {
         for ancestor in path.ancestors() {
             if ancestor
@@ -1839,6 +1874,7 @@ impl ChatWidget<'_> {
             agent_task: None,
             overall_task_status: "preparing".to_string(),
             active_plan_title: None,
+            agent_runtime: HashMap::new(),
             sparkline_data: std::cell::RefCell::new(Vec::new()),
             last_sparkline_update: std::cell::RefCell::new(std::time::Instant::now()),
             stream: crate::streaming::controller::StreamController::new(config.clone()),
@@ -2021,6 +2057,7 @@ impl ChatWidget<'_> {
             agent_task: None,
             overall_task_status: "preparing".to_string(),
             active_plan_title: None,
+            agent_runtime: HashMap::new(),
             sparkline_data: std::cell::RefCell::new(Vec::new()),
             last_sparkline_update: std::cell::RefCell::new(std::time::Instant::now()),
             stream: crate::streaming::controller::StreamController::new(config.clone()),
@@ -4252,15 +4289,34 @@ impl ChatWidget<'_> {
                         .update_status_text("using browser (CDP)".to_string());
                 }
             }
-            EventMsg::AgentStatusUpdate(AgentStatusUpdateEvent {
-                agents,
-                context,
-                task,
-            }) => {
-                // Update the active agents list from the event
+            EventMsg::AgentStatusUpdate(AgentStatusUpdateEvent { agents, context, task }) => {
+                // Update the active agents list from the event and track timing
                 self.active_agents.clear();
+                let now = Instant::now();
                 for agent in agents {
+                    // Update runtime map
+                    let entry = self
+                        .agent_runtime
+                        .entry(agent.id.clone())
+                        .or_insert_with(AgentRuntime::default);
+                    entry.last_update = Some(now);
+                    match agent.status.as_str() {
+                        "running" => {
+                            if entry.started_at.is_none() {
+                                entry.started_at = Some(now);
+                            }
+                        }
+                        "completed" | "failed" => {
+                            if entry.completed_at.is_none() {
+                                entry.completed_at = entry.completed_at.or(Some(now));
+                            }
+                        }
+                        _ => {}
+                    }
+
+                    // Mirror agent list for rendering
                     self.active_agents.push(AgentInfo {
+                        id: agent.id.clone(),
                         name: agent.name.clone(),
                         status: match agent.status.as_str() {
                             "pending" => AgentStatus::Pending,
@@ -4269,6 +4325,7 @@ impl ChatWidget<'_> {
                             "failed" => AgentStatus::Failed,
                             _ => AgentStatus::Pending,
                         },
+                        model: agent.model,
                         result: agent.result,
                         error: agent.error,
                         last_progress: agent.last_progress,
@@ -10802,13 +10859,26 @@ impl ChatWidget<'_> {
         } else {
             let mut parts: Vec<String> = Vec::new();
             for a in self.active_agents.iter().take(3) {
-                let s = match a.status {
-                    AgentStatus::Pending => "pending",
-                    AgentStatus::Running => "running",
-                    AgentStatus::Completed => "done",
-                    AgentStatus::Failed => "failed",
+                let state = match a.status {
+                    AgentStatus::Pending => "pending".to_string(),
+                    AgentStatus::Running => {
+                        // Show elapsed running time when available
+                        if let Some(rt) = self.agent_runtime.get(&a.id) {
+                            if let Some(start) = rt.started_at {
+                                let now = Instant::now();
+                                let elapsed = now.saturating_duration_since(start);
+                                format!("running {}", self.fmt_short_duration(elapsed))
+                            } else {
+                                "running".to_string()
+                            }
+                        } else {
+                            "running".to_string()
+                        }
+                    }
+                    AgentStatus::Completed => "done".to_string(),
+                    AgentStatus::Failed => "failed".to_string(),
                 };
-                let mut label = format!("{} ({})", a.name, s);
+                let mut label = format!("{} ({})", a.name, state);
                 if matches!(a.status, AgentStatus::Running) {
                     if let Some(lp) = &a.last_progress {
                         let mut lp_trim = lp.trim().to_string();
@@ -11102,23 +11172,88 @@ impl ChatWidget<'_> {
                     AgentStatus::Failed => crate::colors::error(),
                 };
 
+                // Build status + timing suffix where available
                 let status_text = match agent.status {
-                    AgentStatus::Pending => "pending",
-                    AgentStatus::Running => "running",
-                    AgentStatus::Completed => "completed",
-                    AgentStatus::Failed => "failed",
+                    AgentStatus::Pending => "pending".to_string(),
+                    AgentStatus::Running => {
+                        if let Some(rt) = self.agent_runtime.get(&agent.id) {
+                            if let Some(start) = rt.started_at {
+                                let now = Instant::now();
+                                let elapsed = now.saturating_duration_since(start);
+                                format!("running {}", self.fmt_short_duration(elapsed))
+                            } else {
+                                "running".to_string()
+                            }
+                        } else {
+                            "running".to_string()
+                        }
+                    }
+                    AgentStatus::Completed | AgentStatus::Failed => {
+                        if let Some(rt) = self.agent_runtime.get(&agent.id) {
+                            if let (Some(start), Some(done)) = (rt.started_at, rt.completed_at) {
+                                let dur = done.saturating_duration_since(start);
+                                let base = if matches!(agent.status, AgentStatus::Completed) {
+                                    "completed"
+                                } else {
+                                    "failed"
+                                };
+                                format!("{} {}", base, self.fmt_short_duration(dur))
+                            } else {
+                                match agent.status {
+                                    AgentStatus::Completed => "completed".to_string(),
+                                    AgentStatus::Failed => "failed".to_string(),
+                                    _ => unreachable!(),
+                                }
+                            }
+                        } else {
+                            match agent.status {
+                                AgentStatus::Completed => "completed".to_string(),
+                                AgentStatus::Failed => "failed".to_string(),
+                                _ => unreachable!(),
+                            }
+                        }
+                    }
                 };
 
-                text_content.push(RLine::from(vec![
-                    Span::from(" "),
+                let mut line_spans: Vec<Span> = Vec::new();
+                line_spans.push(Span::from(" "));
+                line_spans.push(
                     Span::styled(
-                        format!("{}: ", agent.name),
+                        format!("{}", agent.name),
                         Style::default()
                             .fg(crate::colors::text())
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(status_text, Style::default().fg(status_color)),
-                ]));
+                );
+                if let Some(ref model) = agent.model {
+                    if !model.is_empty() {
+                        line_spans.push(Span::styled(
+                            format!(" ({})", model),
+                            Style::default().fg(crate::colors::text_dim()),
+                        ));
+                    }
+                }
+                line_spans.push(Span::from(": "));
+                line_spans.push(Span::styled(status_text, Style::default().fg(status_color)));
+                text_content.push(RLine::from(line_spans));
+
+                // For running agents, show latest progress hint if available
+                if matches!(agent.status, AgentStatus::Running) {
+                    if let Some(ref lp) = agent.last_progress {
+                        let mut lp_trim = lp.trim().to_string();
+                        if lp_trim.len() > 120 {
+                            lp_trim.truncate(120);
+                            lp_trim.push('…');
+                        }
+                        text_content.push(RLine::from(vec![
+                            Span::from("   "),
+                            Span::styled(
+                                lp_trim,
+                                Style::default().fg(crate::colors::text_dim()),
+                            ),
+                        ]));
+                    }
+                }
 
                 // For completed/failed agents, show their final message or error
                 match agent.status {
