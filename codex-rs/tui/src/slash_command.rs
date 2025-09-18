@@ -41,6 +41,8 @@ pub enum SlashCommand {
     Solve,
     Code,
     Logout,
+    // Allow "/exit" as an alias for "/quit" for muscle memory
+    #[strum(serialize = "exit")]
     Quit,
     #[cfg(debug_assertions)]
     TestApproval,
