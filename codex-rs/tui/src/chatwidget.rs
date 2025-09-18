@@ -219,6 +219,8 @@ pub(crate) struct ChatWidget<'a> {
     agent_task: Option<String>,
     overall_task_status: String,
     active_plan_title: Option<String>,
+    pending_approval_requests: usize,
+    current_terminal_title: Option<String>,
     /// Runtime timing per-agent (by id) to improve visibility in the HUD
     agent_runtime: HashMap<String, AgentRuntime>,
     // Sparkline data for showing agent activity (using RefCell for interior mutability)
@@ -855,9 +857,34 @@ impl ChatWidget<'_> {
         if self.active_plan_title == title {
             return;
         }
-        self.active_plan_title = title.clone();
-        self.app_event_tx
-            .send(AppEvent::SetTerminalTitle { title });
+        self.active_plan_title = title;
+        self.refresh_terminal_title_override();
+    }
+
+    fn note_approval_request_started(&mut self) {
+        self.pending_approval_requests = self.pending_approval_requests.saturating_add(1);
+        self.refresh_terminal_title_override();
+    }
+
+    pub(crate) fn approval_request_resolved(&mut self) {
+        if self.pending_approval_requests > 0 {
+            self.pending_approval_requests -= 1;
+        }
+        self.refresh_terminal_title_override();
+    }
+
+    fn refresh_terminal_title_override(&mut self) {
+        let desired = if self.pending_approval_requests > 0 {
+            Some("Awaiting approval…".to_string())
+        } else {
+            self.active_plan_title.clone()
+        };
+
+        if self.current_terminal_title != desired {
+            self.current_terminal_title = desired.clone();
+            self.app_event_tx
+                .send(AppEvent::SetTerminalTitle { title: desired });
+        }
     }
     // Allocate a new synthetic key for internal (non-LLM) messages at the bottom of the
     // current (active) request: (req = last_seen, out = +∞, seq = monotonic).
@@ -1396,6 +1423,7 @@ impl ChatWidget<'_> {
                 command: ev.command,
                 reason: ev.reason,
             });
+        self.note_approval_request_started();
     }
 
     /// Handle apply patch approval request immediately
@@ -1465,6 +1493,7 @@ impl ChatWidget<'_> {
             grant_root,
         };
         self.bottom_pane.push_approval_request(request);
+        self.note_approval_request_started();
     }
 
     /// Handle exec command begin immediately
@@ -1930,6 +1959,8 @@ impl ChatWidget<'_> {
             agent_task: None,
             overall_task_status: "preparing".to_string(),
             active_plan_title: None,
+            pending_approval_requests: 0,
+            current_terminal_title: None,
             agent_runtime: HashMap::new(),
             sparkline_data: std::cell::RefCell::new(Vec::new()),
             last_sparkline_update: std::cell::RefCell::new(std::time::Instant::now()),
@@ -2117,6 +2148,8 @@ impl ChatWidget<'_> {
             agent_task: None,
             overall_task_status: "preparing".to_string(),
             active_plan_title: None,
+            pending_approval_requests: 0,
+            current_terminal_title: None,
             agent_runtime: HashMap::new(),
             sparkline_data: std::cell::RefCell::new(Vec::new()),
             last_sparkline_update: std::cell::RefCell::new(std::time::Instant::now()),

@@ -287,6 +287,7 @@ impl UserApprovalWidget<'_> {
         };
 
         self.app_event_tx.send(AppEvent::CodexOp(op));
+        self.app_event_tx.send(AppEvent::ApprovalRequestResolved);
         self.done = true;
     }
 
