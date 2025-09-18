@@ -41,6 +41,7 @@ pub enum SlashCommand {
     Solve,
     Code,
     Logout,
+    #[strum(serialize = "exit")] // Alias: allow "/exit" to parse as Quit
     Quit,
     #[cfg(debug_assertions)]
     TestApproval,
