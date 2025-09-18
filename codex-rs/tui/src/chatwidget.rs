@@ -3085,6 +3085,15 @@ impl ChatWidget<'_> {
             }
         }
 
+        // Handle plain exit/quit commands (no slash, any case) to gracefully close the app.
+        {
+            let trimmed_lower = text_only.trim().to_lowercase();
+            if trimmed_lower == "exit" || trimmed_lower == "quit" {
+                self.app_event_tx.send(AppEvent::ExitRequest);
+                return;
+            }
+        }
+
         let processed = crate::slash_command::process_slash_command_message(&text_only);
         match processed {
             crate::slash_command::ProcessedCommand::ExpandedPrompt(_expanded) => {
