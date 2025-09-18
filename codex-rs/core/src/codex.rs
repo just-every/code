@@ -450,11 +450,10 @@ mod exec_allow_tests {
             inject_ssl_cert_file: false,
         };
 
-        let matched = match_exec_allow_rule(
-            &vec!["gh".into(), "auth".into(), "status".into()],
-            &vec![rule],
-        )
-        .expect("rule should match");
+        let tokens = vec!["gh".into(), "auth".into(), "status".into()];
+        let rules = vec![rule];
+
+        let matched = match_exec_allow_rule(&tokens, &rules).expect("rule should match");
 
         assert!(matched.require_confirmation);
         assert_eq!(Some(600_000), matched.timeout_ms);
@@ -471,11 +470,10 @@ mod exec_allow_tests {
             inject_ssl_cert_file: false,
         };
 
-        let matched = match_exec_allow_rule(
-            &vec!["docker".into(), "compose".into()],
-            &vec![rule],
-        )
-        .expect("rule should match");
+        let tokens = vec!["docker".into(), "compose".into()];
+        let rules = vec![rule];
+
+        let matched = match_exec_allow_rule(&tokens, &rules).expect("rule should match");
 
         assert!(!matched.require_confirmation);
     }
@@ -484,10 +482,12 @@ mod exec_allow_tests {
     fn injects_default_ssl_cert_when_flag_set() {
         let temp = NamedTempFile::new().expect("tempfile");
         let prev = std::env::var("CODEX_DEFAULT_SSL_CERT_FILE").ok();
-        std::env::set_var(
-            "CODEX_DEFAULT_SSL_CERT_FILE",
-            temp.path().to_str().expect("path str"),
-        );
+        unsafe {
+            std::env::set_var(
+                "CODEX_DEFAULT_SSL_CERT_FILE",
+                temp.path().to_str().expect("path str"),
+            );
+        }
 
         let mut env = HashMap::new();
         maybe_inject_default_ssl_cert_bundle(&mut env);
@@ -497,10 +497,12 @@ mod exec_allow_tests {
             Some(&temp.path().to_string_lossy().to_string())
         );
 
-        if let Some(prev) = prev {
-            std::env::set_var("CODEX_DEFAULT_SSL_CERT_FILE", prev);
-        } else {
-            std::env::remove_var("CODEX_DEFAULT_SSL_CERT_FILE");
+        unsafe {
+            if let Some(prev) = prev {
+                std::env::set_var("CODEX_DEFAULT_SSL_CERT_FILE", prev);
+            } else {
+                std::env::remove_var("CODEX_DEFAULT_SSL_CERT_FILE");
+            }
         }
     }
 }
