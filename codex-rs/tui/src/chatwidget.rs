@@ -3017,6 +3017,17 @@ impl ChatWidget<'_> {
             }
         }
 
+        // Treat plain "exit" or "quit" (without a leading slash) as a request to exit.
+        // This matches common terminal muscle memory and avoids sending these to the LLM.
+        let text_only_trimmed = text_only.trim();
+        if !text_only_trimmed.starts_with('/')
+            && (text_only_trimmed.eq_ignore_ascii_case("exit")
+                || text_only_trimmed.eq_ignore_ascii_case("quit"))
+        {
+            self.app_event_tx.send(AppEvent::ExitRequest);
+            return;
+        }
+
         // Save the prompt if it's a multi-agent command
         let original_trimmed = original_text.trim();
         if original_trimmed.starts_with("/plan ")
