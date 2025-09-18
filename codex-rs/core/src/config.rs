@@ -821,17 +821,30 @@ pub fn set_project_access_mode(
 
     // Ensure projects table and the per-project table exist
     let project_key = project_path.to_string_lossy().to_string();
-    if !doc.as_table().contains_key("projects") {
+    // Ensure `projects` is a table; if key exists but is not a table, replace it.
+    let has_projects_table = doc
+        .as_table()
+        .get("projects")
+        .and_then(|i| i.as_table())
+        .is_some();
+    if !has_projects_table {
         doc["projects"] = TomlItem::Table(toml_edit::Table::new());
     }
-    let projects_tbl = doc["projects"].as_table_mut().unwrap();
-    if !projects_tbl.contains_key(project_key.as_str()) {
+    let Some(projects_tbl) = doc["projects"].as_table_mut() else {
+        return Err(anyhow::anyhow!("failed to prepare projects table"));
+    };
+    // Ensure per-project entry exists and is a table; replace if wrong type.
+    let needs_proj_table = projects_tbl
+        .get(project_key.as_str())
+        .and_then(|i| i.as_table())
+        .is_none();
+    if needs_proj_table {
         projects_tbl.insert(project_key.as_str(), TomlItem::Table(toml_edit::Table::new()));
     }
     let proj_tbl = projects_tbl
         .get_mut(project_key.as_str())
         .and_then(|i| i.as_table_mut())
-        .ok_or_else(|| anyhow::anyhow!("failed to create projects.{} table", project_key))?;
+        .ok_or_else(|| anyhow::anyhow!(format!("failed to create projects.{} table", project_key)))?;
 
     // Write fields
     proj_tbl.insert(
