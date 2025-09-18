@@ -3026,6 +3026,14 @@ impl ChatWidget<'_> {
             self.last_agent_prompt = Some(original_text.clone());
         }
 
+        // Plain "exit" or "quit" (no slash) should quit the app instead of
+        // being sent to the model. Accept any casing.
+        let lowered = original_trimmed.to_ascii_lowercase();
+        if lowered == "exit" || lowered == "quit" {
+            self.app_event_tx.send(AppEvent::ExitRequest);
+            return;
+        }
+
         // Process slash commands and expand them if needed
         // First, allow custom subagent commands: if the message starts with a slash and the
         // command name matches a saved subagent in config, synthesize a unified prompt using
