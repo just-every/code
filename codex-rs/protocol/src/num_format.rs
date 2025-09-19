@@ -1,12 +1,21 @@
 use std::sync::OnceLock;
 
+use std::panic;
+
 use icu_decimal::input::Decimal;
 use icu_decimal::options::DecimalFormatterOptions;
 use icu_decimal::DecimalFormatter;
 use icu_locale_core::Locale;
 
+fn system_locale() -> Option<String> {
+    // `sys_locale` delegates to macOS SystemConfiguration; on some hardened
+    // setups that call panics instead of returning `None`. Catch unwind so the
+    // binary keeps running and we can fall back to en-US formatting.
+    panic::catch_unwind(sys_locale::get_locale).ok().and_then(|it| it)
+}
+
 fn make_local_formatter() -> Option<DecimalFormatter> {
-    let loc: Locale = sys_locale::get_locale()?.parse().ok()?;
+    let loc: Locale = system_locale()?.parse().ok()?;
     DecimalFormatter::try_new(loc.into(), DecimalFormatterOptions::default()).ok()
 }
 
@@ -96,4 +105,3 @@ mod tests {
         assert_eq!(fmt(1_234_000_000_000), "1,234G");
     }
 }
-
