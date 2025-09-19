@@ -122,6 +122,10 @@ pub(crate) struct ChatComposer {
     show_reasoning_hint: bool,
     show_diffs_hint: bool,
     reasoning_shown: bool,
+    // Config-driven labels for footer hints
+    help_hint_label: String,
+    reasoning_hint_label: String,
+    diffs_hint_label: String,
     // Sticky flag: after a chat ScrollUp, make the very next Down trigger
     // chat ScrollDown instead of moving within the textarea, unless another
     // key is pressed in between.
@@ -143,6 +147,9 @@ impl ChatComposer {
         app_event_tx: AppEventSender,
         enhanced_keys_supported: bool,
         using_chatgpt_auth: bool,
+        help_hint_label: String,
+        reasoning_hint_label: String,
+        diffs_hint_label: String,
     ) -> Self {
         let use_shift_enter_hint = enhanced_keys_supported;
 
@@ -174,6 +181,9 @@ impl ChatComposer {
             show_reasoning_hint: false,
             show_diffs_hint: false,
             reasoning_shown: false,
+            help_hint_label,
+            reasoning_hint_label,
+            diffs_hint_label,
             next_down_scrolls_history: false,
             paste_burst: PasteBurst::default(),
         }
@@ -1648,23 +1658,26 @@ impl WidgetRef for ChatComposer {
                 }
 
                 // Helper to build hint spans based on inclusion flags
+                let help_label = self.help_hint_label.clone();
+                let reason_label = self.reasoning_hint_label.clone();
+                let diffs_label = self.diffs_hint_label.clone();
                 let build_hints = |include_reasoning: bool, include_diff: bool| -> Vec<Span> {
                     let mut spans: Vec<Span> = Vec::new();
                     if !self.ctrl_c_quit_hint {
                         if self.show_reasoning_hint && include_reasoning {
                             if !spans.is_empty() { spans.push(Span::from("  •  ").style(label_style)); }
-                            spans.push(Span::from("Ctrl+R").style(key_hint_style));
+                            spans.push(Span::from(reason_label.clone()).style(key_hint_style));
                             let label = if self.reasoning_shown { " hide reasoning" } else { " show reasoning" };
                             spans.push(Span::from(label).style(label_style));
                         }
                         if self.show_diffs_hint && include_diff {
                             if !spans.is_empty() { spans.push(Span::from("  •  ").style(label_style)); }
-                            spans.push(Span::from("Ctrl+D").style(key_hint_style));
+                            spans.push(Span::from(diffs_label.clone()).style(key_hint_style));
                             spans.push(Span::from(" diff viewer").style(label_style));
                         }
                         // Always show help at the end of the command hints
                         if !spans.is_empty() { spans.push(Span::from("  •  ").style(label_style)); }
-                        spans.push(Span::from("Ctrl+H").style(key_hint_style));
+                        spans.push(Span::from(help_label.clone()).style(key_hint_style));
                         spans.push(Span::from(" help").style(label_style));
                     }
                     spans

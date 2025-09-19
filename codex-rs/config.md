@@ -580,3 +580,43 @@ Options that are specific to the TUI.
 [tui]
 # More to come here
 ```
+
+### Shortcuts
+
+You can remap core TUI shortcuts via `[tui.shortcuts]`. Each mapping accepts a key chord
+string with the following format options:
+
+- Modifiers: `ctrl`, `alt` (alias: `meta`), `shift`
+- Separators: `+` or `-` (both work): `ctrl+g`, `ctrl-g`, `ctrl-alt-x`
+- Keys: single characters (`a`..`z`), `enter`, `esc`, `tab`, `backtab` (aka `shift+tab`),
+  `insert`, `space`, arrows (`left`, `right`, `up`, `down`), paging (`pageup`, `pagedown`),
+  `home`, `end`, and function keys (`f1`..`f24`).
+
+Example remaps:
+
+```toml
+[tui.shortcuts]
+help = "ctrl-g"
+toggle_browser_hud = "f6"
+toggle_agents_hud = "f7"
+transcript_page_up = "pageup"
+transcript_page_down = "pagedown"
+transcript_to_top = "home"
+transcript_to_bottom = "end"
+composer_cycle_access_mode = "backtab"    # shift+tab
+composer_file_search = "tab"
+composer_send = "enter"
+composer_insert_newline = "shift+enter"
+composer_history_up = "shift+up"
+composer_history_down = "shift+down"
+app_exit_if_empty = "ctrl-d"
+app_toggle_reasoning = "ctrl-r"
+app_toggle_screen = "ctrl-t"
+app_toggle_diffs = "ctrl-d"
+```
+
+Notes:
+
+- The TUI renders the configured labels (e.g., shows `Ctrl+G` for Help if `help = "ctrl-g"`).
+- Advanced editing shortcuts inside the composer (e.g., `Ctrl+W/H/D` text edits) are not yet
+  remappable; only global toggles and footer hints are driven by config today.

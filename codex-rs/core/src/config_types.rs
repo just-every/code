@@ -317,6 +317,10 @@ pub struct Tui {
     /// with Ctrl+T. Defaults to true.
     #[serde(default = "default_true")]
     pub alternate_screen: bool,
+
+    /// Keyboard shortcut customization.
+    #[serde(default)]
+    pub shortcuts: Shortcuts,
 }
 
 // Important: Provide a manual Default so that when no config file exists and we
@@ -334,7 +338,256 @@ impl Default for Tui {
             spinner: SpinnerSelection::default(),
             notifications: Notifications::default(),
             alternate_screen: true,
+            shortcuts: Shortcuts::default(),
         }
+    }
+}
+
+/// A parsed key chord like "ctrl-g", "shift+enter", "f1", "pageup".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct KeyChord {
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub code: KeyCodeName,
+}
+
+impl KeyChord {
+    pub const fn new(ctrl: bool, alt: bool, shift: bool, code: KeyCodeName) -> Self {
+        Self { ctrl, alt, shift, code }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "value")]
+pub enum KeyCodeName {
+    Char(char),
+    F(u8),
+    Enter,
+    Esc,
+    Tab,
+    BackTab,
+    Insert,
+    Space,
+    Left,
+    Right,
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+}
+
+impl<'de> Deserialize<'de> for KeyCodeName {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let s = String::deserialize(d)?;
+        let t = s.trim();
+        let lower = t.to_ascii_lowercase();
+        Ok(match lower.as_str() {
+            "enter" => KeyCodeName::Enter,
+            "esc" | "escape" => KeyCodeName::Esc,
+            "tab" => KeyCodeName::Tab,
+            "backtab" | "shift+tab" => KeyCodeName::BackTab,
+            "insert" => KeyCodeName::Insert,
+            "space" => KeyCodeName::Space,
+            "left" => KeyCodeName::Left,
+            "right" => KeyCodeName::Right,
+            "up" => KeyCodeName::Up,
+            "down" => KeyCodeName::Down,
+            "pageup" | "page-up" => KeyCodeName::PageUp,
+            "pagedown" | "page-down" => KeyCodeName::PageDown,
+            "home" => KeyCodeName::Home,
+            "end" => KeyCodeName::End,
+            _ if lower.starts_with('f') => {
+                let n = lower[1..].parse::<u8>().map_err(|_| D::Error::custom("invalid F-key"))?;
+                KeyCodeName::F(n)
+            }
+            _ => {
+                let mut chs = t.chars();
+                if let (Some(c), None) = (chs.next(), chs.next()) {
+                    KeyCodeName::Char(c.to_ascii_lowercase())
+                } else {
+                    return Err(D::Error::custom("invalid key code name"));
+                }
+            }
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for KeyChord {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let s = String::deserialize(d)?;
+        let s_trim = s.trim();
+        let mut ctrl = false;
+        let mut alt = false;
+        let mut shift = false;
+
+        fn parse_code<'de, E: serde::de::Error>(raw: &str) -> Result<KeyCodeName, E> {
+            let t = raw.trim();
+            let lower = t.to_ascii_lowercase();
+            Ok(match lower.as_str() {
+                "enter" => KeyCodeName::Enter,
+                "esc" | "escape" => KeyCodeName::Esc,
+                "tab" => KeyCodeName::Tab,
+                "backtab" | "shift+tab" => KeyCodeName::BackTab,
+                "insert" => KeyCodeName::Insert,
+                "space" => KeyCodeName::Space,
+                "left" => KeyCodeName::Left,
+                "right" => KeyCodeName::Right,
+                "up" => KeyCodeName::Up,
+                "down" => KeyCodeName::Down,
+                "pageup" | "page-up" => KeyCodeName::PageUp,
+                "pagedown" | "page-down" => KeyCodeName::PageDown,
+                "home" => KeyCodeName::Home,
+                "end" => KeyCodeName::End,
+                _ if lower.starts_with('f') => {
+                    let n = lower[1..].parse::<u8>().map_err(|_| E::custom("invalid F-key"))?;
+                    KeyCodeName::F(n)
+                }
+                _ => {
+                    let mut chs = t.chars();
+                    if let (Some(c), None) = (chs.next(), chs.next()) {
+                        KeyCodeName::Char(c.to_ascii_lowercase())
+                    } else {
+                        return Err(E::custom("invalid key code name"));
+                    }
+                }
+            })
+        }
+
+        if s_trim.contains('+') {
+            let mut last: Option<&str> = None;
+            for part in s_trim.split('+') {
+                let p = part.trim();
+                let lower = p.to_ascii_lowercase();
+                match lower.as_str() {
+                    "ctrl" | "control" => ctrl = true,
+                    "alt" | "meta" => alt = true,
+                    "shift" => shift = true,
+                    _ => last = Some(p),
+                }
+            }
+            let Some(code_str) = last else { return Err(D::Error::custom("missing key code")); };
+            let code = parse_code::<D::Error>(code_str)?;
+            return Ok(KeyChord { ctrl, alt, shift, code });
+        }
+
+        if let Ok(code) = parse_code::<D::Error>(s_trim) {
+            return Ok(KeyChord { ctrl, alt, shift, code });
+        }
+
+        let mut last: Option<&str> = None;
+        for part in s_trim.split('-') {
+            let p = part.trim();
+            let lower = p.to_ascii_lowercase();
+            match lower.as_str() {
+                "ctrl" | "control" => ctrl = true,
+                "alt" | "meta" => alt = true,
+                "shift" => shift = true,
+                _ => last = Some(p),
+            }
+        }
+        let Some(code_str) = last else { return Err(D::Error::custom("invalid key code name")); };
+        let code = parse_code::<D::Error>(code_str)?;
+        Ok(KeyChord { ctrl, alt, shift, code })
+    }
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq)]
+pub struct Shortcuts {
+    #[serde(default = "Shortcuts::default_help")] pub help: KeyChord,
+    #[serde(default = "Shortcuts::default_toggle_browser_hud")] pub toggle_browser_hud: KeyChord,
+    #[serde(default = "Shortcuts::default_toggle_agents_hud")] pub toggle_agents_hud: KeyChord,
+    #[serde(default = "Shortcuts::default_transcript_page_up")] pub transcript_page_up: KeyChord,
+    #[serde(default = "Shortcuts::default_transcript_page_down")] pub transcript_page_down: KeyChord,
+    #[serde(default = "Shortcuts::default_transcript_to_top")] pub transcript_to_top: KeyChord,
+    #[serde(default = "Shortcuts::default_transcript_to_bottom")] pub transcript_to_bottom: KeyChord,
+    #[serde(default = "Shortcuts::default_composer_cycle_access_mode")] pub composer_cycle_access_mode: KeyChord,
+    #[serde(default = "Shortcuts::default_composer_file_search")] pub composer_file_search: KeyChord,
+    #[serde(default = "Shortcuts::default_composer_send")] pub composer_send: KeyChord,
+    #[serde(default = "Shortcuts::default_composer_insert_newline")] pub composer_insert_newline: KeyChord,
+    #[serde(default = "Shortcuts::default_composer_history_up")] pub composer_history_up: KeyChord,
+    #[serde(default = "Shortcuts::default_composer_history_down")] pub composer_history_down: KeyChord,
+    #[serde(default = "Shortcuts::default_app_exit_if_empty")] pub app_exit_if_empty: KeyChord,
+    #[serde(default = "Shortcuts::default_app_toggle_reasoning")] pub app_toggle_reasoning: KeyChord,
+    #[serde(default = "Shortcuts::default_app_toggle_screen")] pub app_toggle_screen: KeyChord,
+    #[serde(default = "Shortcuts::default_app_toggle_diffs")] pub app_toggle_diffs: KeyChord,
+}
+
+impl Default for Shortcuts {
+    fn default() -> Self {
+        Self {
+            help: Self::default_help(),
+            toggle_browser_hud: Self::default_toggle_browser_hud(),
+            toggle_agents_hud: Self::default_toggle_agents_hud(),
+            transcript_page_up: Self::default_transcript_page_up(),
+            transcript_page_down: Self::default_transcript_page_down(),
+            transcript_to_top: Self::default_transcript_to_top(),
+            transcript_to_bottom: Self::default_transcript_to_bottom(),
+            composer_cycle_access_mode: Self::default_composer_cycle_access_mode(),
+            composer_file_search: Self::default_composer_file_search(),
+            composer_send: Self::default_composer_send(),
+            composer_insert_newline: Self::default_composer_insert_newline(),
+            composer_history_up: Self::default_composer_history_up(),
+            composer_history_down: Self::default_composer_history_down(),
+            app_exit_if_empty: Self::default_app_exit_if_empty(),
+            app_toggle_reasoning: Self::default_app_toggle_reasoning(),
+            app_toggle_screen: Self::default_app_toggle_screen(),
+            app_toggle_diffs: Self::default_app_toggle_diffs(),
+        }
+    }
+}
+
+impl Shortcuts {
+    fn default_help() -> KeyChord { KeyChord::new(true, false, false, KeyCodeName::Char('h')) }
+    fn default_toggle_browser_hud() -> KeyChord { KeyChord::new(true, false, false, KeyCodeName::Char('b')) }
+    fn default_toggle_agents_hud() -> KeyChord { KeyChord::new(true, false, false, KeyCodeName::Char('a')) }
+    fn default_transcript_page_up() -> KeyChord { KeyChord::new(false, false, false, KeyCodeName::PageUp) }
+    fn default_transcript_page_down() -> KeyChord { KeyChord::new(false, false, false, KeyCodeName::PageDown) }
+    fn default_transcript_to_top() -> KeyChord { KeyChord::new(false, false, false, KeyCodeName::Home) }
+    fn default_transcript_to_bottom() -> KeyChord { KeyChord::new(false, false, false, KeyCodeName::End) }
+    fn default_composer_cycle_access_mode() -> KeyChord { KeyChord::new(false, false, false, KeyCodeName::BackTab) }
+    fn default_composer_file_search() -> KeyChord { KeyChord::new(false, false, false, KeyCodeName::Tab) }
+    fn default_composer_send() -> KeyChord { KeyChord::new(false, false, false, KeyCodeName::Enter) }
+    fn default_composer_insert_newline() -> KeyChord { KeyChord::new(false, false, true, KeyCodeName::Enter) }
+    fn default_composer_history_up() -> KeyChord { KeyChord::new(false, false, true, KeyCodeName::Up) }
+    fn default_composer_history_down() -> KeyChord { KeyChord::new(false, false, true, KeyCodeName::Down) }
+    fn default_app_exit_if_empty() -> KeyChord { KeyChord::new(true, false, false, KeyCodeName::Char('d')) }
+    fn default_app_toggle_reasoning() -> KeyChord { KeyChord::new(true, false, false, KeyCodeName::Char('r')) }
+    fn default_app_toggle_screen() -> KeyChord { KeyChord::new(true, false, false, KeyCodeName::Char('t')) }
+    fn default_app_toggle_diffs() -> KeyChord { KeyChord::new(true, false, false, KeyCodeName::Char('d')) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    struct W { k: KeyChord }
+
+    fn parse(s: &str) -> KeyChord {
+        toml::from_str::<W>(&format!("k = \"{}\"", s)).unwrap().k
+    }
+
+    #[test]
+    fn keychord_parses_ctrl_g_variants() {
+        assert_eq!(parse("ctrl-g"), KeyChord::new(true, false, false, KeyCodeName::Char('g')));
+        assert_eq!(parse("ctrl+g"), KeyChord::new(true, false, false, KeyCodeName::Char('g')));
+        assert_eq!(parse("CONTROL+G"), KeyChord::new(true, false, false, KeyCodeName::Char('g')));
+    }
+
+    #[test]
+    fn keychord_parses_special_keys() {
+        assert!(matches!(parse("enter").code, KeyCodeName::Enter));
+        assert!(matches!(parse("page-down").code, KeyCodeName::PageDown));
+        assert!(matches!(parse("PageUp").code, KeyCodeName::PageUp));
+        assert!(matches!(parse("backtab").code, KeyCodeName::BackTab));
+        assert!(matches!(parse("shift+tab").code, KeyCodeName::BackTab));
+        match parse("f7").code { KeyCodeName::F(7) => {}, _ => panic!("expected F7") }
     }
 }
 

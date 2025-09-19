@@ -73,6 +73,7 @@ use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use image::imageops::FilterType;
 use ratatui::buffer::Buffer;
+use crate::keys::{matches_event, label_for_chord};
 use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
@@ -1891,6 +1892,9 @@ impl ChatWidget<'_> {
                 has_input_focus: true,
                 enhanced_keys_supported,
                 using_chatgpt_auth: config.using_chatgpt_auth,
+                help_hint_label: label_for_chord(&config.tui.shortcuts.help),
+                reasoning_hint_label: label_for_chord(&config.tui.shortcuts.app_toggle_reasoning),
+                diffs_hint_label: label_for_chord(&config.tui.shortcuts.app_toggle_diffs),
             }),
             active_exec_cell: None,
             history_cells,
@@ -2083,6 +2087,9 @@ impl ChatWidget<'_> {
                 has_input_focus: true,
                 enhanced_keys_supported,
                 using_chatgpt_auth: config.using_chatgpt_auth,
+                help_hint_label: label_for_chord(&config.tui.shortcuts.help),
+                reasoning_hint_label: label_for_chord(&config.tui.shortcuts.app_toggle_reasoning),
+                diffs_hint_label: label_for_chord(&config.tui.shortcuts.app_toggle_diffs),
             }),
             active_exec_cell: None,
             history_cells,
@@ -2322,67 +2329,33 @@ impl ChatWidget<'_> {
             self.bottom_pane.clear_ctrl_c_quit_hint();
         }
 
-        // Global HUD toggles (avoid conflicting with common editor keys):
-        // - Ctrl+B: toggle Browser panel (expand/collapse)
-        // - Ctrl+G: toggle Agents panel (expand/collapse)
-        if let KeyEvent {
-            code: crossterm::event::KeyCode::Char('b'),
-            modifiers: crossterm::event::KeyModifiers::CONTROL,
-            kind: KeyEventKind::Press | KeyEventKind::Repeat,
-            ..
-        } = key_event
-        {
+        // Global HUD toggles (configurable)
+        if matches_event(&key_event, &self.config.tui.shortcuts.toggle_browser_hud) {
             self.toggle_browser_hud();
             return;
         }
-        if let KeyEvent {
-            code: crossterm::event::KeyCode::Char('a'),
-            modifiers: crossterm::event::KeyModifiers::CONTROL,
-            kind: KeyEventKind::Press | KeyEventKind::Repeat,
-            ..
-        } = key_event
-        {
+        if matches_event(&key_event, &self.config.tui.shortcuts.toggle_agents_hud) {
             self.toggle_agents_hud();
             return;
         }
 
         // Fast-path PageUp/PageDown to scroll the transcript by a viewport at a time.
-        if let crossterm::event::KeyEvent {
-            code: crossterm::event::KeyCode::PageUp,
-            kind: KeyEventKind::Press | KeyEventKind::Repeat,
-            ..
-        } = key_event
-        {
+        if matches_event(&key_event, &self.config.tui.shortcuts.transcript_page_up) {
             layout_scroll::page_up(self);
             return;
         }
-        if let crossterm::event::KeyEvent {
-            code: crossterm::event::KeyCode::PageDown,
-            kind: KeyEventKind::Press | KeyEventKind::Repeat,
-            ..
-        } = key_event
-        {
+        if matches_event(&key_event, &self.config.tui.shortcuts.transcript_page_down) {
             layout_scroll::page_down(self);
             return;
         }
-        // Home/End: when the composer is empty, jump the history to start/end
-        if let crossterm::event::KeyEvent {
-            code: crossterm::event::KeyCode::Home,
-            kind: KeyEventKind::Press | KeyEventKind::Repeat,
-            ..
-        } = key_event
-        {
+        // Home/End (configurable): when composer is empty, jump the transcript
+        if matches_event(&key_event, &self.config.tui.shortcuts.transcript_to_top) {
             if self.composer_is_empty() {
                 layout_scroll::to_top(self);
                 return;
             }
         }
-        if let crossterm::event::KeyEvent {
-            code: crossterm::event::KeyCode::End,
-            kind: KeyEventKind::Press | KeyEventKind::Repeat,
-            ..
-        } = key_event
-        {
+        if matches_event(&key_event, &self.config.tui.shortcuts.transcript_to_bottom) {
             if self.composer_is_empty() {
                 layout_scroll::to_bottom(self);
                 return;
@@ -5442,10 +5415,10 @@ impl ChatWidget<'_> {
         ));
 
         // Global
-        lines.push(kv("Ctrl+H", "Help overlay"));
-        lines.push(kv("Ctrl+R", "Toggle reasoning"));
-        lines.push(kv("Ctrl+T", "Toggle screen"));
-        lines.push(kv("Ctrl+D", "Diff viewer"));
+        lines.push(kv(&label_for_chord(&self.config.tui.shortcuts.help), "Help overlay"));
+        lines.push(kv(&label_for_chord(&self.config.tui.shortcuts.app_toggle_reasoning), "Toggle reasoning"));
+        lines.push(kv(&label_for_chord(&self.config.tui.shortcuts.app_toggle_screen), "Toggle screen"));
+        lines.push(kv(&label_for_chord(&self.config.tui.shortcuts.app_toggle_diffs), "Diff viewer"));
         lines.push(kv("Esc", "Edit previous message / close popups"));
         // Task control shortcuts
         lines.push(kv("Esc", "End current task"));

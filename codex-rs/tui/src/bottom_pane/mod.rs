@@ -91,6 +91,9 @@ pub(crate) struct BottomPaneParams {
     pub(crate) has_input_focus: bool,
     pub(crate) enhanced_keys_supported: bool,
     pub(crate) using_chatgpt_auth: bool,
+    pub(crate) help_hint_label: String,
+    pub(crate) reasoning_hint_label: String,
+    pub(crate) diffs_hint_label: String,
 }
 
 impl BottomPane<'_> {
@@ -104,6 +107,9 @@ impl BottomPane<'_> {
                 params.app_event_tx.clone(),
                 enhanced_keys_supported,
                 params.using_chatgpt_auth,
+                params.help_hint_label,
+                params.reasoning_hint_label,
+                params.diffs_hint_label,
             ),
             active_view: None,
             app_event_tx: params.app_event_tx,

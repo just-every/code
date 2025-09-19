@@ -826,18 +826,7 @@ impl App<'_> {
                                 }
                             }
                         }
-                        KeyEvent {
-                            code: KeyCode::Char('r'),
-                            modifiers: crossterm::event::KeyModifiers::CONTROL,
-                            kind: KeyEventKind::Press,
-                            ..
-                        }
-                        | KeyEvent {
-                            code: KeyCode::Char('r'),
-                            modifiers: crossterm::event::KeyModifiers::CONTROL,
-                            kind: KeyEventKind::Repeat,
-                            ..
-                        } => {
+                        _ if crate::keys::matches_event(&key_event, &self.config.tui.shortcuts.app_toggle_reasoning) => {
                             // Toggle reasoning/thinking visibility (Ctrl+R)
                             match &mut self.app_state {
                                 AppState::Chat { widget } => {
@@ -846,24 +835,14 @@ impl App<'_> {
                                 AppState::Onboarding { .. } => {}
                             }
                         }
-                        KeyEvent {
-                            code: KeyCode::Char('t'),
-                            modifiers: crossterm::event::KeyModifiers::CONTROL,
-                            kind: KeyEventKind::Press | KeyEventKind::Repeat,
-                            ..
-                        } => {
+                        _ if crate::keys::matches_event(&key_event, &self.config.tui.shortcuts.app_toggle_screen) => {
                             let _ = self.toggle_screen_mode(terminal);
                             // Propagate mode to widget so it can adapt layout
                             if let AppState::Chat { widget } = &mut self.app_state {
                                 widget.standard_terminal_mode = !self.alt_screen_active;
                             }
                         }
-                        KeyEvent {
-                            code: KeyCode::Char('d'),
-                            modifiers: crossterm::event::KeyModifiers::CONTROL,
-                            kind: KeyEventKind::Press,
-                            ..
-                        } => {
+                        _ if crate::keys::matches_event(&key_event, &self.config.tui.shortcuts.app_toggle_diffs) => {
                             // Toggle diffs overlay
                             if let AppState::Chat { widget } = &mut self.app_state {
                                 widget.toggle_diffs_popup();
