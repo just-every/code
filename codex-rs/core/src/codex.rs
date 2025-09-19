@@ -4705,6 +4705,26 @@ async fn handle_run_agent(sess: &Session, ctx: &ToolCallCtx, arguments: String) 
     let params_for_event = serde_json::from_str(&arguments).ok();
     let arguments_clone = arguments.clone();
     let call_id_clone = ctx.call_id.clone();
+    // Determine sensible default models: prefer user-configured enabled agents;
+    // otherwise fall back to a broad, multi-agent default set.
+    let default_models: Vec<String> = {
+        let configured: Vec<String> = sess
+            .agents
+            .iter()
+            .filter(|a| a.enabled)
+            .map(|a| a.name.clone())
+            .collect();
+        if configured.is_empty() {
+            vec![
+                "claude".to_string(),
+                "gemini".to_string(),
+                "qwen".to_string(),
+                "code".to_string(),
+            ]
+        } else {
+            configured
+        }
+    };
     execute_custom_tool(
         sess,
         ctx,
@@ -4722,7 +4742,7 @@ async fn handle_run_agent(sess: &Session, ctx: &ToolCallCtx, arguments: String) 
                     .into_iter()
                     .filter_map(|m| m.as_str().map(String::from))
                     .collect(),
-                _ => vec!["code".to_string()], // Default model
+                _ => default_models,
             };
 
             // Helper: derive the command to check for a given model/config pair.
