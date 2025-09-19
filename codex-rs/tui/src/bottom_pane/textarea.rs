@@ -23,6 +23,8 @@ pub(crate) struct TextArea {
     // Simple undo stack capturing full snapshots of text and cursor before edits.
     // This is intentionally simple to reliably undo paste and bulk edits across terminals.
     undo_stack: Vec<UndoSnapshot>,
+    // Stores the most recently "killed" text (via word/line delete/kill commands) for yank (Ctrl+Y).
+    last_killed: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +53,7 @@ impl TextArea {
             wrap_cache: RefCell::new(None),
             preferred_col: None,
             undo_stack: Vec::new(),
+            last_killed: None,
         }
     }
 
@@ -320,6 +323,14 @@ impl TextArea {
             } => {
                 self.undo();
             }
+            // Yank: Ctrl+Y inserts the most recently killed text.
+            KeyEvent {
+                code: KeyCode::Char('y'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            } => {
+                self.yank_last_killed();
+            }
             // macOS-like shortcuts (when terminals report the Command key as SUPER):
             // Cmd+Left  -> move to beginning of line
             // Cmd+Right -> move to end of line
@@ -506,7 +517,9 @@ impl TextArea {
 
     pub fn delete_backward_word(&mut self) {
         let start = self.beginning_of_previous_word();
-        self.replace_range(start..self.cursor_pos, "");
+        let range = start..self.cursor_pos;
+        self.record_kill(range.clone());
+        self.replace_range(range, "");
     }
 
     /// Delete text to the right of the cursor using "word" semantics.
@@ -517,7 +530,9 @@ impl TextArea {
     pub fn delete_forward_word(&mut self) {
         let end = self.end_of_next_word();
         if end > self.cursor_pos {
-            self.replace_range(self.cursor_pos..end, "");
+            let range = self.cursor_pos..end;
+            self.record_kill(range.clone());
+            self.replace_range(range, "");
         }
     }
 
@@ -525,10 +540,14 @@ impl TextArea {
         let eol = self.end_of_current_line();
         if self.cursor_pos == eol {
             if eol < self.text.len() {
-                self.replace_range(self.cursor_pos..eol + 1, "");
+                let range = self.cursor_pos..eol + 1;
+                self.record_kill(range.clone());
+                self.replace_range(range, "");
             }
         } else {
-            self.replace_range(self.cursor_pos..eol, "");
+            let range = self.cursor_pos..eol;
+            self.record_kill(range.clone());
+            self.replace_range(range, "");
         }
     }
 
@@ -536,10 +555,14 @@ impl TextArea {
         let bol = self.beginning_of_current_line();
         if self.cursor_pos == bol {
             if bol > 0 {
-                self.replace_range(bol - 1..bol, "");
+                let range = bol - 1..bol;
+                self.record_kill(range.clone());
+                self.replace_range(range, "");
             }
         } else {
-            self.replace_range(bol..self.cursor_pos, "");
+            let range = bol..self.cursor_pos;
+            self.record_kill(range.clone());
+            self.replace_range(range, "");
         }
     }
 
@@ -549,9 +572,26 @@ impl TextArea {
         let bol = self.beginning_of_current_line();
         let eol = self.end_of_current_line();
         if bol < eol {
-            self.replace_range(bol..eol, "");
+            let range = bol..eol;
+            self.record_kill(range.clone());
+            self.replace_range(range, "");
         }
         self.set_cursor(bol);
+    }
+
+    // Record helpers for yank/kill
+    fn record_kill(&mut self, range: Range<usize>) {
+        if range.start < range.end && range.end <= self.text.len() {
+            self.last_killed = Some(self.text[range.clone()].to_string());
+        }
+    }
+
+    fn yank_last_killed(&mut self) {
+        if let Some(s) = self.last_killed.clone() {
+            if !s.is_empty() {
+                self.insert_str(&s);
+            }
+        }
     }
 
     /// Revert the most recent edit (if any).
@@ -990,6 +1030,36 @@ mod tests {
         let mut t = TextArea::new();
         t.insert_str(text);
         t
+    }
+
+    #[test]
+    fn yank_after_delete_backward_word_restores_text() {
+        let mut t = ta_with("foo bar");
+        t.set_cursor(t.text().len());
+        t.delete_backward_word();
+        assert_eq!(t.text(), "foo ");
+        // Yank should reinsert the last killed word at the cursor
+        t.yank_last_killed();
+        assert_eq!(t.text(), "foo bar");
+    }
+
+    #[test]
+    fn yank_after_kill_to_end_of_line_restores_suffix() {
+        let mut t = ta_with("hello world");
+        t.set_cursor(5); // after "hello"
+        t.kill_to_end_of_line();
+        assert_eq!(t.text(), "hello");
+        t.yank_last_killed();
+        assert_eq!(t.text(), "hello world");
+    }
+
+    #[test]
+    fn yank_with_nothing_killed_is_noop() {
+        let mut t = ta_with("abc");
+        t.set_cursor(1);
+        t.yank_last_killed();
+        assert_eq!(t.text(), "abc");
+        assert_eq!(t.cursor(), 1);
     }
 
     #[test]
