@@ -42,6 +42,7 @@ pub enum SlashCommand {
     Solve,
     Code,
     Logout,
+    #[strum(serialize = "exit")] // allow "/exit" as an alias for "/quit"
     Quit,
     #[cfg(debug_assertions)]
     TestApproval,
@@ -140,6 +141,14 @@ pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
 /// Returns either the expanded prompt (for prompt-expanding commands) or the original message.
 pub fn process_slash_command_message(message: &str) -> ProcessedCommand {
     let trimmed = message.trim();
+
+    // Treat plain "exit" or "quit" (any case) as a request to quit,
+    // even without a leading slash. This mirrors terminal muscle memory
+    // and prevents sending these words to the model.
+    let lower = trimmed.to_ascii_lowercase();
+    if lower == "exit" || lower == "quit" {
+        return ProcessedCommand::RegularCommand(SlashCommand::Quit, String::new());
+    }
 
     // Check if it starts with a slash
     if !trimmed.starts_with('/') {
