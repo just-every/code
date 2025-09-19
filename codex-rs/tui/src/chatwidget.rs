@@ -1417,6 +1417,11 @@ impl ChatWidget<'_> {
         // Use call_id as the approval correlation id so responses map to the
         // exact pending approval in core (supports multiple approvals per turn).
         let approval_id = ev.call_id.clone();
+        // Pause the task spinner while we wait for user input. Once the user
+        // responds, the subsequent Task/Exec events from core will toggle the
+        // spinner back on as needed.
+        self.bottom_pane.set_task_running(false);
+
         self.bottom_pane
             .push_approval_request(ApprovalRequest::Exec {
                 id: approval_id,
@@ -1492,6 +1497,9 @@ impl ChatWidget<'_> {
             reason,
             grant_root,
         };
+        // Stop the spinner while waiting for the user to review the patch.
+        self.bottom_pane.set_task_running(false);
+
         self.bottom_pane.push_approval_request(request);
         self.note_approval_request_started();
     }
