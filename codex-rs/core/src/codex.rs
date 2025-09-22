@@ -5,6 +5,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::ffi::OsString;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
@@ -80,6 +81,7 @@ struct ConfirmGuardPatternRuntime {
     regex: regex_lite::Regex,
     message: Option<String>,
     raw: String,
+    require_approval: bool,
 }
 
 impl ConfirmGuardRuntime {
@@ -91,6 +93,7 @@ impl ConfirmGuardRuntime {
                     regex,
                     message: pattern.message.clone(),
                     raw: pattern.regex.clone(),
+                    require_approval: pattern.require_approval,
                 }),
                 Err(err) => {
                     tracing::warn!("Skipping confirm guard pattern `{}`: {err}", pattern.regex);
@@ -110,7 +113,7 @@ impl ConfirmGuardRuntime {
 }
 
 impl ConfirmGuardPatternRuntime {
-    fn guidance(&self, original_label: &str, original_value: &str, suggested: &str) -> String {
+    fn confirm_guidance(&self, original_label: &str, original_value: &str, suggested: &str) -> String {
         let header = self
             .message
             .clone()
@@ -121,6 +124,328 @@ impl ConfirmGuardPatternRuntime {
                 )
             });
         format!("{header}\n\n{original_label}: {original_value}\nresend_exact_argv: {suggested}")
+    }
+
+    fn approval_reason(&self) -> String {
+        self.message.clone().unwrap_or_else(|| {
+            format!(
+                "Command matches confirm guard pattern `{}` and requires explicit user approval before running.",
+                self.raw
+            )
+        })
+    }
+
+    fn denial_message(&self, original_label: &str, original_value: &str) -> String {
+        format!(
+            "Command denied by confirm guard pattern `{}`. {}\n\n{}: {}",
+            self.raw,
+            self.approval_reason(),
+            original_label,
+            original_value
+        )
+    }
+
+    fn requires_approval(&self) -> bool {
+        self.require_approval
+    }
+}
+
+fn extract_single_simple_command(argv: &[String]) -> Option<Vec<String>> {
+    if argv.len() == 3 {
+        let interpreter = std::path::Path::new(&argv[0])
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        let flag = argv[1].as_str();
+        if matches!(interpreter, "bash" | "sh") && matches!(flag, "-lc" | "-c") {
+            if let Some(tree) = try_parse_bash(&argv[2])
+                && let Some(commands) = try_parse_word_only_commands_sequence(&tree, &argv[2])
+                && commands.len() == 1
+            {
+                return Some(commands[0].clone());
+            }
+            return None;
+        }
+    }
+    Some(argv.to_vec())
+}
+
+fn is_env_assignment(token: &str) -> bool {
+    if !token.contains('=') || token.starts_with('-') {
+        return false;
+    }
+    let mut parts = token.splitn(2, '=');
+    let key = parts.next().unwrap_or("");
+    if key.is_empty() {
+        return false;
+    }
+    let first = key.as_bytes()[0];
+    if !(first == b'_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+    key.bytes().all(|b| b == b'_' || b.is_ascii_alphanumeric())
+}
+
+fn locate_program<'a>(tokens: &'a [String]) -> Option<(usize, &'a str)> {
+    let mut idx = 0usize;
+    let mut saw_env_prefix = false;
+    while idx < tokens.len() {
+        let token = tokens[idx].as_str();
+        if token.is_empty() {
+            idx += 1;
+            continue;
+        }
+        if is_env_assignment(token) {
+            idx += 1;
+            continue;
+        }
+        if token == "env" && !saw_env_prefix {
+            saw_env_prefix = true;
+            idx += 1;
+            continue;
+        }
+        if saw_env_prefix && token.starts_with('-') {
+            idx += 1;
+            continue;
+        }
+        return Some((idx, token));
+    }
+    None
+}
+
+fn match_exec_allow_rule<'a>(tokens: &[String], rules: &'a [ExecAllowRule]) -> Option<&'a ExecAllowRule> {
+    let (program_idx, program) = locate_program(tokens)?;
+    let program_base = std::path::Path::new(program)
+        .file_name()
+        .and_then(|s| s.to_str());
+    let sub = tokens.get(program_idx + 1).map(|s| s.as_str());
+
+    rules.iter().find(|rule| {
+        let rule_program = rule.program.as_str();
+        let rule_base = std::path::Path::new(rule_program)
+            .file_name()
+            .and_then(|s| s.to_str());
+
+        let program_matches = rule_program == program
+            || program_base.map(|b| b == rule_program).unwrap_or(false)
+            || rule_base.map(|b| b == program).unwrap_or(false)
+            || match (rule_base, program_base) {
+                (Some(rb), Some(pb)) => rb == pb,
+                _ => false,
+            };
+
+        if !program_matches {
+            return false;
+        }
+
+        match &rule.subcommand {
+            ExecAllowSubcommand::Any => true,
+            ExecAllowSubcommand::Exact(expected) => {
+                sub.map(|actual| actual == expected.as_str()).unwrap_or(false)
+            }
+            ExecAllowSubcommand::Prefix(prefix) => {
+                sub.map(|actual| actual.starts_with(prefix)).unwrap_or(false)
+            }
+        }
+    })
+}
+
+fn command_paths_within_workspace(
+    tokens: &[String],
+    sandbox_policy: &SandboxPolicy,
+    cwd: &std::path::Path,
+) -> bool {
+    let roots = sandbox_policy.get_writable_roots_with_cwd(cwd);
+    if roots.is_empty() {
+        return true;
+    }
+
+    let cwd_canonical = match canonicalize_allowing_missing(cwd) {
+        Some(path) => path,
+        None => return false,
+    };
+
+    for token in tokens {
+        let trimmed = token.as_str();
+        if matches!(trimmed, "|" | "&&" | "||" | ";") {
+            continue;
+        }
+        if is_env_assignment(trimmed) {
+            continue;
+        }
+
+        let candidates = candidate_paths_from_token(trimmed);
+        if candidates.is_empty() {
+            continue;
+        }
+
+        for candidate in candidates {
+            let path = Path::new(&candidate);
+            let absolute = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                cwd_canonical.join(path)
+            };
+
+            let resolved = match canonicalize_allowing_missing(&absolute) {
+                Some(path) => path,
+                None => return false,
+            };
+
+            if !roots.iter().any(|root| root.is_path_writable(&resolved)) {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
+fn candidate_paths_from_token(token: &str) -> Vec<String> {
+    if token.is_empty() {
+        return Vec::new();
+    }
+
+    let mut candidates = Vec::new();
+
+    let mut push_candidate = |value: &str| {
+        if let Some(cleaned) = normalize_path_candidate(value) {
+            candidates.push(cleaned);
+        }
+    };
+
+    if let Some(eq_idx) = token.find('=') {
+        let value = &token[(eq_idx + 1)..];
+        push_candidate(value);
+    }
+
+    if token.starts_with('-') {
+        if token.contains('=') {
+            // Already handled the suffix after '=' above.
+        } else {
+            let trimmed = token.trim_start_matches('-');
+            if let Some(idx) = trimmed.find('/') {
+                push_candidate(&trimmed[idx..]);
+            } else if let Some(idx) = trimmed.find('\\') {
+                push_candidate(&trimmed[idx..]);
+            } else if trimmed.starts_with("./")
+                || trimmed.starts_with("../")
+                || trimmed.starts_with(".\\")
+                || trimmed.starts_with("..\\")
+            {
+                push_candidate(trimmed);
+            }
+        }
+    } else if !token.contains('=') {
+        push_candidate(token);
+    }
+
+    candidates
+}
+
+fn normalize_path_candidate(value: &str) -> Option<String> {
+    if value.is_empty() {
+        return None;
+    }
+
+    let trimmed = value.trim_matches(|c| matches!(c, '"' | '\''));
+    if trimmed.is_empty() {
+        return None;
+    }
+    if matches!(trimmed, "." | "..") {
+        return Some(trimmed.to_string());
+    }
+
+    let path = Path::new(trimmed);
+    if path.is_absolute()
+        || trimmed.starts_with("./")
+        || trimmed.starts_with("../")
+        || trimmed.starts_with(".\\")
+        || trimmed.starts_with("..\\")
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+    {
+        Some(trimmed.to_string())
+    } else {
+        None
+    }
+}
+
+fn canonicalize_allowing_missing(path: &Path) -> Option<PathBuf> {
+    match path.canonicalize() {
+        Ok(value) => Some(normalize_path_exec_allow(&value)),
+        Err(_) => {
+            let mut suffix = Vec::<OsString>::new();
+            let mut current = path;
+
+            loop {
+                match current.canonicalize() {
+                    Ok(mut canonical_parent) => {
+                        for component in suffix.iter().rev() {
+                            canonical_parent.push(component);
+                        }
+                        return Some(normalize_path_exec_allow(&canonical_parent));
+                    }
+                    Err(_) => {
+                        let parent = current.parent()?;
+                        if let Some(name) = current.file_name() {
+                            suffix.push(name.to_os_string());
+                        }
+                        current = parent;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn normalize_path_exec_allow(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => out.push(prefix.as_os_str()),
+            Component::RootDir => {
+                out.push(component.as_os_str());
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    continue;
+                }
+            }
+            Component::Normal(part) => out.push(part),
+        }
+    }
+    out
+}
+
+fn default_ssl_cert_file_from_env() -> Option<String> {
+    if let Ok(path) = std::env::var("CODEX_DEFAULT_SSL_CERT_FILE") {
+        if !path.is_empty() && Path::new(&path).exists() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn maybe_inject_default_ssl_cert_bundle(env: &mut HashMap<String, String>) {
+    if env.contains_key("SSL_CERT_FILE") || env.contains_key("SSL_CERT_DIR") {
+        return;
+    }
+
+    if let Some(path) = default_ssl_cert_file_from_env().or_else(|| {
+        const CANDIDATES: &[&str] = &[
+            "/etc/ssl/cert.pem",
+            "/usr/local/etc/openssl@3/cert.pem",
+            "/opt/homebrew/etc/openssl@3/cert.pem",
+            "/etc/ssl/certs/ca-certificates.crt",
+        ];
+        CANDIDATES
+            .iter()
+            .find(|candidate| Path::new(candidate).exists())
+            .map(|p| p.to_string())
+    }) {
+        env.insert("SSL_CERT_FILE".to_string(), path);
     }
 }
 
@@ -475,7 +800,8 @@ use crate::client::ModelClient;
 use crate::client_common::{Prompt, ResponseEvent, REVIEW_PROMPT};
 use crate::environment_context::EnvironmentContext;
 use crate::user_instructions::UserInstructions;
-use crate::config::{persist_model_selection, Config};
+use crate::bash::{try_parse_bash, try_parse_word_only_commands_sequence};
+use crate::config::{persist_model_selection, Config, ExecAllowRule, ExecAllowSubcommand};
 use crate::config_types::ProjectHookEvent;
 use crate::config_types::ShellEnvironmentPolicy;
 use crate::conversation_history::ConversationHistory;
@@ -905,6 +1231,7 @@ pub(crate) struct Session {
     /// Track the last screenshot path and hash to detect changes
     last_screenshot_info: Mutex<Option<(PathBuf, Vec<u8>, Vec<u8>)>>, // (path, phash, dhash)
     confirm_guard: ConfirmGuardRuntime,
+    exec_allow: Vec<ExecAllowRule>,
     project_hooks: ProjectHooks,
     project_commands: Vec<ProjectCommand>,
     hook_guard: AtomicBool,
@@ -3246,6 +3573,7 @@ async fn submission_loop(
                     last_system_status: Mutex::new(None),
                     last_screenshot_info: Mutex::new(None),
                     confirm_guard: ConfirmGuardRuntime::from_config(&config.confirm_guard),
+                    exec_allow: config.exec_allow.clone(),
                     project_hooks: config.project_hooks.clone(),
                     project_commands: config.project_commands.clone(),
                     hook_guard: AtomicBool::new(false),
@@ -7731,54 +8059,90 @@ async fn handle_container_exec_with_params(
     if let Some((script_index, script)) = extract_shell_script_from_wrapper(&params.command) {
         let trimmed = script.trim_start();
         let confirm_prefixes = ["confirm:", "CONFIRM:"];
-        let has_confirm_prefix = confirm_prefixes
+        let mut has_confirm_prefix = confirm_prefixes
             .iter()
             .any(|p| trimmed.starts_with(p));
 
-        // If no confirm prefix and it looks like a sensitive git command, reject with guidance.
+        let mut skip_confirm_checks = false;
+
         if !has_confirm_prefix {
             if let Some(pattern) = if sess.confirm_guard.is_empty() {
                 None
             } else {
                 sess.confirm_guard.matched_pattern(trimmed)
             } {
-                let mut argv_confirm = params.command.clone();
-                argv_confirm[script_index] = format!("confirm: {}", script.trim_start());
-                let suggested = serde_json::to_string(&argv_confirm)
-                    .unwrap_or_else(|_| "<failed to serialize suggested argv>".to_string());
-                let guidance = pattern.guidance("original_script", &script, &suggested);
+                if pattern.requires_approval() {
+                    let reason = pattern.approval_reason();
+                    let rx_approve = sess
+                        .request_command_approval(
+                            sub_id.clone(),
+                            call_id.clone(),
+                            params.command.clone(),
+                            params.cwd.clone(),
+                            Some(reason),
+                        )
+                        .await;
 
-                sess
-                    .notify_background_event(&sub_id, format!("Command guard: {}", guidance))
-                    .await;
+                    match rx_approve.await.unwrap_or_default() {
+                        ReviewDecision::Approved => (),
+                        ReviewDecision::ApprovedForSession => {
+                            sess.add_approved_command(ApprovedCommandPattern::new(
+                                params.command.clone(),
+                                ApprovedCommandMatchKind::Exact,
+                                None,
+                            ));
+                        }
+                        ReviewDecision::Denied | ReviewDecision::Abort => {
+                            let message = pattern.denial_message("original_script", &script);
+                            return ResponseInputItem::FunctionCallOutput {
+                                call_id,
+                                output: FunctionCallOutputPayload { content: message, success: Some(false) },
+                            };
+                        }
+                    }
 
-                return ResponseInputItem::FunctionCallOutput {
-                    call_id,
-                    output: FunctionCallOutputPayload { content: guidance, success: None },
-                };
+                    has_confirm_prefix = true;
+                    skip_confirm_checks = true;
+                } else {
+                    let mut argv_confirm = params.command.clone();
+                    argv_confirm[script_index] = format!("confirm: {}", script.trim_start());
+                    let suggested = serde_json::to_string(&argv_confirm)
+                        .unwrap_or_else(|_| "<failed to serialize suggested argv>".to_string());
+                    let guidance = pattern.confirm_guidance("original_script", &script, &suggested);
+
+                    sess
+                        .notify_background_event(&sub_id, format!("Command guard: {}", guidance))
+                        .await;
+
+                    return ResponseInputItem::FunctionCallOutput {
+                        call_id,
+                        output: FunctionCallOutputPayload { content: guidance, success: None },
+                    };
+                }
             }
 
-            if let Some(kind) = detect_sensitive_git(trimmed) {
-                // Provide the exact argv the model should resend with the confirm prefix.
-                let mut argv_confirm = params.command.clone();
-                argv_confirm[script_index] = format!("confirm: {}", script.trim_start());
-                let suggested = serde_json::to_string(&argv_confirm)
-                    .unwrap_or_else(|_| "<failed to serialize suggested argv>".to_string());
+            if !skip_confirm_checks {
+                if let Some(kind) = detect_sensitive_git(trimmed) {
+                    let mut argv_confirm = params.command.clone();
+                    argv_confirm[script_index] = format!("confirm: {}", script.trim_start());
+                    let suggested = serde_json::to_string(&argv_confirm)
+                        .unwrap_or_else(|_| "<failed to serialize suggested argv>".to_string());
 
-                let guidance = guidance_for_sensitive_git(kind, "original_script", &script, &suggested);
+                    let guidance =
+                        guidance_for_sensitive_git(kind, "original_script", &script, &suggested);
 
-                sess
-                    .notify_background_event(&sub_id, format!("Command guard: {}", guidance.clone()))
-                    .await;
+                    sess
+                        .notify_background_event(&sub_id, format!("Command guard: {}", guidance.clone()))
+                        .await;
 
-                return ResponseInputItem::FunctionCallOutput {
-                    call_id,
-                    output: FunctionCallOutputPayload { content: guidance, success: None },
-                };
+                    return ResponseInputItem::FunctionCallOutput {
+                        call_id,
+                        output: FunctionCallOutputPayload { content: guidance, success: None },
+                    };
+                }
             }
         }
 
-        // If confirm prefix present, strip it before execution.
         if has_confirm_prefix {
             let without_prefix = confirm_prefixes
                 .iter()
@@ -7791,7 +8155,7 @@ async fn handle_container_exec_with_params(
         }
 
         let dry_run_analysis = analyze_command(&params.command);
-        if !has_confirm_prefix {
+        if !has_confirm_prefix && !skip_confirm_checks {
             if let Some(analysis) = dry_run_analysis.as_ref() {
                 if analysis.disposition == DryRunDisposition::Mutating {
                     let needs_dry_run = {
@@ -7800,7 +8164,8 @@ async fn handle_container_exec_with_params(
                     };
                     if needs_dry_run {
                         let mut argv_confirm = params.command.clone();
-                        argv_confirm[script_index] = format!("confirm: {}", params.command[script_index].trim_start());
+                        argv_confirm[script_index] =
+                            format!("confirm: {}", params.command[script_index].trim_start());
                         let guidance = guidance_for_dry_run_guard(
                             analysis,
                             "original_script",
@@ -7872,48 +8237,54 @@ async fn handle_container_exec_with_params(
     // If no shell wrapper, perform a lightweight argv inspection for sensitive git commands.
     if extract_shell_script_from_wrapper(&params.command).is_none() {
         let joined = params.command.join(" ");
+        let mut skip_confirm_checks = false;
         if !sess.confirm_guard.is_empty() {
             if let Some(pattern) = sess.confirm_guard.matched_pattern(&joined) {
-                let suggested = serde_json::to_string(&vec![
-                    "bash".to_string(),
-                    "-lc".to_string(),
-                    format!("confirm: {}", joined),
-                ])
-                .unwrap_or_else(|_| "<failed to serialize suggested argv>".to_string());
-                let guidance = pattern.guidance(
-                    "original_argv",
-                    &format!("{:?}", params.command),
-                    &suggested,
-                );
+                if pattern.requires_approval() {
+                    let reason = pattern.approval_reason();
+                    let rx_approve = sess
+                        .request_command_approval(
+                            sub_id.clone(),
+                            call_id.clone(),
+                            params.command.clone(),
+                            params.cwd.clone(),
+                            Some(reason),
+                        )
+                        .await;
 
-                sess
-                    .notify_background_event(&sub_id, format!("Command guard: {}", guidance.clone()))
-                    .await;
+                    match rx_approve.await.unwrap_or_default() {
+                        ReviewDecision::Approved => (),
+                        ReviewDecision::ApprovedForSession => {
+                            sess.add_approved_command(ApprovedCommandPattern::new(
+                                params.command.clone(),
+                                ApprovedCommandMatchKind::Exact,
+                                None,
+                            ));
+                        }
+                        ReviewDecision::Denied | ReviewDecision::Abort => {
+                            let message = pattern.denial_message(
+                                "original_argv",
+                                &format!("{:?}", params.command),
+                            );
+                            return ResponseInputItem::FunctionCallOutput {
+                                call_id,
+                                output: FunctionCallOutputPayload { content: message, success: Some(false) },
+                            };
+                        }
+                    }
 
-                return ResponseInputItem::FunctionCallOutput {
-                    call_id,
-                    output: FunctionCallOutputPayload { content: guidance, success: None },
-                };
-            }
-        }
-
-        if let Some(analysis) = analyze_command(&params.command) {
-            if analysis.disposition == DryRunDisposition::Mutating {
-                let needs_dry_run = {
-                    let state = sess.state.lock().unwrap();
-                    !state.dry_run_guard.has_recent_dry_run(analysis.key)
-                };
-                if needs_dry_run {
-                    let resend = vec![
+                    skip_confirm_checks = true;
+                } else {
+                    let suggested = serde_json::to_string(&vec![
                         "bash".to_string(),
                         "-lc".to_string(),
                         format!("confirm: {}", joined),
-                    ];
-                    let guidance = guidance_for_dry_run_guard(
-                        &analysis,
+                    ])
+                    .unwrap_or_else(|_| "<failed to serialize suggested argv>".to_string());
+                    let guidance = pattern.confirm_guidance(
                         "original_argv",
                         &format!("{:?}", params.command),
-                        resend,
+                        &suggested,
                     );
 
                     sess
@@ -7924,6 +8295,39 @@ async fn handle_container_exec_with_params(
                         call_id,
                         output: FunctionCallOutputPayload { content: guidance, success: None },
                     };
+                }
+            }
+        }
+
+        if !skip_confirm_checks {
+            if let Some(analysis) = analyze_command(&params.command) {
+                if analysis.disposition == DryRunDisposition::Mutating {
+                    let needs_dry_run = {
+                        let state = sess.state.lock().unwrap();
+                        !state.dry_run_guard.has_recent_dry_run(analysis.key)
+                    };
+                    if needs_dry_run {
+                        let resend = vec![
+                            "bash".to_string(),
+                            "-lc".to_string(),
+                            format!("confirm: {}", joined),
+                        ];
+                        let guidance = guidance_for_dry_run_guard(
+                            &analysis,
+                            "original_argv",
+                            &format!("{:?}", params.command),
+                            resend,
+                        );
+
+                        sess
+                            .notify_background_event(&sub_id, format!("Command guard: {}", guidance.clone()))
+                            .await;
+
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id,
+                            output: FunctionCallOutputPayload { content: guidance, success: None },
+                        };
+                    }
                 }
             }
         }
@@ -8097,15 +8501,59 @@ async fn handle_container_exec_with_params(
         MaybeApplyPatchVerified::NotApplyPatch => {}
     }
 
+    let mut exec_allow_reason: Option<String> = None;
     let safety = {
-        let state = sess.state.lock().unwrap();
-        assess_command_safety(
-            &params.command,
-            sess.approval_policy,
-            &sess.sandbox_policy,
-            &state.approved_commands,
-            params.with_escalated_permissions.unwrap_or(false),
-        )
+        let mut bypass_sandbox = false;
+        let mut require_confirmation = false;
+
+        if let Some(tokens) = extract_single_simple_command(&params.command) {
+            tracing::trace!(rules = ?sess.exec_allow, "exec_allow_rules");
+            tracing::trace!(?tokens, "exec_allow_candidate");
+            if let Some(rule) = match_exec_allow_rule(&tokens, &sess.exec_allow) {
+                tracing::trace!(pattern = %rule.program, ?rule.subcommand, "exec_allow_rule_match");
+                if !rule.project_only
+                    || command_paths_within_workspace(&tokens, &sess.sandbox_policy, &params.cwd)
+                {
+                    if params.timeout_ms.is_none() {
+                        if let Some(timeout) = rule.timeout_ms {
+                            params.timeout_ms = Some(timeout);
+                        }
+                    }
+                    if rule.inject_ssl_cert_file {
+                        maybe_inject_default_ssl_cert_bundle(&mut params.env);
+                    }
+                    bypass_sandbox = true;
+                    if rule.require_confirmation {
+                        require_confirmation = true;
+                        exec_allow_reason = Some(format!(
+                            "Command matches exec_allow rule for `{}` and requires explicit approval before bypassing sandboxing.",
+                            rule.program
+                        ));
+                    }
+                }
+            } else {
+                tracing::trace!("exec_allow_no_rule_match");
+            }
+        }
+
+        if bypass_sandbox {
+            if require_confirmation {
+                SafetyCheck::AskUser
+            } else {
+                SafetyCheck::AutoApprove {
+                    sandbox_type: SandboxType::None,
+                }
+            }
+        } else {
+            let state = sess.state.lock().unwrap();
+            assess_command_safety(
+                &params.command,
+                sess.approval_policy,
+                &sess.sandbox_policy,
+                &state.approved_commands,
+                params.with_escalated_permissions.unwrap_or(false),
+            )
+        }
     };
     let command_for_display = params.command.clone();
     let harness_summary_json: Option<String> = None;
@@ -8113,13 +8561,18 @@ async fn handle_container_exec_with_params(
     let sandbox_type = match safety {
         SafetyCheck::AutoApprove { sandbox_type } => sandbox_type,
         SafetyCheck::AskUser => {
+            let approval_reason = if params.justification.is_some() {
+                params.justification.clone()
+            } else {
+                exec_allow_reason.clone()
+            };
             let rx_approve = sess
                 .request_command_approval(
                     sub_id.clone(),
                     call_id.clone(),
                     params.command.clone(),
                     params.cwd.clone(),
-                    params.justification.clone(),
+                    approval_reason,
                 )
                 .await;
             match rx_approve.await.unwrap_or_default() {
