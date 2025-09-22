@@ -20,6 +20,10 @@ Notes
 - `/quit`: exit Codex.
 - `/logout`: log out of Codex.
 
+Shortcuts
+
+- `! <bash command>`: run a bash command in the background from the current working directory (returns immediately with a task id). See `/bashes`.
+
 ## Workspace & Git
 
 - `/init`: create an `AGENTS.md` file with instructions for Codex.
@@ -30,6 +34,8 @@ Notes
 - `/merge`: merge the current worktree branch back into the default branch and
   remove the worktree. Run this from inside the worktree created by `/branch`.
 - `/cmd <name>`: run a project command defined for the current workspace.
+- `/bash <command>`: run a bash command in the background (same as `! <command>`).
+- `/bashes [kill <id>]`: list background bash tasks; use `kill <id>` to force quit a running task.
 
 ## UX & Display
 

@@ -434,10 +434,23 @@ pub(crate) struct ChatWidget<'a> {
     synthetic_system_req: Option<u64>,
     // Map of system notice ids to their history index for in-place replacement
     system_cell_by_id: std::collections::HashMap<String, usize>,
+
+    // Background Bash tasks started via ! or /bash
+    background_bashes: std::collections::HashMap<u64, BackgroundBash>,
 }
 
 struct PendingJumpBack {
     removed_cells: Vec<Box<dyn HistoryCell>>, // cells removed from the end (from selected user message onward)
+}
+
+#[derive(Clone)]
+struct BackgroundBash {
+    _id: u64,
+    command_display: String,
+    _started_at: std::time::Instant,
+    running: bool,
+    exit_code: Option<i32>,
+    duration: Option<std::time::Duration>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2211,6 +2224,7 @@ impl ChatWidget<'_> {
             pending_agent_notes: Vec::new(),
             synthetic_system_req: None,
             system_cell_by_id: HashMap::new(),
+            background_bashes: HashMap::new(),
             standard_terminal_mode: !config.tui.alternate_screen,
         };
         // Seed footer access indicator based on current config
@@ -2237,6 +2251,7 @@ impl ChatWidget<'_> {
         } else {
             w.welcome_shown = true;
         }
+        w.background_bashes = std::collections::HashMap::new();
         w
     }
 
@@ -2419,6 +2434,7 @@ impl ChatWidget<'_> {
             pending_agent_notes: Vec::new(),
             synthetic_system_req: None,
             system_cell_by_id: HashMap::new(),
+            background_bashes: HashMap::new(),
         };
         w.set_standard_terminal_mode(!config.tui.alternate_screen);
         // Welcome at top of first request for forked session too
@@ -5796,6 +5812,18 @@ fn update_rate_limit_resets(
 
     fn try_handle_terminal_shortcut(&mut self, raw_text: &str) -> bool {
         let trimmed = raw_text.trim_start();
+        if let Some(rest) = trimmed.strip_prefix('!') {
+            let command = rest.trim();
+            if command.is_empty() {
+                self.history_push(history_cell::new_error_event(
+                    "No command provided after '!'.".to_string(),
+                ));
+                self.app_event_tx.send(AppEvent::RequestRedraw);
+            } else {
+                self.handle_background_bash_command(command.to_string());
+            }
+            return true;
+        }
         if let Some(rest) = trimmed.strip_prefix("$$") {
             let prompt = rest.trim();
             if prompt.is_empty() {
@@ -5859,6 +5887,115 @@ fn update_rate_limit_resets(
             controller_rx,
             self.config.debug,
         );
+    }
+
+    pub(crate) fn handle_background_bash_command(&mut self, args: String) {
+        let script = args.trim().to_string();
+        if script.is_empty() {
+            self.history_push(history_cell::new_error_event(
+                "`/bash` — provide a command, e.g. /bash npm test".to_string(),
+            ));
+            self.request_redraw();
+            return;
+        }
+
+        let id = self.terminal.alloc_id();
+        let display = Self::truncate_with_ellipsis(&script, 128);
+        let cwd = self.config.cwd.clone();
+
+        // Record locally
+        self.background_bashes.insert(
+            id,
+            BackgroundBash {
+                _id: id,
+                command_display: display.clone(),
+                _started_at: std::time::Instant::now(),
+                running: true,
+                exit_code: None,
+                duration: None,
+            },
+        );
+
+        // Announce start
+        self.history_push(history_cell::new_background_event(format!(
+            "Background bash started (id {id}) in {}\n$ {script}",
+            cwd.display()
+        )));
+        self.request_redraw();
+
+        // Spawn directly without opening the overlay
+        let command = vec![
+            "/bin/bash".to_string(),
+            "-lc".to_string(),
+            script.clone(),
+        ];
+        self.app_event_tx.send(AppEvent::TerminalRunCommand {
+            id,
+            command,
+            command_display: display,
+            controller: None,
+        });
+    }
+
+    pub(crate) fn handle_bashes_command(&mut self, args: String) {
+        let trimmed = args.trim();
+        if let Some(rest) = trimmed.strip_prefix("kill ") {
+            let id_str = rest.trim();
+            if let Ok(id) = id_str.parse::<u64>() {
+                if let Some(b) = self.background_bashes.get(&id) {
+                    if b.running {
+                        self.app_event_tx.send(AppEvent::TerminalCancel { id });
+                        self.history_push(history_cell::new_background_event(format!(
+                            "Requested force quit for background bash {id}"
+                        )));
+                        self.request_redraw();
+                        return;
+                    }
+                }
+                self.history_push(history_cell::new_error_event(format!(
+                    "No running background bash with id {id}"
+                )));
+                self.request_redraw();
+                return;
+            }
+        }
+
+        // List tasks
+        let mut lines: Vec<ratatui::text::Line<'static>> = Vec::new();
+        lines.push(ratatui::text::Line::from("Background bashes:"));
+        let mut any = false;
+        for (id, b) in self.background_bashes.iter() {
+            let state = if b.running {
+                "running"
+            } else if let Some(code) = b.exit_code {
+                if code == 0 { "succeeded" } else { "failed" }
+            } else {
+                "finished"
+            };
+            let dur = b
+                .duration
+                .map(|d| self.fmt_short_duration(d))
+                .unwrap_or_else(|| "-".to_string());
+            lines.push(ratatui::text::Line::from(format!(
+                "- id={} [{}] {} (duration: {})",
+                id, state, b.command_display, dur
+            )));
+            any = true;
+        }
+        if !any {
+            lines.push(ratatui::text::Line::from(
+                "<none> — start with '! <cmd>' or '/bash <cmd>'",
+            ));
+        } else {
+            lines.push(ratatui::text::Line::from(
+                "Use '/bashes kill <id>' to force quit.",
+            ));
+        }
+        self.history_push(crate::history_cell::PlainHistoryCell::new(
+            lines,
+            crate::history_cell::HistoryCellType::Notice,
+        ));
+        self.request_redraw();
     }
 
     fn launch_guided_terminal_prompt(&mut self, prompt: &str) {
@@ -6227,6 +6364,17 @@ fn update_rate_limit_resets(
         }
         if needs_redraw {
             self.request_redraw();
+        }
+        // Update background bash state if this id matches a background task
+        if let Some(entry) = self.background_bashes.get_mut(&id) {
+            entry.running = false;
+            entry.exit_code = exit_code;
+            entry.duration = Some(duration);
+            let status = match exit_code {
+                Some(code) => format!("Background bash {id} exited with code {code}"),
+                None => format!("Background bash {id} finished"),
+            };
+            self.history_push(crate::history_cell::new_background_event(status));
         }
         if success {
             #[cfg(not(debug_assertions))]

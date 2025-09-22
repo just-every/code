@@ -40,6 +40,8 @@ pub enum SlashCommand {
     Validation,
     Mcp,
     Resume,
+    Bash,
+    Bashes,
     // Prompt-expanding commands
     Plan,
     Solve,
@@ -57,6 +59,8 @@ impl SlashCommand {
             SlashCommand::Chrome => "connect to Chrome",
             SlashCommand::Browser => "open internal browser",
             SlashCommand::Resume => "resume a past session for this folder",
+            SlashCommand::Bash => "run a bash command in background (! <cmd>)",
+            SlashCommand::Bashes => "list background bash tasks; supports: '/bashes kill <id>'",
             SlashCommand::Plan => "create a comprehensive plan (multiple agents)",
             SlashCommand::Solve => "solve a challenging problem (multiple agents)",
             SlashCommand::Code => "perform a coding task (multiple agents)",
@@ -108,7 +112,7 @@ impl SlashCommand {
     pub fn requires_arguments(self) -> bool {
         matches!(
             self,
-            SlashCommand::Plan | SlashCommand::Solve | SlashCommand::Code
+            SlashCommand::Plan | SlashCommand::Solve | SlashCommand::Code | SlashCommand::Bash
         )
     }
 
