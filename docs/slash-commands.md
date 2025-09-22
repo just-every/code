@@ -17,7 +17,7 @@ Notes
 - `/chrome`: connect to Chrome.
 - `/new`: start a new chat during a conversation.
 - `/resume`: resume a past session for this folder.
-- `/quit`: exit Codex.
+- `/quit`: exit Codex. Aliases: `/exit`, and plain `exit` or `quit` (no slash, any case).
 - `/logout`: log out of Codex.
 
 ## Workspace & Git
