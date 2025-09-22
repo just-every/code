@@ -207,7 +207,19 @@ impl ModelClient {
         let store = false;
 
         let full_instructions = prompt.get_full_instructions(&self.config.model_family);
-        let tools_json = create_tools_json_for_responses_api(&prompt.tools)?;
+        // Build tool list for the Responses API.
+        // Some providers/models disallow certain tools at specific reasoning efforts.
+        // Notably, web_search is rejected when effort is "minimal"; filter it out proactively
+        // to avoid 400s like: "The following tools cannot be used with reasoning.effort 'minimal': web_search."
+        let mut tools_json = create_tools_json_for_responses_api(&prompt.tools)?;
+        if matches!(self.effort, ReasoningEffortConfig::Minimal) {
+            tools_json.retain(|tool| {
+                tool.get("type")
+                    .and_then(|v| v.as_str())
+                    .map(|ty| ty != "web_search")
+                    .unwrap_or(true)
+            });
+        }
 
         let reasoning = create_reasoning_param_for_request(
             &self.config.model_family,
