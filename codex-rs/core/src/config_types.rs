@@ -37,6 +37,9 @@ pub struct ConfirmGuardPattern {
     /// Optional custom guidance text surfaced when the guard triggers.
     #[serde(default)]
     pub message: Option<String>,
+    /// When true, the command requires an explicit human approval instead of an automatic confirm resend.
+    #[serde(default)]
+    pub require_approval: bool,
 }
 
 fn default_confirm_guard_patterns() -> Vec<ConfirmGuardPattern> {
@@ -44,46 +47,57 @@ fn default_confirm_guard_patterns() -> Vec<ConfirmGuardPattern> {
         ConfirmGuardPattern {
             regex: r"(?i)^\s*git\s+reset\b".to_string(),
             message: Some("Blocked git reset. Reset rewrites the working tree/index and may delete local work. Resend with 'confirm:' if you're certain.".to_string()),
+            require_approval: false,
         },
         ConfirmGuardPattern {
             regex: r"(?i)^\s*git\s+checkout\s+--\b".to_string(),
             message: Some("Blocked git checkout -- <paths>. This overwrites local modifications; resend with 'confirm:' to proceed.".to_string()),
+            require_approval: false,
         },
         ConfirmGuardPattern {
             regex: r"(?i)^\s*git\s+checkout\s+(?:-b|-B|--orphan|--detach)\b".to_string(),
             message: Some("Blocked git checkout with branch-changing flag. Switching branches can discard or hide in-progress changes.".to_string()),
+            require_approval: false,
         },
         ConfirmGuardPattern {
             regex: r"(?i)^\s*git\s+checkout\s+-\b".to_string(),
             message: Some("Blocked git checkout -. Confirm before switching back to the previous branch.".to_string()),
+            require_approval: false,
         },
         ConfirmGuardPattern {
             regex: r"(?i)^\s*git\s+switch\b.*(?:-c|--detach)".to_string(),
             message: Some("Blocked git switch creating or detaching a branch. Resend with 'confirm:' if requested.".to_string()),
+            require_approval: false,
         },
         ConfirmGuardPattern {
             regex: r"(?i)^\s*git\s+switch\s+[^\s-][^\s]*".to_string(),
             message: Some("Blocked git switch <branch>. Branch changes can discard or hide work; confirm before continuing.".to_string()),
+            require_approval: false,
         },
         ConfirmGuardPattern {
             regex: r"(?i)^\s*git\s+clean\b.*(?:-f|--force|-x|-X|-d)".to_string(),
             message: Some("Blocked git clean with destructive flags. This deletes untracked files or build artifacts.".to_string()),
+            require_approval: false,
         },
         ConfirmGuardPattern {
             regex: r"(?i)^\s*git\s+push\b.*(?:--force|-f)".to_string(),
             message: Some("Blocked git push --force. Force pushes rewrite remote history; only continue if explicitly requested.".to_string()),
+            require_approval: false,
         },
         ConfirmGuardPattern {
             regex: r"(?i)^\s*(?:sudo\s+)?rm\s+-[a-z-]*rf[a-z-]*\s+(?:--\s+)?(?:\.|\.\.|\./|/|\*)(?:\s|$)".to_string(),
             message: Some("Blocked rm -rf targeting a broad path (., .., /, or *). Confirm before destructive delete.".to_string()),
+            require_approval: false,
         },
         ConfirmGuardPattern {
             regex: r"(?i)^\s*(?:sudo\s+)?rm\s+-[a-z-]*r[a-z-]*\s+-[a-z-]*f[a-z-]*\s+(?:--\s+)?(?:\.|\.\.|\./|/|\*)(?:\s|$)".to_string(),
             message: Some("Blocked rm -r/-f combination targeting broad paths. Resend with 'confirm:' if you intend to wipe this tree.".to_string()),
+            require_approval: false,
         },
         ConfirmGuardPattern {
             regex: r"(?i)^\s*(?:sudo\s+)?rm\s+-[a-z-]*f[a-z-]*\s+-[a-z-]*r[a-z-]*\s+(?:--\s+)?(?:\.|\.\.|\./|/|\*)(?:\s|$)".to_string(),
             message: Some("Blocked rm -f/-r combination targeting broad paths. Confirm before running.".to_string()),
+            require_approval: false,
         },
         ConfirmGuardPattern {
             regex: r"(?i)^\s*(?:sudo\s+)?rm\b[^\n]*\s+-[a-z-]*rf[a-z-]*\b".to_string(),
@@ -96,18 +110,22 @@ fn default_confirm_guard_patterns() -> Vec<ConfirmGuardPattern> {
         ConfirmGuardPattern {
             regex: r"(?i)^\s*(?:sudo\s+)?find\s+\.(?:\s|$).*\s-delete\b".to_string(),
             message: Some("Blocked find . ... -delete. Recursive deletes require confirmation.".to_string()),
+            require_approval: false,
         },
         ConfirmGuardPattern {
             regex: r"(?i)^\s*(?:sudo\s+)?find\s+\.(?:\s|$).*\s-exec\s+rm\b".to_string(),
             message: Some("Blocked find . ... -exec rm. Confirm before running recursive rm.".to_string()),
+            require_approval: false,
         },
         ConfirmGuardPattern {
             regex: r"(?i)^\s*(?:sudo\s+)?trash\s+-[a-z-]*r[a-z-]*f[a-z-]*\b".to_string(),
             message: Some("Blocked trash -rf. Bulk trash operations can delete large portions of the workspace.".to_string()),
+            require_approval: false,
         },
         ConfirmGuardPattern {
             regex: r"(?i)^\s*(?:sudo\s+)?fd\b.*(?:--exec|-x)\s+rm\b".to_string(),
             message: Some("Blocked fd … --exec rm. Confirm before piping search results into rm.".to_string()),
+            require_approval: false,
         },
     ]
 }

@@ -67,6 +67,72 @@ const CONFIG_TOML_FILE: &str = "config.toml";
 
 const DEFAULT_RESPONSES_ORIGINATOR_HEADER: &str = "codex_cli_rs";
 
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct ExecAllowRuleToml {
+    pub pattern: String,
+    #[serde(default)]
+    pub project_only: Option<bool>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub confirm: Option<bool>,
+    #[serde(default)]
+    pub inject_ssl_cert_file: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExecAllowSubcommand {
+    Any,
+    Exact(String),
+    Prefix(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecAllowRule {
+    pub program: String,
+    pub subcommand: ExecAllowSubcommand,
+    pub project_only: bool,
+    pub timeout_ms: Option<u64>,
+    pub require_confirmation: bool,
+    pub inject_ssl_cert_file: bool,
+}
+
+fn parse_exec_allow_rules(items: Vec<ExecAllowRuleToml>) -> Vec<ExecAllowRule> {
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let mut tokens = item.pattern.split_whitespace();
+        let Some(program) = tokens.next() else {
+            continue;
+        };
+        let matcher = match tokens.next() {
+            None => ExecAllowSubcommand::Any,
+            Some(t) => {
+                if t == "*" {
+                    ExecAllowSubcommand::Any
+                } else if let Some(prefix) = t.strip_suffix(":*") {
+                    if prefix.is_empty() {
+                        ExecAllowSubcommand::Any
+                    } else {
+                        ExecAllowSubcommand::Prefix(prefix.to_string())
+                    }
+                } else {
+                    ExecAllowSubcommand::Exact(t.to_string())
+                }
+            }
+        };
+
+        out.push(ExecAllowRule {
+            program: program.to_string(),
+            subcommand: matcher,
+            project_only: item.project_only.unwrap_or(true),
+            timeout_ms: item.timeout_ms,
+            require_confirmation: item.confirm.unwrap_or(false),
+            inject_ssl_cert_file: item.inject_ssl_cert_file.unwrap_or(false),
+        });
+    }
+    out
+}
+
 /// Application configuration loaded from disk and merged with overrides.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -113,6 +179,8 @@ pub struct Config {
     pub shell_environment_policy: ShellEnvironmentPolicy,
     /// Patterns requiring an explicit confirm prefix before running.
     pub confirm_guard: ConfirmGuardConfig,
+    /// Rules for commands that may bypass sandboxing.
+    pub exec_allow: Vec<ExecAllowRule>,
 
     /// When `true`, `AgentReasoning` events emitted by the backend will be
     /// suppressed from the frontend output. This can reduce visual noise when
@@ -1391,6 +1459,8 @@ pub struct ConfigToml {
 
     #[serde(default)]
     pub confirm_guard: Option<ConfirmGuardConfig>,
+    #[serde(default)]
+    pub exec_allow: Option<Vec<ExecAllowRuleToml>>,
 
     /// Disable server-side response storage (sends the full conversation
     /// context with every request). Currently necessary for OpenAI customers
@@ -1919,6 +1989,9 @@ impl Config {
             })
             .collect();
 
+        let exec_allow = parse_exec_allow_rules(cfg.exec_allow.clone().unwrap_or_default());
+        tracing::info!(rules = ?exec_allow, "config_exec_allow_rules");
+
         let mut confirm_guard = ConfirmGuardConfig::default();
         if let Some(mut user_guard) = cfg.confirm_guard {
             confirm_guard.patterns.extend(user_guard.patterns.drain(..));
@@ -1954,6 +2027,7 @@ impl Config {
             project_commands,
             shell_environment_policy,
             confirm_guard,
+            exec_allow,
             disable_response_storage: config_profile
                 .disable_response_storage
                 .or(cfg.disable_response_storage)
@@ -2668,6 +2742,8 @@ model_verbosity = "high"
                 project_hooks: ProjectHooks::default(),
                 project_commands: Vec::new(),
                 shell_environment_policy: ShellEnvironmentPolicy::default(),
+                confirm_guard: ConfirmGuardConfig::default(),
+                exec_allow: Vec::new(),
                 disable_response_storage: false,
                 auto_upgrade_enabled: false,
                 user_instructions: None,
@@ -2738,6 +2814,8 @@ model_verbosity = "high"
             project_hooks: ProjectHooks::default(),
             project_commands: Vec::new(),
             shell_environment_policy: ShellEnvironmentPolicy::default(),
+            confirm_guard: ConfirmGuardConfig::default(),
+            exec_allow: Vec::new(),
             disable_response_storage: false,
             auto_upgrade_enabled: false,
             user_instructions: None,
@@ -2823,6 +2901,8 @@ model_verbosity = "high"
             project_hooks: ProjectHooks::default(),
             project_commands: Vec::new(),
             shell_environment_policy: ShellEnvironmentPolicy::default(),
+            confirm_guard: ConfirmGuardConfig::default(),
+            exec_allow: Vec::new(),
             disable_response_storage: true,
             auto_upgrade_enabled: false,
             user_instructions: None,
@@ -2893,6 +2973,8 @@ model_verbosity = "high"
             project_hooks: ProjectHooks::default(),
             project_commands: Vec::new(),
             shell_environment_policy: ShellEnvironmentPolicy::default(),
+            confirm_guard: ConfirmGuardConfig::default(),
+            exec_allow: Vec::new(),
             disable_response_storage: false,
             auto_upgrade_enabled: false,
             user_instructions: None,
