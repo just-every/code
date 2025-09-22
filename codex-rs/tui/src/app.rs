@@ -1891,6 +1891,11 @@ impl App<'_> {
                     self.terminal_title_override = title;
                     self.apply_terminal_title();
                 }
+                AppEvent::ApprovalRequestResolved => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.approval_request_resolved();
+                    }
+                }
                 AppEvent::UpdateMcpServer { name, enable } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.toggle_mcp_server(&name, enable);
