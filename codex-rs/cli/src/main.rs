@@ -239,13 +239,47 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
             last,
             config_overrides,
         })) => {
+            // Merge interactive flags: resume-scoped options > root overrides.
             interactive = finalize_resume_interactive(
                 interactive,
                 root_config_overrides.clone(),
-                session_id,
+                session_id.clone(),
                 last,
                 config_overrides,
             );
+
+            // Resolve resume target before launching the TUI. When a session id or --last
+            // is provided, configure the experimental_resume path so the TUI attaches to
+            // the prior rollout immediately. Otherwise, launch normally (user can type /resume).
+            if last || session_id.is_some() {
+                use codex_core::RolloutRecorder;
+                use codex_core::find_conversation_path_by_id_str;
+
+                // Find codex home to locate session files.
+                let codex_home = codex_core::config::find_codex_home()
+                    .map_err(|e| anyhow::anyhow!(format!("failed to resolve codex home: {}", e)))?;
+
+                let resume_path: Option<std::path::PathBuf> = if last {
+                    match RolloutRecorder::list_conversations(&codex_home, 1, None).await {
+                        Ok(page) => page.items.first().map(|it| it.path.clone()),
+                        Err(_) => None,
+                    }
+                } else if let Some(id) = session_id.as_deref() {
+                    find_conversation_path_by_id_str(&codex_home, id).await.unwrap_or(None)
+                } else {
+                    None
+                };
+
+                if let Some(path) = resume_path {
+                    // Prepend with highest precedence so it wins over profiles/config.
+                    let val = format!("experimental_resume={}", path.display());
+                    interactive
+                        .config_overrides
+                        .raw_overrides
+                        .splice(0..0, std::iter::once(val));
+                }
+            }
+
             codex_tui::run_main(interactive, codex_linux_sandbox_exe).await?;
         }
         Some(Subcommand::Login(mut login_cli)) => {
@@ -357,9 +391,6 @@ fn finalize_resume_interactive(
     _last: bool,
     resume_cli: TuiCli,
 ) -> TuiCli {
-    // Our fork does not expose explicit resume fields on the TUI CLI.
-    // We simply merge resume-scoped flags and root overrides and run the TUI.
-
     // Merge resume-scoped flags and overrides with highest precedence.
     merge_resume_cli_flags(&mut interactive, resume_cli);
 
