@@ -325,27 +325,21 @@ impl TextArea {
             // Cmd+Left  -> move to beginning of line
             // Cmd+Right -> move to end of line
             // Cmd+Backspace -> delete entire current line contents
-            #[allow(unreachable_patterns)]
             KeyEvent { code: KeyCode::Left, modifiers, .. }
-                if modifiers.bits() & (KeyModifiers::ALT | KeyModifiers::CONTROL).bits() == 0
-                    && { #[allow(deprecated)] { modifiers.bits() & (crossterm::event::KeyModifiers::from_bits_truncate(0b0000_1000).bits()) } } != 0 =>
+                if modifiers.contains(KeyModifiers::SUPER)
+                    && !modifiers.intersects(KeyModifiers::ALT | KeyModifiers::CONTROL) =>
             {
-                // Treat unknown extra modifier bit (commonly SUPER/Cmd) as line home.
                 self.move_cursor_to_beginning_of_line(false);
             }
-            #[allow(unreachable_patterns)]
             KeyEvent { code: KeyCode::Right, modifiers, .. }
-                if modifiers.bits() & (KeyModifiers::ALT | KeyModifiers::CONTROL).bits() == 0
-                    && { #[allow(deprecated)] { modifiers.bits() & (crossterm::event::KeyModifiers::from_bits_truncate(0b0000_1000).bits()) } } != 0 =>
+                if modifiers.contains(KeyModifiers::SUPER)
+                    && !modifiers.intersects(KeyModifiers::ALT | KeyModifiers::CONTROL) =>
             {
-                // Treat unknown extra modifier bit (commonly SUPER/Cmd) as line end.
                 self.move_cursor_to_end_of_line(false);
             }
-            #[allow(unreachable_patterns)]
             KeyEvent { code: KeyCode::Backspace, modifiers, .. }
-                if { #[allow(deprecated)] { modifiers.bits() & (crossterm::event::KeyModifiers::from_bits_truncate(0b0000_1000).bits()) } } != 0 =>
+                if modifiers.contains(KeyModifiers::SUPER) =>
             {
-                // Treat Cmd+Backspace as delete entire line contents.
                 self.delete_entire_line();
             }
             // Meta-b -> move to beginning of previous word
