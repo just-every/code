@@ -136,21 +136,21 @@ file-opener = "vscode"  # Options: vscode, vscode-insiders, windsurf, cursor, no
 [[subagents.commands]]
 name = "plan"
 read-only = true
-agents = ["claude", "gemini", "qwen", "codex"]
+agents = ["claude", "gemini", "qwen"]
 orchestrator-instructions = "Focus on discovering project layout and risks. Prefer small, verifiable steps."
 agent-instructions = "Summarize assumptions explicitly. Cite files you read."
 
 [[subagents.commands]]
 name = "solve"
 read-only = true
-agents = ["claude", "gemini", "qwen", "codex"]
+agents = ["claude", "gemini", "qwen"]
 orchestrator-instructions = "Run multiple approaches in parallel and compare. Defer cancellation until a tested fix exists."
 agent-instructions = "Propose a concrete fix with steps to validate."
 
 [[subagents.commands]]
 name = "code"
 read-only = false
-agents = ["claude", "gemini", "qwen", "codex"]
+agents = ["claude", "gemini", "qwen"]
 orchestrator-instructions = "Coordinate implementations across agents; surface worktree locations and branches."
 agent-instructions = "Write minimal, focused changes with clear rationale. Include test or validation steps."
 
