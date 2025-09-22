@@ -1068,15 +1068,18 @@ impl ChatWidget<'_> {
             .any(|a| matches!(a.status, AgentStatus::Pending | AgentStatus::Running))
     }
 
-    /// Hide the bottom spinner/status if the UI is idle (no streams, tools, agents, or tasks).
+    /// Hide the bottom spinner/status if the UI is idle (no streams, tools, or agents).
+    ///
+    /// Do not gate on `active_task_ids` here: the task bookkeeping may linger
+    /// until a late TaskComplete event arrives, but once streams/tools/agents
+    /// are idle the UI should drop the "Responding…" spinner immediately.
     fn maybe_hide_spinner(&mut self) {
         let any_tools_running = !self.exec.running_commands.is_empty()
             || !self.tools_state.running_custom_tools.is_empty()
             || !self.tools_state.running_web_search.is_empty();
         let any_streaming = self.stream.is_write_cycle_active();
         let any_agents_active = self.agents_are_actively_running();
-        let any_tasks_active = !self.active_task_ids.is_empty();
-        if !(any_tools_running || any_streaming || any_agents_active || any_tasks_active) {
+        if !(any_tools_running || any_streaming || any_agents_active) {
             self.bottom_pane.set_task_running(false);
         }
     }
@@ -7900,9 +7903,8 @@ fn update_rate_limit_resets(
             || !self.tools_state.running_web_search.is_empty();
         let any_streaming = self.stream.is_write_cycle_active();
         let any_agents_active = self.agents_are_actively_running();
-        let any_tasks_active = !self.active_task_ids.is_empty();
 
-        if !(any_tools_running || any_streaming || any_agents_active || any_tasks_active) {
+        if !(any_tools_running || any_streaming || any_agents_active) {
             self.bottom_pane.set_task_running(false);
             self.bottom_pane.update_status_text(String::new());
             self.bottom_pane.clear_ctrl_c_quit_hint();
