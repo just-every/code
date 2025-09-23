@@ -227,6 +227,29 @@ impl App<'_> {
                                     if !drop_release_events
                                         || matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat)
                                     {
+                                        // Avoid duplicated characters on terminals that send a
+                                        // synthetic Repeat immediately after Press for printable
+                                        // keys. Allow repeats only for navigation/deletion keys.
+                                        if key_event.kind == KeyEventKind::Repeat {
+                                            match key_event.code {
+                                                KeyCode::Left
+                                                | KeyCode::Right
+                                                | KeyCode::Up
+                                                | KeyCode::Down
+                                                | KeyCode::Home
+                                                | KeyCode::End
+                                                | KeyCode::PageUp
+                                                | KeyCode::PageDown
+                                                | KeyCode::Backspace
+                                                | KeyCode::Delete => {
+                                                    // allow auto-repeat
+                                                }
+                                                _ => {
+                                                    // Ignore Repeat for printable/other keys
+                                                    continue;
+                                                }
+                                            }
+                                        }
                                         last_key_time = Instant::now();
                                         app_event_tx.send(AppEvent::KeyEvent(key_event));
                                     }
