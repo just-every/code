@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Non-functional change to trigger release workflow
 
-import { existsSync, mkdirSync, createWriteStream, chmodSync, readFileSync, readSync, writeFileSync, unlinkSync, statSync, openSync, closeSync, copyFileSync, fsyncSync, renameSync, realpathSync } from 'fs';
+import { existsSync, mkdirSync, createWriteStream, chmodSync, readFileSync, readSync, writeFileSync, unlinkSync, statSync, lstatSync, readlinkSync, openSync, closeSync, copyFileSync, fsyncSync, renameSync, realpathSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { get } from 'https';
@@ -147,6 +147,39 @@ function resolveGlobalBinDir() {
   }
 
   return '';
+}
+
+function isOurShellShim(shimPath, isWindows) {
+  try {
+    const lst = lstatSync(shimPath);
+    if (lst.isSymbolicLink()) {
+      const target = readlinkSync(shimPath);
+      return typeof target === 'string' && target.includes('@just-every/code');
+    }
+    if (!lst.isFile()) {
+      return false;
+    }
+    const fd = openSync(shimPath, 'r');
+    let sample = '';
+    try {
+      const buf = Buffer.alloc(768);
+      const read = readSync(fd, buf, 0, buf.length, 0);
+      if (read > 0) {
+        sample = buf.toString('utf8', 0, read);
+      }
+    } finally {
+      closeSync(fd);
+    }
+    if (!sample) {
+      return false;
+    }
+    if (isWindows) {
+      return sample.includes('%~dp0coder') || sample.includes('@just-every/code');
+    }
+    return sample.includes('"$(dirname "$0")/coder"') || sample.includes('@just-every/code');
+  } catch {
+    return false;
+  }
 }
 
 async function downloadBinary(url, dest, maxRedirects = 5, maxRetries = 3) {
@@ -645,9 +678,18 @@ async function main() {
       // npm/pnpm/yarn path
       const globalBin = resolveGlobalBinDir();
       const ourShim = globalBin ? join(globalBin, isWindows ? 'code.cmd' : 'code') : '';
+      const shimExists = Boolean(ourShim && existsSync(ourShim));
+      const shimBelongsToUs = shimExists && isOurShellShim(ourShim, isWindows);
       const candidates = resolveAllOnPath();
       const others = candidates.filter(p => p && (!ourShim || p !== ourShim));
-      const collision = others.length > 0;
+      let collision = others.length > 0;
+
+      if (!collision && shimExists && !shimBelongsToUs) {
+        collision = true;
+        if (!others.includes(ourShim)) {
+          others.unshift(ourShim);
+        }
+      }
 
       const ensureWrapper = (name, args) => {
         if (!globalBin) return;
@@ -677,7 +719,7 @@ async function main() {
         for (const p of others) console.error(`   - ${p}`);
         if (globalBin) {
           try {
-            if (existsSync(ourShim)) {
+            if (shimBelongsToUs && existsSync(ourShim)) {
               unlinkSync(ourShim);
               console.error(`✓ Skipped global 'code' shim (removed ${ourShim})`);
               skippedCmds.push({ name: 'code', reason: `existing: ${others[0]}` });
