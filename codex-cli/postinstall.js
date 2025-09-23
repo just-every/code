@@ -646,8 +646,23 @@ async function main() {
       const globalBin = resolveGlobalBinDir();
       const ourShim = globalBin ? join(globalBin, isWindows ? 'code.cmd' : 'code') : '';
       const candidates = resolveAllOnPath();
-      const others = candidates.filter(p => p && (!ourShim || p !== ourShim));
-      const collision = others.length > 0;
+
+      // Determine if any existing `code` on PATH would be overwritten or is not ours.
+      const looksLikeOurs = (p) => {
+        try {
+          const s = readFileSync(p, 'utf8');
+          return s.includes('@just-every/code') || s.includes('bin/coder.js') || s.includes('"$(dirname \"$0\")/coder"');
+        } catch {
+          return false;
+        }
+      };
+
+      // Collision if:
+      //  - a different path than ourShim exists, or
+      //  - ourShim already exists but it's not our wrapper (e.g., VS Code under Homebrew)
+      const otherPaths = candidates.filter(p => p && (!ourShim || p !== ourShim));
+      const ourShimExistsButNotOurs = ourShim && existsSync(ourShim) && !looksLikeOurs(ourShim);
+      const collision = otherPaths.length > 0 || ourShimExistsButNotOurs;
 
       const ensureWrapper = (name, args) => {
         if (!globalBin) return;
@@ -674,13 +689,16 @@ async function main() {
 
       if (collision) {
         console.error('⚠ Detected existing `code` on PATH:');
-        for (const p of others) console.error(`   - ${p}`);
+        const report = ourShimExistsButNotOurs ? [ourShim, ...otherPaths] : otherPaths;
+        for (const p of report) console.error(`   - ${p}`);
         if (globalBin) {
           try {
-            if (existsSync(ourShim)) {
+            // Only remove our own shim if it exists and is ours; never delete a third-party binary.
+            if (existsSync(ourShim) && looksLikeOurs(ourShim)) {
               unlinkSync(ourShim);
               console.error(`✓ Skipped global 'code' shim (removed ${ourShim})`);
-              skippedCmds.push({ name: 'code', reason: `existing: ${others[0]}` });
+              const first = report[0] || 'unknown';
+              skippedCmds.push({ name: 'code', reason: `existing: ${first}` });
             }
           } catch (e) {
             console.error(`⚠ Could not remove npm shim '${ourShim}': ${e.message}`);
