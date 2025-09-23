@@ -992,6 +992,15 @@ impl App<'_> {
                             }
                         }
                         // (Ctrl+Y disabled): Previously cycled syntax themes; now intentionally no-op
+                        // General key handling fallback.
+                        // Ignore Repeat for printable keys here to avoid doubled
+                        // inserts on terminals that emit an immediate Repeat event
+                        // for every Char/Enter press (observed on some Windows setups).
+                        KeyEvent { kind: KeyEventKind::Repeat, code: KeyCode::Char(_), .. }
+                        | KeyEvent { kind: KeyEventKind::Repeat, code: KeyCode::Enter, .. } => {
+                            // Handled by composer/TextArea which purposely ignores
+                            // Repeat for text insertion; skip dispatching here as well.
+                        }
                         KeyEvent {
                             kind: KeyEventKind::Press | KeyEventKind::Repeat,
                             ..
