@@ -31,11 +31,14 @@ pub fn assess_patch_safety(
         };
     }
 
-    // In Read Only mode, write operations are not permitted. Reject immediately
-    // so the agent receives a clear failure without prompting for approval.
+    // In Read Only mode, writing requires explicit approval. Ask the user
+    // instead of hard-rejecting so a one-time approval can proceed.
     if matches!(sandbox_policy, SandboxPolicy::ReadOnly) {
-        return SafetyCheck::Reject {
-            reason: "write operations are disabled in read-only mode".to_string(),
+        return match policy {
+            AskForApproval::Never => SafetyCheck::Reject {
+                reason: "write operations are disabled in read-only mode".to_string(),
+            },
+            _ => SafetyCheck::AskUser,
         };
     }
 
