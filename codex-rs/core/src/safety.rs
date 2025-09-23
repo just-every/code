@@ -31,12 +31,11 @@ pub fn assess_patch_safety(
         };
     }
 
-    // In Read Only mode, write operations are not permitted. Reject immediately
-    // so the agent receives a clear failure without prompting for approval.
+    // In Read Only mode, do not hard‑reject patches. Instead, ask the user
+    // for approval so the client can escalate and perform writes outside the
+    // sandbox when approved (e.g., via MCP client tools).
     if matches!(sandbox_policy, SandboxPolicy::ReadOnly) {
-        return SafetyCheck::Reject {
-            reason: "write operations are disabled in read-only mode".to_string(),
-        };
+        return SafetyCheck::AskUser;
     }
 
     match policy {
