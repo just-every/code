@@ -227,6 +227,22 @@ impl App<'_> {
                                     if !drop_release_events
                                         || matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat)
                                     {
+                                        // Windows: some terminals emit an extra Repeat immediately
+                                        // after a single key Press for printable characters or Enter,
+                                        // which results in duplicated input (e.g., "a" -> "aa").
+                                        // Ignore those Repeat events while preserving normal hold‑to‑repeat
+                                        // for navigation/editing keys (arrows, Backspace, Delete, etc.).
+                                        #[cfg(windows)]
+                                        {
+                                            use crossterm::event::KeyCode;
+                                            if matches!(key_event.kind, KeyEventKind::Repeat) {
+                                                if matches!(key_event.code, KeyCode::Char(_) | KeyCode::Enter) {
+                                                    // Skip this spurious repeat.
+                                                    continue;
+                                                }
+                                            }
+                                        }
+
                                         last_key_time = Instant::now();
                                         app_event_tx.send(AppEvent::KeyEvent(key_event));
                                     }
