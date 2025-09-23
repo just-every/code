@@ -790,6 +790,25 @@ impl App<'_> {
                     if !self.enhanced_keys_supported {
                         key_event = KeyEvent::new(key_event.code, key_event.modifiers);
                     }
+                    // Windows terminals that support keyboard enhancement flags
+                    // may emit an immediate Repeat event for printable keys on a
+                    // single tap, causing doubled characters (e.g., "hhii").
+                    // Drop Repeat for printable insertion keys at the app layer
+                    // so all views (including popups) avoid double handling.
+                    #[cfg(windows)]
+                    {
+                        use crossterm::event::KeyCode;
+                        use crossterm::event::KeyEventKind;
+                        if self.enhanced_keys_supported && matches!(key_event.kind, KeyEventKind::Repeat) {
+                            match key_event.code {
+                                KeyCode::Char(_) | KeyCode::Enter => {
+                                    // Ignore repeat for character insertion and Enter.
+                                    continue;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                     // Reset double‑Esc timer on any non‑Esc key
                     if !matches!(key_event.code, KeyCode::Esc) {
                         self.last_esc_time = None;
