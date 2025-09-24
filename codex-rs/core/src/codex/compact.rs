@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use super::debug_history;
 use super::get_last_assistant_message_from_turn;
-use super::response_input_from_core_items;
 use super::AgentTask;
 use super::MutexExt;
 use super::Session;
@@ -35,6 +34,8 @@ use futures::prelude::*;
 
 pub(super) const COMPACT_TRIGGER_TEXT: &str = "Start Summarization";
 const SUMMARIZATION_PROMPT: &str = include_str!("../../templates/compact/prompt.md");
+// Hard cap to keep compaction inputs safely under typical model limits
+const MAX_COMPACT_INPUT_CHARS: usize = 16_000;
 
 #[derive(Template)]
 #[template(path = "compact/history_bridge.md", escape = "none")]
@@ -102,7 +103,7 @@ pub(super) async fn perform_compaction(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
     sub_id: String,
-    input: Vec<InputItem>,
+    _input: Vec<InputItem>,
     compact_instructions: String,
     remove_task_on_completion: bool,
 ) -> Vec<ResponseItem> {
@@ -112,10 +113,58 @@ pub(super) async fn perform_compaction(
     let start_event = sess.make_event(&sub_id, EventMsg::TaskStarted);
     sess.send_event(start_event).await;
 
-    let initial_input_for_turn = response_input_from_core_items(input);
+    // Build a minimal, bounded digest rather than sending the full history.
+    // This prevents context-window overflows when compaction is triggered on very long chats.
+    let history_before = {
+        let state = sess.state.lock_unchecked();
+        state.history.contents()
+    };
+    let mut user_messages = collect_user_messages(&history_before);
+    // Take from the tail until we fit under MAX_COMPACT_INPUT_CHARS
+    let mut acc_len = 0usize;
+    let mut selected: Vec<String> = Vec::new();
+    for msg in user_messages.drain(..).rev() {
+        // Leave room for separators and headers; keep logic simple and safe
+        let msg_len = msg.len() + 4;
+        if acc_len + msg_len > MAX_COMPACT_INPUT_CHARS {
+            break;
+        }
+        acc_len += msg_len;
+        selected.push(msg);
+    }
+    selected.reverse();
+
+    let last_assistant = get_last_assistant_message_from_turn(&history_before)
+        .unwrap_or_default();
+
+    // Trim assistant tail if it's too large
+    let assistant_tail = if last_assistant.len() > 4000 {
+        let mut s = last_assistant;
+        s.truncate(4000);
+        s
+    } else {
+        last_assistant
+    };
+
+    let user_digest = if selected.is_empty() {
+        "(no recent user messages)".to_string()
+    } else {
+        selected.join("\n\n")
+    };
+
+    let essentials = format!(
+        "Conversation digest for compaction\n\nRecent user messages:\n{}\n\nLast assistant reply (for context):\n{}",
+        user_digest, assistant_tail
+    );
+
+    let mut turn_input = sess.build_initial_context(turn_context.as_ref());
+    turn_input.push(ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText { text: essentials }],
+    });
+
     let instructions_override = compact_instructions;
-    let turn_input =
-        sess.turn_input_with_history(vec![initial_input_for_turn.clone().into()]);
 
     let mut prompt = Prompt {
         input: turn_input,
