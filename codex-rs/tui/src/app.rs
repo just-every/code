@@ -784,11 +784,17 @@ impl App<'_> {
                 AppEvent::KeyEvent(mut key_event) => {
                     if self.timing_enabled { self.timing.on_key(); }
                     // On terminals that do not support keyboard enhancement flags
-                    // (notably some Windows Git Bash/mintty setups), crossterm may
-                    // report only Release events. Normalize such events to Press so
-                    // keys register consistently.
+                    // (common on some Windows setups), crossterm can emit Release
+                    // without a corresponding Press for printable keys, which can
+                    // cause doubled characters if treated as input. Drop Release
+                    // entirely in this mode; normalize other kinds to Press.
                     if !self.enhanced_keys_supported {
-                        key_event = KeyEvent::new(key_event.code, key_event.modifiers);
+                        if matches!(key_event.kind, KeyEventKind::Release) {
+                            continue;
+                        }
+                        if key_event.kind != KeyEventKind::Press {
+                            key_event = KeyEvent::new(key_event.code, key_event.modifiers);
+                        }
                     }
                     // Reset double‑Esc timer on any non‑Esc key
                     if !matches!(key_event.code, KeyCode::Esc) {
