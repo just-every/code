@@ -114,8 +114,12 @@ pub(super) async fn perform_compaction(
 
     let initial_input_for_turn = response_input_from_core_items(input);
     let instructions_override = compact_instructions;
-    let turn_input =
-        sess.turn_input_with_history(vec![initial_input_for_turn.clone().into()]);
+    // For the compaction request itself, avoid sending the full history.
+    // Large transcripts (e.g., tool output, screenshots) can overflow the model
+    // before we have a chance to compact. Instead, send only the minimal
+    // initial context and a small trigger message.
+    let mut turn_input = sess.build_initial_context(turn_context.as_ref());
+    turn_input.push(initial_input_for_turn.clone().into());
 
     let mut prompt = Prompt {
         input: turn_input,
