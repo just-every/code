@@ -460,53 +460,53 @@ fn rgb_to_ansi256_index(r: u8, g: u8, b: u8) -> u8 {
 fn get_predefined_theme(name: ThemeName) -> Theme {
     match name {
         ThemeName::DarkCarbonNight => Theme {
-            // Dark default - sleek modern dark theme
-            primary: Color::Rgb(37, 194, 255),        // #25C2FF
-            secondary: Color::Rgb(179, 146, 240),     // #B392F0
-            background: Color::Rgb(11, 13, 16),       // #0B0D10
-            foreground: Color::Rgb(230, 237, 243),    // #E6EDF3
-            border: Color::Rgb(83, 85, 88),           // #535558  (↑ contrast)
-            border_focused: Color::Rgb(106, 109, 114), // toned contrast vs border
-            selection: Color::Rgb(23, 32, 42),        // #17202A
-            cursor: Color::Rgb(230, 237, 243),        // #E6EDF3
-            success: Color::Rgb(63, 185, 80),         // #3FB950
-            warning: Color::Rgb(210, 153, 34),        // #D29922
-            error: Color::Rgb(248, 81, 73),           // #F85149
-            info: Color::Rgb(121, 192, 255),          // #79C0FF
-            text: Color::Rgb(230, 237, 243),          // #E6EDF3
-            text_dim: Color::Rgb(139, 148, 158),      // #8B949E
-            text_bright: Color::White,                // #FFFFFF
-            keyword: Color::Rgb(179, 146, 240),       // #B392F0
-            string: Color::Rgb(165, 214, 255),        // #A5D6FF
-            comment: Color::Rgb(110, 118, 129),       // #6E7681
-            function: Color::Rgb(126, 231, 135),      // #7EE787
-            spinner: Color::Rgb(59, 67, 79),          // #3B434F
-            progress: Color::Rgb(37, 194, 255),       // #25C2FF
+            // Dark default using terminal-friendly ANSI colors
+            primary: Color::Cyan,
+            secondary: Color::LightMagenta,
+            background: Color::Black,
+            foreground: Color::White,
+            border: Color::DarkGray,
+            border_focused: Color::Gray,
+            selection: Color::DarkGray,
+            cursor: Color::White,
+            success: Color::Green,
+            warning: Color::Yellow,
+            error: Color::Red,
+            info: Color::LightBlue,
+            text: Color::White,
+            text_dim: Color::Gray,
+            text_bright: Color::White,
+            keyword: Color::LightMagenta,
+            string: Color::LightCyan,
+            comment: Color::DarkGray,
+            function: Color::LightGreen,
+            spinner: Color::DarkGray,
+            progress: Color::Cyan,
         },
 
         ThemeName::LightPhoton => Theme {
-            // Light default - clean professional light theme
-            primary: Color::Rgb(0, 162, 255),       // #00A2FF
-            secondary: Color::Rgb(110, 89, 203),    // #6E59CB
-            background: Color::Rgb(250, 250, 250),  // #FAFAFA
-            foreground: Color::Rgb(31, 35, 40),     // #1F2328
-            border: Color::Rgb(206, 206, 206),      // #CECECE  (↑ contrast)
-            border_focused: Color::Rgb(160, 160, 160), // toned contrast vs border
-            selection: Color::Rgb(234, 242, 255),   // #EAF2FF
-            cursor: Color::Rgb(31, 35, 40),         // #1F2328
-            success: Color::Rgb(26, 127, 55),       // #1A7F37
-            warning: Color::Rgb(154, 103, 0),       // #9A6700
-            error: Color::Rgb(207, 34, 46),         // #CF222E
-            info: Color::Rgb(9, 105, 218),          // #0969DA
-            text: Color::Rgb(79, 91, 106),          // #4f5b6a
-            text_dim: Color::Rgb(171, 180, 199),    // #abb4c7
-            text_bright: Color::Rgb(0, 0, 20),      // #000014
-            keyword: Color::Rgb(110, 89, 203),      // #6E59CB
-            string: Color::Rgb(11, 125, 105),       // #0B7D69
-            comment: Color::Rgb(100, 115, 132),     // #647384
-            function: Color::Rgb(0, 95, 204),       // #005FCC
-            spinner: Color::Rgb(156, 163, 175),     // #9CA3AF
-            progress: Color::Rgb(0, 95, 204),       // #005FCC
+            // Light default using terminal-friendly ANSI colors
+            primary: Color::Blue,
+            secondary: Color::Magenta,
+            background: Color::White,
+            foreground: Color::Black,
+            border: Color::Gray,
+            border_focused: Color::DarkGray,
+            selection: Color::Gray,
+            cursor: Color::Black,
+            success: Color::Green,
+            warning: Color::Yellow,
+            error: Color::Red,
+            info: Color::Blue,
+            text: Color::Black,
+            text_dim: Color::DarkGray,
+            text_bright: Color::Black,
+            keyword: Color::Magenta,
+            string: Color::Green,
+            comment: Color::Gray,
+            function: Color::Blue,
+            spinner: Color::Gray,
+            progress: Color::Blue,
         },
 
         ThemeName::LightPrismRainbow => Theme {
