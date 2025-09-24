@@ -224,9 +224,31 @@ impl App<'_> {
                                     // Some Windows terminals (e.g., legacy conhost) only report
                                     // `Release` events when keyboard enhancement flags are not
                                     // supported. Preserve those events so onboarding works there.
-                                    if !drop_release_events
-                                        || matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat)
-                                    {
+                                    // Additionally, certain Windows terminals emit an extra
+                                    // `Repeat` immediately after a single key press for
+                                    // printable keys (letters) and Enter. To avoid double-typing,
+                                    // ignore those specific repeat events on Windows while still
+                                    // allowing repeat for navigation/editing keys (arrows,
+                                    // Backspace, Delete) when held.
+                                    let allow_release_policy =
+                                        !drop_release_events
+                                            || matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat);
+
+                                    // Default to sending the event unless filtered below.
+                                    let mut allow_send = allow_release_policy;
+
+                                    if allow_send && cfg!(windows) {
+                                        use crossterm::event::KeyCode;
+                                        if matches!(key_event.kind, KeyEventKind::Repeat)
+                                            && (matches!(key_event.code, KeyCode::Char(_))
+                                                || matches!(key_event.code, KeyCode::Enter))
+                                        {
+                                            // Drop spurious repeats for printable chars and Enter
+                                            allow_send = false;
+                                        }
+                                    }
+
+                                    if allow_send {
                                         last_key_time = Instant::now();
                                         app_event_tx.send(AppEvent::KeyEvent(key_event));
                                     }
