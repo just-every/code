@@ -366,10 +366,26 @@ pub(crate) fn collect_user_messages(items: &[ResponseItem]) -> Vec<String> {
 }
 
 pub fn is_session_prefix_message(text: &str) -> bool {
-    matches!(
+    // Treat XML-tagged user instruction and environment blocks as session prefix.
+    if matches!(
         InputMessageKind::from(("user", text)),
         InputMessageKind::UserInstructions | InputMessageKind::EnvironmentContext
-    )
+    ) {
+        return true;
+    }
+
+    // Also treat our compact bridge as a session prefix so it is excluded
+    // from future compact runs. Handle both the new explicit marker and the
+    // historical unmarked bridge text to be robust when resuming older sessions.
+    let trimmed = text.trim_start();
+    if trimmed.starts_with("[COMPACT_BRIDGE]") {
+        return true;
+    }
+    if trimmed.starts_with("You were originally given instructions from a user over one or more turns.") {
+        return true;
+    }
+
+    false
 }
 
 pub(crate) fn build_compacted_history(
@@ -398,7 +414,10 @@ pub(crate) fn build_compacted_history(
     history.push(ResponseItem::Message {
         id: None,
         role: "user".to_string(),
-        content: vec![ContentItem::InputText { text: bridge }],
+        // Tag the compact bridge so subsequent auto-compact passes (e.g. after resume)
+        // can recognize and skip it when collecting prior user messages. This prevents
+        // the bridge from being re-embedded and growing the prompt.
+        content: vec![ContentItem::InputText { text: format!("[COMPACT_BRIDGE]\n{}", bridge) }],
     });
     history
 }
