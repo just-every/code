@@ -14408,7 +14408,7 @@ impl ChatWidget<'_> {
         banner.push_str(&format!("  Script: {}\n", script_path));
         banner.push_str(&format!("  Agents: {}\n", agent_roster));
         banner.push_str(&format!("  Prompt: {}\n", prompt_hint));
-        self.history_push(crate::history_cell::new_background_event(banner));
+        self.insert_background_event_with_placement(banner, BackgroundPlacement::Tail);
 
         let mut env = HashMap::new();
         env.insert(
