@@ -4082,7 +4082,12 @@ impl ChatWidget<'_> {
     /// Push a cell using a synthetic key at the TOP of the NEXT request.
     fn history_push_top_next_req(&mut self, cell: impl HistoryCell + 'static) {
         let key = self.next_req_key_top();
-        let _ = self.history_insert_with_key_global_tagged(Box::new(cell), key, "prelude");
+        let tag = if cell.kind() == HistoryCellType::BackgroundEvent {
+            "background"
+        } else {
+            "prelude"
+        };
+        let _ = self.history_insert_with_key_global_tagged(Box::new(cell), key, tag);
     }
     /// Push a user prompt so it appears right under banners and above model output for the next request.
     fn history_push_prompt_next_req(&mut self, cell: impl HistoryCell + 'static) {
