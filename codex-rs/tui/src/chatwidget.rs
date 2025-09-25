@@ -3078,7 +3078,7 @@ impl ChatWidget<'_> {
 
         // Global HUD toggles (avoid conflicting with common editor keys):
         // - Ctrl+B: toggle Browser panel (expand/collapse)
-        // - Ctrl+A: toggle Agents terminal mode
+        // - Ctrl+Shift+A: toggle Agents terminal mode
         if let KeyEvent {
             code: crossterm::event::KeyCode::Char('b'),
             modifiers: crossterm::event::KeyModifiers::CONTROL,
@@ -3091,13 +3091,17 @@ impl ChatWidget<'_> {
         }
         if let KeyEvent {
             code: crossterm::event::KeyCode::Char('a'),
-            modifiers: crossterm::event::KeyModifiers::CONTROL,
+            modifiers,
             kind: KeyEventKind::Press | KeyEventKind::Repeat,
             ..
         } = key_event
         {
-            self.toggle_agents_hud();
-            return;
+            if modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+                && modifiers.contains(crossterm::event::KeyModifiers::SHIFT)
+            {
+                self.toggle_agents_hud();
+                return;
+            }
         }
 
         if self.agents_terminal.active {
@@ -9195,7 +9199,7 @@ impl ChatWidget<'_> {
             t_fg.add_modifier(Modifier::BOLD),
         )]));
         lines.push(kv("Ctrl+B", "Toggle Browser panel"));
-        lines.push(kv("Ctrl+A", "Open Agents terminal"));
+        lines.push(kv("Ctrl+Shift+A", "Open Agents terminal"));
 
         // Slash command reference
         lines.push(RtLine::from(""));
@@ -16311,9 +16315,9 @@ impl ChatWidget<'_> {
         left_spans.push(Span::raw(" "));
         left_spans.push(Span::raw(summary));
 
-        // Right side: hint for opening terminal (Ctrl+A)
+        // Right side: hint for opening terminal (Ctrl+Shift+A)
         let right_spans: Vec<Span> = vec![
-            Span::from("Ctrl+A").style(key_hint_style),
+            Span::from("Ctrl+Shift+A").style(key_hint_style),
             Span::styled(" open terminal", label_style),
         ];
 
@@ -16379,7 +16383,10 @@ impl ChatWidget<'_> {
 
         let title_spans = vec![
             Span::styled(" Agents ", Style::default().fg(crate::colors::text())),
-            Span::styled("— Ctrl+A to close", Style::default().fg(crate::colors::text_dim())),
+            Span::styled(
+                "— Ctrl+Shift+A to close",
+                Style::default().fg(crate::colors::text_dim()),
+            ),
         ];
 
         let block = Block::default()
@@ -16817,7 +16824,7 @@ impl ChatWidget<'_> {
         left_spans.push(Span::raw(" "));
         left_spans.push(Span::raw(summary));
         let right_spans: Vec<Span> = vec![
-            Span::from("Ctrl+A").style(key_hint_style),
+            Span::from("Ctrl+Shift+A").style(key_hint_style),
             Span::styled(" open terminal", label_style),
         ];
         let measure =

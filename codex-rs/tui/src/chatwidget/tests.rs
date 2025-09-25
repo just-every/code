@@ -486,9 +486,15 @@ fn agents_terminal_toggle_via_shortcuts() {
     assert!(chat.agents_terminal.order.contains(&"agent-1".to_string()));
     assert!(!chat.agents_terminal.active);
 
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    chat.handle_key_event(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ));
     pump_app_events(&mut chat, &rx);
-    assert!(chat.agents_terminal.active, "Ctrl+A should open terminal");
+    assert!(
+        chat.agents_terminal.active,
+        "Ctrl+Shift+A should open terminal"
+    );
 
     // Esc should exit the terminal view
     chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -521,7 +527,10 @@ fn agents_terminal_focus_and_scroll_controls() {
         msg: EventMsg::AgentStatusUpdate(event),
     });
 
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    chat.handle_key_event(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ));
     pump_app_events(&mut chat, &rx);
     assert_eq!(chat.agents_terminal.focus(), AgentsTerminalFocus::Sidebar);
 
@@ -571,7 +580,10 @@ fn agents_terminal_esc_closes_from_sidebar() {
         msg: EventMsg::AgentStatusUpdate(event),
     });
 
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    chat.handle_key_event(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ));
     pump_app_events(&mut chat, &rx);
     assert!(chat.agents_terminal.active, "overlay should open");
     assert_eq!(chat.agents_terminal.focus(), AgentsTerminalFocus::Sidebar);
