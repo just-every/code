@@ -2272,42 +2272,71 @@ impl Session {
         turn_diff_tracker: &mut TurnDiffTracker,
         sub_id: &str,
         name: &str,
+        command_override: Option<Vec<String>>,
+        display_override: Option<String>,
+        mut extra_env: HashMap<String, String>,
         attempt_req: u64,
     ) {
-        let Some(command) = self.find_project_command(name) else {
-            self
-                .notify_background_event(
-                    sub_id,
-                    format!("Unknown project command `{}`", name.trim()),
-                )
-                .await;
-            return;
-        };
-
-        let mut env = command.env.clone();
-        env.entry("CODE_PROJECT_COMMAND_NAME".to_string())
-            .or_insert_with(|| command.name.clone());
-        if let Some(desc) = &command.description {
-            env.entry("CODE_PROJECT_COMMAND_DESCRIPTION".to_string())
-                .or_insert_with(|| desc.clone());
-        }
-        env.entry("CODE_SESSION_CWD".to_string())
+        extra_env
+            .entry("CODE_PROJECT_COMMAND_NAME".to_string())
+            .or_insert_with(|| name.to_string());
+        extra_env
+            .entry("CODE_SESSION_CWD".to_string())
             .or_insert_with(|| self.cwd.to_string_lossy().to_string());
 
-        let exec_params = ExecParams {
-            command: command.command.clone(),
-            cwd: command.resolved_cwd(self.get_cwd()),
-            timeout_ms: command.timeout_ms,
-            env,
-            with_escalated_permissions: Some(false),
-            justification: None,
+        let (exec_params, cmd_name) = if let Some(command) = command_override {
+            let cwd = self.get_cwd().to_path_buf();
+            let params = ExecParams {
+                command,
+                cwd,
+                timeout_ms: None,
+                env: extra_env,
+                with_escalated_permissions: Some(false),
+                justification: Some("Spec Ops slash command".to_string()),
+            };
+
+            (params, name.to_string())
+        } else {
+            let Some(command_cfg) = self.find_project_command(name) else {
+                self
+                    .notify_background_event(
+                        sub_id,
+                        format!("Unknown project command `{}`", name.trim()),
+                    )
+                    .await;
+                return;
+            };
+
+            for (k, v) in command_cfg.env.clone() {
+                extra_env.entry(k).or_insert(v);
+            }
+            if let Some(desc) = &command_cfg.description {
+                extra_env
+                    .entry("CODE_PROJECT_COMMAND_DESCRIPTION".to_string())
+                    .or_insert_with(|| desc.clone());
+            }
+
+            let params = ExecParams {
+                command: command_cfg.command.clone(),
+                cwd: command_cfg.resolved_cwd(self.get_cwd()),
+                timeout_ms: command_cfg.timeout_ms,
+                env: extra_env,
+                with_escalated_permissions: Some(false),
+                justification: None,
+            };
+
+            (params, command_cfg.name.clone())
         };
 
-        let call_id = format!("project_cmd_{}", sanitize_identifier(&command.name));
+        let call_id = format!("project_cmd_{}", sanitize_identifier(&cmd_name));
         let exec_ctx = ExecCommandContext {
             sub_id: sub_id.to_string(),
             call_id: call_id.clone(),
-            command_for_display: exec_params.command.clone(),
+            command_for_display: if let Some(display) = display_override {
+                vec![display]
+            } else {
+                exec_params.command.clone()
+            },
             cwd: exec_params.cwd.clone(),
             apply_patch: None,
         };
@@ -2331,7 +2360,7 @@ impl Session {
                     sub_id,
                     format!(
                         "Project command `{}` failed: {}",
-                        command.name,
+                        name,
                         get_error_message_ui(&err)
                     ),
                 )
@@ -3588,7 +3617,12 @@ async fn submission_loop(
                 }
             }
 
-            Op::RunProjectCommand { name } => {
+            Op::RunProjectCommand {
+                name,
+                command,
+                display,
+                env,
+            } => {
                 let sess = match sess.as_ref() {
                     Some(sess) => sess,
                     None => {
@@ -3598,7 +3632,16 @@ async fn submission_loop(
                 };
                 let mut tracker = TurnDiffTracker::new();
                 let attempt_req = sess.current_request_ordinal();
-                sess.run_project_command(&mut tracker, &sub.id, &name, attempt_req)
+                sess
+                    .run_project_command(
+                        &mut tracker,
+                        &sub.id,
+                        &name,
+                        command,
+                        display,
+                        env,
+                        attempt_req,
+                    )
                     .await;
             }
 

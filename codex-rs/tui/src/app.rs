@@ -1587,6 +1587,16 @@ impl App<'_> {
                                 widget.handle_branch_command(command_args);
                             }
                         }
+                        SlashCommand::SpecPlan
+                        | SlashCommand::SpecTasks
+                        | SlashCommand::SpecImplement
+                        | SlashCommand::SpecValidate
+                        | SlashCommand::SpecReview
+                        | SlashCommand::SpecUnlock => {
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                widget.handle_spec_ops_command(command, command_args);
+                            }
+                        }
                         SlashCommand::Merge => {
                             if let AppState::Chat { widget } = &mut self.app_state {
                                 widget.handle_merge_command();
