@@ -137,11 +137,11 @@ impl TextArea {
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
-        self.cursor_pos_with_state(area, &TextAreaState::default())
+        self.cursor_pos_with_state(area, TextAreaState::default())
     }
 
     /// Compute the on-screen cursor position taking scrolling into account.
-    pub fn cursor_pos_with_state(&self, area: Rect, state: &TextAreaState) -> Option<(u16, u16)> {
+    pub fn cursor_pos_with_state(&self, area: Rect, state: TextAreaState) -> Option<(u16, u16)> {
         let lines = self.wrapped_lines(area.width);
         let effective_scroll = self.effective_scroll(area.height, &lines, state.scroll);
         let i = Self::wrapped_line_index_by_start(&lines, self.cursor_pos)?;
@@ -946,6 +946,7 @@ mod tests {
     use super::*;
     // crossterm types are intentionally not imported here to avoid unused warnings
     use rand::prelude::*;
+    use ratatui::layout::Rect;
 
     fn rand_grapheme(rng: &mut rand::rngs::StdRng) -> String {
         let r: u8 = rng.gen_range(0..100);
@@ -992,6 +993,14 @@ mod tests {
         let mut t = TextArea::new();
         t.insert_str(text);
         t
+    }
+
+    #[test]
+    fn cursor_pos_returns_coordinates_for_visible_cursor() {
+        let mut t = ta_with("hello");
+        t.set_cursor("hello".len());
+        let rect = Rect::new(0, 0, 20, 5);
+        assert_eq!(t.cursor_pos(rect), Some((5, 0)));
     }
 
     #[test]
@@ -1396,14 +1405,15 @@ mod tests {
         // Place cursor in "world"
         let world_start = t.text().find("world").unwrap();
         t.set_cursor(world_start + 3);
-        let (_x, y) = t.cursor_pos(area).unwrap();
+        let default_state = TextAreaState::default();
+        let (_x, y) = t.cursor_pos_with_state(area, &default_state).unwrap();
         assert_eq!(y, 1); // world should be on second wrapped line
 
         // With state and small height, cursor is mapped onto visible row
         let mut state = TextAreaState::default();
         let small_area = Rect::new(0, 0, 6, 1);
         // First call: cursor not visible -> effective scroll ensures it is
-        let (_x, y) = t.cursor_pos_with_state(small_area, &state).unwrap();
+        let (_x, y) = t.cursor_pos_with_state(small_area, state).unwrap();
         assert_eq!(y, 0);
 
         // Render with state to update actual scroll value
@@ -1424,7 +1434,7 @@ mod tests {
         // effective scroll is 0 and the cursor position matches cursor_pos.
         let bad_state = TextAreaState { scroll: 999 };
         let (x1, y1) = t.cursor_pos(area).unwrap();
-        let (x2, y2) = t.cursor_pos_with_state(area, &bad_state).unwrap();
+        let (x2, y2) = t.cursor_pos_with_state(area, bad_state).unwrap();
         assert_eq!((x2, y2), (x1, y1));
 
         // Case 2: Cursor below the current window — y should be clamped to the
@@ -1437,7 +1447,7 @@ mod tests {
         t.set_cursor(t.text().len().saturating_sub(2));
         let small_area = Rect::new(0, 0, wrap_width, 2);
         let state = TextAreaState { scroll: 0 };
-        let (_x, y) = t.cursor_pos_with_state(small_area, &state).unwrap();
+        let (_x, y) = t.cursor_pos_with_state(small_area, state).unwrap();
         assert_eq!(y, small_area.y + small_area.height - 1);
 
         // Case 3: Cursor above the current window — y should be top row (0)
@@ -1451,7 +1461,7 @@ mod tests {
         let state = TextAreaState {
             scroll: lines.saturating_mul(2),
         };
-        let (_x, y) = t.cursor_pos_with_state(area, &state).unwrap();
+        let (_x, y) = t.cursor_pos_with_state(area, state).unwrap();
         assert_eq!(y, area.y);
     }
 
@@ -1469,13 +1479,16 @@ mod tests {
         // Cursor at boundary index 4 should be displayed at start of second wrapped line
         t.set_cursor(4);
         let area = Rect::new(0, 0, 4, 10);
-        let (x, y) = t.cursor_pos(area).unwrap();
+        let default_state = TextAreaState::default();
+        let (x, y) = t
+            .cursor_pos_with_state(area, &default_state)
+            .unwrap();
         assert_eq!((x, y), (0, 1));
 
         // With state and small height, cursor should be visible at row 0, col 0
         let small_area = Rect::new(0, 0, 4, 1);
         let state = TextAreaState::default();
-        let (x, y) = t.cursor_pos_with_state(small_area, &state).unwrap();
+        let (x, y) = t.cursor_pos_with_state(small_area, state).unwrap();
         assert_eq!((x, y), (0, 0));
 
         // Place cursor in the middle of the second wrapped line ("efgh"), at 'g'
@@ -1505,35 +1518,35 @@ mod tests {
         // Start at beginning
         t.set_cursor(0);
         ratatui::widgets::StatefulWidgetRef::render_ref(&(&t), area, &mut buf, &mut state);
-        let (x, y) = t.cursor_pos_with_state(area, &state).unwrap();
+        let (x, y) = t.cursor_pos_with_state(area, state).unwrap();
         assert_eq!((x, y), (0, 0));
 
         // Move down to second visual line; should be at bottom row (row 1) within 2-line viewport
         t.move_cursor_down();
         ratatui::widgets::StatefulWidgetRef::render_ref(&(&t), area, &mut buf, &mut state);
-        let (x, y) = t.cursor_pos_with_state(area, &state).unwrap();
+        let (x, y) = t.cursor_pos_with_state(area, state).unwrap();
         assert_eq!((x, y), (0, 1));
 
         // Move down to third visual line; viewport scrolls and keeps cursor on bottom row
         t.move_cursor_down();
         ratatui::widgets::StatefulWidgetRef::render_ref(&(&t), area, &mut buf, &mut state);
-        let (x, y) = t.cursor_pos_with_state(area, &state).unwrap();
+        let (x, y) = t.cursor_pos_with_state(area, state).unwrap();
         assert_eq!((x, y), (0, 1));
 
         // Move up to second visual line; with current scroll, it appears on top row
         t.move_cursor_up();
         ratatui::widgets::StatefulWidgetRef::render_ref(&(&t), area, &mut buf, &mut state);
-        let (x, y) = t.cursor_pos_with_state(area, &state).unwrap();
+        let (x, y) = t.cursor_pos_with_state(area, state).unwrap();
         assert_eq!((x, y), (0, 0));
 
         // Column preservation across moves: set to col 2 on first line, move down
         t.set_cursor(2);
         ratatui::widgets::StatefulWidgetRef::render_ref(&(&t), area, &mut buf, &mut state);
-        let (x0, y0) = t.cursor_pos_with_state(area, &state).unwrap();
+        let (x0, y0) = t.cursor_pos_with_state(area, state).unwrap();
         assert_eq!((x0, y0), (2, 0));
         t.move_cursor_down();
         ratatui::widgets::StatefulWidgetRef::render_ref(&(&t), area, &mut buf, &mut state);
-        let (x1, y1) = t.cursor_pos_with_state(area, &state).unwrap();
+        let (x1, y1) = t.cursor_pos_with_state(area, state).unwrap();
         assert_eq!((x1, y1), (2, 1));
     }
 
@@ -1789,11 +1802,12 @@ mod tests {
                 ratatui::widgets::WidgetRef::render_ref(&(&ta), full_area, &mut buf);
 
                 // cursor_pos: x must be within width when present
-                let _ = ta.cursor_pos(area);
+                let baseline_state = TextAreaState::default();
+                let _ = ta.cursor_pos_with_state(area, &baseline_state);
 
                 // cursor_pos_with_state: always within viewport rows
                 let (_x, _y) = ta
-                    .cursor_pos_with_state(area, &state)
+                    .cursor_pos_with_state(area, state)
                     .unwrap_or((area.x, area.y));
 
                 // Stateful render should not panic, and updates scroll

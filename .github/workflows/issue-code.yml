@@ -397,7 +397,9 @@ jobs:
             const owner = context.repo.owner; const repo = context.repo.repo;
             const head = `issue-${{ steps.meta.outputs.issue_number }}`;
             const base = process.env.DEFAULT_BRANCH || 'main';
-            const titleRaw = readOrDefault('.github/auto/PR_TITLE.txt', `Auto PR: ${{ steps.meta.outputs.issue_title }}`);
+            const fallbackTitle = ${{ toJson(steps.meta.outputs.issue_title) }};
+            const defaultTitle = fallbackTitle ? 'Auto PR: ' + fallbackTitle : 'Auto PR';
+            const titleRaw = readOrDefault('.github/auto/PR_TITLE.txt', defaultTitle);
             const bodyBase = readOrDefault('.github/auto/PR_BODY.md', '');
             const slug = `${{ steps.slug.outputs.slug }}`;
             const marker = slug ? `<!-- codex-id: ${slug} -->` : '';

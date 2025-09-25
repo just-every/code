@@ -40,7 +40,9 @@ fi
 # Respect pre-set CARGO_HOME/TARGET_DIR to share caches across steps
 export CARGO_HOME="${CARGO_HOME:-$ROOT_DIR/.cargo-home}"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/codex-rs/target}"
-mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR" >/dev/null 2>&1 || true
+# Ensure rustup also uses a repo-local, writable directory to avoid HOME permission issues on CI
+export RUSTUP_HOME="${RUSTUP_HOME:-${CARGO_HOME%/}/rustup}"
+mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR" "$RUSTUP_HOME" >/dev/null 2>&1 || true
 if ! (cd codex-rs && cargo check -p codex-core --test api_surface --quiet) 2>&1 | tee .github/auto/VERIFY_api-check.log; then
   status_api="fail"
 fi

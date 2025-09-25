@@ -69,6 +69,10 @@ pub(crate) fn text_bright() -> Color {
     current_theme().text_bright
 }
 
+pub(crate) fn spinner() -> Color {
+    current_theme().spinner
+}
+
 /// Midpoint color between `text` and `text_dim` for secondary list levels.
 pub(crate) fn text_mid() -> Color {
     let a = current_theme().text;

@@ -198,6 +198,14 @@ pub(super) fn finalize_all_running_as_interrupted(chat: &mut ChatWidget<'_>) {
         }
     }
 
+    if !chat.tools_state.running_wait_tools.is_empty() {
+        chat.tools_state.running_wait_tools.clear();
+    }
+
+    if !chat.tools_state.running_kill_tools.is_empty() {
+        chat.tools_state.running_kill_tools.clear();
+    }
+
     chat.bottom_pane.update_status_text("cancelled".to_string());
     let any_tasks_active = !chat.active_task_ids.is_empty();
     if !any_tasks_active {

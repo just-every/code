@@ -267,6 +267,7 @@ impl WidgetRef for CommandPopup {
 #[cfg(all(test, feature = "legacy_tests"))]
 mod tests {
     use super::*;
+    use std::string::ToString;
 
     #[test]
     fn filter_includes_init_when_typing_prefix() {
@@ -322,7 +323,7 @@ mod tests {
         let mut prompt_names: Vec<String> = items
             .into_iter()
             .filter_map(|it| match it {
-                CommandItem::UserPrompt(i) => popup.prompt_name(i).map(|s| s.to_string()),
+                CommandItem::UserPrompt(i) => popup.prompt_name(i).map(ToString::to_string),
                 _ => None,
             })
             .collect();

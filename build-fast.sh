@@ -29,15 +29,44 @@ USAGE
 resolve_bin_path() {
   case "$PROFILE" in
     dev-fast)
-      BIN_PATH="./target/dev-fast/code"
+      BIN_SUBDIR="dev-fast"
       ;;
     dev)
-      BIN_PATH="./target/debug/code"
+      BIN_SUBDIR="debug"
       ;;
     *)
-      BIN_PATH="./target/${PROFILE}/code"
+      BIN_SUBDIR="$PROFILE"
       ;;
   esac
+
+  local target_root
+  if [ -n "${CARGO_TARGET_DIR:-}" ]; then
+    target_root="${CARGO_TARGET_DIR}"
+  else
+    target_root="${REPO_ROOT}/codex-rs/target"
+  fi
+
+  if [[ "${target_root}" != /* ]]; then
+    target_root="$(cd "${target_root}" >/dev/null 2>&1 && pwd)"
+  fi
+
+  TARGET_DIR_ABS="${target_root}"
+  BIN_CARGO_FILENAME="code"
+  BIN_FILENAME="code"
+  if [ "$PROFILE" = "perf" ]; then
+    BIN_FILENAME="code-perf"
+  fi
+  BIN_SUBPATH="${BIN_SUBDIR}/${BIN_FILENAME}"
+  BIN_CARGO_SUBPATH="${BIN_SUBDIR}/${BIN_CARGO_FILENAME}"
+  BIN_PATH="${TARGET_DIR_ABS}/${BIN_SUBPATH}"
+  BIN_CARGO_PATH="${TARGET_DIR_ABS}/${BIN_CARGO_SUBPATH}"
+  BIN_LINK_PATH="./target/${BIN_SUBPATH}"
+
+  if [ -n "${REPO_TARGET_ABS:-}" ] && [ "${TARGET_DIR_ABS}" = "${REPO_TARGET_ABS}" ]; then
+    BIN_DISPLAY_PATH="./codex-rs/target/${BIN_SUBPATH}"
+  else
+    BIN_DISPLAY_PATH="${BIN_PATH}"
+  fi
 }
 
 case "${1:-}" in
@@ -69,6 +98,7 @@ fi
 
 # Resolve repository paths relative to this script so absolute invocation works
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+CALLER_CWD="$(pwd)"
 
 # Change to the Rust project root directory (codex-rs) regardless of caller CWD
 cd "${SCRIPT_DIR}/codex-rs"
@@ -101,7 +131,6 @@ if [ "$PROFILE_ENV_SUPPLIED" -eq 1 ] || [ -n "$ARG_PROFILE" ]; then
 fi
 
 PROFILE="$PROFILE_VALUE"
-resolve_bin_path
 
 # Optional deterministic mode: aim for more stable hashes by removing
 # UUIDs on macOS, disabling debuginfo, and preferring a single-codegen
@@ -111,7 +140,6 @@ if [ "${DETERMINISTIC:-}" = "1" ]; then
     DET_FORCE_REL="${DETERMINISTIC_FORCE_RELEASE:-1}"
     if [ "$PROFILE" = "dev-fast" ] && [ "$DET_FORCE_REL" = "1" ]; then
         PROFILE="release-prod"
-        resolve_bin_path
         echo "Deterministic build: switching profile to ${PROFILE}"
     elif [ "$PROFILE" = "dev-fast" ]; then
         echo "Deterministic build: keeping profile ${PROFILE} (DETERMINISTIC_FORCE_RELEASE=0)"
@@ -120,9 +148,7 @@ if [ "${DETERMINISTIC:-}" = "1" ]; then
     if command -v git >/dev/null 2>&1 && git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         export SOURCE_DATE_EPOCH="$(git -C "$REPO_ROOT" log -1 --pretty=%ct 2>/dev/null || true)"
     fi
-    # Disable debuginfo (safer to apply globally); avoid touching UUID here
-    # since some proc-macro dylibs require LC_UUID and will fail to load.
-    export RUSTFLAGS="${RUSTFLAGS:-} -C debuginfo=0"
+    # Keep debuginfo intact so profiling tools can resolve symbols.
 fi
 
 # Select the cargo/rustc toolchain to match deploy
@@ -182,7 +208,6 @@ if [ "${DEBUG_SYMBOLS:-}" = "1" ]; then
   elif [ "$PROFILE_EXPLICIT" -eq 0 ] && [ "$PROFILE" = "dev-fast" ]; then
     echo "Debug symbols requested: switching profile to perf"
     PROFILE="perf"
-    resolve_bin_path
   else
     PROFILE_ENV_KEY="$(printf "%s" "$PROFILE" | tr '[:lower:]-' '[:upper:]_')"
     DEBUG_VAR="CARGO_PROFILE_${PROFILE_ENV_KEY}_DEBUG"
@@ -231,6 +256,10 @@ if [ -z "${CARGO_TARGET_DIR:-}" ]; then
   export CARGO_TARGET_DIR="${SCRIPT_DIR}/codex-rs/target"
 fi
 mkdir -p "${CARGO_HOME}" "${CARGO_TARGET_DIR}" 2>/dev/null || true
+# Ensure repo-local target directory exists for compatibility symlinks
+mkdir -p ./target
+REPO_TARGET_ABS="$(cd ./target >/dev/null 2>&1 && pwd)"
+resolve_bin_path
 # Use sparse registry for faster index updates when available
 export CARGO_REGISTRIES_CRATES_IO_PROTOCOL="sparse"
 
@@ -358,18 +387,55 @@ ${USE_CARGO} build ${USE_LOCKED} --profile "${PROFILE}" --bin code --bin code-tu
 
 # Check if build succeeded
 if [ $? -eq 0 ]; then
+    resolve_bin_path
+
+    if [ "$PROFILE" = "perf" ]; then
+      PERF_SOURCE="${BIN_CARGO_PATH}"
+      PERF_TARGET="${BIN_PATH}"
+      if [ -e "${PERF_SOURCE}" ]; then
+        PERF_DIR="$(dirname "${PERF_TARGET}")"
+        mkdir -p "${PERF_DIR}"
+        if [ -e "${PERF_TARGET}" ] || [ -L "${PERF_TARGET}" ]; then
+          rm -f "${PERF_TARGET}"
+        fi
+        (
+          cd "${PERF_DIR}" >/dev/null 2>&1
+          ln -sf "$(basename "${PERF_SOURCE}")" "$(basename "${PERF_TARGET}")"
+        )
+      fi
+    fi
+
     echo "✅ Build successful!"
-    echo "Binary location: ./codex-rs/target/${PROFILE}/code"
+    echo "Binary location: ${BIN_DISPLAY_PATH}"
     echo ""
-    
+
     # Keep old symlink locations working for compatibility
     # Create symlink in target/release for npm wrapper expectations
+    release_link_target="../${BIN_SUBDIR}/${BIN_FILENAME}"
+    cli_link_target="../../codex-rs/target/${BIN_SUBDIR}/${BIN_FILENAME}"
+    dev_fast_link_target="../${BIN_SUBDIR}/${BIN_FILENAME}"
+
+    if [ "${TARGET_DIR_ABS}" != "${REPO_TARGET_ABS}" ]; then
+      release_link_target="${BIN_PATH}"
+      cli_link_target="${BIN_PATH}"
+      dev_fast_link_target="${BIN_PATH}"
+
+      # Maintain repo-local path for downstream tooling when target dir is external
+      if [ -n "${BIN_LINK_PATH:-}" ]; then
+        mkdir -p "$(dirname "${BIN_LINK_PATH}")"
+        if [ -e "${BIN_LINK_PATH}" ]; then
+          rm -f "${BIN_LINK_PATH}"
+        fi
+        ln -sf "${BIN_PATH}" "${BIN_LINK_PATH}"
+      fi
+    fi
+
     mkdir -p ./target/release
     if [ -e "./target/release/code" ]; then
         rm -f ./target/release/code
     fi
-    ln -sf "../${PROFILE}/code" "./target/release/code"
-    
+    ln -sf "${release_link_target}" "./target/release/code"
+
     # Update the symlinks in codex-cli/bin
     CLI_BIN_DIR="../codex-cli/bin"
     mkdir -p "$CLI_BIN_DIR"
@@ -377,15 +443,26 @@ if [ $? -eq 0 ]; then
     for LINK in "code-${TRIPLE}" "coder-${TRIPLE}"; do
       DEST="${CLI_BIN_DIR}/${LINK}"
       [ -e "$DEST" ] && rm -f "$DEST"
-      ln -sf "../../codex-rs/target/${PROFILE}/code" "$DEST"
+      ln -sf "${cli_link_target}" "$DEST"
     done
     # Back-compat fixed names (Apple Silicon triple)
     for LINK in code-aarch64-apple-darwin coder-aarch64-apple-darwin; do
       DEST="${CLI_BIN_DIR}/${LINK}"
       [ -e "$DEST" ] && rm -f "$DEST"
-      ln -sf "../../codex-rs/target/${PROFILE}/code" "$DEST"
+      ln -sf "${cli_link_target}" "$DEST"
     done
-    
+
+    # Ensure repo-local 'code-dev' path stays mapped to latest build output
+    # so the user's alias `code-dev` (if pointing at target/dev-fast/code) keeps working
+    # Only create this symlink if we're not already building in dev-fast profile
+    if [ "$PROFILE" != "dev-fast" ]; then
+      mkdir -p ./target/dev-fast
+      if [ -e "./target/dev-fast/code" ]; then
+        rm -f ./target/dev-fast/code
+      fi
+      ln -sf "${dev_fast_link_target}" "./target/dev-fast/code"
+    fi
+
     # Optional post-link step for deterministic builds: re-link executables
     # with -no_uuid only on macOS. Apply per-bin via `cargo rustc` so
     # dependencies/proc-macro dylibs are not affected.
@@ -401,35 +478,37 @@ if [ $? -eq 0 ]; then
     fi
 
     # Compute absolute path and SHA256 for clarity (after any post-linking)
-    ABS_BIN_PATH="$(cd "$(dirname "${BIN_PATH}")" && pwd)/$(basename "${BIN_PATH}")"
-    if command -v shasum >/dev/null 2>&1; then
-      BIN_SHA="$(shasum -a 256 "${ABS_BIN_PATH}" | awk '{print $1}')"
-    elif command -v sha256sum >/dev/null 2>&1; then
-      BIN_SHA="$(sha256sum "${ABS_BIN_PATH}" | awk '{print $1}')"
-    else
-      BIN_SHA=""
+    ABS_BIN_PATH="${BIN_PATH}"
+    if [[ "${ABS_BIN_PATH}" != /* ]]; then
+      ABS_BIN_PATH="$(cd "$(dirname "${ABS_BIN_PATH}")" >/dev/null 2>&1 && pwd)/$(basename "${ABS_BIN_PATH}")"
     fi
 
-    # Ensure repo-local 'code-dev' path stays mapped to latest build output
-    # so the user's alias `code-dev` (if pointing at target/dev-fast/code) keeps working
-    # Only create this symlink if we're not already building in dev-fast profile
-    if [ "$PROFILE" != "dev-fast" ]; then
-      mkdir -p ./target/dev-fast
-      if [ -e "./target/dev-fast/code" ]; then
-        rm -f ./target/dev-fast/code
+    BIN_SHA=""
+    if [ -e "${ABS_BIN_PATH}" ]; then
+      if command -v shasum >/dev/null 2>&1; then
+        BIN_SHA="$(shasum -a 256 "${ABS_BIN_PATH}" | awk '{print $1}')"
+      elif command -v sha256sum >/dev/null 2>&1; then
+        BIN_SHA="$(sha256sum "${ABS_BIN_PATH}" | awk '{print $1}')"
       fi
-      ln -sf "../${PROFILE}/code" "./target/dev-fast/code"
     fi
 
     if [ -n "$BIN_SHA" ]; then
       echo "Binary Hash: ${BIN_SHA} ($(du -sh "${ABS_BIN_PATH}" | awk '{print $1}'))"
-    else
+    elif [ -e "${ABS_BIN_PATH}" ]; then
       echo "Binary Size: $(du -h "${ABS_BIN_PATH}" | cut -f1)"
+    else
+      echo "Binary artifact not found at ${ABS_BIN_PATH}"
     fi
 
     if [ "$RUN_AFTER_BUILD" -eq 1 ]; then
-      echo "Running ${BIN_PATH}..."
-      "${BIN_PATH}"
+      if [ ! -x "${ABS_BIN_PATH}" ]; then
+        echo "❌ Run failed: ${ABS_BIN_PATH} is missing or not executable"
+        exit 1
+      fi
+      echo "Running ${ABS_BIN_PATH} (cwd: ${CALLER_CWD})..."
+      (
+        cd "${CALLER_CWD}" && "${ABS_BIN_PATH}"
+      )
       RUN_STATUS=$?
       if [ $RUN_STATUS -ne 0 ]; then
         echo "❌ Run failed with status ${RUN_STATUS}"

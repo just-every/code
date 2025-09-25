@@ -99,6 +99,7 @@ impl AgentManager {
                         id: agent.id.clone(),
                         name,
                         status: format!("{:?}", agent.status).to_lowercase(),
+                        batch_id: agent.batch_id.clone(),
                         model: Some(agent.model.clone()),
                         last_progress: agent.progress.last().cloned(),
                         result: agent.result.clone(),
@@ -112,7 +113,22 @@ impl AgentManager {
                 .agents
                 .values()
                 .next()
-                .map(|agent| (agent.context.clone(), agent.output_goal.clone()))
+                .map(|agent| {
+                    let context = agent
+                        .context
+                        .as_ref()
+                        .and_then(|value| if value.trim().is_empty() {
+                            None
+                        } else {
+                            Some(value.clone())
+                        });
+                    let task = if agent.prompt.trim().is_empty() {
+                        None
+                    } else {
+                        Some(agent.prompt.clone())
+                    };
+                    (context, task)
+                })
                 .unwrap_or((None, None));
             let payload = AgentStatusUpdatePayload { agents, context, task };
             let _ = sender.send(payload);

@@ -1,8 +1,73 @@
+use std::sync::OnceLock;
+
 use strum::IntoEnumIterator;
 use strum_macros::AsRefStr;
 use strum_macros::EnumIter;
 use strum_macros::EnumString;
 use strum_macros::IntoStaticStr;
+
+const BUILD_PROFILE: Option<&str> = option_env!("CODEX_PROFILE");
+
+fn demo_command_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        let profile_matches = |
+            profile: &str
+        | {
+            let normalized = profile.trim().to_ascii_lowercase();
+            normalized == "perf" || normalized.starts_with("dev")
+        };
+
+        if let Some(profile) = BUILD_PROFILE.or(option_env!("PROFILE")) {
+            if profile_matches(profile) {
+                return true;
+            }
+        }
+
+        if let Ok(exe_path) = std::env::current_exe() {
+            let path = exe_path.to_string_lossy().to_ascii_lowercase();
+            if path.contains("target/dev-fast/")
+                || path.contains("target/dev/")
+                || path.contains("target/perf/")
+            {
+                return true;
+            }
+        }
+
+        cfg!(debug_assertions)
+    })
+}
+
+fn pro_command_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        let profile_matches = |
+            profile: &str
+        | {
+            let normalized = profile.trim().to_ascii_lowercase();
+            normalized.starts_with("dev") || normalized == "pref" || normalized == "perf"
+        };
+
+        if let Some(profile) = BUILD_PROFILE.or(option_env!("PROFILE")) {
+            if profile_matches(profile) {
+                return true;
+            }
+        }
+
+        if let Ok(exe_path) = std::env::current_exe() {
+            let path = exe_path.to_string_lossy().to_ascii_lowercase();
+            if path.contains("target/dev-fast/")
+                || path.contains("target/dev/")
+                || path.contains("target/pref/")
+                || path.contains("target/perf/")
+            {
+                return true;
+            }
+        }
+
+        false
+    })
+}
 
 /// Commands that can be invoked by starting a message with a leading slash.
 ///
@@ -21,11 +86,14 @@ pub enum SlashCommand {
     New,
     Init,
     Compact,
+    Undo,
+    Review,
     Diff,
     Mention,
     Cmd,
     Status,
     Limits,
+    #[strum(serialize = "update", serialize = "upgrade")]
     Update,
     Theme,
     Model,
@@ -33,13 +101,16 @@ pub enum SlashCommand {
     Verbosity,
     Prompts,
     Perf,
+    Demo,
     Agents,
+    Pro,
     Branch,
     Merge,
     Github,
     Validation,
     Mcp,
     Resume,
+    Login,
     // Prompt-expanding commands
     Plan,
     Solve,
@@ -71,6 +142,8 @@ impl SlashCommand {
             SlashCommand::New => "start a new chat during a conversation",
             SlashCommand::Init => "create an AGENTS.md file with instructions for Code",
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
+            SlashCommand::Undo => "restore the workspace to the last Code snapshot",
+            SlashCommand::Review => "review your changes for potential issues",
             SlashCommand::Quit => "exit Code",
             SlashCommand::Diff => "show git diff (including untracked files)",
             SlashCommand::Mention => "mention a file",
@@ -88,6 +161,7 @@ impl SlashCommand {
             SlashCommand::SpecValidate => "run Spec Ops validate automation (requires SPEC ID)",
             SlashCommand::SpecReview => "run Spec Ops review automation (requires SPEC ID)",
             SlashCommand::SpecUnlock => "unlock SPEC.md copy-on-write lock (requires SPEC ID)",
+            SlashCommand::Pro => "manage Pro mode (toggle/status/auto)",
             SlashCommand::Branch => {
                 "work in an isolated /branch then /merge when done (great for parallel work)"
             }
@@ -96,6 +170,8 @@ impl SlashCommand {
             SlashCommand::Validation => "control validation harness (status/on/off)",
             SlashCommand::Mcp => "manage MCP servers (status/on/off/add)",
             SlashCommand::Perf => "performance tracing (on/off/show/reset)",
+            SlashCommand::Demo => "populate history with demo cells (dev/perf only)",
+            SlashCommand::Login => "manage Code sign-ins (add/select/disconnect)",
             SlashCommand::Logout => "log out of Code",
             #[cfg(debug_assertions)]
             SlashCommand::TestApproval => "test approval request",
@@ -162,6 +238,14 @@ impl SlashCommand {
         }
     }
 
+    pub fn is_available(self) -> bool {
+        match self {
+            SlashCommand::Pro => pro_command_enabled(),
+            SlashCommand::Demo => demo_command_enabled(),
+            _ => true,
+        }
+    }
+
     /// Expands a prompt-expanding command into a full prompt for the LLM.
     /// Returns None if the command is not a prompt-expanding command.
     pub fn expand_prompt(self, args: &str) -> Option<String> {
@@ -189,7 +273,10 @@ impl SlashCommand {
 
 /// Return all built-in commands in a Vec paired with their command string.
 pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
-    SlashCommand::iter().map(|c| (c.command(), c)).collect()
+    SlashCommand::iter()
+        .filter(|c| c.is_available())
+        .map(|c| (c.command(), c))
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -234,6 +321,20 @@ pub fn process_slash_command_message(message: &str) -> ProcessedCommand {
 
     // Try to parse the command
     if let Ok(command) = canonical_command.parse::<SlashCommand>() {
+        if !command.is_available() {
+            let command_name = command.command();
+            let message = match command {
+                SlashCommand::Pro => {
+                    "Error: /pro is only available in dev, dev-fast, or pref builds.".to_string()
+                }
+                SlashCommand::Demo => {
+                    format!("Error: /{command_name} is only available in dev or perf builds.")
+                }
+                _ => format!("Error: /{command_name} is not available in this build."),
+            };
+            return ProcessedCommand::Error(message);
+        }
+
         // Check if it's a prompt-expanding command
         if command.is_prompt_expanding() {
             if args_raw.is_empty() && command.requires_arguments() {

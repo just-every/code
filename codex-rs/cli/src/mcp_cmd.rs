@@ -96,7 +96,7 @@ impl McpCli {
 
         match subcommand {
             McpSubcommand::Serve => {
-                code_mcp_server::run_main(codex_linux_sandbox_exe, config_overrides).await?;
+                codex_mcp_server::run_main(codex_linux_sandbox_exe, config_overrides).await?;
             }
             McpSubcommand::List(args) => {
                 run_list(&config_overrides, args)?;
@@ -144,12 +144,7 @@ fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Result<(
     let mut servers = load_global_mcp_servers(&codex_home)
         .with_context(|| format!("failed to load MCP servers from {}", codex_home.display()))?;
 
-    let new_entry = McpServerConfig {
-        command: command_bin,
-        args: command_args,
-        env: env_map,
-        startup_timeout_ms: None,
-    };
+    let new_entry = McpServerConfig { command: command_bin, args: command_args, env: env_map, startup_timeout_ms: None };
 
     servers.insert(name.clone(), new_entry);
 
@@ -333,9 +328,7 @@ fn run_get(config_overrides: &CliConfigOverrides, get_args: GetArgs) -> Result<(
         }
     };
     println!("  env: {env_display}");
-    if let Some(timeout) = server.startup_timeout_ms {
-        println!("  startup_timeout_ms: {timeout}");
-    }
+    if let Some(timeout_ms) = server.startup_timeout_ms { println!("  startup_timeout_ms: {}", timeout_ms); }
     println!("  remove: codex mcp remove {}", get_args.name);
 
     Ok(())

@@ -1,9 +1,11 @@
 use crate::app_event::{AppEvent, TerminalRunController, TerminalRunEvent};
 use crate::app_event_sender::AppEventSender;
-use crate::chatwidget::ChatWidget;
+use crate::chatwidget::{ChatWidget, GhostState};
+use crate::exec_command::strip_bash_lc_and_escape;
 use crate::file_search::FileSearchManager;
 use crate::get_git_diff::get_git_diff;
 use crate::get_login_status;
+use crate::history_cell;
 use crate::onboarding::onboarding_screen::KeyboardHandler;
 use crate::onboarding::onboarding_screen::OnboardingScreen;
 use crate::onboarding::onboarding_screen::OnboardingScreenArgs;
@@ -11,48 +13,47 @@ use crate::slash_command::SlashCommand;
 use crate::transcript_app::TranscriptApp;
 use crate::tui;
 use crate::tui::TerminalInfo;
-use crate::history_cell;
-use crate::exec_command::strip_bash_lc_and_escape;
-use codex_core::ConversationManager;
-use codex_login::{AuthManager, AuthMode};
 use codex_core::config::add_project_allowed_command;
 use codex_core::config::Config;
 use codex_core::protocol::Event;
 use codex_core::protocol::Op;
 use codex_core::protocol::SandboxPolicy;
+use codex_core::ConversationManager;
+use codex_login::{AuthManager, AuthMode, ServerOptions};
 use color_eyre::eyre::Result;
-use futures::FutureExt;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use crossterm::execute;
 use crossterm::terminal::supports_keyboard_enhancement;
 use crossterm::SynchronizedUpdate; // trait for stdout().sync_update
-use std::collections::HashMap;
-use std::path::PathBuf;
+use futures::FutureExt;
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtyPair, PtySize};
+use ratatui::buffer::Buffer;
 use ratatui::prelude::Rect;
 use ratatui::text::Line;
-use std::sync::Arc;
+use ratatui::CompletedFrame;
+use shlex::try_join;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::Receiver;
-use std::sync::mpsc::channel;
+use std::sync::mpsc::{channel, Receiver, Sender as StdSender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
-use std::process::Stdio;
-use tokio::io::AsyncReadExt;
-use tokio::io::BufReader;
-use tokio::process::Command;
 use tokio::sync::oneshot;
-use shlex::try_join;
 
 /// Time window for debouncing redraw requests.
 ///
-/// Raising this slightly helps coalesce bursts of updates during typing and
-/// reduces render thrash, improving perceived input latency while staying
-/// comfortably under a 60 FPS refresh budget.
-const REDRAW_DEBOUNCE: Duration = Duration::from_millis(16);
+/// Temporarily widened to ~30 FPS (33 ms) to coalesce bursts of updates while
+/// we smooth out per-frame hotspots; keeps redraws responsive without pegging
+/// the main thread.
+const REDRAW_DEBOUNCE: Duration = Duration::from_millis(33);
+const DEFAULT_PTY_ROWS: u16 = 24;
+const DEFAULT_PTY_COLS: u16 = 80;
 
 /// Top-level application state: which full-screen view is currently active.
 #[allow(clippy::large_enum_variant)]
@@ -74,6 +75,13 @@ struct TerminalRunState {
     cancel_tx: Option<oneshot::Sender<()>>,
     running: bool,
     controller: Option<TerminalRunController>,
+    writer_tx: Option<Arc<Mutex<Option<StdSender<Vec<u8>>>>>>,
+    pty: Option<Arc<Mutex<Box<dyn MasterPty + Send>>>>,
+}
+
+struct LoginFlowState {
+    shutdown: codex_login::ShutdownHandle,
+    join_handle: tokio::task::JoinHandle<()>,
 }
 
 pub(crate) struct App<'a> {
@@ -94,6 +102,12 @@ pub(crate) struct App<'a> {
 
     /// True when a redraw has been scheduled but not yet executed (debounce window).
     pending_redraw: Arc<AtomicBool>,
+    /// Tracks whether a frame is currently queued or being drawn. Used to coalesce
+    /// rapid-fire redraw requests without dropping the final state.
+    redraw_inflight: Arc<AtomicBool>,
+    /// Set if a redraw request arrived while another frame was in flight. Ensures we
+    /// queue one more frame immediately after the current draw completes.
+    post_frame_redraw: Arc<AtomicBool>,
     /// True while a one-shot timer for a future animation frame is armed.
     /// This prevents arming multiple timers at once, while allowing timers
     /// to run independently of the short debounce used for immediate redraws.
@@ -107,6 +121,10 @@ pub(crate) struct App<'a> {
     _transcript_saved_viewport: Option<Rect>,
 
     enhanced_keys_supported: bool,
+    /// Tracks keys seen as pressed when keyboard enhancements are unavailable
+    /// so duplicate release events can be filtered and release-only terminals
+    /// still synthesize a press.
+    non_enhanced_pressed_keys: HashSet<KeyCode>,
 
     /// Debug flag for logging LLM requests/responses
     _debug: bool,
@@ -124,6 +142,9 @@ pub(crate) struct App<'a> {
     /// profile defaults until all cells are explicitly painted.
     clear_on_first_frame: bool,
 
+    /// Pending ghost snapshot state to apply after a conversation fork completes.
+    pending_jump_back_ghost_state: Option<GhostState>,
+
     /// Track last known terminal size. If it changes (true resize or a
     /// tab switch that altered the viewport), perform a full clear on the next
     /// draw to avoid ghost cells from the previous size. This is cheap and
@@ -138,12 +159,15 @@ pub(crate) struct App<'a> {
     timing_enabled: bool,
     timing: TimingStats,
 
+    buffer_diff_profiler: BufferDiffProfiler,
+
     /// True when TUI is currently rendering in the terminal's alternate screen.
     alt_screen_active: bool,
 
     terminal_runs: HashMap<u64, TerminalRunState>,
 
     terminal_title_override: Option<String>,
+    login_flow: Option<LoginFlowState>,
 }
 
 /// Aggregate parameters needed to create a `ChatWidget`, as creation may be
@@ -188,6 +212,8 @@ impl App<'_> {
         let (bulk_tx, app_event_rx_bulk) = channel();
         let app_event_tx = AppEventSender::new_dual(high_tx.clone(), bulk_tx.clone());
         let pending_redraw = Arc::new(AtomicBool::new(false));
+        let redraw_inflight = Arc::new(AtomicBool::new(false));
+        let post_frame_redraw = Arc::new(AtomicBool::new(false));
         let scheduled_frame_armed = Arc::new(AtomicBool::new(false));
 
         let enhanced_keys_supported = supports_keyboard_enhancement().unwrap_or(false);
@@ -333,24 +359,30 @@ impl App<'_> {
             latest_upgrade_version,
             file_search,
             pending_redraw,
+            redraw_inflight,
+            post_frame_redraw,
             scheduled_frame_armed,
             input_running,
             _transcript_overlay: None,
             _deferred_history_lines: Vec::new(),
             _transcript_saved_viewport: None,
             enhanced_keys_supported,
+            non_enhanced_pressed_keys: HashSet::new(),
             _debug: debug,
             show_order_overlay,
             commit_anim_running: Arc::new(AtomicBool::new(false)),
             terminal_info,
             clear_on_first_frame: true,
+            pending_jump_back_ghost_state: None,
             last_frame_size: None,
             last_esc_time: None,
             timing_enabled: enable_perf,
             timing: TimingStats::default(),
+            buffer_diff_profiler: BufferDiffProfiler::new_from_env(),
             alt_screen_active: start_in_alt,
             terminal_runs: HashMap::new(),
             terminal_title_override: None,
+            login_flow: None,
         }
     }
 
@@ -372,8 +404,17 @@ impl App<'_> {
     /// to keep keypress echo latency low.
     #[allow(clippy::unwrap_used)]
     fn schedule_redraw(&self) {
-        // Always issue a leading-edge redraw for responsiveness.
-        self.app_event_tx.send(AppEvent::Redraw);
+        // Only queue a new frame when one is not already in flight; otherwise record
+        // that we owe a follow-up immediately after the active frame completes.
+        let should_send = self
+            .redraw_inflight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok();
+        if should_send {
+            self.app_event_tx.send(AppEvent::Redraw);
+        } else {
+            self.post_frame_redraw.store(true, Ordering::Release);
+        }
 
         // Arm debounce window if not already armed.
         if self
@@ -405,8 +446,16 @@ impl App<'_> {
             thread::sleep(duration);
             // Allow a subsequent timer to be armed.
             scheduled.store(false, Ordering::Release);
-            tx.send(AppEvent::Redraw);
+            tx.send(AppEvent::RequestRedraw);
         });
+    }
+
+    fn handle_login_mode_change(&mut self, using_chatgpt_auth: bool) {
+        self.config.using_chatgpt_auth = using_chatgpt_auth;
+        if let AppState::Chat { widget } = &mut self.app_state {
+            widget.set_using_chatgpt_auth(using_chatgpt_auth);
+            let _ = widget.reload_auth();
+        }
     }
 
     fn start_terminal_run(
@@ -432,11 +481,12 @@ impl App<'_> {
 
         let joined_display = try_join(command.iter().map(|s| s.as_str()))
             .ok()
-            .or(display.clone())
             .unwrap_or_else(|| command.join(" "));
 
-        if !joined_display.trim().is_empty() {
-            let line = format!("$ {joined_display}\n");
+        let display_line = display.clone().unwrap_or_else(|| joined_display.clone());
+
+        if !display_line.trim().is_empty() {
+            let line = format!("$ {display_line}\n");
             self.app_event_tx.send(AppEvent::TerminalChunk {
                 id,
                 chunk: line.into_bytes(),
@@ -446,45 +496,69 @@ impl App<'_> {
 
         let stored_command = command.clone();
         let (cancel_tx, cancel_rx) = oneshot::channel();
+        let (writer_tx_raw, writer_rx) = channel::<Vec<u8>>();
+        let writer_tx_shared = Arc::new(Mutex::new(Some(writer_tx_raw)));
         let controller_clone = controller.clone();
-        self.terminal_runs.insert(
-            id,
-            TerminalRunState {
-                command: stored_command,
-                display: joined_display.clone(),
-                cancel_tx: Some(cancel_tx),
-                running: true,
-                controller: controller_clone,
-            },
-        );
-
         let cwd = self.config.cwd.clone();
-        let tx = self.app_event_tx.clone();
         let controller_tx = controller.map(|c| c.tx);
-        let command_spawn = command;
-        tokio::spawn(async move {
-            let mut cmd = Command::new(&command_spawn[0]);
-            if command_spawn.len() > 1 {
-                cmd.args(&command_spawn[1..]);
-            }
-            cmd.current_dir(&cwd);
-            cmd.stdout(Stdio::piped());
-            cmd.stderr(Stdio::piped());
 
-            let start_time = Instant::now();
-            let controller_tx_spawn = controller_tx.clone();
-            let mut child = match cmd.spawn() {
-                Ok(child) => child,
-                Err(err) => {
-                    let msg = format!("Failed to spawn command: {err}\n");
-                    tx.send(AppEvent::TerminalChunk {
-                        id,
-                        chunk: msg.into_bytes(),
+        let (pty_rows, pty_cols) = match &self.app_state {
+            AppState::Chat { widget } => widget
+                .terminal_dimensions_hint()
+                .unwrap_or((DEFAULT_PTY_ROWS, DEFAULT_PTY_COLS)),
+            _ => (DEFAULT_PTY_ROWS, DEFAULT_PTY_COLS),
+        };
+
+        let pty_system = native_pty_system();
+        let pair = match pty_system.openpty(PtySize {
+            rows: pty_rows,
+            cols: pty_cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        }) {
+            Ok(pair) => pair,
+            Err(err) => {
+                let msg = format!("Failed to open PTY: {err}\n");
+                self.app_event_tx.send(AppEvent::TerminalChunk {
+                    id,
+                    chunk: msg.clone().into_bytes(),
+                    _is_stderr: true,
+                });
+                if let Some(ref ctrl) = controller_tx {
+                    let _ = ctrl.send(TerminalRunEvent::Chunk {
+                        data: msg.clone().into_bytes(),
                         _is_stderr: true,
                     });
-                    if let Some(ref ctrl) = controller_tx_spawn {
+                    let _ = ctrl.send(TerminalRunEvent::Exit {
+                        exit_code: Some(1),
+                        _duration: Duration::from_millis(0),
+                    });
+                }
+                self.app_event_tx.send(AppEvent::TerminalExit {
+                    id,
+                    exit_code: Some(1),
+                    _duration: Duration::from_millis(0),
+                });
+                return;
+            }
+        };
+
+        let PtyPair { master, slave } = pair;
+        let master = Arc::new(Mutex::new(master));
+
+        let writer = {
+            let guard = match master.lock() {
+                Ok(guard) => guard,
+                Err(_) => {
+                    let msg = "Failed to acquire terminal writer: poisoned lock\n".to_string();
+                    self.app_event_tx.send(AppEvent::TerminalChunk {
+                        id,
+                        chunk: msg.clone().into_bytes(),
+                        _is_stderr: true,
+                    });
+                    if let Some(ref ctrl) = controller_tx {
                         let _ = ctrl.send(TerminalRunEvent::Chunk {
-                            data: format!("Failed to spawn command: {err}\n").into_bytes(),
+                            data: msg.clone().into_bytes(),
                             _is_stderr: true,
                         });
                         let _ = ctrl.send(TerminalRunEvent::Exit {
@@ -492,7 +566,7 @@ impl App<'_> {
                             _duration: Duration::from_millis(0),
                         });
                     }
-                    tx.send(AppEvent::TerminalExit {
+                    self.app_event_tx.send(AppEvent::TerminalExit {
                         id,
                         exit_code: Some(1),
                         _duration: Duration::from_millis(0),
@@ -500,126 +574,259 @@ impl App<'_> {
                     return;
                 }
             };
+            let result = guard.take_writer();
+            drop(guard);
+            match result {
+                Ok(writer) => writer,
+                Err(err) => {
+                    let msg = format!("Failed to acquire terminal writer: {err}\n");
+                    self.app_event_tx.send(AppEvent::TerminalChunk {
+                        id,
+                        chunk: msg.clone().into_bytes(),
+                        _is_stderr: true,
+                    });
+                    if let Some(ref ctrl) = controller_tx {
+                        let _ = ctrl.send(TerminalRunEvent::Chunk {
+                            data: msg.clone().into_bytes(),
+                            _is_stderr: true,
+                        });
+                        let _ = ctrl.send(TerminalRunEvent::Exit {
+                            exit_code: Some(1),
+                            _duration: Duration::from_millis(0),
+                        });
+                    }
+                    self.app_event_tx.send(AppEvent::TerminalExit {
+                        id,
+                        exit_code: Some(1),
+                        _duration: Duration::from_millis(0),
+                    });
+                    return;
+                }
+            }
+        };
 
-            let mut stdout_task = None;
-            let controller_tx_stdout = controller_tx.clone();
-            if let Some(stdout) = child.stdout.take() {
-                let mut reader = BufReader::new(stdout);
-                let tx_stdout = tx.clone();
-                stdout_task = Some(tokio::spawn(async move {
-                    let mut buf = [0u8; 4096];
-                    loop {
-                        match reader.read(&mut buf).await {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                let chunk = buf[..n].to_vec();
-                                tx_stdout.send(AppEvent::TerminalChunk {
-                                    id,
-                                    chunk: chunk.clone(),
+        let reader = {
+            let guard = match master.lock() {
+                Ok(guard) => guard,
+                Err(_) => {
+                    let msg = "Failed to read terminal output: poisoned lock\n".to_string();
+                    self.app_event_tx.send(AppEvent::TerminalChunk {
+                        id,
+                        chunk: msg.clone().into_bytes(),
+                        _is_stderr: true,
+                    });
+                    if let Some(ref ctrl) = controller_tx {
+                        let _ = ctrl.send(TerminalRunEvent::Chunk {
+                            data: msg.clone().into_bytes(),
+                            _is_stderr: true,
+                        });
+                        let _ = ctrl.send(TerminalRunEvent::Exit {
+                            exit_code: Some(1),
+                            _duration: Duration::from_millis(0),
+                        });
+                    }
+                    self.app_event_tx.send(AppEvent::TerminalExit {
+                        id,
+                        exit_code: Some(1),
+                        _duration: Duration::from_millis(0),
+                    });
+                    return;
+                }
+            };
+            let result = guard.try_clone_reader();
+            drop(guard);
+            match result {
+                Ok(reader) => reader,
+                Err(err) => {
+                    let msg = format!("Failed to read terminal output: {err}\n");
+                    self.app_event_tx.send(AppEvent::TerminalChunk {
+                        id,
+                        chunk: msg.clone().into_bytes(),
+                        _is_stderr: true,
+                    });
+                    if let Some(ref ctrl) = controller_tx {
+                        let _ = ctrl.send(TerminalRunEvent::Chunk {
+                            data: msg.clone().into_bytes(),
+                            _is_stderr: true,
+                        });
+                        let _ = ctrl.send(TerminalRunEvent::Exit {
+                            exit_code: Some(1),
+                            _duration: Duration::from_millis(0),
+                        });
+                    }
+                    self.app_event_tx.send(AppEvent::TerminalExit {
+                        id,
+                        exit_code: Some(1),
+                        _duration: Duration::from_millis(0),
+                    });
+                    return;
+                }
+            }
+        };
+
+        let mut command_builder = CommandBuilder::new(command[0].clone());
+        for arg in &command[1..] {
+            command_builder.arg(arg);
+        }
+        command_builder.cwd(&cwd);
+
+        let mut child = match slave.spawn_command(command_builder) {
+            Ok(child) => child,
+            Err(err) => {
+                let msg = format!("Failed to spawn command: {err}\n");
+                self.app_event_tx.send(AppEvent::TerminalChunk {
+                    id,
+                    chunk: msg.clone().into_bytes(),
+                    _is_stderr: true,
+                });
+                if let Some(ref ctrl) = controller_tx {
+                    let _ = ctrl.send(TerminalRunEvent::Chunk {
+                        data: msg.clone().into_bytes(),
+                        _is_stderr: true,
+                    });
+                    let _ = ctrl.send(TerminalRunEvent::Exit {
+                        exit_code: Some(1),
+                        _duration: Duration::from_millis(0),
+                    });
+                }
+                self.app_event_tx.send(AppEvent::TerminalExit {
+                    id,
+                    exit_code: Some(1),
+                    _duration: Duration::from_millis(0),
+                });
+                return;
+            }
+        };
+
+        let mut killer = child.clone_killer();
+
+        let master_for_state = Arc::clone(&master);
+        self.terminal_runs.insert(
+            id,
+            TerminalRunState {
+                command: stored_command,
+                display: display_line.clone(),
+                cancel_tx: Some(cancel_tx),
+                running: true,
+                controller: controller_clone,
+                writer_tx: Some(writer_tx_shared.clone()),
+                pty: Some(master_for_state),
+            },
+        );
+
+        let tx = self.app_event_tx.clone();
+        let controller_tx_task = controller_tx.clone();
+        let master_for_task = Arc::clone(&master);
+        let writer_tx_for_task = writer_tx_shared.clone();
+        tokio::spawn(async move {
+            let start_time = Instant::now();
+            let controller_tx = controller_tx_task;
+            let _master = master_for_task;
+
+            let writer_handle = tokio::task::spawn_blocking(move || {
+                let mut writer = writer;
+                while let Ok(bytes) = writer_rx.recv() {
+                    if writer.write_all(&bytes).is_err() {
+                        break;
+                    }
+                    if writer.flush().is_err() {
+                        break;
+                    }
+                }
+            });
+
+            let tx_reader = tx.clone();
+            let controller_tx_reader = controller_tx.clone();
+            let reader_handle = tokio::task::spawn_blocking(move || {
+                let mut buf = [0u8; 8192];
+                let mut reader = reader;
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let chunk = buf[..n].to_vec();
+                            tx_reader.send(AppEvent::TerminalChunk {
+                                id,
+                                chunk: chunk.clone(),
+                                _is_stderr: false,
+                            });
+                            if let Some(ref ctrl) = controller_tx_reader {
+                                let _ = ctrl.send(TerminalRunEvent::Chunk {
+                                    data: chunk,
                                     _is_stderr: false,
                                 });
-                                if let Some(ref ctrl) = controller_tx_stdout {
-                                    let _ = ctrl.send(TerminalRunEvent::Chunk {
-                                        data: chunk,
-                                        _is_stderr: false,
-                                    });
-                                }
-                            }
-                            Err(err) => {
-                                tx_stdout.send(AppEvent::TerminalChunk {
-                                    id,
-                                    chunk: format!("Error reading stdout: {err}\n").into_bytes(),
-                                    _is_stderr: true,
-                                });
-                                if let Some(ref ctrl) = controller_tx_stdout {
-                                    let _ = ctrl.send(TerminalRunEvent::Chunk {
-                                        data: format!("Error reading stdout: {err}\n").into_bytes(),
-                                        _is_stderr: true,
-                                    });
-                                }
-                                break;
                             }
                         }
-                    }
-                }));
-            }
-
-            let mut stderr_task = None;
-            let controller_tx_stderr = controller_tx.clone();
-            if let Some(stderr) = child.stderr.take() {
-                let mut reader = BufReader::new(stderr);
-                let tx_stderr = tx.clone();
-                stderr_task = Some(tokio::spawn(async move {
-                    let mut buf = [0u8; 4096];
-                    loop {
-                        match reader.read(&mut buf).await {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                let chunk = buf[..n].to_vec();
-                                tx_stderr.send(AppEvent::TerminalChunk {
-                                    id,
-                                    chunk: chunk.clone(),
+                        Err(err) => {
+                            let msg = format!("Error reading terminal output: {err}\n");
+                            tx_reader.send(AppEvent::TerminalChunk {
+                                id,
+                                chunk: msg.clone().into_bytes(),
+                                _is_stderr: true,
+                            });
+                            if let Some(ref ctrl) = controller_tx_reader {
+                                let _ = ctrl.send(TerminalRunEvent::Chunk {
+                                    data: msg.into_bytes(),
                                     _is_stderr: true,
                                 });
-                                if let Some(ref ctrl) = controller_tx_stderr {
-                                    let _ = ctrl.send(TerminalRunEvent::Chunk {
-                                        data: chunk,
-                                        _is_stderr: true,
-                                    });
-                                }
                             }
-                            Err(err) => {
-                                tx_stderr.send(AppEvent::TerminalChunk {
-                                    id,
-                                    chunk: format!("Error reading stderr: {err}\n").into_bytes(),
-                                    _is_stderr: true,
-                                });
-                                if let Some(ref ctrl) = controller_tx_stderr {
-                                    let _ = ctrl.send(TerminalRunEvent::Chunk {
-                                        data: format!("Error reading stderr: {err}\n").into_bytes(),
-                                        _is_stderr: true,
-                                    });
-                                }
-                                break;
-                            }
+                            break;
                         }
                     }
-                }));
-            }
+                }
+            });
 
-            let cancel_rx = cancel_rx.fuse();
-            tokio::pin!(cancel_rx);
+            let mut cancel_rx = cancel_rx.fuse();
             let mut cancel_triggered = false;
+            let wait_handle = tokio::task::spawn_blocking(move || child.wait());
+            futures::pin_mut!(wait_handle);
             let wait_status = loop {
                 tokio::select! {
-                    res = child.wait() => break res,
+                    res = &mut wait_handle => break res,
                     res = &mut cancel_rx, if !cancel_triggered => {
                         if res.is_ok() {
                             cancel_triggered = true;
-                            let _ = child.start_kill();
+                            let _ = killer.kill();
                         }
                     }
                 }
             };
 
-            if let Some(task) = stdout_task {
-                let _ = task.await;
-            }
-            if let Some(task) = stderr_task {
-                let _ = task.await;
+            {
+                let mut guard = writer_tx_for_task.lock().unwrap();
+                guard.take();
             }
 
+            let _ = reader_handle.await;
+            let _ = writer_handle.await;
+
             let (exit_code, duration) = match wait_status {
-                Ok(status) => (status.code(), start_time.elapsed()),
-                Err(err) => {
+                Ok(Ok(status)) => (Some(status.exit_code() as i32), start_time.elapsed()),
+                Ok(Err(err)) => {
+                    let msg = format!("Process wait failed: {err}\n");
                     tx.send(AppEvent::TerminalChunk {
                         id,
-                        chunk: format!("Process wait failed: {err}\n").into_bytes(),
+                        chunk: msg.clone().into_bytes(),
                         _is_stderr: true,
                     });
                     if let Some(ref ctrl) = controller_tx {
                         let _ = ctrl.send(TerminalRunEvent::Chunk {
-                            data: format!("Process wait failed: {err}\n").into_bytes(),
+                            data: msg.clone().into_bytes(),
+                            _is_stderr: true,
+                        });
+                    }
+                    (None, start_time.elapsed())
+                }
+                Err(err) => {
+                    let msg = format!("Process join failed: {err}\n");
+                    tx.send(AppEvent::TerminalChunk {
+                        id,
+                        chunk: msg.clone().into_bytes(),
+                        _is_stderr: true,
+                    });
+                    if let Some(ref ctrl) = controller_tx {
+                        let _ = ctrl.send(TerminalRunEvent::Chunk {
+                            data: msg.clone().into_bytes(),
                             _is_stderr: true,
                         });
                     }
@@ -713,20 +920,19 @@ impl App<'_> {
                     },
                     AppState::Onboarding { .. } => {}
                 },
-                // InsertBackgroundEvent removed; use InsertBackgroundEventEarly for
-                // approval decisions to appear above command begin.
-                AppEvent::InsertBackgroundEventEarly(message) => match &mut self.app_state {
+                AppEvent::InsertBackgroundEvent { message, placement } => match &mut self.app_state {
                     AppState::Chat { widget } => {
-                        tracing::debug!("app: InsertBackgroundEventEarly len={}", message.len());
-                        widget.insert_background_event_early(message);
+                        tracing::debug!(
+                            "app: InsertBackgroundEvent placement={:?} len={}",
+                            placement,
+                            message.len()
+                        );
+                        widget.insert_background_event_with_placement(message, placement);
                     }
                     AppState::Onboarding { .. } => {}
                 },
-                AppEvent::InsertBackgroundEventLate(message) => match &mut self.app_state {
-                    AppState::Chat { widget } => {
-                        tracing::debug!("app: InsertBackgroundEventLate len={}", message.len());
-                        widget.insert_background_event_late(message);
-                    }
+                AppEvent::AutoUpgradeCompleted { version } => match &mut self.app_state {
+                    AppState::Chat { widget } => widget.on_auto_upgrade_completed(version),
                     AppState::Onboarding { .. } => {}
                 },
                 AppEvent::RateLimitFetchFailed { message } => match &mut self.app_state {
@@ -745,7 +951,13 @@ impl App<'_> {
                 AppEvent::Redraw => {
                     if self.timing_enabled { self.timing.on_redraw_begin(); }
                     let t0 = Instant::now();
-                    std::io::stdout().sync_update(|_| self.draw_next_frame(terminal))??;
+                    let draw_result = std::io::stdout().sync_update(|_| self.draw_next_frame(terminal));
+                    self.redraw_inflight.store(false, Ordering::Release);
+                    let needs_follow_up = self.post_frame_redraw.swap(false, Ordering::AcqRel);
+                    if needs_follow_up {
+                        self.schedule_redraw();
+                    }
+                    draw_result??;
                     if self.timing_enabled { self.timing.on_redraw_end(t0); }
                 }
                 AppEvent::StartCommitAnimation => {
@@ -783,12 +995,51 @@ impl App<'_> {
                 }
                 AppEvent::KeyEvent(mut key_event) => {
                     if self.timing_enabled { self.timing.on_key(); }
-                    // On terminals that do not support keyboard enhancement flags
-                    // (notably some Windows Git Bash/mintty setups), crossterm may
-                    // report only Release events. Normalize such events to Press so
-                    // keys register consistently.
+                    // On terminals without keyboard enhancement flags (notably some Windows
+                    // Git Bash/mintty setups), crossterm may emit duplicate key-up events or
+                    // only report releases. Track which keys were seen as pressed so matching
+                    // releases can be dropped, and synthesize a press when a release arrives
+                    // without a prior press.
                     if !self.enhanced_keys_supported {
-                        key_event = KeyEvent::new(key_event.code, key_event.modifiers);
+                        let key_code = key_event.code.clone();
+                        match key_event.kind {
+                            KeyEventKind::Press | KeyEventKind::Repeat => {
+                                self.non_enhanced_pressed_keys.insert(key_code);
+                            }
+                            KeyEventKind::Release => {
+                                if self.non_enhanced_pressed_keys.remove(&key_code) {
+                                    continue;
+                                }
+
+                                let mut release_handled = false;
+                                if let KeyCode::Char(ch) = key_code {
+                                    let alts: Vec<char> = ch
+                                        .to_lowercase()
+                                        .chain(ch.to_uppercase())
+                                        .filter(|&c| c != ch)
+                                        .collect();
+
+                                    for alt in alts {
+                                        if self
+                                            .non_enhanced_pressed_keys
+                                            .remove(&KeyCode::Char(alt))
+                                        {
+                                            release_handled = true;
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                if release_handled {
+                                    continue;
+                                }
+
+                                key_event = KeyEvent::new(
+                                    Self::normalize_non_enhanced_release_code(key_event.code),
+                                    key_event.modifiers,
+                                );
+                            }
+                        }
                     }
                     // Reset double‑Esc timer on any non‑Esc key
                     if !matches!(key_event.code, KeyCode::Esc) {
@@ -1047,9 +1298,9 @@ impl App<'_> {
                                 )));
                             } else {
                                 let display = strip_bash_lc_and_escape(&command);
-                                widget.history_push(history_cell::new_background_event(format!(
+                                widget.push_background_tail(format!(
                                     "Always allowing `{display}` for this project.",
-                                )));
+                                ));
                             }
                         }
                     }
@@ -1107,6 +1358,11 @@ impl App<'_> {
                     let controller_present = if let Some(run) = self.terminal_runs.get_mut(&id) {
                         run.running = false;
                         run.cancel_tx = None;
+                        if let Some(writer_shared) = run.writer_tx.take() {
+                            let mut guard = writer_shared.lock().unwrap();
+                            guard.take();
+                        }
+                        run.pty = None;
                         run.controller.is_some()
                     } else {
                         false
@@ -1129,6 +1385,11 @@ impl App<'_> {
                         }
                         run.running = false;
                         run.controller = None;
+                        if let Some(writer_shared) = run.writer_tx.take() {
+                            let mut guard = writer_shared.lock().unwrap();
+                            guard.take();
+                        }
+                        run.pty = None;
                         remove_entry = had_controller;
                     }
                     if remove_entry {
@@ -1166,6 +1427,38 @@ impl App<'_> {
                         widget.terminal_mark_running(id);
                     }
                     self.start_terminal_run(id, command, Some(command_display), controller);
+                }
+                AppEvent::TerminalSendInput { id, data } => {
+                    if let Some(run) = self.terminal_runs.get_mut(&id) {
+                        if let Some(writer_shared) = run.writer_tx.as_ref() {
+                            let mut guard = writer_shared.lock().unwrap();
+                            if let Some(tx) = guard.as_ref() {
+                                if tx.send(data).is_err() {
+                                    guard.take();
+                                }
+                            }
+                        }
+                    }
+                }
+                AppEvent::TerminalResize { id, rows, cols } => {
+                    if rows == 0 || cols == 0 {
+                        continue;
+                    }
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.terminal_apply_resize(id, rows, cols);
+                    }
+                    if let Some(run) = self.terminal_runs.get(&id) {
+                        if let Some(pty) = run.pty.as_ref() {
+                            if let Ok(guard) = pty.lock() {
+                                let _ = guard.resize(PtySize {
+                                    rows,
+                                    cols,
+                                    pixel_width: 0,
+                                    pixel_height: 0,
+                                });
+                            }
+                        }
+                    }
                 }
                 AppEvent::TerminalUpdateMessage { id, message } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
@@ -1205,20 +1498,22 @@ impl App<'_> {
                         }
                     }
                 }
-                #[cfg(not(debug_assertions))]
                 AppEvent::RunUpdateCommand { command, display, latest_version } => {
-                    if let AppState::Chat { widget } = &mut self.app_state {
-                        if let Some(launch) = widget.launch_update_command(command, display, latest_version.clone()) {
-                            self.app_event_tx.send(AppEvent::OpenTerminal(launch));
+                    if crate::updates::upgrade_ui_enabled() {
+                        if let AppState::Chat { widget } = &mut self.app_state {
+                            if let Some(launch) = widget.launch_update_command(command, display, latest_version) {
+                                self.app_event_tx.send(AppEvent::OpenTerminal(launch));
+                            }
                         }
                     }
                 }
-                #[cfg(not(debug_assertions))]
                 AppEvent::SetAutoUpgradeEnabled(enabled) => {
-                    if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.set_auto_upgrade_enabled(enabled);
+                    if crate::updates::upgrade_ui_enabled() {
+                        if let AppState::Chat { widget } = &mut self.app_state {
+                            widget.set_auto_upgrade_enabled(enabled);
+                        }
+                        self.config.auto_upgrade_enabled = enabled;
                     }
-                    self.config.auto_upgrade_enabled = enabled;
                 }
                 AppEvent::RequestAgentInstall { name, selected_index } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
@@ -1237,6 +1532,20 @@ impl App<'_> {
                     AppState::Chat { widget } => widget.submit_op(op),
                     AppState::Onboarding { .. } => {}
                 },
+                AppEvent::ShowUndoOptions { index } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.show_undo_restore_options(index);
+                    }
+                }
+                AppEvent::PerformUndoRestore {
+                    index,
+                    restore_files,
+                    restore_conversation,
+                } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.perform_undo_restore(index, restore_files, restore_conversation);
+                    }
+                }
                 AppEvent::DispatchCommand(command, command_text) => {
                     // Persist UI-only slash commands to cross-session history.
                     // For prompt-expanding commands (/plan, /solve, /code) we let the
@@ -1259,6 +1568,20 @@ impl App<'_> {
                     };
 
                     match command {
+                        SlashCommand::Undo => {
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                widget.handle_undo_command();
+                            }
+                        }
+                        SlashCommand::Review => {
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                if command_args.is_empty() {
+                                    widget.open_review_dialog();
+                                } else {
+                                    widget.handle_review_command(command_args);
+                                }
+                            }
+                        }
                         SlashCommand::Branch => {
                             if let AppState::Chat { widget } = &mut self.app_state {
                                 widget.handle_branch_command(command_args);
@@ -1317,6 +1640,11 @@ impl App<'_> {
                             }
                         }
                         SlashCommand::Quit => { break 'main; }
+                        SlashCommand::Login => {
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                widget.handle_login_command();
+                            }
+                        }
                         SlashCommand::Logout => {
                             if let Err(e) = codex_login::logout(&self.config.codex_home) { tracing::error!("failed to logout: {e}"); }
                             break 'main;
@@ -1371,6 +1699,20 @@ impl App<'_> {
                                 widget.handle_agents_command(command_args);
                             }
                         }
+                        SlashCommand::Pro => {
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                match widget.parse_pro_action(&command_args) {
+                                    Ok(action) => {
+                                        let _ = self
+                                            .app_event_tx
+                                            .send(AppEvent::CodexOp(Op::Pro { action }));
+                                    }
+                                    Err(err) => {
+                                        widget.history_push(history_cell::new_error_event(err));
+                                    }
+                                }
+                            }
+                        }
                         SlashCommand::Github => {
                             if let AppState::Chat { widget } = &mut self.app_state {
                                 widget.handle_github_command(command_args);
@@ -1416,6 +1758,11 @@ impl App<'_> {
                         SlashCommand::Perf => {
                             if let AppState::Chat { widget } = &mut self.app_state {
                                 widget.handle_perf_command(command_args);
+                            }
+                        }
+                        SlashCommand::Demo => {
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                widget.handle_demo_command();
                             }
                         }
                         // Prompt-expanding commands should have been handled in submit_user_message
@@ -1540,14 +1887,14 @@ impl App<'_> {
                         widget.set_github_watcher(enabled);
                     }
                 }
-                AppEvent::UpdateValidationPatchHarness(enabled) => {
-                    if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.apply_validation_patch_harness(enabled);
-                    }
-                }
                 AppEvent::UpdateValidationTool { name, enable } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.toggle_validation_tool(&name, enable);
+                    }
+                }
+                AppEvent::UpdateValidationGroup { group, enable } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.toggle_validation_group(group, enable);
                     }
                 }
                 AppEvent::SetTerminalTitle { title } => {
@@ -1599,6 +1946,67 @@ impl App<'_> {
                 AppEvent::SubmitTextWithPreface { visible, preface } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.submit_text_message_with_preface(visible, preface);
+                    }
+                }
+                AppEvent::RunReviewCommand(args) => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.handle_review_command(args);
+                    }
+                }
+                AppEvent::RunReviewWithScope {
+                    prompt,
+                    hint,
+                    preparation_label,
+                    metadata,
+                } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.start_review_with_scope(prompt, hint, preparation_label, metadata);
+                    }
+                }
+                AppEvent::OpenReviewCustomPrompt => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.show_review_custom_prompt();
+                    }
+                }
+                AppEvent::StartReviewCommitPicker => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.show_review_commit_loading();
+                    }
+                    let cwd = self.config.cwd.clone();
+                    let tx = self.app_event_tx.clone();
+                    tokio::spawn(async move {
+                        let commits = codex_core::git_info::recent_commits(&cwd, 60).await;
+                        tx.send(AppEvent::PresentReviewCommitPicker { commits });
+                    });
+                }
+                AppEvent::PresentReviewCommitPicker { commits } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.present_review_commit_picker(commits);
+                    }
+                }
+                AppEvent::StartReviewBranchPicker => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.show_review_branch_loading();
+                    }
+                    let cwd = self.config.cwd.clone();
+                    let tx = self.app_event_tx.clone();
+                    tokio::spawn(async move {
+                        let (branches, current_branch) = tokio::join!(
+                            codex_core::git_info::local_git_branches(&cwd),
+                            codex_core::git_info::current_branch_name(&cwd),
+                        );
+                        tx.send(AppEvent::PresentReviewBranchPicker {
+                            current_branch,
+                            branches,
+                        });
+                    });
+                }
+                AppEvent::PresentReviewBranchPicker {
+                    current_branch,
+                    branches,
+                } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.present_review_branch_picker(current_branch, branches);
                     }
                 }
                 AppEvent::DiffResult(text) => {
@@ -1708,11 +2116,85 @@ impl App<'_> {
                     }
                     self.schedule_redraw();
                 }
+                AppEvent::ShowLoginAccounts => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.show_login_accounts_view();
+                    }
+                }
+                AppEvent::ShowLoginAddAccount => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.show_login_add_account_view();
+                    }
+                }
                 AppEvent::CycleAccessMode => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.cycle_access_mode();
                     }
                     self.schedule_redraw();
+                }
+                AppEvent::LoginStartChatGpt => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        if !widget.login_add_view_active() {
+                            continue 'main;
+                        }
+
+                        if let Some(flow) = self.login_flow.take() {
+                            flow.shutdown.shutdown();
+                            flow.join_handle.abort();
+                        }
+
+                        let opts = ServerOptions::new(
+                            self.config.codex_home.clone(),
+                            codex_login::CLIENT_ID.to_string(),
+                            self.config.responses_originator_header.clone(),
+                        );
+
+                        match codex_login::run_login_server(opts) {
+                            Ok(server) => {
+                                widget.notify_login_chatgpt_started(server.auth_url.clone());
+                                let shutdown = server.cancel_handle();
+                                let tx = self.app_event_tx.clone();
+                                let join_handle = tokio::spawn(async move {
+                                    let result = server
+                                        .block_until_done()
+                                        .await
+                                        .map_err(|e| e.to_string());
+                                    tx.send(AppEvent::LoginChatGptComplete { result });
+                                });
+                                self.login_flow = Some(LoginFlowState { shutdown, join_handle });
+                            }
+                            Err(err) => {
+                                widget.notify_login_chatgpt_failed(format!(
+                                    "Failed to start ChatGPT login: {err}"
+                                ));
+                            }
+                        }
+                    }
+                }
+                AppEvent::LoginCancelChatGpt => {
+                    if let Some(flow) = self.login_flow.take() {
+                        flow.shutdown.shutdown();
+                        flow.join_handle.abort();
+                    }
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.notify_login_chatgpt_cancelled();
+                    }
+                }
+                AppEvent::LoginChatGptComplete { result } => {
+                    if let Some(flow) = self.login_flow.take() {
+                        flow.shutdown.shutdown();
+                        // Allow the task to finish naturally; if still running, abort.
+                        if !flow.join_handle.is_finished() {
+                            flow.join_handle.abort();
+                        }
+                    }
+
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.notify_login_chatgpt_complete(result);
+                    }
+                }
+                AppEvent::LoginUsingChatGptChanged { using_chatgpt_auth } => {
+                    self.handle_login_mode_change(using_chatgpt_auth);
                 }
                 AppEvent::OnboardingAuthComplete(result) => {
                     if let AppState::Onboarding { screen } = &mut self.app_state {
@@ -1769,6 +2251,7 @@ impl App<'_> {
                 }
                 AppEvent::JumpBack { nth, prefill } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
+                        let ghost_state = widget.snapshot_ghost_state();
                         // Build response items from current UI history
                         let items = widget.export_response_items();
                         let cfg = widget.config_ref().clone();
@@ -1787,6 +2270,8 @@ impl App<'_> {
                             }
                             items.iter().take(cut).cloned().collect::<Vec<_>>()
                         };
+
+                        self.pending_jump_back_ghost_state = Some(ghost_state);
 
                         // Perform the fork off the UI thread to avoid nested runtimes
                         let server = self._server.clone();
@@ -1815,21 +2300,56 @@ impl App<'_> {
                     // Replace widget with a new one bound to the forked conversation
                     let session_conf = new_conv.0.session_configured.clone();
                     let conv = new_conv.0.conversation.clone();
-                    let mut new_widget = ChatWidget::new_from_existing(
-                        cfg,
-                        conv,
-                        session_conf,
-                        self.app_event_tx.clone(),
-                        self.enhanced_keys_supported,
-                        self.terminal_info.clone(),
-                        self.show_order_overlay,
-                        self.latest_upgrade_version.clone(),
-                    );
-                    new_widget.enable_perf(self.timing_enabled);
-                    // Ensure any initial animations or status are set up on the fresh widget
-                    new_widget.check_for_initial_animations();
 
-                    self.app_state = AppState::Chat { widget: Box::new(new_widget) };
+                    let mut ghost_state = self.pending_jump_back_ghost_state.take();
+
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        let auth_manager = widget.auth_manager();
+                        let mut new_widget = ChatWidget::new_from_existing(
+                            cfg,
+                            conv,
+                            session_conf,
+                            self.app_event_tx.clone(),
+                            self.enhanced_keys_supported,
+                            self.terminal_info.clone(),
+                            self.show_order_overlay,
+                            self.latest_upgrade_version.clone(),
+                            auth_manager,
+                            false,
+                        );
+                        if let Some(state) = ghost_state.take() {
+                            new_widget.adopt_ghost_state(state);
+                        } else {
+                            tracing::warn!("jump-back fork missing ghost snapshot state; redo may be unavailable");
+                        }
+                        new_widget.enable_perf(self.timing_enabled);
+                        new_widget.check_for_initial_animations();
+                        *widget = Box::new(new_widget);
+                    } else {
+                        let auth_manager = AuthManager::shared(
+                            cfg.codex_home.clone(),
+                            AuthMode::ApiKey,
+                            cfg.responses_originator_header.clone(),
+                        );
+                        let mut new_widget = ChatWidget::new_from_existing(
+                            cfg,
+                            conv,
+                            session_conf,
+                            self.app_event_tx.clone(),
+                            self.enhanced_keys_supported,
+                            self.terminal_info.clone(),
+                            self.show_order_overlay,
+                            self.latest_upgrade_version.clone(),
+                            auth_manager,
+                            false,
+                        );
+                        if let Some(state) = ghost_state.take() {
+                            new_widget.adopt_ghost_state(state);
+                        }
+                        new_widget.enable_perf(self.timing_enabled);
+                        new_widget.check_for_initial_animations();
+                        self.app_state = AppState::Chat { widget: Box::new(new_widget) };
+                    }
                     self.terminal_runs.clear();
                     // Reset any transient state from the previous widget/session
                     self.commit_anim_running.store(false, Ordering::Release);
@@ -2001,7 +2521,7 @@ impl App<'_> {
         }
         self.last_frame_size = Some(screen_size);
 
-        terminal.draw(|frame| {
+        let completed_frame = terminal.draw(|frame| {
             match &mut self.app_state {
                 AppState::Chat { widget } => {
                     if let Some((x, y)) = widget.cursor_pos(frame.area()) {
@@ -2012,6 +2532,7 @@ impl App<'_> {
                 AppState::Onboarding { screen } => frame.render_widget_ref(&*screen, frame.area()),
             }
         })?;
+        self.buffer_diff_profiler.record(&completed_frame);
         Ok(())
     }
 
@@ -2054,6 +2575,187 @@ impl App<'_> {
         }
     }
 
+    fn normalize_non_enhanced_release_code(code: KeyCode) -> KeyCode {
+        match code {
+            KeyCode::Char('\r') | KeyCode::Char('\n') => KeyCode::Enter,
+            KeyCode::Char('\t') => KeyCode::Tab,
+            KeyCode::Char('\u{1b}') => KeyCode::Esc,
+            other => other,
+        }
+    }
+
+}
+
+struct BufferDiffProfiler {
+    enabled: bool,
+    prev: Option<Buffer>,
+    frame_seq: u64,
+    log_every: usize,
+    min_changed: usize,
+    min_percent: f64,
+}
+
+impl BufferDiffProfiler {
+    fn new_from_env() -> Self {
+        match std::env::var("CODE_BUFFER_DIFF_METRICS") {
+            Ok(raw) => {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() || trimmed == "0" {
+                    Self::disabled()
+                } else {
+                    let log_every = trimmed.parse::<usize>().unwrap_or(1).max(1);
+                    let min_changed = std::env::var("CODE_BUFFER_DIFF_MIN_CHANGED")
+                        .ok()
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .unwrap_or(100);
+                    let min_percent = std::env::var("CODE_BUFFER_DIFF_MIN_PERCENT")
+                        .ok()
+                        .and_then(|v| v.trim().parse::<f64>().ok())
+                        .unwrap_or(1.0_f64);
+                    Self {
+                        enabled: true,
+                        prev: None,
+                        frame_seq: 0,
+                        log_every,
+                        min_changed,
+                        min_percent,
+                    }
+                }
+            }
+            Err(_) => Self::disabled(),
+        }
+    }
+
+    fn disabled() -> Self {
+        Self {
+            enabled: false,
+            prev: None,
+            frame_seq: 0,
+            log_every: 1,
+            min_changed: usize::MAX,
+            min_percent: f64::MAX,
+        }
+    }
+
+    fn record(&mut self, frame: &CompletedFrame<'_>) {
+        if !self.enabled {
+            return;
+        }
+
+        let current_buffer = frame.buffer.clone();
+        self.frame_seq = self.frame_seq.saturating_add(1);
+
+        if let Some(prev_buffer) = &self.prev {
+            if self.should_log_frame() {
+                if prev_buffer.area != current_buffer.area {
+                    tracing::info!(
+                        target: "codex_tui::buffer_diff",
+                        frame = self.frame_seq,
+                        prev_width = prev_buffer.area.width,
+                        prev_height = prev_buffer.area.height,
+                        width = current_buffer.area.width,
+                        height = current_buffer.area.height,
+                        "Buffer area changed; skipping diff metrics for this frame"
+                    );
+                } else {
+                    let inspected = prev_buffer.content.len().min(current_buffer.content.len());
+                    let updates = prev_buffer.diff(&current_buffer);
+                    let changed = updates.len();
+                    if changed == 0 {
+                        self.prev = Some(current_buffer);
+                        return;
+                    }
+                    let percent = if inspected > 0 {
+                        (changed as f64 / inspected as f64) * 100.0
+                    } else {
+                        0.0
+                    };
+                    if changed < self.min_changed && percent < self.min_percent {
+                        self.prev = Some(current_buffer);
+                        return;
+                    }
+                    let mut min_col = u16::MAX;
+                    let mut max_col = 0u16;
+                    let mut rows = BTreeSet::new();
+                    let mut longest_run = 0usize;
+                    let mut current_run = 0usize;
+                    let mut last_cell = None;
+                    for (x, y, _) in &updates {
+                        min_col = min_col.min(*x);
+                        max_col = max_col.max(*x);
+                        rows.insert(*y);
+                        match last_cell {
+                            Some((last_x, last_y)) if *y == last_y && *x == last_x + 1 => {
+                                current_run += 1;
+                            }
+                            _ => {
+                                current_run = 1;
+                            }
+                        }
+                        if current_run > longest_run {
+                            longest_run = current_run;
+                        }
+                        last_cell = Some((*x, *y));
+                    }
+                    let row_min = rows.iter().copied().min().unwrap_or(0);
+                    let row_max = rows.iter().copied().max().unwrap_or(0);
+                    let mut spans: Vec<(u16, u16)> = Vec::new();
+                    if !rows.is_empty() {
+                        let mut iter = rows.iter();
+                        let mut start = *iter.next().unwrap();
+                        let mut prev = start;
+                        for &row in iter {
+                            if row == prev + 1 {
+                                prev = row;
+                                continue;
+                            }
+                            spans.push((start, prev));
+                            start = row;
+                            prev = row;
+                        }
+                        spans.push((start, prev));
+                    }
+                    spans.sort_by(|(a_start, a_end), (b_start, b_end)| {
+                        let a_len = usize::from(*a_end) - usize::from(*a_start) + 1;
+                        let b_len = usize::from(*b_end) - usize::from(*b_start) + 1;
+                        b_len.cmp(&a_len)
+                    });
+                    let top_spans: Vec<(u16, u16)> = spans.into_iter().take(3).collect();
+                    let (col_min, col_max) = if min_col == u16::MAX {
+                        (0u16, 0u16)
+                    } else {
+                        (min_col, max_col)
+                    };
+                    let skipped_cells = current_buffer.content.iter().filter(|cell| cell.skip).count();
+                    tracing::info!(
+                        target: "codex_tui::buffer_diff",
+                        frame = self.frame_seq,
+                        inspected,
+                        changed,
+                        percent = format!("{percent:.2}"),
+                        width = current_buffer.area.width,
+                        height = current_buffer.area.height,
+                        dirty_rows = rows.len(),
+                        longest_run,
+                        row_min,
+                        row_max,
+                        col_min,
+                        col_max,
+                        row_spans = ?top_spans,
+                        skipped_cells,
+                        "Buffer diff metrics"
+                    );
+                }
+            }
+        }
+
+        self.prev = Some(current_buffer);
+    }
+
+    fn should_log_frame(&self) -> bool {
+        let interval = self.log_every.max(1) as u64;
+        interval == 1 || self.frame_seq % interval == 0
+    }
 }
 
 fn should_show_onboarding(

@@ -361,11 +361,6 @@ fn run_guided_loop(
             });
             return Ok(());
         }
-        app_event_tx.send(AppEvent::TerminalChunk {
-            id: terminal_id,
-            chunk: format!("$ {command}\n").into_bytes(),
-            _is_stderr: false,
-        });
         app_event_tx.send(AppEvent::TerminalRunCommand {
             id: terminal_id,
             command: wrapped,
@@ -484,11 +479,6 @@ fn run_guided_loop(
                     return Err(anyhow!("next command was empty after confirmation"));
                 }
 
-                app_event_tx.send(AppEvent::TerminalChunk {
-                    id: terminal_id,
-                    chunk: format!("$ {final_command}\n").into_bytes(),
-                    _is_stderr: false,
-                });
                 app_event_tx.send(AppEvent::TerminalRunCommand {
                     id: terminal_id,
                     command: wrap_command(&final_command),

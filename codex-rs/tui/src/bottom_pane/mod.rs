@@ -19,6 +19,7 @@ mod chat_composer;
 mod chat_composer_history;
 pub mod chrome_selection_view;
 mod diff_popup;
+mod custom_prompt_view;
 mod command_popup;
 mod file_search_popup;
 mod paste_burst;
@@ -30,18 +31,21 @@ mod model_selection_view;
 mod scroll_state;
 mod selection_popup_common;
 pub mod list_selection_view;
+pub(crate) use list_selection_view::SelectionAction;
+pub(crate) use custom_prompt_view::CustomPromptView;
 pub mod resume_selection_view;
 pub mod agents_settings_view;
 mod github_settings_view;
 pub mod mcp_settings_view;
+mod login_accounts_view;
 // no direct use of list_selection_view or its items here
 mod textarea;
 pub mod form_text_field;
 mod theme_selection_view;
 mod verbosity_selection_view;
 pub(crate) mod validation_settings_view;
-#[cfg(not(debug_assertions))]
 mod update_settings_view;
+mod undo_restore_view;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CancellationEvent {
@@ -51,8 +55,13 @@ pub(crate) enum CancellationEvent {
 
 pub(crate) use chat_composer::ChatComposer;
 pub(crate) use chat_composer::InputResult;
+pub(crate) use login_accounts_view::{
+    LoginAccountsState,
+    LoginAccountsView,
+    LoginAddAccountState,
+    LoginAddAccountView,
+};
 
-#[cfg(not(debug_assertions))]
 pub(crate) use update_settings_view::{UpdateSettingsView, UpdateSharedState};
 
 use codex_core::protocol::Op;
@@ -64,6 +73,7 @@ use codex_core::config_types::ThemeName;
 use model_selection_view::ModelSelectionView;
 use theme_selection_view::ThemeSelectionView;
 use verbosity_selection_view::VerbositySelectionView;
+pub(crate) use undo_restore_view::UndoRestoreView;
 
 /// Pane displayed in the lower half of the chat UI.
 pub(crate) struct BottomPane<'a> {
@@ -91,6 +101,8 @@ pub(crate) struct BottomPane<'a> {
     /// Defaults to true for visual breathing room, but can be disabled when
     /// the chat history is scrolled up to allow history to reclaim that row.
     top_spacer_enabled: bool,
+
+    pub(crate) using_chatgpt_auth: bool,
 }
 
 pub(crate) struct BottomPaneParams {
@@ -120,6 +132,7 @@ impl BottomPane<'_> {
             live_ring: None,
             status_view_active: false,
             top_spacer_enabled: true,
+            using_chatgpt_auth: params.using_chatgpt_auth,
         }
     }
 
@@ -137,8 +150,12 @@ impl BottomPane<'_> {
         self.request_redraw();
     }
 
-    #[cfg(not(debug_assertions))]
     pub fn show_update_settings(&mut self, view: update_settings_view::UpdateSettingsView) {
+        if !crate::updates::upgrade_ui_enabled() {
+            self.request_redraw();
+            return;
+        }
+
         self.active_view = Some(Box::new(view));
         self.status_view_active = false;
         self.request_redraw();
@@ -167,6 +184,26 @@ impl BottomPane<'_> {
         self.active_view = Some(Box::new(view));
         self.status_view_active = false;
         self.request_redraw();
+    }
+
+    pub fn show_login_accounts(&mut self, view: LoginAccountsView) {
+        self.active_view = Some(Box::new(view));
+        self.status_view_active = false;
+        self.request_redraw();
+    }
+
+    pub fn show_login_add_account(&mut self, view: LoginAddAccountView) {
+        self.active_view = Some(Box::new(view));
+        self.status_view_active = false;
+        self.request_redraw();
+    }
+
+    pub fn set_using_chatgpt_auth(&mut self, using: bool) {
+        if self.using_chatgpt_auth != using {
+            self.using_chatgpt_auth = using;
+            self.composer.set_using_chatgpt_auth(using);
+            self.request_redraw();
+        }
     }
 
     pub fn set_has_chat_history(&mut self, has_history: bool) {
@@ -523,6 +560,13 @@ impl BottomPane<'_> {
         self.request_redraw()
     }
 
+    /// Show a multi-line prompt input view (used for custom review instructions)
+    pub fn show_custom_prompt(&mut self, view: CustomPromptView) {
+        self.active_view = Some(Box::new(view));
+        self.status_view_active = false;
+        self.request_redraw();
+    }
+
     /// Show a generic list selection popup with items and actions.
     pub fn show_list_selection(
         &mut self,
@@ -560,6 +604,12 @@ impl BottomPane<'_> {
         self.request_redraw();
     }
 
+    pub fn show_undo_restore_view(&mut self, view: UndoRestoreView) {
+        self.active_view = Some(Box::new(view));
+        self.status_view_active = false;
+        self.request_redraw();
+    }
+
     /// Show MCP servers status/toggle UI
     pub fn show_mcp_settings(&mut self, rows: crate::bottom_pane::mcp_settings_view::McpServerRows) {
         use mcp_settings_view::McpSettingsView;
@@ -572,11 +622,11 @@ impl BottomPane<'_> {
     /// Show validation harness settings (master toggle + per-tool toggles).
     pub fn show_validation_settings(
         &mut self,
-        patch_harness: bool,
-        tools: Vec<(validation_settings_view::ToolStatus, bool)>,
+        groups: Vec<(validation_settings_view::GroupStatus, bool)>,
+        tools: Vec<validation_settings_view::ToolRow>,
     ) {
         use validation_settings_view::ValidationSettingsView;
-        let view = ValidationSettingsView::new(patch_harness, tools, self.app_event_tx.clone());
+        let view = ValidationSettingsView::new(groups, tools, self.app_event_tx.clone());
         self.active_view = Some(Box::new(view));
         self.status_view_active = false;
         self.request_redraw();
@@ -657,6 +707,13 @@ impl BottomPane<'_> {
         self.composer.is_in_paste_burst()
     }
 
+    pub(crate) fn set_input_focus(&mut self, has_focus: bool) {
+        self.has_input_focus = has_focus;
+        self.composer.set_has_focus(has_focus);
+        self.composer
+            .set_ctrl_c_quit_hint(self.ctrl_c_quit_hint, self.has_input_focus);
+    }
+
     pub(crate) fn on_history_entry_response(
         &mut self,
         log_id: u64,
@@ -687,15 +744,12 @@ impl BottomPane<'_> {
     pub(crate) fn ensure_input_focus(&mut self) {
         // Only ensure focus if there's no active modal view
         if self.active_view.is_none() {
-            self.has_input_focus = true;
-            // Reset any transient state that might affect focus
-            // Clear any temporary status overlays that might interfere
-            if !self.is_task_running {
-                // Status now shown in composer title
+            if !self.has_input_focus {
+                self.set_input_focus(true);
+            } else {
+                self.composer
+                    .set_ctrl_c_quit_hint(self.ctrl_c_quit_hint, self.has_input_focus);
             }
-            // Ensure composer knows it has focus
-            self.composer
-                .set_ctrl_c_quit_hint(self.ctrl_c_quit_hint, self.has_input_focus);
         }
     }
 

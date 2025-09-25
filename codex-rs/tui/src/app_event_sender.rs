@@ -1,6 +1,6 @@
 use std::sync::mpsc::Sender;
 
-use crate::app_event::AppEvent;
+use crate::app_event::{AppEvent, BackgroundPlacement};
 use crate::session_log;
 
 #[derive(Clone, Debug)]
@@ -49,22 +49,38 @@ impl AppEventSender {
         }
     }
 
-    /// Emit a background event initiated by the UI near the top of the current
-    /// request window. This keeps ordering logic in one place (history
-    /// insertion) instead of forging `Event` structs with ad-hoc sequencing.
+    /// Emit a background event using the provided placement strategy. Defaults
+    /// to appending at the end of the current history window.
     ///
     /// IMPORTANT: UI code should call this (or other history helpers) rather
     /// than constructing `Event { event_seq: 0, .. }` manually. Protocol events
     /// must come from `codex-core` via `Session::make_event` so the per-turn
     /// sequence stays consistent.
-    pub(crate) fn send_background_event(&self, message: impl Into<String>) {
-        self.send(AppEvent::InsertBackgroundEventEarly(message.into()));
+    pub(crate) fn send_background_event_with_placement(
+        &self,
+        message: impl Into<String>,
+        placement: BackgroundPlacement,
+    ) {
+        self.send(AppEvent::InsertBackgroundEvent {
+            message: message.into(),
+            placement,
+        });
     }
 
-    /// Emit a background event appended to the current request window so it
-    /// shows up after previously rendered content.
-    pub(crate) fn send_background_event_late(&self, message: impl Into<String>) {
-        self.send(AppEvent::InsertBackgroundEventLate(message.into()));
+    /// Convenience: append a background event at the end of the history.
+    pub(crate) fn send_background_event(&self, message: impl Into<String>) {
+        self.send_background_event_with_placement(message, BackgroundPlacement::Tail);
+    }
+
+    /// Convenience: place a background event before the next provider/tool output.
+    pub(crate) fn send_background_event_before_next_output(
+        &self,
+        message: impl Into<String>,
+    ) {
+        self.send_background_event_with_placement(
+            message,
+            BackgroundPlacement::BeforeNextOutput,
+        );
     }
 
 }

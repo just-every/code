@@ -1,4 +1,7 @@
 fn main() {
+    if let Ok(profile) = std::env::var("PROFILE") {
+        println!("cargo:rustc-env=CODEX_PROFILE={profile}");
+    }
     use std::collections::BTreeMap;
     use std::fs;
     use std::path::PathBuf;
@@ -64,4 +67,3 @@ fn main() {
         }
     }
 }
-

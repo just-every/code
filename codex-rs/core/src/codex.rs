@@ -4,23 +4,26 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
+use std::sync::Weak;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_channel::Receiver;
 use async_channel::Sender;
 use base64::Engine;
 use codex_apply_patch::ApplyPatchAction;
 use codex_apply_patch::MaybeApplyPatchVerified;
-use codex_apply_patch::StdFileSystem;
 use codex_browser::BrowserConfig as CodexBrowserConfig;
 use codex_browser::BrowserManager;
+use crate::config_types::ReasoningEffort as ReasoningEffortConfig;
+use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use crate::config_types::ClientTools;
 // unused: AuthManager
 // unused: ConversationHistoryResponseEvent
@@ -39,16 +42,23 @@ use tracing::info;
 use tracing::trace;
 use tracing::warn;
 use uuid::Uuid;
+use crate::AuthManager;
 use crate::CodexAuth;
-use crate::acp::AcpFileSystem;
 use crate::agent_tool::AgentStatusUpdatePayload;
 use crate::protocol::ApprovedCommandMatchKind;
+use crate::protocol::ProEvent;
+use crate::protocol::ProPhase;
+use crate::protocol::ProStats;
 use crate::protocol::WebSearchBeginEvent;
 use crate::protocol::WebSearchCompleteEvent;
+use codex_protocol::mcp_protocol::AuthMode;
+use crate::account_usage;
+use crate::auth_accounts;
 use codex_protocol::models::WebSearchAction;
 use codex_protocol::protocol::RolloutItem;
 use shlex::split as shlex_split;
 use shlex::try_join as shlex_try_join;
+use chrono::Utc;
 
 pub mod compact;
 use self::compact::build_compacted_history;
@@ -56,6 +66,7 @@ use self::compact::collect_user_messages;
 
 /// Initial submission ID for session configuration
 pub(crate) const INITIAL_SUBMIT_ID: &str = "";
+pub(crate) const PRO_SUBMISSION_ID: &str = "pro";
 const HOOK_OUTPUT_LIMIT: usize = 2048;
 const PENDING_ONLY_SENTINEL: &str = "__codex_pending_only__";
 
@@ -113,10 +124,12 @@ impl ConfirmGuardPatternRuntime {
     }
 }
 
+#[allow(dead_code)]
 trait MutexExt<T> {
     fn lock_unchecked(&self) -> std::sync::MutexGuard<'_, T>;
 }
 
+#[allow(dead_code)]
 impl<T> MutexExt<T> for Mutex<T> {
     fn lock_unchecked(&self) -> std::sync::MutexGuard<'_, T> {
         #[expect(clippy::expect_used)]
@@ -132,6 +145,8 @@ pub(crate) struct TurnContext {
     pub(crate) user_instructions: Option<String>,
     pub(crate) approval_policy: AskForApproval,
     pub(crate) sandbox_policy: SandboxPolicy,
+    pub(crate) shell_environment_policy: ShellEnvironmentPolicy,
+    pub(crate) is_review_mode: bool,
 }
 
 /// Gather ephemeral, per-turn context that should not be persisted to history.
@@ -457,8 +472,7 @@ use crate::apply_patch::convert_apply_patch_to_protocol;
 use crate::apply_patch::get_writable_roots;
 use crate::apply_patch::{self, ApplyPatchResult};
 use crate::client::ModelClient;
-use crate::client_common::Prompt;
-use crate::client_common::ResponseEvent;
+use crate::client_common::{Prompt, ResponseEvent, REVIEW_PROMPT};
 use crate::environment_context::EnvironmentContext;
 use crate::user_instructions::UserInstructions;
 use crate::config::{persist_model_selection, Config};
@@ -475,6 +489,7 @@ use crate::exec::SandboxType;
 use crate::exec::StdoutStream;
 use crate::exec::StreamOutput;
 use crate::exec::process_exec_tool_call;
+use crate::review_format::format_review_findings_block;
 use crate::exec_env::create_env;
 use crate::mcp_connection_manager::McpConnectionManager;
 use crate::mcp_tool_call::handle_mcp_tool_call;
@@ -523,6 +538,9 @@ use crate::protocol::RateLimitSnapshotEvent;
 use crate::protocol::TokenCountEvent;
 use crate::protocol::TokenUsageInfo;
 use crate::protocol::ReviewDecision;
+use crate::protocol::ValidationGroup;
+use crate::protocol::ReviewOutputEvent;
+use crate::protocol::ReviewRequest;
 use crate::protocol::SandboxPolicy;
 use crate::protocol::SessionConfiguredEvent;
 use crate::protocol::Submission;
@@ -568,6 +586,14 @@ pub struct CodexSpawnOk {
 impl Codex {
     /// Spawn a new [`Codex`] and initialize the session.
     pub async fn spawn(config: Config, auth: Option<CodexAuth>) -> CodexResult<CodexSpawnOk> {
+        let auth_manager = auth.map(crate::AuthManager::from_auth_for_testing);
+        Self::spawn_with_auth_manager(config, auth_manager).await
+    }
+
+    pub async fn spawn_with_auth_manager(
+        config: Config,
+        auth_manager: Option<Arc<AuthManager>>,
+    ) -> CodexResult<CodexSpawnOk> {
         // experimental resume path (undocumented)
         let resume_path = config.experimental_resume.clone();
         info!("resume_path: {resume_path:?}");
@@ -600,7 +626,13 @@ impl Codex {
         let session_id = Uuid::new_v4();
 
         // This task will run until Op::Shutdown is received.
-        tokio::spawn(submission_loop(session_id, config, auth, rx_sub, tx_event));
+        tokio::spawn(submission_loop(
+            session_id,
+            config,
+            auth_manager,
+            rx_sub,
+            tx_event,
+        ));
         let codex = Codex {
             next_id: AtomicU64::new(0),
             tx_sub,
@@ -754,6 +786,7 @@ struct State {
     next_internal_sub_id: u64,
     token_usage_info: Option<TokenUsageInfo>,
     latest_rate_limits: Option<RateLimitSnapshotEvent>,
+    pending_manual_compacts: VecDeque<String>,
 }
 
 #[derive(Clone)]
@@ -778,6 +811,39 @@ struct TurnScratchpad {
     partial_reasoning_summary: String,
 }
 
+#[derive(Clone)]
+struct AccountUsageContext {
+    codex_home: PathBuf,
+    account_id: String,
+    plan: Option<String>,
+}
+
+fn account_usage_context(sess: &Session) -> Option<AccountUsageContext> {
+    let codex_home = sess.client.codex_home().to_path_buf();
+    let account_id = auth_accounts::get_active_account_id(&codex_home).ok().flatten()?;
+    let plan = auth_accounts::find_account(&codex_home, &account_id)
+        .ok()
+        .flatten()
+        .and_then(|account| {
+            account
+                .tokens
+                .as_ref()
+                .and_then(|tokens| tokens.id_token.get_chatgpt_plan_type())
+        });
+    Some(AccountUsageContext {
+        codex_home,
+        account_id,
+        plan,
+    })
+}
+
+fn spawn_usage_task<F>(task: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    let _ = tokio::task::spawn_blocking(task);
+}
+
 #[derive(Debug)]
 struct BackgroundExecState {
     notify: std::sync::Arc<tokio::sync::Notify>,
@@ -785,6 +851,9 @@ struct BackgroundExecState {
     tail_buf: Option<std::sync::Arc<std::sync::Mutex<Vec<u8>>>>,
     cmd_display: String,
     suppress_event: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    task_handle: Option<tokio::task::JoinHandle<()>>,
+    order_meta_for_end: crate::protocol::OrderMeta,
+    sub_id: String,
 }
 
 /// Context for an initialized model agent
@@ -841,6 +910,17 @@ pub(crate) struct Session {
     hook_guard: AtomicBool,
     github: Arc<RwLock<crate::config_types::GithubConfig>>,
     validation: Arc<RwLock<crate::config_types::ValidationConfig>>,
+    pro_enabled: AtomicBool,
+    pro_supervisor: Mutex<Option<crate::pro_supervisor::ProSupervisorHandle>>,
+    pro_observer_history: Mutex<ConversationHistory>,
+    pro_observer_log: Mutex<Vec<ResponseItem>>,
+    pro_autonomous_enabled: AtomicBool,
+    pro_observer_running: AtomicBool,
+    pro_observer_trigger_after_current: AtomicBool,
+    pro_observer_last_trigger_at: Mutex<Option<Instant>>,
+    pro_observer_activity_since_last: AtomicU64,
+    self_handle: Weak<Session>,
+    active_review: Mutex<Option<ReviewRequest>>,
 }
 
 struct HookGuard<'a> {
@@ -914,14 +994,200 @@ impl Session {
         self.client_tools.as_ref()
     }
 
-    pub(crate) fn mcp_connection_manager(&self) -> &McpConnectionManager {
-        &self.mcp_connection_manager
+    fn set_active_review(&self, review_request: ReviewRequest) {
+        let mut guard = self.active_review.lock().unwrap();
+        *guard = Some(review_request);
     }
 
-    pub(crate) fn update_validation_patch_harness(&self, enabled: bool) {
-        if let Ok(mut cfg) = self.validation.write() {
-            cfg.patch_harness = enabled;
+    fn take_active_review(&self) -> Option<ReviewRequest> {
+        self.active_review.lock().unwrap().take()
+    }
+
+    fn upgrade_self(&self) -> Option<Arc<Self>> {
+        self.self_handle.upgrade()
+    }
+
+    pub(crate) fn get_user_shell(&self) -> shell::Shell {
+        self.user_shell.clone()
+    }
+
+    pub(crate) fn get_history_contents(&self) -> Vec<ResponseItem> {
+        self.state.lock_unchecked().history.contents()
+    }
+
+    pub(crate) fn model_client(&self) -> &ModelClient {
+        &self.client
+    }
+
+    pub(crate) fn pro_observer_history(&self) -> &Mutex<ConversationHistory> {
+        &self.pro_observer_history
+    }
+
+    pub(crate) fn pro_observer_log(&self) -> &Mutex<Vec<ResponseItem>> {
+        &self.pro_observer_log
+    }
+
+    pub(crate) fn pro_is_enabled(&self) -> bool {
+        self.pro_enabled.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn pro_autonomous_enabled(&self) -> bool {
+        self.pro_autonomous_enabled.load(Ordering::Relaxed)
+    }
+
+    pub(crate) async fn emit_pro_event(&self, sub_id: &str, event: ProEvent) {
+        let msg = EventMsg::Pro(event);
+        let event = self.make_event(sub_id, msg);
+        let _ = self.tx_event.send(event).await;
+    }
+
+    pub(crate) async fn emit_pro_status_snapshot(&self, sub_id: &str) {
+        self
+            .emit_pro_event(
+                sub_id,
+                ProEvent::Status {
+                    phase: ProPhase::Idle,
+                    stats: ProStats::default(),
+                },
+            )
+            .await;
+    }
+
+    pub(crate) fn stop_pro_supervisor(&self) {
+        let mut guard = self.pro_supervisor.lock_unchecked();
+        if let Some(handle) = guard.take() {
+            handle.abort();
         }
+    }
+
+    pub(crate) fn ensure_pro_supervisor(self: &Arc<Self>) {
+        let mut guard = self.pro_supervisor.lock_unchecked();
+        if guard.is_none() {
+            let handle = crate::pro_supervisor::spawn(Arc::clone(self));
+            *guard = Some(handle);
+        }
+    }
+
+    pub(crate) fn observer_mark_activity(&self) {
+        self.pro_observer_activity_since_last
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn history_has_assistant_output(&self) -> bool {
+        let state = self.state.lock_unchecked();
+        Self::items_have_assistant_output(&state.history.contents())
+    }
+
+    fn items_have_assistant_output(items: &[ResponseItem]) -> bool {
+        items.iter().any(|item| match item {
+            ResponseItem::Message { role, content, .. } if role == "assistant" => content
+                .iter()
+                .any(|c| matches!(c, ContentItem::OutputText { text } if !text.trim().is_empty())),
+            ResponseItem::FunctionCall { .. } | ResponseItem::FunctionCallOutput { .. } => true,
+            _ => false,
+        })
+    }
+
+    pub(crate) fn observer_maybe_trigger(&self, sub_id: String, force: bool, reason: &'static str) {
+        if !self.pro_is_enabled() {
+            return;
+        }
+        if self.pro_observer_running.load(Ordering::Relaxed) {
+            if force {
+                self.pro_observer_trigger_after_current
+                    .store(true, Ordering::Relaxed);
+            }
+            return;
+        }
+
+        let now = Instant::now();
+        let mut last_guard = self.pro_observer_last_trigger_at.lock_unchecked();
+        if !force {
+            let ready = last_guard
+                .map(|t| now.duration_since(t) >= Duration::from_secs(20))
+                .unwrap_or(true);
+            if !ready {
+                return;
+            }
+        }
+        *last_guard = Some(now);
+        drop(last_guard);
+
+        if !force {
+            let activity = self
+                .pro_observer_activity_since_last
+                .load(Ordering::Relaxed);
+            if activity < 4 {
+                return;
+            }
+            if !self.history_has_assistant_output() {
+                return;
+            }
+        }
+
+        self.pro_observer_activity_since_last
+            .store(0, Ordering::Relaxed);
+        self.pro_observer_running
+            .store(true, Ordering::Relaxed);
+
+        let Some(sess_arc) = self.upgrade_self() else {
+            self.pro_observer_running
+                .store(false, Ordering::Relaxed);
+            return;
+        };
+
+        tokio::spawn(async move {
+            crate::pro_observer::observe_now(Arc::clone(&sess_arc), sub_id.clone(), reason).await;
+            sess_arc
+                .pro_observer_running
+                .store(false, Ordering::Relaxed);
+            if sess_arc
+                .pro_observer_trigger_after_current
+                .swap(false, Ordering::Relaxed)
+            {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                sess_arc.observer_maybe_trigger(sub_id, true, "follow_up");
+            }
+        });
+    }
+
+    pub(crate) async fn submit_follow_up_user_message(&self, text: String) {
+        let mut response_input = response_input_from_core_items(vec![InputItem::Text { text: text.clone() }]);
+        self.enforce_user_message_limits(PRO_SUBMISSION_ID, &mut response_input);
+        let response_item: ResponseItem = response_input.clone().into();
+        self.record_conversation_items(std::slice::from_ref(&response_item)).await;
+
+        let started = {
+            let mut state = self.state.lock().unwrap();
+            let should_start = state.current_task.is_none();
+            state.pending_input.insert(0, response_input);
+            should_start
+        };
+        if started {
+            self.cleanup_old_status_items().await;
+            let turn_context = self.make_turn_context();
+            let sub_id = self.next_internal_sub_id();
+            let sentinel_input = vec![InputItem::Text { text: PENDING_ONLY_SENTINEL.to_string() }];
+            let agent = AgentTask::spawn(self.upgrade_self().expect("session"), turn_context, sub_id, sentinel_input);
+            self.set_task(agent);
+        }
+
+        if let Some(sess_arc) = self.upgrade_self() {
+            sess_arc
+                .emit_pro_event(
+                    PRO_SUBMISSION_ID,
+                    ProEvent::DeveloperNote {
+                        turn_id: "observer_followup".to_string(),
+                        note: "Observer submitted follow-up".to_string(),
+                        artifacts: Vec::new(),
+                    },
+                )
+                .await;
+        }
+    }
+
+    pub(crate) fn mcp_connection_manager(&self) -> &McpConnectionManager {
+        &self.mcp_connection_manager
     }
 
     pub(crate) fn update_validation_tool(&self, name: &str, enable: bool) {
@@ -947,6 +1213,15 @@ impl Session {
         }
     }
 
+    pub(crate) fn update_validation_group(&self, group: ValidationGroup, enable: bool) {
+        if let Ok(mut cfg) = self.validation.write() {
+            match group {
+                ValidationGroup::Functional => cfg.groups.functional = enable,
+                ValidationGroup::Stylistic => cfg.groups.stylistic = enable,
+            }
+        }
+    }
+
     fn resolve_path(&self, path: Option<String>) -> PathBuf {
         path.as_ref()
             .map(PathBuf::from)
@@ -958,13 +1233,9 @@ impl Session {
         argv: &[String],
         cwd: &Path,
     ) -> MaybeApplyPatchVerified {
-        if let Some(client_tools) = self.client_tools.as_ref() {
-            let fs = AcpFileSystem::new(self.id, client_tools, &self.mcp_connection_manager);
-            codex_apply_patch::maybe_parse_apply_patch_verified(argv, cwd, &fs).await
-        } else {
-            let fs = StdFileSystem;
-            codex_apply_patch::maybe_parse_apply_patch_verified(argv, cwd, &fs).await
-        }
+        // Upstream parser no longer needs a filesystem; it is pure and sync.
+        let _ = self.client_tools.as_ref();
+        codex_apply_patch::maybe_parse_apply_patch_verified(argv, cwd)
     }
 
     // ────────────────────────────
@@ -982,12 +1253,14 @@ impl Session {
         state.request_ordinal = state.request_ordinal.saturating_add(1);
     }
 
-    fn scratchpad_push(&self, item: &ResponseItem, response: &Option<ResponseInputItem>) {
+    fn scratchpad_push(&self, item: &ResponseItem, response: &Option<ResponseInputItem>, sub_id: &str) {
         let mut state = self.state.lock().unwrap();
         if let Some(sp) = &mut state.turn_scratchpad {
             sp.items.push(item.clone());
             if let Some(r) = response {
-                sp.responses.push(r.clone());
+                let mut truncated = r.clone();
+                self.enforce_user_message_limits(sub_id, &mut truncated);
+                sp.responses.push(truncated);
             }
         }
     }
@@ -1064,6 +1337,111 @@ impl Session {
     pub fn queue_user_input(&self, queued: QueuedUserInput) {
         let mut state = self.state.lock().unwrap();
         state.pending_user_input.push(queued);
+    }
+
+    fn enforce_user_message_limits(
+        &self,
+        sub_id: &str,
+        response_item: &mut ResponseInputItem,
+    ) {
+        let ResponseInputItem::Message { role, content } = response_item else {
+            return;
+        };
+        if role != "user" {
+            return;
+        }
+
+        let mut aggregated = String::new();
+        let mut text_segments: Vec<(usize, usize)> = Vec::new();
+        for item in content.iter() {
+            if let ContentItem::InputText { text } = item {
+                let start = aggregated.len();
+                aggregated.push_str(text);
+                let end = aggregated.len();
+                text_segments.push((start, end));
+            }
+        }
+
+        if text_segments.is_empty() {
+            return;
+        }
+
+        let (_, was_truncated, prefix_end, suffix_start) =
+            truncate_middle_bytes(&aggregated, MAX_TOOL_OUTPUT_BYTES_FOR_MODEL);
+        if !was_truncated {
+            return;
+        }
+
+        let cwd = self.get_cwd().to_path_buf();
+        let filename = format!("user-message-{}-{}.txt", sub_id, Uuid::new_v4());
+        let file_note = match ensure_user_dir(&cwd)
+            .and_then(|dir| write_agent_file(&dir, &filename, &aggregated))
+        {
+            Ok(path) => format!("\n\n[Full output saved to: {}]", path.display()),
+            Err(e) => format!("\n\n[Full output was too large and truncation applied; failed to save file: {e}]")
+        };
+
+        let original = std::mem::take(content);
+        let mut new_content = Vec::with_capacity(original.len());
+        let mut segment_iter = text_segments.into_iter();
+        let mut marker_inserted = false;
+        let mut last_text_idx: Option<usize> = None;
+
+        for item in original.into_iter() {
+            match item {
+                ContentItem::InputText { text } => {
+                    if let Some((seg_start, seg_end)) = segment_iter.next() {
+                        let mut new_text = String::new();
+
+                        if seg_start < prefix_end {
+                            let slice_end = seg_end.min(prefix_end) - seg_start;
+                            if let Some(prefix_slice) = text.get(..slice_end) {
+                                new_text.push_str(prefix_slice);
+                            }
+                        }
+
+                        if !marker_inserted && seg_end > prefix_end && seg_start < suffix_start {
+                            new_text.push_str(TRUNCATION_MARKER);
+                            marker_inserted = true;
+                        }
+
+                        if seg_end > suffix_start {
+                            let slice_start = seg_start.max(suffix_start) - seg_start;
+                            if let Some(suffix_slice) = text.get(slice_start..) {
+                                new_text.push_str(suffix_slice);
+                            }
+                        }
+
+                        new_content.push(ContentItem::InputText { text: new_text });
+                        last_text_idx = Some(new_content.len() - 1);
+                    }
+                }
+                other => new_content.push(other),
+            }
+        }
+
+        if !marker_inserted {
+            if let Some(idx) = last_text_idx {
+                if let ContentItem::InputText { text } = &mut new_content[idx] {
+                    text.push_str(TRUNCATION_MARKER);
+                }
+            } else {
+                new_content.push(ContentItem::InputText {
+                    text: TRUNCATION_MARKER.to_string(),
+                });
+                last_text_idx = Some(new_content.len() - 1);
+            }
+        }
+
+        if let Some(idx) = last_text_idx {
+            if let ContentItem::InputText { text } = &mut new_content[idx] {
+                text.push_str(&file_note);
+            }
+        } else {
+            new_content.push(ContentItem::InputText { text: file_note });
+        }
+
+        *content = new_content;
     }
 
     pub fn pop_next_queued_user_input(&self) -> Option<QueuedUserInput> {
@@ -1214,6 +1592,8 @@ impl Session {
             user_instructions: self.user_instructions.clone(),
             approval_policy: self.approval_policy,
             sandbox_policy: self.sandbox_policy.clone(),
+            shell_environment_policy: self.shell_environment_policy.clone(),
+            is_review_mode: false,
         })
     }
 
@@ -1295,6 +1675,10 @@ impl Session {
         self.record_state_snapshot(items).await;
 
         self.state.lock().unwrap().history.record_items(items);
+
+        if self.pro_is_enabled() && Self::items_have_assistant_output(items) {
+            self.observer_mark_activity();
+        }
     }
 
     /// Clean up old screenshots and system status messages from conversation history
@@ -1547,6 +1931,14 @@ impl Session {
                 let event = self.make_event(sub_id, msg);
                 let _ = self.tx_event.send(event).await;
             }
+        }
+
+        if self.pro_is_enabled() {
+            self.observer_mark_activity();
+            let force = *exit_code != 0;
+            let reason = if force { "exec_failure" } else { "activity" };
+            let sub = Uuid::new_v4().to_string();
+            self.observer_maybe_trigger(sub, force, reason);
         }
     }
     /// Runs the exec tool call and emits events for the begin and end of the
@@ -2065,7 +2457,46 @@ impl Session {
             .collect();
 
         // Concatenate filtered history with current turn's extras (which includes current ephemeral images)
-        let result = [filtered_history, extra].concat();
+        let mut result = [filtered_history, extra].concat();
+
+        let current_auth_mode = self
+            .client
+            .get_auth_manager()
+            .and_then(|manager| manager.auth())
+            .map(|auth| auth.mode);
+        let sanitize_encrypted_reasoning = !matches!(current_auth_mode, Some(AuthMode::ChatGPT));
+
+        if sanitize_encrypted_reasoning {
+            let mut stripped = 0usize;
+            result = result
+                .into_iter()
+                .map(|item| match item {
+                    ResponseItem::Reasoning {
+                        id,
+                        summary,
+                        content,
+                        encrypted_content,
+                    } => {
+                        if encrypted_content.is_some() {
+                            stripped += 1;
+                        }
+                        ResponseItem::Reasoning {
+                            id,
+                            summary,
+                            content,
+                            encrypted_content: None,
+                        }
+                    }
+                    other => other,
+                })
+                .collect();
+            if stripped > 0 {
+                debug!(
+                    "Stripped encrypted reasoning from {} history items before sending request",
+                    stripped
+                );
+            }
+        }
 
         debug_history("turn_input_with_history", &result);
 
@@ -2132,15 +2563,28 @@ impl Session {
     /// Returns the input if there was no agent running to inject into
     pub fn inject_input(&self, input: Vec<InputItem>) -> Result<(), Vec<InputItem>> {
         let mut state = self.state.lock().unwrap();
-        if state.current_task.is_some() {
-            state
-                .pending_input
-                .push(response_input_from_core_items(input));
+        if let Some(task) = state.current_task.as_ref() {
+            let mut response = response_input_from_core_items(input);
+            self.enforce_user_message_limits(&task.sub_id, &mut response);
+            state.pending_input.push(response);
             Ok(())
         } else {
             Err(input)
         }
     }
+
+    pub fn enqueue_manual_compact(&self, sub_id: String) -> bool {
+        let mut state = self.state.lock().unwrap();
+        let was_empty = state.pending_manual_compacts.is_empty();
+        state.pending_manual_compacts.push_back(sub_id);
+        was_empty
+    }
+
+    pub fn dequeue_manual_compact(&self) -> Option<String> {
+        let mut state = self.state.lock().unwrap();
+        state.pending_manual_compacts.pop_front()
+    }
+
 
     pub fn get_pending_input(&self) -> Vec<ResponseInputItem> {
         let mut state = self.state.lock().unwrap();
@@ -2167,8 +2611,11 @@ impl Session {
         }
     }
 
-    pub fn add_pending_input(&self, input: ResponseInputItem) {
+    pub fn add_pending_input(&self, mut input: ResponseInputItem) {
         let mut state = self.state.lock().unwrap();
+        if let Some(task) = state.current_task.as_ref() {
+            self.enforce_user_message_limits(&task.sub_id, &mut input);
+        }
         state.pending_input.push(input);
     }
 
@@ -2212,6 +2659,9 @@ impl Session {
         // KillOnDrop in exec.rs.
 
         // (debug removed)
+        self.stop_pro_supervisor();
+        self.pro_enabled.store(false, Ordering::Relaxed);
+        self.pro_autonomous_enabled.store(false, Ordering::Relaxed);
     }
 
     /// Spawn the configured notifier (if any) with the given JSON payload as
@@ -2394,11 +2844,19 @@ fn build_exec_hook_payload(
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum AgentTaskKind {
+    Regular,
+    Review,
+    Compact,
+}
+
 /// A series of Turns in response to user input.
 pub(crate) struct AgentTask {
     sess: Arc<Session>,
     sub_id: String,
     handle: AbortHandle,
+    kind: AgentTaskKind,
 }
 
 impl AgentTask {
@@ -2421,6 +2879,7 @@ impl AgentTask {
             sess,
             sub_id,
             handle,
+            kind: AgentTaskKind::Regular,
         }
     }
 
@@ -2436,13 +2895,12 @@ impl AgentTask {
             let tc_clone = Arc::clone(&turn_context);
             let sub_clone = sub_id.clone();
             tokio::spawn(async move {
-                let _ = compact::perform_compaction(
+                compact::run_compact_task(
                     sess_clone,
                     tc_clone,
                     sub_clone,
                     input,
                     compact_instructions,
-                    true,
                 )
                 .await;
             })
@@ -2452,6 +2910,30 @@ impl AgentTask {
             sess,
             sub_id,
             handle,
+            kind: AgentTaskKind::Compact,
+        }
+    }
+
+    fn review(
+        sess: Arc<Session>,
+        turn_context: Arc<TurnContext>,
+        sub_id: String,
+        input: Vec<InputItem>,
+    ) -> Self {
+        let handle = {
+            let sess_clone = Arc::clone(&sess);
+            let tc_clone = Arc::clone(&turn_context);
+            let sub_clone = sub_id.clone();
+            tokio::spawn(async move {
+                run_agent(sess_clone, tc_clone, sub_clone, input).await;
+            })
+            .abort_handle()
+        };
+        Self {
+            sess,
+            sub_id,
+            handle,
+            kind: AgentTaskKind::Review,
         }
     }
 
@@ -2462,7 +2944,12 @@ impl AgentTask {
                 .sess
                 .make_event(&self.sub_id, EventMsg::TurnAborted(TurnAbortedEvent { reason }));
             let sess = self.sess.clone();
+            let sub_id = self.sub_id.clone();
+            let kind = self.kind;
             tokio::spawn(async move {
+                if kind == AgentTaskKind::Review {
+                    exit_review_mode(sess.clone(), sub_id, None).await;
+                }
                 sess.send_event(event).await;
             });
         }
@@ -2472,7 +2959,7 @@ impl AgentTask {
 async fn submission_loop(
     mut session_id: Uuid,
     config: Arc<Config>,
-    auth: Option<CodexAuth>,
+    auth_manager: Option<Arc<AuthManager>>,
     rx_sub: Receiver<Submission>,
     tx_event: Sender<Event>,
 ) {
@@ -2683,12 +3170,9 @@ async fn submission_loop(
                 };
 
                 // Wrap provided auth (if any) in a minimal AuthManager for client usage.
-                let auth_manager = auth
-                    .as_ref()
-                    .map(|a| crate::AuthManager::from_auth_for_testing(a.clone()));
                 let client = ModelClient::new(
                     config.clone(),
-                    auth_manager,
+                    auth_manager.clone(),
                     provider.clone(),
                     model_reasoning_effort,
                     model_reasoning_summary,
@@ -2764,7 +3248,7 @@ async fn submission_loop(
                 tools_config.web_search_allowed_domains =
                     config.tools_web_search_allowed_domains.clone();
 
-                sess = Some(Arc::new(Session {
+                let mut new_session = Arc::new(Session {
                     id: session_id,
                     client,
                     tools_config,
@@ -2796,7 +3280,23 @@ async fn submission_loop(
                     hook_guard: AtomicBool::new(false),
                     github: Arc::new(RwLock::new(config.github.clone())),
                     validation: Arc::new(RwLock::new(config.validation.clone())),
-                }));
+                    pro_enabled: AtomicBool::new(false),
+                    pro_supervisor: Mutex::new(None),
+                    pro_observer_history: Mutex::new(ConversationHistory::new()),
+                    pro_observer_log: Mutex::new(Vec::new()),
+                    pro_autonomous_enabled: AtomicBool::new(false),
+                    pro_observer_running: AtomicBool::new(false),
+                    pro_observer_trigger_after_current: AtomicBool::new(false),
+                    pro_observer_last_trigger_at: Mutex::new(None),
+                    pro_observer_activity_since_last: AtomicU64::new(0),
+                    self_handle: Weak::new(),
+                    active_review: Mutex::new(None),
+                });
+                let weak_handle = Arc::downgrade(&new_session);
+                if let Some(inner) = Arc::get_mut(&mut new_session) {
+                    inner.self_handle = weak_handle;
+                }
+                sess = Some(new_session);
                 if let Some(sess_arc) = &sess {
                     if !config.always_allow_commands.is_empty() {
                         let mut st = sess_arc.state.lock().unwrap();
@@ -2875,7 +3375,7 @@ async fn submission_loop(
                     let tx_event_clone = tx_event.clone();
                     tokio::spawn(async move {
                         while let Some(payload) = agent_rx.recv().await {
-                            let event = sess_for_agents.make_event(
+                            let status_event = sess_for_agents.make_event(
                                 "agent_status",
                                 EventMsg::AgentStatusUpdate(AgentStatusUpdateEvent {
                                     agents: payload.agents.clone(),
@@ -2883,7 +3383,28 @@ async fn submission_loop(
                                     task: payload.task.clone(),
                                 }),
                             );
-                            let _ = tx_event_clone.send(event).await;
+                            let _ = tx_event_clone.send(status_event).await;
+
+                            let mut spawned: u32 = 0;
+                            let mut active: u32 = 0;
+                            let mut completed: u32 = 0;
+                            for agent in &payload.agents {
+                                spawned = spawned.saturating_add(1);
+                                match agent.status.as_str() {
+                                    "pending" | "running" => active = active.saturating_add(1),
+                                    "completed" => completed = completed.saturating_add(1),
+                                    _ => {}
+                                }
+                            }
+                            let phase = if active > 0 { ProPhase::Background } else { ProPhase::Idle };
+                            let pro_event = sess_for_agents.make_event(
+                                PRO_SUBMISSION_ID,
+                                EventMsg::Pro(ProEvent::Status {
+                                    phase,
+                                    stats: crate::protocol::ProStats { active, completed, spawned },
+                                }),
+                            );
+                            let _ = tx_event_clone.send(pro_event).await;
                         }
                     });
                     agent_manager_initialized = true;
@@ -2921,7 +3442,8 @@ async fn submission_loop(
                 };
 
                 if sess.has_running_task() {
-                    let response_item = response_input_from_core_items(items.clone());
+                    let mut response_item = response_input_from_core_items(items.clone());
+                    sess.enforce_user_message_limits(&sub.id, &mut response_item);
                     let queued = QueuedUserInput {
                         submission_id: sub.id.clone(),
                         response_item,
@@ -2984,16 +3506,16 @@ async fn submission_loop(
                     other => sess.notify_approval(&id, other),
                 }
             }
-            Op::UpdateValidationPatchHarness { enabled } => {
+            Op::UpdateValidationTool { name, enable } => {
                 if let Some(sess) = sess.as_ref() {
-                    sess.update_validation_patch_harness(enabled);
+                    sess.update_validation_tool(&name, enable);
                 } else {
                     send_no_session_event(sub.id).await;
                 }
             }
-            Op::UpdateValidationTool { name, enable } => {
+            Op::UpdateValidationGroup { group, enable } => {
                 if let Some(sess) = sess.as_ref() {
-                    sess.update_validation_tool(&name, enable);
+                    sess.update_validation_group(group, enable);
                 } else {
                     send_no_session_event(sub.id).await;
                 }
@@ -3009,6 +3531,90 @@ async fn submission_loop(
                         warn!("failed to append to message history: {e}");
                     }
                 });
+            }
+
+            Op::Pro { action } => {
+                let Some(active_sess) = sess.as_ref() else {
+                    send_no_session_event(sub.id).await;
+                    continue;
+                };
+                let sess_ref = Arc::clone(active_sess);
+                use crate::protocol::ProAction;
+
+                let mut enable_change: Option<bool> = None;
+                let mut auto_change: Option<bool> = None;
+
+                match action {
+                    ProAction::On => enable_change = Some(true),
+                    ProAction::Off => enable_change = Some(false),
+                    ProAction::Toggle => {
+                        enable_change = Some(!sess_ref.pro_is_enabled());
+                    }
+                    ProAction::Status => {
+                        sess_ref.emit_pro_status_snapshot(&sub.id).await;
+                    }
+                    ProAction::AutoOn => auto_change = Some(true),
+                    ProAction::AutoOff => auto_change = Some(false),
+                    ProAction::AutoToggle => {
+                        auto_change = Some(!sess_ref.pro_autonomous_enabled());
+                    }
+                    ProAction::AutoStatus => {
+                        let enabled = sess_ref.pro_autonomous_enabled();
+                        let message = format!(
+                            "Autonomous mode: {}",
+                            if enabled { "enabled" } else { "disabled" }
+                        );
+                        sess_ref
+                            .emit_pro_event(
+                                &sub.id,
+                                ProEvent::DeveloperNote {
+                                    turn_id: "auto_status".to_string(),
+                                    note: message,
+                                    artifacts: Vec::new(),
+                                },
+                            )
+                            .await;
+                    }
+                }
+
+                if let Some(enable) = enable_change {
+                    sess_ref.pro_enabled.store(enable, Ordering::Relaxed);
+                    if enable {
+                        sess_ref.ensure_pro_supervisor();
+                        sess_ref
+                            .emit_pro_status_snapshot(PRO_SUBMISSION_ID)
+                            .await;
+                    } else {
+                        sess_ref.stop_pro_supervisor();
+                    }
+
+                    sess_ref
+                        .emit_pro_event(
+                            &sub.id,
+                            ProEvent::Toggled { enabled: enable },
+                        )
+                        .await;
+                }
+
+                if let Some(auto) = auto_change {
+                    sess_ref
+                        .pro_autonomous_enabled
+                        .store(auto, Ordering::Relaxed);
+                    let message = format!(
+                        "Pro Autonomous {}",
+                        if auto { "enabled" } else { "disabled" }
+                    );
+                    sess_ref
+                        .emit_pro_event(
+                            &sub.id,
+                            ProEvent::DeveloperNote {
+                                turn_id: "autonomous_toggle".to_string(),
+                                note: message,
+                                artifacts: Vec::new(),
+                            },
+                        )
+                        .await;
+                }
             }
 
             Op::RunProjectCommand {
@@ -3082,11 +3688,35 @@ async fn submission_loop(
 
                 // Attempt to inject input into current task
                 if let Err(items) = sess.inject_input(vec![InputItem::Text {
-                    text: "Start Summarization".to_string(),
+                    text: compact::SUMMARIZATION_PROMPT.to_string(),
                 }]) {
                     let turn_context = sess.make_turn_context();
                     compact::spawn_compact_task(sess.clone(), turn_context, sub.id.clone(), items);
+                } else {
+                    let was_empty = sess.enqueue_manual_compact(sub.id.clone());
+                    let message = if was_empty {
+                        "Manual compact queued; it will run after the current response finishes.".to_string()
+                    } else {
+                        "Manual compact already queued; waiting for the current response to finish.".to_string()
+                    };
+                    let event = sess.make_event(
+                        &sub.id,
+                        EventMsg::AgentMessage(AgentMessageEvent { message }),
+                    );
+                    sess.send_event(event).await;
                 }
+            }
+            Op::Review { review_request } => {
+                let sess = match sess.as_ref() {
+                    Some(sess) => Arc::clone(sess),
+                    None => {
+                        send_no_session_event(sub.id).await;
+                        continue;
+                    }
+                };
+                let config = Arc::clone(&config);
+                let sub_id = sub.id.clone();
+                spawn_review_thread(sess, config, sub_id, review_request).await;
             }
             Op::Shutdown => {
                 info!("Shutting down Codex instance");
@@ -3138,6 +3768,206 @@ async fn submission_loop(
     debug!("Agent loop exited");
 }
 
+async fn spawn_review_thread(
+    sess: Arc<Session>,
+    config: Arc<Config>,
+    sub_id: String,
+    review_request: ReviewRequest,
+) {
+    // Ensure any running task is stopped before starting the review flow.
+    sess.abort();
+
+    let parent_turn_context = sess.make_turn_context();
+
+    // Determine model + family for review mode.
+    let review_model = config.review_model.clone();
+    let review_family = find_family_for_model(&review_model)
+        .unwrap_or_else(|| derive_default_model_family(&review_model));
+
+    // Prepare a per-review configuration that favors deterministic feedback.
+    let mut review_config = (*config).clone();
+    review_config.model = review_model.clone();
+    review_config.model_family = review_family.clone();
+    review_config.model_reasoning_effort = ReasoningEffortConfig::Low;
+    review_config.model_reasoning_summary = ReasoningSummaryConfig::Detailed;
+    review_config.model_text_verbosity = config.model_text_verbosity;
+    review_config.user_instructions = None;
+    review_config.base_instructions = Some(REVIEW_PROMPT.to_string());
+    if let Some(info) = get_model_info(&review_family) {
+        review_config.model_context_window = Some(info.context_window);
+        review_config.model_max_output_tokens = Some(info.max_output_tokens);
+    }
+    let review_config = Arc::new(review_config);
+
+    let review_debug_logger = match crate::debug_logger::DebugLogger::new(review_config.debug) {
+        Ok(logger) => Arc::new(Mutex::new(logger)),
+        Err(err) => {
+            warn!("failed to create review debug logger: {err}");
+            Arc::new(Mutex::new(
+                crate::debug_logger::DebugLogger::new(false).unwrap(),
+            ))
+        }
+    };
+
+    let review_client = ModelClient::new(
+        review_config.clone(),
+        parent_turn_context.client.get_auth_manager(),
+        parent_turn_context.client.get_provider(),
+        review_config.model_reasoning_effort,
+        review_config.model_reasoning_summary,
+        review_config.model_text_verbosity,
+        sess.session_uuid(),
+        review_debug_logger,
+    );
+
+    let review_turn_context = Arc::new(TurnContext {
+        client: review_client,
+        cwd: parent_turn_context.cwd.clone(),
+        base_instructions: Some(REVIEW_PROMPT.to_string()),
+        user_instructions: None,
+        approval_policy: parent_turn_context.approval_policy,
+        sandbox_policy: parent_turn_context.sandbox_policy.clone(),
+        shell_environment_policy: parent_turn_context.shell_environment_policy.clone(),
+        is_review_mode: true,
+    });
+
+    let review_prompt_text = format!(
+        "{}\n\n---\n\nNow, here's your task: {}",
+        REVIEW_PROMPT.trim(),
+        review_request.prompt.trim()
+    );
+    let review_input = vec![InputItem::Text {
+        text: review_prompt_text,
+    }];
+
+    let task = AgentTask::review(Arc::clone(&sess), Arc::clone(&review_turn_context), sub_id.clone(), review_input);
+    sess.set_active_review(review_request.clone());
+    sess.set_task(task);
+
+    let event = sess.make_event(
+        &sub_id,
+        EventMsg::EnteredReviewMode(review_request.clone()),
+    );
+    sess.send_event(event).await;
+}
+
+async fn exit_review_mode(
+    session: Arc<Session>,
+    task_sub_id: String,
+    review_output: Option<ReviewOutputEvent>,
+) {
+    let event = session.make_event(&task_sub_id, EventMsg::ExitedReviewMode(review_output.clone()));
+    session.send_event(event).await;
+
+    let active_request = session.take_active_review();
+
+    let developer_text = match review_output.clone() {
+        Some(output) => {
+            let mut sections: Vec<String> = Vec::new();
+            if !output.overall_explanation.trim().is_empty() {
+                sections.push(output.overall_explanation.trim().to_string());
+            }
+            if !output.findings.is_empty() {
+                sections.push(format_review_findings_block(&output.findings, None));
+            }
+            if !output.overall_correctness.trim().is_empty() {
+                sections.push(format!(
+                    "Overall correctness: {}",
+                    output.overall_correctness.trim()
+                ));
+            }
+            if output.overall_confidence_score > 0.0 {
+                sections.push(format!(
+                    "Confidence score: {:.1}",
+                    output.overall_confidence_score
+                ));
+            }
+
+            let results = if sections.is_empty() {
+                "Reviewer did not provide any findings.".to_string()
+            } else {
+                sections.join("\n\n")
+            };
+
+            format!(
+                "<user_action>\n  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>\n  <action>review</action>\n  <results>\n  {}\n  </results>\n</user_action>\n",
+                results
+            )
+        }
+        None => {
+            "<user_action>\n  <context>User initiated a review task, but it ended without a final response. If the user asks about this, tell them to re-initiate a review with `/review` and wait for it to complete.</context>\n  <action>review</action>\n  <results>\n  None.\n  </results>\n</user_action>\n"
+                .to_string()
+        }
+    };
+
+    let developer_message = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText { text: developer_text }],
+    };
+    let status = if review_output.is_some() {
+        "complete"
+    } else {
+        "no_output"
+    };
+
+    let mut metadata_payload = json!({
+        "type": "code_review_metadata",
+        "status": status,
+    });
+
+    if let Some(request) = active_request {
+        metadata_payload["prompt"] = json!(request.prompt);
+        metadata_payload["user_facing_hint"] = json!(request.user_facing_hint);
+        if let Some(meta) = request.metadata {
+            metadata_payload["review_context"] = serde_json::to_value(meta).unwrap_or(json!({}));
+        }
+    }
+
+    if let Some(ref output) = review_output {
+        metadata_payload["overall_correctness"] = json!(output.overall_correctness);
+        metadata_payload["overall_confidence_score"] = json!(output.overall_confidence_score);
+        metadata_payload["finding_count"] = json!(output.findings.len());
+        metadata_payload["findings"] = serde_json::to_value(&output.findings).unwrap_or(json!([]));
+    }
+
+    let metadata_text = serde_json::to_string_pretty(&metadata_payload)
+        .unwrap_or_else(|_| metadata_payload.to_string());
+
+    let metadata_message = ResponseItem::Message {
+        id: None,
+        role: "developer".to_string(),
+        content: vec![ContentItem::InputText { text: metadata_text }],
+    };
+
+    session
+        .record_conversation_items(&[developer_message, metadata_message])
+        .await;
+}
+
+fn parse_review_output_event(text: &str) -> ReviewOutputEvent {
+    if let Ok(parsed) = serde_json::from_str::<ReviewOutputEvent>(text) {
+        return parsed;
+    }
+
+    // Attempt to extract JSON from fenced code blocks if present.
+    if let Some(idx) = text.find("```json") {
+        if let Some(end_idx) = text[idx + 7..].find("```") {
+            let json_slice = &text[idx + 7..idx + 7 + end_idx];
+            if let Ok(parsed) = serde_json::from_str::<ReviewOutputEvent>(json_slice) {
+                return parsed;
+            }
+        }
+    }
+
+    ReviewOutputEvent {
+        findings: Vec::new(),
+        overall_correctness: String::new(),
+        overall_explanation: text.trim().to_string(),
+        overall_confidence_score: 0.0,
+    }
+}
+
 // Intentionally omit upstream review thread spawning; our fork handles review flows differently.
 /// Takes a user message as input and runs a loop where, at each turn, the model
 /// replies with either:
@@ -3162,6 +3992,11 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
     }
     // Continue with our fork's history and input handling.
 
+    let is_review_mode = turn_context.is_review_mode;
+    let mut review_history: Vec<ResponseItem> = Vec::new();
+    let mut review_messages: Vec<String> = Vec::new();
+    let mut review_exit_emitted = false;
+
     let pending_only_turn = input.len() == 1
         && matches!(
             &input[0],
@@ -3185,11 +4020,17 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
 
     if !pending_only_turn {
         // Convert input to ResponseInputItem
-        let response_item: ResponseItem = response_input_from_core_items(input.clone()).into();
+        let mut response_input = response_input_from_core_items(input.clone());
+        sess.enforce_user_message_limits(&sub_id, &mut response_input);
+        let response_item: ResponseItem = response_input.into();
 
-        // Record to history but we'll handle ephemeral images separately
-        sess.record_conversation_items(&[response_item.clone()])
-            .await;
+        if is_review_mode {
+            review_history.push(response_item.clone());
+        } else {
+            // Record to history but we'll handle ephemeral images separately
+            sess.record_conversation_items(&[response_item.clone()])
+                .await;
+        }
         initial_response_item = Some(response_item);
     }
 
@@ -3215,8 +4056,12 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
         if initial_response_item.is_none() {
             if let Some(first_pending) = pending_input_tail.first().cloned() {
                 pending_input_tail.remove(0);
-                sess.record_conversation_items(&[first_pending.clone()])
-                    .await;
+                if is_review_mode {
+                    review_history.push(first_pending.clone());
+                } else {
+                    sess.record_conversation_items(&[first_pending.clone()])
+                        .await;
+                }
                 initial_response_item = Some(first_pending);
             } else {
                 tracing::warn!(
@@ -3240,7 +4085,14 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
         // conversation history on each turn. The rollout file, however, should
         // only record the new items that originated in this turn so that it
         // represents an append-only log without duplicates.
-        let turn_input: Vec<ResponseItem> = sess.turn_input_with_history(pending_input_tail.clone());
+        let turn_input: Vec<ResponseItem> = if is_review_mode {
+            if !pending_input_tail.is_empty() {
+                review_history.extend(pending_input_tail.clone());
+            }
+            review_history.clone()
+        } else {
+            sess.turn_input_with_history(pending_input_tail.clone())
+        };
 
         let turn_input_messages: Vec<String> = turn_input
             .iter()
@@ -3274,13 +4126,22 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
                     match (&item, &response) {
                         (ResponseItem::Message { role, .. }, None) if role == "assistant" => {
                             // If the model returned a message, we need to record it.
-                            items_to_record_in_conversation_history.push(item);
+                            items_to_record_in_conversation_history.push(item.clone());
+                            if is_review_mode {
+                                if let ResponseItem::Message { content, .. } = &item {
+                                    for ci in content {
+                                        if let ContentItem::OutputText { text } = ci {
+                                            review_messages.push(text.clone());
+                                        }
+                                    }
+                                }
+                            }
                         }
                         (
                             ResponseItem::LocalShellCall { .. },
                             Some(ResponseInputItem::FunctionCallOutput { call_id, output }),
                         ) => {
-                            items_to_record_in_conversation_history.push(item);
+                            items_to_record_in_conversation_history.push(item.clone());
                             items_to_record_in_conversation_history.push(
                                 ResponseItem::FunctionCallOutput {
                                     call_id: call_id.clone(),
@@ -3296,7 +4157,7 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
                                 "Recording function call and output for call_id: {}",
                                 call_id
                             );
-                            items_to_record_in_conversation_history.push(item);
+                            items_to_record_in_conversation_history.push(item.clone());
                             items_to_record_in_conversation_history.push(
                                 ResponseItem::FunctionCallOutput {
                                     call_id: call_id.clone(),
@@ -3308,7 +4169,7 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
                             ResponseItem::CustomToolCall { .. },
                             Some(ResponseInputItem::CustomToolCallOutput { call_id, output }),
                         ) => {
-                            items_to_record_in_conversation_history.push(item);
+                            items_to_record_in_conversation_history.push(item.clone());
                             items_to_record_in_conversation_history.push(
                                 ResponseItem::CustomToolCallOutput {
                                     call_id: call_id.clone(),
@@ -3320,7 +4181,7 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
                             ResponseItem::FunctionCall { .. },
                             Some(ResponseInputItem::McpToolCallOutput { call_id, result }),
                         ) => {
-                            items_to_record_in_conversation_history.push(item);
+                            items_to_record_in_conversation_history.push(item.clone());
                             let output =
                                 convert_call_tool_result_to_function_call_output_payload(&result);
                             items_to_record_in_conversation_history.push(
@@ -3357,17 +4218,23 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
 
                 // Only attempt to take the lock if there is something to record.
                 if !items_to_record_in_conversation_history.is_empty() {
-                    // Record items in their original chronological order to maintain
-                    // proper sequence of events. This ensures function calls and their
-                    // outputs appear in the correct order in conversation history.
-                    sess.record_conversation_items(&items_to_record_in_conversation_history)
-                        .await;
+                    if is_review_mode {
+                        review_history.extend(items_to_record_in_conversation_history.clone());
+                    } else {
+                        // Record items in their original chronological order to maintain
+                        // proper sequence of events. This ensures function calls and their
+                        // outputs appear in the correct order in conversation history.
+                        sess.record_conversation_items(&items_to_record_in_conversation_history)
+                            .await;
+                    }
                 }
 
                 // If there are responses, add them to pending input for the next iteration
                 if !responses.is_empty() {
-                    for response in &responses {
-                        sess.add_pending_input(response.clone());
+                    if !is_review_mode {
+                        for response in &responses {
+                            sess.add_pending_input(response.clone());
+                        }
                     }
                 }
 
@@ -3394,11 +4261,29 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
                     EventMsg::Error(ErrorEvent { message: e.to_string() }),
                 );
                 sess.tx_event.send(event).await.ok();
+                if is_review_mode && !review_exit_emitted {
+                    exit_review_mode(sess.clone(), sub_id.clone(), None).await;
+                    review_exit_emitted = true;
+                }
                 // let the user continue the conversation
                 break;
             }
         }
     }
+    if is_review_mode && !review_exit_emitted {
+        let combined = if !review_messages.is_empty() {
+            review_messages.join("\n\n")
+        } else {
+            last_task_message.clone().unwrap_or_default()
+        };
+        let output = if combined.trim().is_empty() {
+            None
+        } else {
+            Some(parse_review_output_event(&combined))
+        };
+        exit_review_mode(sess.clone(), sub_id.clone(), output).await;
+    }
+
     sess.remove_task(&sub_id);
     let event = sess.make_event(
         &sub_id,
@@ -3413,6 +4298,24 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
         _ => {}
     }
     sess.tx_event.send(event).await.ok();
+
+    if sess.pro_is_enabled() {
+        let sub = Uuid::new_v4().to_string();
+        sess.observer_maybe_trigger(sub, true, "task_complete");
+    }
+
+    if let Some(compact_sub_id) = sess.dequeue_manual_compact() {
+        let turn_context = sess.make_turn_context();
+        compact::spawn_compact_task(
+            Arc::clone(&sess),
+            turn_context,
+            compact_sub_id,
+            vec![InputItem::Text {
+                text: compact::SUMMARIZATION_PROMPT.to_string(),
+            }],
+        );
+        return;
+    }
 
     if let Some(queued) = sess.pop_next_queued_user_input() {
         let sess_clone = Arc::clone(&sess);
@@ -3485,6 +4388,7 @@ async fn run_turn(
             text_format: None,
             model_override: None,
             model_family_override: None,
+            output_schema: None,
         };
 
         // Start a new scratchpad for this HTTP attempt
@@ -3504,6 +4408,25 @@ async fn run_turn(
             Err(CodexErr::Interrupted) => return Err(CodexErr::Interrupted),
             Err(CodexErr::EnvVar(var)) => return Err(CodexErr::EnvVar(var)),
             Err(e @ (CodexErr::UsageLimitReached(_) | CodexErr::UsageNotIncluded)) => {
+                if let CodexErr::UsageLimitReached(limit_err) = &e {
+                    if let Some(ctx) = account_usage_context(&sess) {
+                        let usage_home = ctx.codex_home.clone();
+                        let usage_account = ctx.account_id.clone();
+                        let usage_plan = ctx.plan.clone();
+                        let resets = limit_err.resets_in_seconds;
+                        spawn_usage_task(move || {
+                            if let Err(err) = account_usage::record_usage_limit_hint(
+                                &usage_home,
+                                &usage_account,
+                                usage_plan.as_deref(),
+                                resets,
+                                Utc::now(),
+                            ) {
+                                warn!("Failed to persist usage limit hint: {err}");
+                            }
+                        });
+                    }
+                }
                 return Err(e);
             }
             Err(e) => {
@@ -3849,7 +4772,7 @@ async fn try_run_turn(
                     handle_response_item(sess, turn_diff_tracker, sub_id, item.clone(), sequence_number, output_index, attempt_req).await?;
 
                 // Save into scratchpad so we can seed a retry if the stream drops later.
-                sess.scratchpad_push(&item, &response);
+                sess.scratchpad_push(&item, &response, &sub_id);
 
                 // If this was a finalized assistant message, clear partial text buffer
                 if let ResponseItem::Message { .. } = &item {
@@ -3913,6 +4836,26 @@ async fn try_run_turn(
                         .ok();
                 }
 
+                if let Some(usage) = token_usage.as_ref() {
+                    if let Some(ctx) = account_usage_context(sess) {
+                        let usage_home = ctx.codex_home.clone();
+                        let usage_account = ctx.account_id.clone();
+                        let usage_plan = ctx.plan.clone();
+                        let usage_clone = usage.clone();
+                        spawn_usage_task(move || {
+                            if let Err(err) = account_usage::record_token_usage(
+                                &usage_home,
+                                &usage_account,
+                                usage_plan.as_deref(),
+                                &usage_clone,
+                                Utc::now(),
+                            ) {
+                                warn!("Failed to persist token usage: {err}");
+                            }
+                        });
+                    }
+                }
+
                 let unified_diff = turn_diff_tracker.get_unified_diff();
                 if let Ok(Some(unified_diff)) = unified_diff {
                     let msg = EventMsg::TurnDiff(TurnDiffEvent { unified_diff });
@@ -3968,13 +4911,24 @@ async fn try_run_turn(
             }
             ResponseEvent::RateLimits(snapshot) => {
                 let mut state = sess.state.lock().unwrap();
-                state.latest_rate_limits = Some(RateLimitSnapshotEvent {
-                    primary_used_percent: snapshot.primary_used_percent,
-                    weekly_used_percent: snapshot.weekly_used_percent,
-                    primary_to_weekly_ratio_percent: snapshot.primary_to_weekly_ratio_percent,
-                    primary_window_minutes: snapshot.primary_window_minutes,
-                    weekly_window_minutes: snapshot.weekly_window_minutes,
-                });
+                state.latest_rate_limits = Some(snapshot.clone());
+                if let Some(ctx) = account_usage_context(sess) {
+                    let usage_home = ctx.codex_home.clone();
+                    let usage_account = ctx.account_id.clone();
+                    let usage_plan = ctx.plan.clone();
+                    let snapshot_clone = snapshot.clone();
+                    spawn_usage_task(move || {
+                        if let Err(err) = account_usage::record_rate_limit_snapshot(
+                            &usage_home,
+                            &usage_account,
+                            usage_plan.as_deref(),
+                            &snapshot_clone,
+                            Utc::now(),
+                        ) {
+                            warn!("Failed to persist rate limit snapshot: {err}");
+                        }
+                    });
+                }
             }
             // Note: ReasoningSummaryPartAdded handled above without scratchpad mutation.
         }
@@ -4145,6 +5099,13 @@ fn ensure_agent_dir(cwd: &Path, agent_id: &str) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+fn ensure_user_dir(cwd: &Path) -> Result<PathBuf, String> {
+    let dir = cwd.join(".code").join("users");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create user dir {}: {}", dir.display(), e))?;
+    Ok(dir)
+}
+
 fn write_agent_file(dir: &Path, filename: &str, content: &str) -> Result<PathBuf, String> {
     let path = dir.join(filename);
     std::fs::write(&path, content)
@@ -4152,17 +5113,57 @@ fn write_agent_file(dir: &Path, filename: &str, content: &str) -> Result<PathBuf
     Ok(path)
 }
 
+const AGENT_PREVIEW_MAX_BYTES: usize = 32 * 1024; // 32 KiB
+
 fn preview_first_n_lines(s: &str, n: usize) -> (String, usize) {
-    let mut lines = s.lines();
-    let mut collected: Vec<&str> = Vec::new();
-    for _ in 0..n {
-        if let Some(l) = lines.next() {
-            collected.push(l);
-        } else {
-            break;
-        }
+    let total_lines = s.lines().count();
+    let mut preview = s.lines().take(n).collect::<Vec<_>>().join("\n");
+
+    let (maybe_truncated, was_truncated, _, _) =
+        truncate_middle_bytes(&preview, AGENT_PREVIEW_MAX_BYTES);
+    if was_truncated {
+        preview = maybe_truncated;
+        preview.push_str(&format!(
+            "\n…preview truncated to roughly {AGENT_PREVIEW_MAX_BYTES} bytes…"
+        ));
+    } else {
+        preview = maybe_truncated;
     }
-    (collected.join("\n"), s.lines().count())
+
+    if total_lines > n {
+        if !preview.ends_with('\n') {
+            preview.push('\n');
+        }
+        preview.push_str("…additional lines omitted…");
+    }
+
+    (preview, total_lines)
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+
+    #[test]
+    fn truncates_excessively_long_single_line() {
+        let input = "x".repeat(AGENT_PREVIEW_MAX_BYTES + 1024);
+        let (preview, total_lines) = preview_first_n_lines(&input, 500);
+        assert_eq!(total_lines, 1);
+        assert!(preview.contains("…truncated…"));
+        assert!(preview.contains("preview truncated to roughly"));
+    }
+
+    #[test]
+    fn notes_when_additional_lines_omitted() {
+        let input = (0..600)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (preview, total_lines) = preview_first_n_lines(&input, 500);
+        assert_eq!(total_lines, 600);
+        assert!(preview.contains("…additional lines omitted…"));
+        assert!(!preview.contains("preview truncated to roughly"));
+    }
 }
 
 async fn handle_function_call(
@@ -4213,6 +5214,7 @@ async fn handle_function_call(
         "browser_cleanup" => handle_browser_cleanup(sess, &ctx).await,
         "web_fetch" => handle_web_fetch(sess, &ctx, arguments).await,
         "wait" => handle_wait(sess, &ctx, arguments).await,
+        "kill" => handle_kill(sess, &ctx, arguments).await,
         _ => {
             match sess.mcp_connection_manager.parse_tool_name(&name) {
                 Some((server, tool_name)) => {
@@ -5355,6 +6357,152 @@ async fn handle_wait(
     ).await
 }
 
+// Kill a background shell execution by call_id.
+async fn handle_kill(
+    sess: &Session,
+    ctx: &ToolCallCtx,
+    arguments: String,
+) -> ResponseInputItem {
+    use serde::Deserialize;
+    #[derive(Deserialize, Clone)]
+    struct Params {
+        call_id: String,
+    }
+
+    let mut params_for_event = serde_json::from_str::<serde_json::Value>(&arguments).ok();
+    let arguments_clone = arguments.clone();
+    let ctx_clone = ToolCallCtx::new(ctx.sub_id.clone(), ctx.call_id.clone(), ctx.seq_hint, ctx.output_index);
+    let ctx_for_closure = ctx_clone.clone();
+    let tx_event = sess.tx_event.clone();
+
+    execute_custom_tool(
+        sess,
+        &ctx_clone,
+        "kill".to_string(),
+        params_for_event.take(),
+        move || async move {
+            let ctx_inner = ctx_for_closure.clone();
+            let parsed: Params = match serde_json::from_str(&arguments_clone) {
+                Ok(p) => p,
+                Err(e) => {
+                    return ResponseInputItem::FunctionCallOutput {
+                        call_id: ctx_inner.call_id.clone(),
+                        output: FunctionCallOutputPayload {
+                            content: format!("Invalid kill arguments: {e}"),
+                            success: Some(false),
+                        },
+                    };
+                }
+            };
+
+            use std::sync::atomic::Ordering;
+
+            let (
+                notify,
+                result_cell,
+                suppress_flag,
+                cmd_display,
+                order_meta_for_end,
+                sub_id_for_end,
+                handle_opt,
+                already_done,
+            ) = {
+                let mut st = sess.state.lock().unwrap();
+                match st.background_execs.get_mut(&parsed.call_id) {
+                    Some(bg) => {
+                        let done = bg.result_cell.lock().unwrap().is_some();
+                        let handle = bg.task_handle.take();
+                        (
+                            bg.notify.clone(),
+                            bg.result_cell.clone(),
+                            bg.suppress_event.clone(),
+                            bg.cmd_display.clone(),
+                            bg.order_meta_for_end.clone(),
+                            bg.sub_id.clone(),
+                            handle,
+                            done,
+                        )
+                    }
+                    None => {
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id: ctx_inner.call_id.clone(),
+                            output: FunctionCallOutputPayload {
+                                content: format!("No background job found for call_id={}", parsed.call_id),
+                                success: Some(false),
+                            },
+                        };
+                    }
+                }
+            };
+
+            if already_done {
+                return ResponseInputItem::FunctionCallOutput {
+                    call_id: ctx_inner.call_id.clone(),
+                    output: FunctionCallOutputPayload {
+                        content: format!("Background job {} has already completed.", parsed.call_id),
+                        success: Some(false),
+                    },
+                };
+            }
+
+            suppress_flag.store(true, Ordering::Relaxed);
+            if let Some(handle) = handle_opt {
+                handle.abort();
+                let _ = handle.await;
+            }
+
+            let cancel_message = "Cancelled by user.".to_string();
+            let output = ExecToolCallOutput {
+                exit_code: 130,
+                stdout: StreamOutput::new(String::new()),
+                stderr: StreamOutput::new(cancel_message.clone()),
+                aggregated_output: StreamOutput::new(cancel_message.clone()),
+                duration: std::time::Duration::ZERO,
+                timed_out: false,
+            };
+
+            {
+                let mut slot = result_cell.lock().unwrap();
+                *slot = Some(output.clone());
+            }
+
+            notify.notify_waiters();
+            if let Some(global) = ANY_BG_NOTIFY.get() {
+                global.notify_waiters();
+            }
+
+            let end_msg = EventMsg::ExecCommandEnd(ExecCommandEndEvent {
+                call_id: parsed.call_id.clone(),
+                stdout: output.stdout.text.clone(),
+                stderr: output.stderr.text.clone(),
+                exit_code: output.exit_code,
+                duration: output.duration,
+            });
+            let event = Event {
+                id: sub_id_for_end.clone(),
+                event_seq: 0,
+                msg: end_msg,
+                order: Some(order_meta_for_end),
+            };
+            let _ = tx_event.send(event).await;
+
+            let status = if cmd_display.trim().is_empty() {
+                format!("Killed background job {}", parsed.call_id)
+            } else {
+                format!("Killed background command: {}", cmd_display)
+            };
+
+            ResponseInputItem::FunctionCallOutput {
+                call_id: ctx_inner.call_id.clone(),
+                output: FunctionCallOutputPayload {
+                    content: status,
+                    success: Some(true),
+                },
+            }
+        },
+    ).await
+}
+
 fn to_exec_params(params: ShellToolCallParams, sess: &Session) -> ExecParams {
     ExecParams {
         command: params.command,
@@ -5363,6 +6511,53 @@ fn to_exec_params(params: ShellToolCallParams, sess: &Session) -> ExecParams {
         env: create_env(&sess.shell_environment_policy),
         with_escalated_permissions: params.with_escalated_permissions,
         justification: params.justification,
+    }
+}
+
+fn resolve_agent_read_only(requested: Option<bool>, config: Option<&crate::config_types::AgentConfig>) -> bool {
+    if let Some(flag) = requested {
+        flag
+    } else {
+        config.map(|c| c.read_only).unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod resolve_read_only_tests {
+    use super::*;
+    use crate::config_types::AgentConfig;
+
+    fn make_config(read_only: bool) -> AgentConfig {
+        AgentConfig {
+            name: "test".into(),
+            command: "test".into(),
+            args: Vec::new(),
+            read_only,
+            enabled: true,
+            description: None,
+            env: None,
+            args_read_only: None,
+            args_write: None,
+            instructions: None,
+        }
+    }
+
+    #[test]
+    fn explicit_flag_overrides_config_true() {
+        let cfg = make_config(true);
+        assert!(!resolve_agent_read_only(Some(false), Some(&cfg)));
+    }
+
+    #[test]
+    fn falls_back_to_config_when_request_absent() {
+        let cfg = make_config(true);
+        assert!(resolve_agent_read_only(None, Some(&cfg)));
+    }
+
+    #[test]
+    fn defaults_to_false_without_config() {
+        assert!(!resolve_agent_read_only(None, None));
+        assert!(resolve_agent_read_only(Some(true), None));
     }
 }
 
@@ -5409,7 +6604,7 @@ fn maybe_run_with_user_profile(params: ExecParams, sess: &Session) -> ExecParams
     params
 }
 
-async fn handle_run_agent(sess: &Session, ctx: &ToolCallCtx, arguments: String) -> ResponseInputItem {
+pub(crate) async fn handle_run_agent(sess: &Session, ctx: &ToolCallCtx, arguments: String) -> ResponseInputItem {
     let params_for_event = serde_json::from_str(&arguments).ok();
     let arguments_clone = arguments.clone();
     let call_id_clone = ctx.call_id.clone();
@@ -5518,8 +6713,8 @@ async fn handle_run_agent(sess: &Session, ctx: &ToolCallCtx, arguments: String) 
                         continue;
                     }
 
-                    // Override read_only if agent is configured as read-only
-                    let read_only = config.read_only || params.read_only.unwrap_or(false);
+                    // Respect explicit read_only flag from the caller; otherwise fall back to the config default.
+                    let read_only = resolve_agent_read_only(params.read_only, Some(config));
 
                     let agent_id = manager
                         .create_agent_with_config(
@@ -5541,6 +6736,7 @@ async fn handle_run_agent(sess: &Session, ctx: &ToolCallCtx, arguments: String) 
                         skipped.push(format!("{} (missing: {})", model, cmd_to_check));
                         continue;
                     }
+                    let read_only = resolve_agent_read_only(params.read_only, None);
                     let agent_id = manager
                         .create_agent(
                             model,
@@ -5548,7 +6744,7 @@ async fn handle_run_agent(sess: &Session, ctx: &ToolCallCtx, arguments: String) 
                             params.context.clone(),
                             params.output.clone(),
                             params.files.clone().unwrap_or_default(),
-                            params.read_only.unwrap_or(false),
+                            read_only,
                             batch_id.clone(),
                         )
                         .await;
@@ -5558,6 +6754,7 @@ async fn handle_run_agent(sess: &Session, ctx: &ToolCallCtx, arguments: String) 
 
             // If nothing runnable remains, fall back to a single built‑in Codex agent.
             if agent_ids.is_empty() {
+                let read_only = resolve_agent_read_only(params.read_only, None);
                 let agent_id = manager
                     .create_agent(
                         "code".to_string(),
@@ -5565,7 +6762,7 @@ async fn handle_run_agent(sess: &Session, ctx: &ToolCallCtx, arguments: String) 
                         params.context.clone(),
                         params.output.clone(),
                         params.files.clone().unwrap_or_default(),
-                        params.read_only.unwrap_or(false),
+                        read_only,
                         None,
                     )
                     .await;
@@ -6615,6 +7812,21 @@ async fn handle_container_exec_with_params(
         };
     }
 
+    if let Some(cat_guard) = detect_cat_write(&params.command) {
+        let guidance = guidance_for_cat_write(&cat_guard);
+        sess
+            .notify_background_event(&sub_id, format!("Command guard: {}", guidance.clone()))
+            .await;
+
+        return ResponseInputItem::FunctionCallOutput {
+            call_id,
+            output: FunctionCallOutputPayload {
+                content: guidance,
+                success: None,
+            },
+        };
+    }
+
     if let Some(python_guard) = detect_python_write(&params.command) {
         let guidance = guidance_for_python_write(&python_guard);
         sess
@@ -6936,6 +8148,16 @@ async fn handle_container_exec_with_params(
     let result_cell: std::sync::Arc<std::sync::Mutex<Option<ExecToolCallOutput>>> = std::sync::Arc::new(std::sync::Mutex::new(None));
     let backgrounded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let suppress_event_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let order_meta_for_end = crate::protocol::OrderMeta {
+        request_ordinal: attempt_req,
+        output_index,
+        sequence_number: seq_hint_for_exec.map(|h| h.saturating_add(1)),
+    };
+    let order_meta_for_deltas = crate::protocol::OrderMeta {
+        request_ordinal: attempt_req,
+        output_index,
+        sequence_number: None,
+    };
     {
         let mut st = sess.state.lock().unwrap();
         st.background_execs.insert(
@@ -6946,6 +8168,9 @@ async fn handle_container_exec_with_params(
                 tail_buf: Some(tail_buf.clone()),
                 cmd_display: display_label.clone(),
                 suppress_event: suppress_event_flag.clone(),
+                task_handle: None,
+                order_meta_for_end: order_meta_for_end.clone(),
+                sub_id: sub_id.clone(),
             },
         );
     }
@@ -6969,14 +8194,12 @@ async fn handle_container_exec_with_params(
     let sandbox_cwd = sess.get_cwd().to_path_buf();
     let codex_linux_sandbox_exe = sess.codex_linux_sandbox_exe.clone();
     let result_cell_for_task = result_cell.clone();
-    let order_meta_for_end = crate::protocol::OrderMeta { request_ordinal: attempt_req, output_index, sequence_number: seq_hint_for_exec.map(|h| h.saturating_add(1)) };
-    let order_meta_for_deltas = crate::protocol::OrderMeta { request_ordinal: attempt_req, output_index, sequence_number: None };
     let notify_task = notify.clone();
     let tail_buf_task = tail_buf.clone();
     let backgrounded_task = backgrounded.clone();
     let suppress_event_flag_task = suppress_event_flag.clone();
     let display_label_task = display_label.clone();
-    tokio::spawn(async move {
+    let task_handle = tokio::spawn(async move {
         // Build stdout stream with tail capture. We cannot stamp via `Session` here,
         // but deltas will be delivered with neutral ordering which the UI tolerates.
         let stdout_stream = if exec_command_context.apply_patch.is_some() {
@@ -7059,7 +8282,8 @@ async fn handle_container_exec_with_params(
                         display_label_task.clone()
                     };
                     let header = format!("Background shell completed ({header_label}), exit_code={}, duration={:?}.", out.exit_code, out.duration);
-                    let body = out.aggregated_output.text.clone();
+                    let full_body = format_exec_output_str(&out);
+                    let body = truncate_exec_output_for_storage(&sandbox_cwd, &sub_id_for_events, &call_id_for_events, &full_body);
                     let dev_text = format!("{}\n\n{}", header, body);
                     let _ = tx
                         .send(Submission { id: uuid::Uuid::new_v4().to_string(), op: Op::AddPendingInputDeveloper { text: dev_text } })
@@ -7070,6 +8294,13 @@ async fn handle_container_exec_with_params(
         }
         notify_task.notify_waiters();
     });
+
+    {
+        let mut st = sess.state.lock().unwrap();
+        if let Some(bg) = st.background_execs.get_mut(&call_id) {
+            bg.task_handle = Some(task_handle);
+        }
+    }
 
     // Wait up to 10 seconds for completion
     let waited = tokio::time::timeout(std::time::Duration::from_secs(10), notify.notified()).await;
@@ -7266,13 +8497,14 @@ async fn handle_sandbox_error(
 // context overflows. Keep this conservative because multiple tool outputs
 // can appear in a single turn. The limit is in bytes (on the UTF‑8 string).
 const MAX_TOOL_OUTPUT_BYTES_FOR_MODEL: usize = 32 * 1024; // 32 KiB
+const TRUNCATION_MARKER: &str = "…truncated…\n";
 
-fn truncate_middle_bytes(s: &str, max_bytes: usize) -> (String, bool) {
+fn truncate_middle_bytes(s: &str, max_bytes: usize) -> (String, bool, usize, usize) {
     if s.len() <= max_bytes {
-        return (s.to_string(), false);
+        return (s.to_string(), false, s.len(), s.len());
     }
     if max_bytes == 0 {
-        return ("…truncated…".to_string(), true);
+        return (TRUNCATION_MARKER.trim_end().to_string(), true, 0, s.len());
     }
 
     // Try to keep some head/tail, favoring newline boundaries when possible.
@@ -7302,9 +8534,9 @@ fn truncate_middle_bytes(s: &str, max_bytes: usize) -> (String, bool) {
 
     let mut out = String::with_capacity(max_bytes);
     out.push_str(&s[..prefix_end]);
-    out.push_str("…truncated…\n");
+    out.push_str(TRUNCATION_MARKER);
     out.push_str(&s[suffix_start..]);
-    (out, true)
+    (out, true, prefix_end, suffix_start)
 }
 
 fn format_exec_output_str(exec_output: &ExecToolCallOutput) -> String {
@@ -7323,6 +8555,28 @@ fn format_exec_output_str(exec_output: &ExecToolCallOutput) -> String {
     }
 
     formatted_output
+}
+
+fn truncate_exec_output_for_storage(
+    cwd: &Path,
+    sub_id: &str,
+    call_id: &str,
+    full: &str,
+) -> String {
+    let (maybe_truncated, was_truncated, _, _) = truncate_middle_bytes(full, MAX_TOOL_OUTPUT_BYTES_FOR_MODEL);
+    if !was_truncated {
+        return maybe_truncated;
+    }
+
+    let file_note = match ensure_agent_dir(cwd, sub_id)
+        .and_then(|dir| write_agent_file(&dir, &format!("exec-{call_id}.txt"), full))
+    {
+        Ok(path) => format!("\n\n[Full output saved to: {}]", path.display()),
+        Err(e) => format!("\n\n[Full output was too large and truncation applied; failed to save file: {e}]")
+    };
+    let mut truncated = maybe_truncated;
+    truncated.push_str(&file_note);
+    truncated
 }
 
 /// Exec output serialized for the model. If the payload is too large,
@@ -7351,26 +8605,9 @@ fn format_exec_output_with_limit(
     // round to 1 decimal place
     let duration_seconds = ((duration.as_secs_f32()) * 10.0).round() / 10.0;
 
+    let cwd = sess.get_cwd().to_path_buf();
     let full = format_exec_output_str(exec_output);
-    let (maybe_truncated, was_truncated) =
-        truncate_middle_bytes(&full, MAX_TOOL_OUTPUT_BYTES_FOR_MODEL);
-
-    // If truncated, persist the full output under .code/agents/<agent>/exec-<call_id>.txt
-    // so users can inspect it and the model can refer to a short, stable path.
-    let final_output = if was_truncated {
-        let cwd = sess.get_cwd().to_path_buf();
-        let file_note = match ensure_agent_dir(&cwd, sub_id)
-            .and_then(|dir| write_agent_file(&dir, &format!("exec-{call_id}.txt"), &full))
-        {
-            Ok(path) => format!("\n\n[Full output saved to: {}]", path.display()),
-            Err(e) => format!("\n\n[Full output was too large and truncation applied; failed to save file: {e}]")
-        };
-        let mut s = maybe_truncated;
-        s.push_str(&file_note);
-        s
-    } else {
-        maybe_truncated
-    };
+    let final_output = truncate_exec_output_for_storage(&cwd, sub_id, call_id, &full);
 
     let payload = ExecOutput {
         output: &final_output,
@@ -7462,6 +8699,7 @@ async fn send_agent_status_update(sess: &Session) {
                 AgentStatus::Failed => "failed".to_string(),
                 AgentStatus::Cancelled => "cancelled".to_string(),
             },
+            batch_id: agent.batch_id.clone(),
             model: Some(agent.model.clone()),
             last_progress: agent.progress.last().cloned(),
             result: agent.result.clone(),
@@ -8805,6 +10043,96 @@ fn extract_shell_script_from_wrapper(argv: &[String]) -> Option<(usize, String)>
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct CatWriteSuggestion {
+    label: &'static str,
+    original_value: String,
+}
+
+fn detect_cat_write(argv: &[String]) -> Option<CatWriteSuggestion> {
+    if let Some((_, script)) = extract_shell_script_from_wrapper(argv) {
+        if script_contains_cat_write(&script) {
+            return Some(CatWriteSuggestion {
+                label: "original_script",
+                original_value: script,
+            });
+        }
+    }
+
+    None
+}
+
+fn script_contains_cat_write(script: &str) -> bool {
+    script
+        .lines()
+        .any(|line| line_contains_cat_heredoc_write(line))
+}
+
+fn line_contains_cat_heredoc_write(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return false;
+    }
+
+    let lower = line.to_ascii_lowercase();
+    if !lower.contains("<<") || !lower.contains('>') {
+        return false;
+    }
+
+    let bytes = lower.as_bytes();
+    let mut idx = 0;
+    while idx + 3 <= bytes.len() {
+        if bytes[idx..].starts_with(b"cat") {
+            if idx > 0 {
+                let prev = bytes[idx - 1];
+                if prev.is_ascii_alphanumeric() || prev == b'_' {
+                    idx += 1;
+                    continue;
+                }
+            }
+
+            let after = &lower[idx + 3..];
+            let after_trimmed = after.trim_start();
+            if after_trimmed.starts_with("<<") {
+                let heredoc_offset_in_after = after.find("<<").unwrap_or(0);
+                let heredoc_offset = idx + 3 + heredoc_offset_in_after;
+                let redirect_section = &lower[heredoc_offset..];
+                if let Some(rel_redirect_idx) = redirect_section.find('>') {
+                    let redirect_idx = heredoc_offset + rel_redirect_idx;
+                    if redirect_idx > heredoc_offset {
+                        let redirect_slice = &lower[redirect_idx..];
+                        if redirect_slice.starts_with(">&") {
+                            idx += 1;
+                            continue;
+                        }
+                        let after_gt = redirect_slice[1..].trim_start();
+                        if after_gt.starts_with('&') {
+                            idx += 1;
+                            continue;
+                        }
+                        if after_gt.starts_with('(') {
+                            idx += 1;
+                            continue;
+                        }
+                        return true;
+                    }
+                }
+            }
+        }
+        idx += 1;
+    }
+
+    false
+}
+
+fn guidance_for_cat_write(suggestion: &CatWriteSuggestion) -> String {
+    format!(
+        "Blocked cat heredoc that writes files directly. Use apply_patch to edit files so changes stay reviewable.\n\n{}: {}",
+        suggestion.label,
+        suggestion.original_value
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct PythonWriteSuggestion {
     label: &'static str,
     original_value: String,
@@ -9108,6 +10436,43 @@ mod command_guard_detection_tests {
         ];
 
         assert!(detect_redundant_cd(&argv, &cwd).is_none());
+    }
+
+    #[test]
+    fn detects_cat_heredoc_write() {
+        let argv = vec![
+            "bash".to_string(),
+            "-lc".to_string(),
+            "cat <<'EOF' > codex-rs/git-tooling/Cargo.toml\n[package]\nname = \"demo\"\nEOF".to_string(),
+        ];
+
+        let suggestion = detect_cat_write(&argv).expect("should flag cat write");
+        assert_eq!(suggestion.label, "original_script");
+        assert!(suggestion
+            .original_value
+            .contains("cat <<'EOF' > codex-rs/git-tooling/Cargo.toml"));
+    }
+
+    #[test]
+    fn allows_cat_heredoc_without_redirect() {
+        let argv = vec![
+            "bash".to_string(),
+            "-lc".to_string(),
+            "cat <<'EOF'\nhello\nEOF".to_string(),
+        ];
+
+        assert!(detect_cat_write(&argv).is_none());
+    }
+
+    #[test]
+    fn allows_cat_redirect_to_fd() {
+        let argv = vec![
+            "bash".to_string(),
+            "-lc".to_string(),
+            "cat <<'EOF' >&2\nwarn\nEOF".to_string(),
+        ];
+
+        assert!(detect_cat_write(&argv).is_none());
     }
 
     #[test]

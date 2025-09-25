@@ -62,13 +62,13 @@ impl CustomPromptView {
     }
 }
 
-impl BottomPaneView for CustomPromptView {
-    fn handle_key_event(&mut self, _pane: &mut super::BottomPane, key_event: KeyEvent) {
+impl BottomPaneView<'_> for CustomPromptView {
+    fn handle_key_event(&mut self, pane: &mut super::BottomPane<'_>, key_event: KeyEvent) {
         match key_event {
             KeyEvent {
                 code: KeyCode::Esc, ..
             } => {
-                self.on_ctrl_c(_pane);
+                self.on_ctrl_c(pane);
             }
             KeyEvent {
                 code: KeyCode::Enter,
@@ -93,7 +93,7 @@ impl BottomPaneView for CustomPromptView {
         }
     }
 
-    fn on_ctrl_c(&mut self, _pane: &mut super::BottomPane) -> CancellationEvent {
+    fn on_ctrl_c(&mut self, _pane: &mut super::BottomPane<'_>) -> CancellationEvent {
         self.complete = true;
         if let Some(cb) = &self.on_escape {
             cb(&self.app_event_tx);
@@ -212,32 +212,12 @@ impl BottomPaneView for CustomPromptView {
         }
     }
 
-    fn handle_paste(&mut self, _pane: &mut super::BottomPane, pasted: String) -> bool {
+    fn handle_paste(&mut self, pasted: String) -> super::bottom_pane_view::ConditionalUpdate {
         if pasted.is_empty() {
-            return false;
+            return super::bottom_pane_view::ConditionalUpdate::NoRedraw;
         }
         self.textarea.insert_str(&pasted);
-        true
-    }
-
-    fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
-        if area.height < 2 || area.width <= 2 {
-            return None;
-        }
-        let text_area_height = self.input_height(area.width).saturating_sub(1);
-        if text_area_height == 0 {
-            return None;
-        }
-        let extra_offset: u16 = if self.context_label.is_some() { 1 } else { 0 };
-        let top_line_count = 1u16 + extra_offset;
-        let textarea_rect = Rect {
-            x: area.x.saturating_add(2),
-            y: area.y.saturating_add(top_line_count).saturating_add(1),
-            width: area.width.saturating_sub(2),
-            height: text_area_height,
-        };
-        let state = self.textarea_state.borrow();
-        self.textarea.cursor_pos_with_state(textarea_rect, &state)
+        super::bottom_pane_view::ConditionalUpdate::NeedsRedraw
     }
 }
 

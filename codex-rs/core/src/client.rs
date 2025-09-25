@@ -45,7 +45,7 @@ use crate::model_family::ModelFamily;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
 use crate::openai_tools::create_tools_json_for_responses_api;
-use codex_protocol::protocol::RateLimitSnapshotEvent;
+use crate::protocol::RateLimitSnapshotEvent;
 use crate::protocol::TokenUsage;
 use crate::util::backoff;
 use std::sync::Arc;
@@ -127,6 +127,10 @@ impl ModelClient {
         self.verbosity
     }
 
+    pub fn codex_home(&self) -> &Path {
+        &self.config.codex_home
+    }
+
     pub fn get_auto_compact_token_limit(&self) -> Option<i64> {
         self.config.model_auto_compact_token_limit.or_else(|| {
             get_model_info(&self.config.model_family).and_then(|info| info.auto_compact_token_limit)
@@ -156,6 +160,7 @@ impl ModelClient {
                     &self.client,
                     &self.provider,
                     &self.debug_logger,
+                    self.auth_manager.clone(),
                 )
                 .await?;
 
@@ -207,7 +212,15 @@ impl ModelClient {
         let store = false;
 
         let full_instructions = prompt.get_full_instructions(&self.config.model_family);
-        let tools_json = create_tools_json_for_responses_api(&prompt.tools)?;
+        let mut tools_json = create_tools_json_for_responses_api(&prompt.tools)?;
+        if matches!(self.effort, ReasoningEffortConfig::Minimal) {
+            tools_json.retain(|tool| {
+                tool.get("type")
+                    .and_then(|value| value.as_str())
+                    .map(|tool_type| tool_type != "web_search")
+                    .unwrap_or(true)
+            });
+        }
 
         let reasoning = create_reasoning_param_for_request(
             &self.config.model_family,
@@ -225,17 +238,35 @@ impl ModelClient {
 
         let input_with_instructions = prompt.get_formatted_input();
 
-        // Create text parameter with verbosity and optional format.
-        // Historically not supported with ChatGPT auth, but allow it when a
-        // caller explicitly requests a `text.format` (side‑channel usage).
-        let want_format = prompt.text_format.as_ref();
-        let text = if auth_mode == Some(AuthMode::ChatGPT) && want_format.is_none() {
-            None
-        } else {
-            Some(crate::client_common::Text {
-                verbosity: self.verbosity.into(),
-                format: prompt.text_format.clone(),
+        // Build `text` parameter with conditional verbosity and optional format.
+        // - Omit entirely for ChatGPT auth unless a `text.format` or output schema is present.
+        // - Only include `text.verbosity` for GPT-5 family models; warn and ignore otherwise.
+        // - When a structured `format` is present, omit `verbosity` in serialization.
+        let want_format = prompt.text_format.clone().or_else(|| {
+            prompt.output_schema.as_ref().map(|schema| crate::client_common::TextFormat {
+                r#type: "json_schema".to_string(),
+                name: Some("codex_output_schema".to_string()),
+                strict: Some(true),
+                schema: Some(schema.clone()),
             })
+        });
+
+        let verbosity = match &self.config.model_family.family {
+            family if family == "gpt-5" => Some(self.config.model_text_verbosity),
+            _ => None,
+        };
+
+        let text = match (auth_mode, want_format, verbosity) {
+            (Some(AuthMode::ChatGPT), None, _) => None,
+            (_, Some(fmt), _) => Some(crate::client_common::Text {
+                verbosity: self.verbosity.into(),
+                format: Some(fmt),
+            }),
+            (_, None, Some(_)) => Some(crate::client_common::Text {
+                verbosity: self.verbosity.into(),
+                format: None,
+            }),
+            (_, None, None) => None,
         };
 
         // In general, we want to explicitly send `store: false` when using the Responses API,
@@ -274,6 +305,22 @@ impl ModelClient {
         }
         if azure_workaround {
             attach_item_ids(&mut payload_json, &input_with_instructions);
+        }
+        if let Some(openrouter_cfg) = self.provider.openrouter_config() {
+            if let Some(obj) = payload_json.as_object_mut() {
+                if let Some(provider) = &openrouter_cfg.provider {
+                    obj.insert(
+                        "provider".to_string(),
+                        serde_json::to_value(provider)?
+                    );
+                }
+                if let Some(route) = &openrouter_cfg.route {
+                    obj.insert("route".to_string(), route.clone());
+                }
+                for (key, value) in &openrouter_cfg.extra {
+                    obj.entry(key.clone()).or_insert(value.clone());
+                }
+            }
         }
         let payload_body = serde_json::to_string(&payload_json)?;
 
@@ -589,9 +636,6 @@ struct SseEvent {
 }
 
 #[derive(Debug, Deserialize)]
-struct ResponseCreated {}
-
-#[derive(Debug, Deserialize)]
 struct ResponseCompleted {
     id: String,
     usage: Option<ResponseCompletedUsage>,
@@ -663,18 +707,24 @@ fn attach_item_ids(payload_json: &mut Value, original_items: &[ResponseItem]) {
 
 fn parse_rate_limit_snapshot(headers: &HeaderMap) -> Option<RateLimitSnapshotEvent> {
     let primary_used_percent = parse_header_f64(headers, "x-codex-primary-used-percent")?;
-    let weekly_used_percent = parse_header_f64(headers, "x-codex-protection-used-percent")?;
-    let primary_to_weekly_ratio_percent =
-        parse_header_f64(headers, "x-codex-primary-over-protection-limit-percent")?;
+    let secondary_used_percent = parse_header_f64(headers, "x-codex-secondary-used-percent")?;
+    let primary_to_secondary_ratio_percent =
+        parse_header_f64(headers, "x-codex-primary-over-secondary-limit-percent")?;
     let primary_window_minutes = parse_header_u64(headers, "x-codex-primary-window-minutes")?;
-    let weekly_window_minutes = parse_header_u64(headers, "x-codex-protection-window-minutes")?;
+    let secondary_window_minutes = parse_header_u64(headers, "x-codex-secondary-window-minutes")?;
+    let primary_reset_after_seconds =
+        parse_header_u64(headers, "x-codex-primary-reset-after-seconds");
+    let secondary_reset_after_seconds =
+        parse_header_u64(headers, "x-codex-secondary-reset-after-seconds");
 
     Some(RateLimitSnapshotEvent {
         primary_used_percent,
-        weekly_used_percent,
-        primary_to_weekly_ratio_percent,
+        secondary_used_percent,
+        primary_to_secondary_ratio_percent,
         primary_window_minutes,
-        weekly_window_minutes,
+        secondary_window_minutes,
+        primary_reset_after_seconds,
+        secondary_reset_after_seconds,
     })
 }
 
@@ -1230,6 +1280,7 @@ mod tests {
             stream_max_retries: Some(0),
             stream_idle_timeout_ms: Some(1000),
             requires_openai_auth: false,
+            openrouter: None,
         };
 
         let events = collect_events(
@@ -1290,6 +1341,7 @@ mod tests {
             stream_max_retries: Some(0),
             stream_idle_timeout_ms: Some(1000),
             requires_openai_auth: false,
+            openrouter: None,
         };
 
         let events = collect_events(&[sse1.as_bytes()], provider).await;
@@ -1324,6 +1376,7 @@ mod tests {
             stream_max_retries: Some(0),
             stream_idle_timeout_ms: Some(1000),
             requires_openai_auth: false,
+            openrouter: None,
         };
 
         let events = collect_events(&[sse1.as_bytes()], provider).await;
@@ -1429,6 +1482,7 @@ mod tests {
                 stream_max_retries: Some(0),
                 stream_idle_timeout_ms: Some(1000),
                 requires_openai_auth: false,
+                openrouter: None,
             };
 
             let out = run_sse(evs, provider).await;

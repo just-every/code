@@ -5,6 +5,7 @@ use crate::config_types::AgentConfig;
 use crate::config_types::AllowedCommand;
 use crate::config_types::AllowedCommandMatchKind;
 use crate::config_types::BrowserConfig;
+use crate::config_types::CachedTerminalBackground;
 use crate::config_types::ClientTools;
 use crate::config_types::History;
 use crate::config_types::GithubConfig;
@@ -53,7 +54,7 @@ use toml_edit::DocumentMut;
 use toml_edit::Item as TomlItem;
 use toml_edit::Table as TomlTable;
 
-const OPENAI_DEFAULT_MODEL: &str = "gpt-5";
+const OPENAI_DEFAULT_MODEL: &str = "gpt-5-codex";
 const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5-codex";
 pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5-codex";
 
@@ -72,7 +73,7 @@ pub struct Config {
     /// Optional override of model selection.
     pub model: String,
 
-    /// Model used specifically for review sessions. Defaults to "gpt-5".
+    /// Model used specifically for review sessions. Defaults to "gpt-5-codex".
     pub review_model: String,
 
     pub model_family: ModelFamily,
@@ -647,6 +648,53 @@ pub fn set_tui_theme_name(codex_home: &Path, theme: ThemeName) -> anyhow::Result
     Ok(())
 }
 
+/// Record the most recent terminal background autodetect result under `[tui.cached_terminal_background]`.
+pub fn set_cached_terminal_background(
+    codex_home: &Path,
+    cache: &CachedTerminalBackground,
+) -> anyhow::Result<()> {
+    let config_path = codex_home.join(CONFIG_TOML_FILE);
+    let read_path = resolve_codex_path_for_read(codex_home, Path::new(CONFIG_TOML_FILE));
+    let mut doc = match std::fs::read_to_string(&read_path) {
+        Ok(s) => s.parse::<DocumentMut>()?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentMut::new(),
+        Err(e) => return Err(e.into()),
+    };
+
+    let mut tbl = toml_edit::Table::new();
+    tbl.set_implicit(false);
+    tbl.insert("is_dark", toml_edit::value(cache.is_dark));
+    if let Some(term) = &cache.term {
+        tbl.insert("term", toml_edit::value(term.as_str()));
+    }
+    if let Some(term_program) = &cache.term_program {
+        tbl.insert("term_program", toml_edit::value(term_program.as_str()));
+    }
+    if let Some(term_program_version) = &cache.term_program_version {
+        tbl.insert(
+            "term_program_version",
+            toml_edit::value(term_program_version.as_str()),
+        );
+    }
+    if let Some(colorfgbg) = &cache.colorfgbg {
+        tbl.insert("colorfgbg", toml_edit::value(colorfgbg.as_str()));
+    }
+    if let Some(source) = &cache.source {
+        tbl.insert("source", toml_edit::value(source.as_str()));
+    }
+    if let Some(rgb) = &cache.rgb {
+        tbl.insert("rgb", toml_edit::value(rgb.as_str()));
+    }
+
+    doc["tui"]["cached_terminal_background"] = toml_edit::Item::Table(tbl);
+
+    std::fs::create_dir_all(codex_home)?;
+    let tmp_file = NamedTempFile::new_in(codex_home)?;
+    std::fs::write(tmp_file.path(), doc.to_string())?;
+    tmp_file.persist(config_path)?;
+    Ok(())
+}
+
 /// Persist the selected spinner into `CODEX_HOME/config.toml` at `[tui.spinner].name`.
 pub fn set_tui_spinner_name(codex_home: &Path, spinner_name: &str) -> anyhow::Result<()> {
     let config_path = codex_home.join(CONFIG_TOML_FILE);
@@ -857,8 +905,12 @@ pub fn set_github_actionlint_on_patch(
     Ok(())
 }
 
-/// Persist `[validation].patch_harness = <enabled>`.
-pub fn set_validation_patch_harness(codex_home: &Path, enabled: bool) -> anyhow::Result<()> {
+/// Persist `[validation.groups.<group>] = <enabled>`.
+pub fn set_validation_group_enabled(
+    codex_home: &Path,
+    group: &str,
+    enabled: bool,
+) -> anyhow::Result<()> {
     let config_path = codex_home.join(CONFIG_TOML_FILE);
     let read_path = resolve_codex_path_for_read(codex_home, Path::new(CONFIG_TOML_FILE));
     let mut doc = match std::fs::read_to_string(&read_path) {
@@ -867,7 +919,7 @@ pub fn set_validation_patch_harness(codex_home: &Path, enabled: bool) -> anyhow:
         Err(e) => return Err(e.into()),
     };
 
-    doc["validation"]["patch_harness"] = toml_edit::value(enabled);
+    doc["validation"]["groups"][group] = toml_edit::value(enabled);
 
     std::fs::create_dir_all(codex_home)?;
     let tmp = NamedTempFile::new_in(codex_home)?;
@@ -2348,7 +2400,7 @@ exclude_slash_tmp = true
         tokio::fs::write(
             &config_path,
             r#"
-model = "gpt-5"
+model = "gpt-5-codex"
 model_reasoning_effort = "medium"
 
 [profiles.dev]
@@ -2423,7 +2475,7 @@ model = "gpt-4"
 model_reasoning_effort = "medium"
 
 [profiles.prod]
-model = "gpt-5"
+model = "gpt-5-codex"
 "#,
         )
         .await?;
@@ -2454,7 +2506,7 @@ model = "gpt-5"
                 .profiles
                 .get("prod")
                 .and_then(|profile| profile.model.as_deref()),
-            Some("gpt-5"),
+            Some("gpt-5-codex"),
         );
 
         Ok(())
@@ -2548,6 +2600,7 @@ model_verbosity = "high"
             stream_max_retries: Some(10),
             stream_idle_timeout_ms: Some(300_000),
             requires_openai_auth: false,
+            openrouter: None,
         };
         let model_provider_map = {
             let mut model_provider_map = built_in_model_providers();

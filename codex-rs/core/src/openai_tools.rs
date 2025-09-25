@@ -81,6 +81,75 @@ pub enum ConfigShellToolType {
     StreamableShell,
 }
 
+/// Tool allowing the Pro observer to post concise recommendations to the HUD.
+pub(crate) fn create_pro_recommend_tool() -> OpenAiTool {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "title".to_string(),
+        JsonSchema::String {
+            description: Some("Short label for the recommendation (<= 60 chars)".to_string()),
+        },
+    );
+    properties.insert(
+        "note".to_string(),
+        JsonSchema::String {
+            description: Some("Concise recommendation with actionable guidance".to_string()),
+        },
+    );
+    OpenAiTool::Function(ResponsesApiTool {
+        name: "pro_recommend".to_string(),
+        description: "Post a focused recommendation to the Pro Mode HUD.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["title".to_string(), "note".to_string()]),
+            additional_properties: Some(false),
+        },
+    })
+}
+
+/// Tool enabling the observer to submit a follow-up user message in autonomous mode.
+pub(crate) fn create_pro_submit_user_tool() -> OpenAiTool {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "text".to_string(),
+        JsonSchema::String {
+            description: Some("User message text to submit to the core conversation".to_string()),
+        },
+    );
+    OpenAiTool::Function(ResponsesApiTool {
+        name: "pro_submit_user".to_string(),
+        description: "Submit a follow-up user message when autonomous mode is enabled.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["text".to_string()]),
+            additional_properties: Some(false),
+        },
+    })
+}
+
+/// Tool permitting the observer to inject high-priority developer guidance into the core agent.
+pub(crate) fn create_assist_core_tool() -> OpenAiTool {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "instructions".to_string(),
+        JsonSchema::String {
+            description: Some("Developer instructions to inject into the core agent".to_string()),
+        },
+    );
+    OpenAiTool::Function(ResponsesApiTool {
+        name: "assist_core".to_string(),
+        description: "Inject important developer instructions into the core agent.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["instructions".to_string()]),
+            additional_properties: Some(false),
+        },
+    })
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ToolsConfig {
     pub shell_type: ConfigShellToolType,
@@ -450,10 +519,7 @@ fn sanitize_json_schema(value: &mut JsonValue) {
             }
 
             // Normalize/ensure type
-            let mut ty = map
-                .get("type")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+            let mut ty = map.get("type").and_then(|v| v.as_str()).map(str::to_string);
 
             // If type is an array (union), pick first supported; else leave to inference
             if ty.is_none() {
@@ -595,6 +661,7 @@ pub(crate) fn get_openai_tools(
 
     // Add general wait tool for background completions
     tools.push(create_wait_tool());
+    tools.push(create_kill_tool());
 
     if config.web_search_request {
         let tool = match &config.web_search_allowed_domains {
@@ -661,6 +728,27 @@ pub fn create_wait_tool() -> OpenAiTool {
     })
 }
 
+pub fn create_kill_tool() -> OpenAiTool {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "call_id".to_string(),
+        JsonSchema::String {
+            description: Some("Background call_id to terminate.".to_string()),
+        },
+    );
+
+    OpenAiTool::Function(ResponsesApiTool {
+        name: "kill".to_string(),
+        description: "Terminate a running background command by call_id.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["call_id".to_string()]),
+            additional_properties: Some(false),
+        },
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
@@ -719,6 +807,7 @@ mod tests {
                 "browser_status",
                 "agent_run",
                 "wait",
+                "kill",
                 "web_search",
                 "web_fetch",
             ],
@@ -755,6 +844,7 @@ mod tests {
                 "agent_wait",
                 "agent_list",
                 "wait",
+                "kill",
                 "web_search",
                 "web_fetch",
             ],
@@ -785,6 +875,7 @@ mod tests {
                 "browser_status",
                 "agent_run",
                 "wait",
+                "kill",
                 "web_search",
                 "web_fetch",
             ],
@@ -857,6 +948,7 @@ mod tests {
                 "agent_wait",
                 "agent_list",
                 "wait",
+                "kill",
                 "web_search",
                 "web_fetch",
                 "test_server/do_something_cool",
@@ -974,6 +1066,7 @@ mod tests {
                 "agent_wait",
                 "agent_list",
                 "wait",
+                "kill",
                 "web_search",
                 "web_fetch",
                 "dash/search",
@@ -1050,6 +1143,7 @@ mod tests {
                 "agent_wait",
                 "agent_list",
                 "wait",
+                "kill",
                 "web_search",
                 "web_fetch",
                 "dash/paginate",
@@ -1123,6 +1217,7 @@ mod tests {
                 "agent_wait",
                 "agent_list",
                 "wait",
+                "kill",
                 "web_search",
                 "web_fetch",
                 "dash/tags",
@@ -1199,6 +1294,7 @@ mod tests {
                 "agent_wait",
                 "agent_list",
                 "wait",
+                "kill",
                 "web_search",
                 "web_fetch",
                 "dash/value",

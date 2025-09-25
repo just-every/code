@@ -5,13 +5,14 @@ use crate::environment_context::EnvironmentContext;
 use crate::error::Result;
 use crate::model_family::ModelFamily;
 use crate::openai_tools::OpenAiTool;
-use codex_protocol::protocol::RateLimitSnapshotEvent;
+use crate::protocol::RateLimitSnapshotEvent;
 use crate::protocol::TokenUsage;
 use codex_apply_patch::APPLY_PATCH_TOOL_INSTRUCTIONS;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use futures::Stream;
 use serde::Serialize;
+use serde_json::Value;
 use std::borrow::Cow;
 use std::ops::Deref;
 use std::pin::Pin;
@@ -71,6 +72,8 @@ pub struct Prompt {
 
     /// Optional per-request model family override matching `model_override`.
     pub model_family_override: Option<ModelFamily>,
+    /// Optional the output schema for the model's response.
+    pub output_schema: Option<Value>,
 }
 
 impl Default for Prompt {
@@ -87,6 +90,7 @@ impl Default for Prompt {
             text_format: None,
             model_override: None,
             model_family_override: None,
+            output_schema: None,
         }
     }
 }
@@ -263,12 +267,28 @@ pub(crate) struct Reasoning {
     pub(crate) summary: Option<ReasoningSummaryConfig>,
 }
 
-/// Text configuration for verbosity level in OpenAI API responses.
-#[derive(Debug, Serialize)]
+/// Text configuration for verbosity/format in OpenAI API responses.
+#[derive(Debug)]
 pub(crate) struct Text {
     pub(crate) verbosity: OpenAiTextVerbosity,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) format: Option<TextFormat>,
+}
+
+impl serde::Serialize for Text {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        if let Some(fmt) = &self.format {
+            // When a structured format is present, omit `verbosity` per API expectations.
+            map.serialize_entry("format", fmt)?;
+        } else {
+            map.serialize_entry("verbosity", &self.verbosity)?;
+        }
+        map.end()
+    }
 }
 
 /// OpenAI text verbosity level for serialization.
@@ -501,7 +521,7 @@ mod tests {
             stream: true,
             include: vec![],
             prompt_cache_key: None,
-            text: Some(Text { verbosity: OpenAiTextVerbosity::Low }),
+            text: Some(Text { verbosity: OpenAiTextVerbosity::Low, format: None }),
         };
 
         let v = serde_json::to_value(&req).expect("json");
@@ -511,6 +531,57 @@ mod tests {
                 .and_then(|s| s.as_str()),
             Some("low")
         );
+    }
+
+    #[test]
+    fn serializes_text_schema_with_strict_format() {
+        let input: Vec<ResponseItem> = vec![];
+        let tools: Vec<serde_json::Value> = vec![];
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "answer": {"type": "string"}
+            },
+            "required": ["answer"],
+        });
+        let req = ResponsesApiRequest {
+            model: "gpt-5",
+            instructions: "i",
+            input: &input,
+            tools: &tools,
+            tool_choice: "auto",
+            parallel_tool_calls: false,
+            reasoning: None,
+            store: false,
+            stream: true,
+            include: vec![],
+            prompt_cache_key: None,
+            text: Some(Text {
+                verbosity: OpenAiTextVerbosity::Medium,
+                format: Some(TextFormat {
+                    r#type: "json_schema".to_string(),
+                    name: Some("codex_output_schema".to_string()),
+                    strict: Some(true),
+                    schema: Some(schema.clone()),
+                }),
+            }),
+        };
+
+        let v = serde_json::to_value(&req).expect("json");
+        let text = v.get("text").expect("text field");
+        assert!(text.get("verbosity").is_none());
+        let format = text.get("format").expect("format field");
+
+        assert_eq!(
+            format.get("name"),
+            Some(&serde_json::Value::String("codex_output_schema".into()))
+        );
+        assert_eq!(
+            format.get("type"),
+            Some(&serde_json::Value::String("json_schema".into()))
+        );
+        assert_eq!(format.get("strict"), Some(&serde_json::Value::Bool(true)));
+        assert_eq!(format.get("schema"), Some(&schema));
     }
 
     #[test]

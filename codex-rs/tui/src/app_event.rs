@@ -2,7 +2,10 @@ use codex_core::config_types::ReasoningEffort;
 use codex_core::config_types::TextVerbosity;
 use codex_core::config_types::ThemeName;
 use codex_core::protocol::Event;
+use codex_core::protocol::ValidationGroup;
 use codex_core::protocol::ApprovedCommandMatchKind;
+use codex_core::git_info::CommitLogEntry;
+use codex_core::protocol::ReviewContextMetadata;
 use codex_file_search::FileMatch;
 use crossterm::event::KeyEvent;
 use crossterm::event::MouseEvent;
@@ -59,6 +62,14 @@ pub(crate) enum TerminalAfter {
     RefreshAgentsAndClose { selected_index: usize },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BackgroundPlacement {
+    /// Default: append to the end of the current request/history window.
+    Tail,
+    /// Display immediately before the next provider/tool output for the active request.
+    BeforeNextOutput,
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub(crate) enum AppEvent {
@@ -100,6 +111,15 @@ pub(crate) enum AppEvent {
     /// layer so it can be handled centrally. Includes the full command text.
     DispatchCommand(SlashCommand, String),
 
+    /// Open undo options for a previously captured snapshot.
+    ShowUndoOptions { index: usize },
+    /// Restore workspace state according to the chosen undo scope.
+    PerformUndoRestore {
+        index: usize,
+        restore_files: bool,
+        restore_conversation: bool,
+    },
+
     /// Switch to a new working directory by rebuilding the chat widget with
     /// the same configuration but a different `cwd`. Optionally submits an
     /// initial prompt once the new session is ready.
@@ -119,10 +139,10 @@ pub(crate) enum AppEvent {
 
     /// Update GitHub workflow monitoring toggle
     UpdateGithubWatcher(bool),
-    /// Update validation harness master toggle
-    UpdateValidationPatchHarness(bool),
     /// Enable/disable a specific validation tool
     UpdateValidationTool { name: String, enable: bool },
+    /// Enable/disable an entire validation group
+    UpdateValidationGroup { group: ValidationGroup, enable: bool },
     /// Start installing a validation tool through the terminal overlay
     RequestValidationToolInstall { name: String, command: String },
 
@@ -134,6 +154,32 @@ pub(crate) enum AppEvent {
 
     /// Submit a message with hidden preface instructions
     SubmitTextWithPreface { visible: String, preface: String },
+
+    /// Run a review with an explicit prompt/hint pair (used by TUI selections)
+    RunReviewWithScope {
+        prompt: String,
+        hint: String,
+        preparation_label: Option<String>,
+        metadata: Option<ReviewContextMetadata>,
+    },
+
+    /// Run the review command with the given argument string (mirrors `/review <args>`)
+    RunReviewCommand(String),
+
+    /// Open a bottom-pane form that lets the user select a commit to review.
+    StartReviewCommitPicker,
+    /// Populate the commit picker with retrieved commit entries.
+    PresentReviewCommitPicker { commits: Vec<CommitLogEntry> },
+    /// Open a bottom-pane form that lets the user select a base branch to diff against.
+    StartReviewBranchPicker,
+    /// Populate the branch picker with branch metadata once loaded asynchronously.
+    PresentReviewBranchPicker {
+        current_branch: Option<String>,
+        branches: Vec<String>,
+    },
+
+    /// Show the multi-line prompt input to collect custom review instructions.
+    OpenReviewCustomPrompt,
 
     /// Update the theme (with history event)
     UpdateTheme(ThemeName),
@@ -164,6 +210,11 @@ pub(crate) enum AppEvent {
     /// Bottom composer expanded (e.g., slash command popup opened)
     ComposerExpanded,
 
+    /// Show the main account picker view for /login
+    ShowLoginAccounts,
+    /// Show the add-account flow for /login
+    ShowLoginAddAccount,
+
     /// Kick off an asynchronous file search for the given query (text after
     /// the `@`). Previous searches may be cancelled by the app layer so there
     /// is at most one in-flight search.
@@ -185,12 +236,13 @@ pub(crate) enum AppEvent {
     InsertHistoryWithKind { id: Option<String>, kind: StreamKind, lines: Vec<Line<'static>> },
     /// Finalized assistant answer with raw markdown for re-rendering under theme changes.
     InsertFinalAnswer { id: Option<String>, lines: Vec<Line<'static>>, source: String },
-    /// Insert a background event near the top of the current request so it
-    /// appears above imminent provider output (e.g. above Exec begin).
-    InsertBackgroundEventEarly(String),
-    /// Insert a background event at the end of the current request so it
-    /// follows previously rendered content.
-    InsertBackgroundEventLate(String),
+    /// Insert a background event with explicit placement semantics.
+    InsertBackgroundEvent {
+        message: String,
+        placement: BackgroundPlacement,
+    },
+
+    AutoUpgradeCompleted { version: String },
 
     /// Background rate limit refresh failed (threaded request).
     RateLimitFetchFailed { message: String },
@@ -204,6 +256,15 @@ pub(crate) enum AppEvent {
     /// Onboarding: result of login_with_chatgpt.
     OnboardingAuthComplete(Result<(), String>),
     OnboardingComplete(ChatWidgetArgs),
+
+    /// Begin ChatGPT login flow from the in-app login manager.
+    LoginStartChatGpt,
+    /// Cancel an in-progress ChatGPT login flow triggered via `/login`.
+    LoginCancelChatGpt,
+    /// ChatGPT login flow has completed (success or failure).
+    LoginChatGptComplete { result: Result<(), String> },
+    /// The active authentication mode changed (e.g., switched accounts).
+    LoginUsingChatGptChanged { using_chatgpt_auth: bool },
 
     /// Show Chrome launch options dialog
     #[allow(dead_code)]
@@ -264,6 +325,15 @@ pub(crate) enum AppEvent {
         command_display: String,
         controller: Option<TerminalRunController>,
     },
+    TerminalSendInput {
+        id: u64,
+        data: Vec<u8>,
+    },
+    TerminalResize {
+        id: u64,
+        rows: u16,
+        cols: u16,
+    },
     TerminalRerun { id: u64 },
     TerminalUpdateMessage { id: u64, message: String },
     TerminalForceClose { id: u64 },
@@ -275,13 +345,11 @@ pub(crate) enum AppEvent {
         ack: Redacted<StdSender<TerminalCommandGate>>,
     },
     TerminalApprovalDecision { id: u64, approved: bool },
-    #[cfg(not(debug_assertions))]
     RunUpdateCommand {
         command: Vec<String>,
         display: String,
         latest_version: Option<String>,
     },
-    #[cfg(not(debug_assertions))]
     SetAutoUpgradeEnabled(bool),
     RequestAgentInstall { name: String, selected_index: usize },
     AgentsOverviewSelectionChanged { index: usize },

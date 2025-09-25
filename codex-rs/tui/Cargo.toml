@@ -37,6 +37,7 @@ codex-common = { path = "../common", features = [
 ] }
 codex-core = { path = "../core" }
 codex-file-search = { path = "../file-search" }
+codex-git-tooling = { path = "../git-tooling" }
 codex-login = { path = "../login" }
 codex-ollama = { path = "../ollama" }
 codex-protocol = { path = "../protocol" }
@@ -91,6 +92,10 @@ syntect = { version = "5", features = ["yaml-load", "plist-load", "parsing", "de
 which = "6"
 urlencoding = "2.1"
 pulldown-cmark = "0.13"
+portable-pty = "0.9.0"
+# vt100 0.16+ depends on unicode-width 0.2.1 which conflicts with ratatui 0.29.x.
+# Stick to 0.15.x until ratatui upgrades.
+vt100 = "0.15.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -102,10 +107,6 @@ insta = "1.43.1"
 pretty_assertions = "1"
 rand = "0.9"
 strip-ansi-escapes = "0.1"
-# Downgrade vt100 to avoid a hard requirement on unicode-width 0.2.1,
-# which conflicts with ratatui 0.29.x pinning 0.2.0. This crate is
-# only used in tests.
-vt100 = "0.15.0"
 [build-dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

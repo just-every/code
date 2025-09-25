@@ -137,7 +137,7 @@ impl FormTextField {
         if focused {
             if let Some((cx, cy)) = self
                 .textarea
-                .cursor_pos_with_state(area, &self.state.borrow())
+                .cursor_pos_with_state(area, *self.state.borrow())
             {
                 let max_x = area.x.saturating_add(area.width.saturating_sub(1));
                 let x = cx.min(max_x);

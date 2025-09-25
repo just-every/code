@@ -143,6 +143,39 @@ while true; do
     last_jobs_snapshot="$jobs_snapshot"
   fi
 
+  failing_jobs=$(jq -c '
+    .jobs[]? | select(
+      .status == "completed" and (.conclusion // "") != "" and
+      ((.conclusion | ascii_downcase) as $c | $c != "success" and $c != "skipped" and $c != "neutral")
+    )
+  ' <<<"$json")
+
+  if [[ -n "$failing_jobs" ]]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') detected failing job(s) while run status is '$status'; exiting early." >&2
+    if [[ "$PRINT_FAILURE_LOGS" == true ]]; then
+      if [[ "$status" != "completed" ]]; then
+        echo "Run $RUN_ID is still $status; skipping log download for now." >&2
+      else
+        while IFS= read -r job_json; do
+          [[ -z "$job_json" ]] && continue
+          job_id=$(jq -r '.databaseId // ""' <<<"$job_json")
+          job_name=$(jq -r '.name // "(no name)"' <<<"$job_json")
+          job_conclusion=$(jq -r '.conclusion // "unknown"' <<<"$job_json")
+          echo "--- Logs for job: $job_name (ID $job_id, conclusion: $job_conclusion) ---" >&2
+          if [[ -n "$job_id" ]]; then
+            if ! gh run view "$RUN_ID" --log --job "$job_id" 2>&1; then
+              echo "(failed to fetch logs for job $job_id)" >&2
+            fi
+          else
+            echo "(job has no databaseId; skipping log fetch)" >&2
+          fi
+          echo "--- End logs for job: $job_name ---" >&2
+        done <<<"$failing_jobs"
+      fi
+    fi
+    exit 1
+  fi
+
   if [[ "$status" == "completed" ]]; then
     if [[ "$conclusion" == "success" ]]; then
       echo "Run $RUN_ID succeeded." >&2

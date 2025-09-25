@@ -276,8 +276,9 @@ impl UserApprovalWidget<'_> {
             format!("{}\nfeedback:\n{}", message, feedback)
         };
         // Insert above the upcoming command begin so the decision reads first.
-        self.app_event_tx
-            .send(AppEvent::InsertBackgroundEventEarly(message));
+        self
+            .app_event_tx
+            .send_background_event_before_next_output(message);
 
         // If the user aborted an exec approval, immediately cancel any running task
         // so the UI reflects their intent (clear spinner/status) without waiting

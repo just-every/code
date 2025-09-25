@@ -5,7 +5,7 @@ use codex_core::{AuthManager, ModelClient, Prompt, ResponseEvent};
 use codex_core::config::Config;
 use codex_core::config_types::ReasoningEffort;
 use codex_core::debug_logger::DebugLogger;
-use codex_core::protocol::{Event, EventMsg, TokenCountEvent, RateLimitSnapshotEvent as CoreRateLimitSnapshotEvent};
+use codex_core::protocol::{Event, EventMsg, RateLimitSnapshotEvent, TokenCountEvent};
 use codex_protocol::models::{ContentItem, ResponseItem};
 use futures::StreamExt;
 use tokio::runtime::Runtime;
@@ -80,13 +80,7 @@ fn run_refresh(
 
         let proto_snapshot = snapshot.context("rate limit snapshot missing from response")?;
 
-        let snapshot = CoreRateLimitSnapshotEvent {
-            primary_used_percent: proto_snapshot.primary_used_percent,
-            weekly_used_percent: proto_snapshot.weekly_used_percent,
-            primary_to_weekly_ratio_percent: proto_snapshot.primary_to_weekly_ratio_percent,
-            primary_window_minutes: proto_snapshot.primary_window_minutes,
-            weekly_window_minutes: proto_snapshot.weekly_window_minutes,
-        };
+        let snapshot: RateLimitSnapshotEvent = proto_snapshot.clone();
 
         let event = Event {
             id: "rate-limit-refresh".to_string(),

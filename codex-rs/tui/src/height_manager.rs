@@ -177,6 +177,7 @@ impl HeightManager {
         // Determine HUD height if present.
         let mut hud_h: u16;
         if hud_present {
+            let override_target = hud_target_override.is_some();
             // Use caller-provided target when available; otherwise fall back to
             // an aspect-based estimate similar to the older preview logic.
             let mut target = if let Some(t) = hud_target_override { t } else {
@@ -195,12 +196,21 @@ impl HeightManager {
                 .saturating_sub(status_h)
                 .saturating_sub(bottom_h)
                 .saturating_sub(1);
-            target = target.min(vertical_budget);
-            target = target.clamp(4, vertical_budget.max(4));
+            let min_height = if override_target { 3 } else { 4 };
+            if vertical_budget < min_height {
+                target = vertical_budget;
+            } else {
+                target = target.clamp(min_height, vertical_budget);
+            }
 
-            // Quantize to configured row quantum.
-            let q = self.cfg.hud_quantum.max(1);
-            let quantized = (target / q) * q; // floor to bucket
+            let quantized = if override_target {
+                target
+            } else {
+                // Quantize to configured row quantum.
+                let q = self.cfg.hud_quantum.max(1);
+                let floored = (target / q) * q;
+                if floored == 0 { q } else { floored }
+            };
 
             // Require consecutive-frame confirmation for HUD changes unless bypassed.
             hud_h = self.apply_hud_confirmation(quantized);

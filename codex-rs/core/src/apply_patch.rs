@@ -167,7 +167,6 @@ pub(crate) async fn apply_patch(
             });
         }
     };
-
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let result = if let Some(client_tools) = sess.client_tools() {
@@ -200,18 +199,20 @@ pub(crate) fn convert_apply_patch_to_protocol(
             ApplyPatchFileChange::Add { content } => FileChange::Add {
                 content: content.clone(),
             },
-            ApplyPatchFileChange::Delete => FileChange::Delete,
+            ApplyPatchFileChange::Delete { content: _ } => FileChange::Delete,
             ApplyPatchFileChange::Update {
                 unified_diff,
                 move_path,
-                original_content,
                 new_content,
-            } => FileChange::Update {
-                unified_diff: unified_diff.clone(),
-                move_path: move_path.clone(),
-                original_content: original_content.clone(),
-                new_content: new_content.clone(),
-            },
+            } => {
+                let original_content = std::fs::read_to_string(path).unwrap_or_default();
+                FileChange::Update {
+                    unified_diff: unified_diff.clone(),
+                    move_path: move_path.clone(),
+                    original_content,
+                    new_content: new_content.clone(),
+                }
+            }
         };
         result.insert(path.clone(), protocol_change);
     }
@@ -275,7 +276,7 @@ async fn apply_changes_from_apply_patch(
                     .with_context(|| format!("Failed to write file {}", path.display()))?;
                 added.push(path.clone());
             }
-            ApplyPatchFileChange::Delete => {
+            ApplyPatchFileChange::Delete { content: _ } => {
                 std::fs::remove_file(path)
                     .with_context(|| format!("Failed to delete file {}", path.display()))?;
                 deleted.push(path.clone());

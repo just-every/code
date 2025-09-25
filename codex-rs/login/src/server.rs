@@ -19,6 +19,7 @@ use codex_core::auth::get_auth_file;
 use codex_core::token_data::TokenData;
 use codex_core::token_data::parse_id_token;
 use rand::RngCore;
+use serde_json::Value as JsonValue;
 use tiny_http::Header;
 use tiny_http::Request;
 use tiny_http::Response;
@@ -469,12 +470,23 @@ async fn persist_tokens_async(
         {
             tokens.account_id = Some(acc.to_string());
         }
+        let tokens_for_store = tokens.clone();
+        let last_refresh = Utc::now();
         let auth = AuthDotJson {
             openai_api_key: api_key,
             tokens: Some(tokens),
-            last_refresh: Some(Utc::now()),
+            last_refresh: Some(last_refresh),
         };
-        codex_core::auth::write_auth_json(&auth_file, &auth)
+        codex_core::auth::write_auth_json(&auth_file, &auth)?;
+        let email_for_store = tokens_for_store.id_token.email.clone();
+        let _ = codex_core::auth_accounts::upsert_chatgpt_account(
+            &codex_home,
+            tokens_for_store,
+            last_refresh,
+            email_for_store,
+            true,
+        )?;
+        Ok(())
     })
     .await
     .map_err(|e| io::Error::other(format!("persist task failed: {e}")))?
@@ -494,11 +506,11 @@ fn compose_success_url(port: u16, issuer: &str, id_token: &str, access_token: &s
         .unwrap_or("");
     let completed_onboarding = token_claims
         .get("completed_platform_onboarding")
-        .and_then(|v| v.as_bool())
+        .and_then(JsonValue::as_bool)
         .unwrap_or(false);
     let is_org_owner = token_claims
         .get("is_org_owner")
-        .and_then(|v| v.as_bool())
+        .and_then(JsonValue::as_bool)
         .unwrap_or(false);
     let needs_setup = (!completed_onboarding) && is_org_owner;
     let plan_type = access_claims

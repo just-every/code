@@ -217,6 +217,7 @@ model_reasoning_summary = "detailed"
 - `CODEX_HOME`: Override config directory location
 - `OPENAI_API_KEY`: Use API key instead of ChatGPT auth
 - `OPENAI_BASE_URL`: Use alternative API endpoints
+- `OPENAI_WIRE_API`: Force the built-in OpenAI provider to use `chat` or `responses` wiring
 
 &ensp;
 ## FAQ

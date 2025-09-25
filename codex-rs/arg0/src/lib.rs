@@ -56,22 +56,12 @@ where
 
     let argv1 = args.next().unwrap_or_default();
     if argv1 == CODEX_APPLY_PATCH_ARG1 {
-        let patch_arg = args.next().and_then(|s| s.to_str().map(|s| s.to_owned()));
+        let patch_arg = args.next().and_then(|s| s.to_str().map(str::to_owned));
         let exit_code = match patch_arg {
             Some(patch_arg) => {
                 let mut stdout = std::io::stdout();
                 let mut stderr = std::io::stderr();
-                let fs = codex_apply_patch::StdFileSystem;
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("failed to build apply_patch runtime");
-                match rt.block_on(codex_apply_patch::apply_patch(
-                    &patch_arg,
-                    &mut stdout,
-                    &mut stderr,
-                    &fs,
-                )) {
+                match codex_apply_patch::apply_patch(&patch_arg, &mut stdout, &mut stderr) {
                     Ok(()) => 0,
                     Err(_) => 1,
                 }

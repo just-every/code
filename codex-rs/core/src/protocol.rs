@@ -32,6 +32,13 @@ pub use codex_protocol::protocol::ReviewCodeLocation;
 pub use codex_protocol::protocol::ReviewFinding;
 pub use codex_protocol::protocol::ReviewLineRange;
 pub use codex_protocol::protocol::ReviewOutputEvent;
+pub use codex_protocol::protocol::{ReviewContextMetadata, ReviewRequest};
+pub use codex_protocol::protocol::GitInfo;
+pub use codex_protocol::protocol::RolloutItem;
+pub use codex_protocol::protocol::RolloutLine;
+pub use codex_protocol::protocol::ConversationPathResponseEvent;
+pub use codex_protocol::protocol::ENVIRONMENT_CONTEXT_OPEN_TAG;
+pub use codex_protocol::protocol::ExitedReviewModeEvent;
 
 /// Submission Queue Entry - requests from user
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -40,6 +47,14 @@ pub struct Submission {
     pub id: String,
     /// Payload
     pub op: Op,
+}
+
+/// High-level toggles for validation checks.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationGroup {
+    Functional,
+    Stylistic,
 }
 
 /// Submission operation
@@ -137,14 +152,15 @@ pub enum Op {
         decision: ReviewDecision,
     },
 
-    /// Update the validation harness toggle in the running session.
-    UpdateValidationPatchHarness {
-        enabled: bool,
-    },
-
     /// Update a specific validation tool toggle for the session.
     UpdateValidationTool {
         name: String,
+        enable: bool,
+    },
+
+    /// Update a validation group toggle for the session.
+    UpdateValidationGroup {
+        group: ValidationGroup,
         enable: bool,
     },
 
@@ -155,6 +171,11 @@ pub enum Op {
     AddToHistory {
         /// The message text to be stored.
         text: String,
+    },
+
+    /// Toggle or query Pro Mode state.
+    Pro {
+        action: ProAction,
     },
 
     /// Execute a project-scoped custom command defined in configuration.
@@ -183,8 +204,24 @@ pub enum Op {
     /// The agent will use its existing context (either conversation history or previous response id)
     /// to generate a summary which will be returned as an AgentMessage event.
     Compact,
+    /// Request the agent to perform a dedicated code review.
+    Review { review_request: ReviewRequest },
     /// Request to shut down codex instance.
     Shutdown,
+}
+
+/// Action for Pro Mode control submissions.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ProAction {
+    Toggle,
+    On,
+    Off,
+    Status,
+    AutoToggle,
+    AutoOn,
+    AutoOff,
+    AutoStatus,
 }
 
 /// Determines the conditions under which the user is consulted to approve
@@ -461,21 +498,41 @@ pub struct RecordedEvent {
 }
 
 pub fn event_msg_to_protocol(msg: &EventMsg) -> Option<codex_protocol::protocol::EventMsg> {
-    if matches!(msg, EventMsg::ReplayHistory(_)) {
-        return None;
+    match msg {
+        EventMsg::ReplayHistory(_) => None,
+        EventMsg::TokenCount(payload) => {
+            let info = convert_value(&payload.info)?;
+            let rate_limits = payload
+                .rate_limits
+                .as_ref()
+                .map(rate_limit_snapshot_to_protocol);
+            Some(codex_protocol::protocol::EventMsg::TokenCount(
+                codex_protocol::protocol::TokenCountEvent { info, rate_limits },
+            ))
+        }
+        _ => convert_value(msg),
     }
-    convert_value(msg)
 }
 
 
 pub fn event_msg_from_protocol(msg: &codex_protocol::protocol::EventMsg) -> Option<EventMsg> {
-    let Some(converted) = convert_value(msg) else {
-        return None;
-    };
-    if matches!(converted, EventMsg::ReplayHistory(_)) {
-        return None;
+    match msg {
+        codex_protocol::protocol::EventMsg::TokenCount(payload) => {
+            let info = convert_value(&payload.info).unwrap_or(None);
+            let rate_limits = payload
+                .rate_limits
+                .as_ref()
+                .map(rate_limit_snapshot_from_protocol);
+            Some(EventMsg::TokenCount(TokenCountEvent { info, rate_limits }))
+        }
+        _ => {
+            let converted = convert_value(msg)?;
+            if matches!(converted, EventMsg::ReplayHistory(_)) {
+                return None;
+            }
+            Some(converted)
+        }
     }
-    Some(converted)
 }
 
 
@@ -539,6 +596,78 @@ where
         return None;
     };
     serde_json::from_value(json).ok()
+}
+
+fn rate_limit_snapshot_to_protocol(
+    snapshot: &RateLimitSnapshotEvent,
+) -> codex_protocol::protocol::RateLimitSnapshot {
+    let primary = codex_protocol::protocol::RateLimitWindow {
+        used_percent: snapshot.primary_used_percent,
+        window_minutes: Some(snapshot.primary_window_minutes),
+        resets_in_seconds: snapshot.primary_reset_after_seconds,
+    };
+    let secondary = codex_protocol::protocol::RateLimitWindow {
+        used_percent: snapshot.secondary_used_percent,
+        window_minutes: Some(snapshot.secondary_window_minutes),
+        resets_in_seconds: snapshot.secondary_reset_after_seconds,
+    };
+    codex_protocol::protocol::RateLimitSnapshot {
+        primary: Some(primary),
+        secondary: Some(secondary),
+    }
+}
+
+fn rate_limit_snapshot_from_protocol(
+    snapshot: &codex_protocol::protocol::RateLimitSnapshot,
+) -> RateLimitSnapshotEvent {
+    let primary_used = snapshot
+        .primary
+        .as_ref()
+        .map(|window| window.used_percent)
+        .unwrap_or(0.0)
+        .clamp(0.0, 100.0);
+    let secondary_used = snapshot
+        .secondary
+        .as_ref()
+        .map(|window| window.used_percent)
+        .unwrap_or(0.0)
+        .clamp(0.0, 100.0);
+    let primary_window_minutes = snapshot
+        .primary
+        .as_ref()
+        .and_then(|window| window.window_minutes)
+        .unwrap_or(0);
+    let primary_reset_after_seconds = snapshot
+        .primary
+        .as_ref()
+        .and_then(|window| window.resets_in_seconds);
+    let secondary_window_minutes = snapshot
+        .secondary
+        .as_ref()
+        .and_then(|window| window.window_minutes)
+        .unwrap_or(0);
+    let secondary_reset_after_seconds = snapshot
+        .secondary
+        .as_ref()
+        .and_then(|window| window.resets_in_seconds);
+
+    let ratio_percent = match (primary_window_minutes, secondary_window_minutes) {
+        (0, _) | (_, 0) => f64::NAN,
+        (primary, secondary) => {
+            let ratio = (primary as f64) / (secondary as f64);
+            (ratio * 100.0).clamp(0.0, 100.0)
+        }
+    };
+
+    RateLimitSnapshotEvent {
+        primary_used_percent: primary_used,
+        secondary_used_percent: secondary_used,
+        primary_to_secondary_ratio_percent: ratio_percent,
+        primary_window_minutes,
+        secondary_window_minutes,
+        primary_reset_after_seconds,
+        secondary_reset_after_seconds,
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -663,6 +792,9 @@ pub enum EventMsg {
     /// Used after resuming from a rollout file so the user sees the full
     /// history for that session without re-executing any actions.
     ReplayHistory(ReplayHistoryEvent),
+
+    /// Pro Mode related events (ignored by clients that do not understand them).
+    Pro(ProEvent),
 }
 
 // Individual event payload types matching each `EventMsg` variant.
@@ -677,13 +809,87 @@ pub struct TaskCompleteEvent {
     pub last_agent_message: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct TokenUsage {
     pub input_tokens: u64,
     pub cached_input_tokens: u64,
     pub output_tokens: u64,
     pub reasoning_output_tokens: u64,
     pub total_tokens: u64,
+}
+
+// ==================== Pro Mode (Protocol) ====================
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProEvent {
+    /// Toggled Pro Mode state
+    Toggled {
+        enabled: bool,
+    },
+    /// Periodic status tick
+    Status {
+        phase: ProPhase,
+        stats: ProStats,
+    },
+    /// A helper agent was spawned
+    AgentSpawned {
+        id: String,
+        category: ProCategory,
+        budget_ms: u64,
+    },
+    /// Result from a helper agent
+    AgentResult {
+        id: String,
+        category: ProCategory,
+        ok: bool,
+        note: Option<String>,
+        #[serde(default)]
+        artifacts: Vec<ProArtifact>,
+    },
+    /// Aggregated developer note for the current checkpoint
+    DeveloperNote {
+        turn_id: String,
+        note: String,
+        #[serde(default)]
+        artifacts: Vec<ProArtifact>,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProPhase {
+    Idle,
+    Planning,
+    Research,
+    Debug,
+    Review,
+    Background,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProCategory {
+    Planning,
+    Research,
+    Debugging,
+    Review,
+    Background,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct ProStats {
+    pub active: u32,
+    pub completed: u32,
+    pub spawned: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct ProArtifact {
+    pub kind: String,
+    pub summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 impl TokenUsage {
@@ -740,7 +946,7 @@ impl TokenUsage {
 /// Includes prompts, tools and space to call compact.
 const BASELINE_TOKENS: u64 = 12_000;
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub struct TokenUsageInfo {
     pub total_token_usage: TokenUsage,
     pub last_token_usage: TokenUsage,
@@ -783,21 +989,27 @@ impl TokenUsageInfo {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct RateLimitSnapshotEvent {
     /// Percentage (0-100) of the primary window that has been consumed.
     pub primary_used_percent: f64,
-    /// Percentage (0-100) of the protection window that has been consumed.
-    pub weekly_used_percent: f64,
-    /// Size of the primary window relative to weekly (0-100).
-    pub primary_to_weekly_ratio_percent: f64,
+    /// Percentage (0-100) of the secondary window that has been consumed.
+    pub secondary_used_percent: f64,
+    /// Size of the primary window relative to secondary (0-100).
+    pub primary_to_secondary_ratio_percent: f64,
     /// Rolling window duration for the primary limit, in minutes.
     pub primary_window_minutes: u64,
-    /// Rolling window duration for the weekly limit, in minutes.
-    pub weekly_window_minutes: u64,
+    /// Rolling window duration for the secondary limit, in minutes.
+    pub secondary_window_minutes: u64,
+    /// Seconds until the primary window resets, if reported by the API.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary_reset_after_seconds: Option<u64>,
+    /// Seconds until the secondary window resets, if reported by the API.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secondary_reset_after_seconds: Option<u64>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct TokenCountEvent {
     pub info: Option<TokenUsageInfo>,
     pub rate_limits: Option<RateLimitSnapshotEvent>,
@@ -1106,6 +1318,10 @@ pub struct AgentInfo {
     pub name: String,
     /// Current status of the agent
     pub status: String,
+    /// Optional batch identifier when the agent was launched via agent_run
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub batch_id: Option<String>,
     /// Optional model being used
     pub model: Option<String>,
     /// Latest progress line (if any) for UI previews
@@ -1144,7 +1360,7 @@ pub enum ReviewDecision {
     Abort,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileChange {
     Add {

@@ -32,18 +32,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Rust (1.89)
+      - name: Install Rust (1.90)
         shell: bash
         run: |
           rustup set profile minimal
-          rustup toolchain install 1.89.0 --profile minimal
-          rustup default 1.89.0
+          rustup toolchain install 1.90.0 --profile minimal
+          rustup default 1.90.0
 
       - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
           prefix-key: v5-rust
-          shared-key: codex-preflight-1.89
+          shared-key: codex-preflight-1.90
           workspaces: |
             codex-rs -> target
           cache-targets: true
@@ -152,8 +152,9 @@ jobs:
         shell: bash
         run: |
           rustup set profile minimal
-          rustup toolchain install 1.89.0 --profile minimal --target ${{ matrix.target }}
-          rustup default 1.89.0
+          rustup toolchain install 1.90.0 --profile minimal
+          rustup default 1.90.0
+          rustup target add ${{ matrix.target }}
 
       # Keep target/ across runs so Cargo can no-op when code hasn't changed
       - id: rust_cache
@@ -161,7 +162,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           prefix-key: v5-rust
-          shared-key: codex-${{ matrix.target }}-toolchain-1.89
+          shared-key: codex-${{ matrix.target }}-toolchain-1.90
           workspaces: |
             codex-rs -> target
           cache-targets: true

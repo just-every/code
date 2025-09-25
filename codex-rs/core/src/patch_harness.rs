@@ -1,8 +1,8 @@
-use crate::config_types::{GithubConfig, ValidationConfig};
+use crate::config_types::{validation_tool_category, GithubConfig, ValidationCategory, ValidationConfig};
 use crate::workflow_validation::maybe_run_actionlint;
 use codex_apply_patch::{ApplyPatchAction, ApplyPatchFileChange};
 use serde_json as json;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -24,7 +24,10 @@ pub fn run_patch_harness(
     cfg: &ValidationConfig,
     github: &GithubConfig,
 ) -> Option<(Vec<HarnessFinding>, Vec<String>)> {
-    if !cfg.patch_harness {
+    let functional_enabled = cfg.groups.functional;
+    let stylistic_enabled = cfg.groups.stylistic;
+
+    if !functional_enabled && !stylistic_enabled {
         return None;
     }
 
@@ -33,6 +36,13 @@ pub fn run_patch_harness(
     let mut record_ran = |name: &str| {
         if !ran.iter().any(|existing| existing == name) {
             ran.push(name.to_string());
+        }
+    };
+
+    let category_enabled = |category: ValidationCategory| -> bool {
+        match category {
+            ValidationCategory::Functional => functional_enabled,
+            ValidationCategory::Stylistic => stylistic_enabled,
         }
     };
 
@@ -47,6 +57,9 @@ pub fn run_patch_harness(
             ApplyPatchFileChange::Delete { .. } => (path.as_path(), None),
         };
 
+        if !functional_enabled {
+            continue;
+        }
         let Some(contents) = contents_opt else { continue };
         match analysis_path.extension().and_then(|e| e.to_str()).unwrap_or("") {
             "json" => {
@@ -84,11 +97,13 @@ pub fn run_patch_harness(
     }
 
     // 2) Workflow checks (actionlint plugin).
-    if let Some(lines) = maybe_run_actionlint(action, cwd, github) {
-        if !lines.is_empty() {
-            record_ran("actionlint");
-            for line in lines.into_iter().take(24) {
-                findings.push(HarnessFinding { tool: "actionlint".to_string(), file: None, message: line });
+    if functional_enabled {
+        if let Some(lines) = maybe_run_actionlint(action, cwd, github) {
+            if !lines.is_empty() {
+                record_ran("actionlint");
+                for line in lines.into_iter().take(24) {
+                    findings.push(HarnessFinding { tool: "actionlint".to_string(), file: None, message: line });
+                }
             }
         }
     }
@@ -128,8 +143,8 @@ pub fn run_patch_harness(
     changed_paths.dedup();
 
     let is_allowed = |tool: &str| allow.is_empty() || allow.iter().any(|entry| entry == tool);
-    let run_tool = |tool: &str, args: &[&str], files: &[PathBuf]| -> Vec<HarnessFinding> {
-        if files.is_empty() || !is_allowed(tool) {
+    let run_tool = |tool: &str, args: &[&str], files: &[PathBuf], group_enabled: bool| -> Vec<HarnessFinding> {
+        if !group_enabled || files.is_empty() || !is_allowed(tool) {
             return Vec::new();
         }
         let Some(exe) = which(Path::new(tool)) else { return Vec::new() };
@@ -155,11 +170,13 @@ pub fn run_patch_harness(
         .filter(|path| is_shell_script(staged_root, path))
         .cloned()
         .collect();
-    if cfg.tools.shellcheck.unwrap_or(true) && !shell_scripts.is_empty() {
+    let shellcheck_group = validation_tool_category("shellcheck");
+    let shellcheck_group_enabled = category_enabled(shellcheck_group);
+    if shellcheck_group_enabled && cfg.tools.shellcheck.unwrap_or(true) && !shell_scripts.is_empty() {
         if which(Path::new("shellcheck")).is_some() {
             record_ran("shellcheck");
         }
-        findings.extend(run_tool("shellcheck", &["-f", "gcc"], &shell_scripts));
+        findings.extend(run_tool("shellcheck", &["-f", "gcc"], &shell_scripts, shellcheck_group_enabled));
     }
 
     let markdown_files: Vec<PathBuf> = changed_paths
@@ -167,13 +184,15 @@ pub fn run_patch_harness(
         .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("md"))
         .cloned()
         .collect();
-    if cfg.tools.markdownlint.unwrap_or(true) && !markdown_files.is_empty() {
+    let markdownlint_group = validation_tool_category("markdownlint");
+    let markdownlint_group_enabled = category_enabled(markdownlint_group);
+    if markdownlint_group_enabled && cfg.tools.markdownlint.unwrap_or(true) && !markdown_files.is_empty() {
         if which(Path::new("markdownlint")).is_some() || which(Path::new("markdownlint-cli2")).is_some() {
             record_ran("markdownlint");
         }
-        let mut lines = run_tool("markdownlint", &[], &markdown_files);
+        let mut lines = run_tool("markdownlint", &[], &markdown_files, markdownlint_group_enabled);
         if lines.is_empty() {
-            lines = run_tool("markdownlint-cli2", &[], &markdown_files);
+            lines = run_tool("markdownlint-cli2", &[], &markdown_files, markdownlint_group_enabled);
         }
         findings.extend(lines);
     }
@@ -183,11 +202,13 @@ pub fn run_patch_harness(
         .filter(|path| is_dockerfile(path))
         .cloned()
         .collect();
-    if cfg.tools.hadolint.unwrap_or(true) && !docker_files.is_empty() {
+    let hadolint_group = validation_tool_category("hadolint");
+    let hadolint_group_enabled = category_enabled(hadolint_group);
+    if hadolint_group_enabled && cfg.tools.hadolint.unwrap_or(true) && !docker_files.is_empty() {
         if which(Path::new("hadolint")).is_some() {
             record_ran("hadolint");
         }
-        findings.extend(run_tool("hadolint", &[], &docker_files));
+        findings.extend(run_tool("hadolint", &[], &docker_files, hadolint_group_enabled));
     }
 
     let yaml_files: Vec<PathBuf> = changed_paths
@@ -195,11 +216,13 @@ pub fn run_patch_harness(
         .filter(|path| matches!(path.extension().and_then(|ext| ext.to_str()), Some("yml" | "yaml")))
         .cloned()
         .collect();
-    if cfg.tools.yamllint.unwrap_or(true) && !yaml_files.is_empty() {
+    let yamllint_group = validation_tool_category("yamllint");
+    let yamllint_group_enabled = category_enabled(yamllint_group);
+    if yamllint_group_enabled && cfg.tools.yamllint.unwrap_or(true) && !yaml_files.is_empty() {
         if which(Path::new("yamllint")).is_some() {
             record_ran("yamllint");
         }
-        findings.extend(run_tool("yamllint", &["-f", "parsable"], &yaml_files));
+        findings.extend(run_tool("yamllint", &["-f", "parsable"], &yaml_files, yamllint_group_enabled));
     }
 
     let rust_files: Vec<PathBuf> = changed_paths
@@ -208,11 +231,13 @@ pub fn run_patch_harness(
         .cloned()
         .collect();
 
-    if cfg.tools.shfmt.unwrap_or(true) && !shell_scripts.is_empty() {
+    let shfmt_group = validation_tool_category("shfmt");
+    let shfmt_group_enabled = category_enabled(shfmt_group);
+    if shfmt_group_enabled && cfg.tools.shfmt.unwrap_or(true) && !shell_scripts.is_empty() {
         if which(Path::new("shfmt")).is_some() {
             record_ran("shfmt");
         }
-        findings.extend(run_tool("shfmt", &["-d"], &shell_scripts));
+        findings.extend(run_tool("shfmt", &["-d"], &shell_scripts, shfmt_group_enabled));
     }
 
     let prettier_exts = [
@@ -227,14 +252,346 @@ pub fn run_patch_harness(
             .unwrap_or(false))
         .cloned()
         .collect();
-    if cfg.tools.prettier.unwrap_or(true) && !prettier_files.is_empty() {
+    let prettier_group = validation_tool_category("prettier");
+    let prettier_group_enabled = category_enabled(prettier_group);
+    if prettier_group_enabled && cfg.tools.prettier.unwrap_or(true) && !prettier_files.is_empty() {
         if which(Path::new("prettier")).is_some() {
             record_ran("prettier");
         }
-        findings.extend(run_tool("prettier", &["--check"], &prettier_files));
+        findings.extend(run_tool("prettier", &["--check"], &prettier_files, prettier_group_enabled));
     }
 
-    if cfg.tools.cargo_check.unwrap_or(true) && !rust_files.is_empty() {
+    let ts_files: Vec<PathBuf> = changed_paths
+        .iter()
+        .filter(|path| matches!(path.extension().and_then(|ext| ext.to_str()), Some("ts" | "tsx")))
+        .cloned()
+        .collect();
+    if functional_enabled && cfg.tools.tsc.unwrap_or(true) && !ts_files.is_empty() && is_allowed("tsc") {
+        if let Some(exe) = which(Path::new("tsc")) {
+            record_ran("tsc");
+            let ts_timeout = timeout.max(20);
+            let project = find_nearest_config(cwd, &ts_files, &["tsconfig.json", "tsconfig.base.json", "tsconfig.app.json", "tsconfig.build.json", "tsconfig.lib.json"]);
+            match WorkspaceOverlay::apply(action) {
+                Ok(_overlay) => {
+                    let mut cmd = std::process::Command::new(&exe);
+                    cmd.current_dir(cwd);
+                    cmd.arg("--noEmit");
+                    cmd.arg("--pretty");
+                    cmd.arg("false");
+                    if let Some(config) = project {
+                        cmd.arg("--project");
+                        cmd.arg(config);
+                    } else {
+                        for path in &ts_files {
+                            cmd.arg(path);
+                        }
+                    }
+                    match run_with_timeout(cmd, ts_timeout) {
+                        Some(output) => {
+                            if output.status.map_or(true, |status| !status.success()) {
+                                let mut lines = collect_output_lines(&output.stdout, &output.stderr);
+                                if lines.is_empty() {
+                                    lines.push("tsc failed (no output)".to_string());
+                                }
+                                for line in lines.into_iter().take(24) {
+                                    findings.push(HarnessFinding { tool: "tsc".to_string(), file: None, message: line });
+                                }
+                            }
+                        }
+                        None => findings.push(HarnessFinding {
+                            tool: "tsc".to_string(),
+                            file: None,
+                            message: format!("tsc timed out after {ts_timeout} second(s)"),
+                        }),
+                    }
+                }
+                Err(err) => findings.push(HarnessFinding {
+                    tool: "tsc".to_string(),
+                    file: None,
+                    message: format!("failed to stage workspace for tsc: {err}"),
+                }),
+            }
+        }
+    }
+
+    let eslint_files: Vec<PathBuf> = changed_paths
+        .iter()
+        .filter(|path| matches!(path.extension().and_then(|ext| ext.to_str()), Some("js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs")))
+        .cloned()
+        .collect();
+    if functional_enabled
+        && cfg.tools.eslint.unwrap_or(true)
+        && !eslint_files.is_empty()
+        && is_allowed("eslint")
+        && has_eslint_config(cwd, &eslint_files)
+    {
+        if let Some(exe) = which(Path::new("eslint")) {
+            record_ran("eslint");
+            let lint_timeout = timeout.max(15);
+            match WorkspaceOverlay::apply(action) {
+                Ok(_overlay) => {
+                    let mut cmd = std::process::Command::new(&exe);
+                    cmd.current_dir(cwd);
+                    cmd.args(["--max-warnings", "0", "--format", "unix"]);
+                    for path in &eslint_files {
+                        cmd.arg(path);
+                    }
+                    match run_with_timeout(cmd, lint_timeout) {
+                        Some(output) => {
+                            if output.status.map_or(true, |status| !status.success()) {
+                                let mut lines = collect_output_lines(&output.stdout, &output.stderr);
+                                if lines.is_empty() {
+                                    lines.push("eslint failed (no output)".to_string());
+                                }
+                                for line in lines.into_iter().take(24) {
+                                    findings.push(HarnessFinding { tool: "eslint".to_string(), file: None, message: line });
+                                }
+                            }
+                        }
+                        None => findings.push(HarnessFinding {
+                            tool: "eslint".to_string(),
+                            file: None,
+                            message: format!("eslint timed out after {lint_timeout} second(s)"),
+                        }),
+                    }
+                }
+                Err(err) => findings.push(HarnessFinding {
+                    tool: "eslint".to_string(),
+                    file: None,
+                    message: format!("failed to stage workspace for eslint: {err}"),
+                }),
+            }
+        }
+    }
+
+    let php_files: Vec<PathBuf> = changed_paths
+        .iter()
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("php"))
+        .cloned()
+        .collect();
+    if functional_enabled
+        && cfg.tools.phpstan.unwrap_or(true)
+        && !php_files.is_empty()
+        && is_allowed("phpstan")
+        && has_phpstan_config(cwd, &php_files)
+    {
+        if let Some(exe) = which(Path::new("phpstan")) {
+            record_ran("phpstan");
+            let phpstan_timeout = timeout.max(20);
+            match WorkspaceOverlay::apply(action) {
+                Ok(_overlay) => {
+                    let mut cmd = std::process::Command::new(&exe);
+                    cmd.current_dir(cwd);
+                    cmd.args(["analyse", "--error-format=raw", "--no-progress"]);
+                    for path in &php_files {
+                        cmd.arg(path);
+                    }
+                    match run_with_timeout(cmd, phpstan_timeout) {
+                        Some(output) => {
+                            if output.status.map_or(true, |status| !status.success()) {
+                                let mut lines = collect_output_lines(&output.stdout, &output.stderr);
+                                if lines.is_empty() {
+                                    lines.push("phpstan failed (no output)".to_string());
+                                }
+                                for line in lines.into_iter().take(24) {
+                                    findings.push(HarnessFinding { tool: "phpstan".to_string(), file: None, message: line });
+                                }
+                            }
+                        }
+                        None => findings.push(HarnessFinding {
+                            tool: "phpstan".to_string(),
+                            file: None,
+                            message: format!("phpstan timed out after {phpstan_timeout} second(s)"),
+                        }),
+                    }
+                }
+                Err(err) => findings.push(HarnessFinding {
+                    tool: "phpstan".to_string(),
+                    file: None,
+                    message: format!("failed to stage workspace for phpstan: {err}"),
+                }),
+            }
+        }
+    }
+
+    if functional_enabled
+        && cfg.tools.psalm.unwrap_or(true)
+        && !php_files.is_empty()
+        && is_allowed("psalm")
+        && has_psalm_config(cwd, &php_files)
+    {
+        if let Some(exe) = which(Path::new("psalm")) {
+            record_ran("psalm");
+            let psalm_timeout = timeout.max(20);
+            match WorkspaceOverlay::apply(action) {
+                Ok(_overlay) => {
+                    let mut cmd = std::process::Command::new(&exe);
+                    cmd.current_dir(cwd);
+                    cmd.args(["--no-progress", "--output-format=compact", "--threads=2"]);
+                    for path in &php_files {
+                        cmd.arg(path);
+                    }
+                    match run_with_timeout(cmd, psalm_timeout) {
+                        Some(output) => {
+                            if output.status.map_or(true, |status| !status.success()) {
+                                let mut lines = collect_output_lines(&output.stdout, &output.stderr);
+                                if lines.is_empty() {
+                                    lines.push("psalm failed (no output)".to_string());
+                                }
+                                for line in lines.into_iter().take(24) {
+                                    findings.push(HarnessFinding { tool: "psalm".to_string(), file: None, message: line });
+                                }
+                            }
+                        }
+                        None => findings.push(HarnessFinding {
+                            tool: "psalm".to_string(),
+                            file: None,
+                            message: format!("psalm timed out after {psalm_timeout} second(s)"),
+                        }),
+                    }
+                }
+                Err(err) => findings.push(HarnessFinding {
+                    tool: "psalm".to_string(),
+                    file: None,
+                    message: format!("failed to stage workspace for psalm: {err}"),
+                }),
+            }
+        }
+    }
+
+    let py_files: Vec<PathBuf> = changed_paths
+        .iter()
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("py"))
+        .cloned()
+        .collect();
+    if functional_enabled && cfg.tools.mypy.unwrap_or(true) && !py_files.is_empty() && is_allowed("mypy") {
+        if let Some(exe) = which(Path::new("mypy")) {
+            record_ran("mypy");
+            let mypy_timeout = timeout.max(20);
+            match WorkspaceOverlay::apply(action) {
+                Ok(_overlay) => {
+                    let mut cmd = std::process::Command::new(&exe);
+                    cmd.current_dir(cwd);
+                    cmd.args(["--no-color-output", "--hide-error-context"]);
+                    for path in &py_files {
+                        cmd.arg(path);
+                    }
+                    match run_with_timeout(cmd, mypy_timeout) {
+                        Some(output) => {
+                            if output.status.map_or(true, |status| !status.success()) {
+                                let mut lines = collect_output_lines(&output.stdout, &output.stderr);
+                                if lines.is_empty() {
+                                    lines.push("mypy failed (no output)".to_string());
+                                }
+                                for line in lines.into_iter().take(24) {
+                                    findings.push(HarnessFinding { tool: "mypy".to_string(), file: None, message: line });
+                                }
+                            }
+                        }
+                        None => findings.push(HarnessFinding {
+                            tool: "mypy".to_string(),
+                            file: None,
+                            message: format!("mypy timed out after {mypy_timeout} second(s)"),
+                        }),
+                    }
+                }
+                Err(err) => findings.push(HarnessFinding {
+                    tool: "mypy".to_string(),
+                    file: None,
+                    message: format!("failed to stage workspace for mypy: {err}"),
+                }),
+            }
+        }
+    }
+
+    if functional_enabled && cfg.tools.pyright.unwrap_or(true) && !py_files.is_empty() && is_allowed("pyright") {
+        if let Some(exe) = which(Path::new("pyright")) {
+            record_ran("pyright");
+            let pyright_timeout = timeout.max(20);
+            match WorkspaceOverlay::apply(action) {
+                Ok(_overlay) => {
+                    let mut cmd = std::process::Command::new(&exe);
+                    cmd.current_dir(cwd);
+                    cmd.arg("--warnings");
+                    for path in &py_files {
+                        cmd.arg(path);
+                    }
+                    match run_with_timeout(cmd, pyright_timeout) {
+                        Some(output) => {
+                            if output.status.map_or(true, |status| !status.success()) {
+                                let mut lines = collect_output_lines(&output.stdout, &output.stderr);
+                                if lines.is_empty() {
+                                    lines.push("pyright failed (no output)".to_string());
+                                }
+                                for line in lines.into_iter().take(24) {
+                                    findings.push(HarnessFinding { tool: "pyright".to_string(), file: None, message: line });
+                                }
+                            }
+                        }
+                        None => findings.push(HarnessFinding {
+                            tool: "pyright".to_string(),
+                            file: None,
+                            message: format!("pyright timed out after {pyright_timeout} second(s)"),
+                        }),
+                    }
+                }
+                Err(err) => findings.push(HarnessFinding {
+                    tool: "pyright".to_string(),
+                    file: None,
+                    message: format!("failed to stage workspace for pyright: {err}"),
+                }),
+            }
+        }
+    }
+
+    let go_files: Vec<PathBuf> = changed_paths
+        .iter()
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("go"))
+        .cloned()
+        .collect();
+    if functional_enabled
+        && cfg.tools.golangci_lint.unwrap_or(true)
+        && !go_files.is_empty()
+        && is_allowed("golangci-lint")
+        && has_go_module(cwd)
+    {
+        if let Some(exe) = which(Path::new("golangci-lint")) {
+            record_ran("golangci-lint");
+            let lint_timeout = timeout.max(20);
+            match WorkspaceOverlay::apply(action) {
+                Ok(_overlay) => {
+                    let mut cmd = std::process::Command::new(&exe);
+                    cmd.current_dir(cwd);
+                    cmd.args(["run", "./..."]);
+                    match run_with_timeout(cmd, lint_timeout) {
+                        Some(output) => {
+                            if output.status.map_or(true, |status| !status.success()) {
+                                let mut lines = collect_output_lines(&output.stdout, &output.stderr);
+                                if lines.is_empty() {
+                                    lines.push("golangci-lint failed (no output)".to_string());
+                                }
+                                for line in lines.into_iter().take(24) {
+                                    findings.push(HarnessFinding { tool: "golangci-lint".to_string(), file: None, message: line });
+                                }
+                            }
+                        }
+                        None => findings.push(HarnessFinding {
+                            tool: "golangci-lint".to_string(),
+                            file: None,
+                            message: format!("golangci-lint timed out after {lint_timeout} second(s)"),
+                        }),
+                    }
+                }
+                Err(err) => findings.push(HarnessFinding {
+                    tool: "golangci-lint".to_string(),
+                    file: None,
+                    message: format!("failed to stage workspace for golangci-lint: {err}"),
+                }),
+            }
+        }
+    }
+
+    if functional_enabled && cfg.tools.cargo_check.unwrap_or(true) && !rust_files.is_empty() {
         if which(Path::new("cargo")).is_none() {
             findings.push(HarnessFinding {
                 tool: "cargo-check".to_string(),
@@ -245,6 +602,7 @@ pub fn run_patch_harness(
             match WorkspaceOverlay::apply(action) {
             Ok(overlay) => {
                 let manifests = collect_rust_manifests(cwd, &rust_files);
+                let manifest_hints = compute_rust_target_hints(cwd, &rust_files);
                 let rust_timeout = timeout.max(30);
                 for manifest in manifests {
                     let label = manifest
@@ -256,7 +614,18 @@ pub fn run_patch_harness(
                     cmd.current_dir(cwd);
                     cmd.arg("check");
                     cmd.arg("--quiet");
-                    cmd.arg("--all-targets");
+                    let hints = manifest_hints.get(&manifest).copied().unwrap_or_default();
+                    // `cargo check` does not support `--no-dev-deps`; compiling dev deps is
+                    // avoided by limiting targets instead.
+                    if hints.include_tests {
+                        cmd.arg("--tests");
+                    }
+                    if hints.include_benches {
+                        cmd.arg("--benches");
+                    }
+                    if hints.include_examples {
+                        cmd.arg("--examples");
+                    }
                     cmd.arg("--manifest-path");
                     cmd.arg(manifest.to_string_lossy().to_string());
                     cmd.env("RUSTFLAGS", "-Dwarnings");
@@ -405,6 +774,183 @@ fn collect_output_lines(stdout: &[u8], stderr: &[u8]) -> Vec<String> {
     lines.retain(|line| !line.trim().is_empty());
     lines
 }
+
+#[derive(Default, Clone, Copy)]
+struct RustTargetHints {
+    include_tests: bool,
+    include_benches: bool,
+    include_examples: bool,
+}
+
+impl RustTargetHints {
+    fn observe_path(&mut self, path: &Path) {
+        if touches_tests(path) {
+            self.include_tests = true;
+        }
+        if touches_benches(path) {
+            self.include_benches = true;
+        }
+        if touches_examples(path) {
+            self.include_examples = true;
+        }
+    }
+}
+
+fn compute_rust_target_hints(
+    cwd: &Path,
+    rust_files: &[PathBuf],
+) -> HashMap<PathBuf, RustTargetHints> {
+    let mut hints: HashMap<PathBuf, RustTargetHints> = HashMap::new();
+    for relative in rust_files {
+        if let Some(manifest) = find_manifest(cwd, relative) {
+            hints.entry(manifest).or_default().observe_path(relative);
+        }
+    }
+    hints
+}
+
+fn touches_tests(path: &Path) -> bool {
+    if path.iter().filter_map(|segment| segment.to_str()).any(|segment| {
+        matches_segment(segment, &["tests", "test", "integration-tests", "integration_tests"])
+    }) {
+        return true;
+    }
+    matches_stem(path, &["test", "tests"], &["_test", "_tests"])
+}
+
+fn touches_benches(path: &Path) -> bool {
+    if path
+        .iter()
+        .filter_map(|segment| segment.to_str())
+        .any(|segment| matches_segment(segment, &["benches", "bench", "benchmark"]))
+    {
+        return true;
+    }
+    matches_stem(path, &["bench", "benches"], &["_bench", "_benches"])
+}
+
+fn touches_examples(path: &Path) -> bool {
+    if path
+        .iter()
+        .filter_map(|segment| segment.to_str())
+        .any(|segment| matches_segment(segment, &["examples", "example"]))
+    {
+        return true;
+    }
+    matches_stem(path, &["example", "examples"], &["_example", "_examples"])
+}
+
+fn matches_segment(segment: &str, needles: &[&str]) -> bool {
+    needles
+        .iter()
+        .any(|needle| segment.eq_ignore_ascii_case(needle))
+}
+
+fn matches_stem(path: &Path, exact: &[&str], suffixes: &[&str]) -> bool {
+    let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else { return false };
+    let stem_lower = stem.to_ascii_lowercase();
+    if exact.iter().any(|needle| stem_lower == *needle) {
+        return true;
+    }
+    suffixes.iter().any(|suffix| stem_lower.ends_with(suffix))
+}
+
+fn find_nearest_config(cwd: &Path, files: &[PathBuf], candidates: &[&str]) -> Option<PathBuf> {
+    for relative in files {
+        let mut current = cwd.join(relative).parent().map(Path::to_path_buf);
+        while let Some(dir) = current {
+            for candidate in candidates {
+                let candidate_path = dir.join(candidate);
+                if candidate_path.exists() {
+                    return Some(candidate_path);
+                }
+            }
+            if dir == cwd {
+                break;
+            }
+            current = dir.parent().map(Path::to_path_buf);
+        }
+    }
+    for candidate in candidates {
+        let candidate_path = cwd.join(candidate);
+        if candidate_path.exists() {
+            return Some(candidate_path);
+        }
+    }
+    None
+}
+
+fn package_json_has_key(path: &Path, key: &str) -> bool {
+    let Ok(contents) = std::fs::read_to_string(path) else { return false };
+    let Ok(value) = json::from_str::<json::Value>(&contents) else { return false };
+    value.get(key).is_some()
+}
+
+fn composer_requires_package(path: &Path, package: &str) -> bool {
+    let Ok(contents) = std::fs::read_to_string(path) else { return false };
+    let Ok(value) = json::from_str::<json::Value>(&contents) else { return false };
+    for section in ["require", "require-dev"] {
+        if value
+            .get(section)
+            .and_then(|deps| deps.get(package))
+            .is_some()
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn has_eslint_config(cwd: &Path, files: &[PathBuf]) -> bool {
+    let config_candidates = [
+        ".eslintrc",
+        ".eslintrc.js",
+        ".eslintrc.cjs",
+        ".eslintrc.mjs",
+        ".eslintrc.json",
+        ".eslintrc.yml",
+        ".eslintrc.yaml",
+        "eslint.config.js",
+        "eslint.config.cjs",
+        "eslint.config.mjs",
+        "eslint.config.ts",
+    ];
+    if find_nearest_config(cwd, files, &config_candidates).is_some() {
+        return true;
+    }
+    if let Some(package_json) = find_nearest_config(cwd, files, &["package.json"]) {
+        return package_json_has_key(&package_json, "eslintConfig");
+    }
+    false
+}
+
+fn has_phpstan_config(cwd: &Path, files: &[PathBuf]) -> bool {
+    if find_nearest_config(cwd, files, &["phpstan.neon", "phpstan.neon.dist"]).is_some() {
+        return true;
+    }
+    if let Some(composer_json) = find_nearest_config(cwd, files, &["composer.json"]) {
+        return composer_requires_package(&composer_json, "phpstan/phpstan");
+    }
+    false
+}
+
+fn has_psalm_config(cwd: &Path, files: &[PathBuf]) -> bool {
+    let config_candidates = [
+        "psalm.xml",
+        "psalm.xml.dist",
+        ".psalm/config.xml",
+        ".psalm/config.xml.dist",
+    ];
+    if find_nearest_config(cwd, files, &config_candidates).is_some() {
+        return true;
+    }
+    if let Some(composer_json) = find_nearest_config(cwd, files, &["composer.json"]) {
+        return composer_requires_package(&composer_json, "vimeo/psalm");
+    }
+    false
+}
+
+fn has_go_module(cwd: &Path) -> bool { cwd.join("go.mod").exists() }
 
 fn collect_rust_manifests(cwd: &Path, rust_files: &[PathBuf]) -> Vec<PathBuf> {
     let mut manifests = BTreeSet::new();

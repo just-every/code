@@ -22,14 +22,31 @@ pub fn fill_rect(buf: &mut Buffer, area: Rect, fill_char: Option<char>, style: S
     let offset_y = rect.y.saturating_sub(buf.area.y) as usize;
     let row_span = rect.width as usize;
 
-    for row in 0..rect.height as usize {
-        let start = (offset_y + row) * buf_width + offset_x;
-        let end = start + row_span;
-        let row = &mut buf.content[start..end];
-        for cell in row {
-            cell.set_style(style);
-            if let Some(ch) = fill_char {
-                cell.set_char(ch);
+    if let Some(ch) = fill_char {
+        let mut char_buf = [0; 4];
+        let expected_symbol = ch.encode_utf8(&mut char_buf);
+        for row in 0..rect.height as usize {
+            let start = (offset_y + row) * buf_width + offset_x;
+            let end = start + row_span;
+            let row = &mut buf.content[start..end];
+            for cell in row {
+                if cell.style() != style {
+                    cell.set_style(style);
+                }
+                if cell.symbol() != expected_symbol {
+                    cell.set_char(ch);
+                }
+            }
+        }
+    } else {
+        for row in 0..rect.height as usize {
+            let start = (offset_y + row) * buf_width + offset_x;
+            let end = start + row_span;
+            let row = &mut buf.content[start..end];
+            for cell in row {
+                if cell.style() != style {
+                    cell.set_style(style);
+                }
             }
         }
     }

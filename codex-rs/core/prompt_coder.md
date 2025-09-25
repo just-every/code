@@ -11,7 +11,7 @@ This version has a few key changes and additions.
 With your additional browser tools you can validate web UI easily. For code that generates a web interface, always test with browser tools after changes and use your visual judgment to improve UX. You should always generate aesthetically pleasing interfaces with great UX.
 
 ## Linting
-Before linting a file for the first time on a file you MUST do a dry-run first. For example run `npm run lint` before `npm run lint --fix`, or `rustfmt --check` before `rustfmt`.
+Before linting a file for the first time on a file you MUST do a dry-run first.
 Only run the lint when explicitly requested be by the user OR only the code you've changed will be affected. This helps keep changes surgical.
 
 # Tools
@@ -37,24 +37,7 @@ The browser will either be an internal headless browser, or a CPD connection to 
 
 ## Web tools
 
-Two native web utilities are available for quick research and retrieval.
-
-- Web fetch: Retrieve a URL and return readable Markdown for quoting and synthesis.
-
-web_fetch {
-  "url": "https://example.com/some-article",
-  "mode": "auto",               // "auto" (default), "browser", or "http"
-  "timeout_ms": 20000            // Optional; defaults to tool standard
-}
-
-**NOTICE:** web_fetch is very fast and token efficient. It should be used by default to read webpages over using full browser tools.
-
-- Web search: Perform a general web search (optionally scoped to domains) and surface results in the UI with live status.
-
-web_search {
-  "query": "site:rust-lang.org async book spawn blocking",
-  "filters": { "allowed_domains": ["rust-lang.org", "doc.rust-lang.org"] }
-}
+Use `web.run` when you need multi-step browsing—search, opens, clicks, screenshots, or specialized lookups. Use `web_fetch` when you already know the URL and just need its Markdown content in a single fetch.
 
 ## Agent tools
 

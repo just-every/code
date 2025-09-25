@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use codex_core::config_types::McpServerConfig;
 use codex_core::mcp_connection_manager::McpConnectionManager;

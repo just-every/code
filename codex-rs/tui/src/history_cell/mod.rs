@@ -3,7 +3,6 @@ use crate::exec_command::strip_bash_lc_and_escape;
 use crate::sanitize::Mode as SanitizeMode;
 use crate::sanitize::Options as SanitizeOptions;
 use crate::sanitize::sanitize_for_tui;
-use crate::rate_limits_view::{build_limits_view, LimitsView, RateLimitResetInfo, DEFAULT_GRID_CONFIG};
 use crate::slash_command::SlashCommand;
 use crate::util::buffer::{fill_rect, write_line};
 use crate::insert_history::word_wrap_lines;
@@ -20,12 +19,11 @@ use codex_core::plan_tool::StepStatus;
 use codex_core::plan_tool::UpdatePlanArgs;
 use codex_core::protocol::FileChange;
 use codex_core::protocol::McpInvocation;
-use codex_core::protocol::RateLimitSnapshotEvent;
 use codex_core::protocol::SessionConfiguredEvent;
 use codex_core::protocol::TokenUsage;
 use codex_protocol::num_format::format_with_separators;
-use image::DynamicImage;
-use image::ImageReader;
+use ::image::DynamicImage;
+use ::image::ImageReader;
 use mcp_types::EmbeddedResourceResource;
 use mcp_types::ResourceLink;
 use ratatui::prelude::*;
@@ -38,6 +36,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::WidgetRef;
 use ratatui::widgets::Wrap;
 use shlex::Shlex;
+
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::Cursor;
@@ -50,6 +49,35 @@ use std::time::Instant;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use tracing::error;
+
+mod animated;
+mod explore;
+mod image;
+mod loading;
+mod reasoning;
+mod tool;
+mod wait_status;
+mod plan_update;
+mod plain;
+mod upgrade;
+mod semantic;
+mod text;
+
+pub(crate) use animated::AnimatedWelcomeCell;
+pub(crate) use explore::{ExploreAggregationCell, ExploreEntryStatus};
+pub(crate) use image::ImageOutputCell;
+pub(crate) use loading::LoadingCell;
+pub(crate) use reasoning::CollapsibleReasoningCell;
+pub(crate) use tool::{
+    RunningToolCallCell,
+    RunningToolCallState,
+    ToolCallCell,
+    ToolCallStatus,
+};
+pub(crate) use wait_status::WaitStatusCell;
+pub(crate) use plan_update::PlanUpdateCell;
+pub(crate) use plain::PlainHistoryCell;
+pub(crate) use upgrade::UpgradeNoticeCell;
 
 // ==================== Core Types ====================
 
@@ -196,7 +224,9 @@ pub(crate) trait HistoryCell {
             _ => crate::colors::background(),
         };
         let bg_style = Style::default().bg(cell_bg).fg(crate::colors::text());
-        fill_rect(buf, area, Some(' '), bg_style);
+        if matches!(self.kind(), HistoryCellType::Assistant) {
+            fill_rect(buf, area, Some(' '), bg_style);
+        }
 
         // Ensure the entire allocated area is painted with the theme background
         // by attaching a background-styled Block to the Paragraph as well.
@@ -345,153 +375,6 @@ impl HistoryCell for Box<dyn HistoryCell> {
 // Collapses consecutive Read/Search/List commands into a single "Exploring" cell
 // while commands are executing, updating the entry status once the command finishes.
 
-#[derive(Clone)]
-pub(crate) enum ExploreEntryStatus {
-    Running,
-    Success,
-    NotFound,
-    Error { exit_code: Option<i32> },
-}
-
-#[derive(Clone)]
-struct CommandSummary {
-    display: String,
-    annotation: Option<String>,
-}
-
-#[derive(Clone)]
-enum ExploreSummary {
-    Search {
-        query: Option<String>,
-        path: Option<String>,
-    },
-    List {
-        path: Option<String>,
-    },
-    Read {
-        display_path: String,
-        annotation: Option<String>,
-        range: Option<(u32, u32)>,
-    },
-    Command {
-        command: CommandSummary,
-    },
-    Fallback {
-        text: String,
-    },
-}
-
-#[derive(Clone)]
-struct ExploreEntry {
-    action: ExecAction,
-    summary: ExploreSummary,
-    status: ExploreEntryStatus,
-}
-
-impl ExploreEntry {
-    fn label(&self) -> &'static str {
-        if matches!(self.summary, ExploreSummary::Command { .. }) {
-            return "Ran";
-        }
-        match self.action {
-            ExecAction::Read => "Read",
-            ExecAction::Search => "Search",
-            ExecAction::List => "List",
-            ExecAction::Run => "Run",
-        }
-    }
-
-    fn summary_spans(&self) -> Vec<Span<'static>> {
-        match &self.summary {
-            ExploreSummary::Search { query, path } => {
-                let mut spans = Vec::new();
-                if let Some(q) = query {
-                    if !q.is_empty() {
-                        spans.push(Span::styled(
-                            q.clone(),
-                            Style::default().fg(crate::colors::text()),
-                        ));
-                    }
-                }
-                if let Some(p) = path {
-                    spans.push(Span::styled(
-                        format!(" in {}", p),
-                        Style::default().fg(crate::colors::text_dim()),
-                    ));
-                }
-                if spans.is_empty() {
-                    spans.push(Span::styled(
-                        "search".to_string(),
-                        Style::default().fg(crate::colors::text()),
-                    ));
-                }
-                spans
-            }
-            ExploreSummary::List { path } => {
-                let target = path.as_ref().cloned().unwrap_or_else(|| "./".to_string());
-                vec![Span::styled(
-                    format!("{}", target),
-                    Style::default().fg(crate::colors::text_dim()),
-                )]
-            }
-            ExploreSummary::Read {
-                display_path,
-                annotation,
-                ..
-            } => {
-                let mut spans = vec![Span::styled(
-                    display_path.clone(),
-                    Style::default().fg(crate::colors::text()),
-                )];
-                if let Some(ann) = annotation {
-                    spans.push(Span::styled(
-                        format!(" {}", ann),
-                        Style::default().fg(crate::colors::text_dim()),
-                    ));
-                }
-                spans
-            }
-            ExploreSummary::Command { command } => {
-                let mut spans = highlight_command_summary(&command.display);
-                if let Some(annotation) = &command.annotation {
-                    spans.push(Span::styled(
-                        format!(" {}", annotation),
-                        Style::default().fg(crate::colors::text_dim()),
-                    ));
-                }
-                spans
-            }
-            ExploreSummary::Fallback { text } => vec![Span::styled(
-                text.clone(),
-                Style::default().fg(crate::colors::text()),
-            )],
-        }
-    }
-
-    fn is_running(&self) -> bool {
-        matches!(self.status, ExploreEntryStatus::Running)
-    }
-
-    fn is_error(&self) -> bool {
-        matches!(self.status, ExploreEntryStatus::Error { .. })
-    }
-}
-
-fn highlight_command_summary(command: &str) -> Vec<Span<'static>> {
-    let normalized = normalize_shell_command_display(command);
-    let display_line = insert_line_breaks_after_double_ampersand(&normalized);
-    let highlighted = crate::syntax_highlight::highlight_code_block(&display_line, Some("bash"));
-    if let Some(mut first) = highlighted.into_iter().next() {
-        emphasize_shell_command_name(&mut first);
-        first.spans
-    } else {
-        vec![Span::styled(
-            display_line,
-            Style::default().fg(crate::colors::text()),
-        )]
-    }
-}
-
 pub(crate) fn clean_wait_command(raw: &str) -> String {
     let trimmed = raw.trim();
     let Some((first_token, rest)) = split_token(trimmed) else {
@@ -559,825 +442,8 @@ fn looks_like_shell(token: &str) -> bool {
     )
 }
 
-fn build_command_summary(cmd: &str, original_command: &[String]) -> CommandSummary {
-    let display = select_command_display(cmd, original_command);
-    let (annotation, _) = parse_read_line_annotation_with_range(&display);
-    let display = if annotation.is_some() {
-        strip_redundant_line_filter_pipes(&display)
-    } else {
-        display
-    };
-    CommandSummary { display, annotation }
-}
-
 // Remove formatting-only pipes (sed/head/tail) when we already provide a line-range
 // annotation alongside the command summary. Keeps the core command intact for display.
-fn strip_redundant_line_filter_pipes(cmd: &str) -> String {
-    if !cmd.contains('|') { return cmd.to_string(); }
-
-    let mut segs: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    let mut in_single = false;
-    let mut in_double = false;
-    for ch in cmd.chars() {
-        match ch {
-            '\'' if !in_double => { in_single = !in_single; cur.push(ch); }
-            '"' if !in_single => { in_double = !in_double; cur.push(ch); }
-            '|' if !in_single && !in_double => {
-                segs.push(cur.trim().to_string());
-                cur.clear();
-            }
-            _ => cur.push(ch),
-        }
-    }
-    if !cur.is_empty() { segs.push(cur.trim().to_string()); }
-
-    let is_redundant = |s: &str| {
-        let lower = s.trim().to_lowercase();
-        if lower.is_empty() { return false; }
-        if lower.starts_with("sed ") || lower == "sed" {
-            let parts: Vec<&str> = s.split_whitespace().collect();
-            if parts.len() >= 3 && parts[1] == "-n" {
-                let tok = parts[2].trim_matches('\'').trim_matches('"');
-                if tok.ends_with('p') {
-                    let core = &tok[..tok.len().saturating_sub(1)];
-                    if core.split_once(',').is_some() || core.chars().all(|c| c.is_ascii_digit()) {
-                        return true;
-                    }
-                }
-            }
-        }
-        if lower == "head" || lower.starts_with("head ") { return true; }
-        if lower == "tail" || lower.starts_with("tail ") { return true; }
-        false
-    };
-
-    while let Some(last) = segs.last() {
-        if is_redundant(last) { segs.pop(); } else { break; }
-    }
-
-    if segs.is_empty() { return cmd.to_string(); }
-    segs.join(" | ")
-}
-
-fn select_command_display(cmd: &str, original_command: &[String]) -> String {
-    if let Some(script) = extract_bash_script(original_command) {
-        let trimmed = script.trim();
-        if !trimmed.is_empty() {
-            if command_string_has_connector(trimmed) || trimmed != cmd {
-                return trimmed.to_string();
-            }
-        }
-    }
-
-    if command_tokens_have_connectors(original_command) {
-        let joined = original_command.join(" ").trim().to_string();
-        if !joined.is_empty() {
-            if command_string_has_connector(&joined) || joined != cmd {
-                return joined;
-            }
-        }
-    }
-
-    cmd.to_string()
-}
-
-fn extract_bash_script(command: &[String]) -> Option<String> {
-    if command.len() < 3 {
-        return None;
-    }
-    let exe = command[0].as_str();
-    let flag = command[1].as_str();
-    if looks_like_bash(exe) && (flag == "-c" || flag == "-lc") {
-        command.get(2).cloned()
-    } else {
-        None
-    }
-}
-
-fn looks_like_bash(exe: &str) -> bool {
-    if exe.eq_ignore_ascii_case("bash") || exe.eq_ignore_ascii_case("bash.exe") {
-        return true;
-    }
-    Path::new(exe)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| name.eq_ignore_ascii_case("bash") || name.eq_ignore_ascii_case("bash.exe"))
-        .unwrap_or(false)
-}
-
-fn command_tokens_have_connectors(command: &[String]) -> bool {
-    command.iter().any(|token| matches!(token.as_str(), "|" | "&&" | "||" | ";"))
-}
-
-fn command_string_has_connector(value: &str) -> bool {
-    value.contains('|') || value.contains("&&") || value.contains("||") || value.contains(';')
-}
-
-fn normalize_separators(mut value: String) -> String {
-    if value.is_empty() {
-        return value;
-    }
-    if std::path::MAIN_SEPARATOR != '/' {
-        value = value.replace(std::path::MAIN_SEPARATOR, "/");
-    }
-    value
-}
-
-fn ensure_dir_suffix(mut value: String) -> String {
-    if value.is_empty() {
-        value.push('.');
-    }
-    value = normalize_separators(value);
-    if !value.ends_with('/') {
-        value.push('/');
-    }
-    value
-}
-
-fn format_cwd_display(cwd: &Path, session_root: &Path) -> String {
-    if let Ok(rel) = cwd.strip_prefix(session_root) {
-        if rel.as_os_str().is_empty() {
-            return "./".to_string();
-        }
-        let mut parts: Vec<String> = Vec::new();
-        for comp in rel.components() {
-            match comp {
-                Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
-                Component::ParentDir => parts.push("..".to_string()),
-                Component::CurDir => {}
-                _ => {}
-            }
-        }
-        if parts.is_empty() {
-            "./".to_string()
-        } else {
-            ensure_dir_suffix(parts.join("/"))
-        }
-    } else {
-        ensure_dir_suffix(cwd.display().to_string())
-    }
-}
-
-fn format_list_target(path: Option<&str>, cwd: &Path, session_root: &Path) -> Option<String> {
-    let trimmed = path.and_then(|p| {
-        let t = p.trim();
-        if t.is_empty() { None } else { Some(t) }
-    });
-
-    let display = match trimmed {
-        Some(".") | Some("./") => format_cwd_display(cwd, session_root),
-        Some("/") => normalize_separators("/".to_string()),
-        Some(raw) => {
-            let stripped = raw.trim_end_matches('/');
-            let base = if stripped.is_empty() { raw } else { stripped };
-            ensure_dir_suffix(base.to_string())
-        }
-        None => format_cwd_display(cwd, session_root),
-    };
-
-    Some(display)
-}
-
-fn format_search_target(path: Option<&str>, cwd: &Path, session_root: &Path) -> Option<String> {
-    let trimmed = path.and_then(|p| {
-        let t = p.trim();
-        if t.is_empty() { None } else { Some(t) }
-    });
-    trimmed.map(|p| format_read_target(p, cwd, session_root))
-}
-
-fn format_read_target(name: &str, cwd: &Path, session_root: &Path) -> String {
-    let trimmed = name.trim();
-    let path = Path::new(trimmed);
-    let resolved = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        cwd.join(path)
-    };
-
-    let normalized = if let Ok(rel) = resolved.strip_prefix(session_root) {
-        if rel.as_os_str().is_empty() {
-            trimmed.to_string()
-        } else {
-            normalize_separators(rel.display().to_string())
-        }
-    } else {
-        normalize_separators(resolved.display().to_string())
-    };
-
-    if normalized.is_empty() {
-        trimmed.to_string()
-    } else {
-        normalized
-    }
-}
-
-fn annotation_for_range(start: u32, end: u32) -> Option<String> {
-    if end == u32::MAX {
-        Some(format!("(from {} to end)", start))
-    } else {
-        Some(format!("(lines {} to {})", start, end))
-    }
-}
-
-pub(crate) struct ExploreAggregationCell {
-    entries: Vec<ExploreEntry>,
-    is_trailing: bool,
-}
-
-impl ExploreAggregationCell {
-    pub(crate) fn new() -> Self {
-        Self {
-            entries: Vec::new(),
-            is_trailing: true,
-        }
-    }
-
-    pub(crate) fn set_trailing(&mut self, trailing: bool) {
-        self.is_trailing = trailing;
-    }
-
-    pub(crate) fn push_from_parsed(
-        &mut self,
-        parsed: &[ParsedCommand],
-        status: ExploreEntryStatus,
-        cwd: &Path,
-        session_root: &Path,
-        original_command: &[String],
-    ) -> Option<usize> {
-        let action = action_enum_from_parsed(parsed);
-        let summary = match action {
-            ExecAction::Search => parsed.iter().find_map(|p| match p {
-                ParsedCommand::Search { query, path, cmd } => {
-                    let formatted_path = format_search_target(path.as_deref(), cwd, session_root);
-                    let pretty_query =
-                        query.clone().filter(|q| !q.trim().is_empty()).or_else(|| {
-                            if query.is_none() {
-                                Some(cmd.clone())
-                            } else {
-                                None
-                            }
-                        });
-                    Some(ExploreSummary::Search {
-                        query: pretty_query,
-                        path: formatted_path,
-                    })
-                }
-                _ => None,
-            }),
-            ExecAction::List => parsed.iter().find_map(|p| match p {
-                ParsedCommand::ListFiles { path, .. } => {
-                    let display = format_list_target(path.as_deref(), cwd, session_root);
-                    Some(ExploreSummary::List { path: display })
-                }
-                _ => None,
-            }),
-            ExecAction::Read => parsed.iter().find_map(|p| match p {
-                ParsedCommand::Read { name, cmd, .. } => {
-                    let (annotation, range) = parse_read_line_annotation_with_range(cmd);
-                    let display_path = format_read_target(name, cwd, session_root);
-                    Some(ExploreSummary::Read {
-                        display_path,
-                        annotation,
-                        range,
-                    })
-                }
-                _ => None,
-            }),
-            ExecAction::Run => parsed.iter().find_map(|p| match p {
-                ParsedCommand::ReadCommand { cmd } => Some(ExploreSummary::Command {
-                    command: build_command_summary(cmd, original_command),
-                }),
-                _ => None,
-            }),
-        };
-
-        let summary = summary.or_else(|| {
-            let text = parsed
-                .iter()
-                .map(|p| match p {
-                    ParsedCommand::Unknown { cmd } => cmd.clone(),
-                    _ => String::new(),
-                })
-                .find(|s| !s.is_empty())
-                .unwrap_or_else(|| "exec".to_string());
-            Some(ExploreSummary::Fallback { text })
-        });
-
-        let summary = summary?;
-
-        if let ExploreSummary::Read {
-            display_path,
-            annotation,
-            range,
-        } = &summary
-        {
-            let path_key = display_path.clone();
-            let annot = annotation.clone();
-            let range_val = *range;
-            for idx in (0..self.entries.len()).rev() {
-                if let ExploreSummary::Read {
-                    display_path: existing_path,
-                    annotation: existing_ann,
-                    range: existing_range,
-                } = &mut self.entries[idx].summary
-                {
-                    if *existing_path == path_key {
-                        let reuse = match (*existing_range, range_val) {
-                            (Some((es, ee)), Some((ns, ne))) => {
-                                if ns <= es && ne >= ee {
-                                    *existing_range = Some((ns, ne));
-                                    *existing_ann =
-                                        annot.clone().or_else(|| annotation_for_range(ns, ne));
-                                    true
-                                } else if es <= ns && ee >= ne {
-                                    true
-                                } else {
-                                    let start = es.min(ns);
-                                    let end = if ee == u32::MAX || ne == u32::MAX {
-                                        u32::MAX
-                                    } else {
-                                        ee.max(ne)
-                                    };
-                                    *existing_range = Some((start, end));
-                                    *existing_ann = annotation_for_range(start, end);
-                                    true
-                                }
-                            }
-                            (None, Some((ns, ne))) => {
-                                *existing_range = Some((ns, ne));
-                                *existing_ann =
-                                    annot.clone().or_else(|| annotation_for_range(ns, ne));
-                                true
-                            }
-                            (Some(_), None) => {
-                                if annot.is_some() {
-                                    *existing_ann = annot.clone();
-                                }
-                                true
-                            }
-                            (None, None) => {
-                                if annot.is_some() {
-                                    *existing_ann = annot.clone();
-                                }
-                                true
-                            }
-                        };
-
-                        if reuse {
-                            self.entries[idx].status = status;
-                            return Some(idx);
-                        }
-                    }
-                }
-            }
-        }
-
-        if let ExploreSummary::Command { command: new_cmd } = &summary {
-            for idx in (0..self.entries.len()).rev() {
-                if let ExploreSummary::Command { command: existing } = &mut self.entries[idx].summary
-                {
-                    if existing.display == new_cmd.display
-                        && existing.annotation == new_cmd.annotation
-                    {
-                        self.entries[idx].status = status;
-                        return Some(idx);
-                    }
-                }
-            }
-        }
-
-        self.entries.push(ExploreEntry {
-            action,
-            summary,
-            status,
-        });
-        Some(self.entries.len().saturating_sub(1))
-    }
-
-    pub(crate) fn update_status(&mut self, idx: usize, status: ExploreEntryStatus) {
-        if let Some(entry) = self.entries.get_mut(idx) {
-            entry.status = status;
-        }
-    }
-
-    fn current_exec_status(&self) -> ExecStatus {
-        if self.entries.iter().any(|e| e.is_running()) {
-            ExecStatus::Running
-        } else if self.entries.iter().any(|e| e.is_error()) {
-            ExecStatus::Error
-        } else {
-            ExecStatus::Success
-        }
-    }
-}
-
-impl HistoryCell for ExploreAggregationCell {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-    fn kind(&self) -> HistoryCellType {
-        HistoryCellType::Exec {
-            kind: ExecKind::Search,
-            status: self.current_exec_status(),
-        }
-    }
-
-    fn display_lines(&self) -> Vec<Line<'static>> {
-        let header = if self.is_trailing {
-            "Exploring..."
-        } else {
-            "Explored"
-        };
-
-        if self.entries.is_empty() {
-            return vec![Line::styled(
-                header,
-                Style::default().fg(crate::colors::text()),
-            )];
-        }
-
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        lines.push(Line::styled(
-            header,
-            Style::default().fg(crate::colors::text()),
-        ));
-
-        let max_label_len = self
-            .entries
-            .iter()
-            .map(|e| e.label().chars().count())
-            .max()
-            .unwrap_or(0);
-
-        for (idx, entry) in self.entries.iter().enumerate() {
-            let prefix = if idx == 0 { "└ " } else { "  " };
-            let mut spans: Vec<Span<'static>> = vec![Span::styled(
-                prefix,
-                Style::default().add_modifier(Modifier::DIM),
-            )];
-            let label = entry.label();
-            let label_len = label.chars().count();
-            let padding = max_label_len.saturating_sub(label_len) + 1;
-            let mut padded_label = String::with_capacity(label.len() + padding);
-            padded_label.push_str(label);
-            padded_label.extend(std::iter::repeat(' ').take(padding));
-            spans.push(Span::styled(
-                padded_label,
-                Style::default().fg(crate::colors::text_dim()),
-            ));
-            spans.extend(entry.summary_spans());
-            match entry.status {
-                ExploreEntryStatus::Running => spans.push(Span::styled(
-                    "…",
-                    Style::default().fg(crate::colors::text_dim()),
-                )),
-                ExploreEntryStatus::NotFound => spans.push(Span::styled(
-                    " (not found)",
-                    Style::default().fg(crate::colors::text_dim()),
-                )),
-                ExploreEntryStatus::Error { exit_code } => {
-                    let msg = match (entry.action, exit_code) {
-                        (ExecAction::Search, Some(2)) => " (invalid pattern)".to_string(),
-                        (ExecAction::Search, _) => " (search error)".to_string(),
-                        (ExecAction::List, _) => " (list error)".to_string(),
-                        (ExecAction::Read, _) => " (read error)".to_string(),
-                        _ => exit_code
-                            .map(|code| format!(" (exit {})", code))
-                            .unwrap_or_else(|| " (failed)".to_string()),
-                    };
-                    spans.push(Span::styled(
-                        msg,
-                        Style::default().fg(crate::colors::error()),
-                    ));
-                }
-                ExploreEntryStatus::Success => {}
-            }
-            lines.push(Line::from(spans));
-        }
-        lines
-    }
-
-    fn desired_height(&self, width: u16) -> u16 {
-        Paragraph::new(Text::from(self.display_lines_trimmed()))
-            .wrap(Wrap { trim: false })
-            .line_count(width)
-            .try_into()
-            .unwrap_or(0)
-    }
-
-    fn gutter_symbol(&self) -> Option<&'static str> {
-        None
-    }
-}
-
-// ==================== PlainHistoryCell ====================
-// For simple cells that just store lines
-
-pub(crate) struct PlainHistoryCell {
-    pub(crate) lines: Vec<Line<'static>>,
-    pub(crate) kind: HistoryCellType,
-    cached_layout: std::cell::RefCell<Option<PlainLayoutCache>>,
-}
-
-pub(crate) struct LimitsHistoryCell {
-    view: LimitsView,
-}
-
-impl LimitsHistoryCell {
-    const TRANSCRIPT_WIDTH: u16 = 80;
-
-    fn lines_for_width(&self, width: u16) -> Vec<Line<'static>> {
-        let mut lines = self.view.summary_lines.clone();
-        lines.extend(self.view.gauge_lines(width));
-        lines.extend(self.view.legend_lines.clone());
-        lines.extend(self.view.footer_lines.clone());
-        lines
-    }
-}
-
-impl HistoryCell for LimitsHistoryCell {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-
-    fn kind(&self) -> HistoryCellType {
-        HistoryCellType::Notice
-    }
-
-    fn display_lines(&self) -> Vec<Line<'static>> {
-        self.lines_for_width(Self::TRANSCRIPT_WIDTH)
-    }
-
-    fn has_custom_render(&self) -> bool {
-        true
-    }
-
-    fn custom_render_with_skip(&self, area: Rect, buf: &mut Buffer, skip_rows: u16) {
-        let width = if area.width == 0 { 1 } else { area.width };
-        let lines = self.lines_for_width(width);
-        let text = Text::from(lines);
-
-        let cell_bg = crate::colors::background();
-        let bg_style = Style::default().bg(cell_bg).fg(crate::colors::text());
-        fill_rect(buf, area, Some(' '), bg_style);
-
-        Paragraph::new(text)
-            .wrap(Wrap { trim: false })
-            .scroll((skip_rows, 0))
-            .block(Block::default().style(Style::default().bg(cell_bg)))
-            .style(Style::default().bg(cell_bg))
-            .render(area, buf);
-    }
-}
-
-struct PlainLayoutCache {
-    requested_width: u16,
-    effective_width: u16,
-    height: u16,
-    buffer: Option<Buffer>,
-}
-
-impl PlainHistoryCell {
-    pub(crate) fn new(lines: Vec<Line<'static>>, kind: HistoryCellType) -> Self {
-        Self {
-            lines,
-            kind,
-            cached_layout: std::cell::RefCell::new(None),
-        }
-    }
-
-    pub(crate) fn invalidate_layout_cache(&self) {
-        self.cached_layout.borrow_mut().take();
-    }
-
-    fn ensure_layout(&self, requested_width: u16, effective_width: u16) {
-        let mut cache = self.cached_layout.borrow_mut();
-        let needs_rebuild = cache
-            .as_ref()
-            .map_or(true, |cached| {
-                cached.requested_width != requested_width
-                    || cached.effective_width != effective_width
-            });
-        if needs_rebuild {
-            *cache = Some(self.build_layout(requested_width, effective_width));
-        }
-    }
-
-    fn build_layout(&self, requested_width: u16, effective_width: u16) -> PlainLayoutCache {
-        if requested_width == 0 || effective_width == 0 {
-            return PlainLayoutCache {
-                requested_width,
-                effective_width,
-                height: 0,
-                buffer: None,
-            };
-        }
-
-        let cell_bg = match self.kind {
-            HistoryCellType::Assistant => crate::colors::assistant_bg(),
-            _ => crate::colors::background(),
-        };
-        let bg_style = Style::default().bg(cell_bg).fg(crate::colors::text());
-
-        let trimmed_lines = self.display_lines_trimmed();
-        let text = Text::from(trimmed_lines.clone());
-        let paragraph = Paragraph::new(text).wrap(Wrap { trim: false });
-        let height: u16 = paragraph
-            .line_count(effective_width)
-            .try_into()
-            .unwrap_or(0);
-
-        if height == 0 {
-            return PlainLayoutCache {
-                requested_width,
-                effective_width,
-                height,
-                buffer: None,
-            };
-        }
-
-        let render_height = height.max(1);
-        let render_area = Rect::new(0, 0, requested_width, render_height);
-        let mut buffer = Buffer::empty(render_area);
-        fill_rect(&mut buffer, render_area, Some(' '), bg_style);
-
-        if matches!(self.kind, HistoryCellType::User) {
-            let block = Block::default()
-                .style(bg_style)
-                .padding(Padding {
-                    left: 0,
-                    right: crate::layout_consts::USER_HISTORY_RIGHT_PAD.into(),
-                    top: 0,
-                    bottom: 0,
-                });
-            Paragraph::new(Text::from(trimmed_lines))
-                .block(block)
-                .wrap(Wrap { trim: false })
-                .style(bg_style)
-                .render(render_area, &mut buffer);
-        } else {
-            let block = Block::default().style(Style::default().bg(cell_bg));
-            Paragraph::new(Text::from(trimmed_lines))
-                .block(block)
-                .wrap(Wrap { trim: false })
-                .style(Style::default().bg(cell_bg))
-                .render(render_area, &mut buffer);
-        }
-
-        PlainLayoutCache {
-            requested_width,
-            effective_width,
-            height,
-            buffer: Some(buffer),
-        }
-    }
-}
-
-impl HistoryCell for PlainHistoryCell {
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-    fn kind(&self) -> HistoryCellType {
-        self.kind
-    }
-    fn display_lines(&self) -> Vec<Line<'static>> {
-        // If a gutter symbol implies a standard header line (user, assistant, tool, etc.),
-        // hide that first title line and show only the content.
-        let hide_header = matches!(
-            self.kind,
-            HistoryCellType::User
-                | HistoryCellType::Assistant
-                | HistoryCellType::Tool { .. }
-                | HistoryCellType::Error
-                | HistoryCellType::BackgroundEvent
-                | HistoryCellType::Notice
-        );
-        if hide_header && self.lines.len() > 1 {
-            self.lines[1..].to_vec()
-        } else if hide_header {
-            Vec::new()
-        } else {
-            self.lines.clone()
-        }
-    }
-
-    fn has_custom_render(&self) -> bool {
-        matches!(self.kind, HistoryCellType::User)
-    }
-
-    fn desired_height(&self, width: u16) -> u16 {
-        let effective_width = if matches!(self.kind, HistoryCellType::User) {
-            // Match input composer wrapping by reserving shared right padding.
-            // Keep this in sync with the composer constants.
-            width.saturating_sub(crate::layout_consts::USER_HISTORY_RIGHT_PAD.into())
-        } else {
-            width
-        };
-
-        self.ensure_layout(width, effective_width);
-        self.cached_layout
-            .borrow()
-            .as_ref()
-            .map(|cache| cache.height)
-            .unwrap_or(0)
-    }
-
-    fn render_with_skip(&self, area: Rect, buf: &mut Buffer, skip_rows: u16) {
-        let requested_width = area.width;
-        let effective_width = if matches!(self.kind, HistoryCellType::User) {
-            requested_width
-                .saturating_sub(crate::layout_consts::USER_HISTORY_RIGHT_PAD.into())
-        } else {
-            requested_width
-        };
-
-        let cell_bg = match self.kind {
-            HistoryCellType::Assistant => crate::colors::assistant_bg(),
-            _ => crate::colors::background(),
-        };
-        let bg_style = Style::default().bg(cell_bg).fg(crate::colors::text());
-        fill_rect(buf, area, Some(' '), bg_style);
-
-        if requested_width == 0 || effective_width == 0 {
-            return;
-        }
-
-        self.ensure_layout(requested_width, effective_width);
-        let cache_ref = self.cached_layout.borrow();
-        let Some(cache) = cache_ref.as_ref() else {
-            return;
-        };
-        let Some(src_buffer) = cache.buffer.as_ref() else {
-            return;
-        };
-
-        let content_height = cache.height as usize;
-        if content_height == 0 || skip_rows as usize >= content_height {
-            return;
-        }
-
-        let src_area = src_buffer.area();
-        let copy_width = usize::from(src_area.width.min(area.width));
-        let max_rows = usize::from(area.height);
-
-        for row_offset in 0..max_rows {
-            let src_y = skip_rows as usize + row_offset;
-            if src_y >= content_height || src_y >= usize::from(src_area.height) {
-                break;
-            }
-            let dest_y = area.y + row_offset as u16;
-            for col_offset in 0..copy_width {
-                let dest_x = area.x + col_offset as u16;
-                let src_cell = &src_buffer[(col_offset as u16, src_y as u16)];
-                buf[(dest_x, dest_y)] = src_cell.clone();
-            }
-        }
-    }
-}
-
-pub(crate) struct PlanUpdateCell {
-    lines: Vec<Line<'static>>,
-    icon: &'static str,
-    is_complete: bool,
-}
-
-impl PlanUpdateCell {
-    pub(crate) fn is_complete(&self) -> bool {
-        self.is_complete
-    }
-}
-
-impl HistoryCell for PlanUpdateCell {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-
-    fn kind(&self) -> HistoryCellType {
-        HistoryCellType::PlanUpdate
-    }
-
-    fn display_lines(&self) -> Vec<Line<'static>> {
-        self.lines.clone()
-    }
-
-    fn gutter_symbol(&self) -> Option<&'static str> {
-        Some(self.icon)
-    }
-}
-
 // ==================== ExecCell ====================
 
 #[derive(Clone, PartialEq, Eq)]
@@ -2863,6 +1929,30 @@ mod tests {
     }
 
     #[test]
+    fn build_preview_lines_preserves_tabbed_columns() {
+        let sample = "AGENTS.md\t\tdocs\t\t\tpackage.json\r\n\
+build-fast.sh\t\tflake.lock\t\tpnpm-lock.yaml\r\n\
+CHANGELOG.md\t\tflake.nix\t\tpnpm-workspace.yaml\r\n\
+cliff.toml\t\tFormula\t\t\tREADME.md\r\n\
+codex-cli\t\thomebrew-tap\t\trelease-notes\r\n\
+codex-rs\t\tLICENSE\t\t\tscripts\r\n\
+config.toml.example\tNOTICE\r\n";
+
+        let lines = build_preview_lines(sample, false);
+        assert!(lines.len() >= 6);
+
+        let first_line: String = lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.to_string())
+            .collect();
+        assert!(first_line.contains("AGENTS.md"));
+        assert!(first_line.contains("docs"));
+        assert!(first_line.contains("package.json"));
+        assert!(first_line.contains("  docs"), "expected spaces between ls columns: {first_line:?}");
+    }
+
+    #[test]
     fn format_inline_python_breaks_semicolons() {
         let command = vec![
             "python".to_string(),
@@ -4138,208 +3228,6 @@ impl WidgetRef for &ExecCell {
     }
 }
 
-// ==================== AnimatedWelcomeCell ====================
-
-pub(crate) struct AnimatedWelcomeCell {
-    pub(crate) start_time: Instant,
-    pub(crate) completed: std::cell::Cell<bool>,
-    pub(crate) fade_start: std::cell::Cell<Option<Instant>>,
-    pub(crate) faded_out: std::cell::Cell<bool>,
-    // Lock the measured height on first layout so it doesn't resize later
-    pub(crate) locked_height: std::cell::Cell<Option<u16>>,
-    // When true, render nothing but keep reserved height (for stable layout)
-    pub(crate) hidden: std::cell::Cell<bool>,
-}
-
-impl HistoryCell for AnimatedWelcomeCell {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-    fn kind(&self) -> HistoryCellType {
-        HistoryCellType::AnimatedWelcome
-    }
-    fn display_lines(&self) -> Vec<Line<'static>> {
-        // For plain lines, just show a simple welcome message
-        vec![
-            Line::from(""),
-            Line::from("Welcome to Code"),
-            Line::from(crate::greeting::greeting_placeholder()),
-            Line::from(""),
-        ]
-    }
-
-    fn desired_height(&self, width: u16) -> u16 {
-        // On first use, choose a height based on width; then lock it to avoid
-        // resizing as the user scrolls or resizes slightly.
-        if let Some(h) = self.locked_height.get() {
-            return h.saturating_add(3);
-        }
-
-        // Word "CODE" uses 4 letters of 5 cols each with 3 gaps: 4*5 + 3 = 23 cols.
-        let cols: u16 = 23;
-        let base_rows: u16 = 7;
-        let max_scale: u16 = 3;
-        let scale = if width >= cols {
-            (width / cols).min(max_scale).max(1)
-        } else {
-            1
-        };
-        let h = base_rows.saturating_mul(scale);
-        self.locked_height.set(Some(h));
-        // Add a little padding below to give extra spacing
-        h.saturating_add(3)
-    }
-
-    fn has_custom_render(&self) -> bool {
-        true // AnimatedWelcomeCell uses custom rendering for the glitch animation
-    }
-
-    fn custom_render(&self, area: Rect, buf: &mut Buffer) {
-        // If hidden, draw nothing (area will retain background) to preserve layout height.
-        if self.hidden.get() {
-            return;
-        }
-        let _elapsed = self.start_time.elapsed();
-        // Top-align within the provided area so scrolling simply crops the top.
-        // Limit to our locked height if present to avoid growth/shrink.
-        let locked_h = self.locked_height.get().unwrap_or(21);
-        let height = locked_h.min(area.height);
-        let positioned_area = Rect {
-            x: area.x,
-            y: area.y,
-            width: area.width,
-            height,
-        };
-
-        let fade_duration = std::time::Duration::from_millis(800);
-
-        // Check if we're in fade-out phase
-        if let Some(fade_time) = self.fade_start.get() {
-            let fade_elapsed = fade_time.elapsed();
-            if fade_elapsed < fade_duration && !self.faded_out.get() {
-                // Fade-out animation
-                let fade_progress = fade_elapsed.as_secs_f32() / fade_duration.as_secs_f32();
-                let alpha = 1.0 - fade_progress; // From 1.0 to 0.0
-
-                crate::glitch_animation::render_intro_animation_with_alpha(
-                    positioned_area,
-                    buf,
-                    1.0, // Full animation progress (static state)
-                    alpha,
-                );
-            } else {
-                // Fade-out complete - mark as faded out
-                self.faded_out.set(true);
-                // Don't render anything (invisible)
-                // not rendering
-            }
-        } else {
-            // Normal animation phase
-            let elapsed = self.start_time.elapsed();
-            let animation_duration = std::time::Duration::from_secs(2);
-
-            if elapsed < animation_duration && !self.completed.get() {
-                // Calculate animation progress
-                let progress = elapsed.as_secs_f32() / animation_duration.as_secs_f32();
-
-                // Render the animation
-                crate::glitch_animation::render_intro_animation(positioned_area, buf, progress);
-            } else {
-                // Animation complete - mark it and render final static state
-                self.completed.set(true);
-
-                // Render the final static state
-                crate::glitch_animation::render_intro_animation(positioned_area, buf, 1.0);
-            }
-        }
-    }
-
-    fn is_animating(&self) -> bool {
-        // Check for initial animation
-        if !self.completed.get() {
-            let elapsed = self.start_time.elapsed();
-            let animation_duration = std::time::Duration::from_secs(2);
-            if elapsed < animation_duration {
-                return true;
-            }
-            // Mark as completed if animation time has passed
-            self.completed.set(true);
-        }
-
-        // Check for fade-out animation
-        if let Some(fade_time) = self.fade_start.get() {
-            if !self.faded_out.get() {
-                let fade_elapsed = fade_time.elapsed();
-                let fade_duration = std::time::Duration::from_millis(800);
-                if fade_elapsed < fade_duration {
-                    return true;
-                }
-                // Mark as faded out if fade time has passed
-                self.faded_out.set(true);
-            }
-        }
-
-        false
-    }
-
-    fn trigger_fade(&self) {
-        // Only trigger fade if not already fading or faded
-        if self.fade_start.get().is_none() {
-            self.fade_start.set(Some(Instant::now()));
-        }
-    }
-
-    fn should_remove(&self) -> bool {
-        // Remove only after fade-out is complete
-        self.faded_out.get()
-    }
-}
-
-// ==================== LoadingCell ====================
-
-#[allow(dead_code)]
-pub(crate) struct LoadingCell {
-    #[allow(dead_code)] // May be used for displaying status alongside animation
-    pub(crate) message: String,
-}
-
-impl HistoryCell for LoadingCell {
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-    fn kind(&self) -> HistoryCellType {
-        HistoryCellType::Loading
-    }
-    fn display_lines(&self) -> Vec<Line<'static>> {
-        vec![
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("⟳ ", Style::default().fg(crate::colors::info())),
-                Span::from("Loading..."),
-            ]),
-            Line::from(""),
-        ]
-    }
-
-    fn desired_height(&self, _width: u16) -> u16 {
-        3 // Just 3 lines for the loading message
-    }
-
-    fn has_custom_render(&self) -> bool {
-        false // No custom rendering needed, just use display_lines
-    }
-
-    fn is_animating(&self) -> bool {
-        false // Not animating - no need for constant redraws
-    }
-
-    fn is_loading_cell(&self) -> bool {
-        true // This is a loading cell
-    }
-}
 /// Return the emoji followed by a hair space (U+200A) and a normal space.
 /// This creates a reasonable gap across different terminals,
 /// in particular Terminal.app and iTerm, which render too tightly with just a single normal space.
@@ -4348,693 +3236,35 @@ impl HistoryCell for LoadingCell {
 /// or possibly on emoji.
 // Removed unused helpers padded_emoji and padded_emoji_with.
 
-// ==================== ImageOutputCell ====================
-
-pub(crate) struct ImageOutputCell {
-    #[allow(dead_code)] // Will be used for terminal image protocol support
-    pub(crate) image: DynamicImage,
-}
-
-impl HistoryCell for ImageOutputCell {
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-    fn kind(&self) -> HistoryCellType {
-        HistoryCellType::Image
-    }
-    fn display_lines(&self) -> Vec<Line<'static>> {
-        vec![
-            Line::from("tool result (image output omitted)"),
-            Line::from(""),
-        ]
-    }
-}
-
-// ==================== ToolCallCell ====================
-
-pub(crate) enum ToolState {
-    #[allow(dead_code)]
-    Running,
-    Success,
-    Failed,
-}
-
-pub(crate) struct ToolCallCell {
-    lines: Vec<Line<'static>>,
-    state: ToolState,
-}
-
-impl HistoryCell for ToolCallCell {
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-    fn kind(&self) -> HistoryCellType {
-        HistoryCellType::Tool {
-            status: match self.state {
-                ToolState::Running => ToolStatus::Running,
-                ToolState::Success => ToolStatus::Success,
-                ToolState::Failed => ToolStatus::Failed,
-            },
-        }
-    }
-    fn display_lines(&self) -> Vec<Line<'static>> {
-        // Show all lines; header visibility aligns with exec-style sections
-        self.lines.clone()
-    }
-}
-
-impl ToolCallCell {
-    pub(crate) fn retint(&mut self, old: &crate::theme::Theme, new: &crate::theme::Theme) {
-        retint_lines_in_place(&mut self.lines, old, new);
-    }
-}
-
-// ==================== RunningToolCallCell (animated) ====================
-
-pub(crate) struct RunningToolCallCell {
-    title: String,
-    start_time: Instant,
-    arg_lines: Vec<Line<'static>>,
-    wait_has_target: bool,
-    wait_has_call_id: bool,
-    wait_cap_ms: Option<u64>,
-}
-
-impl HistoryCell for RunningToolCallCell {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-    fn kind(&self) -> HistoryCellType {
-        HistoryCellType::Tool {
-            status: ToolStatus::Running,
-        }
-    }
-    fn gutter_symbol(&self) -> Option<&'static str> {
-        if self.title == "Waiting" {
-            if self.wait_has_call_id {
-                None
-            } else {
-                Some(self.spinner_frame())
-            }
-        } else {
-            Some("⚙")
-        }
-    }
-    fn is_animating(&self) -> bool {
-        true
-    }
-    fn display_lines(&self) -> Vec<Line<'static>> {
-        let elapsed = self.start_time.elapsed();
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        if self.title == "Waiting" {
-            let show_elapsed = !self.wait_has_target;
-            let mut spans = Vec::new();
-            spans.push(
-                Span::styled(
-                    "Waiting...",
-                    Style::default()
-                        .fg(crate::colors::text())
-                        .add_modifier(Modifier::BOLD),
-                ),
-            );
-            let cap_ms = self.wait_cap_ms.unwrap_or(600_000);
-            let cap_str = Self::strip_zero_seconds_suffix(
-                format_duration(Duration::from_millis(cap_ms)),
-            );
-            let suffix = if show_elapsed {
-                let elapsed_str = Self::strip_zero_seconds_suffix(format_duration(elapsed));
-                format!(" ({} / up to {})", elapsed_str, cap_str)
-            } else {
-                format!(" (up to {})", cap_str)
-            };
-            spans.push(Span::styled(
-                suffix,
-                Style::default().fg(crate::colors::text_dim()),
-            ));
-            lines.push(Line::from(spans));
-        } else {
-            lines.push(Line::styled(
-                format!("{} ({})", self.title, format_duration(elapsed)),
-                Style::default()
-                    .fg(crate::colors::info())
-                    .add_modifier(Modifier::BOLD),
-            ));
-        }
-        lines.extend(self.arg_lines.clone());
-        lines.push(Line::from(""));
-        lines
-    }
-}
-
-// ==================== WaitStatusCell (completed wait) ====================
-
-pub(crate) struct WaitStatusCell {
-    lines: Vec<Line<'static>>,
-}
-
-impl WaitStatusCell {
-    pub(crate) fn retint(&mut self, old: &crate::theme::Theme, new: &crate::theme::Theme) {
-        retint_lines_in_place(&mut self.lines, old, new);
-    }
-}
-
-impl HistoryCell for WaitStatusCell {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-    fn kind(&self) -> HistoryCellType {
-        HistoryCellType::Plain
-    }
-    fn display_lines(&self) -> Vec<Line<'static>> {
-        self.lines.clone()
-    }
-    fn gutter_symbol(&self) -> Option<&'static str> {
-        Some("◓")
-    }
-}
-
 pub(crate) fn new_completed_wait_tool_call(target: String, duration: Duration) -> WaitStatusCell {
-    let mut lines: Vec<Line<'static>> = Vec::new();
     let mut duration_str = format_duration(duration);
     if duration_str.ends_with(" 00s") {
-        duration_str.truncate(duration_str.len() - 4);
+        duration_str.truncate(duration_str.len().saturating_sub(4));
     }
-    let mut header_spans = Vec::new();
-    header_spans.push(
-        Span::styled(
-            "Waited",
-            Style::default()
-                .fg(crate::colors::success())
-                .add_modifier(Modifier::BOLD),
-        ),
-    );
-    header_spans.push(Span::styled(
-        format!(" ({duration_str})"),
-        Style::default().fg(crate::colors::text_dim()),
-    ));
-    lines.push(Line::from(header_spans));
 
+    let header = crate::history::WaitStatusHeader {
+        title: "Waited".to_string(),
+        title_tone: crate::history::TextTone::Success,
+        summary: Some(duration_str),
+        summary_tone: crate::history::TextTone::Dim,
+    };
+
+    let mut details: Vec<crate::history::WaitStatusDetail> = Vec::new();
     if !target.is_empty() {
-        lines.push(Line::styled(
-            format!("for {target}"),
-            Style::default().fg(crate::colors::text_dim()),
-        ));
+        details.push(crate::history::WaitStatusDetail {
+            label: "for".to_string(),
+            value: Some(target),
+            tone: crate::history::TextTone::Dim,
+        });
     }
 
-    lines.push(Line::from(""));
+    let state = crate::history::WaitStatusState {
+        id: crate::history::HistoryId::ZERO,
+        header,
+        details,
+    };
 
-    WaitStatusCell { lines }
-}
-
-impl RunningToolCallCell {
-    fn strip_zero_seconds_suffix(mut duration: String) -> String {
-        if duration.ends_with(" 00s") {
-            duration.truncate(duration.len() - 4);
-        }
-        duration
-    }
-    fn spinner_frame(&self) -> &'static str {
-        const FRAMES: [&str; 4] = ["◐", "◓", "◑", "◒"];
-        let idx = ((self.start_time.elapsed().as_millis() / 100) as usize) % FRAMES.len();
-        FRAMES[idx]
-    }
-    pub(crate) fn has_title(&self, title: &str) -> bool {
-        self.title == title
-    }
-    /// Finalize a running web search cell into a completed ToolCallCell.
-    pub(crate) fn finalize_web_search(&self, success: bool, query: Option<String>) -> ToolCallCell {
-        let duration = self.start_time.elapsed();
-        let title = if success {
-            "Web Search"
-        } else {
-            "Web Search (failed)"
-        };
-        let duration = format_duration(duration);
-
-        let title_line = if success {
-            Line::from(vec![
-                Span::styled(
-                    title,
-                    Style::default()
-                        .fg(crate::colors::success())
-                        .add_modifier(Modifier::BOLD),
-                ),
-                format!(", duration: {duration}").dim(),
-            ])
-        } else {
-            Line::from(vec![
-                Span::styled(
-                    title,
-                    Style::default()
-                        .fg(crate::colors::error())
-                        .add_modifier(Modifier::BOLD),
-                ),
-                format!(", duration: {duration}").dim(),
-            ])
-        };
-
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        lines.push(title_line);
-        if let Some(q) = query {
-            lines.push(Line::from(vec![
-                Span::styled("└ query: ", Style::default().fg(crate::colors::text_dim())),
-                Span::styled(q, Style::default().fg(crate::colors::text())),
-            ]));
-        }
-        lines.push(Line::from(""));
-
-        ToolCallCell {
-            lines,
-            state: if success {
-                ToolState::Success
-            } else {
-                ToolState::Failed
-            },
-        }
-    }
-}
-
-// ==================== CollapsibleReasoningCell ====================
-// For reasoning content that can be collapsed to show only summary
-
-pub(crate) struct CollapsibleReasoningCell {
-    pub(crate) lines: Vec<Line<'static>>,
-    pub(crate) collapsed: std::cell::Cell<bool>,
-    pub(crate) in_progress: std::cell::Cell<bool>,
-    // Optional stream id to anchor routing of deltas/finals
-    pub(crate) id: Option<String>,
-    hide_when_collapsed: std::cell::Cell<bool>,
-}
-
-impl CollapsibleReasoningCell {
-    pub fn new_with_id(lines: Vec<Line<'static>>, id: Option<String>) -> Self {
-        Self {
-            lines,
-            collapsed: std::cell::Cell::new(true), // Default to collapsed
-            in_progress: std::cell::Cell::new(false),
-            id,
-            hide_when_collapsed: std::cell::Cell::new(false),
-        }
-    }
-
-    /// Append lines with conservative de-duplication:
-    /// - Drops exact adjacent duplicates (same plain text as last line).
-    /// - Drops any leading prefix of `new_lines` that exactly matches the
-    ///   existing tail (overlap), ignoring ephemeral debug marker lines like
-    ///   "[sN ...]" on both sides so markers don't break matching.
-    pub fn append_lines_dedup(&mut self, mut new_lines: Vec<Line<'static>>) {
-        if new_lines.is_empty() {
-            return;
-        }
-
-        let to_plain = |l: &Line<'_>| -> String {
-            l.spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect::<String>()
-        };
-        let is_marker = |l: &Line<'_>| -> bool {
-            let t = to_plain(l).trim().to_string();
-            t.starts_with('[') && t.ends_with(']')
-        };
-
-        // Compute overlap (suffix/prefix match) while skipping marker lines.
-        let mut existing_plain: Vec<String> = self
-            .lines
-            .iter()
-            .rev()
-            .filter(|l| !is_marker(l))
-            .take(64)
-            .map(|l| to_plain(l))
-            .collect();
-        existing_plain.reverse();
-
-        let incoming_plain: Vec<String> = new_lines
-            .iter()
-            .filter(|l| !is_marker(l))
-            .map(|l| to_plain(l))
-            .collect();
-
-        let max_overlap = existing_plain.len().min(incoming_plain.len());
-        let mut overlap = 0usize;
-        for k in (1..=max_overlap).rev() {
-            if existing_plain.len() >= k && incoming_plain.len() >= k {
-                if existing_plain[existing_plain.len() - k..] == incoming_plain[..k] {
-                    overlap = k;
-                    break;
-                }
-            }
-        }
-        if overlap > 0 {
-            // Drop the first `overlap` non-marker lines from `new_lines`, preserving markers.
-            let mut to_drop = overlap;
-            let mut trimmed: Vec<Line<'static>> = Vec::with_capacity(new_lines.len());
-            for l in new_lines.into_iter() {
-                if to_drop > 0 && !is_marker(&l) {
-                    to_drop -= 1;
-                    continue;
-                }
-                trimmed.push(l);
-            }
-            new_lines = trimmed;
-        }
-
-        // Append, dropping immediate exact duplicates (plain text) to reduce noise.
-        for nl in new_lines.drain(..) {
-            let dup = self
-                .lines
-                .last()
-                .map(|last| to_plain(last) == to_plain(&nl))
-                .unwrap_or(false);
-            if !dup {
-                self.lines.push(nl);
-            }
-        }
-    }
-
-    /// Build a compact debug summary of detected section titles and line metrics
-    /// for on-screen overlays. Only used when the TUI `--order` overlay is active.
-    pub(crate) fn debug_title_overlay(&self) -> String {
-        use unicode_width::UnicodeWidthStr as _;
-        let lines = self.normalized_lines();
-        let mut title_idxs: Vec<usize> = Vec::new();
-        let mut title_previews: Vec<String> = Vec::new();
-        for (i, l) in lines.iter().enumerate() {
-            // Same rule as extract_section_titles: line is a heading if all spans are bold
-            // (ignoring spans that are purely whitespace when trimmed).
-            let is_title = !l.spans.is_empty()
-                && l.spans.iter().all(|s| {
-                    s.style.add_modifier.contains(Modifier::BOLD) || s.content.trim().is_empty()
-                });
-            if is_title {
-                title_idxs.push(i);
-                let mut text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
-                // Truncate preview by display width to avoid slicing inside a UTF-8 codepoint.
-                // Reserve 1 col for the ellipsis when truncation occurs.
-                let maxw = 60usize;
-                if text.width() > maxw {
-                    let (prefix, _suffix, _w) =
-                        crate::live_wrap::take_prefix_by_width(&text, maxw.saturating_sub(1));
-                    text = format!("{}…", prefix);
-                }
-                title_previews.push(text);
-            }
-        }
-        let total = lines.len();
-        let titles = title_previews.len();
-        // Also record final line width to catch cut-offs
-        let lastw = lines
-            .last()
-            .map(|l| {
-                l.spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect::<String>()
-                    .width()
-            })
-            .unwrap_or(0);
-        format!(
-            "rtitles={} idx={:?} total_lines={} lastw={} prevs={:?}",
-            titles, title_idxs, total, lastw, title_previews
-        )
-    }
-
-    pub fn toggle_collapsed(&self) {
-        self.collapsed.set(!self.collapsed.get());
-    }
-
-    pub fn set_collapsed(&self, collapsed: bool) {
-        self.collapsed.set(collapsed);
-    }
-
-    #[allow(dead_code)]
-    pub fn is_collapsed(&self) -> bool {
-        self.collapsed.get()
-    }
-
-    pub fn set_in_progress(&self, in_progress: bool) {
-        self.in_progress.set(in_progress);
-    }
-
-    pub fn set_hide_when_collapsed(&self, hide: bool) {
-        self.hide_when_collapsed.set(hide);
-    }
-
-    /// Normalize reasoning content lines by splitting any line that begins
-    /// with a bold "section title" followed immediately by regular text.
-    /// This produces a separate title line and keeps following text on a new line,
-    /// improving section detection and spacing.
-    fn normalized_lines(&self) -> Vec<Line<'static>> {
-        let mut out: Vec<Line<'static>> = Vec::new();
-        for line in &self.lines {
-            // Skip unchanged if empty or single span
-            if line.spans.len() <= 1 {
-                out.push(line.clone());
-                continue;
-            }
-
-            // Determine length of the leading bold run
-            let mut idx = 0usize;
-            while idx < line.spans.len() {
-                let s = &line.spans[idx];
-                // Treat heading-style titles (often bold) as bold too
-                let is_bold = s.style.add_modifier.contains(Modifier::BOLD);
-                if idx == 0 && s.content.trim().is_empty() {
-                    // allow leading spaces in the bold run
-                    idx += 1;
-                    continue;
-                }
-                if is_bold {
-                    idx += 1;
-                    continue;
-                }
-                break;
-            }
-
-            // If no leading bold run or the entire line is bold, keep as-is
-            if idx == 0 || idx >= line.spans.len() {
-                out.push(line.clone());
-                continue;
-            }
-
-            // Create a separate title line from the leading bold spans
-            let mut title_spans = Vec::new();
-            let mut rest_spans = Vec::new();
-            for (i, s) in line.spans.iter().enumerate() {
-                if i < idx {
-                    title_spans.push(s.clone());
-                } else {
-                    rest_spans.push(s.clone());
-                }
-            }
-
-            // Push title line
-            out.push(Line::from(title_spans));
-            // Insert a spacer if the rest is non-empty and not already a blank line
-            let rest_is_blank = rest_spans.iter().all(|s| s.content.trim().is_empty());
-            if !rest_is_blank {
-                out.push(Line::from(rest_spans));
-            }
-        }
-        out
-    }
-
-    /// Extracts section titles for collapsed display: any line that appears to
-    /// be a heading (entire line styled bold). While streaming (`in_progress`),
-    /// we intentionally suppress the fallback that would otherwise return the
-    /// first non-empty non-header line — this prevents verbose paragraph
-    /// content from flashing before the model emits proper section titles.
-    ///
-    /// After streaming completes, we keep the gentle fallback so providers
-    /// that never emit bold headings still have a concise summary line.
-    fn extract_section_titles(&self) -> Vec<Line<'static>> {
-        let lines = self.normalized_lines();
-        let mut titles: Vec<Line<'static>> = Vec::new();
-        for (_idx, l) in lines.iter().enumerate() {
-            // Skip blank lines
-            let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
-            let trimmed = text.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-
-            // Heading rule (per product): entire line bold only.
-            let all_bold = !l.spans.is_empty()
-                && l.spans.iter().all(|s| {
-                    s.style.add_modifier.contains(Modifier::BOLD) || s.content.trim().is_empty()
-                });
-            if all_bold {
-                titles.push(l.clone());
-            }
-        }
-
-        // If we're still streaming, do NOT fallback to the first non-empty line;
-        // show an ellipsis in `display_lines` until a real title arrives. This
-        // avoids flashing full reasoning paragraphs in collapsed mode.
-        if titles.is_empty() && !self.in_progress.get() {
-            // Fallback (finalized only): first non-empty line as summary
-            for l in lines.iter() {
-                let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
-                let trimmed = text.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                titles.push(l.clone());
-                break;
-            }
-        }
-
-        // Style collapsed titles consistently dim to match reasoning theme
-        let color = crate::colors::text_dim();
-        titles
-            .into_iter()
-            .map(|line| {
-                let spans: Vec<Span<'static>> = line
-                    .spans
-                    .into_iter()
-                    .map(|s| s.style(Style::default().fg(color)))
-                    .collect();
-                Line::from(spans)
-            })
-            .collect()
-    }
-}
-
-impl HistoryCell for CollapsibleReasoningCell {
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-    fn kind(&self) -> HistoryCellType {
-        HistoryCellType::Reasoning
-    }
-
-    fn display_lines(&self) -> Vec<Line<'static>> {
-        // Touch id for sanity/read to avoid dead-code warning; used for routing in ChatWidget
-        let _ = &self.id;
-        if self.lines.is_empty() {
-            return Vec::new();
-        }
-
-        // Normalize to improve section splitting and spacing
-        let normalized = self.normalized_lines();
-
-        // There is no explicit 'thinking' header; show all lines
-        let start_idx = 0;
-
-        if self.collapsed.get() {
-            if self.hide_when_collapsed.get() {
-                return Vec::new();
-            }
-            // When collapsed, show extracted section titles (or at least one summary)
-            let mut titles = self.extract_section_titles();
-            let collapsed_line = if self.in_progress.get() {
-                if let Some(last) = titles.pop() {
-                    let mut spans = last.spans;
-                    spans.push(Span::styled(
-                        "…",
-                        Style::default().fg(crate::colors::text_dim()),
-                    ));
-                    Some(Line::from(spans))
-                } else {
-                    Some(Line::from("…".dim()))
-                }
-            } else {
-                titles.pop()
-            };
-
-            collapsed_line.into_iter().collect()
-        } else {
-            // When expanded, show all lines; append an ellipsis if in progress
-            let mut out = normalized[start_idx..].to_vec();
-            if self.in_progress.get() {
-                out.push(Line::from("…".dim()));
-            }
-            out
-        }
-    }
-
-    fn gutter_symbol(&self) -> Option<&'static str> {
-        // No gutter icon for reasoning/thinking
-        None
-    }
-
-    fn has_custom_render(&self) -> bool {
-        true
-    }
-
-    fn custom_render_with_skip(&self, area: Rect, buf: &mut Buffer, skip_rows: u16) {
-        // Collapsed path: simple paragraph (titles only), already dimmed by extract_section_titles
-        if self.collapsed.get() {
-            if self.hide_when_collapsed.get() {
-                return;
-            }
-            // Clear background
-            let bg_style = Style::default()
-                .bg(crate::colors::background())
-                .fg(crate::colors::text());
-            fill_rect(buf, area, Some(' '), bg_style);
-            let lines = self.display_lines_trimmed();
-            Paragraph::new(Text::from(lines))
-                .block(Block::default().style(Style::default().bg(crate::colors::background())))
-                .wrap(Wrap { trim: false })
-                .scroll((skip_rows, 0))
-                .style(Style::default().bg(crate::colors::background()))
-                .render(area, buf);
-            return;
-        }
-
-        // Expanded path: render full content with a subtle LEFT border and force dim color.
-        let dim = crate::colors::text_dim();
-        // Normalize and recolor all spans to dim so headings remain bold but not bright.
-        let mut lines = self.normalized_lines();
-        for line in &mut lines {
-            line.spans = line
-                .spans
-                .iter()
-                .map(|s| s.clone().style(Style::default().fg(dim)))
-                .collect();
-            // Also patch any line-level style fg so empty-span lines are dim
-            line.style = line.style.patch(Style::default().fg(dim));
-        }
-        let text = Text::from(trim_empty_lines(lines));
-
-        // Clear area
-        let bg = crate::colors::background();
-        let bg_style = Style::default().bg(bg).fg(dim);
-        fill_rect(buf, area, Some(' '), bg_style);
-
-        // Left border like exec output: 1px border + 1px left padding
-        let block = Block::default()
-            .borders(Borders::LEFT)
-            .border_style(Style::default().fg(crate::colors::border_dim()).bg(bg))
-            .style(Style::default().bg(bg))
-            .padding(Padding {
-                left: 1,
-                right: 0,
-                top: 0,
-                bottom: 0,
-            });
-
-        // Scroll across wrapped content considering reduced inner width (area.width - 2)
-        Paragraph::new(text)
-            .block(block)
-            .wrap(Wrap { trim: false })
-            .scroll((skip_rows, 0))
-            .style(Style::default().bg(bg).fg(dim))
-            .render(area, buf);
-    }
+    WaitStatusCell::new(state)
 }
 
 // ==================== StreamingContentCell ====================
@@ -6232,7 +4462,7 @@ pub(crate) fn new_session_info(
 
 /// Build the common lines for the "Popular commands" section (without the leading
 /// "notice" marker). Shared between the initial session info and the startup prelude.
-fn popular_commands_lines(latest_version: Option<&str>) -> Vec<Line<'static>> {
+fn popular_commands_lines(_latest_version: Option<&str>) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     lines.push(Line::styled(
         "Popular commands:",
@@ -6243,7 +4473,6 @@ fn popular_commands_lines(latest_version: Option<&str>) -> Vec<Line<'static>> {
         Span::from(" - "),
         Span::from(SlashCommand::Agents.description())
             .style(Style::default().add_modifier(Modifier::DIM)),
-        Span::styled(" NEW", Style::default().fg(crate::colors::primary())),
     ]));
     lines.push(Line::from(vec![
         Span::styled("/model", Style::default().fg(crate::colors::primary())),
@@ -6268,12 +4497,6 @@ fn popular_commands_lines(latest_version: Option<&str>) -> Vec<Line<'static>> {
             .style(Style::default().add_modifier(Modifier::DIM)),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("/solve", Style::default().fg(crate::colors::primary())),
-        Span::from(" - "),
-        Span::from(SlashCommand::Solve.description())
-            .style(Style::default().add_modifier(Modifier::DIM)),
-    ]));
-    lines.push(Line::from(vec![
         Span::styled("/code", Style::default().fg(crate::colors::primary())),
         Span::from(" - "),
         Span::from(SlashCommand::Code.description())
@@ -6284,28 +4507,28 @@ fn popular_commands_lines(latest_version: Option<&str>) -> Vec<Line<'static>> {
         Span::from(" - "),
         Span::from(SlashCommand::Branch.description())
             .style(Style::default().add_modifier(Modifier::DIM)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("/limits", Style::default().fg(crate::colors::primary())),
+        Span::from(" - "),
+        Span::from(SlashCommand::Limits.description())
+            .style(Style::default().add_modifier(Modifier::DIM)),
         Span::styled(" NEW", Style::default().fg(crate::colors::primary())),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("/resume", Style::default().fg(crate::colors::primary())),
+        Span::styled("/undo", Style::default().fg(crate::colors::primary())),
         Span::from(" - "),
-        Span::from(SlashCommand::Resume.description())
+        Span::from(SlashCommand::Undo.description())
             .style(Style::default().add_modifier(Modifier::DIM)),
+        Span::styled(" NEW", Style::default().fg(crate::colors::primary())),
     ]));
-
-    if let Some(version) = latest_version {
-        let primary = Style::default()
-            .fg(crate::colors::primary())
-            .add_modifier(Modifier::BOLD);
-        lines.push(Line::from(vec![
-            Span::styled("★ Update Available!", primary),
-        ]));
-        lines.push(Line::from(vec![
-            Span::raw("   Use "),
-            Span::styled("/update", Style::default().fg(crate::colors::primary())),
-            Span::raw(format!(" to install version {version}")),
-        ]));
-    }
+    lines.push(Line::from(vec![
+        Span::styled("/review", Style::default().fg(crate::colors::primary())),
+        Span::from(" - "),
+        Span::from(SlashCommand::Review.description())
+            .style(Style::default().add_modifier(Modifier::DIM)),
+        Span::styled(" NEW", Style::default().fg(crate::colors::primary())),
+    ]));
 
     lines
 }
@@ -6313,6 +4536,28 @@ fn popular_commands_lines(latest_version: Option<&str>) -> Vec<Line<'static>> {
 /// Create a notice cell that shows the "Popular commands" immediately.
 /// If `connecting_mcp` is true, include a dim status line to inform users
 /// that external MCP servers are being connected in the background.
+pub(crate) fn new_upgrade_prelude(
+    latest_version: Option<&str>,
+) -> Option<UpgradeNoticeCell> {
+    if !crate::updates::upgrade_ui_enabled() {
+        return None;
+    }
+    let latest = latest_version?.trim();
+    if latest.is_empty() {
+        return None;
+    }
+
+    let current = codex_version::version();
+    if latest == current {
+        return None;
+    }
+
+    Some(UpgradeNoticeCell::new(
+        current.to_string(),
+        latest.to_string(),
+    ))
+}
+
 pub(crate) fn new_popular_commands_notice(
     _connecting_mcp: bool,
     latest_version: Option<&str>,
@@ -6428,19 +4673,12 @@ pub(crate) fn new_streaming_content_with_id(
 }
 
 pub(crate) fn new_animated_welcome() -> AnimatedWelcomeCell {
-    AnimatedWelcomeCell {
-        start_time: Instant::now(),
-        completed: std::cell::Cell::new(false),
-        fade_start: std::cell::Cell::new(None),
-        faded_out: std::cell::Cell::new(false),
-        locked_height: std::cell::Cell::new(None),
-        hidden: std::cell::Cell::new(false),
-    }
+    AnimatedWelcomeCell::new()
 }
 
 #[allow(dead_code)]
 pub(crate) fn new_loading_cell(message: String) -> LoadingCell {
-    LoadingCell { message }
+    LoadingCell::new(message)
 }
 
 pub(crate) fn new_active_exec_command(
@@ -8298,10 +6536,7 @@ pub(crate) fn new_active_mcp_tool_call(invocation: McpInvocation) -> ToolCallCel
         format_mcp_invocation(invocation),
         Line::from(""),
     ];
-    ToolCallCell {
-        lines,
-        state: ToolState::Running,
-    }
+    ToolCallCell::new(lines, ToolCallStatus::Running)
 }
 
 #[allow(dead_code)]
@@ -8323,10 +6558,7 @@ pub(crate) fn new_active_custom_tool_call(tool_name: String, args: Option<String
         ),
         Line::from(""),
     ];
-    ToolCallCell {
-        lines,
-        state: ToolState::Running,
-    }
+    ToolCallCell::new(lines, ToolCallStatus::Running)
 }
 
 // Friendly present-participle titles for running browser tools
@@ -8363,14 +6595,15 @@ pub(crate) fn new_running_browser_tool_call(
             }
         }
     }
-    RunningToolCallCell {
-        title: browser_running_title(&tool_name).to_string(),
-        start_time: Instant::now(),
+    let arg_lines = semantic::lines_from_ratatui(arg_lines);
+    RunningToolCallCell::new(RunningToolCallState::new(
+        browser_running_title(&tool_name).to_string(),
+        SystemTime::now(),
         arg_lines,
-        wait_has_target: false,
-        wait_has_call_id: false,
-        wait_cap_ms: None,
-    }
+        false,
+        false,
+        None,
+    ))
 }
 
 fn custom_tool_running_title(tool_name: &str) -> String {
@@ -8447,14 +6680,15 @@ pub(crate) fn new_running_custom_tool_call(
             ]));
         }
     }
-    RunningToolCallCell {
-        title: custom_tool_running_title(&tool_name),
-        start_time: Instant::now(),
+    let arg_lines = semantic::lines_from_ratatui(arg_lines);
+    RunningToolCallCell::new(RunningToolCallState::new(
+        custom_tool_running_title(&tool_name),
+        SystemTime::now(),
         arg_lines,
         wait_has_target,
         wait_has_call_id,
         wait_cap_ms,
-    }
+    ))
 }
 
 /// Running web search call (native Responses web_search)
@@ -8466,27 +6700,28 @@ pub(crate) fn new_running_web_search(query: Option<String>) -> RunningToolCallCe
             Span::styled(q, Style::default().fg(crate::colors::text())),
         ]));
     }
-    RunningToolCallCell {
-        title: "Web Search...".to_string(),
-        start_time: Instant::now(),
+    let arg_lines = semantic::lines_from_ratatui(arg_lines);
+    RunningToolCallCell::new(RunningToolCallState::new(
+        "Web Search...".to_string(),
+        SystemTime::now(),
         arg_lines,
-        wait_has_target: false,
-        wait_has_call_id: false,
-        wait_cap_ms: None,
-    }
+        false,
+        false,
+        None,
+    ))
 }
 
 pub(crate) fn new_running_mcp_tool_call(invocation: McpInvocation) -> RunningToolCallCell {
     // Represent as provider.tool(...) on one dim line beneath a generic running header with timer
     let line = format_mcp_invocation(invocation);
-    RunningToolCallCell {
-        title: "Working...".to_string(),
-        start_time: Instant::now(),
-        arg_lines: vec![line],
-        wait_has_target: false,
-        wait_has_call_id: false,
-        wait_cap_ms: None,
-    }
+    RunningToolCallCell::new(RunningToolCallState::new(
+        "Working...".to_string(),
+        SystemTime::now(),
+        semantic::lines_from_ratatui(vec![line]),
+        false,
+        false,
+        None,
+    ))
 }
 
 pub(crate) fn new_completed_custom_tool_call(
@@ -8544,14 +6779,14 @@ pub(crate) fn new_completed_custom_tool_call(
     }
 
     lines.push(Line::from(""));
-    ToolCallCell {
+    ToolCallCell::new(
         lines,
-        state: if success {
-            ToolState::Success
+        if success {
+            ToolCallStatus::Success
         } else {
-            ToolState::Failed
+            ToolCallStatus::Failed
         },
-    }
+    )
 }
 
 /// Completed web_fetch tool call with markdown rendering of the `markdown` field.
@@ -8630,9 +6865,9 @@ pub(crate) fn new_completed_web_fetch_tool_call(
         pre_lines,
         body_lines,
         state: if success {
-            ToolState::Success
+            ToolCallStatus::Success
         } else {
-            ToolState::Failed
+            ToolCallStatus::Failed
         },
     }
 }
@@ -8717,7 +6952,7 @@ fn select_preview_from_plain_text(text: &str, head: usize, tail: usize) -> Vec<L
 pub(crate) struct WebFetchToolCell {
     pre_lines: Vec<Line<'static>>,  // header/invocation
     body_lines: Vec<Line<'static>>, // bordered, dim preview
-    state: ToolState,
+    state: ToolCallStatus,
 }
 
 impl HistoryCell for WebFetchToolCell {
@@ -8730,9 +6965,9 @@ impl HistoryCell for WebFetchToolCell {
     fn kind(&self) -> HistoryCellType {
         HistoryCellType::Tool {
             status: match self.state {
-                ToolState::Running => ToolStatus::Running,
-                ToolState::Success => ToolStatus::Success,
-                ToolState::Failed => ToolStatus::Failed,
+                ToolCallStatus::Running => ToolStatus::Running,
+                ToolCallStatus::Success => ToolStatus::Success,
+                ToolCallStatus::Failed => ToolStatus::Failed,
             },
         }
     }
@@ -9206,14 +7441,14 @@ fn new_completed_browser_tool_call(
     }
     lines.push(Line::from(""));
 
-    ToolCallCell {
+    ToolCallCell::new(
         lines,
-        state: if success {
-            ToolState::Success
+        if success {
+            ToolCallStatus::Success
         } else {
-            ToolState::Failed
+            ToolCallStatus::Failed
         },
-    }
+    )
 }
 
 // Map `agent_*` tool names to friendly titles
@@ -9308,14 +7543,14 @@ fn new_completed_agent_tool_call(
     }
     lines.push(Line::from(""));
 
-    ToolCallCell {
+    ToolCallCell::new(
         lines,
-        state: if success {
-            ToolState::Success
+        if success {
+            ToolCallStatus::Success
         } else {
-            ToolState::Failed
+            ToolCallStatus::Failed
         },
-    }
+    )
 }
 
 // Try to create an image cell if the MCP result contains an image
@@ -9348,7 +7583,7 @@ fn try_new_completed_mcp_tool_call_with_image_output(
                     }
                 };
 
-                Some(ImageOutputCell { image })
+                Some(ImageOutputCell::new(image))
             } else {
                 None
             }
@@ -9437,14 +7672,14 @@ pub(crate) fn new_completed_mcp_tool_call(
         }
     }
 
-    Box::new(ToolCallCell {
+    Box::new(ToolCallCell::new(
         lines,
-        state: if success {
-            ToolState::Success
+        if success {
+            ToolCallStatus::Success
         } else {
-            ToolState::Failed
+            ToolCallStatus::Failed
         },
-    })
+    ))
 }
 
 pub(crate) fn new_error_event(message: String) -> PlainHistoryCell {
@@ -9734,29 +7969,11 @@ pub(crate) fn new_status_output(
     PlainHistoryCell::new(lines, HistoryCellType::Notice)
 }
 
-pub(crate) fn new_limits_output(
-    snapshot: &RateLimitSnapshotEvent,
-    reset_info: RateLimitResetInfo,
-) -> LimitsHistoryCell {
-    LimitsHistoryCell {
-        view: build_limits_view(snapshot, reset_info, DEFAULT_GRID_CONFIG),
-    }
-}
-
 pub(crate) fn new_warning_event(message: String) -> PlainHistoryCell {
     let warn_style = Style::default().fg(crate::colors::warning());
-    PlainHistoryCell::new(
-        vec![Line::from(vec![Span::styled(format!("⚠ {message}"), warn_style)])],
-        HistoryCellType::Notice,
-    )
-}
-
-pub(crate) fn new_limits_fetching() -> PlainHistoryCell {
-    let lines: Vec<Line<'static>> = vec![
-        Line::from("/limits").fg(crate::colors::keyword()),
-        Line::from(""),
-        Line::from("Requesting latest rate limit data…".dim()),
-    ];
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(2);
+    lines.push(Line::from("notice"));
+    lines.push(Line::from(vec![Span::styled(format!("⚠ {message}"), warn_style)]));
     PlainHistoryCell::new(lines, HistoryCellType::Notice)
 }
 
@@ -9880,11 +8097,7 @@ pub(crate) fn new_plan_update(update: UpdatePlanArgs) -> PlanUpdateCell {
         }
     }
 
-    PlanUpdateCell {
-        lines,
-        icon,
-        is_complete,
-    }
+    PlanUpdateCell::new(lines, icon, is_complete)
 }
 
 pub(crate) fn new_patch_event(
@@ -10130,7 +8343,6 @@ pub(crate) fn retint_lines_in_place(
 ) {
     use ratatui::style::Color;
     fn map_color(c: Color, old: &crate::theme::Theme, new: &crate::theme::Theme) -> Color {
-        // Map prior theme-resolved colors to new theme.
         if c == old.text {
             return new.text;
         }
@@ -10162,11 +8374,10 @@ pub(crate) fn retint_lines_in_place(
             return new.background;
         }
 
-        // Map named ANSI colors to semantic theme colors for dynamic theme switches
         match c {
             Color::White => return new.text_bright,
             Color::Gray | Color::DarkGray => return new.text_dim,
-            Color::Black => return new.text, // ensure visible on dark backgrounds
+            Color::Black => return new.text,
             Color::Red | Color::LightRed => return new.error,
             Color::Green | Color::LightGreen => return new.success,
             Color::Yellow | Color::LightYellow => return new.warning,
@@ -10179,23 +8390,18 @@ pub(crate) fn retint_lines_in_place(
     }
 
     for line in lines.iter_mut() {
-        // First retint the line-level style so lines that rely on a global
-        // foreground/background (with span-level colors unset) still update.
-        {
-            let mut st = line.style;
-            if let Some(fg) = st.fg {
-                st.fg = Some(map_color(fg, old, new));
-            }
-            if let Some(bg) = st.bg {
-                st.bg = Some(map_color(bg, old, new));
-            }
-            if let Some(uc) = st.underline_color {
-                st.underline_color = Some(map_color(uc, old, new));
-            }
-            line.style = st;
+        let mut st = line.style;
+        if let Some(fg) = st.fg {
+            st.fg = Some(map_color(fg, old, new));
         }
+        if let Some(bg) = st.bg {
+            st.bg = Some(map_color(bg, old, new));
+        }
+        if let Some(uc) = st.underline_color {
+            st.underline_color = Some(map_color(uc, old, new));
+        }
+        line.style = st;
 
-        // Then retint any explicit span-level colors.
         let mut new_spans: Vec<Span<'static>> = Vec::with_capacity(line.spans.len());
         for s in line.spans.drain(..) {
             let mut st = s.style;
@@ -10213,6 +8419,7 @@ pub(crate) fn retint_lines_in_place(
         line.spans = new_spans;
     }
 }
+
 fn format_inline_node_for_display(command_escaped: &str) -> Option<String> {
     let tokens: Vec<String> = Shlex::new(command_escaped).collect();
     if tokens.len() < 2 {

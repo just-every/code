@@ -1,7 +1,6 @@
-#![cfg(any(not(debug_assertions), test))]
-
 use chrono::DateTime;
 use chrono::Utc;
+use once_cell::sync::Lazy;
 use serde::Deserialize;
 use serde::Serialize;
 use std::fs;
@@ -19,6 +18,23 @@ use codex_core::config::Config;
 use codex_core::default_client::create_client;
 use tokio::process::Command;
 use tracing::{info, warn};
+
+static FORCE_UPGRADE_PREVIEW: Lazy<bool> = Lazy::new(|| {
+    std::env::var("SHOW_UPGRADE")
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+});
+
+pub fn upgrade_ui_enabled() -> bool {
+    !cfg!(debug_assertions) || *FORCE_UPGRADE_PREVIEW
+}
+
+pub fn auto_upgrade_runtime_enabled() -> bool {
+    !cfg!(debug_assertions)
+}
 
 pub fn get_upgrade_version(config: &Config) -> Option<String> {
     let version_file = version_filepath(config);
@@ -47,7 +63,6 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
 
 #[derive(Debug, Clone)]
 pub struct UpdateCheckInfo {
-    pub current_version: String,
     pub latest_version: Option<String>,
 }
 
@@ -63,7 +78,6 @@ pub async fn check_for_updates_now(config: &Config) -> anyhow::Result<UpdateChec
     };
 
     Ok(UpdateCheckInfo {
-        current_version,
         latest_version,
     })
 }
@@ -284,6 +298,8 @@ async fn run_upgrade_command(command: Vec<String>) -> anyhow::Result<()> {
         cmd.args(&command[1..]);
     }
     cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::null());
 
     let status = cmd.status().await?;
     if !status.success() {

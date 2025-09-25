@@ -212,11 +212,14 @@ pub fn get_auth_file(codex_home: &Path) -> PathBuf {
 /// if a file was removed, `Ok(false)` if no auth file was present.
 pub fn logout(codex_home: &Path) -> std::io::Result<bool> {
     let auth_file = get_auth_file(codex_home);
-    match std::fs::remove_file(&auth_file) {
-        Ok(_) => Ok(true),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(err) => Err(err),
-    }
+    let removed = match std::fs::remove_file(&auth_file) {
+        Ok(_) => true,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+        Err(err) => return Err(err),
+    };
+
+    let _ = crate::auth_accounts::set_active_account_id(codex_home, None)?;
+    Ok(removed)
 }
 
 /// Writes an `auth.json` that contains only the API key. Intended for CLI use.
@@ -226,7 +229,54 @@ pub fn login_with_api_key(codex_home: &Path, api_key: &str) -> std::io::Result<(
         tokens: None,
         last_refresh: None,
     };
-    write_auth_json(&get_auth_file(codex_home), &auth_dot_json)
+    write_auth_json(&get_auth_file(codex_home), &auth_dot_json)?;
+    let _ = crate::auth_accounts::upsert_api_key_account(
+        codex_home,
+        api_key.to_string(),
+        None,
+        true,
+    )?;
+    Ok(())
+}
+
+/// Activate a stored account by writing its credentials to auth.json and
+/// marking it active in the account store.
+pub fn activate_account(codex_home: &Path, account_id: &str) -> std::io::Result<()> {
+    let Some(account) = crate::auth_accounts::find_account(codex_home, account_id)? else {
+        return Err(std::io::Error::other(format!(
+            "account with id {account_id} was not found"
+        )));
+    };
+
+    let auth_file = get_auth_file(codex_home);
+    let account_id_owned = account.id.clone();
+    match account.mode {
+        AuthMode::ApiKey => {
+            let api_key = account.openai_api_key.clone().ok_or_else(|| {
+                std::io::Error::other("stored API key account is missing the key value")
+            })?;
+            let auth = AuthDotJson {
+                openai_api_key: Some(api_key),
+                tokens: None,
+                last_refresh: None,
+            };
+            write_auth_json(&auth_file, &auth)?;
+        }
+        AuthMode::ChatGPT => {
+            let tokens = account.tokens.clone().ok_or_else(|| {
+                std::io::Error::other("stored ChatGPT account is missing token data")
+            })?;
+            let auth = AuthDotJson {
+                openai_api_key: None,
+                tokens: Some(tokens),
+                last_refresh: account.last_refresh,
+            };
+            write_auth_json(&auth_file, &auth)?;
+        }
+    }
+
+    let _ = crate::auth_accounts::set_active_account_id(codex_home, Some(account_id_owned))?;
+    Ok(())
 }
 
 fn load_auth(
@@ -347,6 +397,22 @@ async fn update_tokens(
     }
     auth_dot_json.last_refresh = Some(Utc::now());
     write_auth_json(auth_file, &auth_dot_json)?;
+
+    if let Some(codex_home) = auth_file.parent() {
+        if let Some(tokens) = auth_dot_json.tokens.clone() {
+            let last_refresh = auth_dot_json
+                .last_refresh
+                .unwrap_or_else(Utc::now);
+            let email = tokens.id_token.email.clone();
+            let _ = crate::auth_accounts::upsert_chatgpt_account(
+                codex_home,
+                tokens,
+                last_refresh,
+                email,
+                true,
+            )?;
+        }
+    }
     Ok(auth_dot_json)
 }
 

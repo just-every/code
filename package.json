@@ -12,7 +12,8 @@
     "fix": "cargo fmt && cargo fix --allow-dirty && cargo clippy --fix --allow-dirty"
   },
   "devDependencies": {
-    "prettier": "^3.6.2"
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.2"
   },
   "resolutions": {
     "braces": "^3.0.3",

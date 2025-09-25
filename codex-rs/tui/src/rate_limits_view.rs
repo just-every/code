@@ -1,5 +1,5 @@
 use crate::colors;
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Datelike, Local, Utc};
 use codex_common::elapsed::format_duration;
 use codex_core::protocol::RateLimitSnapshotEvent;
 use codex_protocol::num_format::format_with_separators;
@@ -54,7 +54,7 @@ fn label_text(text: &str) -> String {
 /// Aggregated output used by the `/limits` command.
 /// It contains the rendered summary lines, optional legend,
 /// and the precomputed gauge state when one can be shown.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct LimitsView {
     pub(crate) summary_lines: Vec<Line<'static>>,
     pub(crate) legend_lines: Vec<Line<'static>>,
@@ -64,12 +64,18 @@ pub(crate) struct LimitsView {
 }
 
 impl LimitsView {
-    /// Render the gauge for the provided width if the data supports it.
+    pub(crate) fn lines_for_width(&self, width: u16) -> Vec<Line<'static>> {
+        let mut lines = self.summary_lines.clone();
+        lines.extend(self.gauge_lines(width));
+        lines.extend(self.legend_lines.clone());
+        lines.extend(self.footer_lines.clone());
+        lines
+    }
+
     pub(crate) fn gauge_lines(&self, width: u16) -> Vec<Line<'static>> {
-        match self.grid_state {
-            Some(state) => render_limit_grid(state, self.grid, width),
-            None => Vec::new(),
-        }
+        self.grid_state
+            .map(|state| render_limit_grid(state, self.grid, width))
+            .unwrap_or_default()
     }
 }
 
@@ -81,8 +87,8 @@ pub(crate) struct GridConfig {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RateLimitResetInfo {
-    pub(crate) primary_last_reset: Option<DateTime<Utc>>,
-    pub(crate) weekly_last_reset: Option<DateTime<Utc>>,
+    pub(crate) primary_next_reset: Option<DateTime<Utc>>,
+    pub(crate) secondary_next_reset: Option<DateTime<Utc>>,
     pub(crate) session_tokens_used: Option<u64>,
     pub(crate) auto_compact_limit: Option<u64>,
     pub(crate) overflow_auto_compact: bool,
@@ -128,14 +134,14 @@ struct RateLimitMetrics {
 impl RateLimitMetrics {
     fn from_snapshot(snapshot: &RateLimitSnapshotEvent) -> Self {
         let hourly_used = snapshot.primary_used_percent.clamp(0.0, 100.0);
-        let weekly_used = snapshot.weekly_used_percent.clamp(0.0, 100.0);
+        let weekly_used = snapshot.secondary_used_percent.clamp(0.0, 100.0);
         Self {
             hourly_used,
             weekly_used,
             hourly_remaining: (100.0 - hourly_used).max(0.0),
             weekly_remaining: (100.0 - weekly_used).max(0.0),
             primary_window_minutes: snapshot.primary_window_minutes,
-            weekly_window_minutes: snapshot.weekly_window_minutes,
+            weekly_window_minutes: snapshot.secondary_window_minutes,
         }
     }
 
@@ -149,7 +155,7 @@ impl RateLimitMetrics {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct GridState {
+pub(crate) struct GridState {
     weekly_used_ratio: f64,
     hourly_remaining_ratio: f64,
 }
@@ -172,11 +178,11 @@ fn build_summary_lines(
     ));
     lines.push(build_hourly_window_line(
         metrics,
-        reset_info.primary_last_reset,
+        reset_info.primary_next_reset,
     ));
     lines.push(build_hourly_reset_line(
         snapshot.primary_window_minutes,
-        reset_info.primary_last_reset,
+        reset_info.primary_next_reset,
     ));
 
     lines.push("".into());
@@ -190,11 +196,11 @@ fn build_summary_lines(
     ));
     lines.push(build_weekly_window_line(
         metrics.weekly_window_minutes,
-        reset_info.weekly_last_reset,
+        reset_info.secondary_next_reset,
     ));
     lines.push(build_weekly_reset_line(
-        snapshot.weekly_window_minutes,
-        reset_info.weekly_last_reset,
+        snapshot.secondary_window_minutes,
+        reset_info.secondary_next_reset,
     ));
 
     lines.push("".into());
@@ -234,7 +240,7 @@ fn build_bar_line(label: &str, percent: f64, suffix: &str, style: Style) -> Line
 
 fn build_hourly_window_line(
     metrics: &RateLimitMetrics,
-    last_reset: Option<DateTime<Utc>>,
+    next_reset: Option<DateTime<Utc>>,
 ) -> Line<'static> {
     let prefix = field_prefix("Window");
     if metrics.primary_window_minutes == 0 {
@@ -247,8 +253,8 @@ fn build_hourly_window_line(
         ]);
     }
 
-    if let Some(last) = last_reset {
-        if let Some(timing) = compute_window_timing(metrics.primary_window_minutes, last) {
+    if let Some(next) = next_reset {
+        if let Some(timing) = compute_window_timing(metrics.primary_window_minutes, next) {
             let window_secs = timing.window.as_secs_f64();
             if window_secs > 0.0 {
                 let elapsed = timing.elapsed();
@@ -272,30 +278,31 @@ fn build_hourly_window_line(
         }
     }
 
-    Line::from(vec![
-        Span::raw(prefix),
-        Span::styled(
-            format!(
-                "(unknown / {})",
-                format_minutes_round_units(metrics.primary_window_minutes)
-            ),
-            Style::default().fg(colors::dim()),
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    spans.push(Span::raw(prefix));
+    spans.push(Span::styled(
+        format!(
+            "(unknown / {})",
+            format_minutes_round_units(metrics.primary_window_minutes)
         ),
-    ])
+        Style::default().fg(colors::dim()),
+    ));
+    Line::from(spans)
 }
 
 fn build_hourly_reset_line(
     window_minutes: u64,
-    last_reset: Option<DateTime<Utc>>,
+    next_reset: Option<DateTime<Utc>>,
 ) -> Line<'static> {
-    if let (Some(last), true) = (last_reset, window_minutes > 0) {
+    if let (Some(next), true) = (next_reset, window_minutes > 0) {
         let prefix = field_prefix("Resets");
-        if let Some(timing) = compute_window_timing(window_minutes, last) {
+        if let Some(timing) = compute_window_timing(window_minutes, next) {
             let remaining = format_duration(timing.remaining);
             let mut spans: Vec<Span<'static>> = Vec::new();
             spans.push(Span::raw(prefix.clone()));
+            let time_display = format_reset_timestamp(timing.next_reset_local, false);
             spans.push(Span::raw("at "));
-            spans.push(Span::raw(timing.next_reset_local));
+            spans.push(Span::raw(time_display));
             spans.push(Span::styled(
                 format!(" (in {remaining})"),
                 Style::default().fg(colors::dim()),
@@ -313,7 +320,7 @@ fn build_hourly_reset_line(
     let mut spans: Vec<Span<'static>> = Vec::new();
     spans.push(Span::raw(field_prefix("Resets")));
     spans.push(Span::styled(
-        "shown once next window detected".to_string(),
+        "awaiting reset timing…".to_string(),
         Style::default().fg(colors::dim()),
     ));
     Line::from(spans)
@@ -321,7 +328,7 @@ fn build_hourly_reset_line(
 
 fn build_weekly_window_line(
     weekly_minutes: u64,
-    last_reset: Option<DateTime<Utc>>,
+    next_reset: Option<DateTime<Utc>>,
 ) -> Line<'static> {
     let prefix = field_prefix("Window");
     if weekly_minutes == 0 {
@@ -334,8 +341,8 @@ fn build_weekly_window_line(
         ]);
     }
 
-    if let Some(last) = last_reset {
-        if let Some(timing) = compute_window_timing(weekly_minutes, last) {
+    if let Some(next) = next_reset {
+        if let Some(timing) = compute_window_timing(weekly_minutes, next) {
             let window_secs = timing.window.as_secs_f64();
             if window_secs > 0.0 {
                 let elapsed = timing.elapsed();
@@ -372,16 +379,16 @@ fn build_weekly_window_line(
 
 fn build_weekly_reset_line(
     window_minutes: u64,
-    last_reset: Option<DateTime<Utc>>,
+    next_reset: Option<DateTime<Utc>>,
 ) -> Line<'static> {
-    if let (Some(last), true) = (last_reset, window_minutes > 0) {
+    if let (Some(next), true) = (next_reset, window_minutes > 0) {
         let prefix = field_prefix("Resets");
-        if let Some(timing) = compute_window_timing(window_minutes, last) {
+        if let Some(timing) = compute_window_timing(window_minutes, next) {
             let remaining = format_duration(timing.remaining);
             let mut spans: Vec<Span<'static>> = Vec::new();
             spans.push(Span::raw(prefix.clone()));
-            spans.push(Span::raw("at "));
-            spans.push(Span::raw(timing.next_reset_local));
+            let detailed_display = format_reset_timestamp(timing.next_reset_local, true);
+            spans.push(Span::raw(detailed_display));
             spans.push(Span::styled(
                 format!(" (in {remaining})"),
                 Style::default().fg(colors::dim()),
@@ -399,7 +406,7 @@ fn build_weekly_reset_line(
     let mut spans: Vec<Span<'static>> = Vec::new();
     spans.push(Span::raw(field_prefix("Resets")));
     spans.push(Span::styled(
-        "shown once next window detected".to_string(),
+        "awaiting reset timing…".to_string(),
         Style::default().fg(colors::dim()),
     ));
     Line::from(spans)
@@ -589,7 +596,7 @@ fn build_context_status_line(
 struct WindowTiming {
     remaining: Duration,
     window: Duration,
-    next_reset_local: String,
+    next_reset_local: chrono::DateTime<Local>,
 }
 
 impl WindowTiming {
@@ -602,7 +609,7 @@ impl WindowTiming {
 
 fn compute_window_timing(
     window_minutes: u64,
-    last_reset: DateTime<Utc>,
+    next_reset: DateTime<Utc>,
 ) -> Option<WindowTiming> {
     let window_seconds = (window_minutes as i64).checked_mul(60)?;
     if window_seconds <= 0 {
@@ -610,25 +617,64 @@ fn compute_window_timing(
     }
 
     let now = Utc::now();
-    let elapsed_secs = now.signed_duration_since(last_reset).num_seconds();
-    let elapsed_within_window = if elapsed_secs <= 0 {
-        0
-    } else {
-        elapsed_secs.rem_euclid(window_seconds)
-    };
-    let remaining_secs = (window_seconds - elapsed_within_window).max(0);
+    let mut remaining_secs = next_reset.signed_duration_since(now).num_seconds();
+    if remaining_secs < 0 {
+        remaining_secs = 0;
+    }
+    if remaining_secs > window_seconds {
+        remaining_secs = window_seconds;
+    }
 
     let window = Duration::from_secs(window_seconds as u64);
     let remaining = Duration::from_secs(remaining_secs as u64);
-    let next_reset = now + chrono::Duration::seconds(remaining_secs);
     Some(WindowTiming {
         remaining,
         window,
-        next_reset_local: next_reset
-            .with_timezone(&Local)
-            .format("%I:%M%P")
-            .to_string(),
+        next_reset_local: next_reset.with_timezone(&Local),
     })
+}
+
+fn format_reset_timestamp(ts: chrono::DateTime<Local>, include_calendar: bool) -> String {
+    let time_part = ts.format("%I:%M%P").to_string();
+    if !include_calendar {
+        return time_part;
+    }
+
+    let dow = ts.format("%a").to_string();
+    let day = format_day_ordinal(ts.day());
+    let month = month_abbrev(ts.month());
+    format!("{dow} {day} {month} at {time_part}")
+}
+
+fn format_day_ordinal(day: u32) -> String {
+    let suffix = match day % 100 {
+        11 | 12 | 13 => "th",
+        _ => match day % 10 {
+            1 => "st",
+            2 => "nd",
+            3 => "rd",
+            _ => "th",
+        },
+    };
+    format!("{day}{suffix}")
+}
+
+fn month_abbrev(month: u32) -> &'static str {
+    match month {
+        1 => "Jan",
+        2 => "Feb",
+        3 => "Mar",
+        4 => "Apr",
+        5 => "May",
+        6 => "Jun",
+        7 => "Jul",
+        8 => "Aug",
+        9 => "Sept",
+        10 => "Oct",
+        11 => "Nov",
+        12 => "Dec",
+        _ => "",
+    }
 }
 
 fn build_status_line(metrics: &RateLimitMetrics) -> Line<'static> {
@@ -800,12 +846,19 @@ fn format_minutes_round_units(minutes: u64) -> String {
 }
 
 fn extract_capacity_fraction(snapshot: &RateLimitSnapshotEvent) -> Option<f64> {
-    let ratio = snapshot.primary_to_weekly_ratio_percent;
-    if ratio.is_finite() {
-        Some((ratio / 100.0).clamp(0.0, 1.0))
-    } else {
-        None
+    let ratio = snapshot.primary_to_secondary_ratio_percent;
+    if ratio.is_finite() && ratio > 0.0 {
+        return Some((ratio / 100.0).clamp(0.0, 1.0));
     }
+
+    // Fallback: derive capacity share from the reported window lengths.
+    let primary = snapshot.primary_window_minutes as f64;
+    let secondary = snapshot.secondary_window_minutes as f64;
+    if primary.is_finite() && secondary.is_finite() && primary > 0.0 && secondary > 0.0 {
+        return Some((primary / secondary).clamp(0.0, 1.0));
+    }
+
+    None
 }
 
 fn compute_grid_state(metrics: &RateLimitMetrics, capacity_fraction: f64) -> Option<GridState> {
@@ -841,7 +894,11 @@ fn scale_grid_state(state: GridState, grid: GridConfig) -> GridState {
 }
 
 /// Convert the grid state to rendered lines for the TUI.
-fn render_limit_grid(state: GridState, grid_config: GridConfig, width: u16) -> Vec<Line<'static>> {
+pub(crate) fn render_limit_grid(
+    state: GridState,
+    grid_config: GridConfig,
+    width: u16,
+) -> Vec<Line<'static>> {
     GridLayout::new(grid_config, width)
         .map(|layout| layout.render(state))
         .unwrap_or_default()
@@ -958,10 +1015,12 @@ mod tests {
     fn snapshot() -> RateLimitSnapshotEvent {
         RateLimitSnapshotEvent {
             primary_used_percent: 30.0,
-            weekly_used_percent: 60.0,
-            primary_to_weekly_ratio_percent: 40.0,
+            secondary_used_percent: 60.0,
+            primary_to_secondary_ratio_percent: 40.0,
             primary_window_minutes: 300,
-            weekly_window_minutes: 10_080,
+            secondary_window_minutes: 10_080,
+            primary_reset_after_seconds: None,
+            secondary_reset_after_seconds: None,
         }
     }
 
@@ -1026,7 +1085,7 @@ mod tests {
     #[test]
     fn build_display_without_ratio_skips_gauge() {
         let mut s = snapshot();
-        s.primary_to_weekly_ratio_percent = f64::NAN;
+        s.primary_to_secondary_ratio_percent = f64::NAN;
         let display = build_limits_view(&s, RateLimitResetInfo::default(), DEFAULT_GRID_CONFIG);
         assert!(display.gauge_lines(80).is_empty());
         assert!(display.legend_lines.is_empty());

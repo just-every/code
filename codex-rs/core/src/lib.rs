@@ -7,6 +7,8 @@
 
 mod apply_patch;
 pub mod auth;
+pub mod auth_accounts;
+pub mod account_usage;
 pub mod bash;
 mod chat_completions;
 mod client;
@@ -15,6 +17,7 @@ pub mod codex;
 mod codex_conversation;
 pub mod token_data;
 pub use codex_conversation::CodexConversation;
+mod command_safety;
 pub mod config;
 pub mod config_edit;
 pub mod config_profile;
@@ -31,7 +34,6 @@ pub mod exec_env;
 mod flags;
 pub mod git_info;
 pub mod internal_storage;
-mod is_safe_command;
 pub mod landlock;
 pub mod http_client;
 pub mod mcp_connection_manager;
@@ -50,6 +52,8 @@ mod unified_exec;
 mod user_instructions;
 pub use model_provider_info::BUILT_IN_OSS_MODEL_PROVIDER_ID;
 pub use model_provider_info::ModelProviderInfo;
+pub use model_provider_info::OpenRouterConfig;
+pub use model_provider_info::OpenRouterProviderConfig;
 pub use model_provider_info::WireApi;
 pub use model_provider_info::built_in_model_providers;
 pub use model_provider_info::create_oss_provider_with_base_url;
@@ -72,6 +76,8 @@ pub mod plan_tool;
 pub mod project_doc;
 pub mod project_features;
 mod rollout;
+mod pro_supervisor;
+mod pro_observer;
 pub(crate) mod safety;
 pub mod seatbelt;
 pub mod shell;
@@ -88,10 +94,12 @@ pub use rollout::find_conversation_path_by_id_str;
 pub use rollout::list::ConversationItem;
 pub use rollout::list::ConversationsPage;
 pub use rollout::list::Cursor;
+mod function_tool;
 mod user_notification;
 pub mod util;
 
 pub use apply_patch::CODEX_APPLY_PATCH_ARG1;
+pub use command_safety::is_safe_command;
 pub use safety::get_platform_sandbox;
 // Use our internal protocol module for crate-internal types and helpers.
 // External callers should rely on specific re-exports below.
