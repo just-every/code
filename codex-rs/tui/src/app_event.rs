@@ -1,12 +1,13 @@
 use codex_core::config_types::ReasoningEffort;
 use codex_core::config_types::TextVerbosity;
 use codex_core::config_types::ThemeName;
-use codex_core::protocol::Event;
-use codex_core::protocol::ValidationGroup;
 use codex_core::protocol::ApprovedCommandMatchKind;
-use codex_core::git_info::CommitLogEntry;
+use codex_core::protocol::Event;
 use codex_core::protocol::ReviewContextMetadata;
+use codex_core::protocol::ValidationGroup;
+use codex_core::git_info::CommitLogEntry;
 use codex_file_search::FileMatch;
+use codex_git_tooling::{GhostCommit, GitToolingError};
 use crossterm::event::KeyEvent;
 use crossterm::event::MouseEvent;
 use ratatui::text::Line;
@@ -361,7 +362,11 @@ pub(crate) enum AppEvent {
         args_write: Option<Vec<String>>,
         instructions: Option<String>,
     },
-    
+    GhostSnapshotCaptureEnd {
+        summary: Option<String>,
+        result: Result<GhostCommit, GitToolingError>,
+        duration: Duration,
+    },
 }
 
 // No helper constructor; use `AppEvent::CodexEvent(ev)` directly to avoid shadowing.

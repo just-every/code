@@ -1824,6 +1824,11 @@ impl App<'_> {
                         }
                     }
                 }
+                AppEvent::GhostSnapshotCaptureEnd { summary, result, duration } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.on_ghost_snapshot_finished(summary, result, duration);
+                    }
+                }
                 AppEvent::SwitchCwd(new_cwd, initial_prompt) => {
                     let target = new_cwd.clone();
                     self.config.cwd = target.clone();

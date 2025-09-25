@@ -273,6 +273,18 @@ const RATE_LIMIT_REFRESH_INTERVAL: chrono::Duration = chrono::Duration::minutes(
 
 const MAX_TRACKED_GHOST_COMMITS: usize = 20;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GhostSnapshotCaptureMode {
+    Blocking,
+    Async,
+}
+
+struct GhostSnapshotInFlight {
+    started_at: Instant,
+    summary: Option<String>,
+    conversation: ConversationSnapshot,
+}
+
 #[derive(Default)]
 struct RateLimitWarningState {
     weekly_index: usize,
@@ -497,6 +509,8 @@ pub(crate) struct ChatWidget<'a> {
     ghost_snapshots: Vec<GhostSnapshot>,
     ghost_snapshots_disabled: bool,
     ghost_snapshots_disabled_reason: Option<GhostSnapshotsDisabledReason>,
+    ghost_snapshot_in_flight: Option<GhostSnapshotInFlight>,
+    slow_snapshot_notified: bool,
 
     // Event sequencing to preserve original order across streaming/tool events
     // and stream-related flags moved into stream_state
@@ -2294,6 +2308,22 @@ impl ChatWidget<'_> {
     /// Periodic tick to commit at most one queued line to history,
     /// animating the output.
     pub(crate) fn on_commit_tick(&mut self) {
+        if let Some(in_flight) = &self.ghost_snapshot_in_flight {
+            let elapsed = in_flight.started_at.elapsed();
+            if elapsed >= Duration::from_secs(3) && !self.slow_snapshot_notified {
+                self.slow_snapshot_notified = true;
+                let summary = in_flight
+                    .summary
+                    .as_ref()
+                    .map(|s| format!(" – {s}"))
+                    .unwrap_or_default();
+                self.push_background_before_next_output(format!(
+                    "Capturing workspace snapshot{summary}… ({:.1}s elapsed)",
+                    elapsed.as_secs_f32()
+                ));
+                self.request_redraw();
+            }
+        }
         streaming::on_commit_tick(self);
     }
     fn is_write_cycle_active(&self) -> bool {
@@ -2663,6 +2693,8 @@ impl ChatWidget<'_> {
             ghost_snapshots: Vec::new(),
             ghost_snapshots_disabled: false,
             ghost_snapshots_disabled_reason: None,
+            ghost_snapshot_in_flight: None,
+            slow_snapshot_notified: false,
             browser_is_external: false,
             // Stable ordering & routing init
             cell_order_seq: vec![OrderKey {
@@ -2894,6 +2926,8 @@ impl ChatWidget<'_> {
             ghost_snapshots: Vec::new(),
             ghost_snapshots_disabled: false,
             ghost_snapshots_disabled_reason: None,
+            ghost_snapshot_in_flight: None,
+            slow_snapshot_notified: false,
             browser_is_external: false,
             // Strict ordering init for forked widget
             cell_order_seq: vec![OrderKey {
@@ -4629,7 +4663,7 @@ impl ChatWidget<'_> {
         } else {
             Some(message.display_text.clone())
         };
-        self.capture_ghost_snapshot(prompt_summary);
+        self.capture_ghost_snapshot(prompt_summary, GhostSnapshotCaptureMode::Async);
 
         let turn_active = self.is_task_running()
             || !self.active_task_ids.is_empty()
@@ -4673,48 +4707,141 @@ impl ChatWidget<'_> {
         // (debug watchdog removed)
     }
 
-    fn capture_ghost_snapshot(&mut self, summary: Option<String>) {
+    fn capture_ghost_snapshot(&mut self, summary: Option<String>, mode: GhostSnapshotCaptureMode) {
         if self.ghost_snapshots_disabled {
             return;
         }
 
+        match mode {
+            GhostSnapshotCaptureMode::Blocking => {
+                self.capture_snapshot_blocking(summary);
+            }
+            GhostSnapshotCaptureMode::Async => {
+                if self.ghost_snapshot_in_flight.is_some() {
+                    tracing::info!("ghost snapshot already in-flight; skipping new request");
+                    return;
+                }
+                let conversation = self.current_conversation_snapshot();
+                self.start_async_snapshot(summary, conversation);
+            }
+        }
+    }
+
+    fn start_async_snapshot(
+        &mut self,
+        summary: Option<String>,
+        conversation: ConversationSnapshot,
+    ) {
+        self.ghost_snapshot_in_flight = Some(GhostSnapshotInFlight {
+            started_at: Instant::now(),
+            summary: summary.clone(),
+            conversation,
+        });
+        self.slow_snapshot_notified = false;
+        self.request_redraw();
+
+        let repo_path = self.config.cwd.clone();
+        let app_event_tx = self.app_event_tx.clone();
+        std::thread::spawn(move || {
+            let start = Instant::now();
+            let result = create_ghost_commit(&CreateGhostCommitOptions::new(&repo_path));
+            let duration = start.elapsed();
+            app_event_tx.send(AppEvent::GhostSnapshotCaptureEnd {
+                summary,
+                result,
+                duration,
+            });
+        });
+    }
+
+    fn capture_snapshot_blocking(&mut self, summary: Option<String>) {
         let conversation = self.current_conversation_snapshot();
         let options = CreateGhostCommitOptions::new(&self.config.cwd);
-        match create_ghost_commit(&options) {
+        let started_at = Instant::now();
+        let result = create_ghost_commit(&options);
+        self.finish_snapshot(summary, conversation, started_at, result);
+    }
+
+    fn finish_snapshot(
+        &mut self,
+        summary: Option<String>,
+        conversation: ConversationSnapshot,
+        started_at: Instant,
+        result: Result<GhostCommit, GitToolingError>,
+    ) {
+        let elapsed = started_at.elapsed();
+        match result {
             Ok(commit) => {
                 self.ghost_snapshots_disabled = false;
                 self.ghost_snapshots_disabled_reason = None;
                 self.ghost_snapshots
-                    .push(GhostSnapshot::new(commit, summary, conversation));
+                    .push(GhostSnapshot::new(commit.clone(), summary.clone(), conversation));
                 if self.ghost_snapshots.len() > MAX_TRACKED_GHOST_COMMITS {
                     self.ghost_snapshots.remove(0);
                 }
+                if elapsed > Duration::from_secs(5) {
+                    let summary_suffix = summary
+                        .as_ref()
+                        .map(|s| format!(" – {s}"))
+                        .unwrap_or_default();
+                    self.push_background_tail(format!(
+                        "Workspace snapshot captured{summary_suffix} in {:.1}s",
+                        elapsed.as_secs_f32()
+                    ));
+                }
             }
             Err(err) => {
-                self.ghost_snapshots_disabled = true;
-                let (message, hint) = match &err {
-                    GitToolingError::NotAGitRepository { .. } => (
-                        "Snapshots disabled: this workspace is not inside a Git repository.".to_string(),
-                        None,
-                    ),
-                    _ => (
-                        format!("Snapshots disabled after Git error: {err}"),
-                        Some(
-                            "Restart Code after resolving the issue to re-enable snapshots.".to_string(),
-                        ),
-                    ),
-                };
-                self.ghost_snapshots_disabled_reason = Some(GhostSnapshotsDisabledReason {
-                    message: message.clone(),
-                    hint: hint.clone(),
-                });
-                self.push_background_tail(message);
-                if let Some(hint) = hint {
-                    self.push_background_tail(hint);
-                }
-                tracing::warn!("failed to create ghost snapshot: {err}");
+                self.disable_snapshots_after_error(err);
             }
         }
+    }
+
+    fn disable_snapshots_after_error(&mut self, err: GitToolingError) {
+        self.ghost_snapshots_disabled = true;
+        let (message, hint) = match &err {
+            GitToolingError::NotAGitRepository { .. } => (
+                "Snapshots disabled: this workspace is not inside a Git repository.".to_string(),
+                None,
+            ),
+            _ => (
+                format!("Snapshots disabled after Git error: {err}"),
+                Some(
+                    "Restart Code after resolving the issue to re-enable snapshots.".to_string(),
+                ),
+            ),
+        };
+        self.ghost_snapshots_disabled_reason = Some(GhostSnapshotsDisabledReason {
+            message: message.clone(),
+            hint: hint.clone(),
+        });
+        self.push_background_tail(message);
+        if let Some(hint) = hint {
+            self.push_background_tail(hint);
+        }
+        tracing::warn!("failed to create ghost snapshot: {err}");
+    }
+
+    pub(crate) fn on_ghost_snapshot_finished(
+        &mut self,
+        summary: Option<String>,
+        result: Result<GhostCommit, GitToolingError>,
+        duration: Duration,
+    ) {
+        let (conversation, started_at) = if let Some(in_flight) = self.ghost_snapshot_in_flight.take() {
+            (in_flight.conversation, in_flight.started_at)
+        } else {
+            // No in-flight snapshot tracked; treat as blocking completion.
+            (self.current_conversation_snapshot(), Instant::now() - duration)
+        };
+        self.slow_snapshot_notified = false;
+        if duration > Duration::from_secs(3) {
+            self.push_background_tail(format!(
+                "Workspace snapshot finished in {:.1}s",
+                duration.as_secs_f32()
+            ));
+        }
+        self.finish_snapshot(summary, conversation, started_at, result);
+        self.request_redraw();
     }
 
     fn current_conversation_snapshot(&self) -> ConversationSnapshot {
@@ -5022,7 +5149,7 @@ impl ChatWidget<'_> {
         if restore_files {
             let previous_len = self.ghost_snapshots.len();
             let pre_summary = Some("Pre-undo checkpoint".to_string());
-            self.capture_ghost_snapshot(pre_summary);
+            self.capture_ghost_snapshot(pre_summary, GhostSnapshotCaptureMode::Blocking);
             if self.ghost_snapshots.len() > previous_len {
                 pre_restore_snapshot = self.ghost_snapshots.last().cloned();
             }
