@@ -27,6 +27,7 @@ use codex_core::model_family::find_family_for_model;
 use codex_login::AuthManager;
 use codex_login::AuthMode;
 use codex_protocol::mcp_protocol::AuthMode as McpAuthMode;
+use crate::slash_command::SlashCommand;
 
 #[cfg(not(debug_assertions))]
 use crate::updates::{resolve_upgrade_resolution, UpgradeResolution, CODE_RELEASE_URL};
@@ -11454,6 +11455,94 @@ impl ChatWidget<'_> {
         });
     }
 
+    pub(crate) fn handle_spec_ops_command(&mut self, command: SlashCommand, raw_args: String) {
+        let Some(meta) = command.spec_ops() else { return; };
+        let trimmed = raw_args.trim();
+        if trimmed.is_empty() {
+            self.history_push(crate::history_cell::new_error_event(format!(
+                "`/{}` requires a SPEC task ID (e.g. `/{} SPEC-OPS-005`).",
+                command.command(),
+                command.command()
+            )));
+            self.request_redraw();
+            return;
+        }
+
+        let mut tokens = trimmed.split_whitespace();
+        let spec_id = tokens.next().unwrap().to_string();
+        let remainder = tokens.collect::<Vec<_>>().join(" ");
+        let spec_task = if remainder.is_empty() {
+            spec_id.clone()
+        } else {
+            format!("{spec_id} {remainder}")
+        };
+
+        let resolution = codex_core::slash_commands::format_subagent_command(
+            command.command(),
+            &spec_task,
+            Some(&self.config.agents),
+            Some(&self.config.subagent_commands),
+        );
+
+        let agent_roster = if resolution.models.is_empty() {
+            "claude,gemini,code".to_string()
+        } else {
+            resolution.models.join(",")
+        };
+
+        let prompt_hint = if resolution.orchestrator_instructions.is_some()
+            || resolution.agent_instructions.is_some()
+        {
+            "custom prompt overrides"
+        } else {
+            "default prompt profile"
+        };
+
+        let script_path = format!("scripts/spec_ops_004/commands/{}", meta.script);
+        let mut banner = String::new();
+        banner.push_str(&format!("Spec Ops /{} → {}\n", meta.display, spec_id));
+        banner.push_str(&format!("  Script: {}\n", script_path));
+        banner.push_str(&format!("  Agents: {}\n", agent_roster));
+        banner.push_str(&format!("  Prompt: {}\n", prompt_hint));
+        self.history_push(crate::history_cell::new_background_event(banner));
+
+        let mut env = HashMap::new();
+        env.insert(
+            "SPEC_OPS_004_AGENTS_AVAILABLE".to_string(),
+            agent_roster.clone(),
+        );
+
+        if let Ok(prompt_version) = std::env::var("SPEC_OPS_004_PROMPT_VERSION") {
+            env.insert("SPEC_OPS_004_PROMPT_VERSION".to_string(), prompt_version);
+        }
+        if let Ok(code_version) = std::env::var("SPEC_OPS_004_CODE_VERSION") {
+            env.insert("SPEC_OPS_004_CODE_VERSION".to_string(), code_version);
+        }
+
+        let command_line = if remainder.is_empty() {
+            format!("scripts/env_run.sh {script_path} {spec_id}")
+        } else {
+            format!("scripts/env_run.sh {script_path} {spec_id} {remainder}")
+        };
+
+        let wrapped = wrap_command(&command_line);
+        if wrapped.is_empty() {
+            self.history_push(crate::history_cell::new_error_event(
+                "Unable to build Spec Ops command invocation.".to_string(),
+            ));
+            self.request_redraw();
+            return;
+        }
+
+        self.submit_op(Op::RunProjectCommand {
+            name: format!("spec_ops_{}", meta.display),
+            command: Some(wrapped),
+            display: Some(command_line),
+            env,
+        });
+        self.request_redraw();
+    }
+
     pub(crate) fn handle_project_command(&mut self, args: String) {
         let name = args.trim();
         if name.is_empty() {
@@ -11486,7 +11575,12 @@ impl ChatWidget<'_> {
             };
             self.insert_background_event_early(notice);
             self.request_redraw();
-            self.submit_op(Op::RunProjectCommand { name: cmd.name });
+            self.submit_op(Op::RunProjectCommand {
+                name: cmd.name,
+                command: None,
+                display: None,
+                env: HashMap::new(),
+            });
         } else {
             let available: Vec<String> = self
                 .config

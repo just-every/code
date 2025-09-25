@@ -3,6 +3,7 @@
 use super::*;
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
+use crate::chatwidget::agent_install::wrap_command;
 use crate::slash_command::SlashCommand;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
@@ -169,6 +170,73 @@ pub(crate) fn make_chatwidget_manual_with_sender() -> (
     let (widget, rx, op_rx) = make_chatwidget_manual();
     let app_event_tx = widget.app_event_tx.clone();
     (widget, app_event_tx, rx, op_rx)
+}
+
+#[test]
+fn spec_plan_requires_task_id() {
+    let (mut chat, rx, _op_rx) = make_chatwidget_manual();
+
+    chat.handle_spec_ops_command(SlashCommand::SpecPlan, "   ".to_string());
+
+    let mut found_error = false;
+    while let Ok(ev) = rx.try_recv() {
+        if let AppEvent::InsertHistory(lines) = ev {
+            let text = lines_to_single_string(&lines);
+            if text.contains("requires a SPEC task ID") {
+                found_error = true;
+                break;
+            }
+        }
+    }
+    assert!(found_error, "missing SPEC ID should surface an error event");
+}
+
+#[test]
+fn spec_plan_runs_project_command() {
+    let (mut chat, rx, mut op_rx) = make_chatwidget_manual();
+
+    chat.handle_spec_ops_command(
+        SlashCommand::SpecPlan,
+        "SPEC-OPS-005 --baseline-mode skip".to_string(),
+    );
+
+    // Ack banner should be recorded in history
+    let mut ack_present = false;
+    while let Ok(ev) = rx.try_recv() {
+        if let AppEvent::InsertHistory(lines) = ev {
+            let text = lines_to_single_string(&lines);
+            if text.contains("Spec Ops /plan") {
+                ack_present = true;
+                break;
+            }
+        }
+    }
+    assert!(ack_present, "expected Spec Ops acknowledgement banner");
+
+    // Command should be forwarded to codex core
+    let op = op_rx.try_recv().expect("expected RunProjectCommand");
+    match op {
+        Op::RunProjectCommand {
+            name,
+            command: Some(argv),
+            display: Some(display),
+            env,
+        } => {
+            assert_eq!(name, "spec_ops_plan");
+            assert_eq!(display, "scripts/env_run.sh scripts/spec_ops_004/commands/spec_ops_plan.sh SPEC-OPS-005 --baseline-mode skip");
+            assert_eq!(
+                argv,
+                wrap_command(
+                    "scripts/env_run.sh scripts/spec_ops_004/commands/spec_ops_plan.sh SPEC-OPS-005 --baseline-mode skip"
+                )
+            );
+            assert_eq!(
+                env.get("SPEC_OPS_004_AGENTS_AVAILABLE"),
+                Some(&"claude,gemini,code".to_string())
+            );
+        }
+        other => panic!("unexpected op forwarded: {other:?}"),
+    }
 }
 
 fn drain_insert_history(

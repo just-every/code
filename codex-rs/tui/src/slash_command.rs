@@ -44,6 +44,12 @@ pub enum SlashCommand {
     Plan,
     Solve,
     Code,
+    SpecPlan,
+    SpecTasks,
+    SpecImplement,
+    SpecValidate,
+    SpecReview,
+    SpecUnlock,
     Logout,
     Quit,
     #[cfg(debug_assertions)]
@@ -76,6 +82,12 @@ impl SlashCommand {
             SlashCommand::Prompts => "show example prompts",
             SlashCommand::Model => "choose model & reasoning effort",
             SlashCommand::Agents => "create and configure agents",
+            SlashCommand::SpecPlan => "run Spec Ops plan automation (requires SPEC ID)",
+            SlashCommand::SpecTasks => "run Spec Ops tasks automation (requires SPEC ID)",
+            SlashCommand::SpecImplement => "run Spec Ops implement automation (requires SPEC ID)",
+            SlashCommand::SpecValidate => "run Spec Ops validate automation (requires SPEC ID)",
+            SlashCommand::SpecReview => "run Spec Ops review automation (requires SPEC ID)",
+            SlashCommand::SpecUnlock => "unlock SPEC.md copy-on-write lock (requires SPEC ID)",
             SlashCommand::Branch => {
                 "work in an isolated /branch then /merge when done (great for parallel work)"
             }
@@ -98,18 +110,56 @@ impl SlashCommand {
 
     /// Returns true if this command should expand into a prompt for the LLM.
     pub fn is_prompt_expanding(self) -> bool {
-        matches!(
-            self,
-            SlashCommand::Plan | SlashCommand::Solve | SlashCommand::Code
-        )
+        matches!(self, SlashCommand::Plan | SlashCommand::Solve | SlashCommand::Code)
     }
 
     /// Returns true if this command requires additional arguments after the command.
     pub fn requires_arguments(self) -> bool {
+        matches!(self, SlashCommand::Plan | SlashCommand::Solve | SlashCommand::Code)
+    }
+
+    /// Returns true when this command maps to Spec Ops automation.
+    pub fn is_spec_ops(self) -> bool {
         matches!(
             self,
-            SlashCommand::Plan | SlashCommand::Solve | SlashCommand::Code
+            SlashCommand::SpecPlan
+                | SlashCommand::SpecTasks
+                | SlashCommand::SpecImplement
+                | SlashCommand::SpecValidate
+                | SlashCommand::SpecReview
+                | SlashCommand::SpecUnlock
         )
+    }
+
+    /// Returns Spec Ops metadata for the command.
+    pub fn spec_ops(self) -> Option<SpecOpsCommand> {
+        match self {
+            SlashCommand::SpecPlan => Some(SpecOpsCommand {
+                display: "plan",
+                script: "spec_ops_plan.sh",
+            }),
+            SlashCommand::SpecTasks => Some(SpecOpsCommand {
+                display: "tasks",
+                script: "spec_ops_tasks.sh",
+            }),
+            SlashCommand::SpecImplement => Some(SpecOpsCommand {
+                display: "implement",
+                script: "spec_ops_implement.sh",
+            }),
+            SlashCommand::SpecValidate => Some(SpecOpsCommand {
+                display: "validate",
+                script: "spec_ops_validate.sh",
+            }),
+            SlashCommand::SpecReview => Some(SpecOpsCommand {
+                display: "review",
+                script: "spec_ops_review.sh",
+            }),
+            SlashCommand::SpecUnlock => Some(SpecOpsCommand {
+                display: "unlock",
+                script: "spec_ops_unlock.sh",
+            }),
+            _ => None,
+        }
     }
 
     /// Expands a prompt-expanding command into a full prompt for the LLM.
@@ -140,6 +190,12 @@ impl SlashCommand {
 /// Return all built-in commands in a Vec paired with their command string.
 pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
     SlashCommand::iter().map(|c| (c.command(), c)).collect()
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SpecOpsCommand {
+    pub display: &'static str,
+    pub script: &'static str,
 }
 
 /// Process a message that might contain a slash command.

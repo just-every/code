@@ -158,8 +158,16 @@ pub enum Op {
     },
 
     /// Execute a project-scoped custom command defined in configuration.
+    /// When `command` is provided, run that argv directly (allowing built-in
+    /// shortcuts to avoid requiring a config entry).
     RunProjectCommand {
         name: String,
+        #[serde(default)]
+        command: Option<Vec<String>>,
+        #[serde(default)]
+        display: Option<String>,
+        #[serde(default)]
+        env: HashMap<String, String>,
     },
 
     /// Internally queue a developer-role message to be included in the next turn.
