@@ -93,6 +93,8 @@ which = "6"
 urlencoding = "2.1"
 pulldown-cmark = "0.13"
 portable-pty = "0.9.0"
+# error helper for prompt builder
+thiserror = "1"
 # vt100 0.16+ depends on unicode-width 0.2.1 which conflicts with ratatui 0.29.x.
 # Stick to 0.15.x until ratatui upgrades.
 vt100 = "0.15.0"

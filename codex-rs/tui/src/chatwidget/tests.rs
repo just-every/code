@@ -338,7 +338,7 @@ pub(crate) fn make_chatwidget_manual_with_sender() -> (
 fn spec_plan_requires_task_id() {
     let (mut chat, rx, _op_rx) = make_chatwidget_manual();
 
-    chat.handle_spec_ops_command(SlashCommand::SpecPlan, "   ".to_string());
+    chat.handle_spec_ops_command(SlashCommand::SpecOpsPlan, "   ".to_string());
 
     let mut found_error = false;
     while let Ok(ev) = rx.try_recv() {
@@ -358,7 +358,7 @@ fn spec_plan_runs_project_command() {
     let (mut chat, rx, mut op_rx) = make_chatwidget_manual();
 
     chat.handle_spec_ops_command(
-        SlashCommand::SpecPlan,
+        SlashCommand::SpecOpsPlan,
         "SPEC-OPS-005 --baseline-mode skip".to_string(),
     );
 

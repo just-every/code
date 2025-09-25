@@ -2,6 +2,8 @@ use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::fs;
+use std::io::Read;
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
@@ -35,6 +37,10 @@ use codex_login::AuthMode;
 use codex_protocol::mcp_protocol::AuthMode as McpAuthMode;
 use codex_protocol::num_format::format_with_separators;
 use crate::slash_command::SlashCommand;
+use crate::slash_command::SpecAutoInvocation;
+use crate::spec_prompts;
+use crate::spec_prompts::{SpecAgent, SpecStage};
+use serde_json::Value;
 
 
 mod diff_handlers;
@@ -533,6 +539,9 @@ pub(crate) struct ChatWidget<'a> {
     // before the next user turn. Each entry is sent in order ahead of the
     // user's visible prompt.
     pending_agent_notes: Vec<String>,
+
+    // Spec Ops automation pipeline state (/spec-auto)
+    spec_auto_state: Option<SpecAutoState>,
 
     // Stable synthetic request bucket for pre‑turn system notices (set on first use)
     synthetic_system_req: Option<u64>,
@@ -2683,6 +2692,7 @@ impl ChatWidget<'_> {
             synthetic_system_req: None,
             system_cell_by_id: HashMap::new(),
             standard_terminal_mode: !config.tui.alternate_screen,
+            spec_auto_state: None,
         };
         if let Ok(Some(active_id)) = auth_accounts::get_active_account_id(&config.codex_home) {
             if let Ok(records) = account_usage::list_rate_limit_snapshots(&config.codex_home) {
@@ -2914,6 +2924,7 @@ impl ChatWidget<'_> {
             pending_agent_notes: Vec::new(),
             synthetic_system_req: None,
             system_cell_by_id: HashMap::new(),
+            spec_auto_state: None,
         };
         if let Ok(Some(active_id)) = auth_accounts::get_active_account_id(&config.codex_home) {
             if let Ok(records) = account_usage::list_rate_limit_snapshots(&config.codex_home) {
@@ -4330,6 +4341,12 @@ impl ChatWidget<'_> {
         if original_trimmed.starts_with("/plan ")
             || original_trimmed.starts_with("/solve ")
             || original_trimmed.starts_with("/code ")
+            || original_trimmed.starts_with("/spec-plan ")
+            || original_trimmed.starts_with("/spec-tasks ")
+            || original_trimmed.starts_with("/spec-implement ")
+            || original_trimmed.starts_with("/spec-validate ")
+            || original_trimmed.starts_with("/spec-review ")
+            || original_trimmed.starts_with("/spec-unlock ")
         {
             self.last_agent_prompt = Some(original_text.clone());
         }
@@ -4399,67 +4416,89 @@ impl ChatWidget<'_> {
 
         let processed = crate::slash_command::process_slash_command_message(&text_only);
         match processed {
-            crate::slash_command::ProcessedCommand::ExpandedPrompt(_expanded) => {
-                // If a built-in multi-agent slash command was used, resolve
-                // configured subagent settings and show an acknowledgement in history.
-                let trimmed = original_trimmed;
-                let (cmd_name, args_opt) = if let Some(rest) = trimmed.strip_prefix("/plan ") {
-                    ("plan", Some(rest.trim().to_string()))
-                } else if let Some(rest) = trimmed.strip_prefix("/solve ") {
-                    ("solve", Some(rest.trim().to_string()))
-                } else if let Some(rest) = trimmed.strip_prefix("/code ") {
-                    ("code", Some(rest.trim().to_string()))
-                } else {
-                    ("", None)
-                };
-
-                if let Some(task) = args_opt {
-                    let res = codex_core::slash_commands::format_subagent_command(
-                        cmd_name,
-                        &task,
-                        Some(&self.config.agents),
-                        Some(&self.config.subagent_commands),
-                    );
-
-                    // Acknowledge the command and show which agents will run.
+            crate::slash_command::ProcessedCommand::ExpandedPrompt(expanded) => {
+                if let Some((stage, spec_id)) = parse_spec_stage_invocation(original_trimmed) {
                     use ratatui::text::Line;
-                    let mode = if res.read_only { "read-only" } else { "write" };
                     let mut lines: Vec<Line<'static>> = Vec::new();
-                    lines.push(Line::from(format!("/{} configured", cmd_name)));
-                    lines.push(Line::from(format!("mode: {}", mode)));
-                    lines.push(Line::from(format!(
-                        "agents: {}",
-                        if res.models.is_empty() {
-                            "<none>".to_string()
-                        } else {
-                            res.models.join(", ")
-                        }
-                    )));
-                    lines.push(Line::from(format!("command: {}", original_text.trim())));
+                    lines.push(Line::from(format!("/{} prepared", stage.command_name())));
+                    lines.push(Line::from(format!("SPEC: {}", spec_id)));
+                    lines.push(Line::from(
+                        "Prompts for Gemini, Claude, and GPT Pro inserted into the composer.",
+                    ));
                     self.history_push(crate::history_cell::PlainHistoryCell::new(
                         lines,
                         crate::history_cell::HistoryCellType::Notice,
                     ));
 
-                    // Replace the message with the resolved prompt
-                    message
-                        .ordered_items
-                        .clear();
-                    message
-                        .ordered_items
-                        .push(InputItem::Text { text: res.prompt });
-                } else {
-                    // Fallback to default expansion behavior
-                    let expanded = _expanded;
-                    message
-                        .ordered_items
-                        .clear();
+                    message.ordered_items.clear();
                     message
                         .ordered_items
                         .push(InputItem::Text { text: expanded });
+                } else {
+                    // If a built-in multi-agent slash command was used, resolve
+                    // configured subagent settings and show an acknowledgement in history.
+                    let trimmed = original_trimmed;
+                    let (cmd_name, args_opt) = if let Some(rest) = trimmed.strip_prefix("/plan ") {
+                        ("plan", Some(rest.trim().to_string()))
+                    } else if let Some(rest) = trimmed.strip_prefix("/solve ") {
+                        ("solve", Some(rest.trim().to_string()))
+                    } else if let Some(rest) = trimmed.strip_prefix("/code ") {
+                        ("code", Some(rest.trim().to_string()))
+                    } else {
+                        ("", None)
+                    };
+
+                    if let Some(task) = args_opt {
+                        let res = codex_core::slash_commands::format_subagent_command(
+                            cmd_name,
+                            &task,
+                            Some(&self.config.agents),
+                            Some(&self.config.subagent_commands),
+                        );
+
+                        // Acknowledge the command and show which agents will run.
+                        use ratatui::text::Line;
+                        let mode = if res.read_only { "read-only" } else { "write" };
+                        let mut lines: Vec<Line<'static>> = Vec::new();
+                        lines.push(Line::from(format!("/{} configured", cmd_name)));
+                        lines.push(Line::from(format!("mode: {}", mode)));
+                        lines.push(Line::from(format!(
+                            "agents: {}",
+                            if res.models.is_empty() {
+                                "<none>".to_string()
+                            } else {
+                                res.models.join(", ")
+                            }
+                        )));
+                        lines.push(Line::from(format!("command: {}", original_text.trim())));
+                        self.history_push(crate::history_cell::PlainHistoryCell::new(
+                            lines,
+                            crate::history_cell::HistoryCellType::Notice,
+                        ));
+
+                        // Replace the message with the resolved prompt
+                        message
+                            .ordered_items
+                            .clear();
+                        message
+                            .ordered_items
+                            .push(InputItem::Text { text: res.prompt });
+                    } else {
+                        // Fallback to default expansion behavior
+                        message
+                            .ordered_items
+                            .clear();
+                        message
+                            .ordered_items
+                            .push(InputItem::Text { text: expanded });
+                    }
                 }
             }
-            crate::slash_command::ProcessedCommand::RegularCommand(cmd, command_text) => {
+            crate::slash_command::ProcessedCommand::RegularCommand { command: cmd, command_text, notice } => {
+                if let Some(message) = notice {
+                    self.history_push(history_cell::new_warning_event(message));
+                }
+
                 if cmd == SlashCommand::Undo {
                     self.handle_undo_command();
                     return;
@@ -4467,6 +4506,10 @@ impl ChatWidget<'_> {
                 // This is a regular slash command, dispatch it normally
                 self.app_event_tx
                     .send(AppEvent::DispatchCommand(cmd, command_text));
+                return;
+            }
+            crate::slash_command::ProcessedCommand::SpecAuto(invocation) => {
+                self.handle_spec_auto_command(invocation);
                 return;
             }
             crate::slash_command::ProcessedCommand::Error(error_msg) => {
@@ -5667,6 +5710,7 @@ impl ChatWidget<'_> {
                 self.stream.insert_reasoning_section_break(&sink);
             }
             EventMsg::TaskStarted => {
+                self.on_spec_auto_task_started(&id);
                 // This begins the new turn; clear the pending prompt anchor count
                 // so subsequent background events use standard placement.
                 self.pending_user_prompts_for_next_turn = 0;
@@ -5697,6 +5741,7 @@ impl ChatWidget<'_> {
             EventMsg::TaskComplete(TaskCompleteEvent {
                 last_agent_message: _,
             }) => {
+                self.on_spec_auto_task_complete(&id);
                 // Finalize any active streams
                 if self.stream.is_write_cycle_active() {
                     // Finalize both streams via streaming facade
@@ -14413,6 +14458,23 @@ impl ChatWidget<'_> {
         banner.push_str(&format!("  Script: {}\n", script_path));
         banner.push_str(&format!("  Agents: {}\n", agent_roster));
         banner.push_str(&format!("  Prompt: {}\n", prompt_hint));
+
+        if let Some(stage) = spec_stage_for_multi_agent_followup(command) {
+            if spec_prompts::agent_prompt(stage.key(), SpecAgent::Gemini).is_some() {
+                banner.push_str(&format!("  Multi-agent stage available: /{}\n", stage.command_name()));
+            }
+            if let Some(notes) = spec_prompts::orchestrator_notes(stage.key()) {
+                if !notes.is_empty() {
+                    banner.push_str("  Notes:\n");
+                    for note in notes {
+                        banner.push_str("    - ");
+                        banner.push_str(&note);
+                        banner.push('\n');
+                    }
+                }
+            }
+        }
+
         self.insert_background_event_with_placement(banner, BackgroundPlacement::Tail);
 
         let mut env = HashMap::new();
@@ -15151,6 +15213,567 @@ impl ChatWidget<'_> {
     }
 }
 
+fn spec_stage_for_multi_agent_followup(command: SlashCommand) -> Option<SpecStage> {
+    match command {
+        SlashCommand::SpecOpsPlan => Some(SpecStage::Plan),
+        SlashCommand::SpecOpsTasks => Some(SpecStage::Tasks),
+        SlashCommand::SpecOpsImplement => Some(SpecStage::Implement),
+        SlashCommand::SpecOpsValidate => Some(SpecStage::Validate),
+        SlashCommand::SpecOpsReview => Some(SpecStage::Review),
+        SlashCommand::SpecOpsUnlock => Some(SpecStage::Unlock),
+        _ => None,
+    }
+}
+
+fn parse_spec_stage_invocation(input: &str) -> Option<(SpecStage, String)> {
+    let trimmed = input.trim();
+    let split_args = |prefix: &str, stage: SpecStage| -> Option<(SpecStage, String)> {
+        trimmed.strip_prefix(prefix).map(|rest| {
+            let spec = rest.trim().split_whitespace().next().unwrap_or("").to_string();
+            (stage, spec)
+        })
+    };
+
+    split_args("/spec-plan ", SpecStage::Plan)
+        .or_else(|| split_args("/spec-tasks ", SpecStage::Tasks))
+        .or_else(|| split_args("/spec-implement ", SpecStage::Implement))
+        .or_else(|| split_args("/spec-validate ", SpecStage::Validate))
+        .or_else(|| split_args("/spec-review ", SpecStage::Review))
+        .or_else(|| split_args("/spec-unlock ", SpecStage::Unlock))
+        .and_then(|(stage, spec)| if spec.is_empty() { None } else { Some((stage, spec)) })
+}
+
+const SPEC_AUTO_MAX_VALIDATE_RETRIES: u32 = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpecAutoPhase {
+    Guardrail,
+    Prompt,
+}
+
+fn guardrail_for_stage(stage: SpecStage) -> SlashCommand {
+    match stage {
+        SpecStage::Plan => SlashCommand::SpecOpsPlan,
+        SpecStage::Tasks => SlashCommand::SpecOpsTasks,
+        SpecStage::Implement => SlashCommand::SpecOpsImplement,
+        SpecStage::Validate => SlashCommand::SpecOpsValidate,
+        SpecStage::Review => SlashCommand::SpecOpsReview,
+        SpecStage::Unlock => SlashCommand::SpecOpsUnlock,
+    }
+}
+
+fn spec_ops_stage_prefix(stage: SpecStage) -> &'static str {
+    match stage {
+        SpecStage::Plan => "plan_",
+        SpecStage::Tasks => "tasks_",
+        SpecStage::Implement => "implement_",
+        SpecStage::Validate => "validate_",
+        SpecStage::Review => "review_",
+        SpecStage::Unlock => "unlock_",
+    }
+}
+
+struct GuardrailEvaluation {
+    success: bool,
+    summary: String,
+    failures: Vec<String>,
+}
+
+fn evaluate_guardrail_value(stage: SpecStage, value: &Value) -> GuardrailEvaluation {
+    match stage {
+        SpecStage::Plan => {
+            let baseline = value
+                .get("baseline")
+                .and_then(|b| b.get("status"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("unknown");
+            let hook = value
+                .get("hooks")
+                .and_then(|h| h.get("session.start"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("unknown");
+            let baseline_ok = matches!(baseline, "passed" | "skipped");
+            let hook_ok = hook == "ok";
+            let success = baseline_ok && hook_ok;
+            let mut failures = Vec::new();
+            if !baseline_ok {
+                failures.push(format!("Baseline audit status: {baseline}"));
+            }
+            if !hook_ok {
+                failures.push(format!("session.start hook: {hook}"));
+            }
+            let summary = format!(
+                "Baseline {baseline}, session.start {hook}"
+            );
+            GuardrailEvaluation {
+                success,
+                summary,
+                failures,
+            }
+        }
+        SpecStage::Tasks => {
+            let status = value
+                .get("tool")
+                .and_then(|t| t.get("status"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("unknown");
+            let success = status == "ok";
+            let failures = if success {
+                Vec::new()
+            } else {
+                vec![format!("tasks hook status: {status}")]
+            };
+            GuardrailEvaluation {
+                success,
+                summary: format!("Tasks automation status: {status}"),
+                failures,
+            }
+        }
+        SpecStage::Implement => {
+            let lock_status = value
+                .get("lock_status")
+                .and_then(|s| s.as_str())
+                .unwrap_or("unknown");
+            let hook_status = value
+                .get("hook_status")
+                .and_then(|s| s.as_str())
+                .unwrap_or("unknown");
+            let success = lock_status == "locked" && hook_status == "ok";
+            let mut failures = Vec::new();
+            if lock_status != "locked" {
+                failures.push(format!("SPEC lock status: {lock_status}"));
+            }
+            if hook_status != "ok" {
+                failures.push(format!("file_after_write hook: {hook_status}"));
+            }
+            GuardrailEvaluation {
+                success,
+                summary: format!(
+                    "Lock status {lock_status}, file hook {hook_status}"
+                ),
+                failures,
+            }
+        }
+        SpecStage::Validate | SpecStage::Review => {
+            let mut failures = Vec::new();
+            let scenarios = value
+                .get("scenarios")
+                .and_then(|s| s.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let mut total = 0usize;
+            let mut passed = 0usize;
+            for scenario in scenarios {
+                let name = scenario
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("unknown");
+                let status = scenario
+                    .get("status")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("unknown");
+                total += 1;
+                if status == "passed" || status == "skipped" {
+                    if status == "passed" {
+                        passed += 1;
+                    }
+                    continue;
+                }
+                failures.push(format!("{name}: {status}"));
+            }
+            let success = failures.is_empty();
+            let summary = if total == 0 {
+                "No validation scenarios reported".to_string()
+            } else {
+                format!("{} of {} scenarios passed", passed, total)
+            };
+            GuardrailEvaluation {
+                success,
+                summary,
+                failures,
+            }
+        }
+        SpecStage::Unlock => {
+            let status = value
+                .get("unlock_status")
+                .and_then(|s| s.as_str())
+                .unwrap_or("unknown");
+            let success = status == "unlocked";
+            let failures = if success {
+                Vec::new()
+            } else {
+                vec![format!("Unlock status: {status}")]
+            };
+            GuardrailEvaluation {
+                success,
+                summary: format!("Unlock status: {status}"),
+                failures,
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct GuardrailWait {
+    stage: SpecStage,
+    command: SlashCommand,
+    task_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct SpecAutoState {
+    spec_id: String,
+    goal: String,
+    stages: Vec<SpecStage>,
+    current_index: usize,
+    phase: SpecAutoPhase,
+    waiting_guardrail: Option<GuardrailWait>,
+    validate_retries: u32,
+    pending_prompt_summary: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct GuardrailOutcome {
+    success: bool,
+    summary: String,
+    telemetry_path: Option<PathBuf>,
+    failures: Vec<String>,
+}
+
+impl SpecAutoState {
+    fn new(spec_id: String, goal: String, resume_from: SpecStage) -> Self {
+        let stages = vec![
+            SpecStage::Plan,
+            SpecStage::Tasks,
+            SpecStage::Implement,
+            SpecStage::Validate,
+            SpecStage::Review,
+            SpecStage::Unlock,
+        ];
+        let start_index = stages
+            .iter()
+            .position(|stage| *stage == resume_from)
+            .unwrap_or(0);
+        Self {
+            spec_id,
+            goal,
+            stages,
+            current_index: start_index,
+            phase: SpecAutoPhase::Guardrail,
+            waiting_guardrail: None,
+            validate_retries: 0,
+            pending_prompt_summary: None,
+        }
+    }
+}
+
+impl ChatWidget<'_> {
+    fn handle_spec_auto_command(&mut self, invocation: SpecAutoInvocation) {
+        let SpecAutoInvocation {
+            spec_id,
+            goal,
+            resume_from,
+        } = invocation;
+
+        let mut header: Vec<ratatui::text::Line<'static>> = Vec::new();
+        header.push(ratatui::text::Line::from(format!(
+            "/spec-auto {}",
+            spec_id
+        )));
+        if !goal.trim().is_empty() {
+            header.push(ratatui::text::Line::from(format!("Goal: {}", goal)));
+        }
+        header.push(ratatui::text::Line::from(format!(
+            "Resume from: {}",
+            resume_from.display_name()
+        )));
+        self.history_push(crate::history_cell::PlainHistoryCell::new(
+            header,
+            crate::history_cell::HistoryCellType::Notice,
+        ));
+
+        self.spec_auto_state = Some(SpecAutoState::new(spec_id, goal, resume_from));
+        self.advance_spec_auto();
+    }
+
+    fn advance_spec_auto(&mut self) {
+        let Some(state) = self.spec_auto_state.as_mut() else { return; };
+        if state.waiting_guardrail.is_some() {
+            return;
+        }
+
+        loop {
+            if state.current_index >= state.stages.len() {
+                self.history_push(crate::history_cell::PlainHistoryCell::new(
+                    vec![ratatui::text::Line::from("/spec-auto pipeline complete")],
+                    crate::history_cell::HistoryCellType::Notice,
+                ));
+                self.spec_auto_state = None;
+                return;
+            }
+
+            let stage = state.stages[state.current_index];
+            match state.phase {
+                SpecAutoPhase::Guardrail => {
+                    let command = guardrail_for_stage(stage);
+                    let args = state.spec_id.clone();
+                    self.handle_spec_ops_command(command, args);
+                    state.waiting_guardrail = Some(GuardrailWait {
+                        stage,
+                        command,
+                        task_id: None,
+                    });
+                    state.phase = SpecAutoPhase::Prompt;
+                    return;
+                }
+                SpecAutoPhase::Prompt => {
+                    let summary = state.pending_prompt_summary.take();
+                    self.present_spec_prompt(stage, &state.spec_id, &state.goal, summary);
+                    state.phase = SpecAutoPhase::Guardrail;
+                    state.current_index += 1;
+                    continue;
+                }
+            }
+        }
+    }
+
+    fn present_spec_prompt(
+        &mut self,
+        stage: SpecStage,
+        spec_id: &str,
+        goal: &str,
+        summary: Option<String>,
+    ) {
+        let mut arg = spec_id.to_string();
+        if !goal.trim().is_empty() {
+            arg.push(' ');
+            arg.push_str(goal.trim());
+        }
+
+        match spec_prompts::build_stage_prompt(stage, &arg) {
+            Ok(prompt) => {
+                let mut lines: Vec<ratatui::text::Line<'static>> = Vec::new();
+                lines.push(ratatui::text::Line::from(format!(
+                    "Prepared /{} prompt for {}",
+                    stage.command_name(),
+                    spec_id
+                )));
+                if let Some(summary) = summary {
+                    lines.push(ratatui::text::Line::from(summary));
+                }
+
+                if self.bottom_pane.composer_is_empty() {
+                    self.bottom_pane.clear_composer();
+                    self.bottom_pane.insert_str(&prompt);
+                    self.last_agent_prompt = Some(prompt.clone());
+                    lines.push(ratatui::text::Line::from(
+                        "Prompt inserted into composer. Review and send to run agents.",
+                    ));
+                } else {
+                    let history_blob = format!(
+                        "--- /{} prompt for {} ---\n{}",
+                        stage.command_name(),
+                        spec_id,
+                        prompt
+                    );
+                    self.insert_background_event_with_placement(
+                        history_blob,
+                        BackgroundPlacement::Tail,
+                    );
+                    lines.push(ratatui::text::Line::from(
+                        "Composer occupied; prompt appended to history.",
+                    ));
+                }
+
+                self.history_push(crate::history_cell::PlainHistoryCell::new(
+                    lines,
+                    crate::history_cell::HistoryCellType::Notice,
+                ));
+            }
+            Err(err) => {
+                self.history_push(crate::history_cell::new_error_event(format!(
+                    "Failed to build /{} prompt: {}",
+                    stage.command_name(),
+                    err
+                )));
+            }
+        }
+    }
+
+    fn on_spec_auto_task_started(&mut self, task_id: &str) {
+        if let Some(state) = self.spec_auto_state.as_mut() {
+            if let Some(wait) = state.waiting_guardrail.as_mut() {
+                if wait.task_id.is_none() {
+                    wait.task_id = Some(task_id.to_string());
+                }
+            }
+        }
+    }
+
+    fn on_spec_auto_task_complete(&mut self, task_id: &str) {
+        let Some(state) = self.spec_auto_state.as_mut() else { return; };
+        let Some(wait) = state.waiting_guardrail.clone() else { return; };
+        let Some(expected_id) = wait.task_id.as_deref() else { return; };
+        if expected_id != task_id {
+            return;
+        }
+
+        state.waiting_guardrail = None;
+        let stage = wait.stage;
+        let spec_id = state.spec_id.clone();
+
+        match self.collect_guardrail_outcome(&spec_id, stage) {
+            Ok(outcome) => {
+                let mut prompt_summary = outcome.summary.clone();
+                if !outcome.failures.is_empty() {
+                    prompt_summary.push_str(" | Failures: ");
+                    prompt_summary.push_str(&outcome.failures.join(", "));
+                }
+                state.pending_prompt_summary = Some(prompt_summary);
+
+                let mut lines: Vec<ratatui::text::Line<'static>> = Vec::new();
+                lines.push(ratatui::text::Line::from(format!(
+                    "[Spec Ops] {} stage: {}",
+                    stage.display_name(),
+                    outcome.summary
+                )));
+                if let Some(path) = outcome.telemetry_path {
+                    lines.push(ratatui::text::Line::from(format!(
+                        "  Telemetry: {}",
+                        path.display()
+                    )));
+                }
+                if !outcome.failures.is_empty() {
+                    for failure in &outcome.failures {
+                        lines.push(ratatui::text::Line::from(format!("  • {failure}")));
+                    }
+                }
+                self.history_push(crate::history_cell::PlainHistoryCell::new(
+                    lines,
+                    crate::history_cell::HistoryCellType::Notice,
+                ));
+
+                if !outcome.success {
+                    if stage == SpecStage::Validate {
+                        if state.validate_retries >= SPEC_AUTO_MAX_VALIDATE_RETRIES {
+                            self.history_push(crate::history_cell::PlainHistoryCell::new(
+                                vec![ratatui::text::Line::from(
+                                    "Validation failed repeatedly; stopping /spec-auto pipeline.",
+                                )],
+                                crate::history_cell::HistoryCellType::Error,
+                            ));
+                            self.spec_auto_state = None;
+                            return;
+                        }
+                        state.validate_retries += 1;
+                        let insert_at = state.current_index + 1;
+                        state.stages.splice(
+                            insert_at..insert_at,
+                            vec![SpecStage::Implement, SpecStage::Validate],
+                        );
+                        self.history_push(crate::history_cell::PlainHistoryCell::new(
+                            vec![ratatui::text::Line::from(format!(
+                                "Retrying implementation/validation cycle (attempt {}).",
+                                state.validate_retries + 1
+                            ))],
+                            crate::history_cell::HistoryCellType::Notice,
+                        ));
+                    } else {
+                        self.history_push(crate::history_cell::new_error_event(
+                            "Guardrail step failed; aborting /spec-auto pipeline.".to_string(),
+                        ));
+                        self.spec_auto_state = None;
+                        return;
+                    }
+                }
+
+                self.advance_spec_auto();
+            }
+            Err(err) => {
+                self.history_push(crate::history_cell::new_error_event(format!(
+                    "Unable to read telemetry for {}: {}",
+                    stage.display_name(),
+                    err
+                )));
+                self.spec_auto_state = None;
+            }
+        }
+    }
+
+    fn collect_guardrail_outcome(
+        &self,
+        spec_id: &str,
+        stage: SpecStage,
+    ) -> Result<GuardrailOutcome, String> {
+        let (path, value) = self.read_latest_spec_ops_telemetry(spec_id, stage)?;
+        let evaluation = evaluate_guardrail_value(stage, &value);
+        Ok(GuardrailOutcome {
+            success: evaluation.success,
+            summary: evaluation.summary,
+            telemetry_path: Some(path),
+            failures: evaluation.failures,
+        })
+    }
+
+    fn read_latest_spec_ops_telemetry(
+        &self,
+        spec_id: &str,
+        stage: SpecStage,
+    ) -> Result<(PathBuf, Value), String> {
+        let evidence_dir = self
+            .config
+            .cwd
+            .join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands")
+            .join(spec_id);
+        let prefix = spec_ops_stage_prefix(stage);
+        let entries = fs::read_dir(&evidence_dir)
+            .map_err(|e| format!("{} ({}): {}", spec_id, stage.command_name(), e))?;
+
+        let mut latest: Option<(PathBuf, SystemTime)> = None;
+        for entry_res in entries {
+            let entry = entry_res.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if !name.starts_with(prefix) {
+                continue;
+            }
+            let modified = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            if latest
+                .as_ref()
+                .map(|(_, ts)| modified > *ts)
+                .unwrap_or(true)
+            {
+                latest = Some((path.clone(), modified));
+            }
+        }
+
+        let (path, _) = latest.ok_or_else(|| {
+            format!(
+                "No telemetry files matching {}* in {}",
+                prefix,
+                evidence_dir.display()
+            )
+        })?;
+
+        let mut file = fs::File::open(&path)
+            .map_err(|e| format!("Failed to open {}: {e}", path.display()))?;
+        let mut buf = String::new();
+        file.read_to_string(&mut buf)
+            .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+        let value: Value = serde_json::from_str(&buf)
+            .map_err(|e| format!("Failed to parse telemetry JSON {}: {e}", path.display()))?;
+        Ok((path, value))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -15219,7 +15842,7 @@ mod tests {
                 .collect();
 
             assert!(
-                !text.chars().any(|ch| (ch < ' ' && ch != ' ')),
+                !text.chars().any(|ch| ch < ' ' && ch != ' '),
                 "line still has control characters: {:?}",
                 text
             );

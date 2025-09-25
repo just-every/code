@@ -4847,6 +4847,21 @@ fn parse_read_line_annotation(cmd: &str) -> Option<String> {
     parse_read_line_annotation_with_range(cmd).0
 }
 
+#[allow(dead_code)]
+fn strip_redundant_line_filter_pipes(cmd: &str) -> String {
+    let (annotation, _) = parse_read_line_annotation_with_range(cmd);
+    if annotation.is_none() {
+        return cmd.to_string();
+    }
+
+    if let Some(idx) = cmd.rfind('|') {
+        let head = cmd[..idx].trim_end();
+        head.to_string()
+    } else {
+        cmd.to_string()
+    }
+}
+
 fn normalize_shell_command_display(cmd: &str) -> String {
     let first_non_ws = cmd
         .char_indices()

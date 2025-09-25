@@ -38,6 +38,16 @@ Notes
   text directly.
 - `/cmd <name>`: run a project command defined for the current workspace.
 
+## Spec Ops Guardrails
+
+- `/spec-ops-plan <SPEC-ID> [--baseline-mode <full|no-run|skip>] [other options]`: run the baseline audit + guardrail prep for a SPEC task. The legacy `/spec-plan` alias remains temporarily and now shows a deprecation warning.
+- `/spec-ops-tasks <SPEC-ID> [options]`: prepare Spec Ops task automation hooks (`/spec-tasks` handles the multi-agent synthesis).
+- `/spec-ops-implement <SPEC-ID> [options]`: lock SPEC.md and prime guardrails ahead of implementation.
+- `/spec-ops-validate <SPEC-ID> [--scenario <name>]`: execute validation harness scenarios and record telemetry.
+- `/spec-ops-review <SPEC-ID> [--dry-run]`: run the Spec Ops audit scenarios; use `/spec-review` for the forthcoming multi-agent consensus stage.
+- `/spec-ops-unlock <SPEC-ID> [--spec-path <path>]`: force-unlock SPEC.md after the guardrail workflow completes. Alias `/spec-unlock` is deprecated.
+- `/spec-auto <SPEC-ID> [goal] [--from <stage>]`: orchestrate the end-to-end Spec Ops + multi-agent pipeline, preparing guardrail commands and stage prompts (supports stages: plan, tasks, implement, validate, review, unlock).
+
 ## UX & Display
 
 - `/theme`: switch between color themes.
@@ -73,6 +83,12 @@ typically start multiple agents. They require a task/problem description.
 - `/plan <task>`: create a comprehensive plan (multiple agents). Prompt‑expanding.
 - `/solve <problem>`: solve a challenging problem (multiple agents). Prompt‑expanding.
 - `/code <task>`: perform a coding task (multiple agents). Prompt‑expanding.
+- `/spec-plan <SPEC-ID> <goal>`: spec-aware planning consensus; injects Gemini/Claude/GPT prompts referencing local-memory context.
+- `/spec-tasks <SPEC-ID>`: multi-agent task synthesis aligned with SPEC.md tracking.
+- `/spec-implement <SPEC-ID> [summary]`: implementation strategy prompts for the three agents.
+- `/spec-validate <SPEC-ID>`: validation consensus prompts tied to Spec Ops telemetry.
+- `/spec-review <SPEC-ID>`: go/no-go review prompts coordinating all agents.
+- `/spec-unlock <SPEC-ID>`: unlock justification prompts prior to running `/spec-ops-unlock`.
 
 ## Development‑Only
 

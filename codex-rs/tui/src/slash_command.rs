@@ -6,6 +6,10 @@ use strum_macros::EnumIter;
 use strum_macros::EnumString;
 use strum_macros::IntoStaticStr;
 
+use crate::spec_prompts;
+use crate::spec_prompts::SpecStage;
+use thiserror::Error;
+
 const BUILD_PROFILE: Option<&str> = option_env!("CODEX_PROFILE");
 
 fn demo_command_enabled() -> bool {
@@ -115,12 +119,32 @@ pub enum SlashCommand {
     Plan,
     Solve,
     Code,
+    #[strum(serialize = "spec-plan")]
     SpecPlan,
+    #[strum(serialize = "spec-tasks")]
     SpecTasks,
+    #[strum(serialize = "spec-implement")]
     SpecImplement,
+    #[strum(serialize = "spec-validate")]
     SpecValidate,
+    #[strum(serialize = "spec-review")]
     SpecReview,
+    #[strum(serialize = "spec-unlock")]
     SpecUnlock,
+    #[strum(serialize = "spec-auto")]
+    SpecAuto,
+    #[strum(serialize = "spec-ops-plan")]
+    SpecOpsPlan,
+    #[strum(serialize = "spec-ops-tasks")]
+    SpecOpsTasks,
+    #[strum(serialize = "spec-ops-implement")]
+    SpecOpsImplement,
+    #[strum(serialize = "spec-ops-validate")]
+    SpecOpsValidate,
+    #[strum(serialize = "spec-ops-review")]
+    SpecOpsReview,
+    #[strum(serialize = "spec-ops-unlock")]
+    SpecOpsUnlock,
     Logout,
     Quit,
     #[cfg(debug_assertions)]
@@ -155,12 +179,27 @@ impl SlashCommand {
             SlashCommand::Prompts => "show example prompts",
             SlashCommand::Model => "choose model & reasoning effort",
             SlashCommand::Agents => "create and configure agents",
-            SlashCommand::SpecPlan => "run Spec Ops plan automation (requires SPEC ID)",
-            SlashCommand::SpecTasks => "run Spec Ops tasks automation (requires SPEC ID)",
-            SlashCommand::SpecImplement => "run Spec Ops implement automation (requires SPEC ID)",
-            SlashCommand::SpecValidate => "run Spec Ops validate automation (requires SPEC ID)",
-            SlashCommand::SpecReview => "run Spec Ops review automation (requires SPEC ID)",
-            SlashCommand::SpecUnlock => "unlock SPEC.md copy-on-write lock (requires SPEC ID)",
+            SlashCommand::SpecPlan => "multi-agent planning flow (requires SPEC ID and goal)",
+            SlashCommand::SpecTasks => "multi-agent task synthesis (requires SPEC ID)",
+            SlashCommand::SpecImplement => "multi-agent implementation design (requires SPEC ID)",
+            SlashCommand::SpecValidate => "multi-agent validation consensus (requires SPEC ID)",
+            SlashCommand::SpecReview => "multi-agent review/go-no-go (requires SPEC ID)",
+            SlashCommand::SpecUnlock => "multi-agent unlock justification (requires SPEC ID)",
+            SlashCommand::SpecAuto => "drive Spec Ops + multi-agent pipeline (requires SPEC ID)",
+            SlashCommand::SpecOpsPlan => "run Spec Ops plan automation (requires SPEC ID)",
+            SlashCommand::SpecOpsTasks => "run Spec Ops tasks automation (requires SPEC ID)",
+            SlashCommand::SpecOpsImplement => {
+                "run Spec Ops implement automation (requires SPEC ID)"
+            }
+            SlashCommand::SpecOpsValidate => {
+                "run Spec Ops validate automation (requires SPEC ID)"
+            }
+            SlashCommand::SpecOpsReview => {
+                "run Spec Ops review automation (requires SPEC ID)"
+            }
+            SlashCommand::SpecOpsUnlock => {
+                "unlock SPEC.md copy-on-write lock (requires SPEC ID)"
+            }
             SlashCommand::Pro => "manage Pro mode (toggle/status/auto)",
             SlashCommand::Branch => {
                 "work in an isolated /branch then /merge when done (great for parallel work)"
@@ -198,42 +237,54 @@ impl SlashCommand {
     pub fn is_spec_ops(self) -> bool {
         matches!(
             self,
-            SlashCommand::SpecPlan
-                | SlashCommand::SpecTasks
-                | SlashCommand::SpecImplement
-                | SlashCommand::SpecValidate
-                | SlashCommand::SpecReview
-                | SlashCommand::SpecUnlock
+            SlashCommand::SpecOpsPlan
+                | SlashCommand::SpecOpsTasks
+                | SlashCommand::SpecOpsImplement
+                | SlashCommand::SpecOpsValidate
+                | SlashCommand::SpecOpsReview
+                | SlashCommand::SpecOpsUnlock
         )
     }
 
     /// Returns Spec Ops metadata for the command.
     pub fn spec_ops(self) -> Option<SpecOpsCommand> {
         match self {
-            SlashCommand::SpecPlan => Some(SpecOpsCommand {
+            SlashCommand::SpecOpsPlan => Some(SpecOpsCommand {
                 display: "plan",
                 script: "spec_ops_plan.sh",
             }),
-            SlashCommand::SpecTasks => Some(SpecOpsCommand {
+            SlashCommand::SpecOpsTasks => Some(SpecOpsCommand {
                 display: "tasks",
                 script: "spec_ops_tasks.sh",
             }),
-            SlashCommand::SpecImplement => Some(SpecOpsCommand {
+            SlashCommand::SpecOpsImplement => Some(SpecOpsCommand {
                 display: "implement",
                 script: "spec_ops_implement.sh",
             }),
-            SlashCommand::SpecValidate => Some(SpecOpsCommand {
+            SlashCommand::SpecOpsValidate => Some(SpecOpsCommand {
                 display: "validate",
                 script: "spec_ops_validate.sh",
             }),
-            SlashCommand::SpecReview => Some(SpecOpsCommand {
+            SlashCommand::SpecOpsReview => Some(SpecOpsCommand {
                 display: "review",
                 script: "spec_ops_review.sh",
             }),
-            SlashCommand::SpecUnlock => Some(SpecOpsCommand {
+            SlashCommand::SpecOpsUnlock => Some(SpecOpsCommand {
                 display: "unlock",
                 script: "spec_ops_unlock.sh",
             }),
+            _ => None,
+        }
+    }
+
+    pub fn spec_stage(self) -> Option<SpecStage> {
+        match self {
+            SlashCommand::SpecPlan => Some(SpecStage::Plan),
+            SlashCommand::SpecTasks => Some(SpecStage::Tasks),
+            SlashCommand::SpecImplement => Some(SpecStage::Implement),
+            SlashCommand::SpecValidate => Some(SpecStage::Validate),
+            SlashCommand::SpecReview => Some(SpecStage::Review),
+            SlashCommand::SpecUnlock => Some(SpecStage::Unlock),
             _ => None,
         }
     }
@@ -312,7 +363,11 @@ pub fn process_slash_command_message(message: &str) -> ProcessedCommand {
             format!("/{} {}", SlashCommand::Quit.command(), args_raw)
         };
 
-        return ProcessedCommand::RegularCommand(SlashCommand::Quit, command_text);
+        return ProcessedCommand::RegularCommand {
+            command: SlashCommand::Quit,
+            command_text,
+            notice: None,
+        };
     }
 
     if !has_slash {
@@ -333,6 +388,24 @@ pub fn process_slash_command_message(message: &str) -> ProcessedCommand {
                 _ => format!("Error: /{command_name} is not available in this build."),
             };
             return ProcessedCommand::Error(message);
+        }
+
+        if let Some(stage) = command.spec_stage() {
+            match spec_prompts::build_stage_prompt(stage, args_raw) {
+                Ok(prompt) => return ProcessedCommand::ExpandedPrompt(prompt),
+                Err(err) => return ProcessedCommand::Error(err.to_string()),
+            }
+        }
+
+        if command == SlashCommand::SpecAuto {
+            match parse_spec_auto_args(args_raw) {
+                Ok(auto) => {
+                    return ProcessedCommand::SpecAuto(auto);
+                }
+                Err(err) => {
+                    return ProcessedCommand::Error(err.to_string());
+                }
+            }
         }
 
         // Check if it's a prompt-expanding command
@@ -356,8 +429,11 @@ pub fn process_slash_command_message(message: &str) -> ProcessedCommand {
             format!("/{} {}", command.command(), args_raw)
         };
 
-        // It's a regular command, return it as-is with the canonical text
-        ProcessedCommand::RegularCommand(command, command_text)
+        ProcessedCommand::RegularCommand {
+            command,
+            command_text,
+            notice: None,
+        }
     } else {
         // Unknown command
         ProcessedCommand::NotCommand(message.to_string())
@@ -370,10 +446,109 @@ pub enum ProcessedCommand {
     ExpandedPrompt(String),
     /// A regular slash command that should be handled by the TUI. The `String`
     /// contains the canonical command text (with leading slash and trimmed args).
-    RegularCommand(SlashCommand, String),
+    RegularCommand {
+        command: SlashCommand,
+        command_text: String,
+        notice: Option<String>,
+    },
+    SpecAuto(SpecAutoInvocation),
     /// Not a slash command, just a regular message
     #[allow(dead_code)]
     NotCommand(String),
     /// Error processing the command
     Error(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct SpecAutoInvocation {
+    pub spec_id: String,
+    pub goal: String,
+    pub resume_from: SpecStage,
+}
+
+#[derive(Debug, Error)]
+pub enum SpecAutoParseError {
+    #[error("`/spec-auto` requires a SPEC ID (e.g. `/spec-auto SPEC-OPS-005`)")]
+    MissingSpecId,
+    #[error("`/spec-auto --from` requires a stage name")]
+    MissingFromStage,
+    #[error("Unknown stage '{0}'. Expected plan, tasks, implement, validate, review, or unlock.")]
+    UnknownStage(String),
+}
+
+fn parse_spec_auto_args(args: &str) -> Result<SpecAutoInvocation, SpecAutoParseError> {
+    let mut tokens = args.trim().split_whitespace();
+    let Some(spec_token) = tokens.next() else {
+        return Err(SpecAutoParseError::MissingSpecId);
+    };
+
+    let mut resume_from = SpecStage::Plan;
+    let mut goal_tokens: Vec<String> = Vec::new();
+    let mut pending_from = false;
+
+    for token in tokens {
+        if pending_from {
+            resume_from = parse_stage_name(token)
+                .ok_or_else(|| SpecAutoParseError::UnknownStage(token.to_string()))?;
+            pending_from = false;
+            continue;
+        }
+
+        match token {
+            "--from" | "--resume-from" => {
+                pending_from = true;
+            }
+            _ => goal_tokens.push(token.to_string()),
+        }
+    }
+
+    if pending_from {
+        return Err(SpecAutoParseError::MissingFromStage);
+    }
+
+    Ok(SpecAutoInvocation {
+        spec_id: spec_token.to_string(),
+        goal: goal_tokens.join(" "),
+        resume_from,
+    })
+}
+
+fn parse_stage_name(value: &str) -> Option<SpecStage> {
+    match value.to_ascii_lowercase().as_str() {
+        "plan" | "spec-plan" => Some(SpecStage::Plan),
+        "tasks" | "spec-tasks" => Some(SpecStage::Tasks),
+        "implement" | "spec-implement" => Some(SpecStage::Implement),
+        "validate" | "spec-validate" => Some(SpecStage::Validate),
+        "review" | "spec-review" => Some(SpecStage::Review),
+        "unlock" | "spec-unlock" => Some(SpecStage::Unlock),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_spec_alias_emits_notice() {
+        let message = process_slash_command_message("/spec-plan SPEC-OPS-999");
+        match message {
+            ProcessedCommand::RegularCommand { command, command_text, notice } => {
+                assert_eq!(command, SlashCommand::SpecOpsPlan);
+                assert_eq!(command_text, "/spec-ops-plan SPEC-OPS-999");
+                let notice = notice.expect("expected deprecation notice");
+                assert!(notice.contains("/spec-plan"));
+                assert!(notice.contains("/spec-ops-plan"));
+            }
+            other => panic!("expected RegularCommand with notice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_spec_auto_args_supports_from_flag() {
+        let auto = parse_spec_auto_args("SPEC-OPS-007 --from tasks align checkout").unwrap();
+        assert_eq!(auto.spec_id, "SPEC-OPS-007");
+        assert_eq!(auto.goal, "align checkout");
+        assert_eq!(auto.resume_from, SpecStage::Tasks);
+    }
 }

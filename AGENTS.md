@@ -11,6 +11,7 @@
 - Treat `SPEC.md` as the single source of truth for tracker status. Use `docs/SPEC-<AREA>-<slug>/spec.md` for per‑feature design detail and `docs/SPEC-<AREA>-<slug>/tasks.md` as the per‑feature working task list produced by `/tasks`. Do not use a global TASKS.md.
 - Reuse `templates/plan-template.md` when producing plans and `templates/tasks-template.md` for `/tasks` outputs.
 - Run `scripts/spec_ops_004/baseline_audit.sh --out docs/SPEC-OPS-004-integrated-coder-hooks/baseline.md` before installing hooks or commands; rerun after Code CLI upgrades.
+- Local Memory guardrail: always search local-memory for relevant context before answering, then store new decisions/solutions/insights with consistent tags (importance ≥7) and link related memories; update or retire stale entries as work evolves.
 
 ## 1) Command mapping (Spec Kit ↔ just-every/code)
 - `/constitution` → Parallel claude/gemini/code run editing `memory/constitution.md` and `product-requirements.md`; capture evidence, surface disagreements, and require manual confirmation for guardrail changes.

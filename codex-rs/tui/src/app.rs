@@ -1592,7 +1592,16 @@ impl App<'_> {
                         | SlashCommand::SpecImplement
                         | SlashCommand::SpecValidate
                         | SlashCommand::SpecReview
-                        | SlashCommand::SpecUnlock => {
+                        | SlashCommand::SpecUnlock
+                        | SlashCommand::SpecAuto => {
+                            // Prompt-expanded in the chat widget; no additional dispatch required here.
+                        }
+                        SlashCommand::SpecOpsPlan
+                        | SlashCommand::SpecOpsTasks
+                        | SlashCommand::SpecOpsImplement
+                        | SlashCommand::SpecOpsValidate
+                        | SlashCommand::SpecOpsReview
+                        | SlashCommand::SpecOpsUnlock => {
                             if let AppState::Chat { widget } = &mut self.app_state {
                                 widget.handle_spec_ops_command(command, command_args);
                             }
