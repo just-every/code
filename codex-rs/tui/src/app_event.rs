@@ -85,6 +85,9 @@ pub(crate) enum AppEvent {
     /// Update the terminal title override. `None` restores the default title.
     SetTerminalTitle { title: Option<String> },
 
+    /// Notification that a pending approval has been resolved by the user.
+    ApprovalRequestResolved,
+
     /// Schedule a one-shot animation frame roughly after the given duration.
     /// Multiple requests are coalesced by the central frame scheduler.
     ScheduleFrameIn(Duration),
