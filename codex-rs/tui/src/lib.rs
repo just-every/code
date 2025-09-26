@@ -27,6 +27,7 @@ use std::path::PathBuf;
 use tracing_appender::non_blocking;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::prelude::*;
+use uuid::Uuid;
 
 mod app;
 mod app_event;
@@ -95,6 +96,11 @@ mod updates;
 
 pub use cli::Cli;
 
+pub struct RunSummary {
+    pub token_usage: codex_core::protocol::TokenUsage,
+    pub session_id: Option<Uuid>,
+}
+
 fn theme_configured_in_config_file(codex_home: &std::path::Path) -> bool {
     let config_path = codex_home.join("config.toml");
     let Ok(contents) = std::fs::read_to_string(&config_path) else {
@@ -115,7 +121,7 @@ fn theme_configured_in_config_file(codex_home: &std::path::Path) -> bool {
 pub async fn run_main(
     mut cli: Cli,
     codex_linux_sandbox_exe: Option<PathBuf>,
-) -> std::io::Result<codex_core::protocol::TokenUsage> {
+) -> std::io::Result<RunSummary> {
     cli.finalize_defaults();
 
     let (sandbox_mode, approval_policy) = if cli.full_auto {
@@ -297,7 +303,7 @@ pub async fn run_main(
         latest_upgrade_version,
         theme_configured_explicitly,
     )
-        .map_err(|err| std::io::Error::other(err.to_string()))
+    .map_err(|err| std::io::Error::other(err.to_string()))
 }
 
 fn run_ratatui_app(
@@ -307,7 +313,7 @@ fn run_ratatui_app(
     startup_footer_notice: Option<String>,
     latest_upgrade_version: Option<String>,
     theme_configured_explicitly: bool,
-) -> color_eyre::Result<codex_core::protocol::TokenUsage> {
+) -> color_eyre::Result<RunSummary> {
     color_eyre::install()?;
 
     // Forward panic reports through tracing so they appear in the UI status
@@ -366,6 +372,7 @@ fn run_ratatui_app(
 
     let app_result = app.run(&mut terminal);
     let usage = app.token_usage();
+    let session_id = app.session_id();
 
     // Optionally print timing summary to stderr after restoring the terminal.
     let timing_summary = app.perf_summary();
@@ -381,7 +388,10 @@ fn run_ratatui_app(
     }
 
     // ignore error when collecting usage – report underlying error instead
-    app_result.map(|_| usage)
+    app_result.map(|_| RunSummary {
+        token_usage: usage,
+        session_id,
+    })
 }
 
 #[expect(

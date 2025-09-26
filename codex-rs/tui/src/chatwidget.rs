@@ -13792,6 +13792,10 @@ impl ChatWidget<'_> {
         self.pending_agent_notes.push(note);
     }
 
+    pub(crate) fn session_id(&self) -> Option<uuid::Uuid> {
+        self.session_id
+    }
+
     pub(crate) fn token_usage(&self) -> &TokenUsage {
         &self.total_token_usage
     }

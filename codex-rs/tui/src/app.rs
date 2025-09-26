@@ -45,6 +45,7 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::sync::oneshot;
+use uuid::Uuid;
 
 /// Time window for debouncing redraw requests.
 ///
@@ -2560,6 +2561,13 @@ impl App<'_> {
                 }
                 _ => screen.handle_key_event(key_event),
             },
+        }
+    }
+
+    pub(crate) fn session_id(&self) -> Option<Uuid> {
+        match &self.app_state {
+            AppState::Chat { widget } => widget.session_id(),
+            AppState::Onboarding { .. } => None,
         }
     }
 
