@@ -102,10 +102,12 @@ fn default_confirm_guard_patterns() -> Vec<ConfirmGuardPattern> {
         ConfirmGuardPattern {
             regex: r"(?i)^\s*(?:sudo\s+)?rm\b[^\n]*\s+-[a-z-]*rf[a-z-]*\b".to_string(),
             message: Some("Blocked rm -rf. Force-recursive delete requires explicit confirmation.".to_string()),
+            require_approval: false,
         },
         ConfirmGuardPattern {
             regex: r"(?i)^\s*(?:sudo\s+)?rm\b[^\n]*\s+-[-0-9a-qs-z]*f[-0-9a-qs-z]*\b".to_string(),
             message: Some("Blocked rm -f. Force delete requires explicit confirmation.".to_string()),
+            require_approval: false,
         },
         ConfirmGuardPattern {
             regex: r"(?i)^\s*(?:sudo\s+)?find\s+\.(?:\s|$).*\s-delete\b".to_string(),
