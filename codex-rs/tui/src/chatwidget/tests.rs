@@ -663,7 +663,7 @@ fn agents_terminal_focus_and_scroll_controls() {
     assert_eq!(chat.agents_terminal.focus(), AgentsTerminalFocus::Sidebar);
 
     chat.layout.last_history_viewport_height.set(5);
-    chat.layout.last_max_scroll.set(5);
+    chat.layout.last_max_scroll.set(40);
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     pump_app_events(&mut chat, &rx);
@@ -671,7 +671,11 @@ fn agents_terminal_focus_and_scroll_controls() {
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     pump_app_events(&mut chat, &rx);
-    assert_eq!(chat.layout.scroll_offset, 1, "Up should scroll output when focused");
+    assert_eq!(chat.layout.scroll_offset, 4, "Up should scroll output when focused");
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    pump_app_events(&mut chat, &rx);
+    assert_eq!(chat.layout.scroll_offset, 3, "Down should move towards bottom when focused");
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     pump_app_events(&mut chat, &rx);

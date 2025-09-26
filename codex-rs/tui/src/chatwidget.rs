@@ -771,6 +771,7 @@ struct AgentsTerminalState {
     shared_context: Option<String>,
     shared_task: Option<String>,
     focus: AgentsTerminalFocus,
+    last_escape: Option<std::time::Instant>,
 }
 
 impl AgentsTerminalState {
@@ -785,6 +786,7 @@ impl AgentsTerminalState {
             shared_context: None,
             shared_task: None,
             focus: AgentsTerminalFocus::Sidebar,
+            last_escape: None,
         }
     }
 
@@ -796,6 +798,7 @@ impl AgentsTerminalState {
         self.shared_context = None;
         self.shared_task = None;
         self.focus = AgentsTerminalFocus::Sidebar;
+        self.last_escape = None;
     }
 
     fn current_agent_id(&self) -> Option<&str> {
@@ -3176,12 +3179,13 @@ impl ChatWidget<'_> {
             }
             match key_event.code {
                 KeyCode::Esc => {
+                    self.agents_terminal.last_escape = Some(std::time::Instant::now());
                     if self.agents_terminal.focus() == AgentsTerminalFocus::Detail {
                         self.agents_terminal.focus_sidebar();
                         self.request_redraw();
-                    } else {
-                        self.exit_agents_terminal_mode();
+                        return;
                     }
+                    self.exit_agents_terminal_mode();
                     return;
                 }
                 KeyCode::Right | KeyCode::Enter => {
@@ -3202,7 +3206,7 @@ impl ChatWidget<'_> {
                 }
                 KeyCode::Up => {
                     if self.agents_terminal.focus() == AgentsTerminalFocus::Detail {
-                        layout_scroll::line_up(self);
+                        layout_scroll::line_down(self);
                         self.record_current_agent_scroll();
                     } else {
                         self.navigate_agents_terminal_selection(-1);
@@ -3211,7 +3215,7 @@ impl ChatWidget<'_> {
                 }
                 KeyCode::Down => {
                     if self.agents_terminal.focus() == AgentsTerminalFocus::Detail {
-                        layout_scroll::line_down(self);
+                        layout_scroll::line_up(self);
                         self.record_current_agent_scroll();
                     } else {
                         self.navigate_agents_terminal_selection(1);
@@ -3229,13 +3233,19 @@ impl ChatWidget<'_> {
                     return;
                 }
                 KeyCode::PageUp => {
-                    layout_scroll::page_up(self);
-                    self.record_current_agent_scroll();
+                    if self.agents_terminal.focus() == AgentsTerminalFocus::Detail {
+                        layout_scroll::page_up(self);
+                        self.record_current_agent_scroll();
+                        return;
+                    }
                     return;
                 }
                 KeyCode::PageDown => {
-                    layout_scroll::page_down(self);
-                    self.record_current_agent_scroll();
+                    if self.agents_terminal.focus() == AgentsTerminalFocus::Detail {
+                        layout_scroll::page_down(self);
+                        self.record_current_agent_scroll();
+                        return;
+                    }
                     return;
                 }
                 _ => {
@@ -8258,6 +8268,7 @@ impl ChatWidget<'_> {
         self.agents_terminal.focus_sidebar();
         self.layout.scroll_offset = self.agents_terminal.saved_scroll_offset;
         self.bottom_pane.set_input_focus(true);
+        self.agents_terminal.last_escape = None;
         self.request_redraw();
     }
 
