@@ -111,11 +111,37 @@ persistence = "save-all"
 max-bytes = 10485760  # 10MB
 
 # MCP Server Configuration
-# Example MCP server configurations
-[mcp-servers.example-server]
+# Example MCP server configurations matching Spec Kit defaults
+[mcp_servers.repo_search]
+command = "uvx"
+args = ["awslabs.git-repo-research-mcp-server@latest"]
+startup_timeout_sec = 30
+tool_timeout_sec = 120
+
+[mcp_servers.doc_index]
 command = "npx"
-args = ["-y", "@example/mcp-server"]
-env = { API_KEY = "your-api-key" }
+args = ["-y", "open-docs-mcp", "--docsDir", "/path/to/docs"]
+startup_timeout_sec = 20
+tool_timeout_sec = 60
+
+[mcp_servers.shell_lite]
+command = "npx"
+args = ["-y", "super-shell-mcp"]
+startup_timeout_sec = 20
+tool_timeout_sec = 300
+
+[mcp_servers.git_status]
+command = "uvx"
+args = ["mcp-server-git", "--repository", "/path/to/repo"]
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+env = { "GIT_PAGER" = "cat" }
+
+[mcp_servers.spec_registry]
+command = "npx"
+args = ["-y", "mcp-proxy", "https://registry.modelcontextprotocol.io/api/sse"]
+startup_timeout_sec = 20
+tool_timeout_sec = 90
 
 # File Opener Configuration
 file-opener = "vscode"  # Options: vscode, vscode-insiders, windsurf, cursor, none

@@ -5,7 +5,7 @@
 - Multi-agent slash commands (`/spec-plan`, `/spec-tasks`, `/spec-implement`, `/spec-validate`, `/spec-review`, `/spec-unlock`, `/spec-auto`) source prompts from `docs/spec-kit/prompts.json` via `codex-rs/tui/src/spec_prompts.rs`.
 - Guardrail wrappers `/spec-ops-*` describe the follow-on multi-agent stage; Spec Ops telemetry lands under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/`.
 - `/spec-auto` self-heals failed guardrail runs by re-queueing implementation/validation up to two retries (`a13178aa-d909-4c14-b94a-3cf11e5f2c4a`) and enforces artifact presence (`27b8cb79-ecb6-4c9f-9866-996df23bdee8`).
-- `.github/codex/home/config.toml` and `.bak` now define MCP launchers for `git_repo_research`, `open_docs`, `super_shell`, `server_git`, and `registry`; `.github/codex/home/mcp-registry.json` mirrors these recipes for `mcp-registry` experiments (`9f31e38b-edcc-4c3d-abc6-2aab9cad6b77`).
+- `.github/codex/home/config.toml` and `.bak` now define MCP launchers for `repo_search`, `doc_index`, `shell_lite`, `git_status`, and `spec_registry`; `.github/codex/home/mcp-registry.json` mirrors these recipes for `mcp-registry` experiments (`9f31e38b-edcc-4c3d-abc6-2aab9cad6b77`).
 
 ## Latest Progress (2025-09-25)
 - Cleaned `SPEC-kit-tasks.md` to mark completed slash-command/prompt delivery as `Done`.
@@ -23,11 +23,11 @@
    - Set `CODEX_HOME=.github/codex/home` and run `code mcp list --json` after rebuilding; archive CLI output under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/` with a timestamped filename.
    - Use `code mcp get <name> --json` to capture full launcher metadata for each server.
 2. **Handshake smoke tests (per server)**
-   - `git_repo_research`: `uvx awslabs.git-repo-research-mcp-server --help` plus a Codex lookup against this repo; log latency and tool list.
-   - `open_docs`: `npx -y open-docs-mcp --docsDir /home/thetu/code/docs` dry-run; confirm index rebuild succeeds and note file count.
-   - `super_shell`: launch via Codex and issue `pwd`, `ls`, `whoami`; verify telemetry captures stdout/stderr cleanly.
-   - `server_git`: request `status` and `log` via MCP; ensure `GIT_PAGER=cat` prevents pager hangs, record returned summary.
-   - `registry`: attempt SSE proxy handshake (`curl -H 'Accept: text/event-stream' https://registry.modelcontextprotocol.io/api/sse`); if 404 persists, log evidence and open follow-up.
+   - `repo_search`: `uvx awslabs.git-repo-research-mcp-server --help` plus a Codex lookup against this repo; log latency and tool list.
+   - `doc_index`: `npx -y open-docs-mcp --docsDir /home/thetu/code/docs` dry-run; confirm index rebuild succeeds and note file count.
+   - `shell_lite`: launch via Codex and issue `pwd`, `ls`, `whoami`; verify telemetry captures stdout/stderr cleanly.
+   - `git_status`: request `status` and `log` via MCP; ensure `GIT_PAGER=cat` prevents pager hangs, record returned summary.
+   - `spec_registry`: attempt SSE proxy handshake (`curl -H 'Accept: text/event-stream' https://registry.modelcontextprotocol.io/api/sse`); if 404 persists, log evidence and open follow-up.
 3. **Telemetry integration**
    - Update `codex-rs/tui/src/chatwidget.rs:15555-15780` so `/spec-auto` evidence lookups query MCP tools first (filesystem fallback second).
    - Include MCP handshake results in telemetry summaries and local-memory write-backs.

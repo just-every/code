@@ -1,5 +1,5 @@
 {
-  "name": "git_repo_research",
+  "name": "repo_search",
   "command": "uvx",
   "args": [
     "awslabs.git-repo-research-mcp-server@latest"

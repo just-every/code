@@ -15861,7 +15861,7 @@ impl ChatWidget<'_> {
         spec_id: &str,
         stage: SpecStage,
     ) -> Result<Option<(PathBuf, Value)>, String> {
-        let Some(cfg) = self.config.mcp_servers.get("super_shell").cloned() else {
+        let Some(cfg) = self.config.mcp_servers.get("shell_lite").cloned() else {
             return Ok(None);
         };
 
@@ -15877,9 +15877,9 @@ impl ChatWidget<'_> {
             .join(spec_id);
 
         let evidence_dir_json = serde_json::to_string(evidence_dir.to_string_lossy().as_ref())
-            .map_err(|e| format!("super-shell telemetry path encoding failed: {e}"))?;
+            .map_err(|e| format!("shell-lite telemetry path encoding failed: {e}"))?;
         let prefix_json = serde_json::to_string(spec_ops_stage_prefix(stage))
-            .map_err(|e| format!("super-shell telemetry prefix encoding failed: {e}"))?;
+            .map_err(|e| format!("shell-lite telemetry prefix encoding failed: {e}"))?;
 
         let script_template = r#"python3 - <<'PY'
 import json, pathlib
@@ -15905,7 +15905,7 @@ PY"#;
             .replace("__PREFIX__", &prefix_json);
 
         let fetch_result = tokio::task::block_in_place(|| {
-            handle.block_on(super_shell_fetch_json(cfg, script))
+            handle.block_on(shell_lite_fetch_json(cfg, script))
         });
 
         let output = match fetch_result {
@@ -15919,10 +15919,10 @@ PY"#;
         }
 
         let response: serde_json::Value = serde_json::from_str(trimmed)
-            .map_err(|e| format!("super-shell telemetry response parse error: {e}"))?;
+            .map_err(|e| format!("shell-lite telemetry response parse error: {e}"))?;
 
         if let Some(error) = response.get("error").and_then(|v| v.as_str()) {
-            return Err(format!("super-shell telemetry read failed: {error}"));
+            return Err(format!("shell-lite telemetry read failed: {error}"));
         }
 
         let path_str = match response.get("path").and_then(|v| v.as_str()) {
@@ -15935,7 +15935,7 @@ PY"#;
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
                 format!(
-                    "super-shell telemetry response missing content for {}",
+                    "shell-lite telemetry response missing content for {}",
                     path_str
                 )
             })?;
@@ -16014,7 +16014,7 @@ PY"#;
     }
 }
 
-async fn super_shell_fetch_json(cfg: McpServerConfig, script: String) -> Result<String, String> {
+async fn shell_lite_fetch_json(cfg: McpServerConfig, script: String) -> Result<String, String> {
     let McpServerConfig {
         command,
         args,
@@ -16027,7 +16027,7 @@ async fn super_shell_fetch_json(cfg: McpServerConfig, script: String) -> Result<
 
     let client = McpClient::new_stdio_client(program, args, env)
         .await
-        .map_err(|e| format!("failed to spawn super-shell MCP server: {e}"))?;
+        .map_err(|e| format!("failed to spawn shell-lite MCP server: {e}"))?;
 
     let startup_timeout = startup_timeout_ms
         .map(Duration::from_millis)
@@ -16052,7 +16052,7 @@ async fn super_shell_fetch_json(cfg: McpServerConfig, script: String) -> Result<
     client
         .initialize(params, None, Some(startup_timeout))
         .await
-        .map_err(|e| format!("super-shell initialize failed: {e}"))?;
+        .map_err(|e| format!("shell-lite initialize failed: {e}"))?;
 
     let call_result = client
         .call_tool(
@@ -16064,10 +16064,10 @@ async fn super_shell_fetch_json(cfg: McpServerConfig, script: String) -> Result<
             Some(Duration::from_secs(30)),
         )
         .await
-        .map_err(|e| format!("super-shell execute_command failed: {e}"))?;
+        .map_err(|e| format!("shell-lite execute_command failed: {e}"))?;
 
     if call_result.is_error.unwrap_or(false) {
-        return Err("super-shell execute_command reported an error".to_string());
+        return Err("shell-lite execute_command reported an error".to_string());
     }
 
     let mut text_output = String::new();

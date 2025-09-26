@@ -1,9 +1,11 @@
 {
-  "name": "super_shell",
+  "name": "doc_index",
   "command": "npx",
   "args": [
     "-y",
-    "super-shell-mcp"
+    "open-docs-mcp",
+    "--docsDir",
+    "/home/thetu/code/docs"
   ],
   "env": null,
   "startup_timeout_ms": null

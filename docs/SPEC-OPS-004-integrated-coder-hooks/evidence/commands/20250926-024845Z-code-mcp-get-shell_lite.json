@@ -1,11 +1,9 @@
 {
-  "name": "open_docs",
+  "name": "shell_lite",
   "command": "npx",
   "args": [
     "-y",
-    "open-docs-mcp",
-    "--docsDir",
-    "/home/thetu/code/docs"
+    "super-shell-mcp"
   ],
   "env": null,
   "startup_timeout_ms": null

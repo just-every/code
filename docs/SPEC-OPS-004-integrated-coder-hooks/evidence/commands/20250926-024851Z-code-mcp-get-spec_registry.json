@@ -1,5 +1,5 @@
 {
-  "name": "registry",
+  "name": "spec_registry",
   "command": "npx",
   "args": [
     "-y",

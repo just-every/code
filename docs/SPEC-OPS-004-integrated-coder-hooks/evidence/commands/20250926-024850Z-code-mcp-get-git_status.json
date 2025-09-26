@@ -1,5 +1,5 @@
 {
-  "name": "server_git",
+  "name": "git_status",
   "command": "uvx",
   "args": [
     "mcp-server-git",

@@ -10,7 +10,7 @@
 | T6 | Implement `/spec-validate` prompt | Compare telemetry from validation harness against acceptance criteria; record evidence in local-memory. | T3 | Gemini Ultra | Done |
 | T7 | Implement `/spec-review` prompt | Produce go/no-go memo referencing MCP evidence; ensure conflicts resolved and logged. | T6 | Claude MAX | Done |
 | T8 | Implement `/spec-unlock` prompt | Require unlock justification memo tied to SPEC.md state before invoking shell unlocker. | T5 | Gemini Ultra | Done |
-| T9 | MCP server enablement | Configure repo-search, doc-index, shell-lite, git-status, spec-registry MCP servers and expose to agents. | T1 | Code | Backlog |
+| T9 | MCP server enablement | Configure repo-search, doc-index, shell-lite, git-status, spec-registry MCP servers and expose to agents. | T1 | Code | Done |
 | T10 | Local-memory migration | Mirror Byterover entries into local-memory domains and update retrieval/write-back hooks. | T1 | Code | Backlog |
 | T11 | `/spec-auto` orchestrator | Build state machine that chains guardrail and multi-agent stages, records checkpoints, and supports resume/skip flags. | T3,T4,T5,T6,T7,T8 | Code | Done |
 | T12 | Consensus diff reviewer | Implement MCP tool that compares agent outputs and enforces consensus acknowledgment before stage completion. | T3 | Gemini Ultra | Backlog |
