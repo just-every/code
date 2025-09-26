@@ -1,7 +1,7 @@
 # Restart Plan: Spec Kit Multi-Agent Pipeline
 
 ## Status
-Checked MCP stack: `repo_search`, `doc_index`, `shell_lite`, and `git_status` all respond via `codex-mcp-client`. Kept the optional `spec_registry` proxy slot; hit `mcp-proxy https://registry.modelcontextprotocol.io/api/sse` (or `/v0/api/sse` once live) to detect when the public registry feed comes online. SPEC-kit T2, T9, T11 are complete; remaining backlog covers T10 local-memory migration, T12 consensus diff reviewer, T13 telemetry schema guard, T14 docs refresh, and T15 nightly sync.
+Checked MCP stack: `repo_search`, `doc_index`, `shell_lite`, and `git_status` all respond via `codex-mcp-client`. Kept the optional `spec_registry` proxy slot; hit `mcp-proxy https://registry.modelcontextprotocol.io/api/sse` (or `/v0/api/sse` once that feed goes live) to detect when the public registry is available. SPEC-kit T2, T9, T11 are complete; remaining backlog covers T10 local-memory migration, T12 consensus diff reviewer, T13 telemetry schema guard, T14 docs refresh, and T15 nightly sync.
 
 ## Validation Commands
 CODEX_HOME=.github/codex/home code mcp list --json
