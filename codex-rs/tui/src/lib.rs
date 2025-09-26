@@ -64,6 +64,7 @@ mod streaming;
 mod sanitize;
 mod layout_consts;
 mod terminal_info;
+mod tui_notifications;
 // mod text_block; // Orphaned after trait-based HistoryCell migration
 mod text_formatting;
 mod text_processing;

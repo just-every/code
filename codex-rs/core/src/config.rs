@@ -723,6 +723,38 @@ pub fn set_tui_spinner_name(codex_home: &Path, spinner_name: &str) -> anyhow::Re
     Ok(())
 }
 
+pub fn set_tui_notifications(codex_home: &Path, notifications: &Notifications) -> anyhow::Result<()> {
+    let config_path = codex_home.join(CONFIG_TOML_FILE);
+    let read_path = resolve_codex_path_for_read(codex_home, Path::new(CONFIG_TOML_FILE));
+    let mut doc = match std::fs::read_to_string(&read_path) {
+        Ok(s) => s.parse::<DocumentMut>()?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentMut::new(),
+        Err(e) => return Err(e.into()),
+    };
+
+    let item = match notifications {
+        Notifications::Enabled(flag) => toml_edit::value(*flag),
+        Notifications::Custom(values) => {
+            let array = toml_edit::Array::from_iter(values.iter().cloned());
+            toml_edit::Item::Value(toml_edit::Value::Array(array))
+        }
+    };
+
+    if !doc.as_table().contains_key("tui") {
+        doc["tui"] = toml_edit::table();
+    }
+    if let Some(tbl) = doc["tui"].as_table_mut() {
+        tbl.set_implicit(false);
+        tbl["notifications"] = item;
+    }
+
+    std::fs::create_dir_all(codex_home)?;
+    let tmp_file = NamedTempFile::new_in(codex_home)?;
+    std::fs::write(tmp_file.path(), doc.to_string())?;
+    tmp_file.persist(config_path)?;
+    Ok(())
+}
+
 /// Save or update a custom spinner under `[tui.spinner.custom.<id>]` with a display `label`,
 /// and set it active by writing `[tui.spinner].name = <id>`.
 pub fn set_custom_spinner(

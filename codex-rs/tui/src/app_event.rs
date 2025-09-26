@@ -112,6 +112,9 @@ pub(crate) enum AppEvent {
     /// layer so it can be handled centrally. Includes the full command text.
     DispatchCommand(SlashCommand, String),
 
+    /// Notify the chat widget that the terminal focus changed (true when focused).
+    TerminalFocusChanged(bool),
+
     /// Open undo options for a previously captured snapshot.
     ShowUndoOptions { index: usize },
     /// Restore workspace state according to the chosen undo scope.

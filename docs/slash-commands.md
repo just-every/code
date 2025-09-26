@@ -46,6 +46,10 @@ Notes
 - `/reasoning (minimal|low|medium|high)`: change reasoning effort.
 - `/prompts`: show example prompts.
 - `/status`: show current session configuration and token usage.
+- `/notifications [status|on|off|both|allow approval]`: configure desktop
+  notifications. Use `status` to view the current setting, `on`/`off` to toggle,
+  `both` to enable agent-turn-complete and approval-requested alerts, and
+  `allow approval` to add approval notifications when already enabled.
 - `/limits`: visualize current hourly and weekly rate-limit usage.
 - `/update`: check the installed version, detect available upgrades, and run the
   appropriate installer when possible.

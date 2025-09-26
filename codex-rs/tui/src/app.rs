@@ -266,10 +266,11 @@ impl App<'_> {
                                     // which can leave the status bar and inline images blank until
                                     // the next resize. A focus‑gain repaint fixes this immediately.
                                     crossterm::event::Event::FocusGained => {
+                                        app_event_tx.send(AppEvent::TerminalFocusChanged(true));
                                         app_event_tx.send(AppEvent::RequestRedraw);
                                     }
                                     crossterm::event::Event::FocusLost => {
-                                        // No action needed; keep state as‑is.
+                                        app_event_tx.send(AppEvent::TerminalFocusChanged(false));
                                     }
                                     crossterm::event::Event::Paste(pasted) => {
                                         // Many terminals convert newlines to \r when pasting (e.g., iTerm2),
@@ -1594,6 +1595,17 @@ impl App<'_> {
                                 widget.handle_undo_command();
                             }
                         }
+                        SlashCommand::Notifications => {
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                widget.handle_notifications_command(command_args);
+                            }
+                        }
+                        AppEvent::TerminalFocusChanged(has_focus) => {
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                widget.handle_terminal_focus_changed(has_focus);
+                            }
+                        }
+                        AppEvent::TerminalFocusChanged(_) => {}
                         SlashCommand::Review => {
                             if let AppState::Chat { widget } = &mut self.app_state {
                                 if command_args.is_empty() {

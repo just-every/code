@@ -240,13 +240,15 @@ use codex_core::config::set_github_actionlint_on_patch;
 use codex_core::config::set_github_check_on_push;
 use codex_core::config::set_validation_group_enabled;
 use codex_core::config::set_validation_tool_enabled;
+use codex_core::config::set_tui_notifications;
 use codex_file_search::FileMatch;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
-use codex_core::config_types::{validation_tool_category, ValidationCategory};
+use codex_core::config_types::{validation_tool_category, ValidationCategory, Notifications};
 use codex_core::protocol::RateLimitSnapshotEvent;
 use codex_core::protocol::ValidationGroup;
 use crate::rate_limits_view::{build_limits_view, RateLimitResetInfo, DEFAULT_GRID_CONFIG};
+use crate::tui_notifications;
 use codex_core::review_format::format_review_findings_block;
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, Timelike, Utc};
 use crossterm::event::KeyCode;
@@ -4454,6 +4456,82 @@ impl ChatWidget<'_> {
         );
     }
 
+    pub(crate) fn handle_notifications_command(&mut self, command_text: String) {
+        let trimmed = command_text.trim();
+        let current = self.config.tui.notifications.clone();
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("status") {
+            let status = match &current {
+                Notifications::Enabled(false) => "Notifications are disabled".to_string(),
+                Notifications::Enabled(true) => "Notifications enabled for agent-turn-complete and approval-requested".to_string(),
+                Notifications::Custom(filters) if filters.is_empty() => "Notifications enabled (no filters applied)".to_string(),
+                Notifications::Custom(filters) => format!("Notifications enabled for: {}", filters.join(", ")),
+            };
+            self.push_background_tail(status);
+            return;
+        }
+
+        let (new_setting, response) = match trimmed.to_ascii_lowercase().as_str() {
+            "on" => (
+                Notifications::Enabled(true),
+                "Enabled desktop notifications".to_string(),
+            ),
+            "off" => (
+                Notifications::Enabled(false),
+                "Disabled desktop notifications".to_string(),
+            ),
+            "both" => (
+                Notifications::Custom(vec![
+                    "agent-turn-complete".to_string(),
+                    "approval-requested".to_string(),
+                ]),
+                "Enabled notifications for agent-turn-complete and approval-requested".to_string(),
+            ),
+            "allow approval" => match current {
+                Notifications::Enabled(true) => (
+                    Notifications::Custom(vec![
+                        "agent-turn-complete".to_string(),
+                        "approval-requested".to_string(),
+                    ]),
+                    "Added approval-requested notifications".to_string(),
+                ),
+                Notifications::Custom(ref filters)
+                    if filters.iter().any(|f| f == "approval-requested") =>
+                {
+                    (current, "Approval-requested notifications already enabled".to_string())
+                }
+                Notifications::Custom(filters) => {
+                    let mut next = filters.clone();
+                    next.push("approval-requested".to_string());
+                    (Notifications::Custom(next), "Added approval-requested notifications".to_string())
+                }
+                Notifications::Enabled(false) => (
+                    current,
+                    "Enable notifications first using /notifications on".to_string(),
+                ),
+            },
+            _ => (
+                current,
+                "Usage: /notifications [status|on|off|both|allow approval]".to_string(),
+            ),
+        };
+
+        if new_setting != current {
+            self.config.tui.notifications = current.clone();
+            if let Ok(home) = find_codex_home() {
+                if let Err(err) = set_tui_notifications(&home, &new_setting) {
+                    tracing::warn!("failed to persist notifications setting: {err}");
+                } else {
+                    self.config.tui.notifications = new_setting.clone();
+                }
+            }
+        }
+
+        self.push_background_tail(response);
+    }
+
+    pub(crate) fn handle_terminal_focus_changed(&mut self, has_focus: bool) {
+        self.terminal_has_focus = has_focus;
+    }
     pub(crate) fn push_background_tail(&mut self, message: impl Into<String>) {
         self.insert_background_event_with_placement(message.into(), BackgroundPlacement::Tail);
     }
