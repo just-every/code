@@ -1,0 +1,4 @@
+Usage: mcp-server-git [OPTIONS]
+Try 'mcp-server-git --help' for help.
+
+Error: Got unexpected extra argument (--help)

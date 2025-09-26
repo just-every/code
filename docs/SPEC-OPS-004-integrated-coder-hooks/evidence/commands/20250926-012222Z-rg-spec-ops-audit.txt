@@ -1,0 +1,1 @@
+codex-rs/tui/src/slash_command.rs:270:                script: "spec_ops_audit.sh",

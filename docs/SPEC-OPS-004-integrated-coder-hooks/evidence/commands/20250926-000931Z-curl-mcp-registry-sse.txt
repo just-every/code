@@ -1,0 +1,1 @@
+{"detail":"Endpoint not found. Did you mean '/v0/api/sse'? See /docs for the API documentation.","status":404,"title":"Not Found"}

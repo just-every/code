@@ -1,0 +1,37 @@
+{
+  "mcpServers": {
+    "git-repo-research": {
+      "type": "stdio",
+      "command": "/usr/bin/zsh",
+      "args": [
+        "-c",
+        "/home/thetu/.local/bin/uvx awslabs.git-repo-research-mcp-server@latest"
+      ]
+    },
+    "open-docs": {
+      "type": "stdio",
+      "command": "/usr/bin/zsh",
+      "args": [
+        "-c",
+        "/home/thetu/.npm-global/bin/npx -y open-docs-mcp --docsDir /home/thetu/code/docs"
+      ]
+    },
+    "super-shell": {
+      "type": "stdio",
+      "command": "/usr/bin/zsh",
+      "args": [
+        "-c",
+        "/home/thetu/.npm-global/bin/npx -y super-shell-mcp"
+      ]
+    },
+    "server-git": {
+      "type": "stdio",
+      "command": "/usr/bin/zsh",
+      "args": [
+        "-c",
+        "/home/thetu/.local/bin/uvx mcp-server-git --repository /home/thetu/code"
+      ]
+    }
+  },
+  "aliases": {}
+}

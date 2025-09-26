@@ -1,0 +1,159 @@
+{
+  "tools": [
+    {
+      "description": "Get information about the current platform and shell",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "get_platform_info"
+    },
+    {
+      "description": "Execute a shell command on the current platform",
+      "inputSchema": {
+        "properties": {
+          "args": {
+            "description": "Command arguments",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "command": {
+            "description": "The command to execute",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
+      },
+      "name": "execute_command"
+    },
+    {
+      "description": "Get the list of whitelisted commands",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "get_whitelist"
+    },
+    {
+      "description": "Add a command to the whitelist",
+      "inputSchema": {
+        "properties": {
+          "command": {
+            "description": "The command to whitelist",
+            "type": "string"
+          },
+          "description": {
+            "description": "Description of the command",
+            "type": "string"
+          },
+          "securityLevel": {
+            "description": "Security level for the command",
+            "enum": [
+              "safe",
+              "requires_approval",
+              "forbidden"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "command",
+          "securityLevel"
+        ],
+        "type": "object"
+      },
+      "name": "add_to_whitelist"
+    },
+    {
+      "description": "Update the security level of a whitelisted command",
+      "inputSchema": {
+        "properties": {
+          "command": {
+            "description": "The command to update",
+            "type": "string"
+          },
+          "securityLevel": {
+            "description": "New security level for the command",
+            "enum": [
+              "safe",
+              "requires_approval",
+              "forbidden"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "command",
+          "securityLevel"
+        ],
+        "type": "object"
+      },
+      "name": "update_security_level"
+    },
+    {
+      "description": "Remove a command from the whitelist",
+      "inputSchema": {
+        "properties": {
+          "command": {
+            "description": "The command to remove from whitelist",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
+      },
+      "name": "remove_from_whitelist"
+    },
+    {
+      "description": "Get the list of commands pending approval",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "get_pending_commands"
+    },
+    {
+      "description": "Approve a pending command",
+      "inputSchema": {
+        "properties": {
+          "commandId": {
+            "description": "ID of the command to approve",
+            "type": "string"
+          }
+        },
+        "required": [
+          "commandId"
+        ],
+        "type": "object"
+      },
+      "name": "approve_command"
+    },
+    {
+      "description": "Deny a pending command",
+      "inputSchema": {
+        "properties": {
+          "commandId": {
+            "description": "ID of the command to deny",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Reason for denial",
+            "type": "string"
+          }
+        },
+        "required": [
+          "commandId"
+        ],
+        "type": "object"
+      },
+      "name": "deny_command"
+    }
+  ]
+}

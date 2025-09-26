@@ -2,6 +2,7 @@ use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::ffi::OsString;
 use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
@@ -25,6 +26,7 @@ use codex_core::ConversationManager;
 use codex_core::config::Config;
 use codex_core::git_info::CommitLogEntry;
 use codex_core::config_types::AgentConfig;
+use codex_core::config_types::McpServerConfig;
 use codex_core::config_types::ReasoningEffort;
 use codex_core::config_types::TextVerbosity;
 use codex_core::plan_tool::{PlanItemArg, StepStatus, UpdatePlanArgs};
@@ -41,6 +43,8 @@ use crate::slash_command::SpecAutoInvocation;
 use crate::spec_prompts;
 use crate::spec_prompts::{SpecAgent, SpecStage};
 use serde_json::Value;
+use codex_mcp_client::McpClient;
+use mcp_types::{ClientCapabilities, ContentBlock, Implementation, InitializeRequestParams, MCP_SCHEMA_VERSION};
 
 
 mod diff_handlers;
@@ -15219,7 +15223,7 @@ fn spec_stage_for_multi_agent_followup(command: SlashCommand) -> Option<SpecStag
         SlashCommand::SpecOpsTasks => Some(SpecStage::Tasks),
         SlashCommand::SpecOpsImplement => Some(SpecStage::Implement),
         SlashCommand::SpecOpsValidate => Some(SpecStage::Validate),
-        SlashCommand::SpecOpsReview => Some(SpecStage::Review),
+        SlashCommand::SpecOpsAudit => Some(SpecStage::Review),
         SlashCommand::SpecOpsUnlock => Some(SpecStage::Unlock),
         _ => None,
     }
@@ -15257,7 +15261,7 @@ fn guardrail_for_stage(stage: SpecStage) -> SlashCommand {
         SpecStage::Tasks => SlashCommand::SpecOpsTasks,
         SpecStage::Implement => SlashCommand::SpecOpsImplement,
         SpecStage::Validate => SlashCommand::SpecOpsValidate,
-        SpecStage::Review => SlashCommand::SpecOpsReview,
+        SpecStage::Review => SlashCommand::SpecOpsAudit,
         SpecStage::Unlock => SlashCommand::SpecOpsUnlock,
     }
 }
@@ -15268,7 +15272,7 @@ fn spec_ops_stage_prefix(stage: SpecStage) -> &'static str {
         SpecStage::Tasks => "tasks_",
         SpecStage::Implement => "implement_",
         SpecStage::Validate => "validate_",
-        SpecStage::Review => "review_",
+        SpecStage::Review => "audit_",
         SpecStage::Unlock => "unlock_",
     }
 }
@@ -15277,6 +15281,62 @@ struct GuardrailEvaluation {
     success: bool,
     summary: String,
     failures: Vec<String>,
+}
+
+fn validate_guardrail_evidence(
+    cwd: &std::path::Path,
+    stage: SpecStage,
+    telemetry: &Value,
+) -> (Vec<String>, usize) {
+    if matches!(stage, SpecStage::Validate) {
+        return (Vec::new(), 0);
+    }
+
+    let Some(artifacts_value) = telemetry.get("artifacts") else {
+        return (vec!["No evidence artifacts recorded".to_string()], 0);
+    };
+    let Some(artifacts) = artifacts_value.as_array() else {
+        return (vec!["Telemetry artifacts field is not an array".to_string()], 0);
+    };
+    if artifacts.is_empty() {
+        return (vec!["Telemetry artifacts array is empty".to_string()], 0);
+    }
+
+    let mut failures = Vec::new();
+    let mut ok_count = 0usize;
+    for (idx, artifact_value) in artifacts.iter().enumerate() {
+        let path_opt = match artifact_value {
+            Value::String(s) => Some(s.as_str()),
+            Value::Object(map) => map.get("path").and_then(|p| p.as_str()),
+            _ => None,
+        };
+        let Some(path_str) = path_opt else {
+            failures.push(format!("Artifact #{} missing path", idx + 1));
+            continue;
+        };
+
+        let raw_path = PathBuf::from(path_str);
+        let resolved = if raw_path.is_absolute() {
+            raw_path.clone()
+        } else {
+            cwd.join(&raw_path)
+        };
+        if resolved.exists() {
+            ok_count += 1;
+        } else {
+            failures.push(format!(
+                "Artifact #{} not found at {}",
+                idx + 1,
+                resolved.display()
+            ));
+        }
+    }
+
+    if ok_count == 0 {
+        failures.push("No evidence artifacts found on disk".to_string());
+    }
+
+    (failures, ok_count)
 }
 
 fn evaluate_guardrail_value(stage: SpecStage, value: &Value) -> GuardrailEvaluation {
@@ -15497,40 +15557,86 @@ impl ChatWidget<'_> {
     }
 
     fn advance_spec_auto(&mut self) {
-        let Some(state) = self.spec_auto_state.as_mut() else { return; };
-        if state.waiting_guardrail.is_some() {
+        if self.spec_auto_state.is_none() {
+            return;
+        }
+        if self
+            .spec_auto_state
+            .as_ref()
+            .and_then(|state| state.waiting_guardrail.as_ref())
+            .is_some()
+        {
             return;
         }
 
-        loop {
-            if state.current_index >= state.stages.len() {
-                self.history_push(crate::history_cell::PlainHistoryCell::new(
-                    vec![ratatui::text::Line::from("/spec-auto pipeline complete")],
-                    crate::history_cell::HistoryCellType::Notice,
-                ));
-                self.spec_auto_state = None;
-                return;
-            }
+        enum NextAction {
+            PipelineComplete,
+            RunGuardrail { command: SlashCommand, args: String },
+            PresentPrompt {
+                stage: SpecStage,
+                spec_id: String,
+                goal: String,
+                summary: Option<String>,
+            },
+        }
 
-            let stage = state.stages[state.current_index];
-            match state.phase {
-                SpecAutoPhase::Guardrail => {
-                    let command = guardrail_for_stage(stage);
-                    let args = state.spec_id.clone();
-                    self.handle_spec_ops_command(command, args);
-                    state.waiting_guardrail = Some(GuardrailWait {
-                        stage,
-                        command,
-                        task_id: None,
-                    });
-                    state.phase = SpecAutoPhase::Prompt;
+        loop {
+            let next_action = {
+                let Some(state) = self.spec_auto_state.as_mut() else { return; };
+
+                if state.current_index >= state.stages.len() {
+                    NextAction::PipelineComplete
+                } else {
+                    let stage = state.stages[state.current_index];
+                    match state.phase {
+                        SpecAutoPhase::Guardrail => {
+                            let command = guardrail_for_stage(stage);
+                            let args = state.spec_id.clone();
+                            state.waiting_guardrail = Some(GuardrailWait {
+                                stage,
+                                command,
+                                task_id: None,
+                            });
+                            state.phase = SpecAutoPhase::Prompt;
+                            NextAction::RunGuardrail { command, args }
+                        }
+                        SpecAutoPhase::Prompt => {
+                            let summary = state.pending_prompt_summary.take();
+                            let spec_id = state.spec_id.clone();
+                            let goal = state.goal.clone();
+                            state.phase = SpecAutoPhase::Guardrail;
+                            state.current_index += 1;
+                            NextAction::PresentPrompt {
+                                stage,
+                                spec_id,
+                                goal,
+                                summary,
+                            }
+                        }
+                    }
+                }
+            };
+
+            match next_action {
+                NextAction::PipelineComplete => {
+                    self.history_push(crate::history_cell::PlainHistoryCell::new(
+                        vec![ratatui::text::Line::from("/spec-auto pipeline complete")],
+                        crate::history_cell::HistoryCellType::Notice,
+                    ));
+                    self.spec_auto_state = None;
                     return;
                 }
-                SpecAutoPhase::Prompt => {
-                    let summary = state.pending_prompt_summary.take();
-                    self.present_spec_prompt(stage, &state.spec_id, &state.goal, summary);
-                    state.phase = SpecAutoPhase::Guardrail;
-                    state.current_index += 1;
+                NextAction::RunGuardrail { command, args } => {
+                    self.handle_spec_ops_command(command, args);
+                    return;
+                }
+                NextAction::PresentPrompt {
+                    stage,
+                    spec_id,
+                    goal,
+                    summary,
+                } => {
+                    self.present_spec_prompt(stage, &spec_id, &goal, summary);
                     continue;
                 }
             }
@@ -15611,25 +15717,31 @@ impl ChatWidget<'_> {
     }
 
     fn on_spec_auto_task_complete(&mut self, task_id: &str) {
-        let Some(state) = self.spec_auto_state.as_mut() else { return; };
-        let Some(wait) = state.waiting_guardrail.clone() else { return; };
-        let Some(expected_id) = wait.task_id.as_deref() else { return; };
-        if expected_id != task_id {
-            return;
-        }
-
-        state.waiting_guardrail = None;
-        let stage = wait.stage;
-        let spec_id = state.spec_id.clone();
+        let (spec_id, stage) = {
+            let Some(state) = self.spec_auto_state.as_mut() else { return; };
+            let Some(wait) = state.waiting_guardrail.take() else { return; };
+            let Some(expected_id) = wait.task_id.as_deref() else {
+                state.waiting_guardrail = Some(wait);
+                return;
+            };
+            if expected_id != task_id {
+                state.waiting_guardrail = Some(wait);
+                return;
+            }
+            (state.spec_id.clone(), wait.stage)
+        };
 
         match self.collect_guardrail_outcome(&spec_id, stage) {
             Ok(outcome) => {
-                let mut prompt_summary = outcome.summary.clone();
-                if !outcome.failures.is_empty() {
-                    prompt_summary.push_str(" | Failures: ");
-                    prompt_summary.push_str(&outcome.failures.join(", "));
+                {
+                    let Some(state) = self.spec_auto_state.as_mut() else { return; };
+                    let mut prompt_summary = outcome.summary.clone();
+                    if !outcome.failures.is_empty() {
+                        prompt_summary.push_str(" | Failures: ");
+                        prompt_summary.push_str(&outcome.failures.join(", "));
+                    }
+                    state.pending_prompt_summary = Some(prompt_summary);
                 }
-                state.pending_prompt_summary = Some(prompt_summary);
 
                 let mut lines: Vec<ratatui::text::Line<'static>> = Vec::new();
                 lines.push(ratatui::text::Line::from(format!(
@@ -15637,7 +15749,7 @@ impl ChatWidget<'_> {
                     stage.display_name(),
                     outcome.summary
                 )));
-                if let Some(path) = outcome.telemetry_path {
+                if let Some(path) = &outcome.telemetry_path {
                     lines.push(ratatui::text::Line::from(format!(
                         "  Telemetry: {}",
                         path.display()
@@ -15655,7 +15767,28 @@ impl ChatWidget<'_> {
 
                 if !outcome.success {
                     if stage == SpecStage::Validate {
-                        if state.validate_retries >= SPEC_AUTO_MAX_VALIDATE_RETRIES {
+                        let (exhausted, retry_message) = {
+                            let Some(state) = self.spec_auto_state.as_mut() else { return; };
+                            if state.validate_retries >= SPEC_AUTO_MAX_VALIDATE_RETRIES {
+                                (true, None)
+                            } else {
+                                state.validate_retries += 1;
+                                let insert_at = state.current_index + 1;
+                                state.stages.splice(
+                                    insert_at..insert_at,
+                                    vec![SpecStage::Implement, SpecStage::Validate],
+                                );
+                                (
+                                    false,
+                                    Some(format!(
+                                        "Retrying implementation/validation cycle (attempt {}).",
+                                        state.validate_retries + 1
+                                    )),
+                                )
+                            }
+                        };
+
+                        if exhausted {
                             self.history_push(crate::history_cell::PlainHistoryCell::new(
                                 vec![ratatui::text::Line::from(
                                     "Validation failed repeatedly; stopping /spec-auto pipeline.",
@@ -15665,19 +15798,13 @@ impl ChatWidget<'_> {
                             self.spec_auto_state = None;
                             return;
                         }
-                        state.validate_retries += 1;
-                        let insert_at = state.current_index + 1;
-                        state.stages.splice(
-                            insert_at..insert_at,
-                            vec![SpecStage::Implement, SpecStage::Validate],
-                        );
-                        self.history_push(crate::history_cell::PlainHistoryCell::new(
-                            vec![ratatui::text::Line::from(format!(
-                                "Retrying implementation/validation cycle (attempt {}).",
-                                state.validate_retries + 1
-                            ))],
-                            crate::history_cell::HistoryCellType::Notice,
-                        ));
+
+                        if let Some(message) = retry_message {
+                            self.history_push(crate::history_cell::PlainHistoryCell::new(
+                                vec![ratatui::text::Line::from(message)],
+                                crate::history_cell::HistoryCellType::Notice,
+                            ));
+                        }
                     } else {
                         self.history_push(crate::history_cell::new_error_event(
                             "Guardrail step failed; aborting /spec-auto pipeline.".to_string(),
@@ -15706,7 +15833,21 @@ impl ChatWidget<'_> {
         stage: SpecStage,
     ) -> Result<GuardrailOutcome, String> {
         let (path, value) = self.read_latest_spec_ops_telemetry(spec_id, stage)?;
-        let evaluation = evaluate_guardrail_value(stage, &value);
+        let mut evaluation = evaluate_guardrail_value(stage, &value);
+        if matches!(
+            stage,
+            SpecStage::Plan | SpecStage::Tasks | SpecStage::Implement | SpecStage::Review | SpecStage::Unlock
+        ) {
+            let (evidence_failures, artifact_count) =
+                validate_guardrail_evidence(self.config.cwd.as_path(), stage, &value);
+            if artifact_count > 0 {
+                evaluation.summary = format!("{} | {} artifacts", evaluation.summary, artifact_count);
+            }
+            if !evidence_failures.is_empty() {
+                evaluation.failures.extend(evidence_failures);
+                evaluation.success = false;
+            }
+        }
         Ok(GuardrailOutcome {
             success: evaluation.success,
             summary: evaluation.summary,
@@ -15715,11 +15856,110 @@ impl ChatWidget<'_> {
         })
     }
 
+    fn try_read_spec_ops_telemetry_via_mcp(
+        &self,
+        spec_id: &str,
+        stage: SpecStage,
+    ) -> Result<Option<(PathBuf, Value)>, String> {
+        let Some(cfg) = self.config.mcp_servers.get("super_shell").cloned() else {
+            return Ok(None);
+        };
+
+        let handle = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => handle,
+            Err(_) => return Ok(None),
+        };
+
+        let evidence_dir = self
+            .config
+            .cwd
+            .join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands")
+            .join(spec_id);
+
+        let evidence_dir_json = serde_json::to_string(evidence_dir.to_string_lossy().as_ref())
+            .map_err(|e| format!("super-shell telemetry path encoding failed: {e}"))?;
+        let prefix_json = serde_json::to_string(spec_ops_stage_prefix(stage))
+            .map_err(|e| format!("super-shell telemetry prefix encoding failed: {e}"))?;
+
+        let script_template = r#"python3 - <<'PY'
+import json, pathlib
+root = pathlib.Path(__DIR__)
+prefix = __PREFIX__
+if not root.exists():
+    print(json.dumps({"path": None, "content": None}))
+    raise SystemExit(0)
+files = sorted(root.glob(prefix + '*.json'), key=lambda p: p.stat().st_mtime, reverse=True)
+if not files:
+    print(json.dumps({"path": None, "content": None}))
+    raise SystemExit(0)
+path = files[0]
+try:
+    data = path.read_text()
+except Exception as exc:
+    print(json.dumps({"path": str(path), "error": str(exc)}))
+else:
+    print(json.dumps({"path": str(path), "content": data}))
+PY"#;
+        let script = script_template
+            .replace("__DIR__", &evidence_dir_json)
+            .replace("__PREFIX__", &prefix_json);
+
+        let fetch_result = tokio::task::block_in_place(|| {
+            handle.block_on(super_shell_fetch_json(cfg, script))
+        });
+
+        let output = match fetch_result {
+            Ok(text) => text,
+            Err(err) => return Err(err),
+        };
+
+        let trimmed = output.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+
+        let response: serde_json::Value = serde_json::from_str(trimmed)
+            .map_err(|e| format!("super-shell telemetry response parse error: {e}"))?;
+
+        if let Some(error) = response.get("error").and_then(|v| v.as_str()) {
+            return Err(format!("super-shell telemetry read failed: {error}"));
+        }
+
+        let path_str = match response.get("path").and_then(|v| v.as_str()) {
+            Some(path) if !path.is_empty() => path,
+            _ => return Ok(None),
+        };
+
+        let content_str = response
+            .get("content")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "super-shell telemetry response missing content for {}",
+                    path_str
+                )
+            })?;
+
+        let telemetry_value: Value = serde_json::from_str(content_str).map_err(|e| {
+            format!(
+                "Failed to parse telemetry JSON {}: {}",
+                path_str,
+                e
+            )
+        })?;
+
+        Ok(Some((PathBuf::from(path_str), telemetry_value)))
+    }
+
     fn read_latest_spec_ops_telemetry(
         &self,
         spec_id: &str,
         stage: SpecStage,
     ) -> Result<(PathBuf, Value), String> {
+        if let Some(via_mcp) = self.try_read_spec_ops_telemetry_via_mcp(spec_id, stage)? {
+            return Ok(via_mcp);
+        }
+
         let evidence_dir = self
             .config
             .cwd
@@ -15774,6 +16014,72 @@ impl ChatWidget<'_> {
     }
 }
 
+async fn super_shell_fetch_json(cfg: McpServerConfig, script: String) -> Result<String, String> {
+    let McpServerConfig {
+        command,
+        args,
+        env,
+        startup_timeout_ms,
+    } = cfg;
+
+    let program = OsString::from(command);
+    let args = args.into_iter().map(OsString::from).collect::<Vec<_>>();
+
+    let client = McpClient::new_stdio_client(program, args, env)
+        .await
+        .map_err(|e| format!("failed to spawn super-shell MCP server: {e}"))?;
+
+    let startup_timeout = startup_timeout_ms
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_secs(10));
+
+    let params = InitializeRequestParams {
+        capabilities: ClientCapabilities {
+            experimental: None,
+            roots: None,
+            sampling: None,
+            elicitation: Some(serde_json::json!({})),
+        },
+        client_info: Implementation {
+            name: "codex-tui".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            title: Some("Codex".into()),
+            user_agent: None,
+        },
+        protocol_version: MCP_SCHEMA_VERSION.to_string(),
+    };
+
+    client
+        .initialize(params, None, Some(startup_timeout))
+        .await
+        .map_err(|e| format!("super-shell initialize failed: {e}"))?;
+
+    let call_result = client
+        .call_tool(
+            "execute_command".to_string(),
+            Some(serde_json::json!({
+                "command": "bash",
+                "args": ["-lc", script],
+            })),
+            Some(Duration::from_secs(30)),
+        )
+        .await
+        .map_err(|e| format!("super-shell execute_command failed: {e}"))?;
+
+    if call_result.is_error.unwrap_or(false) {
+        return Err("super-shell execute_command reported an error".to_string());
+    }
+
+    let mut text_output = String::new();
+    for block in call_result.content {
+        if let ContentBlock::TextContent(body) = block {
+            text_output.push_str(&body.text);
+        }
+    }
+
+    Ok(text_output)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -15784,12 +16090,20 @@ mod tests {
     use codex_core::protocol::Event;
     use codex_core::protocol::EventMsg;
     use codex_core::protocol::TaskCompleteEvent;
+    use serde_json::json;
+    use tempfile::tempdir;
 
     fn test_config() -> Config {
+        test_config_with_cwd(std::env::temp_dir().as_path())
+    }
+
+    fn test_config_with_cwd(cwd: &std::path::Path) -> Config {
+        let mut overrides = ConfigOverrides::default();
+        overrides.cwd = Some(cwd.to_path_buf());
         codex_core::config::Config::load_from_base_config_with_overrides(
             ConfigToml::default(),
-            ConfigOverrides::default(),
-            std::env::temp_dir(),
+            overrides,
+            cwd.to_path_buf(),
         )
         .expect("cfg")
     }
@@ -15889,6 +16203,45 @@ mod tests {
 
         assert!(saw_colored_stdout, "expected ANSI-colored stdout to be preserved");
         assert!(saw_tinted_stderr, "expected stderr output to retain warning tint");
+    }
+
+    #[test]
+    fn spec_auto_evidence_requires_artifact_entries() {
+        let temp = tempdir().expect("tempdir");
+        let telemetry = json!({ "artifacts": [] });
+        let (failures, count) = validate_guardrail_evidence(temp.path(), SpecStage::Plan, &telemetry);
+        assert_eq!(count, 0);
+        assert!(failures
+            .iter()
+            .any(|msg| msg.contains("artifacts array is empty")));
+    }
+
+    #[test]
+    fn spec_auto_evidence_validates_missing_files() {
+        let temp = tempdir().expect("tempdir");
+        let telemetry = json!({ "artifacts": [ { "path": "evidence/missing.log" } ] });
+        let (failures, count) = validate_guardrail_evidence(temp.path(), SpecStage::Implement, &telemetry);
+        assert_eq!(count, 0);
+        assert!(failures
+            .iter()
+            .any(|msg| msg.contains("evidence/missing.log")));
+    }
+
+    #[test]
+    fn spec_auto_evidence_accepts_present_files() {
+        let temp = tempdir().expect("tempdir");
+        let evidence_rel = std::path::Path::new("evidence/good.json");
+        let evidence_abs = temp.path().join(evidence_rel);
+        std::fs::create_dir_all(evidence_abs.parent().expect("parent"))
+            .expect("mkdir");
+        std::fs::write(&evidence_abs, "{} ").expect("write");
+
+        let telemetry = json!({
+            "artifacts": [ { "path": evidence_rel.to_string_lossy() } ]
+        });
+        let (failures, count) = validate_guardrail_evidence(temp.path(), SpecStage::Tasks, &telemetry);
+        assert!(failures.is_empty());
+        assert_eq!(count, 1);
     }
 
     #[tokio::test(flavor = "current_thread")]

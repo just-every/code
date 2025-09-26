@@ -1221,6 +1221,7 @@ dependencies = [
  "codex-file-search",
  "codex-git-tooling",
  "codex-login",
+ "codex-mcp-client",
  "codex-ollama",
  "codex-protocol",
  "codex-version",

@@ -141,8 +141,8 @@ pub enum SlashCommand {
     SpecOpsImplement,
     #[strum(serialize = "spec-ops-validate")]
     SpecOpsValidate,
-    #[strum(serialize = "spec-ops-review")]
-    SpecOpsReview,
+    #[strum(serialize = "spec-ops-audit")]
+    SpecOpsAudit,
     #[strum(serialize = "spec-ops-unlock")]
     SpecOpsUnlock,
     Logout,
@@ -194,8 +194,8 @@ impl SlashCommand {
             SlashCommand::SpecOpsValidate => {
                 "run Spec Ops validate automation (requires SPEC ID)"
             }
-            SlashCommand::SpecOpsReview => {
-                "run Spec Ops review automation (requires SPEC ID)"
+            SlashCommand::SpecOpsAudit => {
+                "run Spec Ops audit automation (requires SPEC ID)"
             }
             SlashCommand::SpecOpsUnlock => {
                 "unlock SPEC.md copy-on-write lock (requires SPEC ID)"
@@ -241,7 +241,7 @@ impl SlashCommand {
                 | SlashCommand::SpecOpsTasks
                 | SlashCommand::SpecOpsImplement
                 | SlashCommand::SpecOpsValidate
-                | SlashCommand::SpecOpsReview
+                | SlashCommand::SpecOpsAudit
                 | SlashCommand::SpecOpsUnlock
         )
     }
@@ -265,9 +265,9 @@ impl SlashCommand {
                 display: "validate",
                 script: "spec_ops_validate.sh",
             }),
-            SlashCommand::SpecOpsReview => Some(SpecOpsCommand {
-                display: "review",
-                script: "spec_ops_review.sh",
+            SlashCommand::SpecOpsAudit => Some(SpecOpsCommand {
+                display: "audit",
+                script: "spec_ops_audit.sh",
             }),
             SlashCommand::SpecOpsUnlock => Some(SpecOpsCommand {
                 display: "unlock",
@@ -519,7 +519,7 @@ fn parse_stage_name(value: &str) -> Option<SpecStage> {
         "tasks" | "spec-tasks" => Some(SpecStage::Tasks),
         "implement" | "spec-implement" => Some(SpecStage::Implement),
         "validate" | "spec-validate" => Some(SpecStage::Validate),
-        "review" | "spec-review" => Some(SpecStage::Review),
+        "review" | "spec-review" | "audit" | "spec-ops-audit" => Some(SpecStage::Review),
         "unlock" | "spec-unlock" => Some(SpecStage::Unlock),
         _ => None,
     }
