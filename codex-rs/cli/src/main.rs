@@ -15,6 +15,7 @@ use codex_cli::login::run_login_with_chatgpt;
 use codex_cli::login::run_logout;
 use codex_cli::proto;
 mod llm;
+mod local_memory_cmd;
 use llm::{LlmCli, run_llm};
 use codex_common::CliConfigOverrides;
 use codex_core::find_conversation_path_by_id_str;
@@ -28,6 +29,7 @@ use tokio::runtime::{Builder as TokioRuntimeBuilder, Handle as TokioHandle};
 
 mod mcp_cmd;
 
+use crate::local_memory_cmd::LocalMemoryCli;
 use crate::mcp_cmd::McpCli;
 use crate::proto::ProtoCli;
 
@@ -74,6 +76,9 @@ enum Subcommand {
     /// [experimental] Run Codex as an MCP server and manage MCP servers.
     #[clap(visible_alias = "acp")]
     Mcp(McpCli),
+
+    /// Local-memory utilities.
+    LocalMemory(LocalMemoryCli),
 
     /// Run the Protocol stream via stdin/stdout
     #[clap(visible_alias = "p")]
@@ -245,6 +250,9 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
             // Propagate any root-level config overrides (e.g. `-c key=value`).
             prepend_config_flags(&mut mcp_cli.config_overrides, root_config_overrides.clone());
             mcp_cli.run(codex_linux_sandbox_exe).await?;
+        }
+        Some(Subcommand::LocalMemory(local_memory_cli)) => {
+            local_memory_cli.run().await?;
         }
         Some(Subcommand::Resume(ResumeCommand {
             session_id,
@@ -448,16 +456,30 @@ fn apply_resume_directives(
 
     match (session_id, last) {
         (Some(id), _) => {
-            let path = resolve_resume_path(Some(id.as_str()), false)?
-                .ok_or_else(|| anyhow!("No recorded session found with id {id}"))?;
-            interactive.resume_session_id = Some(id);
-            push_experimental_resume_override(interactive, &path);
+            match resolve_resume_path(Some(id.as_str()), false)? {
+                Some(path) => {
+                    interactive.resume_session_id = Some(id);
+                    push_experimental_resume_override(interactive, &path);
+                }
+                None => {
+                    eprintln!("No recorded session found with id {id}");
+                    interactive.resume_session_id = Some(id);
+                }
+            }
         }
         (None, true) => {
-            let path = resolve_resume_path(None, true)?
-                .ok_or_else(|| anyhow!("No recent sessions found to resume. Start a session with `code` first."))?;
-            interactive.resume_last = true;
-            push_experimental_resume_override(interactive, &path);
+            match resolve_resume_path(None, true)? {
+                Some(path) => {
+                    interactive.resume_last = true;
+                    push_experimental_resume_override(interactive, &path);
+                }
+                None => {
+                    eprintln!(
+                        "No recent sessions found to resume. Start a session with `code` first."
+                    );
+                    interactive.resume_picker = true;
+                }
+            }
         }
         (None, false) => {
             interactive.resume_picker = true;

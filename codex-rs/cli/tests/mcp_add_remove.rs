@@ -7,7 +7,7 @@ use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 
 fn codex_command(codex_home: &Path) -> Result<assert_cmd::Command> {
-    let mut cmd = assert_cmd::Command::cargo_bin("codex")?;
+    let mut cmd = assert_cmd::Command::cargo_bin("code")?;
     cmd.env("CODEX_HOME", codex_home);
     Ok(cmd)
 }
