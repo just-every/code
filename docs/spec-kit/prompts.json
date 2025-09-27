@@ -2,73 +2,73 @@
   "spec-plan": {
     "gemini": {
       "role": "Researcher",
-      "prompt": "Context:\n${CONTEXT}\n\nTask:\nSurvey SPEC ${SPEC_ID}. Summarize:\n1. Acceptance criteria and evidence requirements.\n2. Conflicts, gaps, stale telemetry, blocked tasks.\n3. Related files/modules/tests worth touching.\n4. Questions to clarify before planning.\nKeep under 400 words. Cite file paths or memory IDs."
+      "prompt": "Context:\n${CONTEXT}\n\nTask:\nSurvey SPEC ${SPEC_ID}. Summarize:\n1. Acceptance criteria and evidence requirements.\n2. Conflicts, gaps, stale telemetry, blocked tasks.\n3. Related files/modules/tests worth touching.\n4. Questions to clarify before planning.\nKeep under 400 words. Cite file paths or memory IDs.\n\nOutput JSON:\n{\n  \"stage\": \"spec-plan\",\n  \"agent\": \"gemini\",\n  \"research_summary\": [ { \"topic\": string, \"details\": string } ],\n  \"questions\": [ string ]\n}\nPersist to local-memory (spec-tracker)."
     },
     "claude": {
       "role": "Synthesizer",
-      "prompt": "Inputs:\n- SPEC packet\n- Gemini research (${PREVIOUS_OUTPUTS.gemini})\n\nDeliver a structured plan:\n1. Work Breakdown (≤7 steps; each with rationale and success signal).\n2. Acceptance Mapping table (Requirement | Validation Step | Artifact).\n3. Risks & Mitigations (with owners or follow-ups).\nReference all sources by path or memory ID."
+      "prompt": "Inputs:\n- SPEC packet\n- Gemini research (${PREVIOUS_OUTPUTS.gemini})\n\nProduce JSON:\n{\n  \"stage\": \"spec-plan\",\n  \"agent\": \"claude\",\n  \"work_breakdown\": [ { \"step\": string, \"rationale\": string, \"success_signal\": string } ],\n  \"acceptance_mapping\": [ { \"requirement\": string, \"validation_step\": string, \"artifact\": string } ],\n  \"risks\": [ { \"risk\": string, \"owner\": string, \"mitigation\": string } ]\n}\nFill arrays even if empty. Use ${PREVIOUS_OUTPUTS.gemini} for context references."
     },
     "gpt_pro": {
       "role": "Executor & QA",
-      "prompt": "Inputs:\n- SPEC packet\n- Gemini and Claude outputs (${PREVIOUS_OUTPUTS})\n\nActions:\n1. Check plan feasibility against repo reality (branch, tooling, hooks).\n2. Highlight missing tests, telemetry steps, or guardrails.\n3. Merge prior outputs into a Final Plan section with Consensus & Conflicts noted.\nRecord rationale for any overrides; list required guardrail commands."
+      "prompt": "Inputs:\n- SPEC packet\n- Gemini and Claude outputs (${PREVIOUS_OUTPUTS})\n\nValidate feasibility and emit JSON:\n{\n  \"stage\": \"spec-plan\",\n  \"agent\": \"gpt_pro\",\n  \"feasibility_notes\": [ string ],\n  \"missing_items\": [ string ],\n  \"final_plan\": {\n    \"work_breakdown\": [...copy of consensus steps...],\n    \"acceptance_mapping\": [...],\n    \"risks\": [...],\n    \"consensus\": { \"agreements\": [ string ], \"conflicts\": [ string ] }\n  }\n}\nReference local evidence paths."
     }
   },
   "spec-tasks": {
     "gemini": {
       "role": "Researcher",
-      "prompt": "Context:\n${CONTEXT}\n\nList key implementation surfaces (files/modules/tests) and current SPEC.md task status. Identify dependencies or blockers for ${SPEC_ID}."
+      "prompt": "Context:\n${CONTEXT}\n\nOutput JSON:\n{\n  \"stage\": \"spec-tasks\",\n  \"agent\": \"gemini\",\n  \"surfaces\": [ { \"area\": string, \"files\": [string], \"tests\": [string], \"notes\": string } ],\n  \"dependencies\": [ string ],\n  \"spec_status\": [ { \"task_id\": string, \"status\": string } ]\n}\nIdentify dependencies or blockers for ${SPEC_ID}."
     },
     "claude": {
       "role": "Synthesizer",
-      "prompt": "Inputs: SPEC packet, Gemini analysis (${PREVIOUS_OUTPUTS.gemini}), Plan summary (${PREVIOUS_OUTPUTS.plan}).\n\nProduce SPEC task table rows (Order, Task ID, Title, Status, Validation Step, Notes). Ensure acceptance mapping coverage and include any lint/tests to run."
+      "prompt": "Inputs: SPEC packet, Gemini analysis (${PREVIOUS_OUTPUTS.gemini}), Plan summary (${PREVIOUS_OUTPUTS.plan}).\n\nProduce JSON:\n{\n  \"stage\": \"spec-tasks\",\n  \"agent\": \"claude\",\n  \"tasks\": [ { \"order\": number, \"task_id\": string, \"title\": string, \"status\": string, \"validation_step\": string, \"artifact\": string, \"notes\": string } ],\n  \"acceptance_coverage\": [ string ],\n  \"followups\": [ string ]\n}\nEnsure acceptance mapping coverage and include lint/tests."
     },
     "gpt_pro": {
       "role": "Executor & QA",
-      "prompt": "Review Gemini/Claude tasks, check guardrail requirements (branch, clean tree, lint/test hooks). Output:\n1. Validated task list ready for SPEC.md update.\n2. Instructions for updating SPEC.md Tasks table and docs/SPEC-*/tasks.md.\n3. List of commands/tests to run per task."
+      "prompt": "Review Gemini/Claude JSON outputs, verify guardrail requirements (branch cleanliness, lint/test hooks). Emit JSON:\n{\n  \"stage\": \"spec-tasks\",\n  \"agent\": \"gpt_pro\",\n  \"validated_tasks\": [...],\n  \"command_plan\": [ string ],\n  \"consensus\": { \"agreements\": [ string ], \"conflicts\": [ string ] }\n}\nReference SPEC.md update steps and docs paths."
     }
   },
   "spec-implement": {
     "gemini": {
-      "prompt": "Given ${CONTEXT} and task list (${PREVIOUS_OUTPUTS.tasks}), enumerate relevant code paths, recent changes, and tests. Flag tricky edge cases or integration points."
+      "prompt": "Given ${CONTEXT} and task list (${PREVIOUS_OUTPUTS.tasks}), emit JSON:\n{\n  \"stage\": \"spec-implement\",\n  \"agent\": \"gemini\",\n  \"code_paths\": [ { \"area\": string, \"files\": [string], \"notes\": string } ],\n  \"recent_changes\": [ string ],\n  \"edge_cases\": [ string ],\n  \"tests\": [ string ]\n}\nFlag tricky integration points." 
     },
     "claude": {
-      "prompt": "Outline implementation strategy:\n- Approach summary per task.\n- Proposed changes (files/functions).\n- Validation plan (tests/commands).\nReference Gemini findings."
+      "prompt": "Outline implementation strategy as JSON:\n{\n  \"stage\": \"spec-implement\",\n  \"agent\": \"claude\",\n  \"approach\": [ { \"task_id\": string, \"summary\": string } ],\n  \"operations\": [ { \"file\": string, \"change_type\": string, \"description\": string } ],\n  \"validation_plan\": [ { \"command\": string, \"purpose\": string } ]\n}\nReference Gemini findings." 
     },
     "gpt_pro": {
-      "prompt": "Validate feasibility, schedule guardrail shells (`/spec-ops-implement`), and produce execution checklist:\n1. Step-by-step edits with commands.\n2. Required validations (fmt/clippy/tests/hashes).\n3. Risk notes. Apply diffs when run via orchestrator."
+      "prompt": "Validate feasibility, schedule `/spec-ops-implement`, and output JSON:\n{\n  \"stage\": \"spec-implement\",\n  \"agent\": \"gpt_pro\",\n  \"checklist\": [ { \"step\": string, \"command\": string } ],\n  \"risks\": [ { \"risk\": string, \"mitigation\": string } ],\n  \"consensus\": { \"agreements\": [ string ], \"conflicts\": [ string ] }\n}\nApply diffs only when orchestrator runs." 
     }
   },
   "spec-validate": {
     "gemini": {
-      "prompt": "Summarize telemetry from `/spec-ops-validate` for ${SPEC_ID}: scenario → status, log path, failures."
+      "prompt": "Summarize telemetry from `/spec-ops-validate` as JSON:\n{\n  \"stage\": \"spec-validate\",\n  \"agent\": \"gemini\",\n  \"scenarios\": [ { \"name\": string, \"status\": string, \"failures\": [string], \"log\": string } ],\n  \"evidence\": [ string ]\n}" 
     },
     "claude": {
-      "prompt": "Crosswalk acceptance criteria vs telemetry results. Flag unmet criteria and remediation steps. Provide summary table."
+      "prompt": "Crosswalk acceptance criteria vs telemetry results. Output JSON:\n{\n  \"stage\": \"spec-validate\",\n  \"agent\": \"claude\",\n  \"analysis\": [ { \"requirement\": string, \"status\": string, \"notes\": string } ],\n  \"remediation\": [ string ]\n}" 
     },
     "gpt_pro": {
-      "prompt": "Confirm shell outputs, ensure evidence hashes exist, and deliver final validation decision with next actions."
+      "prompt": "Confirm shell outputs, ensure evidence hashes exist, and deliver final decision as JSON:\n{\n  \"stage\": \"spec-validate\",\n  \"agent\": \"gpt_pro\",\n  \"decision\": string,\n  \"next_actions\": [ string ],\n  \"consensus\": { \"agreements\": [ string ], \"conflicts\": [ string ] }\n}" 
     }
   },
-  "spec-review": {
+  "spec-audit": {
     "gemini": {
-      "prompt": "Collect review artifacts: git diff summary, tests run, outstanding TODOs, risks."
+      "prompt": "Collect audit artifacts and emit JSON:\n{\n  \"stage\": \"spec-audit\",\n  \"agent\": \"gemini\",\n  \"diff_summary\": string,\n  \"telemetry\": [ string ],\n  \"todos\": [ string ],\n  \"compliance_flags\": [ string ]\n}" 
     },
     "claude": {
-      "prompt": "Draft Go/No-Go memo with sections: Overview, Evidence, Risks, Mitigations, Open Items. Reference artifacts."
+      "prompt": "Draft audit memo as JSON:\n{\n  \"stage\": \"spec-audit\",\n  \"agent\": \"claude\",\n  \"decision\": string,\n  \"evidence\": [ { \"name\": string, \"path\": string } ],\n  \"risks\": [ { \"risk\": string, \"mitigation\": string } ],\n  \"open_items\": [ string ]\n}" 
     },
     "gpt_pro": {
-      "prompt": "Verify guardrails (locks, telemetry, tasks table). Provide final recommendation, conditions, and merge readiness."
+      "prompt": "Verify guardrails and output JSON:\n{\n  \"stage\": \"spec-audit\",\n  \"agent\": \"gpt_pro\",\n  \"checks\": [ { \"item\": string, \"status\": string } ],\n  \"recommendation\": string,\n  \"conditions\": [ string ],\n  \"consensus\": { \"agreements\": [ string ], \"conflicts\": [ string ] }\n}" 
     }
   },
   "spec-unlock": {
     "gemini": {
-      "prompt": "Explain why SPEC ${SPEC_ID} is locked, current branch state, pending work, and risks if unlocked."
+      "prompt": "Explain lock context as JSON:\n{\n  \"stage\": \"spec-unlock\",\n  \"agent\": \"gemini\",\n  \"branch_state\": string,\n  \"pending_work\": [ string ],\n  \"risks\": [ string ]\n}" 
     },
     "claude": {
-      "prompt": "Write unlock justification memo with rationale, safeguards, and follow-up actions."
+      "prompt": "Write unlock justification memo as JSON:\n{\n  \"stage\": \"spec-unlock\",\n  \"agent\": \"claude\",\n  \"rationale\": string,\n  \"safeguards\": [ string ],\n  \"followups\": [ string ]\n}" 
     },
     "gpt_pro": {
-      "prompt": "Check guardrail compliance, decide unlock (approve/deny). If approve, list steps and update local-memory evidence."
+      "prompt": "Check guardrail compliance and decide unlock as JSON:\n{\n  \"stage\": \"spec-unlock\",\n  \"agent\": \"gpt_pro\",\n  \"decision\": string,\n  \"steps\": [ string ],\n  \"consensus\": { \"agreements\": [ string ], \"conflicts\": [ string ] }\n}" 
     }
   },
   "spec-auto": {

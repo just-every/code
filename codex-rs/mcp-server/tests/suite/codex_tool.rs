@@ -68,6 +68,7 @@ async fn tools_list_exposes_acp_entries() -> anyhow::Result<()> {
         "codex-reply",
         acp::AGENT_METHOD_NAMES.session_new,
         acp::AGENT_METHOD_NAMES.session_prompt,
+        "spec_consensus_check",
     ] {
         assert!(
             tool_names.contains(required),

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::codex_message_processor::CodexMessageProcessor;
@@ -6,6 +6,7 @@ use crate::codex_tool_config::create_tool_for_acp_new_session;
 use crate::codex_tool_config::create_tool_for_acp_prompt;
 use crate::codex_tool_config::create_tool_for_codex_tool_call_param;
 use crate::codex_tool_config::create_tool_for_codex_tool_call_reply_param;
+use crate::codex_tool_config::create_tool_for_spec_consensus_check;
 use crate::codex_tool_config::AcpNewSessionToolArgs;
 use crate::codex_tool_config::AcpPromptToolArgs;
 use crate::codex_tool_config::CodexToolCallParam;
@@ -44,7 +45,8 @@ use mcp_types::ModelContextProtocolRequest;
 use mcp_types::RequestId;
 use mcp_types::ServerNotification;
 use mcp_types::TextContent;
-use serde_json::json;
+use serde::Deserialize;
+use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::task;
@@ -481,6 +483,7 @@ impl MessageProcessor {
                 create_tool_for_codex_tool_call_reply_param(),
                 create_tool_for_acp_new_session(),
                 create_tool_for_acp_prompt(),
+                create_tool_for_spec_consensus_check(),
             ],
             next_cursor: None,
         };
@@ -508,6 +511,9 @@ impl MessageProcessor {
             }
             _ if name == acp::AGENT_METHOD_NAMES.session_prompt => {
                 self.handle_tool_call_acp_prompt(id, arguments).await
+            }
+            "spec_consensus_check" => {
+                self.handle_tool_call_spec_consensus(id, arguments).await
             }
             _ => {
                 let result = CallToolResult {
@@ -1182,6 +1188,130 @@ impl MessageProcessor {
         }
     }
 
+    async fn handle_tool_call_spec_consensus(
+        &self,
+        request_id: RequestId,
+        arguments: Option<Value>,
+    ) {
+        #[derive(Debug, Deserialize)]
+        struct ConsensusArtifact {
+            agent: String,
+            #[serde(default)]
+            version: Option<String>,
+            #[serde(default)]
+            content: Value,
+        }
+
+        #[derive(Debug, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct ConsensusRequest {
+            #[serde(rename = "specId")]
+            spec_id: String,
+            stage: String,
+            artifacts: Vec<ConsensusArtifact>,
+        }
+
+        let Some(args_value) = arguments else {
+            let result = CallToolResult {
+                content: vec![ContentBlock::TextContent(TextContent {
+                    r#type: "text".to_string(),
+                    text: "Missing arguments for spec_consensus_check".to_string(),
+                    annotations: None,
+                })],
+                is_error: Some(true),
+                structured_content: None,
+            };
+            self.send_response::<mcp_types::CallToolRequest>(request_id, result)
+                .await;
+            return;
+        };
+
+        let request: ConsensusRequest = match serde_json::from_value(args_value) {
+            Ok(req) => req,
+            Err(err) => {
+                let result = CallToolResult {
+                    content: vec![ContentBlock::TextContent(TextContent {
+                        r#type: "text".to_string(),
+                        text: format!("Failed to parse spec_consensus_check arguments: {err}"),
+                        annotations: None,
+                    })],
+                    is_error: Some(true),
+                    structured_content: None,
+                };
+                self.send_response::<mcp_types::CallToolRequest>(request_id, result)
+                    .await;
+                return;
+            }
+        };
+
+        let stage_normalized = request.stage.to_ascii_lowercase();
+        let expected_agents = expected_agents_for_stage(&stage_normalized);
+
+        let mut present_agents: HashSet<String> = HashSet::new();
+        let mut aggregator_summary: Option<Value> = None;
+        let mut agreements: Vec<String> = Vec::new();
+        let mut conflicts: Vec<String> = Vec::new();
+
+        for artifact in &request.artifacts {
+            present_agents.insert(artifact.agent.to_ascii_lowercase());
+            if artifact.agent.eq_ignore_ascii_case("gpt_pro") {
+                let consensus_node = artifact
+                    .content
+                    .get("consensus")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                agreements = extract_string_list(consensus_node.get("agreements"));
+                conflicts = extract_string_list(consensus_node.get("conflicts"));
+                aggregator_summary = Some(artifact.content.clone());
+            }
+        }
+
+        let missing_agents: Vec<String> = expected_agents
+            .iter()
+            .map(|agent| agent.to_string())
+            .filter(|agent| !present_agents.contains(agent))
+            .collect();
+
+        let aggregator_missing = aggregator_summary.is_none();
+        let required_fields_ok = aggregator_summary
+            .as_ref()
+            .map(|summary| validate_required_fields(&stage_normalized, summary))
+            .unwrap_or(false);
+
+        let degraded = aggregator_missing || !missing_agents.is_empty();
+        let consensus_ok = !aggregator_missing && conflicts.is_empty() && required_fields_ok;
+
+        let summary_value = aggregator_summary.clone().unwrap_or(Value::Null);
+
+        let result_payload = json!({
+            "specId": request.spec_id,
+            "stage": stage_normalized,
+            "consensusOk": consensus_ok,
+            "degraded": degraded,
+            "missingAgents": missing_agents,
+            "agreements": agreements,
+            "conflicts": conflicts,
+            "requiredFieldsOk": required_fields_ok,
+            "aggregator": summary_value,
+        });
+
+        let summary_text = serde_json::to_string_pretty(&result_payload)
+            .unwrap_or_else(|_| "{}".to_string());
+
+        let result = CallToolResult {
+            content: vec![ContentBlock::TextContent(TextContent {
+                r#type: "text".to_string(),
+                text: summary_text,
+                annotations: None,
+            })],
+            is_error: Some(!consensus_ok),
+            structured_content: Some(result_payload),
+        };
+
+        self.send_response::<mcp_types::CallToolRequest>(request_id, result)
+            .await;
+    }
+
     fn handle_tool_list_changed(
         &self,
         params: <mcp_types::ToolListChangedNotification as mcp_types::ModelContextProtocolNotification>::Params,
@@ -1194,6 +1324,74 @@ fn handle_logging_message(
         params: <mcp_types::LoggingMessageNotification as mcp_types::ModelContextProtocolNotification>::Params,
     ) {
         tracing::info!("notifications/message -> params: {:?}", params);
+    }
+}
+
+fn expected_agents_for_stage(stage: &str) -> Vec<&'static str> {
+    match stage {
+        "spec-plan" => vec!["gemini", "claude", "gpt_pro"],
+        "spec-tasks" => vec!["gemini", "claude", "gpt_pro"],
+        "spec-implement" => vec!["gemini", "claude", "gpt_pro"],
+        "spec-validate" => vec!["gemini", "claude", "gpt_pro"],
+        "spec-audit" => vec!["gemini", "claude", "gpt_pro"],
+        "spec-unlock" => vec!["gemini", "claude", "gpt_pro"],
+        _ => vec!["gpt_pro"],
+    }
+}
+
+fn extract_string_list(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    if let Some(s) = item.as_str() {
+                        Some(s.to_string())
+                    } else if item.is_object() || item.is_array() {
+                        serde_json::to_string(item).ok()
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn validate_required_fields(stage: &str, summary: &Value) -> bool {
+    match stage {
+        "spec-plan" => summary
+            .get("final_plan")
+            .and_then(|plan| plan.get("work_breakdown"))
+            .and_then(|wb| wb.as_array())
+            .map(|wb| !wb.is_empty())
+            .unwrap_or(false),
+        "spec-tasks" => summary
+            .get("validated_tasks")
+            .and_then(|tasks| tasks.as_array())
+            .map(|tasks| !tasks.is_empty())
+            .unwrap_or(false),
+        "spec-implement" => summary
+            .get("checklist")
+            .and_then(|list| list.as_array())
+            .map(|list| !list.is_empty())
+            .unwrap_or(false),
+        "spec-validate" => summary
+            .get("decision")
+            .and_then(|d| d.as_str())
+            .map(|d| !d.is_empty())
+            .unwrap_or(false),
+        "spec-audit" => summary
+            .get("recommendation")
+            .and_then(|d| d.as_str())
+            .map(|d| !d.is_empty())
+            .unwrap_or(false),
+        "spec-unlock" => summary
+            .get("decision")
+            .and_then(|d| d.as_str())
+            .map(|d| !d.is_empty())
+            .unwrap_or(false),
+        _ => true,
     }
 }
 
