@@ -13857,18 +13857,18 @@ struct LocalMemorySearchResponse {
     error: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct LocalMemorySearchData {
     #[serde(default)]
     results: Vec<LocalMemorySearchResult>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct LocalMemorySearchResult {
     memory: LocalMemoryRecord,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct LocalMemoryRecord {
     #[serde(default)]
     id: Option<String>,
@@ -13928,17 +13928,123 @@ fn collect_consensus_artifacts(
     spec_id: &str,
     stage: SpecStage,
 ) -> Result<(Vec<ConsensusArtifactData>, Vec<String>), String> {
+    let (entries, mut warnings) = fetch_memory_entries(spec_id, stage)?;
+
+    let mut artifacts: Vec<ConsensusArtifactData> = Vec::new();
+
+    for result in entries {
+        let memory_id = result.memory.id.clone();
+        let content_str = result.memory.content.trim();
+        if content_str.is_empty() {
+            warnings.push("local-memory entry had empty content".to_string());
+            continue;
+        }
+
+        let value = match serde_json::from_str::<Value>(content_str) {
+            Ok(v) => v,
+            Err(err) => {
+                warnings.push(format!("unable to parse consensus artifact JSON: {err}"));
+                continue;
+            }
+        };
+
+        let agent = match value
+            .get("agent")
+            .or_else(|| value.get("model"))
+            .and_then(|v| v.as_str())
+        {
+            Some(agent) if !agent.trim().is_empty() => agent.trim().to_string(),
+            _ => {
+                warnings.push("consensus artifact missing agent field".to_string());
+                continue;
+            }
+        };
+
+        let stage_matches = value
+            .get("stage")
+            .or_else(|| value.get("stage_name"))
+            .and_then(|v| v.as_str())
+            .and_then(parse_consensus_stage)
+            .map(|parsed| parsed == stage)
+            .unwrap_or(false);
+
+        if !stage_matches {
+            warnings.push(format!(
+                "skipping local-memory entry for agent {} because stage did not match {}",
+                agent,
+                stage.command_name()
+            ));
+            continue;
+        }
+
+        let spec_matches = value
+            .get("spec_id")
+            .or_else(|| value.get("specId"))
+            .and_then(|v| v.as_str())
+            .map(|reported| reported.eq_ignore_ascii_case(spec_id))
+            .unwrap_or(true);
+
+        if !spec_matches {
+            warnings.push(format!(
+                "skipping local-memory entry for agent {} because spec id did not match {}",
+                agent,
+                spec_id
+            ));
+            continue;
+        }
+
+        let version = value
+            .get("version")
+            .or_else(|| value.get("prompt_version"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        artifacts.push(ConsensusArtifactData {
+            memory_id,
+            agent,
+            version,
+            content: value,
+        });
+    }
+
+    Ok((artifacts, warnings))
+}
+
+fn fetch_memory_entries(
+    spec_id: &str,
+    stage: SpecStage,
+) -> Result<(Vec<LocalMemorySearchResult>, Vec<String>), String> {
     let query = format!("{} {}", spec_id, stage.command_name());
+    let response = run_local_memory_search(&query, spec_id, stage.command_name())?;
+    if let Some(data) = response.data {
+        if !data.results.is_empty() {
+            return Ok((data.results, Vec::new()));
+        }
+    }
+
+    // TODO: After Oct 2 migration, implement Byterover fallback fetching here and persist results into local-memory.
+    Err(format!(
+        "No local-memory entries found for {} stage '{}'",
+        spec_id,
+        stage.command_name()
+    ))
+}
+
+fn run_local_memory_search(
+    query: &str,
+    spec_id: &str,
+    stage: &str,
+) -> Result<LocalMemorySearchResponse, String> {
     let mut cmd = Command::new("local-memory");
     cmd.arg("search")
-        .arg(&query)
+        .arg(query)
         .arg("--json")
         .arg("--limit")
         .arg("20")
         .arg("--tags")
         .arg(format!("spec:{}", spec_id))
         .arg("--tags")
-        .arg(format!("stage:{}", stage.command_name()));
+        .arg(format!("stage:{}", stage));
 
     let output = cmd
         .output()
@@ -13951,96 +14057,8 @@ fn collect_consensus_artifacts(
         ));
     }
 
-    let response: LocalMemorySearchResponse = serde_json::from_slice(&output.stdout)
-        .map_err(|e| format!("failed to parse local-memory search output: {e}"))?;
-
-    if !response.success {
-        if let Some(err) = response.error {
-            return Err(format!("local-memory search error: {err}"));
-        }
-    }
-
-    let mut artifacts: Vec<ConsensusArtifactData> = Vec::new();
-    let mut warnings: Vec<String> = Vec::new();
-
-    if let Some(data) = response.data {
-        for result in data.results {
-            let memory_id = result.memory.id.clone();
-            let content_str = result.memory.content.trim();
-            if content_str.is_empty() {
-                warnings.push("local-memory entry had empty content".to_string());
-                continue;
-            }
-
-            let value = match serde_json::from_str::<Value>(content_str) {
-                Ok(v) => v,
-                Err(err) => {
-                    warnings.push(format!("unable to parse consensus artifact JSON: {err}"));
-                    continue;
-                }
-            };
-
-            let agent = match value
-                .get("agent")
-                .or_else(|| value.get("model"))
-                .and_then(|v| v.as_str())
-            {
-                Some(agent) if !agent.trim().is_empty() => agent.trim().to_string(),
-                _ => {
-                    warnings.push("consensus artifact missing agent field".to_string());
-                    continue;
-                }
-            };
-
-            let stage_matches = value
-                .get("stage")
-                .or_else(|| value.get("stage_name"))
-                .and_then(|v| v.as_str())
-                .and_then(parse_consensus_stage)
-                .map(|parsed| parsed == stage)
-                .unwrap_or(false);
-
-            if !stage_matches {
-                warnings.push(format!(
-                    "skipping local-memory entry for agent {} because stage did not match {}",
-                    agent,
-                    stage.command_name()
-                ));
-                continue;
-            }
-
-            let spec_matches = value
-                .get("spec_id")
-                .or_else(|| value.get("specId"))
-                .and_then(|v| v.as_str())
-                .map(|reported| reported.eq_ignore_ascii_case(spec_id))
-                .unwrap_or(true);
-
-            if !spec_matches {
-                warnings.push(format!(
-                    "skipping local-memory entry for agent {} because spec id did not match {}",
-                    agent,
-                    spec_id
-                ));
-                continue;
-            }
-
-            let version = value
-                .get("version")
-                .or_else(|| value.get("prompt_version"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-
-            artifacts.push(ConsensusArtifactData {
-                memory_id,
-                agent,
-                version,
-                content: value,
-            });
-        }
-    }
-
-    Ok((artifacts, warnings))
+    serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("failed to parse local-memory search output: {e}"))
 }
 
 fn expected_agents_for_stage(stage: SpecStage) -> Vec<&'static str> {
