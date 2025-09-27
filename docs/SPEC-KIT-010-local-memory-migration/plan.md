@@ -4,10 +4,10 @@
 - Constitution: memory/constitution.md (missing in repo; reference template as needed)
 
 ## Work Breakdown
-1. Inventory Byterover domains, local-memory schema, and existing helper scripts; define migration mapping plus dry-run/report requirements.
-2. Implement migration utility (dry-run + apply) that pulls Byterover entries via MCP and writes normalised records into local-memory with evidence logging.
+1. Inventory Byterover domains, local-memory schema, and existing helper scripts; define migration mapping plus dry-run/report requirements. Capture a baseline using `scripts/spec-kit/local_memory_baseline.py`.
+2. Implement migration utility (dry-run + apply) that pulls Byterover entries via MCP (cached JSON) and writes normalised records into local-memory with evidence logging (`scripts/spec-kit/migrate_local_memory.py`).
 3. Update Codex CLI/TUI integrations so slash commands, consensus verdicts, and Spec Ops hooks read/write using local-memory by default and persist any Byterover fallbacks.
-4. Document the workflow, update SPEC tracker, and capture validation evidence for the migration run.
+4. Document the workflow, update SPEC tracker, and capture validation evidence for the migration run (baseline + dry-run + apply reports).
 
 ## Acceptance Mapping
 | Requirement (Spec) | Validation Step | Test/Check Artifact |
