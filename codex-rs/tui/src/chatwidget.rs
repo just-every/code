@@ -350,7 +350,8 @@ impl RateLimitWarningState {
             next_weekly_index += 1;
         }
         if next_weekly_index > self.weekly_index {
-            let threshold = RATE_LIMIT_WARNING_THRESHOLDS[next_weekly_index - 1];
+            let last_index = next_weekly_index - 1;
+            let threshold = RATE_LIMIT_WARNING_THRESHOLDS[last_index];
             warnings.push(RateLimitWarning {
                 scope: RateLimitWarningScope::Secondary,
                 threshold,
@@ -368,7 +369,8 @@ impl RateLimitWarningState {
             next_hourly_index += 1;
         }
         if next_hourly_index > self.hourly_index {
-            let threshold = RATE_LIMIT_WARNING_THRESHOLDS[next_hourly_index - 1];
+            let last_index = next_hourly_index - 1;
+            let threshold = RATE_LIMIT_WARNING_THRESHOLDS[last_index];
             warnings.push(RateLimitWarning {
                 scope: RateLimitWarningScope::Primary,
                 threshold,
