@@ -28,3 +28,10 @@
 - Tool implemented with tests
 - Docs updated with scheduling/remediation guidance
 - SPEC tracker updated with latest run evidence
+
+## Usage Notes
+- Export memories before running: `./codex-rs/target/debug/code local-memory export --output tmp/memories.jsonl`.
+- Detect drift manually: `python3 scripts/spec-kit/nightly_sync_detect.py --memory tmp/memories.jsonl --json-out docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-015/nightly_sync_detect_<timestamp>.json --pretty`.
+- Exit code 0 = no drift, 1 = drift detected, 2 = execution error (missing inputs, parse failure).
+- Allowlist sustained divergences via `--allowlist path/to/allowlist.txt`; entries accept globbed evidence paths or SPEC IDs.
+- Schedule nightly via cron or CI: export memories, run detector, archive JSON/log artifacts, and alert on non-zero exit status.
