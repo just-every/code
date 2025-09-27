@@ -472,11 +472,19 @@ impl App<'_> {
         Some(message)
     }
 
-    fn emit_osc9_notification(message: &str) {
+    fn emit_osc9_notification(message: &str) -> bool {
+        use std::io::Write as _;
+
         let payload = format!("\u{1b}]9;{}\u{7}", message);
         let mut stdout = std::io::stdout();
-        let _ = stdout.write_all(payload.as_bytes());
-        let _ = stdout.flush();
+
+        match stdout.write_all(payload.as_bytes()) {
+            Ok(()) => matches!(stdout.flush(), Ok(())),
+            Err(err) => {
+                tracing::debug!("write_all failed when emitting OSC9 notification: {}", err);
+                false
+            }
+        }
     }
 
 
@@ -1973,7 +1981,9 @@ impl App<'_> {
                 }
                 AppEvent::EmitTuiNotification { title, body } => {
                     if let Some(message) = Self::format_notification_message(&title, body.as_deref()) {
-                        Self::emit_osc9_notification(&message);
+                        if !Self::emit_osc9_notification(&message) {
+                            tracing::debug!("terminal did not confirm OSC 9 notification");
+                        }
                     }
                 }
                 AppEvent::UpdateMcpServer { name, enable } => {
