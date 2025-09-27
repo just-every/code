@@ -12,37 +12,29 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import os
+import sqlite3
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence
 
 
-DEFAULT_CLI = "local-memory"
 DEFAULT_IMPORTANCE = 7
 
 
 @dataclass
 class MigrationEntry:
+    id: str
     content: str
     domain: str
     tags: List[str]
     importance: int
+    slug: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
-
-    def to_cli_args(self) -> List[str]:
-        args = ["remember", self.content]
-        args += ["--importance", str(self.importance)]
-        if self.domain:
-            args += ["--domain", self.domain]
-        for tag in self.tags:
-            args += ["--tags", tag]
-        if self.created_at:
-            args += ["--created-at", self.created_at]
-        if self.updated_at:
-            args += ["--updated-at", self.updated_at]
-        return args
+    source: str | None = "byterover"
 
 
 def load_sources(paths: Sequence[Path]) -> List[Dict[str, Any]]:
@@ -67,27 +59,46 @@ def normalise(raw: Dict[str, Any]) -> MigrationEntry:
     tags = list(dict.fromkeys((raw.get("tags") or []) + raw.get("extra_tags", [])))
     importance = int(raw.get("importance") or DEFAULT_IMPORTANCE)
 
+    entry_id = raw.get("id") or raw.get("memory_id") or str(uuid.uuid4())
+    slug = raw.get("slug")
+
     created = raw.get("created_at")
     updated = raw.get("updated_at") or created
 
     return MigrationEntry(
+        id=str(entry_id),
         content=content,
         domain=domain,
         tags=tags,
         importance=importance,
+        slug=slug,
         created_at=created,
         updated_at=updated,
+        source=raw.get("source") or "byterover",
     )
 
 
-def run_cli(cli: str, entry: MigrationEntry) -> subprocess.CompletedProcess[str]:
-    args = [cli] + entry.to_cli_args()
-    return subprocess.run(
-        args,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+def resolve_database(explicit: Path | None) -> Path:
+    if explicit:
+        return explicit
+
+    env_home = os.environ.get("LOCAL_MEMORY_HOME")
+    if env_home:
+        candidate = Path(env_home) / "unified-memories.db"
+        if candidate.exists():
+            return candidate
+
+    default_path = Path.home() / ".local-memory" / "unified-memories.db"
+    if default_path.exists():
+        return default_path
+
+    raise FileNotFoundError("local-memory database not found; specify --database")
+
+
+def ensure_timestamp(value: str | None) -> str:
+    if value:
+        return value
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S%z")
 
 
 def summarise(entries: Iterable[MigrationEntry]) -> Dict[str, Any]:
@@ -109,7 +120,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source", required=True, type=Path, nargs="+", help="Path(s) to cached Byterover export JSON")
     parser.add_argument("--dry-run", action="store_true", help="Preview without writing to local-memory")
     parser.add_argument("--apply", action="store_true", help="Apply migration to local-memory")
-    parser.add_argument("--cli", default=DEFAULT_CLI, help="Local-memory CLI command (default: local-memory)")
+    parser.add_argument("--domains", nargs="*", help="Optional domain allow-list (e.g. spec-tracker docs-ops)")
+    parser.add_argument("--database", type=Path, help="Path to local-memory SQLite database")
     parser.add_argument("--out-json", type=Path, help="Where to write migration summary JSON")
     return parser.parse_args()
 
@@ -123,6 +135,9 @@ def main() -> int:
 
     raw_entries = load_sources(args.source)
     entries = [normalise(raw) for raw in raw_entries]
+    if args.domains:
+        allowed = {d.lower() for d in args.domains}
+        entries = [e for e in entries if e.domain.lower() in allowed]
 
     report = {
         "mode": "dry-run" if args.dry_run else "apply",
@@ -133,22 +148,88 @@ def main() -> int:
     }
 
     if args.apply:
-        for entry in entries:
-            result = run_cli(args.cli, entry)
-            status = "success" if result.returncode == 0 else "error"
-            report["results"].append(
-                {
-                    "status": status,
-                    "domain": entry.domain,
-                    "importance": entry.importance,
-                    "tags": entry.tags,
-                    "stderr": result.stderr.strip(),
-                }
-            )
-            if result.returncode != 0:
-                raise SystemExit(
-                    f"local-memory remember failed (domain={entry.domain}): {result.stderr.strip()}"
+        db_path = resolve_database(args.database)
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute("PRAGMA foreign_keys = ON")
+            existing_ids = {row[0] for row in conn.execute("SELECT id FROM memories")}
+            existing_slugs = {
+                row[0]
+                for row in conn.execute("SELECT slug FROM memories WHERE slug IS NOT NULL")
+            }
+
+            inserted = 0
+            skipped = 0
+            for entry in entries:
+                if entry.id in existing_ids:
+                    report["results"].append(
+                        {
+                            "status": "skipped_existing_id",
+                            "id": entry.id,
+                            "domain": entry.domain,
+                            "slug": entry.slug,
+                        }
+                    )
+                    skipped += 1
+                    continue
+
+                if entry.slug and entry.slug in existing_slugs:
+                    report["results"].append(
+                        {
+                            "status": "skipped_existing_slug",
+                            "id": entry.id,
+                            "domain": entry.domain,
+                            "slug": entry.slug,
+                        }
+                    )
+                    skipped += 1
+                    continue
+
+                created = ensure_timestamp(entry.created_at)
+                updated = ensure_timestamp(entry.updated_at)
+                tags_json = json.dumps(entry.tags, ensure_ascii=False)
+
+                conn.execute(
+                    """
+                    INSERT INTO memories (
+                        id, content, source, importance, tags, session_id, domain,
+                        created_at, updated_at, agent_type, agent_context, access_scope, slug
+                    ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, NULL, NULL, ?)
+                    """,
+                    (
+                        entry.id,
+                        entry.content,
+                        entry.source,
+                        entry.importance,
+                        tags_json,
+                        entry.domain,
+                        created,
+                        updated,
+                        entry.slug,
+                    ),
                 )
+
+                existing_ids.add(entry.id)
+                if entry.slug:
+                    existing_slugs.add(entry.slug)
+                inserted += 1
+                report["results"].append(
+                    {
+                        "status": "inserted",
+                        "id": entry.id,
+                        "domain": entry.domain,
+                        "slug": entry.slug,
+                    }
+                )
+
+            conn.commit()
+            report["summary"].update({
+                "inserted": inserted,
+                "skipped": skipped,
+                "database": str(db_path),
+            })
+        finally:
+            conn.close()
 
     if args.out_json:
         write_report(args.out_json, report)
