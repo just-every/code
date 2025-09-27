@@ -14,6 +14,6 @@
 | 10 | T10 | Local-memory migration | Backlog | Code |  |  |  |  |  |  |
 | 11 | T11 | `/spec-auto` orchestrator | Done | Code |  | feat/spec-auto-telemetry |  | 2025-09-26 | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/20250926-025004Z-codex-mcp-client-git-status.json | Wired MCP evidence lookup; `cargo test -p codex-tui spec_auto` |
 | 12 | T12 | Consensus diff reviewer | Done | Gemini Ultra |  |  |  | 2025-09-27 | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus | `/spec-auto` halts on degraded verdicts; prompts emit model metadata; integration tests cover happy/degraded consensus. |
-| 13 | T13 | Telemetry schema enforcement | Backlog | Code |  |  |  |  |  |  |
-| 14 | T14 | Documentation updates | In Progress | Code |  |  |  |  |  |  |
+| 13 | T13 | Telemetry schema enforcement | In Progress | Code | docs/SPEC-KIT-013-telemetry-schema-guard/PRD.md | feat/spec-auto-telemetry |  | 2025-09-27 | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-013/spec-plan_2025-09-27T18:35:18Z-748128599.json | Schema validators + unit tests landed; `cargo test -p codex-tui spec_auto` |
+| 14 | T14 | Documentation updates | In Progress | Code | docs/SPEC-KIT-014-docs-refresh/PRD.md | feat/spec-auto-telemetry |  | 2025-09-27 |  | Slash-command/guardrail/onboarding docs refreshed; `python3 scripts/spec-kit/lint_tasks.py` |
 | 15 | T15 | Nightly sync check | Backlog | Code |  |  |  |  |  |  |

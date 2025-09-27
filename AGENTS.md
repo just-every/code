@@ -19,7 +19,24 @@
 - `/plan` → Multi-agent consensus (claude/gemini/qwen/code) consuming the PRD (and existing spec.md if present) to emit `docs/SPEC-<AREA>-<slug>/plan.md` via the Spec Kit skeleton, explicitly logging agreement vs. dissent.
 - `/tasks` → Multi-agent synthesis that ingests the plan, updates the SPEC.md Tasks table, and writes a per‑feature working file `docs/SPEC-<AREA>-<slug>/tasks.md` (agent‑approved steps with validation hooks/evidence).
 - `/implement` → Multi-agent execution guided by the spec; synthesize the strongest diff, apply locally, then run required env_run.sh validation commands and attach results.
-- `/cmd spec-ops-plan|tasks|implement|validate|review|unlock` → SPEC-OPS-004 project commands; they run clean-tree and branch guardrails, trigger project hooks, and log evidence under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/`.
+- `/cmd spec-ops-plan|tasks|implement|validate|review|unlock` → SPEC-OPS-004 project commands; they run clean-tree and branch guardrails, trigger project hooks, and log evidence under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/`. Guardrails emit telemetry using schema v1 (see below).
+
+### Telemetry Schema (v1)
+- Common fields (all stages): `command`, `specId`, `sessionId`, `timestamp`, `schemaVersion`, `artifacts[]`.
+- Stage payload requirements:
+  - **Plan:** `baseline.mode`, `baseline.artifact`, `baseline.status`, `hooks.session.start`.
+  - **Tasks:** `tool.status`.
+  - **Implement:** `lock_status`, `hook_status`.
+  - **Validate / Audit:** `scenarios[{name,status}]` (`passed|failed|skipped`).
+  - **Unlock:** `unlock_status`.
+- Telemetry lives under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/<SPEC-ID>/`. `/spec-auto` halts if schema validation fails.
+- Keep telemetry schema aligned with docs/SPEC-KIT-013-telemetry-schema-guard/spec.md.
+
+### Model Strategy & Consensus Metadata
+- Reference `docs/spec-kit/model-strategy.md` for the canonical model lineup per stage.
+- Multi-agent outputs **must** include `model`, `model_release`, `reasoning_mode`, and consensus metadata; degraded verdicts escalate per the model strategy escalation rules.
+
+- **Documentation style note:** do not use pipe (`|`) tables in Spec Kit docs or instructions. Present configuration snippets with bullet lists or fenced code blocks instead.
 
 ## 2) Multi-AI behavior (required)
 - `/constitution`: run the listed agents in parallel, surface disagreements before writing.

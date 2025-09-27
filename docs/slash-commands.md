@@ -38,15 +38,15 @@ Notes
   text directly.
 - `/cmd <name>`: run a project command defined for the current workspace.
 
-## Spec Ops Guardrails
+## Spec Ops Guardrails & Telemetry
 
-- `/spec-ops-plan <SPEC-ID> [--baseline-mode <full|no-run|skip>] [other options]`: run the baseline audit + guardrail prep for a SPEC task. The legacy `/spec-plan` alias remains temporarily and now shows a deprecation warning.
-- `/spec-ops-tasks <SPEC-ID> [options]`: prepare Spec Ops task automation hooks (`/spec-tasks` handles the multi-agent synthesis).
-- `/spec-ops-implement <SPEC-ID> [options]`: lock SPEC.md and prime guardrails ahead of implementation.
-- `/spec-ops-validate <SPEC-ID> [--scenario <name>]`: execute validation harness scenarios and record telemetry.
-- `/spec-ops-audit <SPEC-ID> [--dry-run]`: run the Spec Ops audit scenarios; `/spec-audit` performs the multi-agent consensus review and now records verdict JSON for `/spec-auto` gating.
-- `/spec-ops-unlock <SPEC-ID> [--spec-path <path>]`: force-unlock SPEC.md after the guardrail workflow completes. Alias `/spec-unlock` is deprecated.
-- `/spec-auto <SPEC-ID> [goal] [--from <stage>]`: orchestrate the end-to-end Spec Ops + multi-agent pipeline, preparing guardrail commands, stage prompts, and consensus checks (supports stages: plan, tasks, implement, validate, audit, unlock).
+- `/spec-ops-plan <SPEC-ID> [--baseline-mode <full|no-run|skip>] [other options]`: Run the baseline audit + guardrail prep for a SPEC task. Telemetry now emits `schemaVersion`, `baseline.mode`, `baseline.artifact`, `baseline.status`, `hooks.session.start`, and an `artifacts` array. The legacy `/spec-plan` alias remains temporarily and shows a deprecation warning.
+- `/spec-ops-tasks <SPEC-ID> [options]`: Prepare Spec Ops task automation hooks. Telemetry payload includes `tool.status` plus log artifacts.
+- `/spec-ops-implement <SPEC-ID> [options]`: Lock SPEC.md and prime guardrails ahead of implementation. Telemetry emits `lock_status`, `hook_status`, and artifacts.
+- `/spec-ops-validate <SPEC-ID> [--scenario <name>]`: Execute validation harness scenarios and record telemetry with `scenarios[{name,status}]` and log artifacts.
+- `/spec-ops-audit <SPEC-ID> [--dry-run]`: Run the Spec Ops audit scenarios; telemetry mirrors Validate stage (`scenarios` array). `/spec-audit` performs the multi-agent consensus review and records verdict JSON for `/spec-auto` gating.
+- `/spec-ops-unlock <SPEC-ID> [--spec-path <path>]`: Force-unlock SPEC.md after the guardrail workflow completes. Telemetry emits `unlock_status` and artifacts. Alias `/spec-unlock` is deprecated.
+- `/spec-auto <SPEC-ID> [goal] [--from <stage>]`: Orchestrate the end-to-end Spec Ops + multi-agent pipeline, preparing guardrail commands, stage prompts, and consensus checks (supports stages: plan, tasks, implement, validate, audit, unlock). Guardrail telemetry must validate against schema v1 before the pipeline advances.
 
 ## UX & Display
 
@@ -83,12 +83,12 @@ typically start multiple agents. They require a task/problem description.
 - `/plan <task>`: create a comprehensive plan (multiple agents). Prompt‑expanding.
 - `/solve <problem>`: solve a challenging problem (multiple agents). Prompt‑expanding.
 - `/code <task>`: perform a coding task (multiple agents). Prompt‑expanding.
-- `/spec-plan <SPEC-ID> <goal>`: spec-aware planning consensus; injects Gemini/Claude/GPT prompts referencing local-memory context.
-- `/spec-tasks <SPEC-ID>`: multi-agent task synthesis aligned with SPEC.md tracking.
-- `/spec-implement <SPEC-ID> [summary]`: implementation strategy prompts for the three agents.
-- `/spec-validate <SPEC-ID>`: validation consensus prompts tied to Spec Ops telemetry.
-- `/spec-audit <SPEC-ID>`: go/no-go audit consensus prompts coordinating all agents; persists verdicts to local-memory.
-- `/spec-unlock <SPEC-ID>`: unlock justification prompts prior to running `/spec-ops-unlock`.
+- `/spec-plan <SPEC-ID> <goal>`: Spec-aware planning consensus; injects Gemini/Claude/GPT prompts referencing local-memory context. Agent responses must include `model`, `model_release`, and `reasoning_mode` metadata (see `docs/spec-kit/model-strategy.md`).
+- `/spec-tasks <SPEC-ID>`: Multi-agent task synthesis aligned with SPEC.md tracking; emits consensus artifacts referencing telemetry evidence.
+- `/spec-implement <SPEC-ID> [summary]`: Implementation strategy prompts; agents embed model metadata and reference guardrail telemetry.
+- `/spec-validate <SPEC-ID>`: Validation consensus prompts tied to Spec Ops telemetry; degraded runs require re-running guardrail stages.
+- `/spec-audit <SPEC-ID>`: Go/no-go audit consensus prompts coordinating all agents; persists verdict JSON with model metadata.
+- `/spec-unlock <SPEC-ID>`: Unlock justification prompts prior to running `/spec-ops-unlock`; includes model metadata in consensus notes.
 
 ## Development‑Only
 

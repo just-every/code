@@ -52,6 +52,20 @@ For more information on how to use AGENTS.md, see the [official AGENTS.md docume
 
 ### Tips & shortcuts
 
+### Spec Kit workflow quickstart
+
+When working on SPEC tasks, run guardrail commands before multi-agent stages:
+
+1. `/spec-ops-plan <SPEC-ID>` – prepares the workspace and writes telemetry JSON (schema v1) under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/<SPEC-ID>/`.
+2. `/spec-ops-tasks`, `/spec-ops-implement`, `/spec-ops-validate`, `/spec-ops-audit`, `/spec-ops-unlock` – each stage records telemetry with stage-specific fields (`tool.status`, `lock_status`, `scenarios`, etc.).
+3. `/spec-auto <SPEC-ID>` orchestrates the full pipeline; it stops if telemetry fails schema validation or consensus degrades.
+
+Troubleshooting:
+
+- If guardrail telemetry fails schema validation, open the latest JSON in the evidence directory and verify required fields per docs/SPEC-KIT-013-telemetry-schema-guard/spec.md.
+- `scripts/spec-kit/lint_tasks.py` validates SPEC.md tracking after updating docs or task status.
+- Use `/spec-audit` to re-run consensus after resolving degraded verdicts; consult docs/spec-kit/model-strategy.md for escalation rules.
+
 #### Use `@` for file search
 
 Typing `@` triggers a fuzzy-filename search over the workspace root. Use up/down to select among the results and Tab or Enter to replace the `@` with the selected path. You can use Esc to cancel the search.
