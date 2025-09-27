@@ -25,8 +25,14 @@ env = { "GIT_PAGER" = "cat" }
 startup_timeout_sec = 20
 tool_timeout_sec = 120
 
-[mcp_servers.spec_registry]
+[mcp_servers.uniprof]
 command = "npx"
-args = ["-y", "mcp-proxy", "https://registry.modelcontextprotocol.io/api/sse"]
+args = ["-y", "uniprof", "mcp", "run"]
+startup_timeout_sec = 30
+tool_timeout_sec = 300
+
+[mcp_servers.hal]
+command = "npx"
+args = ["-y", "hal-mcp"]
 startup_timeout_sec = 20
-tool_timeout_sec = 90
+tool_timeout_sec = 120

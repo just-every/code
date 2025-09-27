@@ -1,0 +1,195 @@
+{
+  "tools": [
+    {
+      "description": "Make an HTTP GET request to a specified URL. Supports secret substitution using {secrets.key} syntax where 'key' corresponds to HAL_SECRET_KEY environment variables.",
+      "inputSchema": {
+        "properties": {
+          "headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "url": {
+            "format": "uri",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "name": "http-get",
+      "title": "HTTP GET Request"
+    },
+    {
+      "description": "Make an HTTP POST request to a specified URL with optional body and headers. Supports secret substitution using {secrets.key} syntax in URL, headers, and body where 'key' corresponds to HAL_SECRET_KEY environment variables.",
+      "inputSchema": {
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "contentType": {
+            "default": "application/json",
+            "type": "string"
+          },
+          "headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "url": {
+            "format": "uri",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "name": "http-post",
+      "title": "HTTP POST Request"
+    },
+    {
+      "description": "Make an HTTP PUT request to a specified URL with optional body and headers. Supports secret substitution using {secrets.key} syntax in URL, headers, and body where 'key' corresponds to HAL_SECRET_KEY environment variables.",
+      "inputSchema": {
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "contentType": {
+            "default": "application/json",
+            "type": "string"
+          },
+          "headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "url": {
+            "format": "uri",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "name": "http-put",
+      "title": "HTTP PUT Request"
+    },
+    {
+      "description": "Make an HTTP PATCH request to a specified URL with optional body and headers. Supports secret substitution using {secrets.key} syntax in URL, headers, and body where 'key' corresponds to HAL_SECRET_KEY environment variables.",
+      "inputSchema": {
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "contentType": {
+            "default": "application/json",
+            "type": "string"
+          },
+          "headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "url": {
+            "format": "uri",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "name": "http-patch",
+      "title": "HTTP PATCH Request"
+    },
+    {
+      "description": "Make an HTTP DELETE request to a specified URL with optional headers. Supports secret substitution using {secrets.key} syntax in URL and headers where 'key' corresponds to HAL_SECRET_KEY environment variables.",
+      "inputSchema": {
+        "properties": {
+          "headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "url": {
+            "format": "uri",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "name": "http-delete",
+      "title": "HTTP DELETE Request"
+    },
+    {
+      "description": "Make an HTTP HEAD request to a specified URL with optional headers (returns only headers, no body). Supports secret substitution using {secrets.key} syntax in URL and headers where 'key' corresponds to HAL_SECRET_KEY environment variables.",
+      "inputSchema": {
+        "properties": {
+          "headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "url": {
+            "format": "uri",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "name": "http-head",
+      "title": "HTTP HEAD Request"
+    },
+    {
+      "description": "Make an HTTP OPTIONS request to a specified URL to check available methods and headers. Supports secret substitution using {secrets.key} syntax in URL and headers where 'key' corresponds to HAL_SECRET_KEY environment variables.",
+      "inputSchema": {
+        "properties": {
+          "headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "url": {
+            "format": "uri",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "name": "http-options",
+      "title": "HTTP OPTIONS Request"
+    },
+    {
+      "description": "Get a list of available secret keys that can be used with {secrets.key} syntax. Only shows the key names, never the actual secret values.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "list-secrets",
+      "title": "List Available Secrets"
+    }
+  ]
+}

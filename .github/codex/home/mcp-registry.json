@@ -32,12 +32,20 @@
         "/home/thetu/.local/bin/uvx mcp-server-git --repository /home/thetu/code"
       ]
     },
-    "spec-registry": {
+    "uniprof": {
       "type": "stdio",
       "command": "/usr/bin/zsh",
       "args": [
         "-c",
-        "/home/thetu/.npm-global/bin/npx -y mcp-proxy https://registry.modelcontextprotocol.io/api/sse"
+        "/home/thetu/.npm-global/bin/npx -y uniprof mcp run"
+      ]
+    },
+    "hal": {
+      "type": "stdio",
+      "command": "/usr/bin/zsh",
+      "args": [
+        "-c",
+        "/home/thetu/.npm-global/bin/npx -y hal-mcp"
       ]
     }
   },
