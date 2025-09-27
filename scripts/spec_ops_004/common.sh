@@ -4,7 +4,7 @@
 set -euo pipefail
 
 SPEC_OPS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SPEC_OPS_ROOT}/.." && pwd)"
+REPO_ROOT="$(cd "${SPEC_OPS_ROOT}/../.." && pwd)"
 EVIDENCE_ROOT="${REPO_ROOT}/docs/SPEC-OPS-004-integrated-coder-hooks/evidence"
 
 spec_ops_timestamp() {
@@ -12,6 +12,9 @@ spec_ops_timestamp() {
 }
 
 spec_ops_require_clean_tree() {
+  if [[ "${SPEC_OPS_ALLOW_DIRTY:-0}" == "1" ]]; then
+    return
+  fi
   if ! git diff --no-ext-diff --quiet || ! git diff --no-ext-diff --cached --quiet; then
     echo "SPEC-OPS-004: working tree must be clean" >&2
     git status --short >&2

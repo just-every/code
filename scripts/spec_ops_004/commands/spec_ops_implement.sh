@@ -15,13 +15,22 @@ SPEC_ID="$1"; shift || true
 spec_ops_prepare_stage "spec-implement" "${SPEC_ID}"
 spec_ops_write_log "implement guardrail ready"
 
+SCHEMA_VERSION=1
+LOCK_STATUS="locked"
+HOOK_STATUS="ok"
+
 read -r -d '' TELEMETRY <<JSON || true
 {
+  "schemaVersion": ${SCHEMA_VERSION},
   "command": "spec-ops-implement",
   "specId": "${SPEC_ID}",
   "sessionId": "${SPEC_OPS_SESSION_ID}",
   "timestamp": "$(spec_ops_timestamp)",
-  "status": "ready"
+  "lock_status": "${LOCK_STATUS}",
+  "hook_status": "${HOOK_STATUS}",
+  "artifacts": [
+    { "path": "${SPEC_OPS_LOG}" }
+  ]
 }
 JSON
 

@@ -15906,6 +15906,150 @@ fn validate_guardrail_evidence(
     (failures, ok_count)
 }
 
+fn expected_guardrail_command(stage: SpecStage) -> &'static str {
+    match stage {
+        SpecStage::Plan => "spec-ops-plan",
+        SpecStage::Tasks => "spec-ops-tasks",
+        SpecStage::Implement => "spec-ops-implement",
+        SpecStage::Validate => "spec-ops-validate",
+        SpecStage::Audit => "spec-ops-audit",
+        SpecStage::Unlock => "spec-ops-unlock",
+    }
+}
+
+fn get_nested<'a>(root: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    let mut current = root;
+    for segment in path {
+        current = current.get(*segment)?;
+    }
+    Some(current)
+}
+
+fn require_string_field<'a>(
+    root: &'a Value,
+    path: &[&str],
+    errors: &mut Vec<String>,
+) -> Option<&'a str> {
+    let label = path.join(".");
+    match get_nested(root, path).and_then(|value| value.as_str()) {
+        Some(value) if !value.trim().is_empty() => Some(value),
+        Some(_) => {
+            errors.push(format!("Field {label} must be a non-empty string"));
+            None
+        }
+        None => {
+            errors.push(format!("Missing required string field {label}"));
+            None
+        }
+    }
+}
+
+fn require_object<'a>(root: &'a Value, path: &[&str], errors: &mut Vec<String>) -> Option<&'a serde_json::Map<String, Value>> {
+    let label = path.join(".");
+    match get_nested(root, path).and_then(|value| value.as_object()) {
+        Some(map) => Some(map),
+        None => {
+            errors.push(format!("Missing required object field {label}"));
+            None
+        }
+    }
+}
+
+fn validate_guardrail_schema(stage: SpecStage, telemetry: &Value) -> Vec<String> {
+    let mut failures = Vec::new();
+
+    match telemetry.get("command").and_then(|value| value.as_str()) {
+        Some(command) if command == expected_guardrail_command(stage) => {}
+        Some(command) => failures.push(format!(
+            "Unexpected command '{}' (expected {})",
+            command,
+            expected_guardrail_command(stage)
+        )),
+        None => failures.push("Missing required string field command".to_string()),
+    }
+
+    require_string_field(telemetry, &["specId"], &mut failures);
+    require_string_field(telemetry, &["sessionId"], &mut failures);
+    require_string_field(telemetry, &["timestamp"], &mut failures);
+
+    match stage {
+        SpecStage::Validate | SpecStage::Audit => {
+            if let Some(value) = telemetry.get("artifacts") {
+                if !value.is_array() {
+                    failures.push("Field artifacts must be an array when present".to_string());
+                }
+            }
+        }
+        _ => {
+            match telemetry.get("artifacts") {
+                Some(Value::Array(arr)) => {
+                    if arr.is_empty() {
+                        failures.push("Telemetry artifacts array is empty".to_string());
+                    }
+                }
+                Some(_) => failures.push("Field artifacts must be an array".to_string()),
+                None => failures.push("Missing required array field artifacts".to_string()),
+            }
+        }
+    }
+
+    match stage {
+        SpecStage::Plan => {
+            if require_object(telemetry, &["baseline"], &mut failures).is_some() {
+                require_string_field(telemetry, &["baseline", "mode"], &mut failures);
+                require_string_field(telemetry, &["baseline", "artifact"], &mut failures);
+                require_string_field(telemetry, &["baseline", "status"], &mut failures);
+            }
+            if require_object(telemetry, &["hooks"], &mut failures).is_some() {
+                require_string_field(telemetry, &["hooks", "session.start"], &mut failures);
+            }
+        }
+        SpecStage::Tasks => {
+            if require_object(telemetry, &["tool"], &mut failures).is_some() {
+                require_string_field(telemetry, &["tool", "status"], &mut failures);
+            }
+        }
+        SpecStage::Implement => {
+            require_string_field(telemetry, &["lock_status"], &mut failures);
+            require_string_field(telemetry, &["hook_status"], &mut failures);
+        }
+        SpecStage::Validate | SpecStage::Audit => {
+            match telemetry.get("scenarios") {
+                Some(Value::Array(scenarios)) if !scenarios.is_empty() => {
+                    for (idx, scenario) in scenarios.iter().enumerate() {
+                        if !scenario.is_object() {
+                            failures.push(format!(
+                                "Scenario #{} must be an object",
+                                idx + 1
+                            ));
+                            continue;
+                        }
+                        require_string_field(scenario, &["name"], &mut failures);
+                        if let Some(status) = require_string_field(scenario, &["status"], &mut failures) {
+                            const ALLOWED: &[&str] = &["passed", "failed", "skipped"];
+                            if !ALLOWED.contains(&status) {
+                                failures.push(format!(
+                                    "Scenario status must be one of {:?} (got '{}')",
+                                    ALLOWED,
+                                    status
+                                ));
+                            }
+                        }
+                    }
+                }
+                Some(Value::Array(_)) => failures.push("Scenarios array must not be empty".to_string()),
+                Some(_) => failures.push("Field scenarios must be an array of objects".to_string()),
+                None => failures.push("Missing required array field scenarios".to_string()),
+            }
+        }
+        SpecStage::Unlock => {
+            require_string_field(telemetry, &["unlock_status"], &mut failures);
+        }
+    }
+
+    failures
+}
+
 fn evaluate_guardrail_value(stage: SpecStage, value: &Value) -> GuardrailEvaluation {
     match stage {
         SpecStage::Plan => {
@@ -16435,6 +16579,11 @@ impl ChatWidget<'_> {
     ) -> Result<GuardrailOutcome, String> {
         let (path, value) = self.read_latest_spec_ops_telemetry(spec_id, stage)?;
         let mut evaluation = evaluate_guardrail_value(stage, &value);
+        let schema_failures = validate_guardrail_schema(stage, &value);
+        if !schema_failures.is_empty() {
+            evaluation.failures.extend(schema_failures);
+            evaluation.success = false;
+        }
         if matches!(
             stage,
         SpecStage::Plan | SpecStage::Tasks | SpecStage::Implement | SpecStage::Audit | SpecStage::Unlock
@@ -16699,6 +16848,148 @@ mod tests {
     use codex_core::protocol::TaskCompleteEvent;
     use serde_json::json;
     use tempfile::tempdir;
+
+    #[test]
+    fn spec_auto_common_metadata_required() {
+        let value = json!({
+            "command": "spec-ops-plan",
+            "timestamp": "2025-09-27T00:00:00Z",
+            "artifacts": [{ "path": "logs.txt" }],
+            "baseline": { "mode": "no-run", "artifact": "docs/baseline.md", "status": "passed" },
+            "hooks": { "session.start": "ok" }
+        });
+        let failures = super::validate_guardrail_schema(SpecStage::Plan, &value);
+        assert!(failures.iter().any(|msg| msg.contains("specId")));
+        assert!(failures.iter().any(|msg| msg.contains("sessionId")));
+    }
+
+    #[test]
+    fn spec_auto_plan_schema_validation_fails_without_baseline() {
+        let value = json!({
+            "command": "spec-ops-plan",
+            "specId": "SPEC-OPS-004",
+            "sessionId": "2025-09-27T00:00:00Z-1234",
+            "timestamp": "2025-09-27T00:00:00Z",
+            "artifacts": [{ "path": "plan.log" }],
+            "baseline": { "mode": "no-run", "artifact": "docs/baseline.md" },
+            "hooks": { "session.start": "ok" }
+        });
+        let failures = super::validate_guardrail_schema(SpecStage::Plan, &value);
+        assert!(failures.iter().any(|msg| msg.contains("baseline.status")));
+    }
+
+    #[test]
+    fn spec_auto_tasks_schema_requires_status() {
+        let value = json!({
+            "command": "spec-ops-tasks",
+            "specId": "SPEC-OPS-004",
+            "sessionId": "sess",
+            "timestamp": "2025-09-27T00:00:00Z",
+            "artifacts": [{ "path": "tasks.log" }],
+            "tool": {}
+        });
+        let failures = super::validate_guardrail_schema(SpecStage::Tasks, &value);
+        assert!(failures.iter().any(|msg| msg.contains("tool.status")));
+    }
+
+    #[test]
+    fn spec_auto_implement_schema_requires_lock_and_hook() {
+        let value = json!({
+            "command": "spec-ops-implement",
+            "specId": "SPEC-OPS-004",
+            "sessionId": "sess",
+            "timestamp": "2025-09-27T00:00:00Z",
+            "artifacts": [{ "path": "implement.log" }]
+        });
+        let failures = super::validate_guardrail_schema(SpecStage::Implement, &value);
+        assert!(failures.iter().any(|msg| msg.contains("lock_status")));
+        assert!(failures.iter().any(|msg| msg.contains("hook_status")));
+    }
+
+    #[test]
+    fn spec_auto_validate_schema_detects_bad_scenarios() {
+        let value = json!({
+            "command": "spec-ops-validate",
+            "specId": "SPEC-OPS-004",
+            "sessionId": "sess",
+            "timestamp": "2025-09-27T00:00:00Z",
+            "scenarios": []
+        });
+        let failures = super::validate_guardrail_schema(SpecStage::Validate, &value);
+        assert!(failures.iter().any(|msg| msg.contains("Scenarios")));
+    }
+
+    #[test]
+    fn spec_auto_unlock_schema_requires_status() {
+        let value = json!({
+            "command": "spec-ops-unlock",
+            "specId": "SPEC-OPS-004",
+            "sessionId": "sess",
+            "timestamp": "2025-09-27T00:00:00Z",
+            "artifacts": [{ "path": "unlock.log" }]
+        });
+        let failures = super::validate_guardrail_schema(SpecStage::Unlock, &value);
+        assert!(failures.iter().any(|msg| msg.contains("unlock_status")));
+    }
+
+    #[test]
+    fn spec_auto_audit_schema_rejects_invalid_status_values() {
+        let value = json!({
+            "command": "spec-ops-audit",
+            "specId": "SPEC-OPS-004",
+            "sessionId": "sess",
+            "timestamp": "2025-09-27T00:00:00Z",
+            "scenarios": [
+                { "name": "audit", "status": "unknown" }
+            ]
+        });
+        let failures = super::validate_guardrail_schema(SpecStage::Audit, &value);
+        assert!(failures.iter().any(|msg| msg.contains("Scenario status")));
+    }
+
+    #[test]
+    fn spec_auto_plan_schema_validation_accepts_valid_payload() {
+        let value = json!({
+            "command": "spec-ops-plan",
+            "specId": "SPEC-OPS-004",
+            "sessionId": "sess",
+            "timestamp": "2025-09-27T00:00:00Z",
+            "artifacts": [{ "path": "plan.log" }],
+            "baseline": { "mode": "no-run", "artifact": "docs/baseline.md", "status": "passed" },
+            "hooks": { "session.start": "ok" }
+        });
+        let failures = super::validate_guardrail_schema(SpecStage::Plan, &value);
+        assert!(failures.is_empty(), "unexpected failures: {failures:?}");
+    }
+
+    #[test]
+    fn spec_auto_implement_schema_accepts_valid_payload() {
+        let value = json!({
+            "command": "spec-ops-implement",
+            "specId": "SPEC-OPS-004",
+            "sessionId": "sess",
+            "timestamp": "2025-09-27T00:00:00Z",
+            "artifacts": [{ "path": "implement.log" }],
+            "lock_status": "locked",
+            "hook_status": "ok"
+        });
+        let failures = super::validate_guardrail_schema(SpecStage::Implement, &value);
+        assert!(failures.is_empty(), "unexpected failures: {failures:?}");
+    }
+
+    #[test]
+    fn spec_auto_unlock_schema_accepts_valid_payload() {
+        let value = json!({
+            "command": "spec-ops-unlock",
+            "specId": "SPEC-OPS-004",
+            "sessionId": "sess",
+            "timestamp": "2025-09-27T00:00:00Z",
+            "artifacts": [{ "path": "unlock.log" }],
+            "unlock_status": "unlocked"
+        });
+        let failures = super::validate_guardrail_schema(SpecStage::Unlock, &value);
+        assert!(failures.is_empty(), "unexpected failures: {failures:?}");
+    }
 
     fn test_config() -> Config {
         test_config_with_cwd(std::env::temp_dir().as_path())

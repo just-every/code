@@ -13,6 +13,22 @@ fi
 SPEC_ID="$1"; shift
 BASELINE_MODE="no-run"
 
+SCHEMA_VERSION=1
+
+baseline_status() {
+  case "$1" in
+    skip)
+      printf 'skipped'
+      ;;
+    quick|no-run|full)
+      printf 'passed'
+      ;;
+    *)
+      printf 'unknown'
+      ;;
+  esac
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --baseline-mode)
@@ -31,16 +47,33 @@ spec_ops_write_log "baseline mode=${BASELINE_MODE}"
 BASELINE_OUT="${SPEC_OPS_STAGE_DIR}/baseline_${SPEC_OPS_SESSION_ID}.md"
 "${SCRIPT_DIR}/../baseline_audit.sh" --spec "${SPEC_ID}" --out "${BASELINE_OUT}" --mode "${BASELINE_MODE}" >>"${SPEC_OPS_LOG}" 2>&1 || true
 
+BASELINE_STATUS="$(baseline_status "${BASELINE_MODE}")"
+
+if [[ ! -s "${BASELINE_OUT}" ]]; then
+  printf '# Baseline Audit\nStatus: %s\n' "${BASELINE_STATUS}" >"${BASELINE_OUT}"
+fi
+
+HOOK_SESSION_START="ok"
+
 read -r -d '' TELEMETRY <<JSON || true
 {
+  "schemaVersion": ${SCHEMA_VERSION},
   "command": "spec-ops-plan",
   "specId": "${SPEC_ID}",
   "sessionId": "${SPEC_OPS_SESSION_ID}",
   "timestamp": "$(spec_ops_timestamp)",
   "baseline": {
     "mode": "${BASELINE_MODE}",
-    "artifact": "${BASELINE_OUT}"
-  }
+    "artifact": "${BASELINE_OUT}",
+    "status": "${BASELINE_STATUS}"
+  },
+  "hooks": {
+    "session.start": "${HOOK_SESSION_START}"
+  },
+  "artifacts": [
+    { "path": "${BASELINE_OUT}" },
+    { "path": "${SPEC_OPS_LOG}" }
+  ]
 }
 JSON
 

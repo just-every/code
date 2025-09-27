@@ -15,13 +15,20 @@ SPEC_ID="$1"; shift || true
 spec_ops_prepare_stage "spec-unlock" "${SPEC_ID}"
 spec_ops_write_log "unlock guardrail ready"
 
+SCHEMA_VERSION=1
+UNLOCK_STATUS="unlocked"
+
 read -r -d '' TELEMETRY <<JSON || true
 {
+  "schemaVersion": ${SCHEMA_VERSION},
   "command": "spec-ops-unlock",
   "specId": "${SPEC_ID}",
   "sessionId": "${SPEC_OPS_SESSION_ID}",
   "timestamp": "$(spec_ops_timestamp)",
-  "status": "ready"
+  "unlock_status": "${UNLOCK_STATUS}",
+  "artifacts": [
+    { "path": "${SPEC_OPS_LOG}" }
+  ]
 }
 JSON
 

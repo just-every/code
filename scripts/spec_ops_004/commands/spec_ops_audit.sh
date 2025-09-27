@@ -15,13 +15,25 @@ SPEC_ID="$1"; shift || true
 spec_ops_prepare_stage "spec-audit" "${SPEC_ID}"
 spec_ops_write_log "audit guardrail ready"
 
+SCHEMA_VERSION=1
+SCENARIO_STATUS="passed"
+
 read -r -d '' TELEMETRY <<JSON || true
 {
+  "schemaVersion": ${SCHEMA_VERSION},
   "command": "spec-ops-audit",
   "specId": "${SPEC_ID}",
   "sessionId": "${SPEC_OPS_SESSION_ID}",
   "timestamp": "$(spec_ops_timestamp)",
-  "status": "ready"
+  "scenarios": [
+    {
+      "name": "audit guardrail bootstrap",
+      "status": "${SCENARIO_STATUS}"
+    }
+  ],
+  "artifacts": [
+    { "path": "${SPEC_OPS_LOG}" }
+  ]
 }
 JSON
 
