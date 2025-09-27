@@ -1591,7 +1591,7 @@ impl App<'_> {
                         | SlashCommand::SpecTasks
                         | SlashCommand::SpecImplement
                         | SlashCommand::SpecValidate
-                        | SlashCommand::SpecReview
+                        | SlashCommand::SpecAudit
                         | SlashCommand::SpecUnlock
                         | SlashCommand::SpecAuto => {
                             // Prompt-expanded in the chat widget; no additional dispatch required here.
@@ -1604,6 +1604,11 @@ impl App<'_> {
                         | SlashCommand::SpecOpsUnlock => {
                             if let AppState::Chat { widget } = &mut self.app_state {
                                 widget.handle_spec_ops_command(command, command_args);
+                            }
+                        }
+                        SlashCommand::SpecConsensus => {
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                widget.handle_spec_consensus_command(command_args);
                             }
                         }
                         SlashCommand::Merge => {

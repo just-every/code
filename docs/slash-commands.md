@@ -44,9 +44,9 @@ Notes
 - `/spec-ops-tasks <SPEC-ID> [options]`: prepare Spec Ops task automation hooks (`/spec-tasks` handles the multi-agent synthesis).
 - `/spec-ops-implement <SPEC-ID> [options]`: lock SPEC.md and prime guardrails ahead of implementation.
 - `/spec-ops-validate <SPEC-ID> [--scenario <name>]`: execute validation harness scenarios and record telemetry.
-- `/spec-ops-audit <SPEC-ID> [--dry-run]`: run the Spec Ops audit scenarios; use `/spec-review` for the multi-agent consensus stage.
+- `/spec-ops-audit <SPEC-ID> [--dry-run]`: run the Spec Ops audit scenarios; `/spec-audit` performs the multi-agent consensus review and now records verdict JSON for `/spec-auto` gating.
 - `/spec-ops-unlock <SPEC-ID> [--spec-path <path>]`: force-unlock SPEC.md after the guardrail workflow completes. Alias `/spec-unlock` is deprecated.
-- `/spec-auto <SPEC-ID> [goal] [--from <stage>]`: orchestrate the end-to-end Spec Ops + multi-agent pipeline, preparing guardrail commands and stage prompts (supports stages: plan, tasks, implement, validate, review, unlock).
+- `/spec-auto <SPEC-ID> [goal] [--from <stage>]`: orchestrate the end-to-end Spec Ops + multi-agent pipeline, preparing guardrail commands, stage prompts, and consensus checks (supports stages: plan, tasks, implement, validate, audit, unlock).
 
 ## UX & Display
 
@@ -87,7 +87,7 @@ typically start multiple agents. They require a task/problem description.
 - `/spec-tasks <SPEC-ID>`: multi-agent task synthesis aligned with SPEC.md tracking.
 - `/spec-implement <SPEC-ID> [summary]`: implementation strategy prompts for the three agents.
 - `/spec-validate <SPEC-ID>`: validation consensus prompts tied to Spec Ops telemetry.
-- `/spec-review <SPEC-ID>`: go/no-go review prompts coordinating all agents.
+- `/spec-audit <SPEC-ID>`: go/no-go audit consensus prompts coordinating all agents; persists verdicts to local-memory.
 - `/spec-unlock <SPEC-ID>`: unlock justification prompts prior to running `/spec-ops-unlock`.
 
 ## Development‑Only

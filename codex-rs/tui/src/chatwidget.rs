@@ -4,8 +4,8 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::fs;
-use std::io::Read;
-use std::path::PathBuf;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
@@ -133,6 +133,7 @@ use ratatui::widgets::WidgetRef;
 use ratatui_image::picker::Picker;
 use std::cell::Cell;
 use std::cell::RefCell;
+use std::process::Command;
 use std::sync::mpsc;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -214,7 +215,7 @@ use codex_core::protocol::RateLimitSnapshotEvent;
 use codex_core::protocol::ValidationGroup;
 use crate::rate_limits_view::{build_limits_view, RateLimitResetInfo, DEFAULT_GRID_CONFIG};
 use codex_core::review_format::format_review_findings_block;
-use chrono::{DateTime, Duration as ChronoDuration, Local, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Local, SecondsFormat, Utc};
 use crossterm::event::KeyCode;
 use crossterm::event::KeyModifiers;
 use ratatui::style::Stylize;
@@ -13847,6 +13848,267 @@ impl ChatWidget<'_> {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct LocalMemorySearchResponse {
+    success: bool,
+    #[serde(default)]
+    data: Option<LocalMemorySearchData>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalMemorySearchData {
+    #[serde(default)]
+    results: Vec<LocalMemorySearchResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalMemorySearchResult {
+    memory: LocalMemoryRecord,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalMemoryRecord {
+    #[serde(default)]
+    id: Option<String>,
+    content: String,
+}
+
+struct ConsensusArtifactData {
+    memory_id: Option<String>,
+    agent: String,
+    version: Option<String>,
+    content: Value,
+}
+
+#[derive(Serialize)]
+struct ConsensusArtifactVerdict {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    memory_id: Option<String>,
+    agent: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    content: Value,
+}
+
+#[derive(Serialize)]
+struct ConsensusVerdict {
+    spec_id: String,
+    stage: String,
+    recorded_at: String,
+    consensus_ok: bool,
+    degraded: bool,
+    required_fields_ok: bool,
+    missing_agents: Vec<String>,
+    agreements: Vec<String>,
+    conflicts: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    aggregator_agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    aggregator_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    aggregator: Option<Value>,
+    artifacts: Vec<ConsensusArtifactVerdict>,
+}
+
+fn parse_consensus_stage(stage: &str) -> Option<SpecStage> {
+    match stage.to_ascii_lowercase().as_str() {
+        "plan" | "spec-plan" => Some(SpecStage::Plan),
+        "tasks" | "spec-tasks" => Some(SpecStage::Tasks),
+        "implement" | "spec-implement" => Some(SpecStage::Implement),
+        "validate" | "spec-validate" => Some(SpecStage::Validate),
+        "audit" | "review" | "spec-audit" | "spec-review" => Some(SpecStage::Audit),
+        "unlock" | "spec-unlock" => Some(SpecStage::Unlock),
+        _ => None,
+    }
+}
+
+fn collect_consensus_artifacts(
+    spec_id: &str,
+    stage: SpecStage,
+) -> Result<(Vec<ConsensusArtifactData>, Vec<String>), String> {
+    let query = format!("{} {}", spec_id, stage.command_name());
+    let mut cmd = Command::new("local-memory");
+    cmd.arg("search")
+        .arg(&query)
+        .arg("--json")
+        .arg("--limit")
+        .arg("20")
+        .arg("--tags")
+        .arg(format!("spec:{}", spec_id))
+        .arg("--tags")
+        .arg(format!("stage:{}", stage.command_name()));
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("failed to run local-memory search: {e}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "local-memory search failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    let response: LocalMemorySearchResponse = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("failed to parse local-memory search output: {e}"))?;
+
+    if !response.success {
+        if let Some(err) = response.error {
+            return Err(format!("local-memory search error: {err}"));
+        }
+    }
+
+    let mut artifacts: Vec<ConsensusArtifactData> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+
+    if let Some(data) = response.data {
+        for result in data.results {
+            let memory_id = result.memory.id.clone();
+            let content_str = result.memory.content.trim();
+            if content_str.is_empty() {
+                warnings.push("local-memory entry had empty content".to_string());
+                continue;
+            }
+
+            let value = match serde_json::from_str::<Value>(content_str) {
+                Ok(v) => v,
+                Err(err) => {
+                    warnings.push(format!("unable to parse consensus artifact JSON: {err}"));
+                    continue;
+                }
+            };
+
+            let agent = match value
+                .get("agent")
+                .or_else(|| value.get("model"))
+                .and_then(|v| v.as_str())
+            {
+                Some(agent) if !agent.trim().is_empty() => agent.trim().to_string(),
+                _ => {
+                    warnings.push("consensus artifact missing agent field".to_string());
+                    continue;
+                }
+            };
+
+            let stage_matches = value
+                .get("stage")
+                .or_else(|| value.get("stage_name"))
+                .and_then(|v| v.as_str())
+                .and_then(parse_consensus_stage)
+                .map(|parsed| parsed == stage)
+                .unwrap_or(false);
+
+            if !stage_matches {
+                warnings.push(format!(
+                    "skipping local-memory entry for agent {} because stage did not match {}",
+                    agent,
+                    stage.command_name()
+                ));
+                continue;
+            }
+
+            let spec_matches = value
+                .get("spec_id")
+                .or_else(|| value.get("specId"))
+                .and_then(|v| v.as_str())
+                .map(|reported| reported.eq_ignore_ascii_case(spec_id))
+                .unwrap_or(true);
+
+            if !spec_matches {
+                warnings.push(format!(
+                    "skipping local-memory entry for agent {} because spec id did not match {}",
+                    agent,
+                    spec_id
+                ));
+                continue;
+            }
+
+            let version = value
+                .get("version")
+                .or_else(|| value.get("prompt_version"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            artifacts.push(ConsensusArtifactData {
+                memory_id,
+                agent,
+                version,
+                content: value,
+            });
+        }
+    }
+
+    Ok((artifacts, warnings))
+}
+
+fn expected_agents_for_stage(stage: SpecStage) -> Vec<&'static str> {
+    match stage {
+        SpecStage::Plan
+        | SpecStage::Tasks
+        | SpecStage::Implement
+        | SpecStage::Validate
+        | SpecStage::Audit
+        | SpecStage::Unlock => vec!["gemini", "claude", "gpt_pro"],
+    }
+}
+
+fn extract_string_list(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    if let Some(s) = item.as_str() {
+                        Some(s.to_string())
+                    } else if item.is_object() || item.is_array() {
+                        serde_json::to_string(item).ok()
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn validate_required_fields(stage: SpecStage, summary: &Value) -> bool {
+    match stage {
+        SpecStage::Plan => summary
+            .get("final_plan")
+            .and_then(|plan| plan.get("work_breakdown"))
+            .and_then(|wb| wb.as_array())
+            .map(|wb| !wb.is_empty())
+            .unwrap_or(false),
+        SpecStage::Tasks => summary
+            .get("validated_tasks")
+            .and_then(|tasks| tasks.as_array())
+            .map(|tasks| !tasks.is_empty())
+            .unwrap_or(false),
+        SpecStage::Implement => summary
+            .get("checklist")
+            .and_then(|list| list.as_array())
+            .map(|list| !list.is_empty())
+            .unwrap_or(false),
+        SpecStage::Validate => summary
+            .get("decision")
+            .and_then(|d| d.as_str())
+            .map(|d| !d.is_empty())
+            .unwrap_or(false),
+        SpecStage::Audit => summary
+            .get("recommendation")
+            .and_then(|d| d.as_str())
+            .map(|d| !d.is_empty())
+            .unwrap_or(false),
+        SpecStage::Unlock => summary
+            .get("decision")
+            .and_then(|d| d.as_str())
+            .map(|d| !d.is_empty())
+            .unwrap_or(false),
+    }
+}
+
 impl ChatWidget<'_> {
     pub(crate) fn open_review_dialog(&mut self) {
         if self.is_task_running() {
@@ -14516,6 +14778,310 @@ impl ChatWidget<'_> {
             env,
         });
         self.request_redraw();
+    }
+
+    pub(crate) fn handle_spec_consensus_command(&mut self, raw_args: String) {
+        let trimmed = raw_args.trim();
+        if trimmed.is_empty() {
+            self.history_push(crate::history_cell::new_error_event(
+                "Usage: /spec-consensus <SPEC-ID> <stage>".to_string(),
+            ));
+            return;
+        }
+
+        let mut parts = trimmed.split_whitespace();
+        let Some(spec_id) = parts.next() else {
+            self.history_push(crate::history_cell::new_error_event(
+                "Usage: /spec-consensus <SPEC-ID> <stage>".to_string(),
+            ));
+            return;
+        };
+
+        let Some(stage_str) = parts.next() else {
+            self.history_push(crate::history_cell::new_error_event(
+                "Usage: /spec-consensus <SPEC-ID> <stage>".to_string(),
+            ));
+            return;
+        };
+
+        let Some(stage) = parse_consensus_stage(stage_str) else {
+            self.history_push(crate::history_cell::new_error_event(format!(
+                "Unknown stage '{stage_str}'. Expected plan, tasks, implement, validate, audit, or unlock.",
+            )));
+            return;
+        };
+
+        match self.run_spec_consensus(spec_id, stage) {
+            Ok((lines, ok)) => {
+                let cell = crate::history_cell::PlainHistoryCell::new(
+                    lines,
+                    if ok {
+                        crate::history_cell::HistoryCellType::Notice
+                    } else {
+                        crate::history_cell::HistoryCellType::Error
+                    },
+                );
+                self.history_push(cell);
+            }
+            Err(err) => {
+                self.history_push(crate::history_cell::new_error_event(err));
+            }
+        }
+    }
+
+    fn run_spec_consensus(
+        &mut self,
+        spec_id: &str,
+        stage: SpecStage,
+    ) -> Result<(Vec<ratatui::text::Line<'static>>, bool), String> {
+        let (artifacts, mut warnings) = collect_consensus_artifacts(spec_id, stage)?;
+        if artifacts.is_empty() {
+            return Err(format!(
+                "No structured local-memory entries found for {} stage '{}'. Ensure agents stored their JSON via local-memory remember.",
+                spec_id,
+                stage.command_name()
+            ));
+        }
+
+        let mut present_agents: HashSet<String> = HashSet::new();
+        let mut aggregator_summary: Option<Value> = None;
+        let mut aggregator_version: Option<String> = None;
+        let mut aggregator_agent: Option<String> = None;
+        let mut agreements: Vec<String> = Vec::new();
+        let mut conflicts: Vec<String> = Vec::new();
+        let mut required_fields_ok = false;
+
+        for artifact in &artifacts {
+            let agent_lower = artifact.agent.to_ascii_lowercase();
+            present_agents.insert(agent_lower.clone());
+            if artifact.agent.eq_ignore_ascii_case("gpt_pro") {
+                let consensus_node = artifact
+                    .content
+                    .get("consensus")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                agreements = extract_string_list(consensus_node.get("agreements"));
+                conflicts = extract_string_list(consensus_node.get("conflicts"));
+                required_fields_ok = validate_required_fields(stage, &artifact.content);
+                aggregator_summary = Some(artifact.content.clone());
+                aggregator_version = artifact.version.clone();
+                aggregator_agent = Some(artifact.agent.clone());
+            }
+        }
+
+        let expected_agents = expected_agents_for_stage(stage)
+            .into_iter()
+            .map(|agent| agent.to_ascii_lowercase())
+            .collect::<Vec<_>>();
+
+        let missing_agents: Vec<String> = expected_agents
+            .into_iter()
+            .filter(|agent| !present_agents.contains(agent))
+            .collect();
+
+        if aggregator_summary.is_none() {
+            required_fields_ok = false;
+        }
+
+        let aggregator_missing = aggregator_summary.is_none();
+        let degraded = aggregator_missing || !missing_agents.is_empty();
+        let consensus_ok =
+            !aggregator_missing && conflicts.is_empty() && missing_agents.is_empty() && required_fields_ok;
+
+        let mut lines: Vec<ratatui::text::Line<'static>> = Vec::new();
+        let status = if consensus_ok {
+            "CONSENSUS OK"
+        } else if degraded {
+            "CONSENSUS DEGRADED"
+        } else {
+            "CONSENSUS CONFLICT"
+        };
+        lines.push(ratatui::text::Line::from(format!(
+            "[Spec Consensus] {} {} — {}",
+            stage.display_name(),
+            spec_id,
+            status
+        )));
+
+        for warning in warnings.drain(..) {
+            lines.push(ratatui::text::Line::from(format!("  Warning: {warning}")));
+        }
+
+        if !missing_agents.is_empty() {
+            lines.push(ratatui::text::Line::from(format!(
+                "  Missing agents: {}",
+                missing_agents.join(", ")
+            )));
+        }
+
+        if aggregator_missing {
+            lines.push(ratatui::text::Line::from(
+                "  Aggregator (gpt_pro) summary not found in local-memory.",
+            ));
+        }
+
+        if !agreements.is_empty() {
+            lines.push(ratatui::text::Line::from(format!(
+                "  Agreements: {}",
+                agreements.join("; ")
+            )));
+        }
+
+        if !conflicts.is_empty() {
+            lines.push(ratatui::text::Line::from(format!(
+                "  Conflicts: {}",
+                conflicts.join("; ")
+            )));
+        }
+
+        if !required_fields_ok {
+            lines.push(ratatui::text::Line::from(
+                "  Warning: required summary fields missing from aggregator output.",
+            ));
+        }
+
+        let timestamp = Utc::now();
+        let recorded_at = timestamp.to_rfc3339_opts(SecondsFormat::Secs, true);
+        let evidence_slug = timestamp.format("%Y%m%dT%H%M%SZ").to_string();
+
+        let verdict = ConsensusVerdict {
+            spec_id: spec_id.to_string(),
+            stage: stage.command_name().to_string(),
+            recorded_at,
+            consensus_ok,
+            degraded,
+            required_fields_ok,
+            missing_agents: missing_agents.clone(),
+            agreements: agreements.clone(),
+            conflicts: conflicts.clone(),
+            aggregator_agent,
+            aggregator_version,
+            aggregator: aggregator_summary.clone(),
+            artifacts: artifacts
+                .iter()
+                .map(|artifact| ConsensusArtifactVerdict {
+                    memory_id: artifact.memory_id.clone(),
+                    agent: artifact.agent.clone(),
+                    version: artifact.version.clone(),
+                    content: artifact.content.clone(),
+                })
+                .collect(),
+        };
+
+        match self.persist_consensus_verdict(spec_id, stage, &verdict, &evidence_slug) {
+            Ok(path) => {
+                lines.push(ratatui::text::Line::from(format!(
+                    "  Evidence: {}",
+                    path.display()
+                )));
+                if let Err(err) =
+                    self.remember_consensus_verdict(spec_id, stage, &path, &verdict)
+                {
+                    lines.push(ratatui::text::Line::from(format!(
+                        "  Warning: failed to store consensus verdict in local-memory: {}",
+                        err
+                    )));
+                }
+            }
+            Err(err) => {
+                lines.push(ratatui::text::Line::from(format!(
+                    "  Warning: failed to persist consensus evidence: {}",
+                    err
+                )));
+            }
+        }
+
+        Ok((lines, consensus_ok))
+    }
+
+    fn persist_consensus_verdict(
+        &self,
+        spec_id: &str,
+        stage: SpecStage,
+        verdict: &ConsensusVerdict,
+        slug: &str,
+    ) -> Result<PathBuf, String> {
+        let base = self
+            .config
+            .cwd
+            .join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus")
+            .join(spec_id);
+        fs::create_dir_all(&base).map_err(|e| {
+            format!(
+                "failed to create consensus evidence directory {}: {}",
+                base.display(),
+                e
+            )
+        })?;
+
+        let filename = format!("{}-{}.json", slug, stage.command_name());
+        let path = base.join(filename);
+
+        let payload = serde_json::to_vec_pretty(verdict)
+            .map_err(|e| format!("failed to serialize consensus verdict: {e}"))?;
+
+        let mut file = fs::File::create(&path)
+            .map_err(|e| format!("failed to create {}: {e}", path.display()))?;
+        file.write_all(&payload)
+            .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+        file.write_all(b"\n").ok();
+
+        Ok(path)
+    }
+
+    fn remember_consensus_verdict(
+        &self,
+        spec_id: &str,
+        stage: SpecStage,
+        evidence_path: &Path,
+        verdict: &ConsensusVerdict,
+    ) -> Result<(), String> {
+        let summary_value = serde_json::json!({
+            "kind": "spec-consensus-verdict",
+            "specId": spec_id,
+            "stage": stage.command_name(),
+            "consensusOk": verdict.consensus_ok,
+            "degraded": verdict.degraded,
+            "requiredFieldsOk": verdict.required_fields_ok,
+            "missingAgents": verdict.missing_agents,
+            "agreements": verdict.agreements,
+            "conflicts": verdict.conflicts,
+            "artifactsCount": verdict.artifacts.len(),
+            "evidencePath": evidence_path.to_string_lossy(),
+            "recordedAt": verdict.recorded_at,
+        });
+
+        let summary = serde_json::to_string(&summary_value)
+            .map_err(|e| format!("failed to serialize consensus summary: {e}"))?;
+
+        let mut cmd = Command::new("local-memory");
+        cmd.arg("remember")
+            .arg(summary)
+            .arg("--importance")
+            .arg("8")
+            .arg("--domain")
+            .arg("spec-tracker")
+            .arg("--tags")
+            .arg(format!("spec:{}", spec_id))
+            .arg("--tags")
+            .arg(format!("stage:{}", stage.command_name()))
+            .arg("--tags")
+            .arg("consensus")
+            .arg("--tags")
+            .arg("verdict");
+
+        let output = cmd
+            .output()
+            .map_err(|e| format!("failed to run local-memory remember: {e}"))?;
+
+        if !output.status.success() {
+            return Err(format!(
+                "local-memory remember failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+
+        Ok(())
     }
 
     pub(crate) fn handle_project_command(&mut self, args: String) {
@@ -15223,7 +15789,7 @@ fn spec_stage_for_multi_agent_followup(command: SlashCommand) -> Option<SpecStag
         SlashCommand::SpecOpsTasks => Some(SpecStage::Tasks),
         SlashCommand::SpecOpsImplement => Some(SpecStage::Implement),
         SlashCommand::SpecOpsValidate => Some(SpecStage::Validate),
-        SlashCommand::SpecOpsAudit => Some(SpecStage::Review),
+        SlashCommand::SpecOpsAudit => Some(SpecStage::Audit),
         SlashCommand::SpecOpsUnlock => Some(SpecStage::Unlock),
         _ => None,
     }
@@ -15242,7 +15808,8 @@ fn parse_spec_stage_invocation(input: &str) -> Option<(SpecStage, String)> {
         .or_else(|| split_args("/spec-tasks ", SpecStage::Tasks))
         .or_else(|| split_args("/spec-implement ", SpecStage::Implement))
         .or_else(|| split_args("/spec-validate ", SpecStage::Validate))
-        .or_else(|| split_args("/spec-review ", SpecStage::Review))
+        .or_else(|| split_args("/spec-review ", SpecStage::Audit))
+        .or_else(|| split_args("/spec-audit ", SpecStage::Audit))
         .or_else(|| split_args("/spec-unlock ", SpecStage::Unlock))
         .and_then(|(stage, spec)| if spec.is_empty() { None } else { Some((stage, spec)) })
 }
@@ -15261,7 +15828,7 @@ fn guardrail_for_stage(stage: SpecStage) -> SlashCommand {
         SpecStage::Tasks => SlashCommand::SpecOpsTasks,
         SpecStage::Implement => SlashCommand::SpecOpsImplement,
         SpecStage::Validate => SlashCommand::SpecOpsValidate,
-        SpecStage::Review => SlashCommand::SpecOpsAudit,
+        SpecStage::Audit => SlashCommand::SpecOpsAudit,
         SpecStage::Unlock => SlashCommand::SpecOpsUnlock,
     }
 }
@@ -15272,7 +15839,7 @@ fn spec_ops_stage_prefix(stage: SpecStage) -> &'static str {
         SpecStage::Tasks => "tasks_",
         SpecStage::Implement => "implement_",
         SpecStage::Validate => "validate_",
-        SpecStage::Review => "audit_",
+        SpecStage::Audit => "audit_",
         SpecStage::Unlock => "unlock_",
     }
 }
@@ -15414,7 +15981,7 @@ fn evaluate_guardrail_value(stage: SpecStage, value: &Value) -> GuardrailEvaluat
                 failures,
             }
         }
-        SpecStage::Validate | SpecStage::Review => {
+        SpecStage::Validate | SpecStage::Audit => {
             let mut failures = Vec::new();
             let scenarios = value
                 .get("scenarios")
@@ -15507,7 +16074,7 @@ impl SpecAutoState {
             SpecStage::Tasks,
             SpecStage::Implement,
             SpecStage::Validate,
-            SpecStage::Review,
+            SpecStage::Audit,
             SpecStage::Unlock,
         ];
         let start_index = stages
@@ -15814,6 +16381,40 @@ impl ChatWidget<'_> {
                     }
                 }
 
+                match self.run_spec_consensus(&spec_id, stage) {
+                    Ok((consensus_lines, ok)) => {
+                        let cell = crate::history_cell::PlainHistoryCell::new(
+                            consensus_lines,
+                            if ok {
+                                crate::history_cell::HistoryCellType::Notice
+                            } else {
+                                crate::history_cell::HistoryCellType::Error
+                            },
+                        );
+                        self.history_push(cell);
+                        if !ok {
+                            self.history_push(crate::history_cell::PlainHistoryCell::new(
+                                vec![ratatui::text::Line::from(format!(
+                                    "/spec-auto paused: resolve consensus for {} before continuing.",
+                                    stage.display_name()
+                                ))],
+                                crate::history_cell::HistoryCellType::Error,
+                            ));
+                            self.spec_auto_state = None;
+                            return;
+                        }
+                    }
+                    Err(err) => {
+                        self.history_push(crate::history_cell::new_error_event(format!(
+                            "Consensus check failed for {}: {}",
+                            stage.display_name(),
+                            err
+                        )));
+                        self.spec_auto_state = None;
+                        return;
+                    }
+                }
+
                 self.advance_spec_auto();
             }
             Err(err) => {
@@ -15836,7 +16437,7 @@ impl ChatWidget<'_> {
         let mut evaluation = evaluate_guardrail_value(stage, &value);
         if matches!(
             stage,
-            SpecStage::Plan | SpecStage::Tasks | SpecStage::Implement | SpecStage::Review | SpecStage::Unlock
+        SpecStage::Plan | SpecStage::Tasks | SpecStage::Implement | SpecStage::Audit | SpecStage::Unlock
         ) {
             let (evidence_failures, artifact_count) =
                 validate_guardrail_evidence(self.config.cwd.as_path(), stage, &value);
@@ -16083,6 +16684,12 @@ async fn shell_lite_fetch_json(cfg: McpServerConfig, script: String) -> Result<S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use once_cell::sync::Lazy;
+    use std::fs;
+    use std::fs::File;
+    use std::io::Write as IoWrite;
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
     use codex_core::config::Config;
     use codex_core::config::ConfigOverrides;
     use codex_core::config::ConfigToml;
@@ -16109,9 +16716,13 @@ mod tests {
     }
 
     fn make_widget() -> ChatWidget<'static> {
+        make_widget_with_dir(std::env::temp_dir().as_path())
+    }
+
+    fn make_widget_with_dir(cwd: &Path) -> ChatWidget<'static> {
         let (tx_raw, _rx) = std::sync::mpsc::channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
-        let cfg = test_config();
+        let cfg = test_config_with_cwd(cwd);
         let term = crate::tui::TerminalInfo {
             picker: None,
             font_size: (8, 16),
@@ -16242,6 +16853,240 @@ mod tests {
         let (failures, count) = validate_guardrail_evidence(temp.path(), SpecStage::Tasks, &telemetry);
         assert!(failures.is_empty());
         assert_eq!(count, 1);
+    }
+
+    static LM_MOCK_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+    struct LocalMemoryMock {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        dir: tempfile::TempDir,
+        prev_path: Option<String>,
+        prev_search: Option<String>,
+        prev_remember: Option<String>,
+        remember_log: PathBuf,
+    }
+
+    impl LocalMemoryMock {
+        fn new(response: serde_json::Value) -> Self {
+            let guard = LM_MOCK_LOCK.lock().unwrap();
+            let dir = tempdir().expect("mock dir");
+            let script_path = dir.path().join("local-memory");
+            let mut script = File::create(&script_path).expect("mock script");
+            script
+                .write_all(
+                    b"#!/usr/bin/env bash\nset -euo pipefail\ncmd=\"$1\"\nshift || true\ncase \"$cmd\" in\n  search)\n    cat \"$LM_MOCK_SEARCH\"\n    ;;\n  remember)\n    printf '%s\\n' \"$*\" >> \"$LM_MOCK_REMEMBER_LOG\"\n    ;;\n  *)\n    echo 'unsupported local-memory mock command' >&2\n    exit 1\n    ;;\nesac\n",
+                )
+                .expect("write mock");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755))
+                    .expect("chmod mock");
+            }
+
+            let search_path = dir.path().join("search.json");
+            fs::write(
+                &search_path,
+                serde_json::to_vec(&response).expect("serialize response"),
+            )
+            .expect("write response");
+
+            let remember_log = dir.path().join("remember.log");
+
+            let prev_path = std::env::var("PATH").ok();
+            let new_path = match &prev_path {
+                Some(old) => format!("{}:{}", dir.path().display(), old),
+                None => dir.path().display().to_string(),
+            };
+            unsafe {
+                std::env::set_var("PATH", new_path);
+            }
+
+            let prev_search = std::env::var("LM_MOCK_SEARCH").ok();
+            unsafe {
+                std::env::set_var("LM_MOCK_SEARCH", search_path.to_string_lossy().as_ref());
+            }
+
+            let prev_remember = std::env::var("LM_MOCK_REMEMBER_LOG").ok();
+            unsafe {
+                std::env::set_var(
+                    "LM_MOCK_REMEMBER_LOG",
+                    remember_log.to_string_lossy().as_ref(),
+                );
+            }
+
+            Self {
+                _guard: guard,
+                dir,
+                prev_path,
+                prev_search,
+                prev_remember,
+                remember_log,
+            }
+        }
+
+        fn remember_log(&self) -> &Path {
+            &self.remember_log
+        }
+    }
+
+    impl Drop for LocalMemoryMock {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some(prev) = &self.prev_path {
+                    std::env::set_var("PATH", prev);
+                } else {
+                    std::env::remove_var("PATH");
+                }
+                if let Some(prev) = &self.prev_search {
+                    std::env::set_var("LM_MOCK_SEARCH", prev);
+                } else {
+                    std::env::remove_var("LM_MOCK_SEARCH");
+                }
+                if let Some(prev) = &self.prev_remember {
+                    std::env::set_var("LM_MOCK_REMEMBER_LOG", prev);
+                } else {
+                    std::env::remove_var("LM_MOCK_REMEMBER_LOG");
+                }
+            }
+        }
+    }
+
+    fn consensus_fixture(agent: &str, spec_id: &str) -> serde_json::Value {
+        json!({
+            "spec_id": spec_id,
+            "stage": "spec-plan",
+            "agent": agent,
+            "model": match agent {
+                "gemini" => "gemini-2.5-pro",
+                "claude" => "claude-opus-4-1-20250805",
+                _ => "gpt-5",
+            },
+            "model_release": "2025-08-06",
+            "reasoning_mode": if agent == "gemini" { "thinking" } else { "auto" },
+            "final_plan": {
+                "work_breakdown": [ { "step": "Do the thing" } ]
+            },
+            "consensus": {
+                "agreements": ["Aligned"],
+                "conflicts": []
+            }
+        })
+    }
+
+    fn flatten_lines(lines: &[ratatui::text::Line<'static>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn run_spec_consensus_writes_verdict_and_local_memory() {
+        let spec_id = "SPEC-321";
+        let response = json!({
+            "success": true,
+            "data": {
+                "results": [
+                    { "memory": { "id": "agg-1", "content": serde_json::to_string(&consensus_fixture("gpt_pro", spec_id)).unwrap() } },
+                    { "memory": { "id": "gem-1", "content": serde_json::to_string(&consensus_fixture("gemini", spec_id)).unwrap() } },
+                    { "memory": { "id": "cl-1", "content": serde_json::to_string(&consensus_fixture("claude", spec_id)).unwrap() } }
+                ]
+            }
+        });
+        let mock = LocalMemoryMock::new(response);
+        let workspace = tempdir().expect("workspace");
+        let mut chat = make_widget_with_dir(workspace.path());
+
+        let (lines, ok) = chat
+            .run_spec_consensus(spec_id, SpecStage::Plan)
+            .expect("consensus success");
+        assert!(ok);
+
+        let text_lines = flatten_lines(&lines);
+        assert!(text_lines.iter().any(|l| l.contains("CONSENSUS OK")));
+        assert!(text_lines.iter().any(|l| l.contains("Evidence:")));
+
+        let verdict_dir = workspace
+            .path()
+            .join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus")
+            .join(spec_id);
+        let entries = fs::read_dir(&verdict_dir)
+            .expect("verdict dir")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("entries");
+        assert_eq!(entries.len(), 1);
+        let verdict_path = entries[0].path();
+        let verdict_json: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&verdict_path).expect("read verdict"),
+        )
+        .expect("verdict json");
+        assert_eq!(verdict_json["consensus_ok"], json!(true));
+        assert_eq!(verdict_json["agent_models"]["gemini"], json!("gemini-2.5-pro"));
+        assert_eq!(verdict_json["agent_models"]["gpt_pro"], json!("gpt-5"));
+
+        let artifacts = verdict_json["artifacts"].as_array().expect("artifacts array");
+        let aggregator = artifacts
+            .iter()
+            .find(|item| item["agent"] == json!("gpt_pro"))
+            .expect("aggregator artifact");
+        assert_eq!(aggregator["model"], json!("gpt-5"));
+        assert_eq!(aggregator["reasoning_mode"], json!("auto"));
+
+        let remember_log = fs::read_to_string(mock.remember_log()).expect("remember log");
+        assert!(
+            !remember_log.trim().is_empty(),
+            "expected local-memory remember to be invoked"
+        );
+    }
+
+    #[test]
+    fn run_spec_consensus_reports_missing_agents() {
+        let spec_id = "SPEC-654";
+        let response = json!({
+            "success": true,
+            "data": {
+                "results": [
+                    { "memory": { "id": "agg-2", "content": serde_json::to_string(&consensus_fixture("gpt_pro", spec_id)).unwrap() } },
+                    { "memory": { "id": "gem-2", "content": serde_json::to_string(&consensus_fixture("gemini", spec_id)).unwrap() } }
+                ]
+            }
+        });
+        let _mock = LocalMemoryMock::new(response);
+        let workspace = tempdir().expect("workspace");
+        let mut chat = make_widget_with_dir(workspace.path());
+
+        let (lines, ok) = chat
+            .run_spec_consensus(spec_id, SpecStage::Plan)
+            .expect("consensus run");
+        assert!(!ok);
+
+        let text_lines = flatten_lines(&lines);
+        assert!(text_lines.iter().any(|l| l.contains("CONSENSUS DEGRADED")));
+        assert!(text_lines.iter().any(|l| l.contains("Missing agents: claude")));
+
+        let verdict_dir = workspace
+            .path()
+            .join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus")
+            .join(spec_id);
+        let entries = fs::read_dir(&verdict_dir)
+            .expect("verdict dir")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("entries");
+        assert_eq!(entries.len(), 1);
+        let verdict_path = entries[0].path();
+        let verdict_json: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&verdict_path).expect("read verdict"),
+        )
+        .expect("verdict json");
+        assert_eq!(verdict_json["consensus_ok"], json!(false));
+        assert_eq!(verdict_json["missing_agents"], json!(["claude"]));
+        assert_eq!(verdict_json["agent_models"].as_object().unwrap().len(), 2);
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use once_cell::sync::OnceCell;
 use serde::Deserialize;
+use std::fmt::Write as _;
 
 const PROMPTS_JSON: &str = include_str!(
     concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/spec-kit/prompts.json")
@@ -28,7 +29,7 @@ pub struct StagePrompts {
     extra: HashMap<String, serde_json::Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpecAgent {
     Gemini,
     Claude,
@@ -85,13 +86,91 @@ pub fn render_prompt(stage: &str, agent: SpecAgent, vars: &[(&str, &str)]) -> Op
     Some(text)
 }
 
+fn stage_env_suffix(stage: SpecStage) -> String {
+    stage
+        .key()
+        .replace('-', "_")
+        .to_ascii_uppercase()
+}
+
+fn agent_env_prefix(agent: SpecAgent) -> &'static str {
+    match agent {
+        SpecAgent::Gemini => "GEMINI",
+        SpecAgent::Claude => "CLAUDE",
+        SpecAgent::GptPro => "GPT_PRO",
+    }
+}
+
+fn resolve_metadata_field(
+    field: &str,
+    stage: SpecStage,
+    agent: SpecAgent,
+    default: &str,
+) -> String {
+    let stage_key = stage_env_suffix(stage);
+    let agent_key = agent_env_prefix(agent);
+    let mut env_name = String::new();
+    write!(env_name, "SPECKIT_{}_{}_{}", field, agent_key, stage_key).unwrap();
+    if let Ok(value) = std::env::var(&env_name) {
+        return value;
+    }
+    env_name.clear();
+    write!(env_name, "SPECKIT_{}_{}", field, agent_key).unwrap();
+    if let Ok(value) = std::env::var(&env_name) {
+        return value;
+    }
+    default.to_string()
+}
+
+fn model_metadata(stage: SpecStage, agent: SpecAgent) -> Vec<(String, String)> {
+    let (model_id_default, release_default, mode_default) = match (stage, agent) {
+        (SpecStage::Tasks | SpecStage::Unlock, SpecAgent::Gemini) => (
+            "gemini-2.5-flash",
+            "2025-05-14",
+            "fast",
+        ),
+        (_, SpecAgent::Gemini) => ("gemini-2.5-pro", "2025-05-14", "thinking"),
+        (SpecStage::Unlock, SpecAgent::Claude) => (
+            "claude-sonnet-4-20250514",
+            "2025-05-14",
+            "balanced",
+        ),
+        (_, SpecAgent::Claude) => (
+            "claude-opus-4-1-20250805",
+            "2025-08-05",
+            "balanced",
+        ),
+        (SpecStage::Implement, SpecAgent::GptPro) => (
+            "gpt-5-pro",
+            "2025-08-06",
+            "thinking",
+        ),
+        (_, SpecAgent::GptPro) => ("gpt-5", "2025-08-06", "auto"),
+    };
+
+    vec![
+        (
+            "MODEL_ID".into(),
+            resolve_metadata_field("MODEL_ID", stage, agent, model_id_default),
+        ),
+        (
+            "MODEL_RELEASE".into(),
+            resolve_metadata_field("MODEL_RELEASE", stage, agent, release_default),
+        ),
+        (
+            "REASONING_MODE".into(),
+            resolve_metadata_field("REASONING_MODE", stage, agent, mode_default),
+        ),
+    ]
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpecStage {
     Plan,
     Tasks,
     Implement,
     Validate,
-    Review,
+    Audit,
     Unlock,
 }
 
@@ -102,7 +181,7 @@ impl SpecStage {
             SpecStage::Tasks => "spec-tasks",
             SpecStage::Implement => "spec-implement",
             SpecStage::Validate => "spec-validate",
-            SpecStage::Review => "spec-review",
+            SpecStage::Audit => "spec-audit",
             SpecStage::Unlock => "spec-unlock",
         }
     }
@@ -113,7 +192,7 @@ impl SpecStage {
             SpecStage::Tasks => "spec-tasks",
             SpecStage::Implement => "spec-implement",
             SpecStage::Validate => "spec-validate",
-            SpecStage::Review => "spec-review",
+            SpecStage::Audit => "spec-audit",
             SpecStage::Unlock => "spec-unlock",
         }
     }
@@ -124,7 +203,7 @@ impl SpecStage {
             SpecStage::Tasks => "Tasks",
             SpecStage::Implement => "Implement",
             SpecStage::Validate => "Validate",
-            SpecStage::Review => "Review",
+            SpecStage::Audit => "Audit",
             SpecStage::Unlock => "Unlock",
         }
     }
@@ -193,7 +272,7 @@ pub fn build_stage_prompt(stage: SpecStage, raw_args: &str) -> Result<String, Pr
                 "Latest /spec-tasks consensus stored in docs/SPEC-*/tasks.md and local-memory.".into(),
             ));
         }
-        SpecStage::Validate | SpecStage::Review | SpecStage::Unlock => {
+        SpecStage::Validate | SpecStage::Audit | SpecStage::Unlock => {
             // No extra replacements required
         }
     }
@@ -217,9 +296,6 @@ pub fn build_stage_prompt(stage: SpecStage, raw_args: &str) -> Result<String, Pr
         .stage(stage.key())
         .ok_or(PromptBuildError::MissingStage(stage.key()))?;
 
-    let replacement_refs: Vec<(&str, &str)> =
-        replacements.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-
     let mut bundle = String::new();
     bundle.push_str(&format!("# /{} — {}\n\n", stage.command_name(), spec_id));
     bundle.push_str("Leverage local-memory before starting, then run the three agents in parallel using these prompts. Record outputs back into local-memory (spec-tracker, impl-notes, docs-ops).\n\n");
@@ -228,21 +304,33 @@ pub fn build_stage_prompt(stage: SpecStage, raw_args: &str) -> Result<String, Pr
     }
 
     if let Some(prompt) = stage_prompts.gemini.clone() {
-        let rendered = render_prompt(stage.key(), SpecAgent::Gemini, &replacement_refs)
+        let mut gemini_vars = replacements.clone();
+        gemini_vars.extend(model_metadata(stage, SpecAgent::Gemini));
+        let gemini_refs: Vec<(&str, &str)> =
+            gemini_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let rendered = render_prompt(stage.key(), SpecAgent::Gemini, &gemini_refs)
             .unwrap_or_else(|| prompt.prompt);
         bundle.push_str("## Gemini Ultra — Research\n");
         bundle.push_str(&rendered);
         bundle.push_str("\n\n");
     }
     if let Some(prompt) = stage_prompts.claude.clone() {
-        let rendered = render_prompt(stage.key(), SpecAgent::Claude, &replacement_refs)
+        let mut claude_vars = replacements.clone();
+        claude_vars.extend(model_metadata(stage, SpecAgent::Claude));
+        let claude_refs: Vec<(&str, &str)> =
+            claude_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let rendered = render_prompt(stage.key(), SpecAgent::Claude, &claude_refs)
             .unwrap_or_else(|| prompt.prompt);
         bundle.push_str("## Claude MAX — Synthesis\n");
         bundle.push_str(&rendered);
         bundle.push_str("\n\n");
     }
     if let Some(prompt) = stage_prompts.gpt_pro.clone() {
-        let rendered = render_prompt(stage.key(), SpecAgent::GptPro, &replacement_refs)
+        let mut gpt_vars = replacements.clone();
+        gpt_vars.extend(model_metadata(stage, SpecAgent::GptPro));
+        let gpt_refs: Vec<(&str, &str)> =
+            gpt_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let rendered = render_prompt(stage.key(), SpecAgent::GptPro, &gpt_refs)
             .unwrap_or_else(|| prompt.prompt);
         bundle.push_str("## GPT Pro — Execution & QA\n");
         bundle.push_str(&rendered);
@@ -255,6 +343,7 @@ pub fn build_stage_prompt(stage: SpecStage, raw_args: &str) -> Result<String, Pr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn agent_prompt_is_loaded() {
@@ -264,12 +353,17 @@ mod tests {
 
     #[test]
     fn placeholder_substitution() {
-        let rendered = render_prompt(
-            "spec-plan",
-            SpecAgent::Gemini,
-            &[("SPEC_ID", "SPEC-OPS-123"), ("CONTEXT", "<ctx>")],
-        )
-        .expect("rendered");
+        let mut owned: Vec<(String, String)> = vec![
+            ("SPEC_ID".into(), "SPEC-OPS-123".into()),
+            ("CONTEXT".into(), "<ctx>".into()),
+        ];
+        owned.extend(model_metadata(SpecStage::Plan, SpecAgent::Gemini));
+        let refs: Vec<(&str, &str)> = owned
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        let rendered = render_prompt("spec-plan", SpecAgent::Gemini, &refs)
+            .expect("rendered");
         assert!(rendered.contains("SPEC-OPS-123"));
         assert!(rendered.contains("<ctx>"));
     }
@@ -293,5 +387,44 @@ mod tests {
         assert!(prompt.contains("Gemini Ultra"));
         assert!(prompt.contains("Claude MAX"));
         assert!(prompt.contains("GPT Pro"));
+    }
+
+    fn metadata_map(stage: SpecStage, agent: SpecAgent) -> HashMap<String, String> {
+        model_metadata(stage, agent)
+            .into_iter()
+            .collect::<HashMap<_, _>>()
+    }
+
+    #[test]
+    fn model_metadata_defaults_align_with_strategy() {
+        let gemini = metadata_map(SpecStage::Plan, SpecAgent::Gemini);
+        assert_eq!(gemini.get("MODEL_ID"), Some(&"gemini-2.5-pro".to_string()));
+        assert_eq!(gemini.get("REASONING_MODE"), Some(&"thinking".to_string()));
+
+        let claude = metadata_map(SpecStage::Implement, SpecAgent::Claude);
+        assert_eq!(claude.get("MODEL_ID"), Some(&"claude-opus-4-1-20250805".to_string()));
+
+        let gpt = metadata_map(SpecStage::Implement, SpecAgent::GptPro);
+        assert_eq!(gpt.get("MODEL_ID"), Some(&"gpt-5-pro".to_string()));
+        assert_eq!(gpt.get("REASONING_MODE"), Some(&"thinking".to_string()));
+    }
+
+    #[test]
+    fn model_metadata_env_overrides_apply() {
+        unsafe {
+            std::env::set_var("SPECKIT_MODEL_ID_GPT_PRO_SPEC_IMPLEMENT", "custom-gpt");
+            std::env::set_var("SPECKIT_MODEL_RELEASE_GPT_PRO", "2025-09-27");
+            std::env::set_var("SPECKIT_REASONING_MODE_GPT_PRO", "deep");
+        }
+        let map = metadata_map(SpecStage::Implement, SpecAgent::GptPro);
+        unsafe {
+            std::env::remove_var("SPECKIT_MODEL_ID_GPT_PRO_SPEC_IMPLEMENT");
+            std::env::remove_var("SPECKIT_MODEL_RELEASE_GPT_PRO");
+            std::env::remove_var("SPECKIT_REASONING_MODE_GPT_PRO");
+        }
+
+        assert_eq!(map.get("MODEL_ID"), Some(&"custom-gpt".to_string()));
+        assert_eq!(map.get("MODEL_RELEASE"), Some(&"2025-09-27".to_string()));
+        assert_eq!(map.get("REASONING_MODE"), Some(&"deep".to_string()));
     }
 }

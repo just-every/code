@@ -127,8 +127,8 @@ pub enum SlashCommand {
     SpecImplement,
     #[strum(serialize = "spec-validate")]
     SpecValidate,
-    #[strum(serialize = "spec-review")]
-    SpecReview,
+    #[strum(serialize = "spec-audit")]
+    SpecAudit,
     #[strum(serialize = "spec-unlock")]
     SpecUnlock,
     #[strum(serialize = "spec-auto")]
@@ -145,6 +145,8 @@ pub enum SlashCommand {
     SpecOpsAudit,
     #[strum(serialize = "spec-ops-unlock")]
     SpecOpsUnlock,
+    #[strum(serialize = "spec-consensus")]
+    SpecConsensus,
     Logout,
     Quit,
     #[cfg(debug_assertions)]
@@ -183,7 +185,7 @@ impl SlashCommand {
             SlashCommand::SpecTasks => "multi-agent task synthesis (requires SPEC ID)",
             SlashCommand::SpecImplement => "multi-agent implementation design (requires SPEC ID)",
             SlashCommand::SpecValidate => "multi-agent validation consensus (requires SPEC ID)",
-            SlashCommand::SpecReview => "multi-agent review/go-no-go (requires SPEC ID)",
+            SlashCommand::SpecAudit => "multi-agent audit/go-no-go (requires SPEC ID)",
             SlashCommand::SpecUnlock => "multi-agent unlock justification (requires SPEC ID)",
             SlashCommand::SpecAuto => "drive Spec Ops + multi-agent pipeline (requires SPEC ID)",
             SlashCommand::SpecOpsPlan => "run Spec Ops plan automation (requires SPEC ID)",
@@ -200,6 +202,7 @@ impl SlashCommand {
             SlashCommand::SpecOpsUnlock => {
                 "unlock SPEC.md copy-on-write lock (requires SPEC ID)"
             }
+            SlashCommand::SpecConsensus => "check multi-agent consensus via local-memory (requires SPEC ID & stage)",
             SlashCommand::Pro => "manage Pro mode (toggle/status/auto)",
             SlashCommand::Branch => {
                 "work in an isolated /branch then /merge when done (great for parallel work)"
@@ -283,7 +286,7 @@ impl SlashCommand {
             SlashCommand::SpecTasks => Some(SpecStage::Tasks),
             SlashCommand::SpecImplement => Some(SpecStage::Implement),
             SlashCommand::SpecValidate => Some(SpecStage::Validate),
-            SlashCommand::SpecReview => Some(SpecStage::Review),
+            SlashCommand::SpecAudit => Some(SpecStage::Audit),
             SlashCommand::SpecUnlock => Some(SpecStage::Unlock),
             _ => None,
         }
@@ -519,7 +522,7 @@ fn parse_stage_name(value: &str) -> Option<SpecStage> {
         "tasks" | "spec-tasks" => Some(SpecStage::Tasks),
         "implement" | "spec-implement" => Some(SpecStage::Implement),
         "validate" | "spec-validate" => Some(SpecStage::Validate),
-        "review" | "spec-review" | "audit" | "spec-ops-audit" => Some(SpecStage::Review),
+        "review" | "spec-review" | "audit" | "spec-ops-audit" => Some(SpecStage::Audit),
         "unlock" | "spec-unlock" => Some(SpecStage::Unlock),
         _ => None,
     }

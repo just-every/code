@@ -9,7 +9,7 @@ command = "claude"
 enabled = true
 read-only = false
 description = "Claude AI assistant with full capabilities"
-args = ["--dangerously-skip-permissions"]
+args = ["--dangerously-skip-permissions", "-m", "claude-opus-4-1-20250805"]
 
 [[agents]]
 name = "claude-safe"
@@ -18,6 +18,14 @@ enabled = true
 read-only = true
 description = "Claude AI assistant in read-only mode"
 args = []
+
+[[agents]]
+name = "claude-sonnet-4"
+command = "claude"
+enabled = true
+read-only = false
+description = "Claude Sonnet 4 (lower-latency fallback)"
+args = ["-m", "claude-sonnet-4-20250514"]
 
 [[agents]]
 name = "gemini"
@@ -34,6 +42,22 @@ enabled = true
 read-only = true
 description = "Google Gemini AI assistant in read-only mode"
 args = []
+
+[[agents]]
+name = "gemini-2-5-pro"
+command = "gemini"
+enabled = true
+read-only = false
+description = "Google Gemini 2.5 Pro with adjustable thinking budgets"
+args = ["-m", "gemini-2.5-pro", "--thinking-budget", "0.3", "-y"]
+
+[[agents]]
+name = "gemini-2-5-flash"
+command = "gemini"
+enabled = true
+read-only = false
+description = "Google Gemini 2.5 Flash for cost-conscious retrieval"
+args = ["-m", "gemini-2.5-flash", "-y"]
 
 [[agents]]
 name = "qwen"
@@ -59,6 +83,22 @@ description = "Qwen Coder assistant in read-only mode"
 args = []
 
 [[agents]]
+name = "qwen2.5-coder-32b"
+command = "qwen"
+enabled = false
+read-only = false
+description = "Qwen2.5 Coder 32B offline fallback"
+args = ["-m", "qwen2.5-coder-32b", "-y"]
+
+[[agents]]
+name = "rstar-l3"
+command = "rstar"
+enabled = false
+read-only = false
+description = "rStar-L3 reasoning model for air-gapped environments"
+args = ["-m", "rstar-l3"]
+
+[[agents]]
 name = "codex"
 command = "codex"
 enabled = true
@@ -75,6 +115,38 @@ description = "OpenAI GPT-4 assistant"
 args = ["--model", "gpt-4"]
 # Optional environment variables for the agent
 # env = { OPENAI_API_KEY = "your-key-here" }
+
+[[agents]]
+name = "gpt-5"
+command = "gpt"
+enabled = true
+read-only = false
+description = "OpenAI GPT-5 router (auto reasoning)"
+args = ["--model", "gpt-5", "--auto-thinking"]
+
+[[agents]]
+name = "gpt-5-pro"
+command = "gpt"
+enabled = true
+read-only = false
+description = "OpenAI GPT-5 Pro for escalated reasoning"
+args = ["--model", "gpt-5-pro", "--thinking" ]
+
+[[agents]]
+name = "gpt-5-mini"
+command = "gpt"
+enabled = true
+read-only = false
+description = "OpenAI GPT-5 Mini for cost‑sensitive guardrails"
+args = ["--model", "gpt-5-mini"]
+
+[[agents]]
+name = "o4-mini-high"
+command = "gpt"
+enabled = true
+read-only = false
+description = "OpenAI o4-mini-high for deterministic telemetry parsing"
+args = ["--model", "o4-mini-high"]
 
 # Custom agent example
 [[agents]]

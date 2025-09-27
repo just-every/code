@@ -18,7 +18,7 @@
 | Tasks | `/spec-ops-tasks` (`spec_ops_tasks.sh`) | `/spec-tasks <SPEC-ID>` | Planned | Multi-agent synthesis generates `docs/SPEC-*/tasks.md` and acceptance mapping. |
 | Implement | `/spec-ops-implement` (`spec_ops_implement.sh`) | `/spec-implement <SPEC-ID> <prompt>` | Planned | GPT Pro executes diffs with guardrail lock; Claude MAX / Gemini supply solution summaries. |
 | Validate | `/spec-ops-validate` (`spec_ops_004_master.sh`) | `/spec-validate <SPEC-ID>` | Planned | Multi-agent stage compares telemetry vs acceptance criteria and queues regression tests. |
-| Review | `/spec-ops-audit` (rename from `spec_ops_review.sh`) | `/spec-review <SPEC-ID>` | Planned | Rename disambiguates shell harness; multi-agent review writes go/no-go memo. |
+| Audit | `/spec-ops-audit` (rename from `spec_ops_review.sh`) | `/spec-audit <SPEC-ID>` | Planned | Multi-agent audit generates consensus verdict JSON and blocks `/spec-auto` when agents disagree. |
 | Unlock | `/spec-ops-unlock` (`spec_ops_unlock.sh`) | `/spec-unlock <SPEC-ID>` | Planned | Agents produce unlock justification before shell command runs. |
 
 ## Agent Responsibilities
@@ -58,9 +58,9 @@
 7. **Validation Harness**: `/spec-ops-validate` executes scenarios; logs results per scenario.
 8. **Validation Consensus**: `/spec-validate` reconciles telemetry vs acceptance criteria and records sign-off.
 9. **Self-Correction**: if `/spec-ops-validate` telemetry reports failures, `/spec-auto` automatically re-runs implementation and validation (up to two retries) and logs evidence for each attempt.
-10. **Audit & Review**: `/spec-ops-audit` (shell) + `/spec-review` (agents) produce final risk memo.
-10. **Unlock / Cleanup**: `/spec-unlock` memo → `/spec-ops-unlock` executes, documenting rationale.
-11. **Summary**: Agents jointly emit final status memo and push to local-memory + evidence dir.
+10. **Audit Consensus**: `/spec-ops-audit` (shell) + `/spec-audit` (agents) produce the final risk memo and consensus verdict.
+11. **Unlock / Cleanup**: `/spec-unlock` memo → `/spec-ops-unlock` executes, documenting rationale.
+12. **Summary**: Agents jointly emit final status memo and push to local-memory + evidence dir.
 
 ## Risks & Mitigations
 - **Agent Drift**: enforce consensus step with MCP diff reviewer; reject stage completion unless agents acknowledge resolution.
@@ -74,3 +74,6 @@
 
 ## Next Steps
 See `SPEC-kit-tasks.md` for actionable work items and owners.
+
+Refer to `docs/spec-kit/model-strategy.md` for the current model lineup,
+fallbacks, and escalation rules across the pipeline.
