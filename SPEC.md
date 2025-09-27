@@ -11,7 +11,7 @@
 | 7 | T7 | Implement `/spec-audit` prompt | Done | Claude MAX |  |  |  |  |  |  |
 | 8 | T8 | Implement `/spec-unlock` prompt | Done | Gemini Ultra |  |  |  |  |  |  |
 | 9 | T9 | MCP server enablement | Done | Code |  |  |  | 2025-09-26 | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/20250926-231931Z-code-mcp-list.json | Added default MCP configs (repo_search/doc_index/shell_lite/git_status/uniprof/hal) and CLI documentation. |
-| 10 | T10 | Local-memory migration | Backlog | Code |  |  |  |  |  |  |
+| 10 | T10 | Local-memory migration | In Progress | Code | docs/SPEC-KIT-010-local-memory-migration/PRD.md | feat/spec-auto-telemetry |  |  |  | Planning + migration spec drafted 2025-09-27 |
 | 11 | T11 | `/spec-auto` orchestrator | Done | Code |  | feat/spec-auto-telemetry |  | 2025-09-26 | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/20250926-025004Z-codex-mcp-client-git-status.json | Wired MCP evidence lookup; `cargo test -p codex-tui spec_auto` |
 | 12 | T12 | Consensus diff reviewer | Done | Gemini Ultra |  |  |  | 2025-09-27 | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus | `/spec-auto` halts on degraded verdicts; prompts emit model metadata; integration tests cover happy/degraded consensus. |
 | 13 | T13 | Telemetry schema enforcement | Done | Code | docs/SPEC-KIT-013-telemetry-schema-guard/PRD.md | feat/spec-auto-telemetry |  | 2025-09-27 | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-013/spec-plan_2025-09-27T18:35:18Z-748128599.json | Schema validators + unit tests landed; `cargo test -p codex-tui spec_auto` |
