@@ -20,6 +20,11 @@ CODEX_HOME=.github/codex/home code mcp list --json
    - Postgres (select read-only DSN, stdio/proxy server).
    - Confirm `just start-*/stop-*` recipes under `/spec-auto` and archive logs.
 
+## Next Session Prompt
+- Run `./codex-rs/target/dev-fast/code local-memory export --output tmp/memories.jsonl` (or choose a target path).
+- Execute the WIP drift detector prototype once it’s added (`scripts/spec-kit/nightly_sync_detect.py --memory tmp/memories.jsonl`).
+- Note which SPEC IDs report drift and prepare remediation steps for T15 implementation.
+
 ## Telemetry & Consensus Troubleshooting
 
 - **Schema failures:** Inspect the latest guardrail JSON under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/<SPEC-ID>/`. Ensure common fields (`command`, `specId`, `sessionId`, `timestamp`, `schemaVersion`, `artifacts`) and stage payload (baseline/tool/lock/scenarios/unlock) match docs/SPEC-KIT-013-telemetry-schema-guard/spec.md. Re-run the guardrail after fixing shell output.

@@ -4,7 +4,7 @@
 - Constitution: memory/constitution.md (missing in repo; reference template as needed)
 
 ## Work Breakdown
-1. Inventory local-memory export format and evidence directory structure; define mapping (SPEC ID ↔ memory tags).
+1. Inventory `code local-memory export` output and evidence directory structure; define mapping (SPEC ID ↔ memory tags).
 2. Implement drift detection script (parse telemetry JSON, compare to memory entries, produce report + exit codes).
 3. Add allowlist/config support and documentation for scheduling/remediation.
 4. Update SPEC tracker notes and run `scripts/spec-kit/lint_tasks.py` after changes.
