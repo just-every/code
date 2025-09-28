@@ -439,7 +439,6 @@ pub(crate) struct GhostState {
     queued_user_messages: VecDeque<UserMessage>,
 }
 
-#[derive(Default)]
 struct AutoCoordinatorUiState {
     active: bool,
     goal: Option<String>,
@@ -453,6 +452,29 @@ struct AutoCoordinatorUiState {
     seconds_remaining: u8,
     awaiting_goal_input: bool,
     last_broadcast_thought: Option<String>,
+    latest_thinking_title: Option<String>,
+    placeholder_phrase: Option<String>,
+}
+
+impl Default for AutoCoordinatorUiState {
+    fn default() -> Self {
+        Self {
+            active: false,
+            goal: None,
+            current_thoughts: None,
+            current_prompt: None,
+            awaiting_submission: false,
+            waiting_for_response: false,
+            paused_for_manual_edit: false,
+            resume_after_manual_submit: false,
+            countdown_id: 0,
+            seconds_remaining: 0,
+            awaiting_goal_input: false,
+            last_broadcast_thought: None,
+            latest_thinking_title: None,
+            placeholder_phrase: None,
+        }
+    }
 }
 
 impl AutoCoordinatorUiState {
@@ -6327,6 +6349,7 @@ impl ChatWidget<'_> {
         }
 
         if self.auto_state.active && self.auto_state.resume_after_manual_submit {
+            self.auto_prepare_for_new_thinking();
             self.auto_state.waiting_for_response = true;
             self.auto_state.resume_after_manual_submit = false;
             self.auto_state.paused_for_manual_edit = false;
@@ -9422,9 +9445,7 @@ impl ChatWidget<'_> {
                 self.auto_state.reset();
                 self.auto_state.active = true;
                 self.auto_state.goal = Some(goal_text.clone());
-                self.auto_state
-                    .current_thoughts
-                    .replace(auto_drive_strings::next_auto_drive_phrase().to_string());
+                self.auto_prepare_for_new_thinking();
                 self.auto_state.last_broadcast_thought = None;
                 self.auto_state.seconds_remaining = AUTO_COUNTDOWN_SECONDS;
                 self.auto_state.waiting_for_response = true;
@@ -9453,8 +9474,8 @@ impl ChatWidget<'_> {
         {
             self.auto_stop(Some("Coordinator stopped unexpectedly.".to_string()));
         } else {
+            self.auto_prepare_for_new_thinking();
             self.auto_state.waiting_for_response = true;
-            self.auto_state.current_thoughts = None;
             self.auto_state.last_broadcast_thought = None;
             self.auto_rebuild_live_ring();
             self.request_redraw();
@@ -9476,6 +9497,7 @@ impl ChatWidget<'_> {
         self.auto_state.resume_after_manual_submit = false;
         self.auto_state.awaiting_submission = false;
         self.auto_state.waiting_for_response = false;
+        self.auto_state.placeholder_phrase = None;
 
         match status {
             AutoCoordinatorStatus::Continue => {
@@ -9639,6 +9661,7 @@ impl ChatWidget<'_> {
         self.auto_state.paused_for_manual_edit = false;
         self.auto_state.resume_after_manual_submit = false;
         self.auto_state.seconds_remaining = AUTO_COUNTDOWN_SECONDS;
+        self.auto_state.placeholder_phrase = None;
         self.auto_state.current_thoughts = Some(String::new());
         self.auto_rebuild_live_ring();
         self.request_redraw();
@@ -9660,35 +9683,30 @@ impl ChatWidget<'_> {
 
         self.bottom_pane.clear_live_ring();
 
-        if self
-            .auto_state
-            .current_thoughts
-            .as_ref()
-            .map(|text| text.trim().is_empty())
-            .unwrap_or(true)
-        {
-            self.auto_state
-                .current_thoughts
-                .replace(auto_drive_strings::next_auto_drive_phrase().to_string());
+        let mut status_lines: Vec<String> = Vec::new();
+
+        if let Some(title) = self.auto_state.latest_thinking_title.as_ref() {
+            status_lines.push(format!("**{title}**"));
+        } else if let Some(placeholder) = self.auto_state.placeholder_phrase.clone() {
+            status_lines.push(placeholder);
         }
 
-        let base_text = self
-            .auto_state
-            .current_thoughts
-            .clone()
-            .unwrap_or_else(|| auto_drive_strings::next_auto_drive_phrase().to_string());
-
-        let mut status_lines: Vec<String> = base_text
-            .lines()
-            .map(|line| line.trim().to_string())
-            .filter(|line| !line.is_empty())
-            .collect();
+        if status_lines.is_empty() {
+            if let Some(thoughts) = self.auto_state.current_thoughts.as_ref() {
+                if let Some(line) = thoughts
+                    .lines()
+                    .find_map(|line| {
+                        let trimmed = line.trim();
+                        (!trimmed.is_empty()).then(|| trimmed.to_string())
+                    })
+                {
+                    status_lines.push(line);
+                }
+            }
+        }
 
         if status_lines.is_empty() {
-            status_lines.push(base_text.clone());
-        } else {
-            // ensure stored thoughts match cleaned output to avoid trailing whitespace
-            self.auto_state.current_thoughts = Some(status_lines.join("\n"));
+            status_lines.push(auto_drive_strings::next_auto_drive_phrase().to_string());
         }
 
         let prompt = self
@@ -9789,6 +9807,77 @@ impl ChatWidget<'_> {
         self.push_background_tail(format!("Auto Drive: {first_line}"));
     }
 
+    fn auto_prepare_for_new_thinking(&mut self) {
+        self.auto_state.current_thoughts = None;
+        self.auto_state.latest_thinking_title = None;
+        self.auto_state.placeholder_phrase =
+            Some(auto_drive_strings::next_auto_drive_phrase().to_string());
+    }
+
+    fn auto_update_thinking_title(&mut self, text: &str) {
+        let Some(title) = Self::auto_extract_latest_title(text) else {
+            return;
+        };
+
+        if self.auto_state
+            .latest_thinking_title
+            .as_ref()
+            .is_some_and(|existing| existing == &title)
+        {
+            return;
+        }
+
+        self.auto_state.latest_thinking_title = Some(title);
+        self.auto_state.placeholder_phrase = None;
+    }
+
+    fn auto_extract_latest_title(text: &str) -> Option<String> {
+        let mut latest: Option<String> = None;
+        let mut offset = 0usize;
+        while let Some(open_rel) = text[offset..].find("**") {
+            let open_idx = offset + open_rel;
+            let after_open = open_idx + 2;
+            if after_open >= text.len() {
+                break;
+            }
+
+            let line_start = text[..open_idx]
+                .rfind('\n')
+                .map(|idx| idx + 1)
+                .unwrap_or(0);
+            let prefix_slice = &text[line_start..open_idx];
+            let prefix_trimmed = prefix_slice.trim_matches(|c: char| {
+                c.is_whitespace()
+                    || matches!(c, '-' | '*' | '•' | '>' | '#')
+                    || c == '.'
+                    || c.is_ascii_digit()
+            });
+            if !prefix_trimmed.is_empty() {
+                offset = after_open;
+                continue;
+            }
+
+            let rest = &text[after_open..];
+            let Some(close_rel) = rest.find("**") else {
+                break;
+            };
+            let close_idx = after_open + close_rel;
+            let raw_title = &text[after_open..close_idx];
+            if raw_title.trim().is_empty() {
+                offset = close_idx + 2;
+                continue;
+            }
+
+            let collapsed = raw_title
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            latest = Some(collapsed);
+            offset = close_idx + 2;
+        }
+        latest
+    }
+
     fn auto_on_reasoning_delta(&mut self, delta: &str) {
         if !self.auto_state.active || delta.trim().is_empty() {
             return;
@@ -9809,6 +9898,7 @@ impl ChatWidget<'_> {
         };
 
         self.auto_broadcast_thoughts(&payload);
+        self.auto_update_thinking_title(&payload);
 
         if self.auto_state.waiting_for_response {
             self.auto_rebuild_live_ring();
@@ -9823,6 +9913,7 @@ impl ChatWidget<'_> {
 
         self.auto_state.current_thoughts = Some(text.to_string());
         self.auto_broadcast_thoughts(text);
+        self.auto_update_thinking_title(text);
 
         if self.auto_state.waiting_for_response {
             self.auto_rebuild_live_ring();
