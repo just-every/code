@@ -15,6 +15,8 @@ SPEC_ID="$1"; shift || true
 spec_ops_prepare_stage "spec-validate" "${SPEC_ID}"
 spec_ops_write_log "validate guardrail ready"
 
+spec_ops_run_hal_smoke || spec_ops_write_log "HAL smoke skipped/failed"
+
 SCHEMA_VERSION=1
 SCENARIO_STATUS="passed"
 
@@ -32,7 +34,11 @@ read -r -d '' TELEMETRY <<JSON || true
     }
   ],
   "artifacts": [
-    { "path": "${SPEC_OPS_LOG}" }
+    { "path": "${SPEC_OPS_LOG}" }$(
+      for artifact in "${SPEC_OPS_HAL_ARTIFACTS[@]:-}"; do
+        printf ', { "path": "%s" }' "${artifact}"
+      done
+    )
   ]
 }
 JSON
