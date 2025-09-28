@@ -47,6 +47,7 @@ mod history_cell;
 mod history;
 mod insert_history;
 pub mod live_wrap;
+mod local_memory_util;
 mod markdown;
 mod markdown_renderer;
 mod markdown_stream;

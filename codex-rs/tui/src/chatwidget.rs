@@ -38,6 +38,7 @@ use codex_login::AuthManager;
 use codex_login::AuthMode;
 use codex_protocol::mcp_protocol::AuthMode as McpAuthMode;
 use codex_protocol::num_format::format_with_separators;
+use crate::local_memory_util::{self, LocalMemorySearchResult};
 use crate::slash_command::SlashCommand;
 use crate::slash_command::SpecAutoInvocation;
 use crate::spec_prompts;
@@ -13848,33 +13849,6 @@ impl ChatWidget<'_> {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct LocalMemorySearchResponse {
-    success: bool,
-    #[serde(default)]
-    data: Option<LocalMemorySearchData>,
-    #[serde(default)]
-    error: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-struct LocalMemorySearchData {
-    #[serde(default)]
-    results: Vec<LocalMemorySearchResult>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-struct LocalMemorySearchResult {
-    memory: LocalMemoryRecord,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-struct LocalMemoryRecord {
-    #[serde(default)]
-    id: Option<String>,
-    content: String,
-}
-
 struct ConsensusArtifactData {
     memory_id: Option<String>,
     agent: String,
@@ -14014,51 +13988,17 @@ fn fetch_memory_entries(
     spec_id: &str,
     stage: SpecStage,
 ) -> Result<(Vec<LocalMemorySearchResult>, Vec<String>), String> {
-    let query = format!("{} {}", spec_id, stage.command_name());
-    let response = run_local_memory_search(&query, spec_id, stage.command_name())?;
-    if let Some(data) = response.data {
-        if !data.results.is_empty() {
-            return Ok((data.results, Vec::new()));
-        }
+    let results = local_memory_util::search_by_stage(spec_id, stage.command_name(), 20)?;
+    if results.is_empty() {
+        // TODO: After Oct 2 migration, implement Byterover fallback fetching here and persist results into local-memory.
+        Err(format!(
+            "No local-memory entries found for {} stage '{}'",
+            spec_id,
+            stage.command_name()
+        ))
+    } else {
+        Ok((results, Vec::new()))
     }
-
-    // TODO: After Oct 2 migration, implement Byterover fallback fetching here and persist results into local-memory.
-    Err(format!(
-        "No local-memory entries found for {} stage '{}'",
-        spec_id,
-        stage.command_name()
-    ))
-}
-
-fn run_local_memory_search(
-    query: &str,
-    spec_id: &str,
-    stage: &str,
-) -> Result<LocalMemorySearchResponse, String> {
-    let mut cmd = Command::new("local-memory");
-    cmd.arg("search")
-        .arg(query)
-        .arg("--json")
-        .arg("--limit")
-        .arg("20")
-        .arg("--tags")
-        .arg(format!("spec:{}", spec_id))
-        .arg("--tags")
-        .arg(format!("stage:{}", stage));
-
-    let output = cmd
-        .output()
-        .map_err(|e| format!("failed to run local-memory search: {e}"))?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "local-memory search failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
-    serde_json::from_slice(&output.stdout)
-        .map_err(|e| format!("failed to parse local-memory search output: {e}"))
 }
 
 fn expected_agents_for_stage(stage: SpecStage) -> Vec<&'static str> {

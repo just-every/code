@@ -6,9 +6,12 @@ use once_cell::sync::OnceCell;
 use serde::Deserialize;
 use std::fmt::Write as _;
 
-const PROMPTS_JSON: &str = include_str!(
-    concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/spec-kit/prompts.json")
-);
+use crate::local_memory_util;
+
+const PROMPTS_JSON: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../docs/spec-kit/prompts.json"
+));
 
 #[derive(Debug, Deserialize, Clone, Default, PartialEq, Eq)]
 pub struct AgentPrompt {
@@ -70,10 +73,7 @@ pub fn agent_prompt(stage: &str, agent: SpecAgent) -> Option<AgentPrompt> {
 }
 
 pub fn orchestrator_notes(stage: &str) -> Option<Vec<String>> {
-    registry()
-        .stage(stage)?
-        .orchestrator_notes
-        .clone()
+    registry().stage(stage)?.orchestrator_notes.clone()
 }
 
 pub fn render_prompt(stage: &str, agent: SpecAgent, vars: &[(&str, &str)]) -> Option<String> {
@@ -87,10 +87,7 @@ pub fn render_prompt(stage: &str, agent: SpecAgent, vars: &[(&str, &str)]) -> Op
 }
 
 fn stage_env_suffix(stage: SpecStage) -> String {
-    stage
-        .key()
-        .replace('-', "_")
-        .to_ascii_uppercase()
+    stage.key().replace('-', "_").to_ascii_uppercase()
 }
 
 fn agent_env_prefix(agent: SpecAgent) -> &'static str {
@@ -124,27 +121,15 @@ fn resolve_metadata_field(
 
 fn model_metadata(stage: SpecStage, agent: SpecAgent) -> Vec<(String, String)> {
     let (model_id_default, release_default, mode_default) = match (stage, agent) {
-        (SpecStage::Tasks | SpecStage::Unlock, SpecAgent::Gemini) => (
-            "gemini-2.5-flash",
-            "2025-05-14",
-            "fast",
-        ),
+        (SpecStage::Tasks | SpecStage::Unlock, SpecAgent::Gemini) => {
+            ("gemini-2.5-flash", "2025-05-14", "fast")
+        }
         (_, SpecAgent::Gemini) => ("gemini-2.5-pro", "2025-05-14", "thinking"),
-        (SpecStage::Unlock, SpecAgent::Claude) => (
-            "claude-sonnet-4-20250514",
-            "2025-05-14",
-            "balanced",
-        ),
-        (_, SpecAgent::Claude) => (
-            "claude-opus-4-1-20250805",
-            "2025-08-05",
-            "balanced",
-        ),
-        (SpecStage::Implement, SpecAgent::GptPro) => (
-            "gpt-5-pro",
-            "2025-08-06",
-            "thinking",
-        ),
+        (SpecStage::Unlock, SpecAgent::Claude) => {
+            ("claude-sonnet-4-20250514", "2025-05-14", "balanced")
+        }
+        (_, SpecAgent::Claude) => ("claude-opus-4-1-20250805", "2025-08-05", "balanced"),
+        (SpecStage::Implement, SpecAgent::GptPro) => ("gpt-5-pro", "2025-08-06", "thinking"),
         (_, SpecAgent::GptPro) => ("gpt-5", "2025-08-06", "auto"),
     };
 
@@ -253,7 +238,8 @@ pub fn build_stage_prompt(stage: SpecStage, raw_args: &str) -> Result<String, Pr
             ));
             replacements.push((
                 "PREVIOUS_OUTPUTS".into(),
-                "Refer to Gemini + Claude outputs captured in local-memory for consensus notes.".into(),
+                "Refer to Gemini + Claude outputs captured in local-memory for consensus notes."
+                    .into(),
             ));
         }
         SpecStage::Tasks => {
@@ -269,7 +255,8 @@ pub fn build_stage_prompt(stage: SpecStage, raw_args: &str) -> Result<String, Pr
         SpecStage::Implement => {
             replacements.push((
                 "PREVIOUS_OUTPUTS.tasks".into(),
-                "Latest /spec-tasks consensus stored in docs/SPEC-*/tasks.md and local-memory.".into(),
+                "Latest /spec-tasks consensus stored in docs/SPEC-*/tasks.md and local-memory."
+                    .into(),
             ));
         }
         SpecStage::Validate | SpecStage::Audit | SpecStage::Unlock => {
@@ -303,11 +290,34 @@ pub fn build_stage_prompt(stage: SpecStage, raw_args: &str) -> Result<String, Pr
         bundle.push_str(&format!("Goal: {}\n\n", goal_hint));
     }
 
+    match gather_local_memory_context(spec_id, stage) {
+        Ok(entries) if !entries.is_empty() => {
+            bundle.push_str("## Local-memory context\n");
+            for entry in entries {
+                bundle.push_str("- ");
+                bundle.push_str(&entry);
+                bundle.push('\n');
+            }
+            bundle.push('\n');
+        }
+        Ok(_) => {
+            bundle.push_str("## Local-memory context\n- No stage-specific local-memory entries found yet (fallback will run after migration).\n\n");
+        }
+        Err(err) => {
+            bundle.push_str(&format!(
+                "## Local-memory context\n- Unable to fetch local-memory context: {}\n\n",
+                err
+            ));
+        }
+    }
+
     if let Some(prompt) = stage_prompts.gemini.clone() {
         let mut gemini_vars = replacements.clone();
         gemini_vars.extend(model_metadata(stage, SpecAgent::Gemini));
-        let gemini_refs: Vec<(&str, &str)> =
-            gemini_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let gemini_refs: Vec<(&str, &str)> = gemini_vars
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
         let rendered = render_prompt(stage.key(), SpecAgent::Gemini, &gemini_refs)
             .unwrap_or_else(|| prompt.prompt);
         bundle.push_str("## Gemini Ultra — Research\n");
@@ -317,8 +327,10 @@ pub fn build_stage_prompt(stage: SpecStage, raw_args: &str) -> Result<String, Pr
     if let Some(prompt) = stage_prompts.claude.clone() {
         let mut claude_vars = replacements.clone();
         claude_vars.extend(model_metadata(stage, SpecAgent::Claude));
-        let claude_refs: Vec<(&str, &str)> =
-            claude_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let claude_refs: Vec<(&str, &str)> = claude_vars
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
         let rendered = render_prompt(stage.key(), SpecAgent::Claude, &claude_refs)
             .unwrap_or_else(|| prompt.prompt);
         bundle.push_str("## Claude MAX — Synthesis\n");
@@ -328,8 +340,10 @@ pub fn build_stage_prompt(stage: SpecStage, raw_args: &str) -> Result<String, Pr
     if let Some(prompt) = stage_prompts.gpt_pro.clone() {
         let mut gpt_vars = replacements.clone();
         gpt_vars.extend(model_metadata(stage, SpecAgent::GptPro));
-        let gpt_refs: Vec<(&str, &str)> =
-            gpt_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let gpt_refs: Vec<(&str, &str)> = gpt_vars
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
         let rendered = render_prompt(stage.key(), SpecAgent::GptPro, &gpt_refs)
             .unwrap_or_else(|| prompt.prompt);
         bundle.push_str("## GPT Pro — Execution & QA\n");
@@ -338,6 +352,30 @@ pub fn build_stage_prompt(stage: SpecStage, raw_args: &str) -> Result<String, Pr
     }
 
     Ok(bundle)
+}
+
+fn gather_local_memory_context(spec_id: &str, stage: SpecStage) -> Result<Vec<String>, String> {
+    let results = local_memory_util::search_by_stage(spec_id, stage.command_name(), 8)?;
+    let mut entries: Vec<String> = Vec::new();
+
+    for result in results.into_iter().take(5) {
+        let mut snippet = result.memory.content.trim().replace('\n', " ");
+        if snippet.is_empty() {
+            continue;
+        }
+        if snippet.len() > 160 {
+            snippet.truncate(160);
+            snippet.push_str("…");
+        }
+
+        if let Some(id) = result.memory.id.as_ref() {
+            entries.push(format!("{} — {}", id, snippet));
+        } else {
+            entries.push(snippet);
+        }
+    }
+
+    Ok(entries)
 }
 
 #[cfg(test)]
@@ -362,8 +400,7 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
-        let rendered = render_prompt("spec-plan", SpecAgent::Gemini, &refs)
-            .expect("rendered");
+        let rendered = render_prompt("spec-plan", SpecAgent::Gemini, &refs).expect("rendered");
         assert!(rendered.contains("SPEC-OPS-123"));
         assert!(rendered.contains("<ctx>"));
     }
@@ -402,7 +439,10 @@ mod tests {
         assert_eq!(gemini.get("REASONING_MODE"), Some(&"thinking".to_string()));
 
         let claude = metadata_map(SpecStage::Implement, SpecAgent::Claude);
-        assert_eq!(claude.get("MODEL_ID"), Some(&"claude-opus-4-1-20250805".to_string()));
+        assert_eq!(
+            claude.get("MODEL_ID"),
+            Some(&"claude-opus-4-1-20250805".to_string())
+        );
 
         let gpt = metadata_map(SpecStage::Implement, SpecAgent::GptPro);
         assert_eq!(gpt.get("MODEL_ID"), Some(&"gpt-5-pro".to_string()));
