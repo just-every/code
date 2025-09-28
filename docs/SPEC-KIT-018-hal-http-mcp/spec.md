@@ -9,15 +9,15 @@
 
 ## Objectives
 1. Provision a HAL MCP profile that targets the local Kavedarr API (`http://127.0.0.1:7878`) with authenticated requests using the generated `kvd_` API key.
-2. Provide concrete HAL request definitions (health, movie listing, indexer test, GraphQL ping) stored in this repository so guardrails can reuse them.
+2. Provide concrete HAL request definitions (health, movie listing, indexer test, GraphQL ping) stored in the product repository so guardrails can reuse them.
 3. Document how operators bootstrap/rotate `HAL_SECRET_KAVEDARR_API_KEY` and where to keep the generated key (Codex secret store, not committed).
 4. Update `/spec-*` flows and runbooks so HAL smoke checks become part of the validation evidence (stored under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/`).
 
 ## Scope
-- Concrete HAL MCP configuration snippet (`docs/hal/hal_config.toml`) referencing the Kavedarr base URL and secret.
-- HAL request profile (`docs/hal/hal_profile.json`) covering the smoke checks.
+- Concrete HAL MCP configuration snippet (`docs/hal/hal_config.toml`) checked into the product repo referencing the Kavedarr base URL and secret placeholder.
+- HAL request profile (`docs/hal/hal_profile.json`) in the product repo covering the smoke checks.
 - Operator documentation covering API key bootstrap/rotation and Hal usage.
-- Guardrail integration that captures HAL responses under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/`.
+- Guardrail integration that captures HAL responses under the product repo's `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/`.
 
 ## Non-Goals
 - Standing up a hosted staging environment (we continue to hit the local/development instance).
@@ -26,6 +26,6 @@
 
 ## Acceptance Criteria
 - HAL MCP entry registered and working against the local API (manual `code mcp call hal ...` succeeds).
-- HAL evidence (health + authenticated call + GraphQL) stored under SPEC-KIT-018.
+- HAL evidence (health + authenticated call + GraphQL) stored under the product repo's SPEC-KIT-018 evidence directory.
 - `/spec-*` prompts mention HAL usage and evidence requirement.
 - SPEC tracker row T18 updated with evidence path and status.

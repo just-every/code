@@ -2,12 +2,12 @@
 
 ## Status
 - New HAL integration templates committed under `docs/SPEC-KIT-018-hal-http-mcp/` (template repo).
-- Project downstream wiring started in `/home/thetu/kavedarr/docs/hal/` (config/profile/readme) but not yet committed.
+- Project downstream wiring should live in `/home/thetu/kavedarr/docs/hal/` (config/profile/readme) and the project's evidence folders.
 - HAL MCP entry appended to `/home/thetu/.code/config.toml` (needs Codex restart) but HAL secret not exported.
 - API key for HAL located in `/home/thetu/kavedarr/.env` (`HAL_SECRET_KAVEDARR_API_KEY`).
 - Kavedarr service currently fails to start due to missing JWT env vars in shell (need export).
 - Spec tracker updated: T18 row now points to integration status; T10 docs still pending evidence.
-- Working tree dirty: template docs, spec prompts, slash commands, SPEC.md, SPEC-kit-tasks.md, new docs/hal/ folder.
+- Working tree dirty: template docs, spec prompts, slash commands, SPEC.md, SPEC-kit-tasks.md.
 
 ## Validation Commands
 CODEX_HOME=.github/codex/home code mcp list --json  # verify HAL appears after restart
@@ -26,9 +26,9 @@ HAL_PROFILE=/home/thetu/kavedarr/docs/hal/hal_profile.json code mcp call hal hea
 3. **Run HAL smoke profile**
    - `HAL_PROFILE=/home/thetu/kavedarr/docs/hal/hal_profile.json code mcp call hal health`
    - repeat for `list_movies`, `indexer_test`, `graphql_ping`
-   - Save responses under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/`.
+   - Save responses under `/home/thetu/kavedarr/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/`.
 4. **Commit template + project wiring**
-   - Stage & commit `docs/SPEC-KIT-018-hal-http-mcp`, `docs/hal`, `codex-rs/tui/src/spec_prompts.rs`, `docs/slash-commands.md`, `SPEC.md`, `SPEC-kit-tasks.md` (after evidence captured).
+   - Stage & commit template changes (`docs/SPEC-KIT-018-hal-http-mcp`, `codex-rs/tui/src/spec_prompts.rs`, `docs/slash-commands.md`, `SPEC.md`, `SPEC-kit-tasks.md`) here; project repo should commit its own `docs/hal/` files and evidence.
 5. **Resume remaining SPEC tasks**
    - T10/T13/T14 follow-up after HAL evidence.
 
@@ -36,7 +36,7 @@ HAL_PROFILE=/home/thetu/kavedarr/docs/hal/hal_profile.json code mcp call hal hea
 - Source `.env` and export JWT + HAL secrets.
 - Start `cargo run --bin kavedarr`, confirm API key bootstrap (log `kvd_…`).
 - Restart Codex so HAL appears in `/mcp list`.
-- Run `code mcp call hal {health,list_movies,indexer_test,graphql_ping}` with `HAL_PROFILE` set; archive JSON under SPEC-KIT-018 evidence.
+- Run `code mcp call hal {health,list_movies,indexer_test,graphql_ping}` with `HAL_PROFILE` set; archive JSON under the project repo's SPEC-KIT-018 evidence directory.
 - Stage/commit HAL docs + SPEC tracker updates once evidence stored.
 
 ## Telemetry & Consensus Troubleshooting
