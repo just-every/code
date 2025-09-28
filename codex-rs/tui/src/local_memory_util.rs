@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::{env, process::Command};
 
 use serde::Deserialize;
 
@@ -50,7 +50,8 @@ pub fn run_local_memory_search(
     } else {
         limit.to_string()
     };
-    let mut cmd = Command::new("local-memory");
+    let binary = env::var("LOCAL_MEMORY_BIN").unwrap_or_else(|_| "local-memory".to_string());
+    let mut cmd = Command::new(binary);
     cmd.arg("search")
         .arg(query)
         .arg("--json")

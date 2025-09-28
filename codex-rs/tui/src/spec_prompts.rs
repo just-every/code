@@ -382,6 +382,67 @@ fn gather_local_memory_context(spec_id: &str, stage: SpecStage) -> Result<Vec<St
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::fs;
+    use std::sync::Mutex;
+    use tempfile::TempDir;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn build_stub_script(responses: &[(&str, &str)]) -> String {
+        let mut script = String::from(
+            "#!/usr/bin/env python3\nimport json\nimport sys\nresponses = {\n",
+        );
+        for (key, json) in responses {
+            script.push_str(&format!("    {key:?}: json.loads({json:?}),\n"));
+        }
+        if !responses.iter().any(|(key, _)| *key == "default") {
+            script.push_str("    'default': {'success': True, 'data': {'results': []}},\n");
+        }
+        script.push_str(
+            "}\nstage = next((arg for arg in sys.argv if arg.startswith('stage:')), 'default')\n",
+        );
+        script.push_str(
+            "payload = responses.get(stage, responses.get('default', {'success': True, 'data': {'results': []}}))\n",
+        );
+        script.push_str("json.dump(payload, sys.stdout)\n");
+        script.push_str("sys.stdout.flush()\n");
+        script
+    }
+
+    fn with_local_memory_stub<F, R>(responses: &[(&str, &str)], f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().expect("temp dir");
+        let script_path = temp_dir.path().join("local-memory-stub.py");
+        let script_content = build_stub_script(responses);
+        fs::write(&script_path, script_content).expect("write stub");
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&script_path).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script_path, perms).unwrap();
+        }
+        unsafe {
+            std::env::set_var("LOCAL_MEMORY_BIN", &script_path);
+        }
+        let result = f();
+        unsafe {
+            std::env::remove_var("LOCAL_MEMORY_BIN");
+        }
+        drop(temp_dir);
+        result
+    }
+
+    fn metadata_map(stage: SpecStage, agent: SpecAgent) -> HashMap<String, String> {
+        model_metadata(stage, agent)
+            .into_iter()
+            .collect::<HashMap<_, _>>()
+    }
 
     #[test]
     fn agent_prompt_is_loaded() {
@@ -426,10 +487,72 @@ mod tests {
         assert!(prompt.contains("GPT Pro"));
     }
 
-    fn metadata_map(stage: SpecStage, agent: SpecAgent) -> HashMap<String, String> {
-        model_metadata(stage, agent)
-            .into_iter()
-            .collect::<HashMap<_, _>>()
+    #[test]
+    fn gather_local_memory_context_returns_entries() {
+        let populated = r#"{"success": true, "data": {"results": [
+            {"memory": {"id": "mem-plan-01", "content": "Plan consensus summary"}},
+            {"memory": {"content": "Secondary note with additional insights"}}
+        ]}}"#;
+
+        let entries = with_local_memory_stub(
+            &[("stage:spec-plan", populated), ("default", r#"{"success": true, "data": {"results": []}}"#)],
+            || gather_local_memory_context("SPEC-OPS-123", SpecStage::Plan).unwrap(),
+        );
+
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0].contains("mem-plan-01"));
+        assert!(entries[0].contains("Plan consensus summary"));
+        assert!(entries[1].starts_with("Secondary note"));
+    }
+
+    #[test]
+    fn gather_local_memory_context_handles_empty_results() {
+        let entries = with_local_memory_stub(
+            &[("default", r#"{"success": true, "data": {"results": []}}"#)],
+            || gather_local_memory_context("SPEC-OPS-123", SpecStage::Plan).unwrap(),
+        );
+
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn build_stage_prompt_includes_local_memory_for_plan() {
+        let populated = r#"{"success": true, "data": {"results": [
+            {"memory": {"id": "mem-plan-01", "content": "Plan consensus summary"}}
+        ]}}"#;
+
+        let prompt = with_local_memory_stub(
+            &[("stage:spec-plan", populated)],
+            || build_stage_prompt(SpecStage::Plan, "SPEC-OPS-123 Align migration").unwrap(),
+        );
+
+        assert!(prompt.contains("## Local-memory context"));
+        assert!(prompt.contains("mem-plan-01"));
+    }
+
+    #[test]
+    fn build_stage_prompt_emits_empty_notice_for_tasks() {
+        let prompt = with_local_memory_stub(
+            &[("default", r#"{"success": true, "data": {"results": []}}"#)],
+            || build_stage_prompt(SpecStage::Tasks, "SPEC-OPS-123").unwrap(),
+        );
+
+        assert!(prompt.contains("No stage-specific local-memory entries"));
+    }
+
+    #[test]
+    fn build_stage_prompt_uses_local_memory_for_tasks_stage() {
+        let populated = r#"{"success": true, "data": {"results": [
+            {"memory": {"id": "mem-tasks-01", "content": "Task breakdown from prior run"}}
+        ]}}"#;
+
+        let prompt = with_local_memory_stub(
+            &[("stage:spec-tasks", populated)],
+            || build_stage_prompt(SpecStage::Tasks, "SPEC-OPS-123").unwrap(),
+        );
+
+        assert!(prompt.contains("mem-tasks-01"));
+        assert!(prompt.contains("Task breakdown from prior run"));
     }
 
     #[test]
