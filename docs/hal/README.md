@@ -16,3 +16,19 @@ Required project files:
 Remember to generate the API key once (watch the server bootstrap output) and
 store it as `HAL_SECRET_KAVEDARR_API_KEY` (or the project-specific equivalent)
 in the Codex secret store. Never commit the actual key.
+
+### Manual smoke example
+
+From the template repo you can drive HAL via the new MCP client utility:
+
+```bash
+HAL_KEY=$(grep HAL_SECRET_KAVEDARR_API_KEY /path/to/project/.env | cut -d"=" -f2 | tr -d "'\r\n")
+cargo run -p codex-mcp-client --bin call_tool -- \
+  --tool http-get \
+  --args '{"url":"http://127.0.0.1:7878/health"}' \
+  --env HAL_SECRET_KAVEDARR_API_KEY=$HAL_KEY \
+  -- npx -y hal-mcp
+```
+
+Pipe the JSON output to project-local evidence files (see the SPEC-KIT-018 tasks
+for the canonical locations).

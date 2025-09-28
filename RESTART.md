@@ -24,9 +24,8 @@ HAL_PROFILE=/home/thetu/kavedarr/docs/hal/hal_profile.json code mcp call hal hea
    - `export HAL_SECRET_KAVEDARR_API_KEY=$(grep HAL_SECRET_KAVEDARR_API_KEY .env | cut -d"=" -f2 | tr -d "'" )`
    - Restart Codex (`code`) or `/mcp reload` so HAL server loads new env.
 3. **Run HAL smoke profile**
-   - `HAL_PROFILE=/home/thetu/kavedarr/docs/hal/hal_profile.json code mcp call hal health`
-   - repeat for `list_movies`, `indexer_test`, `graphql_ping`
-   - Save responses under `/home/thetu/kavedarr/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/`.
+   - Use `cargo run -p codex-mcp-client --bin call_tool -- --tool <http-get|http-post> … -- npx -y hal-mcp`.
+   - Capture health, list, indexer test, and GraphQL ping outputs; pipe the JSON bodies into `/home/thetu/kavedarr/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/`.
 4. **Commit template + project wiring**
    - Stage & commit template changes (`docs/SPEC-KIT-018-hal-http-mcp`, `codex-rs/tui/src/spec_prompts.rs`, `docs/slash-commands.md`, `SPEC.md`, `SPEC-kit-tasks.md`) here; project repo should commit its own `docs/hal/` files and evidence.
 5. **Resume remaining SPEC tasks**

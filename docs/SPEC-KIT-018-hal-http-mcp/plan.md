@@ -7,7 +7,7 @@
 1. Author `docs/hal/hal_config.toml` inside the product repo (for Kavedarr: `~/kavedarr/docs/hal/hal_config.toml`) pointing HAL at `http://127.0.0.1:7878` with default headers that pull `HAL_SECRET_KAVEDARR_API_KEY` from the secret store.
 2. Create `docs/hal/hal_profile.json` in the product repo containing the smoke requests (health, movie list, indexer test, GraphQL) and ensure they align with current API routes.
 3. Update operator docs (README/slash command guidance) so `/spec-*` flows include HAL smoke checks, reference the per-project config location, and remind operators to keep secrets out of this repo.
-4. Run the HAL profile locally from the product repo, archive outputs under that repo's `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/`, update SPEC tracker, and lint tasks.
+4. Run the HAL profile locally from the product repo using `cargo run -p codex-mcp-client --bin call_tool …`, archive outputs under that repo's `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/`, update SPEC tracker, and lint tasks.
 
 ## Acceptance Mapping
 | Requirement (Spec) | Validation Step | Test/Check Artifact |
