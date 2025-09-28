@@ -21,3 +21,4 @@
 | T17 | Justfile service orchestration | Replace devserver MCP with `just` recipes for starting/stopping Kavedarr API, worker, and dashboard. | T9 | Code | Done |
 | T18 | Evaluate HAL HTTP MCP integration | Publish reusable HAL HTTP MCP templates (config + requests) so downstream projects can provide their own hosts/secrets. | T9 | Code | In Progress |
 | T19 | Evaluate Postgres MCP integration | Assess Postgres MCP against staging telemetry databases and design read-only credential strategy. | T9 | Code | Backlog |
+| T20 | Guardrail script hardening | Investigate deeper validation/enforcement in `/spec-ops-*` scripts (HAL failure handling, baseline assertions, telemetry gating) and produce a proposal with concrete checks. | T18 | Code | Backlog |

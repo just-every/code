@@ -1,18 +1,15 @@
 # Restart Plan: Spec Kit Multi-Agent Pipeline
 
 ## Status
-- New HAL integration templates committed under `docs/SPEC-KIT-018-hal-http-mcp/` (template repo).
-- Project downstream wiring should live in `/home/thetu/kavedarr/docs/hal/` (config/profile/readme) and the project's evidence folders.
-- HAL MCP entry appended to `/home/thetu/.code/config.toml` (needs Codex restart) but HAL secret not exported.
-- API key for HAL located in `/home/thetu/kavedarr/.env` (`HAL_SECRET_KAVEDARR_API_KEY`).
-- Kavedarr service currently fails to start due to missing JWT env vars in shell (need export).
-- Spec tracker updated: T18 row now points to integration status; T10 docs still pending evidence.
-- Working tree dirty: template docs, spec prompts, slash commands, SPEC.md, SPEC-kit-tasks.md.
+- `/spec-ops-validate` now drives HAL smoke automatically via `call_tool` and appends evidence to telemetry.
+- HAL config/evidence committed in `~/kavedarr`; template repo fully updated.
+- `SPEC-kit-tasks.md` has new backlog item **T20 Guardrail script hardening** (staged but not committed yet).
+- Docs/prompts/slash commands reference the MCP helper; remaining in-progress tasks: **T14** docs refresh, **T18** HAL integration follow-through.
 
 ## Validation Commands
-CODEX_HOME=.github/codex/home code mcp list --json  # verify HAL appears after restart
-cd /home/thetu/kavedarr && source .env && cargo run --bin kavedarr  # bootstrap API key & run service
-cargo run -p codex-mcp-client --bin call_tool -- --tool http-get --args '{"url":"http://127.0.0.1:7878/health"}' --env HAL_SECRET_KAVEDARR_API_KEY=… -- npx -y hal-mcp
+CODEX_HOME=.github/codex/home code mcp list --json  # HAL registered?
+cargo run -p codex-mcp-client --bin call_tool -- --tool http-get --args '{"url":"http://127.0.0.1:7878/health"}' -- npx -y hal-mcp  # MCP helper sanity check
+python3 scripts/spec_ops_004/validate_schema.py docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018  # schema guard (T13 follow-up)
 
 ## Next Steps
 1. **Bring Kavedarr API up locally**
@@ -23,20 +20,22 @@ cargo run -p codex-mcp-client --bin call_tool -- --tool http-get --args '{"url":
 2. **Export HAL secret to shell before launching Codex**
    - `export HAL_SECRET_KAVEDARR_API_KEY=$(grep HAL_SECRET_KAVEDARR_API_KEY .env | cut -d"=" -f2 | tr -d "'" )`
    - Restart Codex (`code`) or `/mcp reload` so HAL server loads new env.
-3. **Run HAL smoke profile**
-   - Use `cargo run -p codex-mcp-client --bin call_tool -- --tool <http-get|http-post> … -- npx -y hal-mcp`.
-   - Capture health, list, indexer test, and GraphQL ping outputs; pipe the JSON bodies into `/home/thetu/kavedarr/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/`.
-4. **Commit template + project wiring**
-   - Stage & commit template changes (`docs/SPEC-KIT-018-hal-http-mcp`, `codex-rs/tui/src/spec_prompts.rs`, `docs/slash-commands.md`, `SPEC.md`, `SPEC-kit-tasks.md`) here; project repo should commit its own `docs/hal/` files and evidence.
-5. **Resume remaining SPEC tasks**
-   - T10/T13/T14 follow-up after HAL evidence.
+3. **Close out HAL task (T18)**
+   - Exercise `spec_ops_run_hal_smoke` against a degraded API and define failure criteria.
+   - Document findings + required code changes for telemetry enforcement.
+4. **Finish docs refresh (T14)**
+   - Audit `docs/slash-commands.md`, `AGENTS.md`, and restart notes for stale guardrail references; push cleanup commit.
+5. **Kick off guardrail hardening plan (T20)**
+   - Outline additional checks (baseline validation, SPEC lock enforcement, schema linting) and drop proposal in `docs/SPEC-OPS-004-integrated-coder-hooks/notes/`.
 
 ## Next Session Prompt
-- Source `.env` and export JWT + HAL secrets.
-- Start `cargo run --bin kavedarr`, confirm API key bootstrap (log `kvd_…`).
-- Restart Codex so HAL appears in `/mcp list`.
-- Run `cargo run -p codex-mcp-client --bin call_tool -- --tool {http-get|http-post} … -- npx -y hal-mcp`; archive JSON under the project repo's SPEC-KIT-018 evidence directory.
-- Stage/commit HAL docs + SPEC tracker updates once evidence stored.
+```
+source ~/.bashrc
+cd ~/code
+export HAL_SECRET_KAVEDARR_API_KEY=$(grep HAL_SECRET_KAVEDARR_API_KEY ~/kavedarr/.env | cut -d"=" -f2 | tr -d "'")
+cargo run -p codex-mcp-client --bin call_tool -- --tool http-get --args '{"url":"http://127.0.0.1:7878/health"}' -- npx -y hal-mcp
+vim SPEC-kit-tasks.md  # flesh out T20 guardrail hardening plan
+```
 
 ## Telemetry & Consensus Troubleshooting
 
