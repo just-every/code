@@ -13,7 +13,7 @@
 | Requirement (Spec) | Validation Step | Test/Check Artifact |
 | --- | --- | --- |
 | HAL config committed | Product repo contains `docs/hal/hal_config.toml` with host + secret reference | File review |
-| HAL profile committed | Product repo contains `docs/hal/hal_profile.json` with required requests | `code mcp call hal health` |
+| HAL profile committed | Product repo contains `docs/hal/hal_profile.json` with required requests | `cargo run -p codex-mcp-client --bin call_tool -- --tool http-get …` |
 | Docs/prompts updated | README + guardrail prompts mention HAL usage | Doc diff + `cargo test -p codex-tui spec_auto` |
 | Evidence captured | JSON stored under product repo `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/` | Evidence files |
 

@@ -12,7 +12,7 @@
 ## Validation Commands
 CODEX_HOME=.github/codex/home code mcp list --json  # verify HAL appears after restart
 cd /home/thetu/kavedarr && source .env && cargo run --bin kavedarr  # bootstrap API key & run service
-HAL_PROFILE=/home/thetu/kavedarr/docs/hal/hal_profile.json code mcp call hal health
+cargo run -p codex-mcp-client --bin call_tool -- --tool http-get --args '{"url":"http://127.0.0.1:7878/health"}' --env HAL_SECRET_KAVEDARR_API_KEY=… -- npx -y hal-mcp
 
 ## Next Steps
 1. **Bring Kavedarr API up locally**
@@ -35,7 +35,7 @@ HAL_PROFILE=/home/thetu/kavedarr/docs/hal/hal_profile.json code mcp call hal hea
 - Source `.env` and export JWT + HAL secrets.
 - Start `cargo run --bin kavedarr`, confirm API key bootstrap (log `kvd_…`).
 - Restart Codex so HAL appears in `/mcp list`.
-- Run `code mcp call hal {health,list_movies,indexer_test,graphql_ping}` with `HAL_PROFILE` set; archive JSON under the project repo's SPEC-KIT-018 evidence directory.
+- Run `cargo run -p codex-mcp-client --bin call_tool -- --tool {http-get|http-post} … -- npx -y hal-mcp`; archive JSON under the project repo's SPEC-KIT-018 evidence directory.
 - Stage/commit HAL docs + SPEC tracker updates once evidence stored.
 
 ## Telemetry & Consensus Troubleshooting

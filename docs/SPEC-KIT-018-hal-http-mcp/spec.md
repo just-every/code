@@ -25,7 +25,7 @@
 - Automating API key rotation (document manual steps only).
 
 ## Acceptance Criteria
-- HAL MCP entry registered and working against the local API (manual `code mcp call hal ...` succeeds).
+- HAL MCP entry registered and working against the local API (manual `cargo run -p codex-mcp-client --bin call_tool -- --tool … -- npx -y hal-mcp` succeeds).
 - HAL evidence (health + authenticated call + GraphQL) stored under the product repo's SPEC-KIT-018 evidence directory.
 - `/spec-*` prompts mention HAL usage and evidence requirement.
 - SPEC tracker row T18 updated with evidence path and status.
