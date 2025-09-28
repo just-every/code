@@ -11,7 +11,7 @@
 | T7 | Implement `/spec-audit` prompt | Produce go/no-go memo referencing MCP evidence, emit consensus verdict JSON, and surface agent disagreements. | T6 | Claude MAX | Done |
 | T8 | Implement `/spec-unlock` prompt | Require unlock justification memo tied to SPEC.md state before invoking shell unlocker. | T5 | Gemini Ultra | Done |
 | T9 | MCP server enablement | Configure repo-search, doc-index, shell-lite, git-status, spec-registry MCP servers and expose to agents. | T1 | Code | Done |
-| T10 | Local-memory migration | Mirror Byterover entries into local-memory domains and update retrieval/write-back hooks. Baseline + migration tooling scaffolding in place; finish tests, runtime fallbacks, and schedule Oct 2 run. | T1 | Code | In Progress |
+| T10 | Local-memory migration | Mirror Byterover entries into local-memory domains and update retrieval/write-back hooks. Migration tooling, local-memory-first flows, and evidence runbook completed 2025-09-28. | T1 | Code | Done |
 | T11 | `/spec-auto` orchestrator | Build state machine that chains guardrail and multi-agent stages, records checkpoints, and supports resume/skip flags. | T3,T4,T5,T6,T7,T8 | Code | Done |
 | T12 | Consensus diff reviewer | Implement MCP tool that compares agent outputs, persists verdicts, and blocks `/spec-auto` until consensus degradation is resolved. | T3 | Gemini Ultra | Done |
 | T13 | Telemetry schema enforcement | Add validation to fail `/spec-auto` when JSON evidence is missing or malformed. | T2 | Code | Backlog |
