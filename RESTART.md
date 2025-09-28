@@ -1,29 +1,43 @@
 # Restart Plan: Spec Kit Multi-Agent Pipeline
 
 ## Status
-Checked MCP stack: `repo_search`, `doc_index`, `shell_lite`, and `git_status` all respond via `codex-mcp-client`. SPEC-kit T2, T9, T11, and T12 are complete; remaining backlog covers T10 local-memory migration, T13 telemetry schema guard, T14 docs refresh, and T15 nightly sync.
+- New HAL integration templates committed under `docs/SPEC-KIT-018-hal-http-mcp/` (template repo).
+- Project downstream wiring started in `/home/thetu/kavedarr/docs/hal/` (config/profile/readme) but not yet committed.
+- HAL MCP entry appended to `/home/thetu/.code/config.toml` (needs Codex restart) but HAL secret not exported.
+- API key for HAL located in `/home/thetu/kavedarr/.env` (`HAL_SECRET_KAVEDARR_API_KEY`).
+- Kavedarr service currently fails to start due to missing JWT env vars in shell (need export).
+- Spec tracker updated: T18 row now points to integration status; T10 docs still pending evidence.
+- Working tree dirty: template docs, spec prompts, slash commands, SPEC.md, SPEC-kit-tasks.md, new docs/hal/ folder.
 
 ## Validation Commands
-CODEX_HOME=.github/codex/home code mcp list --json
-(cd codex-rs && target/debug/codex-mcp-client uvx awslabs.git-repo-research-mcp-server@latest)
-(cd codex-rs && target/debug/codex-mcp-client npx -y open-docs-mcp --docsDir /home/thetu/code/docs)
-(cd codex-rs && target/debug/codex-mcp-client npx -y super-shell-mcp)
-(cd codex-rs && target/debug/codex-mcp-client uvx mcp-server-git --repository /home/thetu/code)
+CODEX_HOME=.github/codex/home code mcp list --json  # verify HAL appears after restart
+cd /home/thetu/kavedarr && source .env && cargo run --bin kavedarr  # bootstrap API key & run service
+HAL_PROFILE=/home/thetu/kavedarr/docs/hal/hal_profile.json code mcp call hal health
 
 ## Next Steps
-1. **T10 Local-memory migration**
-   - Add fixture-based tests for `scripts/spec-kit/migrate_local_memory.py` and wire the bulk Byterover export helper (single retrieval on Oct 2).
-   - Extend TUI slash-command hydration to use the new local-memory helper (consensus already updated) and add coverage for the fallback hook.
-   - Prep Oct 2 runbook: dry-run → apply → rerun nightly drift detector; cache Byterover export for replay.
-2. **T13 Telemetry schema guard** – integrate validator into remaining guardrail paths once T10 data flows are stable; expand scenario coverage.
-3. **T14 Docs refresh** – fold migration workflow + nightly sync docs into onboarding/AGENTS.
-4. **T15 Nightly sync** – once T10 lands, re-run detector and attach evidence to SPEC tracker.
-5. MCP expansions (T16–T19) stay queued until core migration + schema work finishes.
+1. **Bring Kavedarr API up locally**
+   - `export JWT_PRIVATE_KEY_PATH=/home/thetu/kavedarr/keys/jwt-private.pem`
+   - `export JWT_PUBLIC_KEY_PATH=/home/thetu/kavedarr/keys/jwt-public.pem`
+   - `source .env` (provides DB + HAL secret) then `cargo run --bin kavedarr`
+   - Capture/bootstrap message with `kvd_…` key if it rotates.
+2. **Export HAL secret to shell before launching Codex**
+   - `export HAL_SECRET_KAVEDARR_API_KEY=$(grep HAL_SECRET_KAVEDARR_API_KEY .env | cut -d"=" -f2 | tr -d "'" )`
+   - Restart Codex (`code`) or `/mcp reload` so HAL server loads new env.
+3. **Run HAL smoke profile**
+   - `HAL_PROFILE=/home/thetu/kavedarr/docs/hal/hal_profile.json code mcp call hal health`
+   - repeat for `list_movies`, `indexer_test`, `graphql_ping`
+   - Save responses under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/`.
+4. **Commit template + project wiring**
+   - Stage & commit `docs/SPEC-KIT-018-hal-http-mcp`, `docs/hal`, `codex-rs/tui/src/spec_prompts.rs`, `docs/slash-commands.md`, `SPEC.md`, `SPEC-kit-tasks.md` (after evidence captured).
+5. **Resume remaining SPEC tasks**
+   - T10/T13/T14 follow-up after HAL evidence.
 
 ## Next Session Prompt
-- Add unit tests for `scripts/spec-kit/migrate_local_memory.py` using fixture exports (dry-run/apply) and commit results.
-- Wire the local-memory helper into `/spec-plan`/`/spec-tasks` hydration and add tests around empty vs populated context.
-- Draft the Byterover bulk export script (`scripts/spec-kit/fetch_byterover_bulk.py`) that performs a single batched retrieval and caches JSON for the Oct 2 migration.
+- Source `.env` and export JWT + HAL secrets.
+- Start `cargo run --bin kavedarr`, confirm API key bootstrap (log `kvd_…`).
+- Restart Codex so HAL appears in `/mcp list`.
+- Run `code mcp call hal {health,list_movies,indexer_test,graphql_ping}` with `HAL_PROFILE` set; archive JSON under SPEC-KIT-018 evidence.
+- Stage/commit HAL docs + SPEC tracker updates once evidence stored.
 
 ## Telemetry & Consensus Troubleshooting
 

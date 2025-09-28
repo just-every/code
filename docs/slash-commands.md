@@ -47,6 +47,7 @@ Notes
 - `/spec-ops-audit <SPEC-ID> [--dry-run]`: Run the Spec Ops audit scenarios; telemetry mirrors Validate stage (`scenarios` array). `/spec-audit` performs the multi-agent consensus review and records verdict JSON for `/spec-auto` gating.
 - `/spec-ops-unlock <SPEC-ID> [--spec-path <path>]`: Force-unlock SPEC.md after the guardrail workflow completes. Telemetry emits `unlock_status` and artifacts. Alias `/spec-unlock` is deprecated.
 - `/spec-auto <SPEC-ID> [goal] [--from <stage>]`: Orchestrate the end-to-end Spec Ops + multi-agent pipeline, preparing guardrail commands, stage prompts, and consensus checks (supports stages: plan, tasks, implement, validate, audit, unlock). Guardrail telemetry must validate against schema v1 before the pipeline advances.
+- HAL HTTP MCP: configure using `docs/hal/hal_config.toml` and `docs/hal/hal_profile.json`, then run `code mcp call hal <request>` (health/list_movies/indexer_test/graphql_ping) to capture evidence for SPEC-KIT-018.
 
 ## UX & Display
 

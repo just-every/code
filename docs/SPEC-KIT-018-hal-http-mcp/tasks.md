@@ -1,0 +1,8 @@
+# Tasks: T18 HAL HTTP MCP Integration
+
+| Order | Task | Owner | Status | Validation |
+| --- | --- | --- | --- | --- |
+| 1 | Author project HAL config (`docs/hal/hal_config.toml`) pointing at local API | Code | Done | Manual review |
+| 2 | Create HAL request profile (`docs/hal/hal_profile.json`) covering health/REST/GraphQL | Code | Done | `code mcp call hal health` |
+| 3 | Update docs/prompts to include HAL smoke guidance | Code | Done | Doc diff + `cargo test -p codex-tui spec_auto` |
+| 4 | Run HAL smoke + archive evidence under SPEC-KIT-018; update SPEC.md | Code | Done | Evidence JSON + `cargo test -p codex-tui spec_auto` |

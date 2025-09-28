@@ -311,6 +311,11 @@ pub fn build_stage_prompt(stage: SpecStage, raw_args: &str) -> Result<String, Pr
         }
     }
 
+    bundle.push_str("## HTTP MCP (HAL)\n");
+    bundle.push_str(
+        "- If a HAL HTTP MCP profile is configured (see docs/SPEC-KIT-018-hal-http-mcp), run the published templates (health, REST, GraphQL) against your project-specific API and archive the outputs in that project’s evidence folder.\n\n",
+    );
+
     if let Some(prompt) = stage_prompts.gemini.clone() {
         let mut gemini_vars = replacements.clone();
         gemini_vars.extend(model_metadata(stage, SpecAgent::Gemini));

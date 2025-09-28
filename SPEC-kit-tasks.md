@@ -19,5 +19,5 @@
 | T15 | Nightly sync check | Create script/job that reconciles local-memory entries with evidence logs to detect drift. | T10 | Code | Backlog |
 | T16 | Evaluate Uniprof MCP integration | Pilot `uniprof` MCP to capture /spec-validate profiling evidence and document flamegraph workflow. | T9 | Code | Backlog |
 | T17 | Justfile service orchestration | Replace devserver MCP with `just` recipes for starting/stopping Kavedarr API, worker, and dashboard. | T9 | Code | Done |
-| T18 | Evaluate HAL HTTP MCP integration | Wire HAL to Kavedarr staging OpenAPI spec for automated API smoke validation with secret management. | T9 | Code | In Progress |
+| T18 | Evaluate HAL HTTP MCP integration | Publish reusable HAL HTTP MCP templates (config + requests) so downstream projects can provide their own hosts/secrets. | T9 | Code | In Progress |
 | T19 | Evaluate Postgres MCP integration | Assess Postgres MCP against staging telemetry databases and design read-only credential strategy. | T9 | Code | Backlog |
