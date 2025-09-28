@@ -453,6 +453,9 @@ struct AutoCoordinatorUiState {
     seconds_remaining: u8,
     awaiting_goal_input: bool,
     last_broadcast_thought: Option<String>,
+    thinking_prefix_stripped: bool,
+    current_display_line: Option<String>,
+    placeholder_phrase: Option<String>,
 }
 
 impl AutoCoordinatorUiState {
@@ -463,6 +466,68 @@ impl AutoCoordinatorUiState {
     fn countdown_active(&self) -> bool {
         self.awaiting_submission && !self.paused_for_manual_edit
     }
+}
+
+fn strip_role_prefix_if_present(input: &str) -> (&str, bool) {
+    const PREFIXES: [&str; 2] = ["Coordinator:", "CLI:"];
+
+    let mut prefix_start = None;
+    for (idx, ch) in input.char_indices() {
+        if ch.is_ascii_whitespace() {
+            continue;
+        }
+        prefix_start = Some(idx);
+        break;
+    }
+
+    let Some(start) = prefix_start else {
+        return (input, false);
+    };
+
+    let candidate = &input[start..];
+    for prefix in PREFIXES {
+        if candidate.len() >= prefix.len()
+            && candidate[..prefix.len()].eq_ignore_ascii_case(prefix)
+        {
+            let mut rest_idx = start + prefix.len();
+            for ch in input[rest_idx..].chars() {
+                if ch.is_ascii_whitespace() {
+                    rest_idx += ch.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            return (&input[rest_idx..], true);
+        }
+    }
+
+    (input, false)
+}
+
+fn extract_latest_bold_title(text: &str) -> Option<String> {
+    let mut latest: Option<String> = None;
+    for line in text.lines() {
+        if let Some(title) = extract_bold_heading(line) {
+            latest = Some(title);
+        }
+    }
+    latest
+}
+
+fn extract_bold_heading(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if !trimmed.starts_with("**") {
+        return None;
+    }
+
+    let rest = &trimmed[2..];
+    let (content, _after) = rest.split_once("**")?;
+    if content.is_empty() {
+        return None;
+    }
+
+    let consumed = 2 + content.len() + 2;
+    Some(trimmed[..consumed].to_string())
 }
 
 struct UndoSnapshotPreview {
@@ -9422,9 +9487,11 @@ impl ChatWidget<'_> {
                 self.auto_state.reset();
                 self.auto_state.active = true;
                 self.auto_state.goal = Some(goal_text.clone());
-                self.auto_state
-                    .current_thoughts
-                    .replace(auto_drive_strings::next_auto_drive_phrase().to_string());
+                self.auto_state.current_thoughts = None;
+                self.auto_state.current_display_line = None;
+                self.auto_state.placeholder_phrase =
+                    Some(auto_drive_strings::next_auto_drive_phrase().to_string());
+                self.auto_state.thinking_prefix_stripped = false;
                 self.auto_state.last_broadcast_thought = None;
                 self.auto_state.seconds_remaining = AUTO_COUNTDOWN_SECONDS;
                 self.auto_state.waiting_for_response = true;
@@ -9456,6 +9523,9 @@ impl ChatWidget<'_> {
             self.auto_state.waiting_for_response = true;
             self.auto_state.current_thoughts = None;
             self.auto_state.last_broadcast_thought = None;
+            self.auto_state.current_display_line = None;
+            self.auto_state.placeholder_phrase = None;
+            self.auto_state.thinking_prefix_stripped = false;
             self.auto_rebuild_live_ring();
             self.request_redraw();
         }
@@ -9585,6 +9655,9 @@ impl ChatWidget<'_> {
         self.auto_state.seconds_remaining = 0;
         self.auto_state.current_thoughts = None;
         self.auto_state.last_broadcast_thought = None;
+        self.auto_state.current_display_line = None;
+        self.auto_state.placeholder_phrase = None;
+        self.auto_state.thinking_prefix_stripped = false;
         self.bottom_pane.update_status_text(String::new());
         self.bottom_pane.set_task_running(false);
         self.submit_text_message(prompt);
@@ -9640,6 +9713,9 @@ impl ChatWidget<'_> {
         self.auto_state.resume_after_manual_submit = false;
         self.auto_state.seconds_remaining = AUTO_COUNTDOWN_SECONDS;
         self.auto_state.current_thoughts = Some(String::new());
+        self.auto_state.current_display_line = None;
+        self.auto_state.placeholder_phrase = None;
+        self.auto_state.thinking_prefix_stripped = false;
         self.auto_rebuild_live_ring();
         self.request_redraw();
         self.auto_send_conversation();
@@ -9660,36 +9736,23 @@ impl ChatWidget<'_> {
 
         self.bottom_pane.clear_live_ring();
 
-        if self
+        let status_text = if let Some(title) = self
             .auto_state
-            .current_thoughts
+            .current_display_line
             .as_ref()
-            .map(|text| text.trim().is_empty())
-            .unwrap_or(true)
+            .filter(|s| !s.trim().is_empty())
         {
-            self.auto_state
-                .current_thoughts
-                .replace(auto_drive_strings::next_auto_drive_phrase().to_string());
-        }
-
-        let base_text = self
-            .auto_state
-            .current_thoughts
-            .clone()
-            .unwrap_or_else(|| auto_drive_strings::next_auto_drive_phrase().to_string());
-
-        let mut status_lines: Vec<String> = base_text
-            .lines()
-            .map(|line| line.trim().to_string())
-            .filter(|line| !line.is_empty())
-            .collect();
-
-        if status_lines.is_empty() {
-            status_lines.push(base_text.clone());
+            title.clone()
         } else {
-            // ensure stored thoughts match cleaned output to avoid trailing whitespace
-            self.auto_state.current_thoughts = Some(status_lines.join("\n"));
-        }
+            let phrase = self
+                .auto_state
+                .placeholder_phrase
+                .get_or_insert_with(|| auto_drive_strings::next_auto_drive_phrase().to_string())
+                .clone();
+            phrase
+        };
+
+        let status_lines: Vec<String> = vec![status_text];
 
         let prompt = self
             .auto_state
@@ -9760,6 +9823,26 @@ impl ChatWidget<'_> {
             .send(AppEvent::ScheduleFrameIn(Duration::from_millis(interval)));
     }
 
+    fn auto_update_display_title(&mut self) {
+        let Some(text) = self.auto_state.current_thoughts.as_ref() else {
+            return;
+        };
+
+        if let Some(title) = extract_latest_bold_title(text) {
+            let needs_update = self
+                .auto_state
+                .current_display_line
+                .as_ref()
+                .map(|current| current != &title)
+                .unwrap_or(true);
+
+            if needs_update {
+                self.auto_state.current_display_line = Some(title);
+                self.auto_state.placeholder_phrase = None;
+            }
+        }
+    }
+
     fn auto_broadcast_thoughts(&mut self, raw: &str) {
         if !self.auto_state.active {
             return;
@@ -9794,6 +9877,16 @@ impl ChatWidget<'_> {
             return;
         }
 
+        let cleaned_delta = if !self.auto_state.thinking_prefix_stripped {
+            let (without_prefix, stripped) = strip_role_prefix_if_present(delta);
+            if stripped {
+                self.auto_state.thinking_prefix_stripped = true;
+            }
+            without_prefix.to_string()
+        } else {
+            delta.to_string()
+        };
+
         let payload = {
             let entry = self
                 .auto_state
@@ -9804,9 +9897,15 @@ impl ChatWidget<'_> {
                 entry.clear();
             }
 
-            entry.push_str(delta);
+            entry.push_str(&cleaned_delta);
             entry.clone()
         };
+
+        if !self.auto_state.thinking_prefix_stripped && !cleaned_delta.trim().is_empty() {
+            self.auto_state.thinking_prefix_stripped = true;
+        }
+
+        self.auto_update_display_title();
 
         self.auto_broadcast_thoughts(&payload);
 
@@ -9822,6 +9921,8 @@ impl ChatWidget<'_> {
         }
 
         self.auto_state.current_thoughts = Some(text.to_string());
+        self.auto_state.thinking_prefix_stripped = true;
+        self.auto_update_display_title();
         self.auto_broadcast_thoughts(text);
 
         if self.auto_state.waiting_for_response {
