@@ -62,6 +62,7 @@ mod streaming;
 mod terminal_handlers;
 mod terminal;
 mod tools;
+mod session_header;
 use self::agent_install::{
     start_agent_install_session,
     start_direct_terminal_session,
@@ -500,6 +501,7 @@ pub(crate) struct ChatWidget<'a> {
     active_review_prompt: Option<String>,
     overall_task_status: String,
     active_plan_title: Option<String>,
+    session_header: session_header::SessionHeader,
     /// Runtime timing per-agent (by id) to improve visibility in the HUD
     agent_runtime: HashMap<String, AgentRuntime>,
     // Sparkline data for showing agent activity (using RefCell for interior mutability)
@@ -2791,6 +2793,7 @@ impl ChatWidget<'_> {
             active_review_prompt: None,
             overall_task_status: "preparing".to_string(),
             active_plan_title: None,
+            session_header: session_header::SessionHeader::new(config.model.clone()),
             agent_runtime: HashMap::new(),
             sparkline_data: std::cell::RefCell::new(Vec::new()),
             last_sparkline_update: std::cell::RefCell::new(std::time::Instant::now()),
