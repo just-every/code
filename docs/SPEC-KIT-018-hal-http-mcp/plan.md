@@ -1,32 +1,35 @@
 # Plan: T18 HAL HTTP MCP Integration
 ## Inputs
-- Spec: docs/SPEC-KIT-018-hal-http-mcp/spec.md (16cfdc66)
-- Constitution: memory/constitution.md (1.1)
+- Spec: docs/SPEC-KIT-018-hal-http-mcp/spec.md (3f3c34f0)
+- Constitution: memory/constitution.md (8bcab66e)
 
 ## Work Breakdown
-1. Author `docs/hal/hal_config.toml` inside the product repo (for Kavedarr: `~/kavedarr/docs/hal/hal_config.toml`) pointing HAL at `http://127.0.0.1:7878` with default headers that pull `HAL_SECRET_KAVEDARR_API_KEY` from the secret store.
-2. Create `docs/hal/hal_profile.json` in the product repo containing the smoke requests (health, movie list, indexer test, GraphQL) and ensure they align with current API routes.
-3. Update operator docs (README/slash command guidance) so `/spec-*` flows include HAL smoke checks, reference the per-project config location, and remind operators to keep secrets out of this repo.
-4. Run the HAL profile locally from the product repo using `cargo run -p codex-mcp-client --bin call_tool …`, archive outputs under that repo's `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/`, update SPEC tracker, and lint tasks.
+1. **Guardrail prerequisites (blocker sync).** Pair with T20 owners to land guardrail fixes: ensure `spec_ops_run_hal_smoke` propagates non-zero exits, GraphQL payload escaping is corrected, and `SPEC_OPS_CARGO_MANIFEST`/`--manifest-path` is honored. Re-run `/spec-ops-plan SPEC-KIT-018` and `/spec-ops-validate SPEC-KIT-018` against a known-bad HAL to verify telemetry now reports failure and records `hal.summary`.
+2. **HAL configuration assets.** Author final templates `docs/SPEC-KIT-018-hal-http-mcp/hal_config.toml.example` and `docs/SPEC-KIT-018-hal-http-mcp/hal_profile.json` capturing health, movie list, indexer test, and GraphQL ping endpoints. Document secret usage (`HAL_SECRET_KAVEDARR_API_KEY`) and instructions for copying these assets into the product repo (~/kavedarr/docs/hal/...).
+3. **Evidence capture workflow.** With guardrail fixes in place, execute `/spec-ops-validate SPEC-KIT-018` twice: once with HAL offline (expect failure) and once with HAL healthy. Store artifacts under docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/ and annotate each telemetry payload with scenario notes.
+4. **Documentation & prompt refresh.** Update docs/slash-commands.md, AGENTS.md, and docs/getting-started.md to describe HAL smoke integration, evidence directories, manifest overrides, and consensus model metadata. Ensure `/spec-*` guidance references HAL prerequisites and the need for degraded vs healthy evidence snapshots.
+5. **Tracker & validation.** Update SPEC.md row T18 with evidence paths and status, run `scripts/spec-kit/lint_tasks.py`, perform a doc validation dry-run (`scripts/doc-structure-validate.sh --mode=templates --dry-run` prior to full run), and capture review notes for handoff.
 
 ## Acceptance Mapping
 | Requirement (Spec) | Validation Step | Test/Check Artifact |
 | --- | --- | --- |
-| HAL config committed | Product repo contains `docs/hal/hal_config.toml` with host + secret reference | File review |
-| HAL profile committed | Product repo contains `docs/hal/hal_profile.json` with required requests | `cargo run -p codex-mcp-client --bin call_tool -- --tool http-get …` |
-| Docs/prompts updated | README + guardrail prompts mention HAL usage | Doc diff + `cargo test -p codex-tui spec_auto` |
-| Evidence captured | JSON stored under product repo `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/` | Evidence files |
+| HAL MCP entry registered and working | `cargo run --manifest-path codex-rs/Cargo.toml -p codex-mcp-client --bin call_tool -- --tool http-get --args '{"url":"http://127.0.0.1:7878/health"}' -- npx -y hal-mcp` succeeds with healthy HAL | docs/hal/hal_config.toml.example, command output |
+| HAL evidence stored under SPEC-KIT-018 | Inspect docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/* for paired failed/passed telemetry JSON | Evidence JSON files |
+| `/spec-*` flows document HAL usage | Review docs/slash-commands.md & AGENTS.md diffs for HAL guidance and telemetry schema reminders | Updated docs |
+| SPEC tracker updated with notes | Modify SPEC.md row T18 with status + evidence links and run `scripts/spec-kit/lint_tasks.py` | SPEC.md diff, lint output |
 
 ## Risks & Unknowns
-- Local API must be running with migrations applied; HAL calls will fail otherwise.
-- API key bootstrap is one-time; losing the generated key requires rotation.
-- Evidence may contain sensitive IDs—scrub before sharing externally.
+- Guardrail hardening (T20) must complete before evidence is trustworthy; any delay blocks Step 3.
+- Local Kavedarr API availability can destabilize validation; consider lightweight mock for CI if outages persist.
+- API key rotation relies on operator process; missing runbook updates could expose secrets.
+- Differences between template repo and product repo layouts require clear copy instructions to avoid configuration drift.
 
 ## Consensus & Risks (Multi-AI)
-- Solo Codex planning pending full multi-agent `/plan`; rerun with additional agents if required by governance.
+- Agreement: Claude (docs architect), Gemini (planner), and Code (risk) all insist on sequencing guardrail fixes before new evidence and on providing degraded + healthy HAL runs with updated documentation.
+- Disagreement & resolution: Gemini initially proposed pausing T18 entirely until T20 lands; consensus reached to proceed but treat Step 1 as an explicit blocker and track the dependency before moving forward.
 
 ## Exit Criteria (Done)
-- HAL config + docs merged; sample smoke evidence stored under SPEC-KIT-018 in product repo.
-- `/spec-*` flows mention HAL checks and succeed locally.
-- SPEC tracker row T18 updated with evidence link and status.
-- `scripts/spec-kit/lint_tasks.py` passes after tracker update.
+- Guardrail fixes verified via failed HAL run producing `hal.summary.status="failed"` telemetry.
+- HAL templates committed and referenced in operator docs with clear copy/secret instructions.
+- Healthy and degraded HAL evidence captured and linked in SPEC.md.
+- Docs/slash-commands.md, AGENTS.md, and onboarding guidance updated; lint/validation scripts pass.

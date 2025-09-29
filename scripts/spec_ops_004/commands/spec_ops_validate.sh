@@ -15,10 +15,24 @@ SPEC_ID="$1"; shift || true
 spec_ops_prepare_stage "spec-validate" "${SPEC_ID}"
 spec_ops_write_log "validate guardrail ready"
 
-spec_ops_run_hal_smoke || spec_ops_write_log "HAL smoke skipped/failed"
+SPEC_OPS_HAL_ARTIFACTS=()
+
+HAL_FAILURE=0
+if ! spec_ops_run_hal_smoke; then
+  HAL_FAILURE=1
+  if [[ ${#SPEC_OPS_HAL_FAILED_CHECKS[@]} -gt 0 ]]; then
+    spec_ops_write_log "HAL smoke failed checks: ${SPEC_OPS_HAL_FAILED_CHECKS[*]}"
+  else
+    spec_ops_write_log "HAL smoke skipped/failed"
+  fi
+fi
 
 SCHEMA_VERSION=1
 SCENARIO_STATUS="passed"
+
+if [[ ${HAL_FAILURE} -ne 0 ]]; then
+  SCENARIO_STATUS="failed"
+fi
 
 read -r -d '' TELEMETRY <<JSON || true
 {
@@ -35,7 +49,8 @@ read -r -d '' TELEMETRY <<JSON || true
   ],
   "artifacts": [
     { "path": "${SPEC_OPS_LOG}" }$(
-      for artifact in "${SPEC_OPS_HAL_ARTIFACTS[@]:-}"; do
+      for artifact in "${SPEC_OPS_HAL_ARTIFACTS[@]}"; do
+        [[ -z "${artifact}" ]] && continue
         printf ', { "path": "%s" }' "${artifact}"
       done
     )
@@ -46,3 +61,7 @@ JSON
 spec_ops_emit_telemetry "${TELEMETRY}"
 echo "Validate guardrail executed for ${SPEC_ID}"
 echo "Telemetry: ${SPEC_OPS_TELEMETRY}"
+
+if [[ ${HAL_FAILURE} -ne 0 ]]; then
+  exit 1
+fi

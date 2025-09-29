@@ -16,6 +16,7 @@ SPEC_ID=""
 OUT_FILE=""
 LOG_FILE=""
 MODE="full"
+FORCE_FAIL=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -27,6 +28,8 @@ while [[ $# -gt 0 ]]; do
       LOG_FILE="$2"; shift 2 ;;
     --mode)
       MODE="$2"; shift 2 ;;
+    --force-fail)
+      FORCE_FAIL=1; shift ;;
     --help|-h)
       usage; exit 0 ;;
     *)
@@ -57,14 +60,23 @@ case "${MODE}" in
     STATUS="unknown" ;;
 esac
 
+if [[ "${FORCE_FAIL}" == "1" || "${SPEC_OPS_BASELINE_FORCE_FAIL:-0}" == "1" ]]; then
+  STATUS="failed"
+fi
+
 {
   printf '# Baseline Audit\n\n'
-  printf '- Spec: %s\n' "${SPEC_ID}"
-  printf '- Mode: %s\n' "${MODE}"
-  printf '- Status: %s\n' "${STATUS}"
-  printf '- Timestamp: %s\n\n' "$(spec_ops_timestamp)"
+  printf -- '- Spec: %s\n' "${SPEC_ID}"
+  printf -- '- Mode: %s\n' "${MODE}"
+  printf -- '- Status: %s\n' "${STATUS}"
+  printf -- '- Timestamp: %s\n\n' "$(spec_ops_timestamp)"
   printf 'This placeholder baseline audit asserts guardrails have been reviewed. Replace with project-specific checks when available.\n'
 } >"${OUT_FILE}"
 
 echo "Status: ${STATUS}"
+
+if [[ "${STATUS}" == "failed" ]]; then
+  exit 1
+fi
+
 exit 0
