@@ -1,10 +1,10 @@
 # Restart Plan: Spec Kit Multi-Agent Pipeline
 
 ## Status
-- Guardrail scripts now propagate baseline and HAL smoke failures; new env/CLI overrides (`--allow-fail`, `SPEC_OPS_CARGO_MANIFEST`) landed locally.
-- Healthy + degraded HAL telemetry captured under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/` for template verification (latest `hal.summary` run: `spec-validate_2025-09-29T12:33:03Z-3193628696.json`).
-- Specs/tasks updated for T14, T18, and new T20 guardrail-hardening spec/plan/task files committed in this repo.
-- Remaining work: finish T14 doc refresh using fresh evidence; wire HAL prompts/docs (T18); merge guardrail fixes and push to remote.
+- Guardrail enforcement (T20) is merged: `/spec-ops-plan` fails on missing baseline output, manifests are resolved via `SPEC_OPS_CARGO_MANIFEST`, and HAL artifacts are recorded only when present.
+- HAL MCP integration (T18) is complete: templates reference `HAL_SECRET_KAVEDARR_API_KEY`, and healthy/degraded telemetry lives under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/` (e.g., `spec-validate_2025-09-29T16:25:38Z-2828521850.json`, `spec-validate_2025-09-29T16:34:21Z-229132461.json`).
+- Documentation refresh (T14) is in flight; follow `docs/getting-started.md` for the canonical troubleshooting and HAL workflow.
+- Current branch: `feat/spec-auto-telemetry` (ahead of origin) — push when ready.
 
 ## Validation Commands
 CODEX_HOME=.github/codex/home code mcp list --json  # HAL registered?
@@ -12,20 +12,20 @@ cargo run -p codex-mcp-client --bin call_tool -- --tool http-get --args '{"url":
 python3 scripts/spec_ops_004/validate_schema.py docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018  # schema guard (T13 follow-up)
 
 ## Next Steps
-1. **Push guardrail + doc updates**
-   - Review staged diffs (scripts, Rust validator, docs, evidence) and commit to `feat/spec-auto-telemetry`, then `git push`.
-2. **Finish T20 script patches**
-   - Land baseline propagation, manifest-awareness, and HAL failure plumbing (tasks 1–3) and rerun `/spec-ops-plan|validate` with healthy + degraded HAL windows under `SPEC_OPS_TELEMETRY_HAL=1`.
-3. **Prep rollout memo / CI parity**
-   - Coordinate with infra on CI env vars (`SPEC_OPS_CARGO_MANIFEST`, HAL access), update the rollout memo, and schedule enforcement enablement.
+1. **Finalize T14 doc edits**
+   - Audit `docs/slash-commands.md`, `AGENTS.md`, `docs/getting-started.md`, and cross-links to `docs/spec-kit/model-strategy.md`; ensure troubleshooting references the latest evidence set.
+2. **Push branch**
+   - `git status -sb`, confirm no stray files (ignore `PDDL.md` and local evidence), then `git push origin feat/spec-auto-telemetry`.
+3. **Run guardrail smoke before `/spec-auto`**
+   - `/spec-ops-plan SPEC-KIT-018 --baseline-mode full`
+   - `SPEC_OPS_TELEMETRY_HAL=1 /spec-ops-validate SPEC-KIT-018`
+   - `/spec-auto SPEC-KIT-018` (halts if consensus or telemetry drift).
 
 ## Next Session Prompt
 ```
 source ~/.bashrc
 cd ~/code
 git status -sb
-git add <files>
-git commit -m "fix(guardrails): record hal summary telemetry"
 git push origin feat/spec-auto-telemetry
 ```
 
