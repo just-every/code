@@ -6,13 +6,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../common.sh"
 
 if [[ $# -lt 1 ]]; then
-  echo "Usage: /spec-ops-plan <SPEC-ID> [--baseline-mode <mode>] [--allow-fail]" >&2
+  echo "Usage: /spec-ops-plan <SPEC-ID> [--baseline-mode <mode>] [--allow-fail] [--manifest-path <path>]" >&2
   exit 1
 fi
 
 SPEC_ID="$1"; shift
 BASELINE_MODE="no-run"
 ALLOW_BASELINE_FAIL=0
+MANIFEST_PATH=""
 
 if [[ "${SPEC_OPS_ALLOW_DIRTY:-0}" == "1" || "${SPEC_OPS_BASELINE_ALLOW_FAIL:-0}" == "1" ]]; then
   ALLOW_BASELINE_FAIL=1
@@ -42,14 +43,25 @@ while [[ $# -gt 0 ]]; do
       BASELINE_MODE="skip"; shift ;;
     --allow-fail)
       ALLOW_BASELINE_FAIL=1; shift ;;
+    --manifest-path)
+      if [[ $# -lt 2 ]]; then
+        echo "--manifest-path requires a value" >&2
+        exit 1
+      fi
+      MANIFEST_PATH="$2"; shift 2 ;;
     *)
       echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
 
+if [[ -n "${MANIFEST_PATH}" ]]; then
+  spec_ops_set_manifest_path "${MANIFEST_PATH}"
+fi
+
 spec_ops_require_clean_tree
 spec_ops_prepare_stage "spec-plan" "${SPEC_ID}"
 spec_ops_write_log "baseline mode=${BASELINE_MODE}"
+spec_ops_write_log "using manifest $(spec_ops_manifest_path)"
 
 BASELINE_OUT="${SPEC_OPS_STAGE_DIR}/baseline_${SPEC_OPS_SESSION_ID}.md"
 BASELINE_EXIT=0
@@ -73,7 +85,19 @@ if [[ ${BASELINE_EXIT} -ne 0 ]]; then
 fi
 
 if [[ ! -s "${BASELINE_OUT}" ]]; then
-  printf '# Baseline Audit\nStatus: %s\n' "${BASELINE_STATUS}" >"${BASELINE_OUT}"
+  spec_ops_write_log "baseline output missing or empty; marking failure"
+  BASELINE_STATUS="failed"
+  if [[ ${BASELINE_EXIT} -eq 0 ]]; then
+    BASELINE_EXIT=1
+  fi
+  {
+    printf '# Baseline Audit\n\n'
+    printf -- '- Spec: %s\n' "${SPEC_ID}"
+    printf -- '- Mode: %s\n' "${BASELINE_MODE}"
+    printf -- '- Status: %s\n' "${BASELINE_STATUS}"
+    printf -- '- Timestamp: %s\n\n' "$(spec_ops_timestamp)"
+    printf 'Baseline output missing; failing guardrail.\n'
+  } >"${BASELINE_OUT}"
 fi
 
 HOOK_SESSION_START="ok"

@@ -42,12 +42,13 @@ Owner: Code
   - Healthy baseline captures (`20250929-114636Z-hal-*`)
   - Forced failure window (`20250929-114708Z-hal-*`)
   - Telemetry with `hal.summary` enabled in both degraded and healthy modes (`spec-validate_2025-09-29T12:33:03Z-3193628696.json`, `spec-audit_2025-09-29T12:33:29Z-218285443.json`, `spec-validate_2025-09-29T14:54:35Z-3088619300.json`) referencing the new artifact sets (`20250929-123303Z-hal-*`, `20250929-123329Z-hal-*`, `20250929-145435Z-hal-*`).
+  - Latest guardrail validation runs (2025-09-29 16:23Z–16:34Z) covering baseline failure, allow-fail override, degraded HAL, and healthy HAL: `spec-plan_2025-09-29T16:23:24Z-2625014190.json`, `spec-plan_2025-09-29T16:23:09Z-1240129600.log`, `spec-validate_2025-09-29T16:25:38Z-2828521850.json`, `spec-validate_2025-09-29T16:34:21Z-229132461.json`.
 - Update `scripts/spec-kit/lint_tasks.py` outputs to ensure the new telemetry fields still lint cleanly.
 
 ## Rollout Checklist (2025-09-29)
-- **Telemetry flag staging:** Document `SPEC_OPS_TELEMETRY_HAL=1` across slash-command, AGENTS, and onboarding guides. Keep the flag opt-in until CI parity is confirmed, then flip the default in guardrail scripts.
-- **CI parity:** Ensure CI runners export `SPEC_OPS_CARGO_MANIFEST=codex-rs/Cargo.toml` and have HAL (or a mock) reachable. Schedule a dry run of the guardrail harness with the flag enabled before enforcing failure exits.
-- **Rollout memo:** Share this note plus SPEC.md updates with T14/T18 owners. Highlight the paired evidence sets (`20250929-114636Z-hal-*`, `20250929-114708Z-hal-*`) and remind teams to keep both healthy/degraded artifacts under version control.
+- **Telemetry flag staging:** Document `SPEC_OPS_TELEMETRY_HAL=1` across slash-command, AGENTS, and onboarding guides. Keep the flag opt-in; local runs must export it when gathering evidence.
+- **Local enforcement:** Guardrail exits are enforced immediately in local workflows—document the requirement in release playbooks and store evidence alongside runs.
+- **Rollout communication:** Record enforcement decisions in this note and local memory; highlight paired evidence sets (`20250929-114636Z-hal-*`, `20250929-114708Z-hal-*`, `20250929-163421Z-hal-*`) for healthy/degraded validation. Share the note path when coordinating with downstream teams.
 
 ## Open Questions
 - Should HAL failures block `/spec-ops-validate` when the product repo intentionally runs without downloaders/indexers? Need confirmation from the HAL integration owners before making strict mode the default.

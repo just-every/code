@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "command": "spec-ops-validate",
+  "specId": "SPEC-KIT-018",
+  "sessionId": "2025-09-29T16:25:18Z-2624813049",
+  "timestamp": "2025-09-29T16:25:18Z",
+  "scenarios": [
+    {
+      "name": "validate guardrail bootstrap",
+      "status": "skipped"
+    }
+  ],
+  "artifacts": [
+    { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/spec-validate_2025-09-29T16:25:18Z-2624813049.log" }
+  ],
+  "hal": {
+    "summary": {
+      "status": "skipped"
+    }
+  }
+}

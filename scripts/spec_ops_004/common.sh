@@ -47,6 +47,26 @@ spec_ops_write_log() {
   printf '%s %s\n' "$(spec_ops_timestamp)" "$*" >>"${SPEC_OPS_LOG}"
 }
 
+spec_ops_set_manifest_path() {
+  local manifest="$1"
+  if [[ -z "${manifest}" ]]; then
+    return 0
+  fi
+  if [[ "${manifest}" != /* ]]; then
+    manifest="${REPO_ROOT}/${manifest}"
+  fi
+  export SPEC_OPS_CARGO_MANIFEST="${manifest}"
+  return 0
+}
+
+spec_ops_manifest_path() {
+  local manifest="${SPEC_OPS_CARGO_MANIFEST:-${REPO_ROOT}/codex-rs/Cargo.toml}"
+  if [[ "${manifest}" != /* ]]; then
+    manifest="${REPO_ROOT}/${manifest}"
+  fi
+  printf '%s' "${manifest}"
+}
+
 spec_ops_emit_telemetry() {
   local content="$1"
   printf '%s\n' "${content}" >"${SPEC_OPS_TELEMETRY}"
@@ -70,7 +90,8 @@ spec_ops_capture_hal() {
 
   local tmp
   tmp="$(mktemp)"
-  local manifest_path="${SPEC_OPS_CARGO_MANIFEST:-${REPO_ROOT}/codex-rs/Cargo.toml}"
+  local manifest_path
+  manifest_path="$(spec_ops_manifest_path)"
   if [[ ! -f "${manifest_path}" ]]; then
     spec_ops_write_log "cargo manifest ${manifest_path} not found; skipping HAL tool ${tool}"
     rm -f "${tmp}"
@@ -107,7 +128,12 @@ spec_ops_capture_hal() {
   else
     spec_ops_write_log "HAL tool ${tool} -> ${dest}"
   fi
-  SPEC_OPS_HAL_ARTIFACTS+=("${dest}")
+
+  if [[ -s "${dest}" ]]; then
+    SPEC_OPS_HAL_ARTIFACTS+=("${dest}")
+  else
+    spec_ops_write_log "HAL tool ${tool} generated empty artifact; skipping record"
+  fi
 
   if [[ ${fallback_used} -eq 1 ]]; then
     return 1
