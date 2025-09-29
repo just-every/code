@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "command": "spec-ops-plan",
+  "specId": "SPEC-KIT-018",
+  "sessionId": "2025-09-29T14:54:20Z-20962766",
+  "timestamp": "2025-09-29T14:54:20Z",
+  "baseline": {
+    "mode": "no-run",
+    "artifact": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/baseline_2025-09-29T14:54:20Z-20962766.md",
+    "status": "passed"
+  },
+  "hooks": {
+    "session.start": "ok"
+  },
+  "artifacts": [
+    { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/baseline_2025-09-29T14:54:20Z-20962766.md" },
+    { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/spec-plan_2025-09-29T14:54:20Z-20962766.log" }
+  ]
+}

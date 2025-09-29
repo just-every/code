@@ -28,11 +28,10 @@ if ! spec_ops_run_hal_smoke; then
 fi
 
 SCHEMA_VERSION=1
-SCENARIO_STATUS="passed"
+SCENARIO_STATUS="${SPEC_OPS_HAL_STATUS:-failed}"
 
-if [[ ${HAL_FAILURE} -ne 0 ]]; then
-  SCENARIO_STATUS="failed"
-fi
+hal_summary=""
+hal_summary=$(spec_ops_hal_summary_block "${SCENARIO_STATUS}") || hal_summary=""
 
 read -r -d '' TELEMETRY <<JSON || true
 {
@@ -54,7 +53,7 @@ read -r -d '' TELEMETRY <<JSON || true
         printf ', { "path": "%s" }' "${artifact}"
       done
     )
-  ]
+  ]${hal_summary}
 }
 JSON
 

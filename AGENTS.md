@@ -19,7 +19,7 @@
 - `/plan` → Multi-agent consensus (claude/gemini/qwen/code) consuming the PRD (and existing spec.md if present) to emit `docs/SPEC-<AREA>-<slug>/plan.md` via the Spec Kit skeleton, explicitly logging agreement vs. dissent.
 - `/tasks` → Multi-agent synthesis that ingests the plan, updates the SPEC.md Tasks table, and writes a per‑feature working file `docs/SPEC-<AREA>-<slug>/tasks.md` (agent‑approved steps with validation hooks/evidence).
 - `/implement` → Multi-agent execution guided by the spec; synthesize the strongest diff, apply locally, then run required env_run.sh validation commands and attach results.
-- `/cmd spec-ops-plan|tasks|implement|validate|review|unlock` → SPEC-OPS-004 project commands; they run clean-tree and branch guardrails, trigger project hooks, and log evidence under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/`. Guardrails emit telemetry using schema v1 (see below).
+- `/cmd spec-ops-plan|tasks|implement|validate|review|unlock` → SPEC-OPS-004 project commands; they run clean-tree and branch guardrails, trigger project hooks, and log evidence under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/`. Guardrails emit telemetry using schema v1 (see below). Set `SPEC_OPS_CARGO_MANIFEST` (default `codex-rs/Cargo.toml`) or pass `--manifest-path` so cargo invocations survive workspace splits; `--allow-fail`/`SPEC_OPS_ALLOW_DIRTY=1` gates baseline enforcement and `SPEC_OPS_TELEMETRY_HAL=1` enables HAL summary payloads when smoke checks run.
 
 ### Telemetry Schema (v1)
 - Common fields (all stages): `command`, `specId`, `sessionId`, `timestamp`, `schemaVersion`, `artifacts[]`.
@@ -31,6 +31,7 @@
   - **Unlock:** `unlock_status`.
 - Telemetry lives under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/<SPEC-ID>/`. `/spec-auto` halts if schema validation fails.
 - Keep telemetry schema aligned with docs/SPEC-KIT-013-telemetry-schema-guard/spec.md.
+- Enable `SPEC_OPS_TELEMETRY_HAL=1` to append `hal.summary` (`status`, `failed_checks`, `artifacts`) when HAL smoke runs execute; collect both healthy and degraded captures so documentation can reference real evidence.
 
 ### Model Strategy & Consensus Metadata
 - Reference `docs/spec-kit/model-strategy.md` for the canonical model lineup per stage.

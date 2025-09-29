@@ -40,14 +40,24 @@ Notes
 
 ## Spec Ops Guardrails & Telemetry
 
-- `/spec-ops-plan <SPEC-ID> [--baseline-mode <full|no-run|skip>] [other options]`: Run the baseline audit + guardrail prep for a SPEC task. Telemetry now emits `schemaVersion`, `baseline.mode`, `baseline.artifact`, `baseline.status`, `hooks.session.start`, and an `artifacts` array. The legacy `/spec-plan` alias remains temporarily and shows a deprecation warning.
-- `/spec-ops-tasks <SPEC-ID> [options]`: Prepare Spec Ops task automation hooks. Telemetry payload includes `tool.status` plus log artifacts.
-- `/spec-ops-implement <SPEC-ID> [options]`: Lock SPEC.md and prime guardrails ahead of implementation. Telemetry emits `lock_status`, `hook_status`, and artifacts.
-- `/spec-ops-validate <SPEC-ID> [--scenario <name>]`: Execute validation harness scenarios and record telemetry with `scenarios[{name,status}]` and log artifacts.
-- `/spec-ops-audit <SPEC-ID> [--dry-run]`: Run the Spec Ops audit scenarios; telemetry mirrors Validate stage (`scenarios` array). `/spec-audit` performs the multi-agent consensus review and records verdict JSON for `/spec-auto` gating.
+All guardrail stages emit a schema v1 telemetry envelope containing `command`, `specId`, `sessionId`, `timestamp`, `schemaVersion`, and an `artifacts[]` list. Stage payloads add:
+
+- Plan → `baseline.mode`, `baseline.artifact`, `baseline.status`, `hooks.session.start`.
+- Tasks → `tool.status`.
+- Implement → `lock_status`, `hook_status`.
+- Validate/Audit → `scenarios[{name,status}]` (`passed|failed|skipped`).
+- Unlock → `unlock_status`.
+
+Evidence JSON and logs must live under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/<SPEC-ID>/`; collect both healthy and degraded HAL captures when applicable (see SPEC-KIT-018).
+
+- `/spec-ops-plan <SPEC-ID> [--baseline-mode <full|no-run|skip>] [--allow-fail] [--manifest-path <path>]`: Run the baseline audit + guardrail prep. Failing audits propagate a non-zero exit and mark `baseline.status="failed"` unless `--allow-fail` or `SPEC_OPS_ALLOW_DIRTY=1` is provided. Set `SPEC_OPS_CARGO_MANIFEST` (default `codex-rs/Cargo.toml`) to adjust the Rust workspace root. The legacy `/spec-plan` alias remains temporarily and shows a deprecation warning.
+- `/spec-ops-tasks <SPEC-ID> [options]`: Prepare Spec Ops task automation hooks. Telemetry payload includes `tool.status`. Respect `SPEC_OPS_CARGO_MANIFEST` when invoking cargo helpers.
+- `/spec-ops-implement <SPEC-ID> [options]`: Lock SPEC.md and prime guardrails ahead of implementation. Telemetry emits `lock_status`, `hook_status`, and artifacts. Failures unlock automatically unless `--keep-lock` is set.
+- `/spec-ops-validate <SPEC-ID> [--scenario <name>] [--allow-fail]`: Execute validation harness scenarios and record telemetry with `scenarios[{name,status}]`. HAL smoke checks surface per-endpoint captures; enable `SPEC_OPS_TELEMETRY_HAL=1` to attach `hal.summary` (`status`, `failed_checks`, `artifacts`) for downstream analysis.
+- `/spec-ops-audit <SPEC-ID> [--dry-run]`: Run the Spec Ops audit scenarios; telemetry mirrors Validate stage. `/spec-audit` performs the multi-agent consensus review and records verdict JSON (with model metadata) for `/spec-auto` gating.
 - `/spec-ops-unlock <SPEC-ID> [--spec-path <path>]`: Force-unlock SPEC.md after the guardrail workflow completes. Telemetry emits `unlock_status` and artifacts. Alias `/spec-unlock` is deprecated.
-- `/spec-auto <SPEC-ID> [goal] [--from <stage>]`: Orchestrate the end-to-end Spec Ops + multi-agent pipeline, preparing guardrail commands, stage prompts, and consensus checks (supports stages: plan, tasks, implement, validate, audit, unlock). Guardrail telemetry must validate against schema v1 before the pipeline advances.
-- HAL HTTP MCP: configure the product repo's `docs/hal/hal_config.toml` and `docs/hal/hal_profile.json`, then run `cargo run -p codex-mcp-client --bin call_tool -- --tool <request> … -- npx -y hal-mcp` (health/list_movies/indexer_test/graphql_ping) to capture evidence for SPEC-KIT-018 in that project.
+- `/spec-auto <SPEC-ID> [goal] [--from <stage>]`: Orchestrate the end-to-end Spec Ops + multi-agent pipeline. The run halts if any guardrail JSON fails schema validation or if consensus metadata (see docs/spec-kit/model-strategy.md) is missing.
+- HAL HTTP MCP: configure `docs/hal/hal_config.toml` and `docs/hal/hal_profile.json`, then run `cargo run -p codex-mcp-client --bin call_tool -- --tool <request> … -- npx -y hal-mcp` (health/list_movies/indexer_test/graphql_ping) to capture healthy and degraded evidence for SPEC-KIT-018. Store the JSON responses alongside the guardrail telemetry so docs can reference real artifacts.
 
 ## UX & Display
 

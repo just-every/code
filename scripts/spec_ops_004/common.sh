@@ -9,6 +9,7 @@ EVIDENCE_ROOT="${REPO_ROOT}/docs/SPEC-OPS-004-integrated-coder-hooks/evidence"
 
 SPEC_OPS_HAL_ARTIFACTS=()
 SPEC_OPS_HAL_FAILED_CHECKS=()
+SPEC_OPS_HAL_STATUS="skipped"
 
 spec_ops_timestamp() {
   date -u "+%Y-%m-%dT%H:%M:%SZ"
@@ -116,6 +117,9 @@ spec_ops_capture_hal() {
 }
 
 spec_ops_run_hal_smoke() {
+  SPEC_OPS_HAL_STATUS="skipped"
+  SPEC_OPS_HAL_FAILED_CHECKS=()
+
   if [[ "${SPEC_OPS_HAL_SKIP:-0}" == "1" ]]; then
     spec_ops_write_log "SPEC_OPS_HAL_SKIP=1; skipping HAL smoke"
     return 0
@@ -123,6 +127,7 @@ spec_ops_run_hal_smoke() {
 
   if ! command -v jq >/dev/null 2>&1; then
     spec_ops_write_log "jq not available; skipping HAL smoke"
+    SPEC_OPS_HAL_STATUS="failed"
     return 1
   fi
 
@@ -130,6 +135,7 @@ spec_ops_run_hal_smoke() {
   local secret_value="${!secret_env:-}"
   if [[ -z "${secret_value}" ]]; then
     spec_ops_write_log "HAL secret ${secret_env} not set; skipping HAL smoke"
+    SPEC_OPS_HAL_STATUS="failed"
     return 1
   fi
 
@@ -176,9 +182,11 @@ spec_ops_run_hal_smoke() {
   if [[ ${failures} -gt 0 ]]; then
     SPEC_OPS_HAL_FAILED_CHECKS=("${failed_checks[@]}")
     spec_ops_write_log "HAL smoke failures: ${failed_checks[*]}"
+    SPEC_OPS_HAL_STATUS="failed"
     return 1
   fi
 
+  SPEC_OPS_HAL_STATUS="passed"
   return 0
 }
 
@@ -186,4 +194,42 @@ spec_ops_hal_evidence_dir() {
   local dest="${SPEC_OPS_HAL_EVIDENCE_DIR:-${SPEC_OPS_STAGE_DIR}}"
   mkdir -p "${dest}"
   printf '%s\n' "${dest}"
+}
+
+spec_ops_hal_summary_block() {
+  local status="$1"
+  if [[ "${SPEC_OPS_TELEMETRY_HAL:-0}" != "1" ]]; then
+    return 0
+  fi
+
+  local block
+  printf -v block $',\n  "hal": {\n    "summary": {\n      "status": "%s"' "${status}"
+
+  if [[ ${#SPEC_OPS_HAL_FAILED_CHECKS[@]} -gt 0 ]]; then
+    block+=$',\n      "failed_checks": ['
+    for i in "${!SPEC_OPS_HAL_FAILED_CHECKS[@]}"; do
+      local name="${SPEC_OPS_HAL_FAILED_CHECKS[$i]}"
+      if [[ $i -gt 0 ]]; then
+        block+=', '
+      fi
+      block+=$(printf '"%s"' "${name}")
+    done
+    block+=']'
+  fi
+
+  if [[ ${#SPEC_OPS_HAL_ARTIFACTS[@]} -gt 0 ]]; then
+    block+=$',\n      "artifacts": ['
+    for i in "${!SPEC_OPS_HAL_ARTIFACTS[@]}"; do
+      local path="${SPEC_OPS_HAL_ARTIFACTS[$i]}"
+      if [[ $i -gt 0 ]]; then
+        block+=', '
+      fi
+      block+=$(printf '"%s"' "${path}")
+    done
+    block+=']'
+  fi
+
+  block+=$'\n    }\n  }'
+  printf '%s' "${block}"
+  return 0
 }

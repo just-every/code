@@ -1,0 +1,15 @@
+{
+  "connected": true,
+  "executionTimeMs": 0,
+  "indexerCount": 1,
+  "indexers": [
+    {
+      "enabled": true,
+      "id": 1,
+      "implementation": "Stub",
+      "name": "StubIndexer"
+    }
+  ],
+  "message": "Indexer connection successful",
+  "status": "success"
+}

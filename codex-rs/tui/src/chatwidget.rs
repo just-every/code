@@ -15999,6 +15999,69 @@ fn validate_guardrail_schema(stage: SpecStage, telemetry: &Value) -> Vec<String>
                 Some(_) => failures.push("Field scenarios must be an array of objects".to_string()),
                 None => failures.push("Missing required array field scenarios".to_string()),
             }
+
+            if let Some(hal_value) = telemetry.get("hal") {
+                if let Some(summary_value) = hal_value.get("summary") {
+                    if let Some(summary) = summary_value.as_object() {
+                        if let Some(status) = summary.get("status").and_then(|s| s.as_str()) {
+                            const ALLOWED: &[&str] = &["passed", "failed", "skipped"];
+                            if !ALLOWED.contains(&status) {
+                                failures.push(format!(
+                                    "Field hal.summary.status must be one of {:?} (got '{}')",
+                                    ALLOWED,
+                                    status
+                                ));
+                            }
+                        } else {
+                            failures.push(
+                                "Missing required string field hal.summary.status".to_string(),
+                            );
+                        }
+
+                        if let Some(failed_checks) = summary.get("failed_checks") {
+                            match failed_checks.as_array() {
+                                Some(entries) => {
+                                    for (idx, entry) in entries.iter().enumerate() {
+                                        match entry.as_str() {
+                                            Some(text) if !text.trim().is_empty() => {}
+                                            _ => failures.push(format!(
+                                                "hal.summary.failed_checks[{}] must be a non-empty string",
+                                                idx
+                                            )),
+                                        }
+                                    }
+                                }
+                                None => failures.push(
+                                    "Field hal.summary.failed_checks must be an array of strings".to_string(),
+                                ),
+                            }
+                        }
+
+                        if let Some(artifacts) = summary.get("artifacts") {
+                            match artifacts.as_array() {
+                                Some(entries) => {
+                                    for (idx, entry) in entries.iter().enumerate() {
+                                        match entry.as_str() {
+                                            Some(text) if !text.trim().is_empty() => {}
+                                            _ => failures.push(format!(
+                                                "hal.summary.artifacts[{}] must be a non-empty string",
+                                                idx
+                                            )),
+                                        }
+                                    }
+                                }
+                                None => failures.push(
+                                    "Field hal.summary.artifacts must be an array of strings".to_string(),
+                                ),
+                            }
+                        }
+                    } else {
+                        failures.push("Field hal.summary must be an object".to_string());
+                    }
+                } else {
+                    failures.push("Missing required object field hal.summary".to_string());
+                }
+            }
         }
         SpecStage::Unlock => {
             require_string_field(telemetry, &["unlock_status"], &mut failures);
@@ -16111,11 +16174,38 @@ fn evaluate_guardrail_value(stage: SpecStage, value: &Value) -> GuardrailEvaluat
                 failures.push(format!("{name}: {status}"));
             }
             let success = failures.is_empty();
-            let summary = if total == 0 {
+            let mut summary = if total == 0 {
                 "No validation scenarios reported".to_string()
             } else {
                 format!("{} of {} scenarios passed", passed, total)
             };
+
+            if let Some(hal_summary) = value
+                .get("hal")
+                .and_then(|hal| hal.get("summary"))
+                .and_then(|summary| summary.as_object())
+            {
+                if let Some(status) = hal_summary.get("status").and_then(|s| s.as_str()) {
+                    summary = format!("{summary}; HAL {status}");
+                    if status == "failed" {
+                        if let Some(checks) = hal_summary
+                            .get("failed_checks")
+                            .and_then(|list| list.as_array())
+                        {
+                            let joined = checks
+                                .iter()
+                                .filter_map(|v| v.as_str())
+                                .filter(|text| !text.trim().is_empty())
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            if !joined.is_empty() {
+                                failures.push(format!("HAL failed checks: {joined}"));
+                            }
+                        }
+                    }
+                }
+            }
+
             GuardrailEvaluation {
                 success,
                 summary,
@@ -16878,6 +16968,51 @@ mod tests {
     }
 
     #[test]
+    fn spec_auto_validate_schema_allows_hal_summary() {
+        let value = json!({
+            "command": "spec-ops-validate",
+            "specId": "SPEC-OPS-018",
+            "sessionId": "sess",
+            "timestamp": "2025-09-29T12:33:03Z",
+            "scenarios": [
+                { "name": "validate guardrail bootstrap", "status": "failed" }
+            ],
+            "hal": {
+                "summary": {
+                    "status": "failed",
+                    "failed_checks": ["graphql_ping"],
+                    "artifacts": ["docs/evidence/hal-graphql_ping.json"]
+                }
+            }
+        });
+        let failures = super::validate_guardrail_schema(SpecStage::Validate, &value);
+        assert!(failures.is_empty(), "unexpected failures: {failures:?}");
+    }
+
+    #[test]
+    fn spec_auto_validate_schema_rejects_invalid_hal_status() {
+        let value = json!({
+            "command": "spec-ops-validate",
+            "specId": "SPEC-OPS-018",
+            "sessionId": "sess",
+            "timestamp": "2025-09-29T12:33:03Z",
+            "scenarios": [
+                { "name": "validate guardrail bootstrap", "status": "passed" }
+            ],
+            "hal": {
+                "summary": {
+                    "status": "unknown"
+                }
+            }
+        });
+        let failures = super::validate_guardrail_schema(SpecStage::Validate, &value);
+        assert!(
+            failures.iter().any(|msg| msg.contains("hal.summary.status")),
+            "expected hal summary status failure, got {failures:?}"
+        );
+    }
+
+    #[test]
     fn spec_auto_unlock_schema_requires_status() {
         let value = json!({
             "command": "spec-ops-unlock",
@@ -16947,6 +17082,30 @@ mod tests {
         });
         let failures = super::validate_guardrail_schema(SpecStage::Unlock, &value);
         assert!(failures.is_empty(), "unexpected failures: {failures:?}");
+    }
+
+    #[test]
+    fn evaluate_guardrail_highlights_hal_failures() {
+        let value = json!({
+            "scenarios": [
+                { "name": "validate guardrail bootstrap", "status": "failed" }
+            ],
+            "hal": {
+                "summary": {
+                    "status": "failed",
+                    "failed_checks": ["graphql_ping", "list_movies"],
+                    "artifacts": ["docs/logs/hal-graphql.json"]
+                }
+            }
+        });
+
+        let evaluation = super::evaluate_guardrail_value(SpecStage::Validate, &value);
+        assert!(!evaluation.success);
+        assert!(evaluation.summary.contains("HAL failed"));
+        assert!(evaluation
+            .failures
+            .iter()
+            .any(|msg| msg.contains("HAL failed checks")));
     }
 
     fn test_config() -> Config {

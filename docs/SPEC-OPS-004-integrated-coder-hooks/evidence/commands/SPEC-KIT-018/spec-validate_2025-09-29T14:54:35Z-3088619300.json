@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "command": "spec-ops-validate",
+  "specId": "SPEC-KIT-018",
+  "sessionId": "2025-09-29T14:54:35Z-3088619300",
+  "timestamp": "2025-09-29T14:54:39Z",
+  "scenarios": [
+    {
+      "name": "validate guardrail bootstrap",
+      "status": "passed"
+    }
+  ],
+  "artifacts": [
+    { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/spec-validate_2025-09-29T14:54:35Z-3088619300.log" }, { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/20250929-145435Z-hal-health.json" }, { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/20250929-145435Z-hal-list_movies.json" }, { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/20250929-145435Z-hal-indexer_test.json" }, { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/20250929-145435Z-hal-graphql_ping.json" }
+  ],
+  "hal": {
+    "summary": {
+      "status": "passed",
+      "artifacts": ["/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/20250929-145435Z-hal-health.json", "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/20250929-145435Z-hal-list_movies.json", "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/20250929-145435Z-hal-indexer_test.json", "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/20250929-145435Z-hal-graphql_ping.json"]
+    }
+  }
+}
