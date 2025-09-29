@@ -8,8 +8,8 @@
     "method": "GET",
     "path": "/api/v3/movie",
     "headers": {
-      "X-Api-Key": "{secrets.kavedarr.api_key}",
-      "apikey": "{secrets.kavedarr.api_key}"
+      "X-Api-Key": "{secrets.HAL_SECRET_KAVEDARR_API_KEY}",
+      "apikey": "{secrets.HAL_SECRET_KAVEDARR_API_KEY}"
     },
     "query": {
       "page": 1,
@@ -22,8 +22,8 @@
     "path": "/api/v3/indexer/test",
     "headers": {
       "Content-Type": "application/json",
-      "X-Api-Key": "{secrets.kavedarr.api_key}",
-      "apikey": "{secrets.kavedarr.api_key}"
+      "X-Api-Key": "{secrets.HAL_SECRET_KAVEDARR_API_KEY}",
+      "apikey": "{secrets.HAL_SECRET_KAVEDARR_API_KEY}"
     },
     "body": {},
     "description": "POST smoke to verify indexer connectivity"
@@ -33,8 +33,8 @@
     "path": "/graphql",
     "headers": {
       "Content-Type": "application/json",
-      "X-Api-Key": "{secrets.kavedarr.api_key}",
-      "apikey": "{secrets.kavedarr.api_key}"
+      "X-Api-Key": "{secrets.HAL_SECRET_KAVEDARR_API_KEY}",
+      "apikey": "{secrets.HAL_SECRET_KAVEDARR_API_KEY}"
     },
     "body": {
       "query": "query { __typename }"

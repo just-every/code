@@ -158,6 +158,19 @@ description = "Custom LLM implementation"
 args = ["--config", "/path/to/config.json"]
 env = { MODEL_PATH = "/models/custom.bin", TEMP = "0.7" }
 
+# MCP Servers
+
+[mcp_servers.hal]
+command = "npx"
+args = ["-y", "hal-mcp"]
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+
+# Configure HAL environment by copying docs/hal/hal_config.toml.example into your
+# product repository (e.g., ~/kavedarr/docs/hal/hal_config.toml) and pointing
+# HAL_PROFILE at the project-specific request JSON. The Codex secret store must
+# provide HAL_SECRET_KAVEDARR_API_KEY before enabling the MCP server.
+
 # Sandbox Configuration
 # Controls file system access and permissions
 sandbox-mode = "workspace-write"

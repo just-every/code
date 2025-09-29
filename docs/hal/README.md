@@ -17,7 +17,9 @@ Required project files:
 
 Remember to generate the API key once (watch the server bootstrap output) and
 store it as `HAL_SECRET_KAVEDARR_API_KEY` (or the project-specific equivalent)
-in the Codex secret store. Never commit the actual key.
+in the Codex secret store. The bundled `hal_profile.json` references
+`{secrets.HAL_SECRET_KAVEDARR_API_KEY}`, so the MCP client will inject the
+value automatically. Never commit the actual key.
 
 ### Manual smoke example
 
