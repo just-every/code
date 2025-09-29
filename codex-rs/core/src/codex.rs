@@ -6236,6 +6236,28 @@ fn maybe_run_with_user_profile(params: ExecParams, sess: &Session) -> ExecParams
     params
 }
 
+fn agent_task_lacks_context(task: &str) -> bool {
+    task.trim().is_empty()
+}
+
+#[cfg(test)]
+mod agent_task_lacks_context_tests {
+    use super::agent_task_lacks_context;
+
+    #[test]
+    fn blocks_empty_and_whitespace_only_tasks() {
+        assert!(agent_task_lacks_context(""));
+        assert!(agent_task_lacks_context("   "));
+        assert!(agent_task_lacks_context("\n\t"));
+    }
+
+    #[test]
+    fn allows_non_empty_tasks() {
+        assert!(!agent_task_lacks_context("check"));
+        assert!(!agent_task_lacks_context("please check"));
+    }
+}
+
 pub(crate) async fn handle_run_agent(sess: &Session, ctx: &ToolCallCtx, arguments: String) -> ResponseInputItem {
     let params_for_event = serde_json::from_str(&arguments).ok();
     let arguments_clone = arguments.clone();
@@ -6249,12 +6271,8 @@ pub(crate) async fn handle_run_agent(sess: &Session, ctx: &ToolCallCtx, argument
     match serde_json::from_str::<RunAgentParams>(&arguments_clone) {
         Ok(params) => {
             let trimmed_task = params.task.trim();
-            let word_count = trimmed_task
-                .split_whitespace()
-                .filter(|segment| !segment.is_empty())
-                .count();
 
-            if trimmed_task.is_empty() || word_count < 4 {
+            if agent_task_lacks_context(&params.task) {
                 let guidance = format!(
                     "⚠️ Agent prompt too short: give the manager more context (at least a full sentence) before running agents. Current prompt: \"{}\".",
                     trimmed_task
