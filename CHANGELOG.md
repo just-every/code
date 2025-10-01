@@ -7,6 +7,8 @@
 
 - Auto-drive: add final observer validation before finishing runs so missed work is caught. (94061ee)
 - Auto-drive: stop appending ellipsis to decision summaries so prompts stay clean. (6384601)
+- TUI/History: completed state-driven refactor; all cells render from `HistoryState` via the shared renderer cache with stable IDs and domain events. (local)
+- Docs: captured the history architecture in `docs/tui-chatwidget-refactor.md`, `docs/history_state_schema.md`, and `docs/history_render_cache_bridge.md`. (local)
 
 ## [0.2.179] - 2025-09-30
 

@@ -11,6 +11,7 @@ use crossterm::event::KeyEvent;
 use crossterm::event::MouseEvent;
 use ratatui::text::Line;
 use crate::streaming::StreamKind;
+use crate::history::state::HistorySnapshot;
 use std::time::Duration;
 
 use codex_git_tooling::{GhostCommit, GitToolingError};
@@ -340,7 +341,7 @@ pub(crate) enum AppEvent {
 
     /// Begin jump-back to the Nth last user message (1 = latest).
     /// Trims visible history up to that point and pre-fills the composer.
-    JumpBack { nth: usize, prefill: String },
+    JumpBack { nth: usize, prefill: String, history_snapshot: Option<HistorySnapshot> },
     /// Result of an async jump-back fork operation performed off the UI thread.
     /// Carries the forked conversation, trimmed prefix to replay, and composer prefill.
     JumpBackForked {

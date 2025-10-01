@@ -12,15 +12,11 @@ use std::path::{Component, Path};
 
 pub(crate) struct ExploreAggregationCell {
     record: ExploreRecord,
-    is_trailing: bool,
 }
 
 impl ExploreAggregationCell {
     pub(crate) fn from_record(record: ExploreRecord) -> Self {
-        Self {
-            record,
-            is_trailing: true,
-        }
+        Self { record }
     }
 
     pub(crate) fn record(&self) -> &ExploreRecord {
@@ -29,14 +25,6 @@ impl ExploreAggregationCell {
 
     pub(crate) fn record_mut(&mut self) -> &mut ExploreRecord {
         &mut self.record
-    }
-
-    pub(crate) fn set_trailing(&mut self, trailing: bool) {
-        self.is_trailing = trailing;
-    }
-
-    pub(crate) fn is_trailing(&self) -> bool {
-        self.is_trailing
     }
 
     fn current_exec_status(&self) -> ExecStatus {
@@ -77,79 +65,7 @@ impl HistoryCell for ExploreAggregationCell {
     }
 
     fn display_lines(&self) -> Vec<Line<'static>> {
-        let header = if self.is_trailing {
-            "Exploring..."
-        } else {
-            "Explored"
-        };
-
-        if self.record.entries.is_empty() {
-            return vec![Line::styled(
-                header,
-                Style::default().fg(crate::colors::text()),
-            )];
-        }
-
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        lines.push(Line::styled(
-            header,
-            Style::default().fg(crate::colors::text()),
-        ));
-
-        let max_label_len = self
-            .record
-            .entries
-            .iter()
-            .map(entry_label_width)
-            .max()
-            .unwrap_or(0);
-
-        for (idx, entry) in self.record.entries.iter().enumerate() {
-            let prefix = if idx == 0 { "└ " } else { "  " };
-            let mut spans: Vec<Span<'static>> = vec![Span::styled(
-                prefix,
-                Style::default().add_modifier(Modifier::DIM),
-            )];
-            let label = entry_label(entry);
-            let padding = max_label_len.saturating_sub(label.chars().count()) + 1;
-            let mut padded_label = String::with_capacity(label.len() + padding);
-            padded_label.push_str(label);
-            padded_label.extend(std::iter::repeat(' ').take(padding));
-            spans.push(Span::styled(
-                padded_label,
-                Style::default().fg(crate::colors::text_dim()),
-            ));
-            spans.extend(entry_summary_spans(entry));
-            match entry.status {
-                ExploreEntryStatus::Running => spans.push(Span::styled(
-                    "…",
-                    Style::default().fg(crate::colors::text_dim()),
-                )),
-                ExploreEntryStatus::NotFound => spans.push(Span::styled(
-                    " (not found)",
-                    Style::default().fg(crate::colors::text_dim()),
-                )),
-                ExploreEntryStatus::Error { exit_code } => {
-                    let msg = match (entry.action, exit_code) {
-                        (ExecAction::Search, Some(2)) => " (invalid pattern)".to_string(),
-                        (ExecAction::Search, _) => " (search error)".to_string(),
-                        (ExecAction::List, _) => " (list error)".to_string(),
-                        (ExecAction::Read, _) => " (read error)".to_string(),
-                        _ => exit_code
-                            .map(|code| format!(" (exit {})", code))
-                            .unwrap_or_else(|| " (failed)".to_string()),
-                    };
-                    spans.push(Span::styled(
-                        msg,
-                        Style::default().fg(crate::colors::error()),
-                    ));
-                }
-                ExploreEntryStatus::Success => {}
-            }
-            lines.push(Line::from(spans));
-        }
-
-        lines
+        explore_lines_from_record(&self.record)
     }
 
     fn desired_height(&self, width: u16) -> u16 {
@@ -339,6 +255,131 @@ impl ExploreRecord {
         }
     }
 }
+
+pub(crate) fn explore_lines_from_record(record: &ExploreRecord) -> Vec<Line<'static>> {
+    let exploring = record.entries.is_empty()
+        || record
+            .entries
+            .iter()
+            .any(|entry| matches!(entry.status, ExploreEntryStatus::Running));
+    let header = if exploring { "Exploring..." } else { "Explored" };
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::styled(
+        header,
+        Style::default().fg(crate::colors::text()),
+    ));
+
+    if record.entries.is_empty() {
+        return lines;
+    }
+
+    let max_label_len = record
+        .entries
+        .iter()
+        .map(entry_label_width)
+        .max()
+        .unwrap_or(0);
+
+    for (idx, entry) in record.entries.iter().enumerate() {
+        let prefix = if idx == 0 { "└ " } else { "  " };
+        let mut spans: Vec<Span<'static>> = vec![Span::styled(
+            prefix,
+            Style::default().add_modifier(Modifier::DIM),
+        )];
+        let label = entry_label(entry);
+        let padding = max_label_len.saturating_sub(label.chars().count()) + 1;
+        let mut padded_label = String::with_capacity(label.len() + padding);
+        padded_label.push_str(label);
+        padded_label.extend(std::iter::repeat(' ').take(padding));
+        spans.push(Span::styled(
+            padded_label,
+            Style::default().fg(crate::colors::text_dim()),
+        ));
+        spans.extend(entry_summary_spans(entry));
+        match entry.status {
+            ExploreEntryStatus::Running => spans.push(Span::styled(
+                "…",
+                Style::default().fg(crate::colors::text_dim()),
+            )),
+            ExploreEntryStatus::NotFound => spans.push(Span::styled(
+                " (not found)",
+                Style::default().fg(crate::colors::text_dim()),
+            )),
+            ExploreEntryStatus::Error { exit_code } => {
+                let msg = match (entry.action, exit_code) {
+                    (ExecAction::Search, Some(2)) => " (invalid pattern)".to_string(),
+                    (ExecAction::Search, _) => " (search error)".to_string(),
+                    (ExecAction::List, _) => " (list error)".to_string(),
+                    (ExecAction::Read, _) => " (read error)".to_string(),
+                    _ => exit_code
+                        .map(|code| format!(" (exit {})", code))
+                        .unwrap_or_else(|| " (failed)".to_string()),
+                };
+                spans.push(Span::styled(
+                    msg,
+                    Style::default().fg(crate::colors::error()),
+                ));
+            }
+            ExploreEntryStatus::Success => {}
+        }
+        lines.push(Line::from(spans));
+    }
+
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line_text(line: &Line<'_>) -> String {
+        line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn explore_lines_from_record_reflects_running_status() {
+        let record = ExploreRecord {
+            id: HistoryId(7),
+            entries: vec![
+                ExploreEntry {
+                    action: ExecAction::Search,
+                    summary: ExploreSummary::Search {
+                        query: Some("pattern".into()),
+                        path: Some("src".into()),
+                    },
+                    status: ExploreEntryStatus::Running,
+                },
+                ExploreEntry {
+                    action: ExecAction::Read,
+                    summary: ExploreSummary::Read {
+                        display_path: "README.md".into(),
+                        annotation: Some("(lines 1 to 5)".into()),
+                        range: Some((1, 5)),
+                    },
+                    status: ExploreEntryStatus::Success,
+                },
+            ],
+        };
+
+        let lines = explore_lines_from_record(&record);
+        assert_eq!(line_text(&lines[0]), "Exploring...");
+        assert!(lines.iter().any(|line| line_text(line).contains("pattern")));
+        assert!(lines.iter().any(|line| line_text(line).contains("README.md")));
+
+        let mut completed = record.clone();
+        for entry in &mut completed.entries {
+            entry.status = ExploreEntryStatus::Success;
+        }
+        let completed_lines = explore_lines_from_record(&completed);
+        assert_eq!(line_text(&completed_lines[0]), "Explored");
+    }
+}
+
 
 fn entry_label(entry: &ExploreEntry) -> &'static str {
     if matches!(entry.summary, ExploreSummary::Command { .. }) {

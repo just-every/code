@@ -38,8 +38,10 @@ State groupings:
 History helper shim:
 - Added to `ChatWidget`:
   - `history_push(cell)`: wrapper for `add_to_history`
-  - `history_replace_at(idx, cell)`
-  - `history_remove_at(idx)`
+  
+Additional references:
+- Renderer cache bridge rationale: [`history_render_cache_bridge.md`](history_render_cache_bridge.md)
+- History record schema + snapshot details: [`history_state_schema.md`](history_state_schema.md)
 - Migrated usages in `exec_tools.rs` and `tools.rs` (some hotspots) to use the shim.
 
 Build + policy:
@@ -145,12 +147,10 @@ Build + policy:
 
 - [x] Sweep remaining history mutations to use the shim
 - [x] Consolidate history merge API (adopt helpers across call sites)
-- [x] Replace all action string checks with ExecAction enum
+- [x] Replace all action string checks with `ExecAction`
 - [x] Add ID newtypes (Exec/Tool/Stream) and migrate maps
-- [ ] Replace action strings with `ExecAction` enum
-- [ ] Add ID newtypes (Exec/Tool/Stream)
-- [ ] Tighten streaming API (begin/delta/finalize facade)
-- [ ] Add unit + vt100 tests as listed above
+- [x] Tighten streaming API (begin/delta/finalize facade)
+- [x] Add state-driven renderer/unit tests for exec, assistant, streaming, diff
 
 ---
 

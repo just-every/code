@@ -2,12 +2,16 @@ use super::*;
 use super::text::{message_lines_from_ratatui, message_lines_to_ratatui};
 use crate::history::state::{
     HistoryId,
+    InlineSpan,
     MessageHeader,
     MessageLine,
+    MessageLineKind,
     NoticeRecord,
     PlainMessageKind,
     PlainMessageRole,
     PlainMessageState,
+    TextEmphasis,
+    TextTone,
 };
 use crate::theme::{current_theme, Theme};
 use ratatui::buffer::Buffer;
@@ -30,12 +34,6 @@ pub(crate) struct PlainCellState {
 }
 
 impl PlainCellState {
-    fn new(lines: Vec<Line<'static>>, kind: HistoryCellType) -> Self {
-        let mut message = PlainMessageStateBuilder::from_lines(lines, kind);
-        message.kind = plain_message_kind_from_cell_kind(kind);
-        Self { message, kind }
-    }
-
     fn role(&self) -> PlainMessageRole {
         self.message.role
     }
@@ -55,13 +53,6 @@ pub(crate) struct PlainHistoryCell {
 }
 
 impl PlainHistoryCell {
-    pub(crate) fn new(lines: Vec<Line<'static>>, kind: HistoryCellType) -> Self {
-        Self {
-            state: PlainCellState::new(lines, kind),
-            cached_layout: std::cell::RefCell::new(None),
-        }
-    }
-
     pub(crate) fn from_state(state: PlainMessageState) -> Self {
         let kind = history_cell_kind_from_plain(state.kind);
         Self {
@@ -335,6 +326,56 @@ impl PlainMessageStateBuilder {
             lines: message_lines,
             metadata: None,
         }
+    }
+}
+
+pub(crate) fn plain_message_state_from_lines(
+    lines: Vec<Line<'static>>,
+    kind: HistoryCellType,
+) -> PlainMessageState {
+    PlainMessageStateBuilder::from_lines(lines, kind)
+}
+
+pub(crate) fn plain_message_state_from_paragraphs<I, S>(
+    kind: PlainMessageKind,
+    role: PlainMessageRole,
+    lines: I,
+) -> PlainMessageState
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let message_lines = lines
+        .into_iter()
+        .map(|text| MessageLine {
+            kind: MessageLineKind::Paragraph,
+            spans: vec![InlineSpan {
+                text: text.into(),
+                tone: TextTone::Default,
+                emphasis: TextEmphasis::default(),
+                entity: None,
+            }],
+        })
+        .collect();
+
+    PlainMessageState {
+        id: HistoryId::ZERO,
+        role,
+        kind,
+        header: None,
+        lines: message_lines,
+        metadata: None,
+    }
+}
+
+pub(crate) fn plain_role_for_kind(kind: PlainMessageKind) -> PlainMessageRole {
+    match kind {
+        PlainMessageKind::User => PlainMessageRole::User,
+        PlainMessageKind::Assistant => PlainMessageRole::Assistant,
+        PlainMessageKind::Tool => PlainMessageRole::Tool,
+        PlainMessageKind::Error => PlainMessageRole::Error,
+        PlainMessageKind::Background => PlainMessageRole::BackgroundEvent,
+        PlainMessageKind::Notice | PlainMessageKind::Plain => PlainMessageRole::System,
     }
 }
 

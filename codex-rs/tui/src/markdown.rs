@@ -36,7 +36,7 @@ fn append_markdown_with_opener_and_cwd(
     append_markdown_with_opener_and_cwd_and_bold(markdown_source, lines, file_opener, cwd, false);
 }
 
-fn append_markdown_with_opener_and_cwd_and_bold(
+pub(crate) fn append_markdown_with_opener_and_cwd_and_bold(
     markdown_source: &str,
     lines: &mut Vec<Line<'static>>,
     file_opener: UriBasedFileOpener,

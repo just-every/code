@@ -1,15 +1,16 @@
 use super::*;
-use crate::history::state::{AssistantMessageState, AssistantStreamState};
+use crate::history::state::AssistantMessageState;
+use codex_core::config::Config;
+use codex_core::config_types::UriBasedFileOpener;
+use std::path::PathBuf;
 
 // ==================== AssistantMarkdownCell ====================
-// Stores assistant markdown state and rebuilds on demand (e.g., theme/syntax changes)
+// Stores assistant markdown state alongside minimal rendering context (file opener + cwd).
 
 pub(crate) struct AssistantMarkdownCell {
     state: AssistantMessageState,
-    // Pre-rendered lines (first line is a hidden "codex" header)
-    lines: Vec<Line<'static>>, // includes hidden header "codex"
-    // Cached per-width wrap plan to avoid re-segmentation and re-measure
-    cached_layout: std::cell::RefCell<Option<AssistantLayoutCache>>,
+    file_opener: UriBasedFileOpener,
+    cwd: PathBuf,
 }
 
 impl AssistantMarkdownCell {
@@ -17,32 +18,11 @@ impl AssistantMarkdownCell {
         state: AssistantMessageState,
         cfg: &codex_core::config::Config,
     ) -> Self {
-        let mut me = Self {
+        Self {
             state,
-            lines: Vec::new(),
-            cached_layout: std::cell::RefCell::new(None),
-        };
-        me.rebuild(cfg);
-        me
-    }
-
-    pub(crate) fn from_stream_state(
-        state: &AssistantStreamState,
-        cfg: &codex_core::config::Config,
-    ) -> Self {
-        let message_state = AssistantMessageState {
-            id: state.id,
-            stream_id: Some(state.stream_id.clone()),
-            markdown: state.preview_markdown.clone(),
-            citations: state.citations.clone(),
-            metadata: state.metadata.clone(),
-            token_usage: state
-                .metadata
-                .as_ref()
-                .and_then(|meta| meta.token_usage.clone()),
-            created_at: state.last_updated_at,
-        };
-        Self::from_state(message_state, cfg)
+            file_opener: cfg.file_opener,
+            cwd: cfg.cwd.clone(),
+        }
     }
 
     pub(crate) fn update_state(
@@ -51,7 +31,8 @@ impl AssistantMarkdownCell {
         cfg: &codex_core::config::Config,
     ) {
         self.state = state;
-        self.rebuild(cfg);
+        self.file_opener = cfg.file_opener;
+        self.cwd = cfg.cwd.clone();
     }
 
     pub(crate) fn stream_id(&self) -> Option<&str> {
@@ -70,168 +51,8 @@ impl AssistantMarkdownCell {
         &mut self.state
     }
 
-    fn rebuild(&mut self, cfg: &codex_core::config::Config) {
-        let mut out: Vec<Line<'static>> = Vec::new();
-        out.push(Line::from("codex"));
-        crate::markdown::append_markdown_with_bold_first(&self.state.markdown, &mut out, cfg);
-        // Apply bright text to body like streaming finalize
-        let bright = crate::colors::text_bright();
-        for line in out.iter_mut().skip(1) {
-            line.style = line.style.patch(Style::default().fg(bright));
-        }
-        self.lines = out;
-        // Invalidate cached layout on rebuild (theme/lines changed)
-        *self.cached_layout.borrow_mut() = None;
-    }
-
     pub(crate) fn ensure_layout(&self, width: u16) -> AssistantLayoutCache {
-        if let Some(cache) = self.cached_layout.borrow().as_ref() {
-            if cache.width == width {
-                return cache.clone();
-            }
-        }
-
-        let text_wrap_width = width;
-        let mut segs: Vec<AssistantSeg> = Vec::new();
-        let mut text_buf: Vec<Line<'static>> = Vec::new();
-        let mut iter = self.display_lines_trimmed().into_iter().peekable();
-        let measure_line = |line: &Line<'_>| -> u16 {
-            line.spans
-                .iter()
-                .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
-                .sum::<usize>()
-                .min(u16::MAX as usize) as u16
-        };
-
-        while let Some(line) = iter.next() {
-            if crate::render::line_utils::is_code_block_painted(&line) {
-                if !text_buf.is_empty() {
-                    let wrapped = word_wrap_lines(&text_buf, text_wrap_width);
-                    segs.push(AssistantSeg::Text(wrapped));
-                    text_buf.clear();
-                }
-
-                let mut chunk = vec![line];
-                while let Some(next) = iter.peek() {
-                    if crate::render::line_utils::is_code_block_painted(next) {
-                        chunk.push(iter.next().unwrap());
-                    } else {
-                        break;
-                    }
-                }
-
-                let mut lang_label: Option<String> = None;
-                let mut content_lines: Vec<Line<'static>> = Vec::new();
-                for (idx, candidate) in chunk.into_iter().enumerate() {
-                    if idx == 0 {
-                        let flat: String = candidate
-                            .spans
-                            .iter()
-                            .map(|s| s.content.as_ref())
-                            .collect();
-                        if let Some(s) = flat.strip_prefix("⟦LANG:") {
-                            if let Some(end) = s.find('⟧') {
-                                lang_label = Some(s[..end].to_string());
-                                continue;
-                            }
-                        }
-                    }
-                    content_lines.push(candidate);
-                }
-
-                while content_lines
-                    .first()
-                    .is_some_and(|l| crate::render::line_utils::is_blank_line_spaces_only(l))
-                {
-                    let _ = content_lines.remove(0);
-                }
-                while content_lines
-                    .last()
-                    .is_some_and(|l| crate::render::line_utils::is_blank_line_spaces_only(l))
-                {
-                    let _ = content_lines.pop();
-                }
-
-                if content_lines.is_empty() {
-                    continue;
-                }
-
-                let max_line_width = content_lines
-                    .iter()
-                    .map(|l| measure_line(l))
-                    .max()
-                    .unwrap_or(0);
-
-                segs.push(AssistantSeg::Code {
-                    lines: content_lines,
-                    lang_label,
-                    max_line_width,
-                });
-                continue;
-            }
-
-            if text_wrap_width > 4 && is_horizontal_rule_line(&line) {
-                if !text_buf.is_empty() {
-                    let wrapped = word_wrap_lines(&text_buf, text_wrap_width);
-                    segs.push(AssistantSeg::Text(wrapped));
-                    text_buf.clear();
-                }
-                let hr = Line::from(Span::styled(
-                    std::iter::repeat('─')
-                        .take(text_wrap_width as usize)
-                        .collect::<String>(),
-                    Style::default().fg(crate::colors::assistant_hr()),
-                ));
-                segs.push(AssistantSeg::Bullet(vec![hr]));
-                continue;
-            }
-
-            if text_wrap_width > 4 {
-                if let Some((indent_spaces, bullet_char)) = detect_bullet_prefix(&line) {
-                    if !text_buf.is_empty() {
-                        let wrapped = word_wrap_lines(&text_buf, text_wrap_width);
-                        segs.push(AssistantSeg::Text(wrapped));
-                        text_buf.clear();
-                    }
-                    segs.push(AssistantSeg::Bullet(wrap_bullet_line(
-                        line,
-                        indent_spaces,
-                        &bullet_char,
-                        text_wrap_width,
-                    )));
-                    continue;
-                }
-            }
-
-            text_buf.push(line);
-        }
-
-        if !text_buf.is_empty() {
-            let wrapped = word_wrap_lines(&text_buf, text_wrap_width);
-            segs.push(AssistantSeg::Text(wrapped));
-            text_buf.clear();
-        }
-
-        let mut seg_rows: Vec<u16> = Vec::with_capacity(segs.len());
-        let mut total: u16 = 0;
-        for seg in &segs {
-            let rows = match seg {
-                AssistantSeg::Text(lines) | AssistantSeg::Bullet(lines) => lines.len() as u16,
-                AssistantSeg::Code { lines, .. } => lines.len() as u16 + 2,
-            };
-            seg_rows.push(rows);
-            total = total.saturating_add(rows);
-        }
-        total = total.saturating_add(2);
-
-        let cache = AssistantLayoutCache {
-            width,
-            segs,
-            seg_rows,
-            total_rows_with_padding: total,
-        };
-        *self.cached_layout.borrow_mut() = Some(cache.clone());
-        cache
+        compute_assistant_layout_with_context(&self.state, self.file_opener, &self.cwd, width)
     }
 
     pub(crate) fn render_with_layout(
@@ -397,12 +218,7 @@ impl HistoryCell for AssistantMarkdownCell {
     }
 
     fn display_lines(&self) -> Vec<Line<'static>> {
-        // Hide the header line, mirroring PlainHistoryCell behavior for Assistant
-        if self.lines.len() > 1 {
-            self.lines[1..].to_vec()
-        } else {
-            Vec::new()
-        }
+        assistant_markdown_lines_with_context(&self.state, self.file_opener, &self.cwd)
     }
 
     fn has_custom_render(&self) -> bool {
@@ -422,7 +238,6 @@ impl HistoryCell for AssistantMarkdownCell {
 // Cached layout for AssistantMarkdownCell (per width)
 #[derive(Clone)]
 pub(crate) struct AssistantLayoutCache {
-    pub(crate) width: u16,
     pub(crate) segs: Vec<AssistantSeg>,
     pub(crate) seg_rows: Vec<u16>,
     pub(crate) total_rows_with_padding: u16,
@@ -431,6 +246,190 @@ pub(crate) struct AssistantLayoutCache {
 impl AssistantLayoutCache {
     pub(crate) fn total_rows(&self) -> u16 {
         self.total_rows_with_padding
+    }
+}
+
+pub(crate) fn assistant_markdown_lines(
+    state: &AssistantMessageState,
+    cfg: &Config,
+) -> Vec<Line<'static>> {
+    assistant_markdown_lines_with_context(state, cfg.file_opener, &cfg.cwd)
+}
+
+pub(crate) fn assistant_markdown_lines_with_context(
+    state: &AssistantMessageState,
+    file_opener: UriBasedFileOpener,
+    cwd: &Path,
+) -> Vec<Line<'static>> {
+    let mut out: Vec<Line<'static>> = Vec::new();
+    out.push(Line::from("codex"));
+    crate::markdown::append_markdown_with_opener_and_cwd_and_bold(
+        &state.markdown,
+        &mut out,
+        file_opener,
+        cwd,
+        true,
+    );
+    let bright = crate::colors::text_bright();
+    for line in out.iter_mut().skip(1) {
+        line.style = line.style.patch(Style::default().fg(bright));
+    }
+    out.into_iter().skip(1).collect()
+}
+
+pub(crate) fn compute_assistant_layout(
+    state: &AssistantMessageState,
+    cfg: &Config,
+    width: u16,
+) -> AssistantLayoutCache {
+    compute_assistant_layout_with_context(state, cfg.file_opener, &cfg.cwd, width)
+}
+
+pub(crate) fn compute_assistant_layout_with_context(
+    state: &AssistantMessageState,
+    file_opener: UriBasedFileOpener,
+    cwd: &Path,
+    width: u16,
+) -> AssistantLayoutCache {
+    let text_wrap_width = width;
+    let mut segs: Vec<AssistantSeg> = Vec::new();
+    let mut text_buf: Vec<Line<'static>> = Vec::new();
+    let mut iter = super::trim_empty_lines(assistant_markdown_lines_with_context(state, file_opener, cwd))
+        .into_iter()
+        .peekable();
+    let measure_line = |line: &Line<'_>| -> u16 {
+        line.spans
+            .iter()
+            .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+            .sum::<usize>()
+            .min(u16::MAX as usize) as u16
+    };
+
+    while let Some(line) = iter.next() {
+        if crate::render::line_utils::is_code_block_painted(&line) {
+            if !text_buf.is_empty() {
+                let wrapped = word_wrap_lines(&text_buf, text_wrap_width);
+                segs.push(AssistantSeg::Text(wrapped));
+                text_buf.clear();
+            }
+
+            let mut chunk = vec![line];
+            while let Some(next) = iter.peek() {
+                if crate::render::line_utils::is_code_block_painted(next) {
+                    chunk.push(iter.next().unwrap());
+                } else {
+                    break;
+                }
+            }
+
+            let mut lang_label: Option<String> = None;
+            let mut content_lines: Vec<Line<'static>> = Vec::new();
+            for (idx, candidate) in chunk.into_iter().enumerate() {
+                if idx == 0 {
+                    let flat: String = candidate
+                        .spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect();
+                    if let Some(s) = flat.strip_prefix("⟦LANG:") {
+                        if let Some(end) = s.find('⟧') {
+                            lang_label = Some(s[..end].to_string());
+                            continue;
+                        }
+                    }
+                }
+                content_lines.push(candidate);
+            }
+
+            while content_lines
+                .first()
+                .is_some_and(|l| crate::render::line_utils::is_blank_line_spaces_only(l))
+            {
+                let _ = content_lines.remove(0);
+            }
+            while content_lines
+                .last()
+                .is_some_and(|l| crate::render::line_utils::is_blank_line_spaces_only(l))
+            {
+                let _ = content_lines.pop();
+            }
+
+            if content_lines.is_empty() {
+                continue;
+            }
+
+            let max_line_width = content_lines
+                .iter()
+                .map(|l| measure_line(l))
+                .max()
+                .unwrap_or(0);
+
+            segs.push(AssistantSeg::Code {
+                lines: content_lines,
+                lang_label,
+                max_line_width,
+            });
+            continue;
+        }
+
+        if text_wrap_width > 4 && is_horizontal_rule_line(&line) {
+            if !text_buf.is_empty() {
+                let wrapped = word_wrap_lines(&text_buf, text_wrap_width);
+                segs.push(AssistantSeg::Text(wrapped));
+                text_buf.clear();
+            }
+            let hr = Line::from(Span::styled(
+                std::iter::repeat('─')
+                    .take(text_wrap_width as usize)
+                    .collect::<String>(),
+                Style::default().fg(crate::colors::assistant_hr()),
+            ));
+            segs.push(AssistantSeg::Bullet(vec![hr]));
+            continue;
+        }
+
+        if text_wrap_width > 4 {
+            if let Some((indent_spaces, bullet_char)) = detect_bullet_prefix(&line) {
+                if !text_buf.is_empty() {
+                    let wrapped = word_wrap_lines(&text_buf, text_wrap_width);
+                    segs.push(AssistantSeg::Text(wrapped));
+                    text_buf.clear();
+                }
+                segs.push(AssistantSeg::Bullet(wrap_bullet_line(
+                    line,
+                    indent_spaces,
+                    &bullet_char,
+                    text_wrap_width,
+                )));
+                continue;
+            }
+        }
+
+        text_buf.push(line);
+    }
+
+    if !text_buf.is_empty() {
+        let wrapped = word_wrap_lines(&text_buf, text_wrap_width);
+        segs.push(AssistantSeg::Text(wrapped));
+        text_buf.clear();
+    }
+
+    let mut seg_rows: Vec<u16> = Vec::with_capacity(segs.len());
+    let mut total: u16 = 0;
+    for seg in &segs {
+        let rows = match seg {
+            AssistantSeg::Text(lines) | AssistantSeg::Bullet(lines) => lines.len() as u16,
+            AssistantSeg::Code { lines, .. } => lines.len() as u16 + 2,
+        };
+        seg_rows.push(rows);
+        total = total.saturating_add(rows);
+    }
+    total = total.saturating_add(2);
+
+    AssistantLayoutCache {
+        segs,
+        seg_rows,
+        total_rows_with_padding: total,
     }
 }
 
