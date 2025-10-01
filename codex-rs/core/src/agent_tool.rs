@@ -3,7 +3,6 @@ use chrono::Duration;
 use chrono::Utc;
 use serde::Deserialize;
 use serde::Serialize;
-use uuid::Uuid;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -12,6 +11,7 @@ use tokio::process::Command;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use uuid::Uuid;
 
 use crate::config_types::AgentConfig;
 use crate::openai_tools::JsonSchema;
@@ -582,6 +582,36 @@ async fn execute_model_with_permissions(
         }
     }
 
+    fn normalize_gemini_args(args: Vec<String>) -> Vec<String> {
+        if args.iter().all(|arg| arg != "-m" && !arg.starts_with("-m=")) {
+            return args;
+        }
+
+        let mut out: Vec<String> = Vec::with_capacity(args.len());
+        let mut i = 0;
+        while i < args.len() {
+            let arg = &args[i];
+            if arg == "-m" {
+                if let Some(model) = args.get(i + 1).cloned() {
+                    out.push("--model".to_string());
+                    out.push(model);
+                    i += 2;
+                    continue;
+                }
+                out.push("--model".to_string());
+                i += 1;
+            } else if let Some(rest) = arg.strip_prefix("-m=") {
+                out.push("--model".to_string());
+                out.push(rest.to_string());
+                i += 1;
+            } else {
+                out.push(arg.clone());
+                i += 1;
+            }
+        }
+        out
+    }
+
     // Use config command if provided, otherwise use model name
     let command = if let Some(ref cfg) = config {
         cfg.command.clone()
@@ -594,6 +624,11 @@ async fn execute_model_with_permissions(
     // `codex` binary to be present on PATH. This improves portability,
     // especially on Windows where global shims may be missing.
     let model_lower = model.to_lowercase();
+    let is_gemini = if config.is_some() {
+        command.eq_ignore_ascii_case("gemini")
+    } else {
+        model_lower == "gemini"
+    };
     let mut cmd = if (model_lower == "code" || model_lower == "codex") && config.is_none() {
         match std::env::current_exe() {
             Ok(path) => Command::new(path),
@@ -619,14 +654,34 @@ async fn execute_model_with_permissions(
         // Add any configured args first, preferring mode‑specific values
         if read_only {
             if let Some(ro) = cfg.args_read_only.as_ref() {
-                for arg in ro { cmd.arg(arg); }
+                let normalized = if is_gemini {
+                    normalize_gemini_args(ro.clone())
+                } else {
+                    ro.clone()
+                };
+                for arg in normalized { cmd.arg(arg); }
             } else {
-                for arg in &cfg.args { cmd.arg(arg); }
+                let normalized = if is_gemini {
+                    normalize_gemini_args(cfg.args.clone())
+                } else {
+                    cfg.args.clone()
+                };
+                for arg in normalized { cmd.arg(arg); }
             }
         } else if let Some(w) = cfg.args_write.as_ref() {
-            for arg in w { cmd.arg(arg); }
+            let normalized = if is_gemini {
+                normalize_gemini_args(w.clone())
+            } else {
+                w.clone()
+            };
+            for arg in normalized { cmd.arg(arg); }
         } else {
-            for arg in &cfg.args { cmd.arg(arg); }
+            let normalized = if is_gemini {
+                normalize_gemini_args(cfg.args.clone())
+            } else {
+                cfg.args.clone()
+            };
+            for arg in normalized { cmd.arg(arg); }
         }
     }
 
@@ -637,6 +692,9 @@ async fn execute_model_with_permissions(
     match model_name {
         "claude" | "gemini" | "qwen" => {
             let mut defaults = crate::agent_defaults::default_params_for(model_name, read_only);
+            if is_gemini {
+                defaults = normalize_gemini_args(defaults);
+            }
             defaults.push("-p".into());
             defaults.push(prompt.to_string());
             cmd.args(defaults);
@@ -745,20 +803,43 @@ async fn execute_model_with_permissions(
         if let Some(ref cfg) = config {
             if read_only {
                 if let Some(ro) = cfg.args_read_only.as_ref() {
-                    args.extend(ro.iter().cloned());
+                    let normalized = if is_gemini {
+                        normalize_gemini_args(ro.clone())
+                    } else {
+                        ro.clone()
+                    };
+                    args.extend(normalized);
                 } else {
-                    args.extend(cfg.args.iter().cloned());
+                    let normalized = if is_gemini {
+                        normalize_gemini_args(cfg.args.clone())
+                    } else {
+                        cfg.args.clone()
+                    };
+                    args.extend(normalized);
                 }
             } else if let Some(w) = cfg.args_write.as_ref() {
-                args.extend(w.iter().cloned());
+                let normalized = if is_gemini {
+                    normalize_gemini_args(w.clone())
+                } else {
+                    w.clone()
+                };
+                args.extend(normalized);
             } else {
-                args.extend(cfg.args.iter().cloned());
+                let normalized = if is_gemini {
+                    normalize_gemini_args(cfg.args.clone())
+                } else {
+                    cfg.args.clone()
+                };
+                args.extend(normalized);
             }
         }
 
         match model_name {
             "claude" | "gemini" | "qwen" => {
                 let mut defaults = crate::agent_defaults::default_params_for(model_name, read_only);
+                if is_gemini {
+                    defaults = normalize_gemini_args(defaults);
+                }
                 defaults.push("-p".into());
                 defaults.push(prompt.to_string());
                 args.extend(defaults);
