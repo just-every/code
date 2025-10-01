@@ -642,9 +642,14 @@ fn determine_repo_trust_state(
     } else if config_toml.is_cwd_trusted(&config.cwd) {
         // If the current cwd project is trusted and no explicit config has been set,
         // default to fully trusted, non‑interactive execution to match expected behavior.
-        // This restores the previous semantics before the recent trust‑flow refactor.
+        // This restores the previous semantics before the recent trust‑flow refactor while
+        // still honoring user-provided workspace-write customizations (e.g., protecting .git).
         config.approval_policy = AskForApproval::Never;
-        config.sandbox_policy = SandboxPolicy::DangerFullAccess;
+
+        let default_workspace_policy = SandboxPolicy::new_workspace_write_policy();
+        if config.sandbox_policy == default_workspace_policy {
+            config.sandbox_policy = SandboxPolicy::DangerFullAccess;
+        }
         Ok(false)
     } else {
         // if none of the above conditions are met (and no per‑project overrides), show the trust screen
