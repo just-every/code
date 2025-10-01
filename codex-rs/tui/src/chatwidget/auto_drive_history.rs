@@ -54,7 +54,13 @@ impl AutoDriveHistory {
             return;
         }
         self.raw.extend(items.iter().cloned());
-        self.pending_skip = self.pending_skip.saturating_add(items.len());
+        let convertible_count = items
+            .iter()
+            .filter(|item| matches!(item, ResponseItem::Message { .. }))
+            .count();
+        self.pending_skip = self
+            .pending_skip
+            .saturating_add(convertible_count);
     }
 
     pub(crate) fn append_converted_tail(&mut self, items: &[ResponseItem]) {

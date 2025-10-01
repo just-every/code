@@ -38,14 +38,16 @@ See code for full type definitions and exact shapes: `protocol/src/mcp_protocol.
 Run Codex as an MCP server and connect an MCP client:
 
 ```bash
-codex mcp | your_mcp_client
+codex mcp-server | your_mcp_client
 ```
 
 For a simple inspection UI, you can also try:
 
 ```bash
-npx @modelcontextprotocol/inspector codex mcp
+npx @modelcontextprotocol/inspector codex mcp-server
 ```
+
+Use the separate `codex mcp` subcommand to manage configured MCP server launchers in `config.toml`.
 
 ## Conversations
 

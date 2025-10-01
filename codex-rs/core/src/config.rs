@@ -15,6 +15,9 @@ use crate::config_types::ThemeColors;
 use crate::config_types::McpServerConfig;
 use crate::config_types::McpServerTransportConfig;
 use crate::config_types::Notifications;
+use crate::config_types::OtelConfig;
+use crate::config_types::OtelConfigToml;
+use crate::config_types::OtelExporterKind;
 use crate::config_types::ProjectCommandConfig;
 use crate::config_types::ProjectHookConfig;
 use crate::config_types::SandboxWorkspaceWrite;
@@ -24,6 +27,7 @@ use crate::config_types::TextVerbosity;
 use crate::config_types::Tui;
 use crate::config_types::UriBasedFileOpener;
 use crate::config_types::ConfirmGuardConfig;
+use crate::config_types::DEFAULT_OTEL_ENVIRONMENT;
 use crate::git_info::resolve_root_git_project_for_trust;
 use crate::model_family::ModelFamily;
 use crate::model_family::derive_default_model_family;
@@ -34,6 +38,8 @@ use crate::openai_model_info::get_model_info;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
 use crate::config_types::ReasoningEffort;
+use std::sync::LazyLock;
+use std::sync::Mutex;
 use crate::config_types::ReasoningSummary;
 use crate::project_features::{load_project_commands, ProjectCommand, ProjectHooks};
 use codex_protocol::mcp_protocol::AuthMode;
@@ -68,6 +74,25 @@ pub(crate) const PROJECT_DOC_MAX_BYTES: usize = 32 * 1024; // 32 KiB
 const CONFIG_TOML_FILE: &str = "config.toml";
 
 const DEFAULT_RESPONSES_ORIGINATOR_HEADER: &str = "codex_cli_rs";
+
+static RESPONSES_ORIGINATOR_OVERRIDE: LazyLock<Mutex<Option<String>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+pub fn set_default_originator(originator: &str) -> std::io::Result<()> {
+    let mut guard = RESPONSES_ORIGINATOR_OVERRIDE
+        .lock()
+        .map_err(|_| std::io::Error::new(ErrorKind::Other, "originator override lock poisoned"))?;
+    *guard = Some(originator.to_string());
+    Ok(())
+}
+
+fn default_responses_originator() -> String {
+    RESPONSES_ORIGINATOR_OVERRIDE
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .unwrap_or_else(|| DEFAULT_RESPONSES_ORIGINATOR_HEADER.to_owned())
+}
 
 /// Application configuration loaded from disk and merged with overrides.
 #[derive(Debug, Clone, PartialEq)]
@@ -129,6 +154,9 @@ pub struct Config {
     /// context with every request). Currently necessary for OpenAI customers
     /// who have opted into Zero Data Retention (ZDR).
     pub disable_response_storage: bool,
+
+    /// OTEL configuration (exporter type, endpoint, headers, etc.).
+    pub otel: crate::config_types::OtelConfig,
 
     /// When true, Code will silently install updates on startup whenever a newer
     /// release is available. Upgrades are performed using the package manager
@@ -1535,6 +1563,9 @@ pub struct ConfigToml {
     /// who have opted into Zero Data Retention (ZDR).
     pub disable_response_storage: Option<bool>,
 
+    #[serde(default)]
+    pub otel: Option<OtelConfigToml>,
+
     /// Enable silent upgrades during startup when a newer release is available.
     #[serde(default, deserialize_with = "deserialize_option_bool_from_maybe_string")]
     pub auto_upgrade_enabled: Option<bool>,
@@ -2048,7 +2079,7 @@ impl Config {
 
         let responses_originator_header: String = cfg
             .responses_originator_header_internal_override
-            .unwrap_or(DEFAULT_RESPONSES_ORIGINATOR_HEADER.to_owned());
+            .unwrap_or_else(|| default_responses_originator());
 
         // Normalize agents: when `command` is missing/empty, default to `name`.
         let agents: Vec<AgentConfig> = cfg
@@ -2168,6 +2199,19 @@ impl Config {
                 .map(|t| t.notifications.clone())
                 .unwrap_or_default(),
             auto_drive_observer_cadence: cfg.auto_drive_observer_cadence.unwrap_or(5),
+            otel: {
+                let t: OtelConfigToml = cfg.otel.unwrap_or_default();
+                let log_user_prompt = t.log_user_prompt.unwrap_or(false);
+                let environment = t
+                    .environment
+                    .unwrap_or(DEFAULT_OTEL_ENVIRONMENT.to_string());
+                let exporter = t.exporter.unwrap_or(OtelExporterKind::None);
+                OtelConfig {
+                    log_user_prompt,
+                    environment,
+                    exporter,
+                }
+            },
         };
         Ok(config)
     }
@@ -2857,6 +2901,8 @@ model_verbosity = "high"
                 validation: ValidationConfig::default(),
                 experimental_resume: None,
                 tui_notifications: Default::default(),
+                auto_drive_observer_cadence: 5,
+                otel: crate::config_types::OtelConfig::default(),
             },
             o3_profile_config
         );
@@ -2929,6 +2975,7 @@ model_verbosity = "high"
             experimental_resume: None,
             tui_notifications: Default::default(),
             auto_drive_observer_cadence: 5,
+            otel: crate::config_types::OtelConfig::default(),
         };
 
         assert_eq!(expected_gpt3_profile_config, gpt3_profile_config);
@@ -3015,6 +3062,7 @@ model_verbosity = "high"
             experimental_resume: None,
             tui_notifications: Default::default(),
             auto_drive_observer_cadence: 5,
+            otel: crate::config_types::OtelConfig::default(),
         };
 
         assert_eq!(expected_zdr_profile_config, zdr_profile_config);
@@ -3085,6 +3133,7 @@ model_verbosity = "high"
             experimental_resume: None,
             tui_notifications: Default::default(),
             auto_drive_observer_cadence: 5,
+            otel: crate::config_types::OtelConfig::default(),
         };
 
         assert_eq!(expected_gpt5_profile_config, gpt5_profile_config);

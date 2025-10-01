@@ -48,6 +48,7 @@ use crate::openai_tools::create_tools_json_for_responses_api;
 use crate::protocol::RateLimitSnapshotEvent;
 use crate::protocol::TokenUsage;
 use crate::util::backoff;
+use codex_otel::otel_event_manager::OtelEventManager;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -76,6 +77,7 @@ fn try_parse_retry_after(err: &Error) -> Option<std::time::Duration> {
 pub struct ModelClient {
     config: Arc<Config>,
     auth_manager: Option<Arc<AuthManager>>,
+    otel_event_manager: Option<OtelEventManager>,
     client: reqwest::Client,
     provider: ModelProviderInfo,
     session_id: Uuid,
@@ -89,6 +91,7 @@ impl ModelClient {
     pub fn new(
         config: Arc<Config>,
         auth_manager: Option<Arc<AuthManager>>,
+        otel_event_manager: Option<OtelEventManager>,
         provider: ModelProviderInfo,
         effort: ReasoningEffortConfig,
         summary: ReasoningSummaryConfig,
@@ -101,6 +104,7 @@ impl ModelClient {
         Self {
             config,
             auth_manager,
+            otel_event_manager,
             client,
             provider,
             session_id,
@@ -125,6 +129,10 @@ impl ModelClient {
     #[allow(dead_code)]
     pub fn get_text_verbosity(&self) -> TextVerbosityConfig {
         self.verbosity
+    }
+
+    pub fn get_otel_event_manager(&self) -> Option<OtelEventManager> {
+        self.otel_event_manager.clone()
     }
 
     pub fn codex_home(&self) -> &Path {
@@ -169,6 +177,7 @@ impl ModelClient {
                     &self.provider,
                     &self.debug_logger,
                     self.auth_manager.clone(),
+                    self.otel_event_manager.clone(),
                 )
                 .await?;
 
@@ -205,7 +214,8 @@ impl ModelClient {
         if let Some(path) = &*CODEX_RS_SSE_FIXTURE {
             // short circuit for tests
             warn!(path, "Streaming from fixture");
-            return stream_from_fixture(path, self.provider.clone()).await;
+            return stream_from_fixture(path, self.provider.clone(), self.otel_event_manager.clone())
+                .await;
         }
 
         let auth_manager = self.auth_manager.clone();
@@ -385,7 +395,11 @@ impl ModelClient {
                 }
             }
 
-            let res = req_builder.send().await;
+            let res = if let Some(otel) = self.otel_event_manager.as_ref() {
+                otel.log_request(attempt, || req_builder.send()).await
+            } else {
+                req_builder.send().await
+            };
             if let Ok(resp) = &res {
                 trace!(
                     "Response status: {}, request-id: {}",
@@ -435,12 +449,14 @@ impl ModelClient {
                     let stream = resp.bytes_stream().map_err(CodexErr::Reqwest);
                     let debug_logger = Arc::clone(&self.debug_logger);
                     let request_id_clone = request_id.clone();
+                    let otel_event_manager = self.otel_event_manager.clone();
                     tokio::spawn(process_sse(
                         stream,
                         tx_event,
                         self.provider.stream_idle_timeout(),
                         debug_logger,
                         request_id_clone,
+                        otel_event_manager,
                     ));
 
                     return Ok(ResponseStream { rx_event });
@@ -769,6 +785,7 @@ async fn process_sse<S>(
     idle_timeout: Duration,
     debug_logger: Arc<Mutex<DebugLogger>>,
     request_id: String,
+    otel_event_manager: Option<OtelEventManager>,
 ) where
     S: Stream<Item = Result<Bytes>> + Unpin,
 {
@@ -793,7 +810,15 @@ async fn process_sse<S>(
     let mut last_text_reasoning_content: HashMap<(String, u32, u32), String> = HashMap::new();
 
     loop {
-        let sse = match timeout(idle_timeout, stream.next()).await {
+        let next_event = if let Some(manager) = otel_event_manager.as_ref() {
+            manager
+                .log_sse_event(|| timeout(idle_timeout, stream.next()))
+                .await
+        } else {
+            timeout(idle_timeout, stream.next()).await
+        };
+
+        let sse = match next_event {
             Ok(Some(Ok(sse))) => sse,
             Ok(Some(Err(e))) => {
                 debug!("SSE Error: {e:#}");
@@ -807,6 +832,21 @@ async fn process_sse<S>(
                         id: response_id,
                         usage,
                     }) => {
+                        if let (Some(usage), Some(manager)) = (&usage, otel_event_manager.as_ref()) {
+                            manager.sse_event_completed(
+                                usage.input_tokens,
+                                usage.output_tokens,
+                                usage
+                                    .input_tokens_details
+                                    .as_ref()
+                                    .map(|d| d.cached_tokens),
+                                usage
+                                    .output_tokens_details
+                                    .as_ref()
+                                    .map(|d| d.reasoning_tokens),
+                                usage.total_tokens,
+                            );
+                        }
                         let event = ResponseEvent::Completed {
                             response_id,
                             token_usage: usage.map(Into::into),
@@ -814,12 +854,14 @@ async fn process_sse<S>(
                         let _ = tx_event.send(Ok(event)).await;
                     }
                     None => {
-                        let _ = tx_event
-                            .send(Err(response_error.unwrap_or(CodexErr::Stream(
-                                "stream closed before response.completed".into(),
-                                None,
-                            ))))
-                            .await;
+                        let error = response_error.unwrap_or(CodexErr::Stream(
+                            "stream closed before response.completed".into(),
+                            None,
+                        ));
+                        if let Some(manager) = otel_event_manager.as_ref() {
+                            manager.see_event_completed_failed(&error);
+                        }
+                        let _ = tx_event.send(Err(error)).await;
                     }
                 }
                 // Mark the request log as complete
@@ -1130,6 +1172,7 @@ async fn process_sse<S>(
 async fn stream_from_fixture(
     path: impl AsRef<Path>,
     provider: ModelProviderInfo,
+    otel_event_manager: Option<OtelEventManager>,
 ) -> Result<ResponseStream> {
     let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent>>(1600);
     let f = std::fs::File::open(path.as_ref())?;
@@ -1152,6 +1195,7 @@ async fn stream_from_fixture(
         provider.stream_idle_timeout(),
         debug_logger,
         String::new(), // Empty request_id for test fixture
+        otel_event_manager,
     ));
     Ok(ResponseStream { rx_event })
 }
@@ -1193,6 +1237,7 @@ mod tests {
             provider.stream_idle_timeout(),
             debug_logger,
             String::new(),
+            None,
         ));
 
         let mut events = Vec::new();
@@ -1230,6 +1275,7 @@ mod tests {
             provider.stream_idle_timeout(),
             debug_logger,
             String::new(),
+            None,
         ));
 
         let mut out = Vec::new();
@@ -1301,14 +1347,18 @@ mod tests {
 
         matches!(
             &events[0],
-            Ok(ResponseEvent::OutputItemDone(ResponseItem::Message { role, .. }))
-                if role == "assistant"
+            Ok(ResponseEvent::OutputItemDone {
+                item: ResponseItem::Message { role, .. },
+                ..
+            }) if role == "assistant"
         );
 
         matches!(
             &events[1],
-            Ok(ResponseEvent::OutputItemDone(ResponseItem::Message { role, .. }))
-                if role == "assistant"
+            Ok(ResponseEvent::OutputItemDone {
+                item: ResponseItem::Message { role, .. },
+                ..
+            }) if role == "assistant"
         );
 
         match &events[2] {
@@ -1356,7 +1406,10 @@ mod tests {
 
         assert_eq!(events.len(), 2);
 
-        matches!(events[0], Ok(ResponseEvent::OutputItemDone(_)));
+        matches!(
+            events[0],
+            Ok(ResponseEvent::OutputItemDone { .. })
+        );
 
         match &events[1] {
             Err(CodexErr::Stream(msg, _)) => {
@@ -1422,7 +1475,7 @@ mod tests {
             matches!(ev, ResponseEvent::Created)
         }
         fn is_output(ev: &ResponseEvent) -> bool {
-            matches!(ev, ResponseEvent::OutputItemDone(_))
+            matches!(ev, ResponseEvent::OutputItemDone { .. })
         }
         fn is_completed(ev: &ResponseEvent) -> bool {
             matches!(ev, ResponseEvent::Completed { .. })

@@ -22,6 +22,13 @@ use codex_apply_patch::ApplyPatchAction;
 use codex_apply_patch::MaybeApplyPatchVerified;
 use codex_browser::BrowserConfig as CodexBrowserConfig;
 use codex_browser::BrowserManager;
+use codex_otel::otel_event_manager::OtelEventManager;
+use codex_otel::otel_event_manager::ToolDecisionSource;
+use codex_protocol::config_types::ReasoningEffort as ProtoReasoningEffort;
+use codex_protocol::config_types::ReasoningSummary as ProtoReasoningSummary;
+use codex_protocol::protocol::AskForApproval as ProtoAskForApproval;
+use codex_protocol::protocol::ReviewDecision as ProtoReviewDecision;
+use codex_protocol::protocol::SandboxPolicy as ProtoSandboxPolicy;
 use crate::config_types::ReasoningEffort as ReasoningEffortConfig;
 use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use crate::config_types::ClientTools;
@@ -117,6 +124,62 @@ impl ConfirmGuardPatternRuntime {
                 )
             });
         format!("{header}\n\n{original_label}: {original_value}\nresend_exact_argv: {suggested}")
+    }
+}
+
+fn to_proto_reasoning_effort(effort: ReasoningEffortConfig) -> ProtoReasoningEffort {
+    match effort {
+        ReasoningEffortConfig::Minimal => ProtoReasoningEffort::Minimal,
+        ReasoningEffortConfig::Low => ProtoReasoningEffort::Low,
+        ReasoningEffortConfig::Medium => ProtoReasoningEffort::Medium,
+        ReasoningEffortConfig::High => ProtoReasoningEffort::High,
+        ReasoningEffortConfig::None => ProtoReasoningEffort::Minimal,
+    }
+}
+
+fn to_proto_reasoning_summary(summary: ReasoningSummaryConfig) -> ProtoReasoningSummary {
+    match summary {
+        ReasoningSummaryConfig::Auto => ProtoReasoningSummary::Auto,
+        ReasoningSummaryConfig::Concise => ProtoReasoningSummary::Concise,
+        ReasoningSummaryConfig::Detailed => ProtoReasoningSummary::Detailed,
+        ReasoningSummaryConfig::None => ProtoReasoningSummary::None,
+    }
+}
+
+fn to_proto_approval_policy(policy: AskForApproval) -> ProtoAskForApproval {
+    match policy {
+        AskForApproval::UnlessTrusted => ProtoAskForApproval::UnlessTrusted,
+        AskForApproval::OnFailure => ProtoAskForApproval::OnFailure,
+        AskForApproval::OnRequest => ProtoAskForApproval::OnRequest,
+        AskForApproval::Never => ProtoAskForApproval::Never,
+    }
+}
+
+fn to_proto_sandbox_policy(policy: SandboxPolicy) -> ProtoSandboxPolicy {
+    match policy {
+        SandboxPolicy::DangerFullAccess => ProtoSandboxPolicy::DangerFullAccess,
+        SandboxPolicy::ReadOnly => ProtoSandboxPolicy::ReadOnly,
+        SandboxPolicy::WorkspaceWrite {
+            writable_roots,
+            network_access,
+            exclude_tmpdir_env_var,
+            exclude_slash_tmp,
+            allow_git_writes: _,
+        } => ProtoSandboxPolicy::WorkspaceWrite {
+            writable_roots,
+            network_access,
+            exclude_tmpdir_env_var,
+            exclude_slash_tmp,
+        },
+    }
+}
+
+fn to_proto_review_decision(decision: ReviewDecision) -> ProtoReviewDecision {
+    match decision {
+        ReviewDecision::Approved => ProtoReviewDecision::Approved,
+        ReviewDecision::ApprovedForSession => ProtoReviewDecision::ApprovedForSession,
+        ReviewDecision::Denied => ProtoReviewDecision::Denied,
+        ReviewDecision::Abort => ProtoReviewDecision::Abort,
     }
 }
 
@@ -1892,7 +1955,7 @@ impl Session {
             &self.sandbox_policy,
             with_escalated_permissions,
         ) {
-            SafetyCheck::AutoApprove { sandbox_type } => sandbox_type,
+            SafetyCheck::AutoApprove { sandbox_type, .. } => sandbox_type,
             SafetyCheck::AskUser | SafetyCheck::Reject { .. } => {
                 crate::safety::get_platform_sandbox().unwrap_or(SandboxType::None)
             }
@@ -2931,10 +2994,44 @@ async fn submission_loop(
                     }
                 };
 
+                let conversation_id = codex_protocol::mcp_protocol::ConversationId::from(session_id);
+                let auth_snapshot = auth_manager.as_ref().and_then(|mgr| mgr.auth());
+                let otel_event_manager = {
+                    let manager = OtelEventManager::new(
+                        conversation_id,
+                        config.model.as_str(),
+                        config.model_family.slug.as_str(),
+                        auth_snapshot
+                            .as_ref()
+                            .and_then(|auth| auth.get_account_id()),
+                        auth_snapshot.as_ref().map(|auth| auth.mode),
+                        config.otel.log_user_prompt,
+                        crate::terminal::user_agent(),
+                    );
+                    manager.conversation_starts(
+                        config.model_provider.name.as_str(),
+                        Some(to_proto_reasoning_effort(model_reasoning_effort)),
+                        to_proto_reasoning_summary(model_reasoning_summary),
+                        config.model_context_window,
+                        config.model_max_output_tokens,
+                        config.model_auto_compact_token_limit,
+                        to_proto_approval_policy(approval_policy),
+                        to_proto_sandbox_policy(sandbox_policy.clone()),
+                        config
+                            .mcp_servers
+                            .keys()
+                            .map(String::as_str)
+                            .collect(),
+                        config.active_profile.clone(),
+                    );
+                    manager
+                };
+
                 // Wrap provided auth (if any) in a minimal AuthManager for client usage.
                 let client = ModelClient::new(
                     config.clone(),
                     auth_manager.clone(),
+                    Some(otel_event_manager.clone()),
                     provider.clone(),
                     model_reasoning_effort,
                     model_reasoning_summary,
@@ -3448,9 +3545,15 @@ async fn spawn_review_thread(
         }
     };
 
+    let review_otel = parent_turn_context
+        .client
+        .get_otel_event_manager()
+        .map(|mgr| mgr.with_model(review_config.model.as_str(), review_config.model_family.slug.as_str()));
+
     let review_client = ModelClient::new(
         review_config.clone(),
         parent_turn_context.client.get_auth_manager(),
+        review_otel,
         parent_turn_context.client.get_provider(),
         review_config.model_reasoning_effort,
         review_config.model_reasoning_summary,
@@ -7403,6 +7506,8 @@ async fn handle_container_exec_with_params(
     // If the argv is a shell wrapper, analyze and optionally strip `confirm:`.
     let mut params = params;
     let seq_hint_for_exec = seq_hint;
+    let otel_event_manager = sess.client.get_otel_event_manager();
+    let tool_name = "local_shell";
     if let Some((script_index, script)) = extract_shell_script_from_wrapper(&params.command) {
         let trimmed = script.trim_start();
         let confirm_prefixes = ["confirm:", "CONFIRM:"];
@@ -7786,7 +7891,28 @@ async fn handle_container_exec_with_params(
     let harness_summary_json: Option<String> = None;
 
     let sandbox_type = match safety {
-        SafetyCheck::AutoApprove { sandbox_type } => sandbox_type,
+        SafetyCheck::AutoApprove {
+            sandbox_type,
+            user_explicitly_approved,
+        } => {
+            if let Some(manager) = otel_event_manager.as_ref() {
+                let (decision_for_log, source) = if user_explicitly_approved {
+                    (
+                        ReviewDecision::ApprovedForSession,
+                        ToolDecisionSource::User,
+                    )
+                } else {
+                    (ReviewDecision::Approved, ToolDecisionSource::Config)
+                };
+                manager.tool_decision(
+                    tool_name,
+                    call_id.as_str(),
+                    to_proto_review_decision(decision_for_log),
+                    source,
+                );
+            }
+            sandbox_type
+        }
         SafetyCheck::AskUser => {
             let rx_approve = sess
                 .request_command_approval(
@@ -7797,8 +7923,19 @@ async fn handle_container_exec_with_params(
                     params.justification.clone(),
                 )
                 .await;
-            match rx_approve.await.unwrap_or_default() {
-                ReviewDecision::Approved => (),
+
+            let decision = rx_approve.await.unwrap_or_default();
+            if let Some(manager) = otel_event_manager.as_ref() {
+                manager.tool_decision(
+                    tool_name,
+                    call_id.as_str(),
+                    to_proto_review_decision(decision),
+                    ToolDecisionSource::User,
+                );
+            }
+
+            match decision {
+                ReviewDecision::Approved => {}
                 ReviewDecision::ApprovedForSession => {
                     sess.add_approved_command(ApprovedCommandPattern::new(
                         params.command.clone(),
@@ -8058,6 +8195,8 @@ async fn handle_sandbox_error(
     let call_id = exec_command_context.call_id.clone();
     let sub_id = exec_command_context.sub_id.clone();
     let cwd = exec_command_context.cwd.clone();
+    let otel_event_manager = sess.client.get_otel_event_manager();
+    let tool_name = "local_shell";
 
     // Early out if either the user never wants to be asked for approval, or
     // we're letting the model manage escalation requests. Otherwise, continue
@@ -8110,88 +8249,96 @@ async fn handle_sandbox_error(
         )
         .await;
 
-    match rx_approve.await.unwrap_or_default() {
-        ReviewDecision::Approved | ReviewDecision::ApprovedForSession => {
+    let decision = rx_approve.await.unwrap_or_default();
+    if let Some(manager) = otel_event_manager.as_ref() {
+        manager.tool_decision(
+            tool_name,
+            call_id.as_str(),
+            to_proto_review_decision(decision),
+            ToolDecisionSource::User,
+        );
+    }
+
+    match decision {
+        ReviewDecision::Approved => {}
+        ReviewDecision::ApprovedForSession => {
             // Persist this command as pre‑approved for the
-            // remainder of the session so future
-            // executions skip the sandbox directly.
-            // TODO(ragona): Isn't this a bug? It always saves the command in an | fork?
+            // remainder of the session so future executions skip the sandbox directly.
             sess.add_approved_command(ApprovedCommandPattern::new(
                 params.command.clone(),
                 ApprovedCommandMatchKind::Exact,
                 None,
             ));
-            // Inform UI we are retrying without sandbox.
-            sess.notify_background_event(&sub_id, "retrying command without sandbox")
-                .await;
-
-            // This is an escalated retry; the policy will not be
-            // examined and the sandbox has been set to `None`.
-            // Use the same attempt_req as the tool call that failed; this retry
-            // is still part of the current provider attempt.
-            let retry_output_result = sess
-                .run_exec_with_events(
-                    turn_diff_tracker,
-                    exec_command_context.clone(),
-                    ExecInvokeArgs {
-                        params,
-                        sandbox_type: SandboxType::None,
-                        sandbox_policy: &sess.sandbox_policy,
-                        sandbox_cwd: sess.get_cwd(),
-                        codex_linux_sandbox_exe: &sess.codex_linux_sandbox_exe,
-                        stdout_stream: if exec_command_context.apply_patch.is_some() {
-                            None
-                        } else {
-                            Some(StdoutStream {
-                                sub_id: sub_id.clone(),
-                                call_id: call_id.clone(),
-                                tx_event: sess.tx_event.clone(),
-                                session: None,
-                                tail_buf: None,
-                                order: Some(crate::protocol::OrderMeta { request_ordinal: attempt_req, output_index: None, sequence_number: None }),
-                            })
-                        },
-                    },
-                    None,
-                    None,
-                    attempt_req,
-                )
-                .await;
-
-            match retry_output_result {
-                Ok(retry_output) => {
-                    let ExecToolCallOutput { exit_code, .. } = &retry_output;
-
-                    let is_success = *exit_code == 0;
-                    let content = format_exec_output_with_limit(sess, &sub_id, &call_id, &retry_output);
-
-                    ResponseInputItem::FunctionCallOutput {
-                        call_id: call_id.clone(),
-                        output: FunctionCallOutputPayload {
-                            content,
-                            success: Some(is_success),
-                        },
-                    }
-                }
-                Err(e) => ResponseInputItem::FunctionCallOutput {
-                    call_id: call_id.clone(),
-                    output: FunctionCallOutputPayload {
-                        content: format!("retry failed: {e}"),
-                        success: None,
-                    },
-                },
-            }
         }
         ReviewDecision::Denied | ReviewDecision::Abort => {
             // Fall through to original failure handling.
-            ResponseInputItem::FunctionCallOutput {
+            return ResponseInputItem::FunctionCallOutput {
                 call_id,
                 output: FunctionCallOutputPayload {
                     content: "exec command rejected by user".to_string(),
                     success: None,
                 },
+            };
+        }
+    };
+
+    // Inform UI we are retrying without sandbox.
+    sess.notify_background_event(&sub_id, "retrying command without sandbox")
+        .await;
+
+    // This is an escalated retry; the policy will not be examined and the sandbox has been set to `None`.
+    // Use the same attempt_req as the tool call that failed; this retry is still part of the current provider attempt.
+    let retry_output_result = sess
+        .run_exec_with_events(
+            turn_diff_tracker,
+            exec_command_context.clone(),
+            ExecInvokeArgs {
+                params,
+                sandbox_type: SandboxType::None,
+                sandbox_policy: &sess.sandbox_policy,
+                sandbox_cwd: sess.get_cwd(),
+                codex_linux_sandbox_exe: &sess.codex_linux_sandbox_exe,
+                stdout_stream: if exec_command_context.apply_patch.is_some() {
+                    None
+                } else {
+                    Some(StdoutStream {
+                        sub_id: sub_id.clone(),
+                        call_id: call_id.clone(),
+                        tx_event: sess.tx_event.clone(),
+                        session: None,
+                        tail_buf: None,
+                        order: Some(crate::protocol::OrderMeta { request_ordinal: attempt_req, output_index: None, sequence_number: None }),
+                    })
+                },
+            },
+            None,
+            None,
+            attempt_req,
+        )
+        .await;
+
+    match retry_output_result {
+        Ok(retry_output) => {
+            let ExecToolCallOutput { exit_code, .. } = &retry_output;
+
+            let is_success = *exit_code == 0;
+            let content = format_exec_output_with_limit(sess, &sub_id, &call_id, &retry_output);
+
+            ResponseInputItem::FunctionCallOutput {
+                call_id: call_id.clone(),
+                output: FunctionCallOutputPayload {
+                    content,
+                    success: Some(is_success),
+                },
             }
         }
+        Err(e) => ResponseInputItem::FunctionCallOutput {
+            call_id: call_id.clone(),
+            output: FunctionCallOutputPayload {
+                content: format!("retry failed: {e}"),
+                success: None,
+            },
+        },
     }
 }
 

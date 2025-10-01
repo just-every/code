@@ -91,6 +91,7 @@ where
     let client = ModelClient::new(
         Arc::clone(&config),
         None,
+        None,
         provider,
         effort,
         summary,

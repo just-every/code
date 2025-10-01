@@ -12,6 +12,7 @@ use codex_cli::SeatbeltCommand;
 use codex_cli::login::run_login_status;
 use codex_cli::login::run_login_with_api_key;
 use codex_cli::login::run_login_with_chatgpt;
+use codex_cli::login::run_login_with_device_code;
 use codex_cli::login::run_logout;
 use codex_cli::proto;
 mod llm;
@@ -19,7 +20,9 @@ use llm::{LlmCli, run_llm};
 use codex_common::CliConfigOverrides;
 use codex_core::find_conversation_path_by_id_str;
 use codex_core::RolloutRecorder;
+use codex_cloud_tasks::Cli as CloudTasksCli;
 use codex_exec::Cli as ExecCli;
+use codex_responses_api_proxy::Args as ResponsesApiProxyArgs;
 use codex_tui::Cli as TuiCli;
 use codex_tui::ExitSummary;
 use codex_tui::RESUME_COMMAND_NAME;
@@ -97,6 +100,12 @@ enum Subcommand {
     #[clap(visible_alias = "acp")]
     Mcp(McpCli),
 
+    /// [experimental] Run the Codex MCP server (stdio transport).
+    McpServer,
+
+    /// [experimental] Run the app server.
+    AppServer,
+
     /// Run the Protocol stream via stdin/stdout
     #[clap(visible_alias = "p")]
     Proto(ProtoCli),
@@ -121,6 +130,13 @@ enum Subcommand {
     /// Internal: generate TypeScript protocol bindings.
     #[clap(hide = true)]
     GenerateTs(GenerateTsCommand),
+    /// [EXPERIMENTAL] Browse tasks from Codex Cloud and apply changes locally.
+    #[clap(name = "cloud", alias = "cloud-tasks")]
+    Cloud(CloudTasksCli),
+
+    /// Internal: run the responses API proxy.
+    #[clap(hide = true)]
+    ResponsesApiProxy(ResponsesApiProxyArgs),
 
     /// Diagnose PATH, binary collisions, and versions.
     Doctor,
@@ -176,6 +192,20 @@ struct LoginCommand {
 
     #[arg(long = "api-key", value_name = "API_KEY")]
     api_key: Option<String>,
+
+    /// EXPERIMENTAL: Use device code flow (not yet supported)
+    /// This feature is experimental and may changed in future releases.
+    #[arg(long = "experimental_use-device-code", hide = true)]
+    use_device_code: bool,
+
+    /// EXPERIMENTAL: Use custom OAuth issuer base URL (advanced)
+    /// Override the OAuth issuer base URL (advanced)
+    #[arg(long = "experimental_issuer", value_name = "URL", hide = true)]
+    issuer_base_url: Option<String>,
+
+    /// EXPERIMENTAL: Use custom OAuth client ID (advanced)
+    #[arg(long = "experimental_client-id", value_name = "CLIENT_ID", hide = true)]
+    client_id: Option<String>,
 
     #[command(subcommand)]
     action: Option<LoginSubcommand>,
@@ -276,10 +306,16 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
             );
             codex_exec::run_main(exec_cli, codex_linux_sandbox_exe).await?;
         }
+        Some(Subcommand::McpServer) => {
+            codex_mcp_server::run_main(codex_linux_sandbox_exe, root_config_overrides).await?;
+        }
         Some(Subcommand::Mcp(mut mcp_cli)) => {
             // Propagate any root-level config overrides (e.g. `-c key=value`).
             prepend_config_flags(&mut mcp_cli.config_overrides, root_config_overrides.clone());
-            mcp_cli.run(codex_linux_sandbox_exe).await?;
+            mcp_cli.run().await?;
+        }
+        Some(Subcommand::AppServer) => {
+            codex_app_server::run_main(codex_linux_sandbox_exe, root_config_overrides).await?;
         }
         Some(Subcommand::Resume(ResumeCommand {
             session_id,
@@ -322,7 +358,14 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                     run_login_status(login_cli.config_overrides).await;
                 }
                 None => {
-                    if let Some(api_key) = login_cli.api_key {
+                    if login_cli.use_device_code {
+                        run_login_with_device_code(
+                            login_cli.config_overrides,
+                            login_cli.issuer_base_url,
+                            login_cli.client_id,
+                        )
+                        .await;
+                    } else if let Some(api_key) = login_cli.api_key {
                         run_login_with_api_key(login_cli.config_overrides, api_key).await;
                     } else {
                         run_login_with_chatgpt(login_cli.config_overrides).await;
@@ -346,6 +389,13 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
         }
         Some(Subcommand::Completion(completion_cli)) => {
             print_completion(completion_cli);
+        }
+        Some(Subcommand::Cloud(mut cloud_cli)) => {
+            prepend_config_flags(
+                &mut cloud_cli.config_overrides,
+                root_config_overrides.clone(),
+            );
+            codex_cloud_tasks::run_main(cloud_cli, codex_linux_sandbox_exe).await?;
         }
         Some(Subcommand::Debug(debug_args)) => match debug_args.cmd {
             DebugCommand::Seatbelt(mut seatbelt_cli) => {
@@ -377,6 +427,10 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                 root_config_overrides.clone(),
             );
             run_apply_command(apply_cli, None).await?;
+        }
+        Some(Subcommand::ResponsesApiProxy(args)) => {
+            tokio::task::spawn_blocking(move || codex_responses_api_proxy::run_main(args))
+                .await??;
         }
         Some(Subcommand::GenerateTs(gen_cli)) => {
             codex_protocol_ts::generate_ts(&gen_cli.out_dir, gen_cli.prettier.as_deref())?;

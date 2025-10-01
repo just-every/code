@@ -33,7 +33,7 @@ impl IndentContext {
 }
 
 #[allow(dead_code)]
-pub(crate) fn render_markdown_text(input: &str) -> Text<'static> {
+pub fn render_markdown_text(input: &str) -> Text<'static> {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     let parser = Parser::new_ext(input, options);
@@ -42,6 +42,7 @@ pub(crate) fn render_markdown_text(input: &str) -> Text<'static> {
     w.text
 }
 
+#[cfg(test)]
 pub(crate) fn render_markdown_text_with_citations(
     input: &str,
     scheme: Option<&str>,
@@ -119,6 +120,7 @@ where
             Event::InlineHtml(html) => self.html(html, true),
             Event::FootnoteReference(_) => {}
             Event::TaskListMarker(_) => {}
+            Event::InlineMath(math) | Event::DisplayMath(math) => self.text(math),
         }
     }
 
@@ -126,7 +128,7 @@ where
         match tag {
             Tag::Paragraph => self.start_paragraph(),
             Tag::Heading { level, .. } => self.start_heading(level),
-            Tag::BlockQuote => self.start_blockquote(),
+            Tag::BlockQuote(_) => self.start_blockquote(),
             Tag::CodeBlock(kind) => {
                 let indent = match kind {
                     CodeBlockKind::Fenced(_) => None,
@@ -152,6 +154,7 @@ where
             | Tag::TableCell
             | Tag::Image { .. }
             | Tag::MetadataBlock(_) => {}
+            _ => {}
         }
     }
 
@@ -159,7 +162,7 @@ where
         match tag {
             TagEnd::Paragraph => self.end_paragraph(),
             TagEnd::Heading(_) => self.end_heading(),
-            TagEnd::BlockQuote => self.end_blockquote(),
+            TagEnd::BlockQuote(_) => self.end_blockquote(),
             TagEnd::CodeBlock => self.end_codeblock(),
             TagEnd::List(_) => self.end_list(),
             TagEnd::Item => {
@@ -176,6 +179,7 @@ where
             | TagEnd::TableCell
             | TagEnd::Image
             | TagEnd::MetadataBlock(_) => {}
+            _ => {}
         }
     }
 

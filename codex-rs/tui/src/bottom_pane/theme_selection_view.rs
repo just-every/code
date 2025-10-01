@@ -329,7 +329,7 @@ impl ThemeSelectionView {
                 } else {
                     codex_protocol::mcp_protocol::AuthMode::ApiKey
                 };
-                let auth_mgr = codex_core::AuthManager::shared(
+                let auth_mgr = codex_core::AuthManager::shared_with_mode_and_originator(
                     cfg.codex_home.clone(),
                     preferred_auth,
                     cfg.responses_originator_header.clone(),
@@ -337,6 +337,7 @@ impl ThemeSelectionView {
                 let client = codex_core::ModelClient::new(
                     std::sync::Arc::new(cfg.clone()),
                     Some(auth_mgr),
+                    None,
                     cfg.model_provider.clone(),
                     codex_core::config_types::ReasoningEffort::Low,
                     cfg.model_reasoning_summary,
@@ -628,7 +629,7 @@ impl ThemeSelectionView {
                     Ok(c) => c,
                     Err(e) => { tx.send_background_event_before_next_output(format!("Config error: {}", e)); return; }
                 };
-                let auth_mgr = codex_core::AuthManager::shared(
+                let auth_mgr = codex_core::AuthManager::shared_with_mode_and_originator(
                     cfg.codex_home.clone(),
                     codex_protocol::mcp_protocol::AuthMode::ApiKey,
                     cfg.responses_originator_header.clone(),
@@ -636,6 +637,7 @@ impl ThemeSelectionView {
                 let client = codex_core::ModelClient::new(
                     std::sync::Arc::new(cfg.clone()),
                     Some(auth_mgr),
+                    None,
                     cfg.model_provider.clone(),
                     cfg.model_reasoning_effort,
                     cfg.model_reasoning_summary,

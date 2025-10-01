@@ -16,7 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
-mcp-types = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
 codex-protocol = { workspace = true }
 ts-rs = { workspace = true }
-clap = { workspace = true, features = ["derive"] }
+mcp-types = { workspace = true }

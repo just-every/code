@@ -1,5 +1,6 @@
 use crate::user_approval_widget::ApprovalRequest;
 use crossterm::event::KeyEvent;
+use std::any::Any;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
@@ -38,6 +39,11 @@ pub(crate) trait BottomPaneView<'a> {
     /// Update the status indicator text.
     fn update_status_text(&mut self, _text: String) -> ConditionalUpdate {
         ConditionalUpdate::NoRedraw
+    }
+
+    /// Allow downcasting for views that expose additional APIs.
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        None
     }
 
     /// Called when task completes to check if the view should be hidden.

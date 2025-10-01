@@ -123,7 +123,6 @@ use codex_core::protocol::TokenUsage;
 use codex_core::protocol::TurnDiffEvent;
 use crate::bottom_pane::{
     AutoCoordinatorButton,
-    AutoCoordinatorView,
     AutoCoordinatorViewModel,
     CountdownState,
 };
@@ -480,6 +479,8 @@ struct AutoCoordinatorUiState {
     current_summary: Option<String>,
     current_prompt: Option<String>,
     current_display_line: Option<String>,
+    current_display_is_summary: bool,
+    current_reasoning_title: Option<String>,
     placeholder_phrase: Option<String>,
     thinking_prefix_stripped: bool,
     current_summary_index: Option<u32>,
@@ -493,6 +494,7 @@ struct AutoCoordinatorUiState {
     last_broadcast_summary: Option<String>,
     last_decision_summary: Option<String>,
     last_decision_display: Option<String>,
+    last_decision_display_is_summary: bool,
     observer_telemetry: Option<AutoObserverTelemetry>,
     observer_status: AutoObserverStatus,
     coordinator_waiting: bool,
@@ -2856,7 +2858,7 @@ impl ChatWidget<'_> {
 
         let (codex_op_tx, codex_op_rx) = unbounded_channel::<Op>();
 
-        let auth_manager = AuthManager::shared(
+        let auth_manager = AuthManager::shared_with_mode_and_originator(
             config.codex_home.clone(),
             AuthMode::ApiKey,
             config.responses_originator_header.clone(),
@@ -10529,6 +10531,8 @@ impl ChatWidget<'_> {
                 self.auto_state.goal = Some(goal_text.clone());
                 self.auto_state.current_summary = None;
                 self.auto_state.current_display_line = None;
+                self.auto_state.current_display_is_summary = false;
+                self.auto_state.current_reasoning_title = None;
                 self.auto_state.current_summary_index = None;
                 self.auto_state.placeholder_phrase =
                     Some(auto_drive_strings::next_auto_drive_phrase().to_string());
@@ -10567,6 +10571,9 @@ impl ChatWidget<'_> {
             self.auto_state.current_summary = None;
             self.auto_state.last_broadcast_summary = None;
             self.auto_state.current_summary_index = None;
+            self.auto_state.current_display_line = None;
+            self.auto_state.current_display_is_summary = false;
+            self.auto_state.current_reasoning_title = None;
             self.auto_state.placeholder_phrase =
                 Some(auto_drive_strings::next_auto_drive_phrase().to_string());
             self.auto_state.thinking_prefix_stripped = false;
@@ -10595,6 +10602,8 @@ impl ChatWidget<'_> {
         self.auto_state.coordinator_waiting = false;
         self.auto_on_reasoning_final(&summary);
         self.auto_state.last_decision_display = self.auto_state.current_display_line.clone();
+        self.auto_state.last_decision_display_is_summary =
+            self.auto_state.current_display_is_summary;
         self.auto_state.paused_for_manual_edit = false;
         self.auto_state.resume_after_manual_submit = false;
         self.auto_state.awaiting_submission = false;
@@ -10736,7 +10745,6 @@ impl ChatWidget<'_> {
         if !self.auto_state.active {
             return;
         }
-        self.auto_state.placeholder_phrase = None;
         self.auto_on_reasoning_delta(&delta, summary_index);
     }
 
@@ -10763,10 +10771,13 @@ impl ChatWidget<'_> {
         self.auto_state.current_summary = None;
         self.auto_state.last_broadcast_summary = None;
         self.auto_state.current_display_line = post_submit_display.clone();
+        self.auto_state.current_display_is_summary =
+            self.auto_state.last_decision_display_is_summary && post_submit_display.is_some();
         self.auto_state.current_summary_index = None;
         self.auto_state.placeholder_phrase = post_submit_display.is_none().then(|| {
             auto_drive_strings::next_auto_drive_phrase().to_string()
         });
+        self.auto_state.current_reasoning_title = None;
         self.auto_state.thinking_prefix_stripped = false;
         self.bottom_pane.update_status_text(String::new());
         self.bottom_pane.set_task_running(false);
@@ -10884,7 +10895,8 @@ impl ChatWidget<'_> {
                 .clone()
         };
 
-        let mut status_lines = vec![append_thought_ellipsis(&status_text)];
+        let headline = self.auto_format_status_headline(&status_text);
+        let mut status_lines = vec![headline];
         if self.auto_state.waiting_for_response && !self.auto_state.coordinator_waiting {
             if let Some(summary) = self.auto_state.last_decision_summary.as_ref() {
                 let trimmed = summary.trim();
@@ -10975,7 +10987,6 @@ impl ChatWidget<'_> {
             prompt,
             awaiting_submission: self.auto_state.awaiting_submission,
             waiting_for_response: self.auto_state.waiting_for_response,
-            coordinator_waiting: self.auto_state.coordinator_waiting,
             countdown,
             button,
             manual_hint,
@@ -10983,8 +10994,9 @@ impl ChatWidget<'_> {
             cli_running,
         };
 
-        self.bottom_pane
-            .show_auto_coordinator_view(AutoCoordinatorView::new(model, self.app_event_tx.clone()));
+        self
+            .bottom_pane
+            .show_auto_coordinator_view(model);
 
         if self.auto_state.waiting_for_response {
             self.bottom_pane
@@ -10998,6 +11010,32 @@ impl ChatWidget<'_> {
             .send(AppEvent::ScheduleFrameIn(Duration::from_millis(interval)));
     }
 
+    fn auto_format_status_headline(&self, text: &str) -> String {
+        let trimmed = text.trim_end();
+        if trimmed.is_empty() {
+            return String::new();
+        }
+
+        if self.auto_state.current_display_is_summary {
+            return trimmed.to_string();
+        }
+
+        let show_summary_without_ellipsis = self.auto_state.awaiting_submission
+            && self.auto_state.current_reasoning_title.is_none()
+            && self
+                .auto_state
+                .current_summary
+                .as_ref()
+                .map(|summary| !summary.trim().is_empty())
+                .unwrap_or(false);
+
+        if show_summary_without_ellipsis {
+            trimmed.to_string()
+        } else {
+            append_thought_ellipsis(trimmed)
+        }
+    }
+
     fn auto_update_display_title(&mut self) {
         if !self.auto_state.active {
             return;
@@ -11007,18 +11045,27 @@ impl ChatWidget<'_> {
             return;
         };
 
-        if let Some(title) = extract_latest_bold_title(summary) {
-            let needs_update = self
-                .auto_state
-                .current_display_line
-                .as_ref()
-                .map(|current| current != &title)
-                .unwrap_or(true);
+        let display = summary.lines().find_map(|line| {
+            let trimmed = line.trim();
+            (!trimmed.is_empty()).then(|| Self::truncate_with_ellipsis(trimmed, 160))
+        });
 
-            if needs_update {
-                self.auto_state.current_display_line = Some(title);
-                self.auto_state.placeholder_phrase = None;
-            }
+        let Some(display) = display else {
+            return;
+        };
+
+        let needs_update = self
+            .auto_state
+            .current_display_line
+            .as_ref()
+            .map(|current| current != &display)
+            .unwrap_or(true);
+
+        if needs_update {
+            self.auto_state.current_display_line = Some(display);
+            self.auto_state.current_display_is_summary = true;
+            self.auto_state.placeholder_phrase = None;
+            self.auto_state.current_reasoning_title = None;
         }
     }
 
@@ -11061,6 +11108,13 @@ impl ChatWidget<'_> {
                 self.auto_state.current_summary_index = Some(idx);
                 self.auto_state.current_summary = Some(String::new());
                 self.auto_state.thinking_prefix_stripped = false;
+                self.auto_state.current_reasoning_title = None;
+                self.auto_state.current_display_line = None;
+                self.auto_state.current_display_is_summary = false;
+                self.auto_state.placeholder_phrase =
+                    Some(auto_drive_strings::next_auto_drive_phrase().to_string());
+                self.auto_rebuild_live_ring();
+                self.request_redraw();
             }
         }
 
@@ -11089,6 +11143,23 @@ impl ChatWidget<'_> {
             }
 
             entry.push_str(&cleaned_delta);
+
+            if let Some(title) = extract_latest_bold_title(entry) {
+                let needs_update = self
+                    .auto_state
+                    .current_reasoning_title
+                    .as_ref()
+                    .map(|existing| existing != &title)
+                    .unwrap_or(true);
+                if needs_update {
+                    self.auto_state.current_reasoning_title = Some(title.clone());
+                    self.auto_state.current_display_line = Some(title);
+                    self.auto_state.current_display_is_summary = false;
+                    self.auto_state.placeholder_phrase = None;
+                    self.auto_rebuild_live_ring();
+                    self.request_redraw();
+                }
+            }
         }
     }
 
@@ -11097,6 +11168,7 @@ impl ChatWidget<'_> {
             return;
         }
 
+        self.auto_state.current_reasoning_title = None;
         self.auto_state.current_summary = Some(text.to_string());
         self.auto_state.thinking_prefix_stripped = true;
         self.auto_state.current_summary_index = None;

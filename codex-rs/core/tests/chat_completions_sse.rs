@@ -8,6 +8,7 @@ use codex_core::ResponseEvent;
 use codex_core::ResponseItem;
 use codex_core::WireApi;
 use codex_core::debug_logger::DebugLogger;
+use codex_otel::otel_event_manager::OtelEventManager;
 use codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR;
 use core_test_support::load_default_config_for_test;
 use futures::StreamExt;
@@ -18,6 +19,7 @@ use wiremock::MockServer;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
+use codex_protocol::mcp_protocol::{AuthMode, ConversationId};
 
 fn network_disabled() -> bool {
     std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok()
@@ -69,6 +71,7 @@ async fn run_stream(sse_body: &str) -> Vec<ResponseEvent> {
 
     let client = ModelClient::new(
         Arc::clone(&config),
+        None,
         None,
         provider,
         effort,
@@ -326,4 +329,99 @@ async fn streams_reasoning_before_tool_call() {
     }
 
     assert!(matches!(events[3], ResponseEvent::Completed { .. }));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn streams_with_otel_event_manager() {
+    if network_disabled() {
+        println!(
+            "Skipping test because it cannot execute when network is disabled in a Codex sandbox."
+        );
+        return;
+    }
+
+    let server = MockServer::start().await;
+
+    let sse_body = concat!(
+        "data: {\"id\":\"chatcmpl-123\",\"object\":\"chat.completion.chunk\",\"created\":1710000000,\"model\":\"gpt-4o-mini\",",
+        "\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"id\":\"chatcmpl-123\",\"object\":\"chat.completion.chunk\",\"created\":1710000001,\"model\":\"gpt-4o-mini\",",
+        "\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+
+    let template = ResponseTemplate::new(200)
+        .insert_header("content-type", "text/event-stream")
+        .set_body_raw(sse_body, "text/event-stream");
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(template)
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = ModelProviderInfo {
+        name: "openai".into(),
+        base_url: Some(server.uri()),
+        env_key: None,
+        env_key_instructions: None,
+        wire_api: WireApi::Chat,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: Some(0),
+        stream_max_retries: Some(0),
+        stream_idle_timeout_ms: Some(5_000),
+        requires_openai_auth: false,
+        openrouter: None,
+    };
+
+    let codex_home = TempDir::new().unwrap();
+    let mut config = load_default_config_for_test(&codex_home);
+    config.model_provider_id = provider.name.clone();
+    config.model_provider = provider.clone();
+    config.show_raw_agent_reasoning = true;
+    let effort = config.model_reasoning_effort;
+    let summary = config.model_reasoning_summary;
+    let verbosity = config.model_text_verbosity;
+    let config = Arc::new(config);
+    let debug_logger = Arc::new(Mutex::new(DebugLogger::new(false).unwrap()));
+
+    let conversation_id = ConversationId::from(Uuid::new_v4());
+    let otel_manager = OtelEventManager::new(
+        conversation_id,
+        config.model.as_str(),
+        config.model_family.slug.as_str(),
+        None,
+        Some(AuthMode::ApiKey),
+        false,
+        "test-cli".to_string(),
+    );
+
+    let client = ModelClient::new(
+        Arc::clone(&config),
+        None,
+        Some(otel_manager),
+        provider,
+        effort,
+        summary,
+        verbosity,
+        Uuid::new_v4(),
+        debug_logger,
+    );
+
+    let mut prompt = Prompt::default();
+    prompt.input.push(ResponseItem::Message {
+        id: None,
+        role: "user".into(),
+        content: vec![ContentItem::InputText {
+            text: "hi".into(),
+        }],
+    });
+
+    let mut stream = client.stream(&prompt).await.expect("stream chat");
+    while let Some(event) = stream.next().await {
+        event.expect("event");
+    }
 }

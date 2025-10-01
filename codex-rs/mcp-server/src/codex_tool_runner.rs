@@ -28,6 +28,7 @@ use uuid::Uuid;
 
 use crate::exec_approval::handle_exec_approval_request;
 use crate::outgoing_message::OutgoingMessageSender;
+use crate::outgoing_message::OutgoingMessageSenderExt;
 use crate::outgoing_message::OutgoingNotificationMeta;
 use crate::patch_approval::handle_patch_approval_request;
 use crate::session_store::{SessionEntry, SessionMap};

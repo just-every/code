@@ -21,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-use crate::app_event::{AppEvent, AutoCoordinatorStatus};
+use crate::app_event::{AppEvent, AutoCoordinatorStatus, AutoObserverStatus, AutoObserverTelemetry};
 use crate::app_event_sender::AppEventSender;
 use crate::chatwidget::retry::{retry_with_backoff, RetryDecision, RetryError, RetryOptions};
 #[cfg(feature = "dev-faults")]
@@ -31,10 +31,13 @@ use chrono::{DateTime, Local, Utc};
 use rand::Rng;
 use super::auto_observer::{
     build_observer_conversation,
+    run_observer_once,
     start_auto_observer,
     AutoObserverCommand,
     ObserverOutcome,
+    ObserverReason,
     ObserverTrigger,
+    summarize_intervention,
 };
 
 const RATE_LIMIT_BUFFER: Duration = Duration::from_secs(120);
@@ -144,7 +147,7 @@ fn run_auto_loop(
     };
     let codex_home = config.codex_home.clone();
     let responses_originator_header = config.responses_originator_header.clone();
-    let auth_mgr = AuthManager::shared(
+    let auth_mgr = AuthManager::shared_with_mode_and_originator(
         codex_home,
         preferred_auth,
         responses_originator_header,
@@ -154,9 +157,10 @@ fn run_auto_loop(
     let model_text_verbosity = config.model_text_verbosity;
     let sandbox_policy = config.sandbox_policy.clone();
     let config = Arc::new(config);
-    let client = ModelClient::new(
+    let client = Arc::new(ModelClient::new(
         config.clone(),
         Some(auth_mgr),
+        None,
         model_provider,
         ReasoningEffort::Medium,
         model_reasoning_summary,
@@ -166,7 +170,7 @@ fn run_auto_loop(
             DebugLogger::new(debug_enabled)
                 .unwrap_or_else(|_| DebugLogger::new(false).expect("debug logger")),
         )),
-    );
+    ));
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -205,6 +209,7 @@ fn run_auto_loop(
     let mut stopped = false;
     let mut requests_completed: u64 = 0;
     let mut observer_guidance: Vec<String> = Vec::new();
+    let mut observer_telemetry = AutoObserverTelemetry::default();
     let mut observer_handle = if observer_cadence == 0 {
         None
     } else {
@@ -236,7 +241,7 @@ fn run_auto_loop(
                 compose_developer_intro(&base_developer_intro, &observer_guidance);
             match request_coordinator_decision(
                 &runtime,
-                &client,
+                client.as_ref(),
                 developer_intro.as_str(),
                 &primary_goal_message,
                 &schema,
@@ -246,16 +251,16 @@ fn run_auto_loop(
                 &cancel_token,
             ) {
                 Ok((status, summary, prompt_opt, transcript_items)) => {
-                    let prompt_clone = prompt_opt.clone();
-                    let event = AppEvent::AutoCoordinatorDecision {
-                        status,
-                        summary,
-                        prompt: prompt_opt,
-                        transcript: transcript_items.clone(),
-                    };
-                    app_event_tx.send(event);
-
                     if matches!(status, AutoCoordinatorStatus::Continue) {
+                        let prompt_clone = prompt_opt.clone();
+                        let event = AppEvent::AutoCoordinatorDecision {
+                            status,
+                            summary,
+                            prompt: prompt_opt,
+                            transcript: transcript_items.clone(),
+                        };
+                        app_event_tx.send(event);
+
                         if let (Some(handle), Some(cadence)) =
                             (observer_handle.as_ref(), observer_cadence)
                         {
@@ -268,16 +273,73 @@ fn run_auto_loop(
                                     conversation,
                                     goal_text: goal_text.clone(),
                                     environment_details: environment_details.clone(),
+                                    reason: ObserverReason::Cadence,
                                 };
                                 if handle.tx.send(AutoObserverCommand::Trigger(trigger)).is_err() {
                                     tracing::warn!("failed to trigger auto observer");
                                 }
                             }
                         }
-                    } else {
-                        stopped = true;
                         continue;
                     }
+
+                    let observer_conversation =
+                        build_observer_conversation(conv_for_observer.clone(), None);
+                    let validation_result = run_final_observer_validation(
+                        &runtime,
+                        client.clone(),
+                        observer_conversation,
+                        &goal_text,
+                        &environment_details,
+                        status,
+                    );
+
+                    if let Ok((observer_status, replace_message, additional_instructions)) =
+                        &validation_result
+                    {
+                        let telemetry = AutoObserverTelemetry {
+                            trigger_count: observer_telemetry.trigger_count.saturating_add(1),
+                            last_status: *observer_status,
+                            last_intervention: summarize_intervention(
+                                replace_message.as_deref(),
+                                additional_instructions.as_deref(),
+                            ),
+                        };
+                        observer_telemetry = telemetry.clone();
+                        let observer_event = AppEvent::AutoObserverReport {
+                            status: *observer_status,
+                            telemetry,
+                            replace_message: replace_message.clone(),
+                            additional_instructions: additional_instructions.clone(),
+                        };
+                        app_event_tx.send(observer_event);
+
+                        if matches!(observer_status, AutoObserverStatus::Failing) {
+                            if let Some(instr) = additional_instructions
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                            {
+                                if !observer_guidance.iter().any(|existing| existing == instr) {
+                                    observer_guidance.push(instr.to_string());
+                                }
+                            }
+                            pending_conversation = Some(conv_for_observer);
+                            continue;
+                        }
+                    } else if let Err(err) = validation_result {
+                        tracing::warn!("final observer validation failed: {err:#}");
+                    }
+
+                    let event = AppEvent::AutoCoordinatorDecision {
+                        status,
+                        summary,
+                        prompt: prompt_opt,
+                        transcript: transcript_items,
+                    };
+                    app_event_tx.send(event);
+                    stopped = true;
+                    continue;
                 }
                 Err(err) => {
                     if err.downcast_ref::<AutoCoordinatorCancelled>().is_some() {
@@ -320,6 +382,7 @@ fn run_auto_loop(
                     }
                 }
 
+                observer_telemetry = telemetry.clone();
                 let event = AppEvent::AutoObserverReport {
                     status,
                     telemetry,
@@ -365,9 +428,26 @@ fn should_trigger_observer(requests_completed: u64, cadence: u64) -> bool {
     cadence != 0 && requests_completed > 0 && requests_completed % cadence == 0
 }
 
+fn run_final_observer_validation(
+    runtime: &tokio::runtime::Runtime,
+    client: Arc<ModelClient>,
+    conversation: Vec<ResponseItem>,
+    goal_text: &str,
+    environment_details: &str,
+    finish_status: AutoCoordinatorStatus,
+) -> Result<(AutoObserverStatus, Option<String>, Option<String>)> {
+    let trigger = ObserverTrigger {
+        conversation,
+        goal_text: goal_text.to_string(),
+        environment_details: environment_details.to_string(),
+        reason: ObserverReason::FinalCheck { finish_status },
+    };
+    run_observer_once(runtime, client, trigger)
+}
+
 fn build_developer_message(goal_text: &str, environment_details: &str) -> (String, String) {
     let intro = format!(
-        "You are coordinating prompts sent to a running Code CLI process. You should act like a human maintainer of the project would act. You will see a **Primary Goal** below - this is what you are always working towards.\n\n**Rules**\n- `finish_status`: one of `continue`, `finish_success`, or `finish_failed`.\n  * Use `continue` when another prompt is reasonable. Always prefer this option.\n  * Use `finish_success` when the goal has been completed in it's entirety and absolutely no work remains.\n  * Use `finish_failed` when the goal absolutely can not be satisfied or you are stuck in a loop. This should almost never be used. Try other approaches and gather more information if there is no clear path forward.\n- `summary`: short summary (<= 160 characters) describing what will happen when the CLI performs the next prompt\n- `prompt`: the exact prompt to provide to the Code CLI process. You will receive the response the CLI provides.\n- First plan, then execute. Allow the CLI to plan for you. You should get it to do the thinking for you.\n- Keep the prompt minimal to give the CLI room to make independent decision.\n- Don't repeat yourself. You will see past prompts and outputs showing current progress. Always push the project forward.\n- Often a simple 'Please continue' or 'Work on feature A next' or 'What do you think is the best approach?' is sufficient. Your job is to keep things running in an appropriate direction. The CLI does all the actual work and thinking. You do not need to know much about the project or codebase, allow the CLI to do all this for you. You are focused on overall direction not implementation details.\n- Only stop when no other options remain. A human is observing your work and will step in if they want to go in a different direction. You should not ask them for assistance - you should use your judgement to move on the most likely path forward. The human may override your message send to the CLI if they choose to go in another direction. This allows you to just guess the best path, knowing an overseer will step in if needed.\n\nUseful commands:\n`/review <what to review>` e.g. `/review latest commit` - this spins up a specialist review thread for the CLI which excels at identify issues. This is useful for repeatedly reviewing code changes you make and fixing them.\n`/reasoning <high|medium|low>` e.g. set `/reasoning high` if the CLI makes a poor decision or `/reasoning low` to move faster on simple tasks\n\nEnvironment:\\n{environment_details}"
+        "You are coordinating prompts sent to a running Code CLI process. You should act like a human maintainer of the project would act. You will see a **Primary Goal** below - this is what you are always working towards.\n\n**JSON Structure**\n- `finish_status`: one of `continue`, `finish_success`, or `finish_failed`.\n  * Use `continue` when another prompt is reasonable. Always prefer this option.\n  * Use `finish_success` when the goal has been completed in its entirety and absolutely no work remains.\n  * Use `finish_failed` when the goal absolutely cannot be satisfied or you are stuck in a loop. This should almost never be used. Try other approaches and gather more information if there is no clear path forward.\n- `summary`: short summary (<= 160 characters) describing what will happen when the CLI performs the next prompt\n- `prompt`: the exact prompt to provide to the Code CLI process. You will receive the response the CLI provides.\n\n**Rules**\n- You set direction, not implementation. Keep the CLI on track, but let it do all the thinking and implementation. You do not have the context the CLI has.\n- When working on an existing code base, start by prompting the CLI to explain the problem and outline plausible approaches. This lets it build context rather than jumping in naively with a solution.\n- Keep every prompt minimal to give the CLI room to make independent decisions.\n- Don't repeat yourself. If something doesn't work, take a different approach. Always push the project forward.\n- Often a simple 'Please continue' or 'Work on feature A next' or 'What do you think is the best approach?' is sufficient. Your job is to keep things running in an appropriate direction. The CLI does all the actual work and thinking. You do not need to know much about the project or codebase, allow the CLI to do all this for you. You are focused on overall direction not implementation details.\n- Only stop when no other options remain. A human is observing your work and will step in if they want to go in a different direction. You should not ask them for assistance - you should use your judgement to move on the most likely path forward. The human may override your message send to the CLI if they choose to go in another direction. This allows you to just guess the best path, knowing an overseer will step in if needed.\n\nUseful command:\n`/review <what to review>` e.g. `/review latest commit` - this spins up a specialist review thread for the CLI which excels at identify issues. This is useful for repeatedly reviewing code changes you make and fixing them.\n\nEnvironment:\n{environment_details}"
     );
     let primary_goal = format!("**Primary Goal**\n{goal_text}");
     (intro, primary_goal)

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::codex_message_processor::CodexMessageProcessor;
+use codex_app_server::codex_message_processor::CodexMessageProcessor;
 use crate::codex_tool_config::create_tool_for_acp_new_session;
 use crate::codex_tool_config::create_tool_for_acp_prompt;
 use crate::codex_tool_config::create_tool_for_acp_set_model;
@@ -54,7 +54,6 @@ use tokio::task;
 use uuid::Uuid;
 
 pub(crate) struct MessageProcessor {
-    codex_message_processor: CodexMessageProcessor,
     outgoing: Arc<OutgoingMessageSender>,
     initialized: bool,
     codex_linux_sandbox_exe: Option<PathBuf>,
@@ -62,6 +61,7 @@ pub(crate) struct MessageProcessor {
     session_map: SessionMap,
     running_requests_id_to_codex_uuid: Arc<Mutex<HashMap<RequestId, Uuid>>>,
     base_config: Arc<Config>,
+    codex_message_processor: CodexMessageProcessor,
 }
 
 impl MessageProcessor {
@@ -73,7 +73,7 @@ impl MessageProcessor {
         config: Arc<Config>,
     ) -> Self {
         let outgoing = Arc::new(outgoing);
-        let auth_manager = AuthManager::shared(
+        let auth_manager = AuthManager::shared_with_mode_and_originator(
             config.codex_home.clone(),
             AuthMode::ApiKey,
             config.responses_originator_header.clone(),
@@ -85,11 +85,10 @@ impl MessageProcessor {
             conversation_manager.clone(),
             outgoing.clone(),
             codex_linux_sandbox_exe.clone(),
-            config_for_processor,
+            config_for_processor.clone(),
         );
         let session_map: SessionMap = Arc::new(Mutex::new(HashMap::new()));
         Self {
-            codex_message_processor,
             outgoing,
             initialized: false,
             codex_linux_sandbox_exe,
@@ -97,6 +96,7 @@ impl MessageProcessor {
             session_map,
             running_requests_id_to_codex_uuid: Arc::new(Mutex::new(HashMap::new())),
             base_config: config,
+            codex_message_processor,
         }
     }
 

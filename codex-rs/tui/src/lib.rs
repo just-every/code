@@ -26,7 +26,6 @@ use std::fs::OpenOptions;
 use std::path::PathBuf;
 use tracing_appender::non_blocking;
 use tracing_subscriber::EnvFilter;
-use tracing_subscriber::prelude::*;
 use uuid::Uuid;
 
 mod app;
@@ -52,11 +51,13 @@ mod history;
 mod insert_history;
 pub mod live_wrap;
 mod markdown;
+mod markdown_render;
 mod markdown_renderer;
 mod markdown_stream;
 mod syntax_highlight;
 pub mod onboarding;
 mod pager_overlay;
+pub mod public_widgets;
 mod render;
 // mod scroll_view; // Orphaned after trait-based HistoryCell migration
 mod session_log;
@@ -98,6 +99,8 @@ mod chatwidget_stream_tests;
 mod updates;
 
 pub use cli::Cli;
+pub use self::markdown_render::render_markdown_text;
+pub use public_widgets::composer_input::{ComposerAction, ComposerInput};
 
 fn theme_configured_in_config_file(codex_home: &std::path::Path) -> bool {
     let config_path = codex_home.join("config.toml");
@@ -113,7 +116,6 @@ fn theme_configured_in_config_file(codex_home: &std::path::Path) -> bool {
     let inline_pattern = Regex::new(r"(?m)^\s*tui\.theme\s*=").expect("valid regex");
     inline_pattern.is_match(&contents)
 }
-
 // (tests access modules directly within the crate)
 
 #[derive(Debug)]
@@ -280,12 +282,13 @@ pub async fn run_main(
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter))
     };
 
-    // Build layered subscriber:
-    let file_layer = tracing_subscriber::fmt::layer()
-        .with_writer(non_blocking)
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(env_filter())
         .with_target(false)
         .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
-        .with_filter(env_filter());
+        .with_ansi(false)
+        .with_writer(non_blocking)
+        .try_init();
 
     if cli.oss {
         codex_ollama::ensure_oss_ready(&config)
@@ -293,7 +296,7 @@ pub async fn run_main(
             .map_err(|e| std::io::Error::other(format!("OSS setup failed: {e}")))?;
     }
 
-    let _ = tracing_subscriber::registry().with(file_layer).try_init();
+    let _otel = codex_core::otel_init::build_provider(&config, env!("CARGO_PKG_VERSION"));
 
     let latest_upgrade_version = if crate::updates::upgrade_ui_enabled() {
         updates::get_upgrade_version(&config)

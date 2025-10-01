@@ -16,6 +16,54 @@ use serde::Deserialize;
 use serde::Serialize;
 use strum_macros::Display;
 
+pub const DEFAULT_OTEL_ENVIRONMENT: &str = "dev";
+
+#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum OtelHttpProtocol {
+    Binary,
+    Json,
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum OtelExporterKind {
+    None,
+    OtlpHttp {
+        endpoint: String,
+        headers: HashMap<String, String>,
+        protocol: OtelHttpProtocol,
+    },
+    OtlpGrpc {
+        endpoint: String,
+        headers: HashMap<String, String>,
+    },
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct OtelConfigToml {
+    pub log_user_prompt: Option<bool>,
+    pub environment: Option<String>,
+    pub exporter: Option<OtelExporterKind>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OtelConfig {
+    pub log_user_prompt: bool,
+    pub environment: String,
+    pub exporter: OtelExporterKind,
+}
+
+impl Default for OtelConfig {
+    fn default() -> Self {
+        OtelConfig {
+            log_user_prompt: false,
+            environment: DEFAULT_OTEL_ENVIRONMENT.to_owned(),
+            exporter: OtelExporterKind::None,
+        }
+    }
+}
+
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct McpServerConfig {
     #[serde(flatten)]

@@ -48,6 +48,7 @@ pub fn generate_ts(out_dir: &Path, prettier: Option<&Path>) -> Result<()> {
     codex_protocol::mcp_protocol::ExecCommandApprovalParams::export_all_to(out_dir)?;
     codex_protocol::mcp_protocol::ExecCommandApprovalResponse::export_all_to(out_dir)?;
     codex_protocol::mcp_protocol::ServerNotification::export_all_to(out_dir)?;
+    codex_protocol::mcp_protocol::ClientNotification::export_all_to(out_dir)?;
 
     generate_index_ts(out_dir)?;
 
@@ -66,7 +67,7 @@ pub fn generate_ts(out_dir: &Path, prettier: Option<&Path>) -> Result<()> {
                 .status()
                 .with_context(|| format!("Failed to invoke Prettier at {}", prettier_bin.display()))?;
             if !status.success() {
-                return Err(anyhow!("Prettier failed with status {}", status));
+                return Err(anyhow!("Prettier failed with status {status}"));
             }
         }
     }

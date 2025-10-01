@@ -23,6 +23,7 @@ codex-file-search = { path = "../file-search" }
 codex-mcp-client = { path = "../mcp-client" }
 codex-protocol = { path = "../protocol" }
 codex-rmcp-client = { path = "../rmcp-client" }
+codex-otel = { path = "../otel", features = ["otel"] }
 agent-client-protocol = "0.4.3"
 dirs = "6"
 env-flags = "0.1.1"

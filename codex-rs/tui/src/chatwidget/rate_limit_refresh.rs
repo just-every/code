@@ -43,7 +43,7 @@ fn run_refresh(
             codex_protocol::mcp_protocol::AuthMode::ApiKey
         };
 
-        let auth_mgr = AuthManager::shared(
+        let auth_mgr = AuthManager::shared_with_mode_and_originator(
             config.codex_home.clone(),
             auth_mode,
             config.responses_originator_header.clone(),
@@ -118,6 +118,7 @@ fn build_model_client(
     let client = ModelClient::new(
         Arc::new(config.clone()),
         Some(auth_mgr),
+        None,
         config.model_provider.clone(),
         ReasoningEffort::Low,
         config.model_reasoning_summary,

@@ -34,7 +34,7 @@ async fn exec_includes_output_schema_in_request() -> anyhow::Result<()> {
         responses::ev_assistant_message("m1", "fixture hello"),
         responses::ev_completed("resp1"),
     ]);
-    responses::mount_sse_once(&server, any(), body).await;
+    responses::mount_sse_once_match(&server, any(), body).await;
 
     Command::cargo_bin("codex-exec")?
         .current_dir(workspace.path())

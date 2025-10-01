@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use rand::{rng, Rng};
 
 const AUTO_DRIVE_PHRASES: [&str; 60] = [
     "Plotting course…",
@@ -63,11 +63,12 @@ const AUTO_DRIVE_PHRASES: [&str; 60] = [
     "Envisioning next move…",
 ];
 
-static PHRASE_COUNTER: AtomicU64 = AtomicU64::new(0);
-
 pub fn next_auto_drive_phrase() -> &'static str {
-    let idx = (PHRASE_COUNTER.fetch_add(1, Ordering::Relaxed) as usize)
-        % AUTO_DRIVE_PHRASES.len();
+    let len = AUTO_DRIVE_PHRASES.len();
+    if len == 0 {
+        return "";
+    }
+    let idx = rng().random_range(0..len);
     AUTO_DRIVE_PHRASES[idx]
 }
 

@@ -633,30 +633,6 @@ fn style_del() -> Style {
 // --- Very light tinted backgrounds for insert/delete lines ------------------
 use ratatui::style::Color;
 
-fn color_to_rgb(c: Color) -> (u8, u8, u8) {
-    match c {
-        Color::Rgb(r, g, b) => (r, g, b),
-        Color::Black => (0, 0, 0),
-        Color::White => (255, 255, 255),
-        Color::Gray => (192, 192, 192),
-        Color::DarkGray => (128, 128, 128),
-        Color::Red => (205, 49, 49),
-        Color::Green => (13, 188, 121),
-        Color::Yellow => (229, 229, 16),
-        Color::Blue => (36, 114, 200),
-        Color::Magenta => (188, 63, 188),
-        Color::Cyan => (17, 168, 205),
-        Color::LightRed => (255, 102, 102),
-        Color::LightGreen => (102, 255, 178),
-        Color::LightYellow => (255, 255, 102),
-        Color::LightBlue => (102, 153, 255),
-        Color::LightMagenta => (255, 102, 255),
-        Color::LightCyan => (102, 255, 255),
-        Color::Indexed(i) => (i, i, i),
-        Color::Reset => color_to_rgb(crate::colors::background()),
-    }
-}
-
 fn blend(bg: (u8, u8, u8), fg: (u8, u8, u8), alpha: f32) -> (u8, u8, u8) {
     let inv = 1.0 - alpha;
     let r = (bg.0 as f32 * inv + fg.0 as f32 * alpha).round() as u8;
@@ -671,8 +647,8 @@ fn is_dark(rgb: (u8, u8, u8)) -> bool {
 }
 
 fn tinted_bg_toward(accent: Color) -> Color {
-    let bg = color_to_rgb(crate::colors::background());
-    let fg = color_to_rgb(accent);
+    let bg = crate::colors::color_to_rgb(crate::colors::background());
+    let fg = crate::colors::color_to_rgb(accent);
     // Slightly stronger tint on dark themes, lighter on light themes
     let alpha = if is_dark(bg) { 0.20 } else { 0.10 };
     let (r, g, b) = blend(bg, fg, alpha);

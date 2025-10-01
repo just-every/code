@@ -3,15 +3,12 @@ mod event_processor;
 mod event_processor_with_human_output;
 mod event_processor_with_json_output;
 
-use std::io::IsTerminal;
-use std::io::Read;
-use std::path::PathBuf;
-
 pub use cli::Cli;
 use codex_core::AuthManager;
 use codex_core::BUILT_IN_OSS_MODEL_PROVIDER_ID;
 use codex_core::ConversationManager;
 use codex_core::NewConversation;
+use codex_core::config::set_default_originator;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::git_info::get_git_repo_root;
@@ -26,6 +23,9 @@ use codex_protocol::config_types::SandboxMode;
 use event_processor_with_human_output::EventProcessorWithHumanOutput;
 use event_processor_with_json_output::EventProcessorWithJsonOutput;
 use serde_json::Value;
+use std::io::IsTerminal;
+use std::io::Read;
+use std::path::PathBuf;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
@@ -37,6 +37,10 @@ use crate::event_processor::EventProcessor;
 use codex_core::find_conversation_path_by_id_str;
 
 pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()> {
+    if let Err(err) = set_default_originator("codex_exec") {
+        tracing::warn!(?err, "Failed to set codex exec originator override {err:?}");
+    }
+
     let Cli {
         command,
         images,
@@ -111,18 +115,18 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         ),
     };
 
-    // TODO(mbolin): Take a more thoughtful approach to logging.
+    // Build fmt layer (existing logging) to compose with OTEL layer.
     let default_level = "error";
+
+    // Build env_filter separately and attach via with_filter.
+    let env_filter = EnvFilter::try_from_default_env()
+        .or_else(|_| EnvFilter::try_new(default_level))
+        .unwrap_or_else(|_| EnvFilter::new(default_level));
+
     let _ = tracing_subscriber::fmt()
-        // Fallback to the `default_level` log filter if the environment
-        // variable is not set _or_ contains an invalid value
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .or_else(|_| EnvFilter::try_new(default_level))
-                .unwrap_or_else(|_| EnvFilter::new(default_level)),
-        )
+        .with_env_filter(env_filter)
         .with_ansi(stderr_with_ansi)
-        .with_writer(std::io::stderr)
+        .with_writer(|| std::io::stderr())
         .try_init();
 
     let sandbox_mode = if full_auto {
@@ -215,7 +219,7 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         std::process::exit(1);
     }
 
-    let conversation_manager = ConversationManager::new(AuthManager::shared(
+    let conversation_manager = ConversationManager::new(AuthManager::shared_with_mode_and_originator(
         config.codex_home.clone(),
         codex_protocol::mcp_protocol::AuthMode::ApiKey,
         config.responses_originator_header.clone(),
@@ -234,7 +238,7 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
                 .resume_conversation_from_rollout(
                     config.clone(),
                     path,
-                    AuthManager::shared(
+                    AuthManager::shared_with_mode_and_originator(
                         config.codex_home.clone(),
                         codex_protocol::mcp_protocol::AuthMode::ApiKey,
                         config.responses_originator_header.clone(),

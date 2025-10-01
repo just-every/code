@@ -849,8 +849,17 @@ impl AuthManager {
         }
     }
 
-    /// Convenience constructor returning an `Arc` wrapper.
-    pub fn shared(
+    /// Convenience constructor returning an `Arc` wrapper with default auth mode + originator.
+    pub fn shared(codex_home: PathBuf) -> Arc<Self> {
+        Arc::new(Self::new(
+            codex_home,
+            AuthMode::ApiKey,
+            crate::default_client::DEFAULT_ORIGINATOR.to_string(),
+        ))
+    }
+
+    /// Convenience constructor returning an `Arc` wrapper with explicit auth mode and originator.
+    pub fn shared_with_mode_and_originator(
         codex_home: PathBuf,
         preferred_auth_mode: AuthMode,
         originator: String,

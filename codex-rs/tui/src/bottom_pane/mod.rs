@@ -432,15 +432,8 @@ impl BottomPane<'_> {
     /// Update the status indicator text. Shows status as overlay above composer
     /// to allow continued input while processing.
     pub(crate) fn update_status_text(&mut self, text: String) {
-        // If there's an active modal view that can handle status updates, let it
         if let Some(view) = self.active_view.as_mut() {
-            if matches!(
-                view.update_status_text(text.clone()),
-                bottom_pane_view::ConditionalUpdate::NeedsRedraw
-            ) {
-                self.request_redraw();
-                return;
-            }
+            let _ = view.update_status_text(text.clone());
         }
 
         // Pass status message to composer for dynamic title display
@@ -712,10 +705,35 @@ impl BottomPane<'_> {
         self.request_redraw();
     }
 
-    pub(crate) fn show_auto_coordinator_view(&mut self, view: AutoCoordinatorView) {
+    pub(crate) fn show_auto_coordinator_view(&mut self, model: AutoCoordinatorViewModel) {
+        if let Some(existing) = self.active_view.as_mut() {
+            if self.active_view_kind == ActiveViewKind::AutoCoordinator {
+                if let Some(existing_any) = existing.as_any_mut() {
+                    if let Some(auto_view) = existing_any.downcast_mut::<AutoCoordinatorView>() {
+                        auto_view.update_model(model);
+                        let status_text = self
+                            .composer
+                            .status_message()
+                            .map_or_else(String::new, str::to_string);
+                        let _ = auto_view.update_status_text(status_text);
+                        self.status_view_active = false;
+                        self.request_redraw();
+                        return;
+                    }
+                }
+            }
+        }
+
         if self.active_view.is_some() && self.active_view_kind != ActiveViewKind::AutoCoordinator {
             return;
         }
+
+        let mut view = AutoCoordinatorView::new(model, self.app_event_tx.clone());
+        let status_text = self
+            .composer
+            .status_message()
+            .map_or_else(String::new, str::to_string);
+        let _ = view.update_status_text(status_text);
         self.active_view = Some(Box::new(view));
         self.active_view_kind = ActiveViewKind::AutoCoordinator;
         self.status_view_active = false;

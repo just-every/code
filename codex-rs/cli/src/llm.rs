@@ -120,7 +120,7 @@ async fn run_llm_request(
     prompt.text_format = Some(text_format);
 
     // Auth + provider
-    let auth_mgr = AuthManager::shared(
+    let auth_mgr = AuthManager::shared_with_mode_and_originator(
         config.codex_home.clone(),
         AuthMode::ApiKey,
         config.responses_originator_header.clone(),
@@ -129,6 +129,7 @@ async fn run_llm_request(
     let client = ModelClient::new(
         std::sync::Arc::new(config.clone()),
         Some(auth_mgr),
+        None,
         provider,
         config.model_reasoning_effort,
         config.model_reasoning_summary,

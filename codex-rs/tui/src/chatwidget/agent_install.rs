@@ -259,7 +259,7 @@ fn run_guided_loop(
     } else {
         codex_protocol::mcp_protocol::AuthMode::ApiKey
     };
-    let auth_mgr = AuthManager::shared(
+    let auth_mgr = AuthManager::shared_with_mode_and_originator(
         cfg.codex_home.clone(),
         preferred_auth,
         cfg.responses_originator_header.clone(),
@@ -267,6 +267,7 @@ fn run_guided_loop(
     let client = ModelClient::new(
         Arc::new(cfg.clone()),
         Some(auth_mgr),
+        None,
         cfg.model_provider.clone(),
         ReasoningEffort::Low,
         cfg.model_reasoning_summary,

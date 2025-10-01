@@ -1,5 +1,6 @@
 use codex_core::CodexAuth;
 use codex_core::ContentItem;
+use codex_core::debug_logger::DebugLogger;
 use codex_core::ConversationManager;
 use codex_core::LocalShellAction;
 use codex_core::LocalShellExecAction;
@@ -18,7 +19,6 @@ use codex_core::built_in_model_providers;
 use codex_core::protocol::EventMsg;
 use codex_core::protocol::InputItem;
 use codex_core::protocol::Op;
-use codex_protocol::mcp_protocol::ConversationId;
 use codex_protocol::models::ReasoningItemReasoningSummary;
 use codex_protocol::models::WebSearchAction;
 use core_test_support::load_default_config_for_test;
@@ -34,6 +34,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::sync::Arc;
+use std::sync::Mutex;
 use tempfile::TempDir;
 use uuid::Uuid;
 use wiremock::Mock;
@@ -766,15 +767,20 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
     config.model_provider = provider.clone();
     let effort = config.model_reasoning_effort;
     let summary = config.model_reasoning_summary;
+    let verbosity = config.model_text_verbosity;
     let config = Arc::new(config);
+    let debug_logger = Arc::new(Mutex::new(DebugLogger::new(false).unwrap()));
 
     let client = ModelClient::new(
         Arc::clone(&config),
         None,
+        None,
         provider,
         effort,
         summary,
-        ConversationId::new(),
+        verbosity,
+        Uuid::new_v4(),
+        debug_logger,
     );
 
     let mut prompt = Prompt::default();
@@ -1434,15 +1440,20 @@ async fn openrouter_metadata_is_forwarded_in_responses_payload() {
     config.model_provider = provider.clone();
     let effort = config.model_reasoning_effort;
     let summary = config.model_reasoning_summary;
+    let verbosity = config.model_text_verbosity;
     let config = Arc::new(config);
+    let debug_logger = Arc::new(Mutex::new(DebugLogger::new(false).unwrap()));
 
     let client = ModelClient::new(
         Arc::clone(&config),
         None,
+        None,
         provider,
         effort,
         summary,
-        ConversationId::new(),
+        verbosity,
+        Uuid::new_v4(),
+        debug_logger,
     );
 
     let mut prompt = Prompt::default();

@@ -136,7 +136,7 @@ pub(crate) fn keyword() -> Color {
 // Overlay/scrim helper: a dimmed background used behind modal overlays.
 // We derive it from the current theme background so it looks consistent for
 // both light and dark themes.
-fn color_to_rgb(c: Color) -> (u8, u8, u8) {
+pub(crate) fn color_to_rgb(c: Color) -> (u8, u8, u8) {
     match c {
         Color::Rgb(r, g, b) => (r, g, b),
         Color::Black => (0, 0, 0),

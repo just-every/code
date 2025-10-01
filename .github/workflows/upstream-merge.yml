@@ -613,7 +613,9 @@ jobs:
               cargo check -p codex-core --tests --quiet
           </constraints>
           EOP
-          } | env -i PATH="$SAFE_PATH" HOME="$SAFE_HOME" \
+          } > .github/auto/AUTO_GOAL.md
+
+          env -i PATH="$SAFE_PATH" HOME="$SAFE_HOME" \
             RUSTC_WRAPPER="sccache" SCCACHE_GHA_ENABLED="true" SCCACHE_IDLE_TIMEOUT="1800" SCCACHE_CACHE_SIZE="5G" \
             OPENAI_API_KEY="x" \
             OPENAI_BASE_URL="http://127.0.0.1:5055/v1" \
@@ -621,7 +623,11 @@ jobs:
             GH_TOKEN="$GH_TOKEN" \
             npm_config_cache="$SAFE_HOME/.npm" \
             npx -y @just-every/code@latest \
-            exec \
+            auto \
+            --goal-file .github/auto/AUTO_GOAL.md \
+            --max-attempts 3 \
+            --cd "$GITHUB_WORKSPACE" \
+            --skip-git-repo-check \
             -s workspace-write \
             -c sandbox_workspace_write.allow_git_writes=true \
             -c sandbox_workspace_write.network_access=true \
@@ -632,9 +638,8 @@ jobs:
             -c shell_environment_policy.r#set.SCCACHE_IDLE_TIMEOUT="1800" \
             -c shell_environment_policy.r#set.SCCACHE_CACHE_SIZE="5G" \
             -c shell_environment_policy.r#set.KEEP_ENV="1" \
-            --cd "$GITHUB_WORKSPACE" \
-            --skip-git-repo-check \
-            - | tee .github/auto/AGENT_STDOUT.txt
+            --json-report .github/auto/AGENT_REPORT.json \
+            | tee .github/auto/AGENT_STDOUT.txt
 
       - name: Assert agent success (fail on streaming/errors)
         if: steps.check_upstream.outputs.skip != 'true'

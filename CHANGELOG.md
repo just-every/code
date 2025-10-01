@@ -3,10 +3,20 @@
 > [!TIP]
 > We're constantly improving Code! This page documents the core changes. You can also check our [releases page](https://github.com/just-every/code/releases) for additional information.
 
-## [0.2.179] - 2025-09-30
+## [0.2.180] - 2025-10-01
 
+- Auto-drive: add final observer validation before finishing runs so missed work is caught. (94061ee)
+- Auto-drive: stop appending ellipsis to decision summaries so prompts stay clean. (6384601)
 - TUI/History: completed state-driven refactor; all cells render from `HistoryState` via the shared renderer cache with stable IDs and domain events. (local)
 - Docs: captured the history architecture in `docs/tui-chatwidget-refactor.md`, `docs/history_state_schema.md`, and `docs/history_render_cache_bridge.md`. (local)
+
+## [0.2.179] - 2025-09-30
+
+- Auto-drive: persist conversation between turns and retain the raw coordinator transcript so context carries forward. (6d6e3f5, 6edced3)
+- Auto-drive: restore streaming reasoning titles and tidy decision summaries by removing stray ellipses. (104febe, 001a415, 25b6d0c)
+- Auto-drive: surface spinner status when the composer is hidden, show progress in the title, and refresh the footer CTA styling. (935876a, eb54fe6, 86600f8, c9550bd)
+- Auto-drive: expand coordinator guidance with AUTO_AGENTS instructions to keep automation setups aligned. (2029365)
+- TUI/Theme: reuse a shared RGB mapping for ANSI fallbacks to make colors consistent across terminals. (a904665, 258e032)
 
 ## [0.2.178] - 2025-09-30
 

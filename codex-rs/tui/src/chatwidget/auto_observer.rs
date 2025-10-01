@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::{self, json, Value};
 use tracing::{debug, error, warn};
 
-use crate::app_event::{AutoObserverStatus, AutoObserverTelemetry};
+use crate::app_event::{AutoCoordinatorStatus, AutoObserverStatus, AutoObserverTelemetry};
 
 use super::auto_coordinator::{
     extract_first_json_object,
@@ -37,11 +37,18 @@ pub(super) enum AutoObserverCommand {
     Stop,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) enum ObserverReason {
+    Cadence,
+    FinalCheck { finish_status: AutoCoordinatorStatus },
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct ObserverTrigger {
     pub conversation: Vec<ResponseItem>,
     pub goal_text: String,
     pub environment_details: String,
+    pub reason: ObserverReason,
 }
 
 #[derive(Debug, Clone)]
@@ -55,7 +62,7 @@ pub(super) struct ObserverOutcome {
 const OBSERVER_SCHEMA_NAME: &str = "auto_coordinator_observer";
 
 pub(super) fn start_auto_observer(
-    client: ModelClient,
+    client: Arc<ModelClient>,
     cadence: u32,
     coordinator_tx: Sender<AutoCoordinatorCommand>,
 ) -> Result<AutoObserverHandle> {
@@ -74,8 +81,16 @@ pub(super) fn start_auto_observer(
     })
 }
 
+pub(super) fn run_observer_once(
+    runtime: &tokio::runtime::Runtime,
+    client: Arc<ModelClient>,
+    trigger: ObserverTrigger,
+) -> Result<(AutoObserverStatus, Option<String>, Option<String>)> {
+    evaluate_observer(runtime, client, trigger)
+}
+
 fn run_observer_loop(
-    client: ModelClient,
+    client: Arc<ModelClient>,
     rx: Receiver<AutoObserverCommand>,
     coordinator_tx: Sender<AutoCoordinatorCommand>,
 ) -> Result<()> {
@@ -84,7 +99,6 @@ fn run_observer_loop(
         .build()
         .context("creating runtime for auto observer")?;
 
-    let client = Arc::new(client);
     let mut telemetry = AutoObserverTelemetry {
         trigger_count: 0,
         last_status: AutoObserverStatus::Ok,
@@ -206,12 +220,11 @@ fn run_observer_prompt(
         warn!("observer returned failing status without guidance");
     }
 
-    let (replace_message, additional_instructions) =
-        if matches!(status, AutoObserverStatus::Failing) {
-            (trimmed_replace_message, trimmed_additional_instructions)
-        } else {
-            (None, None)
-        };
+    let (replace_message, additional_instructions) = partition_observer_guidance(
+        status,
+        trimmed_replace_message,
+        trimmed_additional_instructions,
+    );
 
     debug!(
         "[Auto observer] status={status:?} replace={} instructions={}",
@@ -222,11 +235,23 @@ fn run_observer_prompt(
     Ok((status, replace_message, additional_instructions))
 }
 
+fn partition_observer_guidance(
+    status: AutoObserverStatus,
+    replace_message: Option<String>,
+    additional_instructions: Option<String>,
+) -> (Option<String>, Option<String>) {
+    if matches!(status, AutoObserverStatus::Failing) {
+        (replace_message, additional_instructions)
+    } else {
+        (None, additional_instructions)
+    }
+}
+
 fn build_observer_prompt(trigger: &ObserverTrigger, model_slug: &str) -> Prompt {
     let mut prompt = Prompt::default();
     prompt.store = true;
 
-    let instructions = build_observer_instructions(&trigger.environment_details);
+    let instructions = build_observer_instructions(&trigger.environment_details, trigger.reason);
     prompt.input.push(make_message("developer", instructions));
     let goal = format!("Primary Goal\n{}", trigger.goal_text);
     prompt.input.push(make_message("developer", goal));
@@ -314,10 +339,21 @@ fn parse_observer_response(raw: &str) -> Result<(ObserverResponse, Value)> {
     Ok((response, value))
 }
 
-fn build_observer_instructions(environment_details: &str) -> String {
-    format!(
-        "You are observing a AI Coordinator trying to drive a CLI towards a Primary Goal (shown below).\nPlease critically observe the conversation between the Coordinator and the CLI. Detect either of these issues;\n- Stuck in a loop\n- Not working towards primary goal\nGenerate a response based on this information;\n`status`: one of 'ok' or 'failing' - most of the time it will be 'ok', but use 'failing' when intervention absolutely is needed. When using 'failing' please provide one or both fields below to correct the problem;\n`replace_message`: A message to replace the last Coordinator message\n`additional_instructions`: Instructions to give to the Coordinator for future runs\n**Warning**\nYou almost always want to use `status`: \"ok\". You are a last resort. Avoid setting `status`: \"failing\" for minor issues as it will disrupt the progress of the task.\nEnvironment:\n{environment_details}"
-    )
+fn build_observer_instructions(environment_details: &str, reason: ObserverReason) -> String {
+    let body = match reason {
+        ObserverReason::Cadence => "You are observing a AI Coordinator trying to drive a CLI towards a Primary Goal (shown below).\nPlease critically observe the conversation between the Coordinator and the CLI. Detect either of these issues;\n- Stuck in a loop\n- Not working towards primary goal\nGenerate a response based on this information;\n`status`: one of 'ok' or 'failing' - most of the time it will be 'ok', but use 'failing' when intervention absolutely is needed. When using 'failing' please provide one or both fields below to correct the problem;\n`replace_message`: A message to replace the last Coordinator message\n`additional_instructions`: Instructions to give to the Coordinator for future runs\n**Warning**\nYou almost always want to use `status`: \"ok\". You are a last resort. Avoid setting `status`: \"failing\" for minor issues as it will disrupt the progress of the task.".to_string(),
+        ObserverReason::FinalCheck { finish_status } => {
+            let finish_phrase = match finish_status {
+                AutoCoordinatorStatus::Success => "believes the goal has been fully completed",
+                AutoCoordinatorStatus::Failed => "reported that it cannot complete the goal",
+                AutoCoordinatorStatus::Continue => "is still mid-run and should not have requested final validation",
+            };
+            format!(
+                "You are performing a final validation run after Auto Drive {finish_phrase}.\nStudy the full conversation and decide if the Primary Goal is truly satisfied.\n- If absolutely everything is done, respond with `status`: 'ok' and leave the other fields null.\n- If any required work remains, respond with `status`: 'failing'. Provide a concise `additional_instructions` developer prompt describing what has already been completed and the specific steps still required. Include enough detail for the coordinator to resume effectively.\n- Use `replace_message` only when the last prompt sent to the CLI must be replaced immediately."
+            )
+        }
+    };
+    format!("{body}\nEnvironment:\n{environment_details}")
 }
 
 fn build_observer_schema() -> Value {
@@ -342,7 +378,7 @@ fn build_observer_schema() -> Value {
     })
 }
 
-fn summarize_intervention(
+pub(super) fn summarize_intervention(
     replace_message: Option<&str>,
     additional_instructions: Option<&str>,
 ) -> Option<String> {
@@ -393,14 +429,14 @@ pub(super) fn build_observer_conversation(
                                 } else {
                                     format!("Coordinator: {text}")
                                 };
-                                new_content.push(ContentItem::InputText { text: prefixed });
+                                new_content.push(ContentItem::OutputText { text: prefixed });
                             }
                             other => new_content.push(other),
                         }
                     }
                     filtered.push(ResponseItem::Message {
                         id: None,
-                        role: "user".to_string(),
+                        role,
                         content: new_content,
                     });
                 } else {
@@ -481,5 +517,67 @@ mod tests {
             response.additional_instructions.as_deref(),
             Some("Confirm environment variables")
         );
+    }
+
+    #[test]
+    fn observer_ok_status_retains_additional_instructions() {
+        let status = AutoObserverStatus::Ok;
+        let (replace_message, additional_instructions) = partition_observer_guidance(
+            status,
+            Some("Should be ignored".to_string()),
+            Some("Keep nudging the task".to_string()),
+        );
+
+        assert!(replace_message.is_none(), "ok status should not replace prompt");
+        assert_eq!(
+            additional_instructions.as_deref(),
+            Some("Keep nudging the task"),
+            "observer notes should be preserved for ok status"
+        );
+    }
+
+    #[test]
+    fn build_observer_conversation_preserves_assistant_roles() {
+        let base = vec![
+            make_message("assistant", "Coordinator: initial guidance".to_string()),
+            make_message("assistant", "Consider running tests".to_string()),
+        ];
+
+        let conversation = build_observer_conversation(base.clone(), Some("Review progress"));
+
+        assert_eq!(conversation.len(), base.len() + 1);
+
+        for (idx, item) in conversation.iter().enumerate().take(base.len()) {
+            match item {
+                ResponseItem::Message { role, content, .. } => {
+                    assert_eq!(role, "assistant", "role should remain assistant at index {idx}");
+                    assert_eq!(content.len(), 1);
+                    match &content[0] {
+                        ContentItem::OutputText { text } => {
+                            assert!(
+                                text.starts_with("Coordinator:"),
+                                "coordinator text should be prefixed"
+                            );
+                        }
+                        other => panic!("unexpected content variant: {:?}", other),
+                    }
+                }
+                other => panic!("unexpected response item: {:?}", other),
+            }
+        }
+
+        match conversation.last().expect("appended prompt") {
+            ResponseItem::Message { role, content, .. } => {
+                assert_eq!(role, "user");
+                assert_eq!(content.len(), 1);
+                match &content[0] {
+                    ContentItem::InputText { text } => {
+                        assert!(text.contains("Coordinator: Review progress"));
+                    }
+                    other => panic!("unexpected content: {:?}", other),
+                }
+            }
+            other => panic!("unexpected item appended: {:?}", other),
+        }
     }
 }

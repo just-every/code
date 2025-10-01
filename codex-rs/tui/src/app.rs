@@ -205,7 +205,7 @@ impl App<'_> {
         startup_footer_notice: Option<String>,
         latest_upgrade_version: Option<String>,
     ) -> Self {
-        let conversation_manager = Arc::new(ConversationManager::new(AuthManager::shared(
+        let conversation_manager = Arc::new(ConversationManager::new(AuthManager::shared_with_mode_and_originator(
             config.codex_home.clone(),
             AuthMode::ApiKey,
             config.responses_originator_header.clone(),
@@ -2455,7 +2455,7 @@ impl App<'_> {
                         new_widget.check_for_initial_animations();
                         *widget = Box::new(new_widget);
                     } else {
-                        let auth_manager = AuthManager::shared(
+                        let auth_manager = AuthManager::shared_with_mode_and_originator(
                             cfg.codex_home.clone(),
                             AuthMode::ApiKey,
                             cfg.responses_originator_header.clone(),

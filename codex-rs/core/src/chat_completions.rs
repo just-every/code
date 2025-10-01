@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use bytes::Bytes;
+use codex_otel::otel_event_manager::OtelEventManager;
 use eventsource_stream::Eventsource;
 use futures::Stream;
 use futures::StreamExt;
@@ -41,6 +42,7 @@ pub(crate) async fn stream_chat_completions(
     provider: &ModelProviderInfo,
     debug_logger: &Arc<Mutex<DebugLogger>>,
     auth_manager: Option<Arc<AuthManager>>,
+    otel_event_manager: Option<OtelEventManager>,
 ) -> Result<ResponseStream> {
     if prompt.output_schema.is_some() {
         return Err(CodexErr::UnsupportedOperation(
@@ -393,6 +395,7 @@ pub(crate) async fn stream_chat_completions(
                     provider.stream_idle_timeout(),
                     debug_logger_clone,
                     request_id_clone,
+                    otel_event_manager.clone(),
                 ));
                 return Ok(ResponseStream { rx_event });
             }
@@ -461,6 +464,7 @@ async fn process_chat_sse<S>(
     idle_timeout: Duration,
     debug_logger: Arc<Mutex<DebugLogger>>,
     request_id: String,
+    otel_event_manager: Option<OtelEventManager>,
 ) where
     S: Stream<Item = Result<Bytes>> + Unpin,
 {
@@ -485,7 +489,15 @@ async fn process_chat_sse<S>(
     let mut current_item_id: Option<String> = None;
 
     loop {
-        let sse = match timeout(idle_timeout, stream.next()).await {
+        let next_event = if let Some(manager) = otel_event_manager.as_ref() {
+            manager
+                .log_sse_event(|| timeout(idle_timeout, stream.next()))
+                .await
+        } else {
+            timeout(idle_timeout, stream.next()).await
+        };
+
+        let sse = match next_event {
             Ok(Some(Ok(ev))) => ev,
             Ok(Some(Err(e))) => {
                 let _ = tx_event
@@ -1039,7 +1051,7 @@ pub(crate) trait AggregateStreamExt: Stream<Item = Result<ResponseEvent>> + Size
     /// `ResponseEvent` sequence for a typical text turn looks like:
     ///
     /// ```ignore
-    ///     OutputItemDone(<full message>)
+    ///     OutputItemDone { item: <full message>, .. }
     ///     Completed
     /// ```
     ///
