@@ -26,7 +26,7 @@ pub fn default_params_for(name: &str, read_only: bool) -> Vec<String> {
         }
         // Gemini CLI: pin to a stable model by default; write mode adds -y
         "gemini" => {
-            let mut v = vec!["-m".to_string(), "gemini-2.5-pro".to_string()];
+            let mut v = vec!["--model".to_string(), "gemini-2.5-pro".to_string()];
             if !read_only { v.push("-y".into()); }
             v
         }
@@ -53,4 +53,3 @@ pub fn default_params_for(name: &str, read_only: bool) -> Vec<String> {
         _ => Vec::new(),
     }
 }
-
