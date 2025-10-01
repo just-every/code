@@ -9,7 +9,8 @@ pub(super) fn web_search_begin(chat: &mut ChatWidget<'_>, call_id: String, query
     chat.finalize_active_stream();
     chat.flush_interrupt_queue();
 
-    let cell = history_cell::new_running_web_search(query.clone());
+    let mut cell = history_cell::new_running_web_search(query.clone());
+    cell.state_mut().call_id = Some(call_id.clone());
     let idx = chat.history_insert_with_key_global(Box::new(cell), key);
     tracing::info!("[order] WebSearchBegin call_id={} idx={}", call_id, idx);
     chat.tools_state
@@ -20,7 +21,8 @@ pub(super) fn web_search_begin(chat: &mut ChatWidget<'_>, call_id: String, query
 }
 
 pub(super) fn web_search_complete(chat: &mut ChatWidget<'_>, call_id: String, query: Option<String>) {
-    if let Some((idx, maybe_query)) = chat.tools_state.running_web_search.remove(&super::ToolCallId(call_id)) {
+    let call_key = super::ToolCallId(call_id.clone());
+    if let Some((idx, maybe_query)) = chat.tools_state.running_web_search.remove(&call_key) {
         let mut target_idx = None;
         if idx < chat.history_cells.len() {
             let is_ws = chat.history_cells[idx]
@@ -48,7 +50,8 @@ pub(super) fn web_search_complete(chat: &mut ChatWidget<'_>, call_id: String, qu
                 .downcast_ref::<history_cell::RunningToolCallCell>()
             {
                 let final_query = query.or(maybe_query);
-                let completed = rt.finalize_web_search(true, final_query);
+                let mut completed = rt.finalize_web_search(true, final_query);
+                completed.state_mut().call_id = Some(call_id.clone());
                 chat.history_replace_at(i, Box::new(completed));
                 chat.history_maybe_merge_tool_with_previous(i);
                 tracing::info!("[order] WebSearchEnd replace at idx={}", i);
@@ -62,18 +65,32 @@ pub(super) fn web_search_complete(chat: &mut ChatWidget<'_>, call_id: String, qu
 pub(super) fn mcp_begin(chat: &mut ChatWidget<'_>, ev: McpToolCallBeginEvent, key: OrderKey) {
     for cell in &chat.history_cells { cell.trigger_fade(); }
     let McpToolCallBeginEvent { call_id, invocation } = ev;
-    let cell = history_cell::new_running_mcp_tool_call(invocation);
+    let mut cell = history_cell::new_running_mcp_tool_call(invocation);
+    cell.state_mut().call_id = Some(call_id.clone());
     let idx = chat.history_insert_with_key_global(Box::new(cell), key);
+    let history_id = chat
+        .history_state
+        .history_id_for_tool_call(&call_id)
+        .or_else(|| chat.history_cell_ids.get(idx).and_then(|slot| *slot));
     chat.tools_state
         .running_custom_tools
-        .insert(super::ToolCallId(call_id), super::RunningToolEntry::new(key, idx));
+        .insert(
+            super::ToolCallId(call_id),
+            super::RunningToolEntry::new(key, idx).with_history_id(history_id),
+        );
 }
 
 pub(super) fn mcp_end(chat: &mut ChatWidget<'_>, ev: McpToolCallEndEvent, key: OrderKey) {
     let McpToolCallEndEvent { call_id, duration, invocation, result } = ev;
     let success = !result.as_ref().map(|r| r.is_error.unwrap_or(false)).unwrap_or(false);
-    let completed = history_cell::new_completed_mcp_tool_call(80, invocation, duration, success, result);
-    if let Some(entry) = chat.tools_state.running_custom_tools.remove(&super::ToolCallId(call_id)) {
+    let mut completed = history_cell::new_completed_mcp_tool_call(80, invocation, duration, success, result);
+    if let Some(tool_cell) = completed
+        .as_any_mut()
+        .downcast_mut::<history_cell::ToolCallCell>()
+    {
+        tool_cell.state_mut().call_id = Some(call_id.clone());
+    }
+    if let Some(entry) = chat.tools_state.running_custom_tools.remove(&super::ToolCallId(call_id.clone())) {
         if let Some(idx) = chat.resolve_running_tool_index(&entry) {
             if idx < chat.history_cells.len() {
                 chat.history_replace_at(idx, completed);

@@ -31,6 +31,15 @@ pub struct PerfStats {
     // Aggregation by cell kind/label
     pub per_kind_total: std::collections::HashMap<String, ItemStat>,
     pub per_kind_render: std::collections::HashMap<String, ItemStat>,
+    // Scroll instrumentation
+    pub scroll_events: u64,
+    pub scroll_lines_requested: u64,
+    pub scroll_render_frames: u64,
+    pub scroll_lines_rendered: u64,
+    pub ns_scroll_render: u128,
+    // Undo/resume instrumentation
+    pub undo_restore_events: u64,
+    pub ns_undo_restore: u128,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -71,6 +80,33 @@ impl PerfStats {
             ms_overlay_body,
             self.cells_overlay_body_bg,
         ));
+
+        if self.scroll_events > 0 || self.scroll_render_frames > 0 {
+            let ms_scroll = (self.ns_scroll_render as f64) / 1_000_000.0;
+            out.push_str(&format!(
+                "\n  scroll: events={} lines_requested={} render_frames={} lines_rendered={} render_time={:.2}ms",
+                self.scroll_events,
+                self.scroll_lines_requested,
+                self.scroll_render_frames,
+                self.scroll_lines_rendered,
+                ms_scroll,
+            ));
+        }
+
+        if self.undo_restore_events > 0 {
+            let ms_total = (self.ns_undo_restore as f64) / 1_000_000.0;
+            let avg = if self.undo_restore_events > 0 {
+                ms_total / self.undo_restore_events as f64
+            } else {
+                0.0
+            };
+            out.push_str(&format!(
+                "\n  undo_restore: events={} total={:.2}ms avg={:.2}ms",
+                self.undo_restore_events,
+                ms_total,
+                avg,
+            ));
+        }
 
         // Top hotspots by (index,width)
         let mut top_total: Vec<(&(usize, u16), &ItemStat)> = self.hot_total.iter().collect();
@@ -136,6 +172,7 @@ impl PerfStats {
         out
     }
 
+    #[allow(dead_code)]
     pub fn record_total(&mut self, key: (usize, u16), kind: &str, ns: u128) {
         let e = self.hot_total.entry(key).or_insert_with(ItemStat::default);
         e.calls = e.calls.saturating_add(1);
@@ -158,5 +195,54 @@ impl PerfStats {
             .or_insert_with(ItemStat::default);
         ek.calls = ek.calls.saturating_add(1);
         ek.ns = ek.ns.saturating_add(ns);
+    }
+
+    pub fn record_scroll_trigger(&mut self, lines: u64) {
+        self.scroll_events = self.scroll_events.saturating_add(1);
+        self.scroll_lines_requested = self.scroll_lines_requested.saturating_add(lines);
+    }
+
+    pub fn record_scroll_render(&mut self, lines: u64, ns: u128) {
+        self.scroll_render_frames = self.scroll_render_frames.saturating_add(1);
+        self.scroll_lines_rendered = self.scroll_lines_rendered.saturating_add(lines);
+        self.ns_scroll_render = self.ns_scroll_render.saturating_add(ns);
+    }
+
+    pub fn record_undo_restore(&mut self, ns: u128) {
+        self.undo_restore_events = self.undo_restore_events.saturating_add(1);
+        self.ns_undo_restore = self.ns_undo_restore.saturating_add(ns);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scroll_metrics_accumulate() {
+        let mut stats = PerfStats::default();
+        stats.record_scroll_trigger(5);
+        stats.record_scroll_trigger(3);
+        stats.record_scroll_render(4, 2_000_000);
+        assert_eq!(stats.scroll_events, 2);
+        assert_eq!(stats.scroll_lines_requested, 8);
+        assert_eq!(stats.scroll_render_frames, 1);
+        assert_eq!(stats.scroll_lines_rendered, 4);
+        assert_eq!(stats.ns_scroll_render, 2_000_000);
+
+        let summary = stats.summary();
+        assert!(summary.contains("scroll:"));
+    }
+
+    #[test]
+    fn undo_restore_metrics_accumulate() {
+        let mut stats = PerfStats::default();
+        stats.record_undo_restore(5_000_000);
+        stats.record_undo_restore(3_000_000);
+        assert_eq!(stats.undo_restore_events, 2);
+        assert_eq!(stats.ns_undo_restore, 8_000_000);
+
+        let summary = stats.summary();
+        assert!(summary.contains("undo_restore"));
     }
 }

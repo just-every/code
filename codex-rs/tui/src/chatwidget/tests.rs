@@ -9,7 +9,14 @@ use crate::app_event::{
     BackgroundPlacement,
 };
 use crate::app_event_sender::AppEventSender;
-use crate::history::state::{ExecStatus, ExploreEntryStatus, HistoryId, HistoryRecord, HistoryState};
+use crate::history::state::{
+    ExecStatus,
+    ExploreEntryStatus,
+    HistoryDomainRecord,
+    HistoryId,
+    HistoryRecord,
+    HistoryState,
+};
 use crate::slash_command::SlashCommand;
 use super::auto_coordinator::AutoCoordinatorHandle;
 use super::auto_observer::build_observer_conversation;
@@ -175,6 +182,48 @@ fn assistant_history_state_tracks_stream_and_final() {
 
     assert!(has_final, "expected finalized assistant message state");
     assert!(!has_stream, "stream state should be removed after finalization");
+}
+
+#[test]
+fn history_snapshot_restore_rehydrates_state() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+
+    chat.history_push_plain_state(history_cell::new_user_prompt("First turn".to_string()));
+    chat.push_background_tail("note: background");
+
+    let snapshot = chat.history_snapshot_for_persistence();
+    let original_len = snapshot.records.len();
+    assert!(original_len >= 2, "expected at least two records in snapshot");
+
+    chat.push_background_tail("extra entry");
+    assert!(
+        chat.history_state().records.len() > original_len,
+        "setup should have more records before restore"
+    );
+
+    chat.restore_history_snapshot(&snapshot);
+
+    assert_eq!(
+        chat.history_state().records.len(),
+        original_len,
+        "history_state should match restored snapshot length"
+    );
+    assert_eq!(
+        chat.history_cell_ids.len(),
+        original_len,
+        "history_cell_ids should align with restored records"
+    );
+    assert_eq!(
+        chat.cell_order_seq.len(),
+        original_len,
+        "order keys should be restored for each record"
+    );
+
+    let restored_cells = cell_texts(&chat);
+    assert!(
+        restored_cells.first().map(|s| s.contains("user")).unwrap_or(false),
+        "expected first restored cell to include user header"
+    );
 }
 
 fn cell_texts(chat: &ChatWidget<'_>) -> Vec<String> {
@@ -1341,7 +1390,7 @@ fn slash_command_prefix_processes_followup_message() {
 fn undo_options_view_shows_toggles() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
 
-    chat.history_push(history_cell::new_user_prompt("latest change".to_string()));
+    chat.history_push_plain_state(history_cell::new_user_prompt("latest change".to_string()));
 
     let commit = codex_git_tooling::GhostCommit::new("abcdef1234567890".to_string(), None);
     chat.ghost_snapshots.push(GhostSnapshot::new(
@@ -1528,6 +1577,96 @@ fn exec_output_delta_updates_history_state() {
     assert_eq!(exec_record.stdout_chunks[0].offset, 0);
     assert_eq!(exec_record.stdout_chunks[0].content, "hello");
     assert!(exec_record.stderr_chunks.is_empty());
+}
+
+#[test]
+fn exec_output_delta_tracks_history_id_after_reorder() {
+    let (mut chat, rx, _op_rx) = make_chatwidget_manual();
+
+    chat.handle_codex_event(Event {
+        id: "call-reorder".into(),
+        msg: EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
+            call_id: "call-reorder".into(),
+            command: vec!["bash".into(), "-lc".into(), "sleep 1".into()],
+            cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            parsed_cmd: vec![ParsedCommand::Unknown {
+                cmd: "sleep 1".into(),
+            }],
+        }),
+        order: Some(order_meta(10)),
+    });
+    let _ = pump_app_events(&mut chat, &rx);
+    let _ = drain_insert_history(&rx);
+
+    let exec_id = chat
+        .history_state()
+        .records
+        .iter()
+        .find_map(|record| match record {
+            HistoryRecord::Exec(rec) if rec.call_id.as_deref() == Some("call-reorder") => {
+                Some(rec.id)
+            }
+            _ => None,
+        })
+        .expect("exec record present");
+
+    let early_meta = OrderMeta {
+        request_ordinal: 0,
+        output_index: Some(0),
+        sequence_number: Some(0),
+    };
+    let order_key = ChatWidget::order_key_from_order_meta(&early_meta);
+    let state = history_cell::plain_message_state_from_lines(
+        vec![ratatui::text::Line::from("reordered")],
+        history_cell::HistoryCellType::Plain,
+    );
+    let plain = history_cell::PlainHistoryCell::from_state(state.clone());
+    chat.history_insert_with_key_global_tagged(
+        Box::new(plain),
+        order_key,
+        "test",
+        Some(HistoryDomainRecord::Plain(state)),
+    );
+
+    let exec_cell_idx = chat
+        .history_cells
+        .iter()
+        .position(|cell| {
+            cell.as_any()
+                .downcast_ref::<history_cell::ExecCell>()
+                .is_some()
+        })
+        .expect("exec cell located after reordering");
+    assert!(exec_cell_idx > 0, "exec cell should shift after inserting earlier cell");
+
+    chat.handle_codex_event(Event {
+        id: "call-reorder".into(),
+        msg: EventMsg::ExecCommandOutputDelta(ExecCommandOutputDeltaEvent {
+            call_id: "call-reorder".into(),
+            stream: ExecOutputStream::Stdout,
+            chunk: b"output".to_vec(),
+        }),
+        order: Some(order_meta(11)),
+    });
+
+    let exec_record = chat
+        .history_state()
+        .records
+        .iter()
+        .find_map(|record| match record {
+            HistoryRecord::Exec(rec) if rec.id == exec_id => Some(rec.clone()),
+            _ => None,
+        })
+        .expect("exec record still present");
+
+    assert_eq!(exec_record.stdout_chunks.len(), 1);
+    assert_eq!(exec_record.stdout_chunks[0].content, "output");
+    assert_eq!(
+        chat
+            .history_state()
+            .history_id_for_exec_call("call-reorder"),
+        Some(exec_id)
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1968,6 +2107,82 @@ fn apply_patch_events_emit_history_cells() {
         blob.contains("Applied patch"),
         "missing applied patch header: {blob:?}"
     );
+}
+
+#[test]
+fn apply_patch_failure_records_metadata() {
+    let (mut chat, rx, _op_rx) = make_chatwidget_manual();
+
+    let mut changes = HashMap::new();
+    changes.insert(
+        PathBuf::from("foo.txt"),
+        FileChange::Add {
+            content: "hello\n".to_string(),
+        },
+    );
+    chat.handle_codex_event(Event {
+        id: "s1".into(),
+        msg: EventMsg::ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent {
+            call_id: "c1".into(),
+            changes,
+            reason: None,
+            grant_root: None,
+        }),
+    });
+    flush_stream_events(&mut chat, &rx);
+
+    let mut changes2 = HashMap::new();
+    changes2.insert(
+        PathBuf::from("foo.txt"),
+        FileChange::Add {
+            content: "hello\n".to_string(),
+        },
+    );
+    chat.handle_codex_event(Event {
+        id: "s1".into(),
+        msg: EventMsg::PatchApplyBegin(PatchApplyBeginEvent {
+            call_id: "c1".into(),
+            auto_approved: false,
+            changes: changes2,
+        }),
+    });
+    flush_stream_events(&mut chat, &rx);
+
+    chat.handle_codex_event(Event {
+        id: "s1".into(),
+        msg: EventMsg::PatchApplyEnd(PatchApplyEndEvent {
+            call_id: "c1".into(),
+            stdout: "applied 0 hunks".into(),
+            stderr: "error: rejected hunk".into(),
+            success: false,
+        }),
+    });
+    flush_stream_events(&mut chat, &rx);
+
+    let idx = chat
+        .history_cells
+        .iter()
+        .rposition(|cell| matches!(cell.kind(), HistoryCellType::Patch { .. }))
+        .expect("patch cell present");
+    let patch_cell = chat.history_cells[idx]
+        .as_any()
+        .downcast_ref::<history_cell::PatchSummaryCell>()
+        .expect("patch summary cell");
+    assert!(matches!(
+        patch_cell.record().patch_type,
+        HistoryPatchEventType::ApplyFailure
+    ));
+    let failure = patch_cell
+        .record()
+        .failure
+        .as_ref()
+        .expect("failure metadata present");
+    assert!(failure.message.contains("error"));
+    assert!(failure
+        .stderr_excerpt
+        .as_ref()
+        .expect("stderr excerpt")
+        .contains("rejected"));
 }
 
 #[test]
@@ -2416,7 +2631,7 @@ fn message_text(item: &ResponseItem) -> Option<String> {
 fn export_auto_drive_items_includes_cli_outputs() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
 
-    chat.history_push(history_cell::new_user_prompt("Run integration tests".to_string()));
+    chat.history_push_plain_state(history_cell::new_user_prompt("Run integration tests".to_string()));
 
     chat.insert_final_answer_with_id(None, Vec::new(), "{\"status\":\"ok\"}".to_string());
     let _ = drain_insert_history(&rx);
@@ -2497,7 +2712,7 @@ fn export_auto_drive_items_includes_cli_outputs() {
 fn observer_conversation_filters_reasoning_and_prefixes() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
 
-    chat.history_push(history_cell::new_user_prompt("Summarize recent commits".to_string()));
+    chat.history_push_plain_state(history_cell::new_user_prompt("Summarize recent commits".to_string()));
     chat.insert_final_answer_with_id(None, Vec::new(), "CLI summary".to_string());
     let _ = drain_insert_history(&rx);
 

@@ -5,6 +5,7 @@ use crate::exec_command::strip_bash_lc_and_escape;
 use crate::file_search::FileSearchManager;
 use crate::get_git_diff::get_git_diff;
 use crate::get_login_status;
+use crate::history::state::HistorySnapshot;
 use crate::history_cell;
 use crate::onboarding::onboarding_screen::KeyboardHandler;
 use crate::onboarding::onboarding_screen::OnboardingScreen;
@@ -145,6 +146,8 @@ pub(crate) struct App<'a> {
 
     /// Pending ghost snapshot state to apply after a conversation fork completes.
     pending_jump_back_ghost_state: Option<GhostState>,
+    /// Pending history snapshot to seed the next widget after a jump-back fork.
+    pending_jump_back_history_snapshot: Option<HistorySnapshot>,
 
     /// Track last known terminal size. If it changes (true resize or a
     /// tab switch that altered the viewport), perform a full clear on the next
@@ -396,6 +399,7 @@ impl App<'_> {
             terminal_info,
             clear_on_first_frame: true,
             pending_jump_back_ghost_state: None,
+            pending_jump_back_history_snapshot: None,
             last_frame_size: None,
             last_esc_time: None,
             timing_enabled: enable_perf,
@@ -1375,7 +1379,7 @@ impl App<'_> {
                                 &command,
                                 match_kind.clone(),
                             ) {
-                                widget.history_push(history_cell::new_error_event(format!(
+                                widget.history_push_plain_state(history_cell::new_error_event(format!(
                                     "Failed to persist always-allow command: {err:#}",
                                 )));
                             } else {
@@ -1398,7 +1402,7 @@ impl App<'_> {
                     let restricted = !matches!(self.config.sandbox_policy, SandboxPolicy::DangerFullAccess);
                     if let AppState::Chat { widget } = &mut self.app_state {
                         if restricted && requires_immediate_command {
-                            widget.history_push(history_cell::new_error_event(
+                            widget.history_push_plain_state(history_cell::new_error_event(
                                 "Terminal requires Full Access to auto-run install commands.".to_string(),
                             ));
                             widget.show_agents_overview_ui();
@@ -2364,7 +2368,11 @@ impl App<'_> {
                         widget.handle_chrome_launch_option(option, port);
                     }
                 }
-                AppEvent::JumpBack { nth, prefill } => {
+                AppEvent::JumpBack {
+                    nth,
+                    prefill,
+                    history_snapshot,
+                } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         let ghost_state = widget.snapshot_ghost_state();
                         // Build response items from current UI history
@@ -2387,6 +2395,7 @@ impl App<'_> {
                         };
 
                         self.pending_jump_back_ghost_state = Some(ghost_state);
+                        self.pending_jump_back_history_snapshot = history_snapshot;
 
                         // Perform the fork off the UI thread to avoid nested runtimes
                         let server = self._server.clone();
@@ -2417,6 +2426,8 @@ impl App<'_> {
                     let conv = new_conv.0.conversation.clone();
 
                     let mut ghost_state = self.pending_jump_back_ghost_state.take();
+                    let history_snapshot = self.pending_jump_back_history_snapshot.take();
+                    let emit_prefix = history_snapshot.is_none();
 
                     if let AppState::Chat { widget } = &mut self.app_state {
                         let auth_manager = widget.auth_manager();
@@ -2436,6 +2447,9 @@ impl App<'_> {
                             new_widget.adopt_ghost_state(state);
                         } else {
                             tracing::warn!("jump-back fork missing ghost snapshot state; redo may be unavailable");
+                        }
+                        if let Some(snapshot) = history_snapshot.as_ref() {
+                            new_widget.restore_history_snapshot(snapshot);
                         }
                         new_widget.enable_perf(self.timing_enabled);
                         new_widget.check_for_initial_animations();
@@ -2461,6 +2475,9 @@ impl App<'_> {
                         if let Some(state) = ghost_state.take() {
                             new_widget.adopt_ghost_state(state);
                         }
+                        if let Some(snapshot) = history_snapshot.as_ref() {
+                            new_widget.restore_history_snapshot(snapshot);
+                        }
                         new_widget.enable_perf(self.timing_enabled);
                         new_widget.check_for_initial_animations();
                         self.app_state = AppState::Chat { widget: Box::new(new_widget) };
@@ -2473,18 +2490,20 @@ impl App<'_> {
                     self.clear_on_first_frame = true;
 
                     // Replay prefix to the UI
-                    let ev = codex_core::protocol::Event {
-                        id: "fork".to_string(),
-                        event_seq: 0,
-                        msg: codex_core::protocol::EventMsg::ReplayHistory(
-                            codex_core::protocol::ReplayHistoryEvent {
-                                items: prefix_items,
-                                events: Vec::new(),
-                            }
-                        ),
-                        order: None,
-                    };
-                    self.app_event_tx.send(AppEvent::CodexEvent(ev));
+                    if emit_prefix {
+                        let ev = codex_core::protocol::Event {
+                            id: "fork".to_string(),
+                            event_seq: 0,
+                            msg: codex_core::protocol::EventMsg::ReplayHistory(
+                                codex_core::protocol::ReplayHistoryEvent {
+                                    items: prefix_items,
+                                    events: Vec::new(),
+                                }
+                            ),
+                            order: None,
+                        };
+                        self.app_event_tx.send(AppEvent::CodexEvent(ev));
+                    }
 
                     // Prefill composer with the edited text
                     if let AppState::Chat { widget } = &mut self.app_state {

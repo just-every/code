@@ -178,6 +178,7 @@ impl RunningToolCallCell {
         };
         let state = ToolCallState {
             id: HistoryId::ZERO,
+            call_id: None,
             status,
             title: if success {
                 "Web Search".to_string()

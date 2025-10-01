@@ -1,6 +1,5 @@
 //! Collapsible reasoning cells backed by structured reasoning sections.
 
-use super::semantic::SemanticLine;
 use super::text;
 use super::*;
 use crate::history::state::{
@@ -32,16 +31,17 @@ pub(crate) struct CollapsibleReasoningState {
 #[derive(Clone, Debug, PartialEq)]
 struct ReasoningLineEntry {
     raw: Line<'static>,
-    semantic: SemanticLine,
+    spans: Vec<InlineSpan>,
 }
 
 impl CollapsibleReasoningState {
     pub(crate) fn new(lines: Vec<Line<'static>>, id: Option<String>) -> Self {
+        let theme = crate::theme::current_theme();
         let entries = lines
             .into_iter()
-            .map(|line| ReasoningLineEntry {
-                semantic: SemanticLine::from_line(line.clone()),
-                raw: line,
+            .map(|line| {
+                let spans = text::inline_spans_from_ratatui(&line, &theme);
+                ReasoningLineEntry { raw: line, spans }
             })
             .collect::<Vec<_>>();
         let sections = sections_from_entries(&entries);
@@ -81,9 +81,9 @@ impl CollapsibleReasoningCell {
         let rendered_lines = sections_to_ratatui_lines(&sections, &theme);
         let entries = rendered_lines
             .into_iter()
-            .map(|line| ReasoningLineEntry {
-                semantic: SemanticLine::from_line(line.clone()),
-                raw: line,
+            .map(|line| {
+                let spans = text::inline_spans_from_ratatui(&line, &theme);
+                ReasoningLineEntry { raw: line, spans }
             })
             .collect::<Vec<_>>();
 
@@ -137,11 +137,12 @@ impl CollapsibleReasoningCell {
             return;
         }
         let mut state = self.state.borrow_mut();
+        let theme = crate::theme::current_theme();
         let mut incoming = new_lines
             .into_iter()
-            .map(|line| ReasoningLineEntry {
-                semantic: SemanticLine::from_line(line.clone()),
-                raw: line,
+            .map(|line| {
+                let spans = text::inline_spans_from_ratatui(&line, &theme);
+                ReasoningLineEntry { raw: line, spans }
             })
             .collect::<Vec<_>>();
         dedup_append_entries(&mut state.lines, &mut incoming);
@@ -301,7 +302,6 @@ fn dedup_append_entries(
 
     let to_plain = |line: &ReasoningLineEntry| -> String {
         line
-            .semantic
             .spans
             .iter()
             .map(|span| span.text.as_str())
@@ -494,7 +494,6 @@ fn trim_section(section: &mut ReasoningSection) {
 
 fn plain_text(entry: &ReasoningLineEntry) -> String {
     entry
-        .semantic
         .spans
         .iter()
         .map(|span| span.text.as_str())
@@ -502,13 +501,7 @@ fn plain_text(entry: &ReasoningLineEntry) -> String {
 }
 
 fn spans_from_entry(entry: &ReasoningLineEntry) -> Vec<InlineSpan> {
-    entry
-        .semantic
-        .spans
-        .iter()
-        .cloned()
-        .map(text::inline_span_from_semantic)
-        .collect()
+    entry.spans.clone()
 }
 
 fn spans_are_blank(spans: &[InlineSpan]) -> bool {
@@ -522,7 +515,7 @@ fn is_marker_text(text: &str) -> bool {
 
 fn is_heading_entry(entry: &ReasoningLineEntry) -> bool {
     let mut has_content = false;
-    for span in &entry.semantic.spans {
+    for span in &entry.spans {
         if span.text.trim().is_empty() {
             continue;
         }

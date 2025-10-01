@@ -25,8 +25,9 @@ This fork extends upstream `openai/codex` in several areas. These bullets are a 
 
 - TUI Enhancements
   - Strict streaming ordering invariants (request_ordinal, output_index, sequence_number) and delta rendering.
-  - Markdown renderer improvements and code‑block snapshots; theme selection view; bottom pane chrome selection.
-  - History cells with richer tool‑specific titles and previews (browser_*, web_fetch, agents).
+  - Markdown renderer improvements and code-block snapshots; theme selection view; bottom pane chrome selection.
+  - History cells with richer tool-specific titles and previews (browser_*, web_fetch, agents).
+  - Fully state-driven history refactor: `HistoryState` + `HistoryDomainEvent`, shared renderer cache, and serialized snapshots. See `docs/tui-chatwidget-refactor.md`, `docs/history_state_schema.md`, and `docs/history_render_cache_bridge.md`.
 
 - Version and User‑Agent Handling
   - Consistent `codex_version::version()` usage; `get_codex_user_agent(_default)` helper; MCP server/client UA tests.
@@ -36,4 +37,3 @@ This fork extends upstream `openai/codex` in several areas. These bullets are a 
   - Upstream merge guards and policy to prefer our core files; static verify checks (handlers↔tools parity, UA/version) to prevent regressions.
 
 Note: These are representative areas. You must still scan for newer fork‑only behavior (e.g., additional TUI UX, new tools, rollout metrics, protocol fields) and preserve them when resolving conflicts.
-

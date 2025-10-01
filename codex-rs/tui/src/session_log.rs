@@ -12,6 +12,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::app_event::AppEvent;
+use crate::history::state::HistorySnapshot;
 
 static LOGGER: LazyLock<SessionLogger> = LazyLock::new(SessionLogger::new);
 
@@ -228,4 +229,56 @@ where
         "payload": obj,
     });
     LOGGER.write_json_line(value);
+}
+
+fn make_history_snapshot_value(
+    commit_id: &str,
+    summary: Option<&str>,
+    history: &HistorySnapshot,
+) -> serde_json::Value {
+    let record_count = history.records.len();
+    let order_len = history.order.len();
+    let order_debug_len = history.order_debug.len();
+    json!({
+        "ts": now_ts(),
+        "dir": "meta",
+        "kind": "history_snapshot",
+        "commit": commit_id,
+        "summary": summary,
+        "record_count": record_count,
+        "order_len": order_len,
+        "order_debug_len": order_debug_len,
+        "history": history,
+    })
+}
+
+pub(crate) fn log_history_snapshot(
+    commit_id: &str,
+    summary: Option<&str>,
+    history: &HistorySnapshot,
+) {
+    if !LOGGER.is_enabled() {
+        return;
+    }
+    LOGGER.write_json_line(make_history_snapshot_value(commit_id, summary, history));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::history::state::HistoryState;
+
+    #[test]
+    fn history_snapshot_value_includes_snapshot_payload() {
+        let state = HistoryState::new();
+        let snapshot = state.snapshot();
+        let value = make_history_snapshot_value("abc123", Some("summary"), &snapshot);
+        assert_eq!(value["kind"], "history_snapshot");
+        assert_eq!(value["commit"], "abc123");
+        assert_eq!(value["summary"], "summary");
+        assert_eq!(value["record_count"], 0);
+        assert_eq!(value["order_len"], 0);
+        assert_eq!(value["order_debug_len"], 0);
+        assert!(value["history"].is_object());
+    }
 }

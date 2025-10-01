@@ -3,6 +3,11 @@
 > [!TIP]
 > We're constantly improving Code! This page documents the core changes. You can also check our [releases page](https://github.com/just-every/code/releases) for additional information.
 
+## [0.2.179] - 2025-09-30
+
+- TUI/History: completed state-driven refactor; all cells render from `HistoryState` via the shared renderer cache with stable IDs and domain events. (local)
+- Docs: captured the history architecture in `docs/tui-chatwidget-refactor.md`, `docs/history_state_schema.md`, and `docs/history_render_cache_bridge.md`. (local)
+
 ## [0.2.178] - 2025-09-30
 
 - Auto-drive: restructure coordinator transcript to clarify CLI roles and context. (4733856)

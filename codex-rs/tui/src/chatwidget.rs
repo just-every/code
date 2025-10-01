@@ -83,7 +83,9 @@ use self::auto_drive_history::AutoDriveHistory;
 use self::auto_coordinator::{start_auto_coordinator, AutoCoordinatorCommand, AutoCoordinatorHandle};
 use self::limits_overlay::{LimitsOverlay, LimitsOverlayContent, LimitsTab};
 use self::rate_limit_refresh::start_rate_limit_refresh;
-use self::history_render::{CachedLayout, HistoryRenderState, LayoutRef};
+use self::history_render::{
+    CachedLayout, HistoryRenderState, RenderRequest, RenderRequestKind, RenderSettings,
+};
 use codex_core::parse_command::ParsedCommand;
 use codex_core::protocol::AgentMessageDeltaEvent;
 use codex_core::protocol::ApprovedCommandMatchKind;
@@ -144,7 +146,7 @@ use ratatui::text::Line;
 use ratatui::widgets::Widget;
 use ratatui::widgets::WidgetRef;
 use ratatui_image::picker::Picker;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::mpsc;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -238,24 +240,35 @@ use crate::history_cell::PlanUpdateCell;
 use crate::history_cell::DiffCell;
 use crate::history::state::PatchEventType as HistoryPatchEventType;
 use crate::history::state::{
-    HistoryDomainEvent,
-    HistoryDomainRecord,
-    ExecWaitNote,
     AssistantMessageState,
     AssistantStreamDelta,
     AssistantStreamState,
-    DiffRecord,
     DiffLineKind,
-    HistoryEvent,
+    DiffRecord,
+    ExecWaitNote,
+    HistoryDomainEvent,
+    HistoryDomainRecord,
     HistoryId,
-    HistoryMutation,
     HistoryRecord,
+    HistoryMutation,
+    HistorySnapshot,
     HistoryState,
+    InlineSpan,
+    MessageLine,
+    MessageLineKind,
+    PlainMessageKind,
+    PlainMessageRole,
+    PlainMessageState,
     MessageMetadata,
+    OrderKeySnapshot,
+    PatchFailureMetadata,
+    PatchRecord,
     RateLimitLegendEntry,
     RateLimitsRecord,
     TextTone,
+    TextEmphasis,
 };
+use crate::sanitize::{sanitize_for_tui, Mode as SanitizeMode, Options as SanitizeOptions};
 use crate::slash_command::{ProcessedCommand, SlashCommand};
 use crate::live_wrap::RowBuilder;
 use crate::streaming::StreamKind;
@@ -283,6 +296,7 @@ use codex_core::config_types::{validation_tool_category, ValidationCategory};
 use codex_core::protocol::RateLimitSnapshotEvent;
 use codex_core::protocol::ValidationGroup;
 use crate::rate_limits_view::{build_limits_view, RateLimitResetInfo, DEFAULT_GRID_CONFIG};
+use crate::session_log;
 use codex_core::review_format::format_review_findings_block;
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, TimeZone, Timelike, Utc};
 use crossterm::event::KeyCode;
@@ -339,6 +353,7 @@ struct RunningCommand {
     parsed: Vec<ParsedCommand>,
     // Index of the in-history Exec cell for this call, if inserted
     history_index: Option<usize>,
+    history_id: Option<HistoryId>,
     // Aggregated exploration entry (history index, entry index) when grouped
     explore_entry: Option<(usize, usize)>,
     stdout: String,
@@ -514,6 +529,7 @@ pub(crate) struct ChatWidget<'a> {
     history_cells: Vec<Box<dyn HistoryCell>>, // Store all history in memory
     history_cell_ids: Vec<Option<HistoryId>>,
     history_render: HistoryRenderState,
+    render_theme_epoch: u64,
     history_state: HistoryState,
     config: Config,
     latest_upgrade_version: Option<String>,
@@ -711,10 +727,16 @@ struct GhostSnapshot {
     captured_at: DateTime<Local>,
     summary: Option<String>,
     conversation: ConversationSnapshot,
+    history: HistorySnapshot,
 }
 
 impl GhostSnapshot {
-    fn new(commit: GhostCommit, summary: Option<String>, conversation: ConversationSnapshot) -> Self {
+    fn new(
+        commit: GhostCommit,
+        summary: Option<String>,
+        conversation: ConversationSnapshot,
+        history: HistorySnapshot,
+    ) -> Self {
         let summary = summary.and_then(|text| {
             let trimmed = text.trim();
             if trimmed.is_empty() {
@@ -728,6 +750,7 @@ impl GhostSnapshot {
             captured_at: Local::now(),
             summary,
             conversation,
+            history,
         }
     }
 
@@ -775,14 +798,20 @@ impl GhostSnapshot {
 struct GhostSnapshotRequest {
     summary: Option<String>,
     conversation: ConversationSnapshot,
+    history: HistorySnapshot,
     started_at: Instant,
 }
 
 impl GhostSnapshotRequest {
-    fn new(summary: Option<String>, conversation: ConversationSnapshot) -> Self {
+    fn new(
+        summary: Option<String>,
+        conversation: ConversationSnapshot,
+        history: HistorySnapshot,
+    ) -> Self {
         Self {
             summary,
             conversation,
+            history,
             started_at: Instant::now(),
         }
     }
@@ -980,6 +1009,26 @@ impl Ord for OrderKey {
 impl PartialOrd for OrderKey {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+impl From<OrderKeySnapshot> for OrderKey {
+    fn from(snapshot: OrderKeySnapshot) -> Self {
+        Self {
+            req: snapshot.req,
+            out: snapshot.out,
+            seq: snapshot.seq,
+        }
+    }
+}
+
+impl From<OrderKey> for OrderKeySnapshot {
+    fn from(key: OrderKey) -> Self {
+        OrderKeySnapshot {
+            req: key.req,
+            out: key.out,
+            seq: key.seq,
+        }
     }
 }
 
@@ -1585,6 +1634,26 @@ impl ChatWidget<'_> {
         );
     }
 
+    pub(super) fn perf_track_scroll_delta(&self, before: u16, after: u16) {
+        if !self.perf_state.enabled {
+            return;
+        }
+        if before == after {
+            return;
+        }
+        let delta = before.abs_diff(after) as u64;
+        {
+            let mut stats = self.perf_state.stats.borrow_mut();
+            stats.record_scroll_trigger(delta);
+        }
+        let pending = self
+            .perf_state
+            .pending_scroll_rows
+            .get()
+            .saturating_add(delta);
+        self.perf_state.pending_scroll_rows.set(pending);
+    }
+
     // Synthetic key for internal content that should appear at the TOP of the NEXT request
     // (e.g., the user’s prompt preceding the model’s output for that turn).
     fn next_req_key_top(&mut self) -> OrderKey {
@@ -1860,10 +1929,8 @@ impl ChatWidget<'_> {
                 }
                 if role == "user" {
                     let key = self.next_internal_key();
-                    let _ = self.history_insert_with_key_global(
-                        Box::new(crate::history_cell::new_user_prompt(text.to_string())),
-                        key,
-                    );
+                    let state = history_cell::new_user_prompt(text.to_string());
+                    let _ = self.history_insert_plain_state_with_key(state, key, "epilogue");
 
                     if let Some(front) = self.queued_user_messages.front() {
                         if front.display_text.trim() == text.trim() {
@@ -1872,16 +1939,14 @@ impl ChatWidget<'_> {
                         }
                     }
                 } else {
-                    use crate::history_cell::HistoryCellType;
-                    use crate::history_cell::PlainHistoryCell;
                     let mut lines = Vec::new();
                     crate::markdown::append_markdown(text, &mut lines, &self.config);
                     let key = self.next_internal_key();
-                    let _ = self.history_insert_plain_cell_with_key(
-                        PlainHistoryCell::new(lines, HistoryCellType::Assistant),
-                        key,
-                        "epilogue",
+                    let state = history_cell::plain_message_state_from_lines(
+                        lines,
+                        history_cell::HistoryCellType::Assistant,
                     );
+                    let _ = self.history_insert_plain_state_with_key(state, key, "epilogue");
                 }
             }
             ResponseItem::FunctionCall { name, arguments, call_id, .. } => {
@@ -2312,6 +2377,79 @@ impl ChatWidget<'_> {
         exec_tools::handle_exec_end_now(self, ev, order);
     }
 
+    fn build_patch_failure_metadata(stdout: &str, stderr: &str) -> PatchFailureMetadata {
+        fn sanitize(text: &str) -> String {
+            let normalized = history_cell::normalize_overwrite_sequences(text);
+            sanitize_for_tui(
+                &normalized,
+                SanitizeMode::AnsiPreserving,
+                SanitizeOptions {
+                    expand_tabs: true,
+                    tabstop: 4,
+                    debug_markers: false,
+                },
+            )
+        }
+
+        fn excerpt(input: &str) -> Option<String> {
+            let trimmed = input.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            const MAX_CHARS: usize = 2_000;
+            const MAX_LINES: usize = 20;
+            let mut excerpt = String::new();
+            let mut remaining = MAX_CHARS;
+            for (idx, line) in trimmed.lines().enumerate() {
+                if idx >= MAX_LINES || remaining == 0 {
+                    break;
+                }
+                let line = line.trim_end_matches('\r');
+                let mut line_chars = line.chars();
+                let mut chunk = String::new();
+                while remaining > 0 {
+                    if let Some(ch) = line_chars.next() {
+                        let width = ch.len_utf8();
+                        if width > remaining {
+                            break;
+                        }
+                        chunk.push(ch);
+                        remaining -= width;
+                    } else {
+                        break;
+                    }
+                }
+                if chunk.len() < line.len() {
+                    chunk.push('…');
+                    remaining = 0;
+                }
+                if !excerpt.is_empty() {
+                    excerpt.push('\n');
+                }
+                excerpt.push_str(&chunk);
+                if remaining == 0 {
+                    break;
+                }
+            }
+            Some(excerpt)
+        }
+
+        let sanitized_stdout = sanitize(stdout);
+        let sanitized_stderr = sanitize(stderr);
+        let message = sanitized_stderr
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(|line| line.to_string())
+            .unwrap_or_else(|| "Patch application failed".to_string());
+
+        PatchFailureMetadata {
+            message,
+            stdout_excerpt: excerpt(&sanitized_stdout),
+            stderr_excerpt: excerpt(&sanitized_stderr),
+        }
+    }
+
     /// If a completed exec cell sits at `idx`, attempt to merge it into the
     /// previous cell when they represent the same action header (e.g., Search, Read).
 
@@ -2333,17 +2471,19 @@ impl ChatWidget<'_> {
                 if let Some(record) = self
                     .history_cells
                     .get(idx)
-                    .and_then(|existing| self.history_record_from_cell(existing.as_ref()))
+                    .and_then(|existing| history_cell::record_from_cell(existing.as_ref()))
                 {
                     if let HistoryRecord::Patch(mut patch_record) = record {
                         patch_record.patch_type = HistoryPatchEventType::ApplySuccess;
                         let record_index = self
                             .record_index_for_cell(idx)
                             .unwrap_or_else(|| self.record_index_for_position(idx));
-                        let mutation = self.history_state.apply_event(HistoryEvent::Replace {
-                            index: record_index,
-                            record: HistoryRecord::Patch(patch_record.clone()),
-                        });
+                        let mutation = self
+                            .history_state
+                            .apply_domain_event(HistoryDomainEvent::Replace {
+                                index: record_index,
+                                record: HistoryDomainRecord::Patch(patch_record.clone()),
+                            });
                         if let Some(id) = self.apply_mutation_to_cell_index(idx, mutation) {
                             if idx < self.history_cell_ids.len() {
                                 self.history_cell_ids[idx] = Some(id);
@@ -2358,10 +2498,56 @@ impl ChatWidget<'_> {
             return;
         }
 
-        // failure path
-        let failure_cell = history_cell::new_patch_apply_failure(ev.stderr);
+        let failure_meta = Self::build_patch_failure_metadata(&ev.stdout, &ev.stderr);
+        if let Some(idx) = self.history_cells.iter().rposition(|cell| {
+            matches!(
+                cell.kind(),
+                crate::history_cell::HistoryCellType::Patch {
+                    kind: crate::history_cell::PatchKind::ApplyBegin
+                } | crate::history_cell::HistoryCellType::Patch {
+                    kind: crate::history_cell::PatchKind::Proposed
+                }
+            )
+        }) {
+            if let Some(record) = self
+                .history_cells
+                .get(idx)
+                .and_then(|existing| history_cell::record_from_cell(existing.as_ref()))
+            {
+                if let HistoryRecord::Patch(mut patch_record) = record {
+                    patch_record.patch_type = HistoryPatchEventType::ApplyFailure;
+                    patch_record.failure = Some(failure_meta.clone());
+                    let record_index = self
+                        .record_index_for_cell(idx)
+                        .unwrap_or_else(|| self.record_index_for_position(idx));
+                    let mutation = self
+                        .history_state
+                        .apply_domain_event(HistoryDomainEvent::Replace {
+                            index: record_index,
+                            record: HistoryDomainRecord::Patch(patch_record.clone()),
+                        });
+                    if let Some(_id) = self.apply_mutation_to_cell_index(idx, mutation) {
+                        self.maybe_hide_spinner();
+                        return;
+                    }
+                }
+            }
+        }
+
+        let record = PatchRecord {
+            id: HistoryId::ZERO,
+            patch_type: HistoryPatchEventType::ApplyFailure,
+            changes: HashMap::new(),
+            failure: Some(failure_meta),
+        };
+        let cell = history_cell::PatchSummaryCell::from_record(record.clone());
         let key = self.next_internal_key();
-        let _ = self.history_insert_plain_cell_with_key(failure_cell, key, "patch-failure");
+        let _ = self.history_insert_with_key_global_tagged(
+            Box::new(cell),
+            key,
+            "patch-failure",
+            Some(HistoryDomainRecord::Patch(record)),
+        );
         self.maybe_hide_spinner();
     }
 
@@ -2534,8 +2720,14 @@ impl ChatWidget<'_> {
 
         // Fatal error path: show an error cell and clear running state.
         let key = self.next_internal_key();
-        let _ = self
-            .history_insert_with_key_global(Box::new(history_cell::new_error_event(message)), key);
+        let state = history_cell::new_error_event(message.clone());
+        let cell = crate::history_cell::PlainHistoryCell::from_state(state.clone());
+        let _ = self.history_insert_with_key_global_tagged(
+            Box::new(cell),
+            key,
+            "epilogue",
+            Some(HistoryDomainRecord::Plain(state)),
+        );
         self.bottom_pane.set_task_running(false);
         self.exec.running_commands.clear();
         self.stream.clear_all();
@@ -2853,6 +3045,7 @@ impl ChatWidget<'_> {
             agents_terminal: AgentsTerminalState::new(),
             pending_upgrade_notice: None,
             history_render: HistoryRenderState::new(),
+            render_theme_epoch: 0,
             history_state: HistoryState::new(),
             history_cell_ids: Vec::new(),
             height_manager: RefCell::new(HeightManager::new(
@@ -2874,7 +3067,8 @@ impl ChatWidget<'_> {
             last_theme: crate::theme::current_theme(),
             perf_state: PerfState {
                 enabled: false,
-                stats: std::cell::RefCell::new(PerfStats::default()),
+                stats: RefCell::new(PerfStats::default()),
+                pending_scroll_rows: Cell::new(0),
             },
             session_id: None,
             pending_jump_back: None,
@@ -2939,10 +3133,12 @@ impl ChatWidget<'_> {
                     w.history_push_top_next_req(upgrade_cell);
                 }
             }
-            w.history_push_top_next_req(history_cell::new_popular_commands_notice(
+            let notice_state = history_cell::new_popular_commands_notice(
                 false,
                 w.latest_upgrade_version.as_deref(),
-            )); // tag: prelude
+            );
+            let notice_key = w.next_req_key_top();
+            let _ = w.history_insert_plain_state_with_key(notice_state, notice_key, "prelude");
             if connecting_mcp {
                 // Render connecting status as a separate cell with standard gutter and spacing
                 w.history_push_top_next_req(history_cell::new_connecting_mcp_status());
@@ -3108,6 +3304,7 @@ impl ChatWidget<'_> {
             agents_terminal: AgentsTerminalState::new(),
             pending_upgrade_notice: None,
             history_render: HistoryRenderState::new(),
+            render_theme_epoch: 0,
             history_state: HistoryState::new(),
             history_cell_ids: Vec::new(),
             height_manager: RefCell::new(HeightManager::new(
@@ -3129,7 +3326,8 @@ impl ChatWidget<'_> {
             last_theme: crate::theme::current_theme(),
             perf_state: PerfState {
                 enabled: false,
-                stats: std::cell::RefCell::new(PerfStats::default()),
+                stats: RefCell::new(PerfStats::default()),
+                pending_scroll_rows: Cell::new(0),
             },
             session_id: None,
             pending_jump_back: None,
@@ -3398,7 +3596,7 @@ impl ChatWidget<'_> {
             .auto_history
             .replace_converted(conversation.clone());
         if !tail.is_empty() {
-            self.auto_history.append_raw(&tail);
+            self.auto_history.append_converted_tail(&tail);
         }
         self.auto_history.raw_snapshot()
     }
@@ -3796,10 +3994,12 @@ impl ChatWidget<'_> {
                 self.app_event_tx.send(AppEvent::RequestRedraw);
             }
             InputResult::ScrollUp => {
+                let before = self.layout.scroll_offset;
                 // Only allow Up to navigate command history when the top view
                 // cannot be scrolled at all (no scrollback available).
                 if self.layout.last_max_scroll.get() == 0 {
                     if self.bottom_pane.try_history_up() {
+                        self.perf_track_scroll_delta(before, self.layout.scroll_offset);
                         return;
                     }
                 }
@@ -3826,13 +4026,16 @@ impl ChatWidget<'_> {
                     .borrow_mut()
                     .record_event(HeightEvent::UserScroll);
                 self.maybe_show_history_nav_hint_on_first_scroll();
+                self.perf_track_scroll_delta(before, self.layout.scroll_offset);
             }
             InputResult::ScrollDown => {
+                let before = self.layout.scroll_offset;
                 // Only allow Down to navigate command history when the top view
                 // cannot be scrolled at all (no scrollback available).
                 if self.layout.last_max_scroll.get() == 0 && self.bottom_pane.history_is_browsing()
                 {
                     if self.bottom_pane.try_history_down() {
+                        self.perf_track_scroll_delta(before, self.layout.scroll_offset);
                         return;
                     }
                 }
@@ -3848,6 +4051,7 @@ impl ChatWidget<'_> {
                     self.height_manager
                         .borrow_mut()
                         .record_event(HeightEvent::ComposerModeChange);
+                    self.perf_track_scroll_delta(before, self.layout.scroll_offset);
                 } else if self.layout.scroll_offset >= 3 {
                     // Move towards bottom but do NOT toggle spacer yet; wait until
                     // the user confirms by pressing Down again at bottom.
@@ -3857,6 +4061,7 @@ impl ChatWidget<'_> {
                         .borrow_mut()
                         .record_event(HeightEvent::UserScroll);
                     self.maybe_show_history_nav_hint_on_first_scroll();
+                    self.perf_track_scroll_delta(before, self.layout.scroll_offset);
                 } else if self.layout.scroll_offset > 0 {
                     // Land exactly at bottom without toggling spacer yet; require
                     // a subsequent Down to re-enable the spacer so the input
@@ -3867,6 +4072,7 @@ impl ChatWidget<'_> {
                         .borrow_mut()
                         .record_event(HeightEvent::UserScroll);
                     self.maybe_show_history_nav_hint_on_first_scroll();
+                    self.perf_track_scroll_delta(before, self.layout.scroll_offset);
                 }
                 self.flash_scrollbar();
             }
@@ -4773,24 +4979,47 @@ impl ChatWidget<'_> {
 
         let mut cell = cell;
 
+        let record_index = self.record_index_for_position(pos);
         let mutation = if let Some(domain_record) = record {
-            let record_index = self.record_index_for_position(pos);
-            Some(
-                self.history_state
-                    .apply_domain_event(HistoryDomainEvent::Insert {
+            let event = match domain_record {
+                HistoryDomainRecord::Exec(ref exec_record) => {
+                    HistoryDomainEvent::StartExec {
                         index: record_index,
-                        record: domain_record,
-                    }),
-            )
-        } else if let Some(record) = self.history_record_from_cell(cell.as_ref()) {
-            let record_index = self.record_index_for_position(pos);
-            Some(
-                self.history_state
-                    .apply_event(HistoryEvent::Insert {
-                        index: record_index,
-                        record,
-                    }),
-            )
+                        call_id: exec_record.call_id.clone(),
+                        command: exec_record.command.clone(),
+                        parsed: exec_record.parsed.clone(),
+                        action: exec_record.action,
+                        started_at: exec_record.started_at,
+                        working_dir: exec_record.working_dir.clone(),
+                        env: exec_record.env.clone(),
+                        tags: exec_record.tags.clone(),
+                    }
+                }
+                other => HistoryDomainEvent::Insert {
+                    index: record_index,
+                    record: other,
+                },
+            };
+            Some(self.history_state.apply_domain_event(event))
+        } else if let Some(record) = history_cell::record_from_cell(cell.as_ref()) {
+            let event = match HistoryDomainRecord::from(record) {
+                HistoryDomainRecord::Exec(exec_record) => HistoryDomainEvent::StartExec {
+                    index: record_index,
+                    call_id: exec_record.call_id.clone(),
+                    command: exec_record.command.clone(),
+                    parsed: exec_record.parsed.clone(),
+                    action: exec_record.action,
+                    started_at: exec_record.started_at,
+                    working_dir: exec_record.working_dir.clone(),
+                    env: exec_record.env.clone(),
+                    tags: exec_record.tags.clone(),
+                },
+                other => HistoryDomainEvent::Insert {
+                    index: record_index,
+                    record: other,
+                },
+            };
+            Some(self.history_state.apply_domain_event(event))
         } else {
             None
         };
@@ -4859,6 +5088,162 @@ impl ChatWidget<'_> {
         pos
     }
 
+    fn history_insert_existing_record(
+        &mut self,
+        mut cell: Box<dyn HistoryCell>,
+        key: OrderKey,
+        tag: &'static str,
+        id: HistoryId,
+    ) -> usize {
+        #[cfg(debug_assertions)]
+        {
+            let cell_kind = cell.kind();
+            if cell_kind == HistoryCellType::BackgroundEvent {
+                debug_assert!(
+                    tag == "background",
+                    "Background events must use the background helper (tag={})",
+                    tag
+                );
+            }
+        }
+
+        let is_reasoning_cell = cell
+            .as_any()
+            .downcast_ref::<crate::history_cell::CollapsibleReasoningCell>()
+            .is_some();
+        if !is_reasoning_cell {
+            self.clear_reasoning_in_progress();
+        }
+
+        let mut pos = self.history_cells.len();
+        for i in 0..self.history_cells.len() {
+            if let Some(existing) = self.cell_order_seq.get(i) {
+                if *existing > key {
+                    pos = i;
+                    break;
+                }
+            }
+        }
+
+        if self.cell_order_seq.len() < self.history_cells.len() {
+            let missing = self.history_cells.len() - self.cell_order_seq.len();
+            for _ in 0..missing {
+                self.cell_order_seq.push(OrderKey {
+                    req: 0,
+                    out: -1,
+                    seq: 0,
+                });
+            }
+        }
+
+        tracing::info!(
+            "[order] insert(existing): {} pos={} len_before={} order_len_before={} tag={}",
+            Self::debug_fmt_order_key(key),
+            pos,
+            self.history_cells.len(),
+            self.cell_order_seq.len(),
+            tag
+        );
+
+        let reasoning_title_dbg: Option<String> = if self.show_order_overlay {
+            if let Some(rc) = cell
+                .as_any()
+                .downcast_ref::<crate::history_cell::CollapsibleReasoningCell>()
+            {
+                let lines = rc.display_lines_trimmed();
+                if let Some(line) = lines.first() {
+                    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                    let bytes = text.len();
+                    let chars = text.chars().count();
+                    let width = unicode_width::UnicodeWidthStr::width(text.as_str());
+                    let spans = line.spans.len();
+                    let span_lens: Vec<usize> =
+                        line.spans.iter().map(|s| s.content.len()).collect();
+                    let mut preview = text.clone();
+                    {
+                        use unicode_width::UnicodeWidthStr as _;
+                        let maxw = 120usize;
+                        if preview.width() > maxw {
+                            preview = format!(
+                                "{}…",
+                                crate::live_wrap::take_prefix_by_width(
+                                    &preview,
+                                    maxw.saturating_sub(1)
+                                )
+                                .0
+                            );
+                        }
+                    }
+                    Some(format!(
+                        "title='{}' bytes={} chars={} width={} spans={} span_bytes={:?}",
+                        preview, bytes, chars, width, spans, span_lens
+                    ))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        Self::assign_history_id_inner(&mut cell, id);
+
+        self.history_cells.insert(pos, cell);
+        self.history_cell_ids.insert(pos, Some(id));
+        if self.cell_order_seq.len() < pos {
+            self.cell_order_seq.resize(
+                pos,
+                OrderKey {
+                    req: 0,
+                    out: -1,
+                    seq: 0,
+                },
+            );
+        }
+        self.cell_order_seq.insert(pos, key);
+
+        let ordered = "existing";
+        let req_dbg = format!("{}", key.req);
+        let dbg = if let Some(tdbg) = reasoning_title_dbg {
+            format!(
+                "insert: {} req={} {} pos={} tag={} | {}",
+                ordered,
+                req_dbg,
+                Self::debug_fmt_order_key(key),
+                pos,
+                tag,
+                tdbg
+            )
+        } else {
+            format!(
+                "insert: {} req={} {} pos={} tag={}",
+                ordered,
+                req_dbg,
+                Self::debug_fmt_order_key(key),
+                pos,
+                tag
+            )
+        };
+        if self.cell_order_dbg.len() < pos {
+            self.cell_order_dbg.resize(pos, None);
+        }
+        self.cell_order_dbg.insert(pos, Some(dbg));
+        self.invalidate_height_cache();
+        self.autoscroll_if_near_bottom();
+        self.bottom_pane.set_has_chat_history(true);
+        self.process_animation_cleanup();
+        if !self.agents_terminal.active {
+            self.bottom_pane.ensure_input_focus();
+        }
+        self.app_event_tx.send(AppEvent::RequestRedraw);
+        self.refresh_explore_trailing_flags();
+        self.refresh_reasoning_collapsed_visibility();
+        self.history_render.invalidate_history_id(id);
+        pos
+    }
+
     fn append_wait_pairs(target: &mut Vec<(String, bool)>, additions: &[(String, bool)]) {
         for (text, is_error) in additions {
             let trimmed = text.trim();
@@ -4890,17 +5275,14 @@ impl ChatWidget<'_> {
 
     fn update_exec_wait_state_with_pairs(
         &mut self,
-        history_idx: usize,
+        history_id: HistoryId,
         total_wait: Option<Duration>,
         wait_active: bool,
         notes: &[(String, bool)],
     ) -> bool {
-        if history_idx >= self.history_cells.len() {
+        let Some(record_idx) = self.history_state.index_of(history_id) else {
             return false;
-        }
-        let record_idx = self
-            .record_index_for_cell(history_idx)
-            .unwrap_or_else(|| self.record_index_for_position(history_idx));
+        };
         let note_records: Vec<ExecWaitNote> = notes
             .iter()
             .filter_map(|(text, is_error)| {
@@ -4926,15 +5308,22 @@ impl ChatWidget<'_> {
             wait_active,
             notes: note_records,
         });
-        if let Some(id) = self.apply_mutation_to_cell_index(history_idx, mutation) {
-            if history_idx < self.history_cell_ids.len() {
-                self.history_cell_ids[history_idx] = Some(id);
+        match mutation {
+            HistoryMutation::Replaced {
+                id,
+                record: HistoryRecord::Exec(exec_record),
+                ..
             }
-            self.invalidate_height_cache();
-            self.request_redraw();
-            return true;
+            | HistoryMutation::Inserted {
+                id,
+                record: HistoryRecord::Exec(exec_record),
+                ..
+            } => {
+                self.update_cell_from_record(id, HistoryRecord::Exec(exec_record));
+                true
+            }
+            _ => false,
         }
-        false
     }
 
     fn hydrate_cell_from_record(
@@ -5001,7 +5390,8 @@ impl ChatWidget<'_> {
                     .as_any_mut()
                     .downcast_mut::<crate::history_cell::StreamingContentCell>()
                 {
-                    stream.update_from_state(state.clone(), config);
+                    stream.set_state(state.clone());
+                    stream.update_context(config.file_opener, &config.cwd);
                     return true;
                 }
             }
@@ -5020,7 +5410,6 @@ impl ChatWidget<'_> {
                     .downcast_mut::<crate::history_cell::PatchSummaryCell>()
                 {
                     *patch.record_mut() = state.clone();
-                    patch.invalidate_cache();
                     return true;
                 }
             }
@@ -5069,8 +5458,15 @@ impl ChatWidget<'_> {
             HistoryRecord::Exec(state) => {
                 Some(Box::new(history_cell::ExecCell::from_record(state.clone())))
             }
+            HistoryRecord::MergedExec(state) => Some(Box::new(
+                history_cell::MergedExecCell::from_state(state.clone()),
+            )),
             HistoryRecord::AssistantStream(state) => Some(Box::new(
-                history_cell::StreamingContentCell::from_state(state.clone(), &self.config),
+                history_cell::StreamingContentCell::from_state(
+                    state.clone(),
+                    self.config.file_opener,
+                    self.config.cwd.clone(),
+                ),
             )),
             HistoryRecord::AssistantMessage(state) => Some(Box::new(
                 history_cell::AssistantMarkdownCell::from_state(state.clone(), &self.config),
@@ -5147,7 +5543,7 @@ impl ChatWidget<'_> {
         }
 
         self.history_cells.iter().enumerate().find_map(|(idx, cell)| {
-            self.history_record_from_cell(cell.as_ref())
+        history_cell::record_from_cell(cell.as_ref())
                 .map(|record| record.id() == id)
                 .filter(|matched| *matched)
                 .map(|_| idx)
@@ -5159,6 +5555,8 @@ impl ChatWidget<'_> {
             tracing::debug!("skip update_cell_from_record: zero id");
             return;
         }
+
+        self.history_render.invalidate_history_id(id);
 
         if let Some(idx) = self.cell_index_for_history_id(id) {
             if let Some(mut rebuilt) = self.build_cell_from_record(&record) {
@@ -5218,6 +5616,11 @@ impl ChatWidget<'_> {
             .downcast_mut::<crate::history_cell::ExecCell>()
         {
             exec.record.id = id;
+        } else if let Some(merged) = cell
+            .as_any_mut()
+            .downcast_mut::<crate::history_cell::MergedExecCell>()
+        {
+            merged.set_history_id(id);
         } else if let Some(stream) = cell
             .as_any_mut()
             .downcast_mut::<crate::history_cell::StreamingContentCell>()
@@ -5276,112 +5679,6 @@ impl ChatWidget<'_> {
         }
     }
 
-    fn history_record_from_cell(&self, cell: &dyn HistoryCell) -> Option<HistoryRecord> {
-        if let Some(plain) = cell
-            .as_any()
-            .downcast_ref::<crate::history_cell::PlainHistoryCell>()
-        {
-            return Some(HistoryRecord::PlainMessage(plain.state().clone()));
-        }
-        if let Some(wait) = cell
-            .as_any()
-            .downcast_ref::<crate::history_cell::WaitStatusCell>()
-        {
-            return Some(HistoryRecord::WaitStatus(wait.state().clone()));
-        }
-        if let Some(loading) = cell
-            .as_any()
-            .downcast_ref::<crate::history_cell::LoadingCell>()
-        {
-            return Some(HistoryRecord::Loading(loading.state().clone()));
-        }
-        if let Some(background) = cell
-            .as_any()
-            .downcast_ref::<crate::history_cell::BackgroundEventCell>()
-        {
-            return Some(HistoryRecord::BackgroundEvent(background.state().clone()));
-        }
-        if let Some(tool_call) = cell
-            .as_any()
-            .downcast_ref::<crate::history_cell::ToolCallCell>()
-        {
-            return Some(HistoryRecord::ToolCall(tool_call.state().clone()));
-        }
-        if let Some(running_tool) = cell
-            .as_any()
-            .downcast_ref::<crate::history_cell::RunningToolCallCell>()
-        {
-            return Some(HistoryRecord::RunningTool(running_tool.state().clone()));
-        }
-        if let Some(plan) = cell
-            .as_any()
-            .downcast_ref::<crate::history_cell::PlanUpdateCell>()
-        {
-            return Some(HistoryRecord::PlanUpdate(plan.state().clone()));
-        }
-        if let Some(upgrade) = cell
-            .as_any()
-            .downcast_ref::<crate::history_cell::UpgradeNoticeCell>()
-        {
-            return Some(HistoryRecord::UpgradeNotice(upgrade.state().clone()));
-        }
-        if let Some(reasoning) = cell
-            .as_any()
-            .downcast_ref::<crate::history_cell::CollapsibleReasoningCell>()
-        {
-            return Some(HistoryRecord::Reasoning(reasoning.reasoning_state()));
-        }
-        if let Some(exec) = cell
-            .as_any()
-            .downcast_ref::<crate::history_cell::ExecCell>()
-        {
-            return Some(HistoryRecord::Exec(exec.record.clone()));
-        }
-        if let Some(stream) = cell
-            .as_any()
-            .downcast_ref::<crate::history_cell::StreamingContentCell>()
-        {
-            return Some(HistoryRecord::AssistantStream(stream.state().clone()));
-        }
-        if let Some(assistant) = cell
-            .as_any()
-            .downcast_ref::<crate::history_cell::AssistantMarkdownCell>()
-        {
-            return Some(HistoryRecord::AssistantMessage(assistant.state().clone()));
-        }
-        if let Some(diff) = cell
-            .as_any()
-            .downcast_ref::<crate::history_cell::DiffCell>()
-        {
-            return Some(HistoryRecord::Diff(diff.record().clone()));
-        }
-        if let Some(image) = cell
-            .as_any()
-            .downcast_ref::<crate::history_cell::ImageOutputCell>()
-        {
-            return Some(HistoryRecord::Image(image.record().clone()));
-        }
-        if let Some(patch) = cell
-            .as_any()
-            .downcast_ref::<crate::history_cell::PatchSummaryCell>()
-        {
-            return Some(HistoryRecord::Patch(patch.record().clone()));
-        }
-        if let Some(explore) = cell
-            .as_any()
-            .downcast_ref::<crate::history_cell::ExploreAggregationCell>()
-        {
-            return Some(HistoryRecord::Explore(explore.record().clone()));
-        }
-        if let Some(rate_limits) = cell
-            .as_any()
-            .downcast_ref::<crate::history_cell::RateLimitsCell>()
-        {
-            return Some(HistoryRecord::RateLimits(rate_limits.record().clone()));
-        }
-        None
-    }
-
     /// Push a cell using a synthetic global order key at the bottom of the current request.
     pub(crate) fn history_push(&mut self, cell: impl HistoryCell + 'static) {
         #[cfg(debug_assertions)]
@@ -5395,19 +5692,37 @@ impl ChatWidget<'_> {
         let _ = self.history_insert_with_key_global_tagged(Box::new(cell), key, "epilogue", None);
     }
 
-    fn history_insert_plain_cell_with_key(
+    fn history_insert_plain_state_with_key(
         &mut self,
-        cell: crate::history_cell::PlainHistoryCell,
+        state: PlainMessageState,
         key: OrderKey,
         tag: &'static str,
     ) -> usize {
-        let record = HistoryDomainRecord::Plain(cell.state().clone());
-        self.history_insert_with_key_global_tagged(Box::new(cell), key, tag, Some(record))
+        let cell = crate::history_cell::PlainHistoryCell::from_state(state.clone());
+        self.history_insert_with_key_global_tagged(
+            Box::new(cell),
+            key,
+            tag,
+            Some(HistoryDomainRecord::Plain(state)),
+        )
     }
 
-    fn history_push_plain_cell(&mut self, cell: crate::history_cell::PlainHistoryCell) {
+    pub(crate) fn history_push_plain_state(&mut self, state: PlainMessageState) {
         let key = self.next_internal_key();
-        let _ = self.history_insert_plain_cell_with_key(cell, key, "epilogue");
+        let _ = self.history_insert_plain_state_with_key(state, key, "epilogue");
+    }
+
+    fn history_push_plain_paragraphs<I, S>(
+        &mut self,
+        kind: PlainMessageKind,
+        lines: I,
+    ) where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let role = history_cell::plain_role_for_kind(kind);
+        let state = history_cell::plain_message_state_from_paragraphs(kind, role, lines);
+        self.history_push_plain_state(state);
     }
 
     fn history_push_diff(&mut self, title: Option<String>, diff_output: String) {
@@ -5475,12 +5790,6 @@ impl ChatWidget<'_> {
         let key = self.next_req_key_top();
         let _ = self.history_insert_with_key_global_tagged(Box::new(cell), key, "prelude", None);
     }
-    /// Push a user prompt so it appears right under banners and above model output for the next request.
-    fn history_push_prompt_next_req(&mut self, cell: impl HistoryCell + 'static) {
-        let key = self.next_req_key_prompt();
-        let _ = self.history_insert_with_key_global_tagged(Box::new(cell), key, "prompt", None);
-    }
-
     fn history_replace_with_record(
         &mut self,
         idx: usize,
@@ -5517,14 +5826,14 @@ impl ChatWidget<'_> {
             return;
         }
 
-        let record = self.history_record_from_cell(cell.as_ref());
+        let record = history_cell::record_from_cell(cell.as_ref());
         let mut maybe_id = None;
 
-        match (record, self.record_index_for_cell(idx)) {
+        match (record.map(HistoryDomainRecord::from), self.record_index_for_cell(idx)) {
             (Some(record), Some(record_idx)) => {
                 let mutation = self
                     .history_state
-                    .apply_event(HistoryEvent::Replace {
+                    .apply_domain_event(HistoryDomainEvent::Replace {
                         index: record_idx,
                         record,
                     });
@@ -5536,7 +5845,7 @@ impl ChatWidget<'_> {
                 let record_idx = self.record_index_for_position(idx);
                 let mutation = self
                     .history_state
-                    .apply_event(HistoryEvent::Insert {
+                    .apply_domain_event(HistoryDomainEvent::Insert {
                         index: record_idx,
                         record,
                     });
@@ -5563,6 +5872,11 @@ impl ChatWidget<'_> {
     }
 
     fn resolve_running_tool_index(&self, entry: &RunningToolEntry) -> Option<usize> {
+        if let Some(id) = entry.history_id {
+            if let Some(pos) = self.cell_index_for_history_id(id) {
+                return Some(pos);
+            }
+        }
         if let Some(pos) = self
             .cell_order_seq
             .iter()
@@ -5663,17 +5977,24 @@ impl ChatWidget<'_> {
             }
         }
         combined.extend(body);
-        self.history_replace_at(
+        let state = history_cell::plain_message_state_from_lines(
+            combined,
+            crate::history_cell::HistoryCellType::Plain,
+        );
+        self.history_replace_with_record(
             idx - 1,
-            Box::new(crate::history_cell::PlainHistoryCell::new(
-                combined,
-                crate::history_cell::HistoryCellType::Plain,
-            )),
+            Box::new(crate::history_cell::PlainHistoryCell::from_state(state.clone())),
+            HistoryDomainRecord::Plain(state),
         );
         self.history_remove_at(idx);
     }
 
     fn record_index_for_position(&self, ui_index: usize) -> usize {
+        if let Some(Some(id)) = self.history_cell_ids.get(ui_index) {
+            if let Some(idx) = self.history_state.index_of(*id) {
+                return idx;
+            }
+        }
         self.history_cell_ids
             .iter()
             .take(ui_index)
@@ -5708,12 +6029,15 @@ impl ChatWidget<'_> {
             match cell.kind() {
                 crate::history_cell::HistoryCellType::Notice => {
                     // Older layout: status was inside the notice cell — replace it
-                    self.history_replace_at(
+                    let state = history_cell::new_popular_commands_notice(
+                        false,
+                        self.latest_upgrade_version.as_deref(),
+                    );
+                    let cell = crate::history_cell::PlainHistoryCell::from_state(state.clone());
+                    self.history_replace_with_record(
                         idx,
-                        Box::new(history_cell::new_popular_commands_notice(
-                            false,
-                            self.latest_upgrade_version.as_deref(),
-                        )),
+                        Box::new(cell),
+                        HistoryDomainRecord::Plain(state),
                     );
                 }
                 _ => {
@@ -5724,29 +6048,7 @@ impl ChatWidget<'_> {
         }
     }
 
-    fn refresh_explore_trailing_flags(&mut self) {
-        let mut trailing_non_reasoning: Option<usize> = None;
-        for i in (0..self.history_cells.len()).rev() {
-            if self.history_cells[i]
-                .as_any()
-                .downcast_ref::<history_cell::CollapsibleReasoningCell>()
-                .is_some()
-            {
-                continue;
-            }
-            trailing_non_reasoning = Some(i);
-            break;
-        }
-
-        for (idx, cell) in self.history_cells.iter_mut().enumerate() {
-            if let Some(explore) = cell
-                .as_any_mut()
-                .downcast_mut::<history_cell::ExploreAggregationCell>()
-            {
-                explore.set_trailing(Some(idx) == trailing_non_reasoning);
-            }
-        }
-    }
+    fn refresh_explore_trailing_flags(&mut self) {}
 
     fn submit_user_message(&mut self, user_message: UserMessage) {
         // Surface a local diagnostic note and anchor it to the NEXT turn,
@@ -5789,7 +6091,7 @@ impl ChatWidget<'_> {
                 }
             }
             // If we can't recover, surface an error and drop the message to prevent loops
-            self.history_push(history_cell::new_error_event(format!(
+            self.history_push_plain_state(history_cell::new_error_event(format!(
                 "Working directory is missing: {}",
                 self.config.cwd.display()
             )));
@@ -5865,28 +6167,18 @@ impl ChatWidget<'_> {
                     );
                     // Acknowledge configuration
                     let mode = if res.read_only { "read-only" } else { "write" };
-                    let mut ack: Vec<ratatui::text::Line<'static>> = Vec::new();
-                    ack.push(ratatui::text::Line::from(format!(
-                        "/{} configured",
-                        res.name
-                    )));
-                    ack.push(ratatui::text::Line::from(format!("mode: {}", mode)));
-                    ack.push(ratatui::text::Line::from(format!(
-                        "agents: {}",
-                        if res.models.is_empty() {
-                            "<none>".to_string()
-                        } else {
-                            res.models.join(", ")
-                        }
-                    )));
-                    ack.push(ratatui::text::Line::from(format!(
-                        "command: {}",
-                        original_text.trim()
-                    )));
-                    self.history_push_plain_cell(crate::history_cell::PlainHistoryCell::new(
-                        ack,
-                        crate::history_cell::HistoryCellType::Notice,
-                    ));
+                    let agents = if res.models.is_empty() {
+                        "<none>".to_string()
+                    } else {
+                        res.models.join(", ")
+                    };
+                    let lines = vec![
+                        format!("/{} configured", res.name),
+                        format!("mode: {}", mode),
+                        format!("agents: {}", agents),
+                        format!("command: {}", original_text.trim()),
+                    ];
+                    self.history_push_plain_paragraphs(PlainMessageKind::Notice, lines);
 
                     message
                         .ordered_items
@@ -5924,24 +6216,19 @@ impl ChatWidget<'_> {
                     );
 
                     // Acknowledge the command and show which agents will run.
-                    use ratatui::text::Line;
                     let mode = if res.read_only { "read-only" } else { "write" };
-                    let mut lines: Vec<Line<'static>> = Vec::new();
-                    lines.push(Line::from(format!("/{} configured", cmd_name)));
-                    lines.push(Line::from(format!("mode: {}", mode)));
-                    lines.push(Line::from(format!(
-                        "agents: {}",
-                        if res.models.is_empty() {
-                            "<none>".to_string()
-                        } else {
-                            res.models.join(", ")
-                        }
-                    )));
-                    lines.push(Line::from(format!("command: {}", original_text.trim())));
-                    self.history_push_plain_cell(crate::history_cell::PlainHistoryCell::new(
-                        lines,
-                        crate::history_cell::HistoryCellType::Notice,
-                    ));
+                    let agents = if res.models.is_empty() {
+                        "<none>".to_string()
+                    } else {
+                        res.models.join(", ")
+                    };
+                    let lines = vec![
+                        format!("/{} configured", cmd_name),
+                        format!("mode: {}", mode),
+                        format!("agents: {}", agents),
+                        format!("command: {}", original_text.trim()),
+                    ];
+                    self.history_push_plain_paragraphs(PlainMessageKind::Notice, lines);
 
                     // Replace the message with the resolved prompt
                     message
@@ -5973,7 +6260,7 @@ impl ChatWidget<'_> {
             }
             crate::slash_command::ProcessedCommand::Error(error_msg) => {
                 // Show error in history
-                self.history_push(history_cell::new_error_event(error_msg));
+                self.history_push_plain_state(history_cell::new_error_event(error_msg));
                 return;
             }
             crate::slash_command::ProcessedCommand::NotCommand(_) => {
@@ -6215,7 +6502,11 @@ impl ChatWidget<'_> {
             return GhostSnapshotJobHandle::Skipped;
         }
 
-        let request = GhostSnapshotRequest::new(summary, self.current_conversation_snapshot());
+        let request = GhostSnapshotRequest::new(
+            summary,
+            self.current_conversation_snapshot(),
+            self.history_snapshot_for_persistence(),
+        );
         self.enqueue_ghost_snapshot(request)
     }
 
@@ -6224,7 +6515,11 @@ impl ChatWidget<'_> {
             return None;
         }
 
-        let request = GhostSnapshotRequest::new(summary, self.current_conversation_snapshot());
+        let request = GhostSnapshotRequest::new(
+            summary,
+            self.current_conversation_snapshot(),
+            self.history_snapshot_for_persistence(),
+        );
         let repo_path = self.config.cwd.clone();
         let started_at = request.started_at;
         let result = create_ghost_commit(&CreateGhostCommitOptions::new(repo_path.as_path()));
@@ -6359,8 +6654,18 @@ impl ChatWidget<'_> {
             Ok(commit) => {
                 self.ghost_snapshots_disabled = false;
                 self.ghost_snapshots_disabled_reason = None;
-                let snapshot = GhostSnapshot::new(commit, request.summary, request.conversation);
+                let snapshot = GhostSnapshot::new(
+                    commit,
+                    request.summary,
+                    request.conversation,
+                    request.history,
+                );
                 self.ghost_snapshots.push(snapshot.clone());
+                session_log::log_history_snapshot(
+                    snapshot.commit().id(),
+                    snapshot.summary.as_deref(),
+                    &snapshot.history,
+                );
                 if self.ghost_snapshots.len() > MAX_TRACKED_GHOST_COMMITS {
                     self.ghost_snapshots.remove(0);
                 }
@@ -6461,6 +6766,18 @@ impl ChatWidget<'_> {
             .assistant_turns
             .saturating_sub(snapshot.assistant_turns);
         (user_delta, assistant_delta)
+    }
+
+    fn history_snapshot_for_persistence(&self) -> HistorySnapshot {
+        let order: Vec<OrderKeySnapshot> = self
+            .cell_order_seq
+            .iter()
+            .map(|key| (*key).into())
+            .collect();
+        let order_debug = self.cell_order_dbg.clone();
+        self.history_state
+            .snapshot()
+            .with_order(order, order_debug)
     }
 
     pub(crate) fn snapshot_ghost_state(&self) -> GhostState {
@@ -6721,6 +7038,110 @@ impl ChatWidget<'_> {
         self.bottom_pane.show_undo_restore_view(view);
     }
 
+    pub(crate) fn restore_history_snapshot(&mut self, snapshot: &HistorySnapshot) {
+        let perf_timer = self.perf_state.enabled.then(Instant::now);
+        self.history_state.restore(snapshot);
+
+        self.history_render.invalidate_all();
+
+        self.history_cells.clear();
+        self.history_cell_ids.clear();
+        self.cell_order_seq.clear();
+        self.cell_order_dbg.clear();
+
+        for record in &self.history_state.records {
+            if let Some(mut cell) = self.build_cell_from_record(record) {
+                let id = record.id();
+                Self::assign_history_id_inner(&mut cell, id);
+                self.history_cells.push(cell);
+                self.history_cell_ids.push(Some(id));
+            } else {
+                tracing::warn!("unable to rebuild history cell for record id {:?}", record.id());
+                let fallback = history_cell::new_background_event(format!(
+                    "Restored snapshot missing renderer for record {:?}",
+                    record.id()
+                ));
+                self.history_cells.push(Box::new(fallback));
+                self.history_cell_ids.push(None);
+            }
+        }
+
+        if !snapshot.order.is_empty() {
+            self.cell_order_seq = snapshot
+                .order
+                .iter()
+                .copied()
+                .map(OrderKey::from)
+                .collect();
+        } else {
+            self.cell_order_seq = self
+                .history_cells
+                .iter()
+                .enumerate()
+                .map(|(idx, _)| OrderKey {
+                    req: (idx as u64).saturating_add(1),
+                    out: i32::MAX,
+                    seq: (idx as u64).saturating_add(1),
+                })
+                .collect();
+        }
+
+        if self.cell_order_seq.len() < self.history_cells.len() {
+            let mut next_req = self
+                .cell_order_seq
+                .iter()
+                .map(|key| key.req)
+                .max()
+                .unwrap_or(0);
+            let mut next_seq = self
+                .cell_order_seq
+                .iter()
+                .map(|key| key.seq)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1);
+            while self.cell_order_seq.len() < self.history_cells.len() {
+                next_req = next_req.saturating_add(1);
+                self.cell_order_seq.push(OrderKey {
+                    req: next_req,
+                    out: i32::MAX,
+                    seq: next_seq,
+                });
+                next_seq = next_seq.saturating_add(1);
+            }
+        }
+
+        if !snapshot.order_debug.is_empty() {
+            self.cell_order_dbg = snapshot.order_debug.clone();
+        }
+        if self.cell_order_dbg.len() < self.history_cells.len() {
+            self.cell_order_dbg
+                .resize(self.history_cells.len(), None);
+        }
+
+        let max_req = self.cell_order_seq.iter().map(|key| key.req).max().unwrap_or(0);
+        let max_seq = self.cell_order_seq.iter().map(|key| key.seq).max().unwrap_or(0);
+
+        self.last_seen_request_index = max_req;
+        self.current_request_index = max_req;
+        self.internal_seq = max_seq;
+
+        self.bottom_pane
+            .set_has_chat_history(!self.history_cells.is_empty());
+        self.refresh_reasoning_collapsed_visibility();
+        self.refresh_explore_trailing_flags();
+        self.invalidate_height_cache();
+        self.request_redraw();
+
+        if let (true, Some(started)) = (self.perf_state.enabled, perf_timer) {
+            let elapsed = started.elapsed().as_nanos();
+            self.perf_state
+                .stats
+                .borrow_mut()
+                .record_undo_restore(elapsed);
+        }
+    }
+
     pub(crate) fn perform_undo_restore(
         &mut self,
         index: usize,
@@ -6783,6 +7204,7 @@ impl ChatWidget<'_> {
                 self.app_event_tx.send(AppEvent::JumpBack {
                     nth: user_delta,
                     prefill: String::new(),
+                    history_snapshot: Some(snapshot.history.clone()),
                 });
                 if assistant_delta > 0 {
                     self.push_background_tail(format!(
@@ -6804,7 +7226,7 @@ impl ChatWidget<'_> {
         }
 
         for err in errors {
-            self.history_push(history_cell::new_error_event(err));
+            self.history_push_plain_state(history_cell::new_error_event(err));
         }
 
         if files_restored {
@@ -6860,7 +7282,9 @@ impl ChatWidget<'_> {
         } = message;
 
         if !display_text.is_empty() {
-            self.history_push_prompt_next_req(history_cell::new_user_prompt(display_text.clone()));
+            let key = self.next_req_key_prompt();
+            let state = history_cell::new_user_prompt(display_text.clone());
+            let _ = self.history_insert_plain_state_with_key(state, key, "prompt");
             self.pending_user_prompts_for_next_turn =
                 self.pending_user_prompts_for_next_turn.saturating_add(1);
             self.pending_dispatched_user_messages
@@ -6906,9 +7330,9 @@ impl ChatWidget<'_> {
         }) in messages.into_iter().enumerate()
         {
             if !display_text.is_empty() {
-                self.history_push_prompt_next_req(history_cell::new_user_prompt(
-                    display_text.clone(),
-                ));
+                let key = self.next_req_key_prompt();
+                let state = history_cell::new_user_prompt(display_text.clone());
+                let _ = self.history_insert_plain_state_with_key(state, key, "prompt");
                 self.pending_user_prompts_for_next_turn =
                     self.pending_user_prompts_for_next_turn.saturating_add(1);
                 history_texts.push(display_text.clone());
@@ -7015,12 +7439,15 @@ impl ChatWidget<'_> {
                     if is_first {
                         self.welcome_shown = true;
                     }
-                    self.history_push_top_next_req(history_cell::new_session_info(
+                    let session_state = history_cell::new_session_info(
                         &self.config,
                         event,
                         is_first,
                         self.latest_upgrade_version.as_deref(),
-                    )); // tag: prelude
+                    );
+                    let key = self.next_req_key_top();
+                    let _ = self
+                        .history_insert_plain_state_with_key(session_state, key, "prelude");
                 }
 
                 if let Some(user_message) = self.initial_user_message.take() {
@@ -7674,21 +8101,37 @@ impl ChatWidget<'_> {
                             )
                         }
                     };
-                    if let Some(idx) = running.history_index {
-                        let mutation = self.history_state.apply_domain_event(
-                            HistoryDomainEvent::UpdateExecStream {
-                                index: idx,
-                                stdout_chunk,
-                                stderr_chunk,
-                            },
-                        );
-                        if let HistoryMutation::Replaced {
-                            id,
-                            record: HistoryRecord::Exec(exec_record),
-                            ..
-                        } = mutation
-                        {
-                            self.update_cell_from_record(id, HistoryRecord::Exec(exec_record));
+                    let history_id = running.history_id.or_else(|| {
+                        let mapped = self
+                            .history_state
+                            .history_id_for_exec_call(call_id.as_ref())
+                            .or_else(|| {
+                                running.history_index.and_then(|idx| {
+                                    self.history_cell_ids
+                                        .get(idx)
+                                        .and_then(|slot| *slot)
+                                })
+                            });
+                        running.history_id = mapped;
+                        mapped
+                    });
+                    if let Some(history_id) = history_id {
+                        if let Some(record_idx) = self.history_state.index_of(history_id) {
+                            let mutation = self.history_state.apply_domain_event(
+                                HistoryDomainEvent::UpdateExecStream {
+                                    index: record_idx,
+                                    stdout_chunk,
+                                    stderr_chunk,
+                                },
+                            );
+                            if let HistoryMutation::Replaced {
+                                id,
+                                record: HistoryRecord::Exec(exec_record),
+                                ..
+                            } = mutation
+                            {
+                                self.update_cell_from_record(id, HistoryRecord::Exec(exec_record));
+                            }
                         }
                     }
                     self.invalidate_height_cache();
@@ -7874,16 +8317,28 @@ impl ChatWidget<'_> {
                             .running_wait_tools
                             .insert(ToolCallId(call_id.clone()), exec_call_id.clone());
 
-                        let mut wait_update: Option<(usize, Option<Duration>, Vec<(String, bool)>)> = None;
+                        let mut wait_update: Option<(
+                            HistoryId,
+                            Option<Duration>,
+                            Vec<(String, bool)>,
+                        )> = None;
                         if let Some(running) = self.exec.running_commands.get_mut(&exec_call_id) {
                             running.wait_active = true;
                             running.wait_notes.clear();
-                            if let Some(idx) = running.history_index {
-                                wait_update = Some((idx, running.wait_total, running.wait_notes.clone()));
+                            let history_id = running.history_id.or_else(|| {
+                                running.history_index.and_then(|idx| {
+                                    self.history_cell_ids
+                                        .get(idx)
+                                        .and_then(|slot| *slot)
+                                })
+                            });
+                            running.history_id = history_id;
+                            if let Some(id) = history_id {
+                                wait_update = Some((id, running.wait_total, running.wait_notes.clone()));
                             }
                         }
-                        if let Some((idx, total, notes)) = wait_update {
-                            let _ = self.update_exec_wait_state_with_pairs(idx, total, true, &notes);
+                        if let Some((history_id, total, notes)) = wait_update {
+                            let _ = self.update_exec_wait_state_with_pairs(history_id, total, true, &notes);
                         }
                         self.bottom_pane
                             .update_status_text("waiting for command".to_string());
@@ -7907,7 +8362,7 @@ impl ChatWidget<'_> {
                     }
                 }
                 // Animated running cell with live timer and formatted args
-                let cell = if tool_name.starts_with("browser_") {
+                let mut cell = if tool_name.starts_with("browser_") {
                     history_cell::new_running_browser_tool_call(
                         tool_name.clone(),
                         params_string.clone(),
@@ -7918,6 +8373,7 @@ impl ChatWidget<'_> {
                         params_string.clone(),
                     )
                 };
+                cell.state_mut().call_id = Some(call_id.clone());
                 // Enforce ordering for custom tool begin
                 let ok = match event.order.as_ref() {
                     Some(om) => Self::order_key_from_order_meta(om),
@@ -7929,11 +8385,18 @@ impl ChatWidget<'_> {
                     }
                 };
                 let idx = self.history_insert_with_key_global(Box::new(cell), ok);
+                let history_id = self
+                    .history_state
+                    .history_id_for_tool_call(&call_id)
+                    .or_else(|| self.history_cell_ids.get(idx).and_then(|slot| *slot));
                 // Track index so we can replace it on completion
                 if idx < self.history_cells.len() {
                     self.tools_state
                         .running_custom_tools
-                        .insert(ToolCallId(call_id.clone()), RunningToolEntry::new(ok, idx));
+                        .insert(
+                            ToolCallId(call_id.clone()),
+                            RunningToolEntry::new(ok, idx).with_history_id(history_id),
+                        );
                 }
 
                 // Update border status based on tool
@@ -8006,7 +8469,7 @@ impl ChatWidget<'_> {
                                 note_lines.push((note_text.to_string(), is_error_note));
                             }
                         }
-                        let mut history_idx: Option<usize> = None;
+                        let mut history_id: Option<HistoryId> = None;
                         let mut wait_total: Option<Duration> = None;
                         let mut wait_notes_snapshot: Vec<(String, bool)> = Vec::new();
                         if let Some(running) = self.exec.running_commands.get_mut(&exec_call_id) {
@@ -8017,38 +8480,49 @@ impl ChatWidget<'_> {
                             Self::append_wait_pairs(&mut running.wait_notes, &note_lines);
                             wait_notes_snapshot = running.wait_notes.clone();
                             wait_total = running.wait_total;
-                            history_idx = running.history_index;
+                            history_id = running.history_id.or_else(|| {
+                                running.history_index.and_then(|idx| {
+                                    self.history_cell_ids
+                                        .get(idx)
+                                        .and_then(|slot| *slot)
+                                })
+                            });
+                            running.history_id = history_id;
                         } else {
                             Self::append_wait_pairs(&mut wait_notes_snapshot, &note_lines);
                         }
 
-                        if history_idx.is_none() {
+                        if history_id.is_none() {
                             if let Some((idx, _)) = self.history_cells.iter().enumerate().rev().find(|(_, cell)| {
                                 cell.as_any()
                                     .downcast_ref::<history_cell::ExecCell>()
                                     .is_some()
                             }) {
-                                history_idx = Some(idx);
-                                if let Some(running) = self.exec.running_commands.get_mut(&exec_call_id) {
-                                    running.history_index = Some(idx);
+                                if let Some(id) = self.history_cell_ids.get(idx).and_then(|slot| *slot) {
+                                    history_id = Some(id);
+                                    if let Some(running) =
+                                        self.exec.running_commands.get_mut(&exec_call_id)
+                                    {
+                                        running.history_index = Some(idx);
+                                        running.history_id = Some(id);
+                                    }
                                 }
                             }
                         }
 
-                        if let Some(idx) = history_idx {
-                            let record_idx = self
-                                .record_index_for_cell(idx)
-                                .unwrap_or_else(|| self.record_index_for_position(idx));
-                            if let Some(HistoryRecord::Exec(exec_record)) =
-                                self.history_state.get(record_idx).cloned()
-                            {
+                        if let Some(id) = history_id {
+                            let exec_record = self
+                                .history_state
+                                .index_of(id)
+                                .and_then(|idx| self.history_state.get(idx).cloned());
+                            if let Some(HistoryRecord::Exec(record)) = exec_record {
                                 if wait_total.is_none() {
-                                    let base = exec_record.wait_total.unwrap_or_default();
+                                    let base = record.wait_total.unwrap_or_default();
                                     wait_total = Some(base.saturating_add(duration));
                                 }
                                 if wait_notes_snapshot.is_empty() {
                                     wait_notes_snapshot =
-                                        Self::wait_pairs_from_exec_notes(&exec_record.wait_notes);
+                                        Self::wait_pairs_from_exec_notes(&record.wait_notes);
                                     Self::append_wait_pairs(&mut wait_notes_snapshot, &note_lines);
                                 }
                             } else {
@@ -8060,7 +8534,7 @@ impl ChatWidget<'_> {
                                 }
                             }
                             let _ = self.update_exec_wait_state_with_pairs(
-                                idx,
+                                id,
                                 wait_total,
                                 wait_still_pending,
                                 &wait_notes_snapshot,
@@ -8135,29 +8609,33 @@ impl ChatWidget<'_> {
                     return;
                 }
                 if tool_name == "wait" && !success && content.trim() == "Cancelled by user." {
-                    let wait_cancelled_cell = PlainHistoryCell::new(
-                        vec![Line::styled(
-                            "Wait cancelled",
-                            Style::default()
-                                .fg(crate::colors::error())
-                                .add_modifier(Modifier::BOLD),
-                        )],
-                        HistoryCellType::Error,
-                    );
+                    let mut emphasis = TextEmphasis::default();
+                    emphasis.bold = true;
+                    let wait_state = PlainMessageState {
+                        id: HistoryId::ZERO,
+                        role: PlainMessageRole::Error,
+                        kind: PlainMessageKind::Error,
+                        header: None,
+                        lines: vec![MessageLine {
+                            kind: MessageLineKind::Paragraph,
+                            spans: vec![InlineSpan {
+                                text: "Wait cancelled".into(),
+                                tone: TextTone::Error,
+                                emphasis,
+                                entity: None,
+                            }],
+                        }],
+                        metadata: None,
+                    };
 
                     if let Some(idx) = resolved_idx {
-                        let record = HistoryDomainRecord::Plain(wait_cancelled_cell.state().clone());
                         self.history_replace_with_record(
                             idx,
-                            Box::new(wait_cancelled_cell),
-                            record,
+                            Box::new(history_cell::PlainHistoryCell::from_state(wait_state.clone())),
+                            HistoryDomainRecord::Plain(wait_state.clone()),
                         );
                     } else {
-                        let _ = self.history_insert_plain_cell_with_key(
-                            wait_cancelled_cell,
-                            ok,
-                            "untagged",
-                        );
+                        let _ = self.history_insert_plain_state_with_key(wait_state, ok, "untagged");
                     }
 
                     self.bottom_pane
@@ -8208,13 +8686,14 @@ impl ChatWidget<'_> {
                     self.maybe_hide_spinner();
                     return;
                 }
-                let completed = history_cell::new_completed_custom_tool_call(
+                let mut completed = history_cell::new_completed_custom_tool_call(
                     tool_name,
                     params_string,
                     duration,
                     success,
                     content,
                 );
+                completed.state_mut().call_id = Some(call_id.clone());
                 if let Some(idx) = resolved_idx {
                     self.history_replace_at(idx, Box::new(completed));
                 } else {
@@ -8453,10 +8932,11 @@ impl ChatWidget<'_> {
                     for line in prompt_text.lines() {
                         lines.push(Line::from(line.to_string()));
                     }
-                    self.history_push_plain_cell(history_cell::PlainHistoryCell::new(
+                    let state = history_cell::plain_message_state_from_lines(
                         lines,
                         history_cell::HistoryCellType::Notice,
-                    ));
+                    );
+                    self.history_push_plain_state(state);
                 }
                 self.request_redraw();
             }
@@ -8491,7 +8971,7 @@ impl ChatWidget<'_> {
                             _ => "<< Code review finished without a final response >>".to_string(),
                         };
                         self.push_background_tail(banner);
-                        self.history_push(history_cell::new_warning_event(
+                        self.history_push_plain_state(history_cell::new_warning_event(
                             "Review session ended without returning findings. Try `/review` again if you still need feedback.".to_string(),
                         ));
                     }
@@ -8510,14 +8990,17 @@ impl ChatWidget<'_> {
         match arg.as_str() {
             "on" => {
                 self.perf_state.enabled = true;
+                self.perf_state.pending_scroll_rows.set(0);
                 self.add_perf_output("performance tracing: on".to_string());
             }
             "off" => {
                 self.perf_state.enabled = false;
+                self.perf_state.pending_scroll_rows.set(0);
                 self.add_perf_output("performance tracing: off".to_string());
             }
             "reset" => {
                 self.perf_state.stats.borrow_mut().reset();
+                self.perf_state.pending_scroll_rows.set(0);
                 self.add_perf_output("performance stats reset".to_string());
             }
             "show" | "" => {
@@ -8672,7 +9155,7 @@ impl ChatWidget<'_> {
                 label
             ));
 
-            self.history_push(history_cell::new_user_prompt((*prompt).to_string()));
+            self.history_push_plain_state(history_cell::new_user_prompt((*prompt).to_string()));
 
             let mut reasoning_lines: Vec<Line<'static>> = reasoning_steps
                 .iter()
@@ -8778,7 +9261,7 @@ impl ChatWidget<'_> {
                     history_cell::PatchEventType::ApprovalRequest,
                     patch_changes,
                 ));
-                self.history_push(history_cell::new_patch_apply_failure(message));
+                self.history_push_plain_state(history_cell::new_patch_apply_failure(message));
             }
 
             self.history_push(history_cell::new_plan_update(plan.clone()));
@@ -8792,19 +9275,19 @@ impl ChatWidget<'_> {
                 (*result).to_string(),
             ));
 
-            self.history_push(history_cell::new_warning_event((*warning_text).to_string()));
-            self.history_push(history_cell::new_error_event((*error_text).to_string()));
+            self.history_push_plain_state(history_cell::new_warning_event((*warning_text).to_string()));
+            self.history_push_plain_state(history_cell::new_error_event((*error_text).to_string()));
 
-            self.history_push(history_cell::new_model_output("gpt-5-codex", *effort));
-            self.history_push(history_cell::new_reasoning_output(effort));
+            self.history_push_plain_state(history_cell::new_model_output("gpt-5-codex", *effort));
+            self.history_push_plain_state(history_cell::new_reasoning_output(effort));
 
-            self.history_push(history_cell::new_status_output(
+            self.history_push_plain_state(history_cell::new_status_output(
                 &self.config,
                 &self.total_token_usage,
                 &self.last_token_usage,
             ));
 
-            self.history_push(history_cell::new_prompts_output());
+            self.history_push_plain_state(history_cell::new_prompts_output());
         }
 
         let final_preview_lines = vec![
@@ -8826,10 +9309,11 @@ impl ChatWidget<'_> {
         for l in text.lines() {
             lines.push(ratatui::text::Line::from(l.to_string()))
         }
-        self.history_push_plain_cell(crate::history_cell::PlainHistoryCell::new(
+        let state = history_cell::plain_message_state_from_lines(
             lines,
             crate::history_cell::HistoryCellType::Notice,
-        ));
+        );
+        self.history_push_plain_state(state);
     }
 
     pub(crate) fn add_diff_output(&mut self, diff_output: String) {
@@ -8837,7 +9321,7 @@ impl ChatWidget<'_> {
     }
 
     pub(crate) fn add_status_output(&mut self) {
-        self.history_push(history_cell::new_status_output(
+        self.history_push_plain_state(history_cell::new_status_output(
             &self.config,
             &self.total_token_usage,
             &self.last_token_usage,
@@ -8914,7 +9398,7 @@ impl ChatWidget<'_> {
         }
 
         if self.rate_limit_snapshot.is_some() {
-            self.history_push(history_cell::new_warning_event(message));
+            self.history_push_plain_state(history_cell::new_warning_event(message));
         }
     }
 
@@ -8982,7 +9466,7 @@ impl ChatWidget<'_> {
         match crate::updates::resolve_upgrade_resolution() {
             crate::updates::UpgradeResolution::Command { command, display } => {
                 if command.is_empty() {
-                    self.history_push(history_cell::new_error_event(
+                    self.history_push_plain_state(history_cell::new_error_event(
                         "`/update` — no upgrade command available for this install.".to_string(),
                     ));
                     self.request_redraw();
@@ -9078,7 +9562,7 @@ impl ChatWidget<'_> {
     }
 
     pub(crate) fn add_prompts_output(&mut self) {
-        self.history_push(history_cell::new_prompts_output());
+        self.history_push_plain_state(history_cell::new_prompts_output());
     }
 
     #[allow(dead_code)]
@@ -9245,10 +9729,11 @@ impl ChatWidget<'_> {
             }
         }
 
-        self.history_push_plain_cell(crate::history_cell::PlainHistoryCell::new(
+        let state = history_cell::plain_message_state_from_lines(
             lines,
             crate::history_cell::HistoryCellType::Notice,
-        ));
+        );
+        self.history_push_plain_state(state);
         self.request_redraw();
     }
 
@@ -9759,7 +10244,7 @@ impl ChatWidget<'_> {
     ) -> Option<TerminalLaunch> {
         self.agents_overview_selected_index = selected_index;
         let Some((_, default_command)) = self.resolve_agent_install_command(&name) else {
-            self.history_push(history_cell::new_error_event(format!(
+            self.history_push_plain_state(history_cell::new_error_event(format!(
                 "No install command available for agent '{name}' on this platform."
             )));
             self.show_agents_overview_ui();
@@ -9802,7 +10287,7 @@ impl ChatWidget<'_> {
     ) -> Option<TerminalLaunch> {
         let trimmed = install_hint.trim();
         if trimmed.is_empty() {
-            self.history_push(history_cell::new_error_event(format!(
+            self.history_push_plain_state(history_cell::new_error_event(format!(
                 "No install command available for validation tool '{tool_name}'."
             )));
             self.request_redraw();
@@ -9811,7 +10296,7 @@ impl ChatWidget<'_> {
 
         let wrapped = wrap_command(trimmed);
         if wrapped.is_empty() {
-            self.history_push(history_cell::new_error_event(format!(
+            self.history_push_plain_state(history_cell::new_error_event(format!(
                 "Unable to build install command for validation tool '{tool_name}'."
             )));
             self.request_redraw();
@@ -9841,7 +10326,7 @@ impl ChatWidget<'_> {
         if let Some(rest) = trimmed.strip_prefix("$$") {
             let prompt = rest.trim();
             if prompt.is_empty() {
-                self.history_push(history_cell::new_error_event(
+                self.history_push_plain_state(history_cell::new_error_event(
                     "No prompt provided after '$$'.".to_string(),
                 ));
                 self.app_event_tx.send(AppEvent::RequestRedraw);
@@ -9878,7 +10363,7 @@ impl ChatWidget<'_> {
 
     fn run_terminal_command(&mut self, command: &str) {
         if wrap_command(command).is_empty() {
-            self.history_push(history_cell::new_error_event(
+            self.history_push_plain_state(history_cell::new_error_event(
                 "Unable to build shell command for execution.".to_string(),
             ));
             self.app_event_tx.send(AppEvent::RequestRedraw);
@@ -10651,7 +11136,7 @@ impl ChatWidget<'_> {
         latest_version: Option<String>,
     ) -> Option<TerminalLaunch> {
         if !crate::updates::upgrade_ui_enabled() {
-            self.history_push(history_cell::new_error_event(
+            self.history_push_plain_state(history_cell::new_error_event(
                 "`/update` — updates are disabled in debug builds. Set SHOW_UPGRADE=1 to preview.".
                     to_string(),
             ));
@@ -10661,7 +11146,7 @@ impl ChatWidget<'_> {
 
         self.pending_upgrade_notice = None;
         if command.is_empty() {
-            self.history_push(history_cell::new_error_event(
+            self.history_push_plain_state(history_cell::new_error_event(
                 "`/update` — no upgrade command available for this install.".to_string(),
             ));
             self.request_redraw();
@@ -10675,7 +11160,7 @@ impl ChatWidget<'_> {
         };
 
         if command_text.trim().is_empty() {
-            self.history_push(history_cell::new_error_event(
+            self.history_push_plain_state(history_cell::new_error_event(
                 "`/update` — unable to resolve upgrade command text.".to_string(),
             ));
             self.request_redraw();
@@ -11867,7 +12352,7 @@ impl ChatWidget<'_> {
     pub(crate) fn handle_model_command(&mut self, command_args: String) {
         if self.is_task_running() {
             let message = "'/model' is disabled while a task is in progress.".to_string();
-            self.history_push(history_cell::new_error_event(message));
+            self.history_push_plain_state(history_cell::new_error_event(message));
             return;
         }
 
@@ -11876,7 +12361,7 @@ impl ChatWidget<'_> {
             let message =
                 "No model presets are available. Update your configuration to define models."
                     .to_string();
-            self.history_push(history_cell::new_error_event(message));
+            self.history_push_plain_state(history_cell::new_error_event(message));
             return;
         }
 
@@ -11890,7 +12375,7 @@ impl ChatWidget<'_> {
                     "Unknown model preset: '{}'. Use /model with no arguments to open the selector.",
                     trimmed
                 );
-                self.history_push(history_cell::new_error_event(message));
+                self.history_push_plain_state(history_cell::new_error_event(message));
             }
             return;
         }
@@ -11944,14 +12429,15 @@ impl ChatWidget<'_> {
         }
 
         let placement = self.ui_placement_for_now();
-        let cell = history_cell::new_model_output(&self.config.model, self.config.model_reasoning_effort);
+        let state = history_cell::new_model_output(&self.config.model, self.config.model_reasoning_effort);
+        let cell = crate::history_cell::PlainHistoryCell::from_state(state.clone());
         self.push_system_cell(
             Box::new(cell),
             placement,
             Some("ui:model".to_string()),
             None,
             "system",
-            None,
+            Some(HistoryDomainRecord::Plain(state)),
         );
 
         self.request_redraw();
@@ -11976,7 +12462,7 @@ impl ChatWidget<'_> {
                         "Invalid reasoning level: '{}'. Use: minimal, low, medium, or high",
                         trimmed
                     );
-                    self.history_push(history_cell::new_error_event(message));
+                    self.history_push_plain_state(history_cell::new_error_event(message));
                     return;
                 }
             };
@@ -11987,7 +12473,7 @@ impl ChatWidget<'_> {
                 let message =
                     "No model presets are available. Update your configuration to define models."
                         .to_string();
-                self.history_push(history_cell::new_error_event(message));
+                self.history_push_plain_state(history_cell::new_error_event(message));
                 return;
             }
 
@@ -12005,7 +12491,7 @@ impl ChatWidget<'_> {
         if self.config.using_chatgpt_auth {
             let message =
                 "Text verbosity is not available when using Sign in with ChatGPT".to_string();
-            self.history_push(history_cell::new_error_event(message));
+            self.history_push_plain_state(history_cell::new_error_event(message));
             return;
         }
 
@@ -12024,7 +12510,7 @@ impl ChatWidget<'_> {
                         "Invalid verbosity level: '{}'. Use: low, medium, or high",
                         trimmed
                     );
-                    self.history_push(history_cell::new_error_event(message));
+                    self.history_push_plain_state(history_cell::new_error_event(message));
                     return;
                 }
             };
@@ -12186,14 +12672,15 @@ impl ChatWidget<'_> {
 
         // Add status message to history (replaceable system notice)
         let placement = self.ui_placement_for_now();
-        let cell = history_cell::new_reasoning_output(&new_effort);
+        let state = history_cell::new_reasoning_output(&new_effort);
+        let cell = crate::history_cell::PlainHistoryCell::from_state(state.clone());
         self.push_system_cell(
             Box::new(cell),
             placement,
             Some("ui:reasoning".to_string()),
             None,
             "system",
-            None,
+            Some(HistoryDomainRecord::Plain(state)),
         );
     }
 
@@ -12617,7 +13104,7 @@ impl ChatWidget<'_> {
                 .as_any_mut()
                 .downcast_mut::<history_cell::StreamingContentCell>()
             {
-                stream.rebuild_with_config(&self.config);
+                stream.update_context(self.config.file_opener, &self.config.cwd);
             } else if let Some(wait) = cell
                 .as_any_mut()
                 .downcast_mut::<history_cell::WaitStatusCell>()
@@ -12645,6 +13132,8 @@ impl ChatWidget<'_> {
 
         // Update snapshot and redraw; height caching can remain (colors don't affect wrap)
         self.last_theme = new;
+        self.render_theme_epoch = self.render_theme_epoch.saturating_add(1);
+        self.history_render.invalidate_all();
         self.app_event_tx.send(AppEvent::RequestRedraw);
     }
 
@@ -12766,6 +13255,7 @@ impl ChatWidget<'_> {
                             tx.send(crate::app_event::AppEvent::JumpBack {
                                 nth,
                                 prefill: text.clone(),
+                                history_snapshot: None,
                             });
                         }
                     })];
@@ -13038,116 +13528,82 @@ impl ChatWidget<'_> {
                     lines.len()
                 );
                 self.clear_reasoning_in_progress();
-                if let Some(ref want) = id {
-                    self.ensure_answer_stream_state(want);
-                }
 
-                let state_lookup = id
-                    .as_ref()
-                    .and_then(|want| self.history_state.assistant_stream_state(want).cloned());
-                let fallback_state =
-                    self.synthesize_stream_state_from_lines(id.as_ref(), &lines, true);
+                let explicit_id = id.clone();
+                let stream_identifier = explicit_id.clone().unwrap_or_else(|| {
+                    self.stream
+                        .current_stream_id()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "stream-preview".to_string())
+                });
 
-                if let Some(last) = self.history_cells.last_mut() {
-                    if let Some(stream_cell) = last
-                        .as_any_mut()
-                        .downcast_mut::<history_cell::StreamingContentCell>()
-                    {
-                        let ids_match = match id.as_ref() {
-                            Some(want) => stream_cell.matches_id(want),
-                            None => true,
+                let fallback_preview = self
+                    .synthesize_stream_state_from_lines(Some(&stream_identifier), &lines, true)
+                    .preview_markdown;
+                let preview_markdown = self
+                    .stream
+                    .preview_source_for_kind(StreamKind::Answer)
+                    .unwrap_or(fallback_preview);
+
+                let mutation = self.history_state.apply_domain_event(
+                    HistoryDomainEvent::UpsertAssistantStream {
+                        stream_id: stream_identifier.clone(),
+                        preview_markdown,
+                        delta: None,
+                        metadata: None,
+                    },
+                );
+
+                match mutation {
+                    HistoryMutation::Inserted { id: history_id, record, .. } => {
+                        let insert_key = match explicit_id.as_deref() {
+                            Some(rid) => self.try_stream_order_key(kind, rid).unwrap_or_else(|| {
+                                tracing::warn!(
+                                    "missing stream order key for Answer id={}; using synthetic key",
+                                    rid
+                                );
+                                self.next_internal_key()
+                            }),
+                            None => {
+                                tracing::warn!(
+                                    "missing stream id for Answer; using synthetic key"
+                                );
+                                self.next_internal_key()
+                            }
                         };
-                        if ids_match {
-                            let state = state_lookup
-                                .clone()
-                                .unwrap_or_else(|| fallback_state.clone());
-                            tracing::debug!(
-                                "history.update -> tail StreamingContentCell id={:?}",
-                                id
-                            );
-                            stream_cell.update_from_state(state, &self.config);
-                            self.invalidate_height_cache();
-                            self.autoscroll_if_near_bottom();
-                            self.request_redraw();
-                            return;
-                        }
-                    }
-                }
 
-                if let Some(ref want) = id {
-                    if let Some(idx) = self.history_cells.iter().rposition(|c| {
-                        c.as_any()
-                            .downcast_ref::<history_cell::StreamingContentCell>()
-                            .map(|sc| sc.matches_id(want))
-                            .unwrap_or(false)
-                    }) {
-                        if let Some(stream_cell) = self.history_cells[idx]
-                            .as_any_mut()
-                            .downcast_mut::<history_cell::StreamingContentCell>()
-                        {
-                            let state = state_lookup
-                                .clone()
-                                .unwrap_or_else(|| fallback_state.clone());
-                            tracing::debug!(
-                                "history.update -> StreamingContentCell at idx={} id={}",
-                                idx,
-                                want
-                            );
-                            stream_cell.update_from_state(state, &self.config);
-                            self.invalidate_height_cache();
-                            self.autoscroll_if_near_bottom();
-                            self.request_redraw();
-                            return;
-                        }
-                    }
-                }
-
-                let state = state_lookup.unwrap_or(fallback_state);
-
-                let key = match id.as_deref() {
-                    Some(rid) => self.try_stream_order_key(kind, rid).unwrap_or_else(|| {
-                        tracing::warn!(
-                            "missing stream order key for Answer id={}; using synthetic key",
-                            rid
+                        let mut cell = self
+                            .build_cell_from_record(&record)
+                            .expect("assistant stream record should build cell");
+                        self.assign_history_id(&mut cell, history_id);
+                        let new_idx = self.history_insert_existing_record(
+                            cell,
+                            insert_key,
+                            "stream-begin",
+                            history_id,
                         );
-                        self.next_internal_key()
-                    }),
-                    None => {
-                        tracing::warn!("missing stream id for Answer; using synthetic key");
-                        self.next_internal_key()
+                        tracing::debug!(
+                            "history.new StreamingContentCell at idx={} id={:?}",
+                            new_idx,
+                            explicit_id
+                        );
                     }
-                };
-                tracing::info!(
-                    "[order] insert Answer new id={:?} {}",
-                    id,
-                    Self::debug_fmt_order_key(key)
-                );
-                let new_idx = self.history_insert_with_key_global_tagged(
-                    Box::new(history_cell::new_streaming_content(state.clone(), &self.config)),
-                    key,
-                    "stream-begin",
-                    Some(HistoryDomainRecord::AssistantStream(state)),
-                );
-                tracing::debug!(
-                    "history.new StreamingContentCell at idx={} id={:?}",
-                    new_idx,
-                    id
-                );
+                    HistoryMutation::Replaced { id: history_id, record, .. } => {
+                        self.update_cell_from_record(history_id, record);
+                    }
+                    HistoryMutation::Noop => {}
+                    other => tracing::debug!(
+                        "unexpected streaming mutation {:?} for id={:?}",
+                        other,
+                        explicit_id
+                    ),
+                }
             }
         }
 
         // Auto-follow if near bottom so new inserts are visible
         self.autoscroll_if_near_bottom();
         self.request_redraw();
-    }
-
-    fn ensure_answer_stream_state(&mut self, stream_id: &str) {
-        let preview = self
-            .stream
-            .preview_source_for_kind(StreamKind::Answer)
-            .unwrap_or_default();
-        self.history_state
-            .upsert_assistant_stream_state(stream_id, preview, None, None);
     }
 
     fn synthesize_stream_state_from_lines(
@@ -13202,22 +13658,21 @@ impl ChatWidget<'_> {
                 state.id,
                 HistoryRecord::AssistantStream(state.clone()),
             );
+            self.autoscroll_if_near_bottom();
             return;
         }
 
-        if let Some(idx) = self.history_cells.iter().rposition(|c| {
-            c.as_any()
-                .downcast_ref::<history_cell::StreamingContentCell>()
-                .map(|sc| sc.matches_id(stream_id))
-                .unwrap_or(false)
-        }) {
-            if let Some(stream_cell) = self.history_cells[idx]
-                .as_any_mut()
-                .downcast_mut::<history_cell::StreamingContentCell>()
-            {
-                stream_cell.update_from_state(state, &self.config);
-                self.invalidate_height_cache();
-                self.request_redraw();
+        if let Some(existing) = self
+            .history_state
+            .assistant_stream_state(stream_id)
+            .cloned()
+        {
+            if existing.id != HistoryId::ZERO {
+                self.update_cell_from_record(
+                    existing.id,
+                    HistoryRecord::AssistantStream(existing),
+                );
+                self.autoscroll_if_near_bottom();
             }
         }
     }
@@ -13787,7 +14242,6 @@ impl ChatWidget<'_> {
     }
 
     fn launch_chrome_with_profile(&mut self, port: u16) {
-        use ratatui::text::Line;
         use std::process::Stdio;
 
         #[cfg(target_os = "macos")]
@@ -13876,10 +14330,10 @@ impl ChatWidget<'_> {
         }
 
         // Add status message
-        self.history_push_plain_cell(history_cell::PlainHistoryCell::new(
-            vec![Line::from("✅ Chrome launched with user profile")],
-            history_cell::HistoryCellType::BackgroundEvent,
-        ));
+        self.history_push_plain_paragraphs(
+            PlainMessageKind::Background,
+            vec!["✅ Chrome launched with user profile".to_string()],
+        );
         // Show browsing state in input border after launch
         self.bottom_pane
             .update_status_text("using browser".to_string());
@@ -14406,7 +14860,6 @@ impl ChatWidget<'_> {
     }
 
     fn launch_chrome_with_temp_profile(&mut self, port: u16) {
-        use ratatui::text::Line;
         use std::process::Stdio;
 
         let temp_dir = std::env::temp_dir();
@@ -14501,13 +14954,13 @@ impl ChatWidget<'_> {
         }
 
         // Add status message
-        self.history_push_plain_cell(history_cell::PlainHistoryCell::new(
-            vec![Line::from(format!(
+        self.history_push_plain_paragraphs(
+            PlainMessageKind::Background,
+            vec![format!(
                 "✅ Chrome launched with temporary profile at {}",
                 profile_dir.display()
-            ))],
-            history_cell::HistoryCellType::BackgroundEvent,
-        ));
+            )],
+        );
     }
 
     fn schedule_browser_autofix(
@@ -14674,10 +15127,10 @@ impl ChatWidget<'_> {
 
                 // Add status message
                 let status_msg = format!("🌐 Opening internal browser: {}", full_url);
-                self.history_push_plain_cell(history_cell::PlainHistoryCell::new(
-                    vec![Line::from(status_msg)],
-                    history_cell::HistoryCellType::BackgroundEvent,
-                ));
+                self.history_push_plain_paragraphs(
+                    PlainMessageKind::Background,
+                    vec![status_msg],
+                );
                 // Also reflect browsing activity in the input border
                 self.bottom_pane
                     .update_status_text("using browser".to_string());
@@ -15084,14 +15537,8 @@ impl ChatWidget<'_> {
             "Usage: /github [status|on|off]".to_string()
         };
 
-        let lines = response
-            .lines()
-            .map(|line| Line::from(line.to_string()))
-            .collect();
-        self.history_push_plain_cell(history_cell::PlainHistoryCell::new(
-            lines,
-            history_cell::HistoryCellType::BackgroundEvent,
-        ));
+        let lines: Vec<String> = response.lines().map(|line| line.to_string()).collect();
+        self.history_push_plain_paragraphs(PlainMessageKind::Background, lines);
     }
 
     fn validation_tool_flag_mut(
@@ -15436,12 +15883,12 @@ impl ChatWidget<'_> {
                     }
                     Err(e) => {
                         let msg = format!("Failed to read MCP config: {}", e);
-                        self.history_push(history_cell::new_error_event(msg));
+                        self.history_push_plain_state(history_cell::new_error_event(msg));
                     }
                 },
                 Err(e) => {
                     let msg = format!("Failed to locate CODEX_HOME: {}", e);
-                    self.history_push(history_cell::new_error_event(msg));
+                    self.history_push_plain_state(history_cell::new_error_event(msg));
                 }
             }
             return;
@@ -15479,19 +15926,19 @@ impl ChatWidget<'_> {
                     }
                     Err(e) => {
                         let msg = format!("Failed to read MCP config: {}", e);
-                        self.history_push(history_cell::new_error_event(msg));
+                        self.history_push_plain_state(history_cell::new_error_event(msg));
                     }
                 },
                 Err(e) => {
                     let msg = format!("Failed to locate CODEX_HOME: {}", e);
-                    self.history_push(history_cell::new_error_event(msg));
+                    self.history_push_plain_state(history_cell::new_error_event(msg));
                 }
             },
             "on" | "off" => {
                 let name = parts.next().unwrap_or("");
                 if name.is_empty() {
                     let msg = format!("Usage: /mcp {} <name>", sub);
-                    self.history_push(history_cell::new_error_event(msg));
+                    self.history_push_plain_state(history_cell::new_error_event(msg));
                     return;
                 }
                 match find_codex_home() {
@@ -15534,13 +15981,13 @@ impl ChatWidget<'_> {
                             }
                             Err(e) => {
                                 let msg = format!("Failed to update MCP server '{}': {}", name, e);
-                                self.history_push(history_cell::new_error_event(msg));
+                                self.history_push_plain_state(history_cell::new_error_event(msg));
                             }
                         }
                     }
                     Err(e) => {
                         let msg = format!("Failed to locate CODEX_HOME: {}", e);
-                        self.history_push(history_cell::new_error_event(msg));
+                        self.history_push_plain_state(history_cell::new_error_event(msg));
                     }
                 }
             }
@@ -15551,7 +15998,7 @@ impl ChatWidget<'_> {
                 let tail_tokens: Vec<String> = parts.map(|s| s.to_string()).collect();
                 if tail_tokens.is_empty() {
                     let msg = "Usage: /mcp add <name> <command> [args…] [ENV=VAL…]\n       or: /mcp add <command> [args…] [ENV=VAL…]".to_string();
-                    self.history_push(history_cell::new_error_event(msg));
+                    self.history_push_plain_state(history_cell::new_error_event(msg));
                     return;
                 }
 
@@ -15630,7 +16077,7 @@ impl ChatWidget<'_> {
 
                 if command.is_empty() {
                     let msg = "Usage: /mcp add <name> <command> [args…] [ENV=VAL…]".to_string();
-                    self.history_push(history_cell::new_error_event(msg));
+                    self.history_push_plain_state(history_cell::new_error_event(msg));
                     return;
                 }
 
@@ -15669,13 +16116,13 @@ impl ChatWidget<'_> {
                             }
                             Err(e) => {
                                 let msg = format!("Failed to add MCP server '{}': {}", name, e);
-                                self.history_push(history_cell::new_error_event(msg));
+                                self.history_push_plain_state(history_cell::new_error_event(msg));
                             }
                         }
                     }
                     Err(e) => {
                         let msg = format!("Failed to locate CODEX_HOME: {}", e);
-                        self.history_push(history_cell::new_error_event(msg));
+                        self.history_push_plain_state(history_cell::new_error_event(msg));
                     }
                 }
             }
@@ -15684,7 +16131,7 @@ impl ChatWidget<'_> {
                     "Unknown MCP command: '{}'\nUsage:\n  /mcp status\n  /mcp on <name>\n  /mcp off <name>\n  /mcp add <name> <command> [args…] [ENV=VAL…]",
                     sub
                 );
-                self.history_push(history_cell::new_error_event(msg));
+                self.history_push_plain_state(history_cell::new_error_event(msg));
             }
         }
     }
@@ -15876,14 +16323,8 @@ impl ChatWidget<'_> {
                 .unwrap_or_else(|_| "Failed to get browser status.".to_string());
 
             // Add the response to the UI
-            let lines = status
-                .lines()
-                .map(|line| Line::from(line.to_string()))
-                .collect();
-            self.history_push_plain_cell(history_cell::PlainHistoryCell::new(
-                lines,
-                history_cell::HistoryCellType::BackgroundEvent,
-            ));
+            let lines: Vec<String> = status.lines().map(|line| line.to_string()).collect();
+            self.history_push_plain_paragraphs(PlainMessageKind::Background, lines);
             return;
         }
 
@@ -16788,7 +17229,7 @@ fn strip_role_prefix_if_present(input: &str) -> (&str, bool) {
 impl ChatWidget<'_> {
     pub(crate) fn open_review_dialog(&mut self) {
         if self.is_task_running() {
-            self.history_push(crate::history_cell::new_error_event(
+            self.history_push_plain_state(crate::history_cell::new_error_event(
                 "`/review` — complete or cancel the current task before starting a new review.".to_string(),
             ));
             self.request_redraw();
@@ -17082,7 +17523,7 @@ impl ChatWidget<'_> {
     /// Handle `/review [focus]` command by starting a dedicated review session.
     pub(crate) fn handle_review_command(&mut self, args: String) {
         if self.is_task_running() {
-            self.history_push(crate::history_cell::new_error_event(
+            self.history_push_plain_state(crate::history_cell::new_error_event(
                 "`/review` — complete or cancel the current task before starting a new review.".to_string(),
             ));
             self.request_redraw();
@@ -17286,7 +17727,7 @@ impl ChatWidget<'_> {
     /// into the worktree. If `task` is non-empty, submits it immediately.
     pub(crate) fn handle_branch_command(&mut self, args: String) {
         if Self::is_branch_worktree_path(&self.config.cwd) {
-            self.history_push(crate::history_cell::new_error_event(
+            self.history_push_plain_state(crate::history_cell::new_error_event(
                 "`/branch` — already inside a branch worktree; switch to the repo root before creating another branch."
                     .to_string(),
             ));
@@ -17492,7 +17933,7 @@ impl ChatWidget<'_> {
     pub(crate) fn handle_project_command(&mut self, args: String) {
         let name = args.trim();
         if name.is_empty() {
-            self.history_push(crate::history_cell::new_error_event(
+            self.history_push_plain_state(crate::history_cell::new_error_event(
                 "`/cmd` — provide a project command name".to_string(),
             ));
             self.request_redraw();
@@ -17500,7 +17941,7 @@ impl ChatWidget<'_> {
         }
 
         if self.config.project_commands.is_empty() {
-            self.history_push(crate::history_cell::new_error_event(
+            self.history_push_plain_state(crate::history_cell::new_error_event(
                 "No project commands configured for this workspace.".to_string(),
             ));
             self.request_redraw();
@@ -17537,7 +17978,7 @@ impl ChatWidget<'_> {
             } else {
                 format!(" Available commands: {}", available.join(", "))
             };
-            self.history_push(crate::history_cell::new_error_event(format!(
+            self.history_push_plain_state(crate::history_cell::new_error_event(format!(
                 "Unknown project command `{}`.{}",
                 name,
                 suggestion
@@ -17653,7 +18094,7 @@ impl ChatWidget<'_> {
     /// non-trivial.
     pub(crate) fn handle_merge_command(&mut self) {
         if !Self::is_branch_worktree_path(&self.config.cwd) {
-            self.history_push(crate::history_cell::new_error_event(
+            self.history_push_plain_state(crate::history_cell::new_error_event(
                 "`/merge` — run this command from inside a branch worktree created with '/branch'."
                     .to_string(),
             ));
@@ -18297,7 +18738,7 @@ mod tests {
                 .collect();
 
             assert!(
-                !text.chars().any(|ch| (ch < ' ' && ch != ' ')),
+                !text.chars().any(|ch| ch < ' ' && ch != ' '),
                 "line still has control characters: {:?}",
                 text
             );
@@ -20121,7 +20562,10 @@ impl WidgetRef for &ChatWidget<'_> {
             .fg(crate::colors::text());
         fill_rect(buf, history_area, Some(' '), base_style);
 
-        // Collect all content items into a single list
+        // Collect all content items into a single list.
+        // The shared renderer cache (documented in docs/history_render_cache_bridge.md)
+        // consumes this list via `RenderRequest` so we can reuse per-cell caches
+        // while progressively moving the draw loop toward pure HistoryRecord state.
         let mut all_content: Vec<&dyn HistoryCell> = Vec::new();
         for cell in self.history_cells.iter() {
             all_content.push(cell);
@@ -20152,35 +20596,96 @@ impl WidgetRef for &ChatWidget<'_> {
             all_content.push(cell);
         }
 
-        let mut assistant_layouts: Vec<Option<crate::history_cell::AssistantLayoutCache>> =
-            vec![None; all_content.len()];
-        let mut default_layouts: Vec<Option<Rc<CachedLayout>>> =
-            vec![None; all_content.len()];
-
         // Append any queued user messages as sticky preview cells at the very
         // end so they always render at the bottom until they are dispatched.
         let mut queued_preview_cells: Vec<crate::history_cell::PlainHistoryCell> = Vec::new();
         if !self.queued_user_messages.is_empty() {
             for qm in &self.queued_user_messages {
-                queued_preview_cells.push(crate::history_cell::new_queued_user_prompt(
-                    qm.display_text.clone(),
-                ));
+                let state = history_cell::new_queued_user_prompt(qm.display_text.clone());
+                queued_preview_cells.push(crate::history_cell::PlainHistoryCell::from_state(state));
             }
             for c in &queued_preview_cells {
                 all_content.push(c as &dyn HistoryCell);
             }
         }
 
-        if assistant_layouts.len() < all_content.len() {
-            assistant_layouts.resize(all_content.len(), None);
-        }
-        if default_layouts.len() < all_content.len() {
-            default_layouts.resize(all_content.len(), None);
+        let mut render_requests: Vec<RenderRequest> = Vec::with_capacity(all_content.len());
+        for (idx, cell) in all_content.iter().enumerate() {
+            let (history_id, has_record) = if idx < self.history_cell_ids.len() {
+                if let Some(id) = self.history_cell_ids[idx] {
+                    let exists = self.history_state.index_of(id).is_some();
+                    (id, exists)
+                } else {
+                    (HistoryId::ZERO, false)
+                }
+            } else {
+                (HistoryId::ZERO, false)
+            };
+
+            let is_streaming = cell
+                .as_any()
+                .downcast_ref::<crate::history_cell::StreamingContentCell>()
+                .is_some();
+
+            let mut cacheable = history_id != HistoryId::ZERO
+                && has_record
+                && !cell.has_custom_render()
+                && !cell.is_animating()
+                && !is_streaming;
+
+            let assistant = cell
+                .as_any()
+                .downcast_ref::<crate::history_cell::AssistantMarkdownCell>();
+
+            let mut fallback_lines = None;
+            let mut kind = RenderRequestKind::Legacy;
+            if history_id != HistoryId::ZERO {
+                if let Some(record) = self.history_state.record(history_id) {
+                    match record {
+                        HistoryRecord::Exec(_) => {
+                            kind = RenderRequestKind::Exec { id: history_id };
+                        }
+                        HistoryRecord::MergedExec(_) => {
+                            kind = RenderRequestKind::MergedExec { id: history_id };
+                        }
+                        HistoryRecord::Explore(_) => {
+                            kind = RenderRequestKind::Explore { id: history_id };
+                        }
+                        HistoryRecord::Diff(_) => {
+                            kind = RenderRequestKind::Diff { id: history_id };
+                        }
+                        HistoryRecord::AssistantStream(stream_state) => {
+                            kind = RenderRequestKind::Streaming { id: history_id };
+                            if stream_state.in_progress {
+                                cacheable = false;
+                            }
+                        }
+                        HistoryRecord::AssistantMessage(_) => {
+                            kind = RenderRequestKind::Assistant { id: history_id };
+                        }
+                        other => {
+                            fallback_lines =
+                                Some(history_cell::lines_from_record(other, &self.config));
+                        }
+                    }
+                }
+            }
+
+            render_requests.push(RenderRequest {
+                history_id,
+                cell: Some(*cell),
+                assistant,
+                use_cache: cacheable,
+                fallback_lines,
+                kind,
+                config: &self.config,
+            });
         }
 
         // Calculate total content height using prefix sums; build if needed
         let spacing = 1u16; // Standard spacing between cells
         const GUTTER_WIDTH: u16 = 2; // Same as in render loop
+        let reasoning_visible = self.is_reasoning_shown();
         let cache_width = content_area.width.saturating_sub(GUTTER_WIDTH);
 
         // Opportunistically clear height cache if width changed
@@ -20192,161 +20697,81 @@ impl WidgetRef for &ChatWidget<'_> {
             p.frames = p.frames.saturating_add(1);
         }
 
-        // Detect dynamic content that requires per-frame recomputation
-        let has_active_animation_early = self.history_cells.iter().any(|cell| cell.is_animating());
-        let must_rebuild_prefix = !self.history_render.prefix_valid.get()
-            || self.history_render.last_prefix_width.get() != content_area.width
-            || self.history_render.last_prefix_count.get() != all_content.len()
-            || streaming_cell.is_some()
-            || has_active_animation_early;
+        let render_settings = RenderSettings::new(cache_width, self.render_theme_epoch, reasoning_visible);
+        let rendered_cells = self
+            .history_render
+            .visible_cells(
+                &self.history_state,
+                &render_requests,
+                render_settings,
+            );
 
-        let total_height: u16 = if must_rebuild_prefix {
-            let perf_enabled = self.perf_state.enabled;
-            let total_start = if perf_enabled {
-                Some(std::time::Instant::now())
-            } else {
-                None
-            };
-            let mut ps = self.history_render.prefix_sums.borrow_mut();
-            ps.clear();
-            ps.push(0);
-            let mut acc = 0u16;
-            if perf_enabled {
-                let mut p = self.perf_state.stats.borrow_mut();
-                p.prefix_rebuilds = p.prefix_rebuilds.saturating_add(1);
-            }
-            for (idx, item) in all_content.iter().enumerate() {
-                let content_width = content_area.width.saturating_sub(GUTTER_WIDTH);
-                let maybe_assistant = item
-                    .as_any()
-                    .downcast_ref::<crate::history_cell::AssistantMarkdownCell>();
-                let is_streaming = item
-                    .as_any()
-                    .downcast_ref::<crate::history_cell::StreamingContentCell>()
-                    .is_some();
-                let can_use_layout_cache = !item.has_custom_render()
-                    && !item.is_animating()
-                    && !is_streaming;
+        let perf_enabled = self.perf_state.enabled;
+        let total_start = if perf_enabled {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+        let mut ps = self.history_render.prefix_sums.borrow_mut();
+        ps.clear();
+        ps.push(0);
+        let mut acc = 0u16;
+        if perf_enabled {
+            let mut p = self.perf_state.stats.borrow_mut();
+            p.prefix_rebuilds = p.prefix_rebuilds.saturating_add(1);
+        }
+        for (idx, vis) in rendered_cells.iter().enumerate() {
+            let cell = vis.cell.expect("rendered cell missing source");
+            let content_width = content_area.width.saturating_sub(GUTTER_WIDTH);
+            let line_count = vis
+                .layout
+                .as_ref()
+                .map(|layout| layout.line_count().min(u16::MAX as usize) as u16)
+                .unwrap_or_else(|| cell.desired_height(content_width));
+            acc = acc.saturating_add(line_count);
 
-                let h = if let Some(assistant) = maybe_assistant {
-                    if perf_enabled {
-                        let mut p = self.perf_state.stats.borrow_mut();
-                        p.height_misses_total = p.height_misses_total.saturating_add(1);
-                    }
-                    let t0 = perf_enabled.then(Instant::now);
-                    let plan = assistant.ensure_layout(content_width);
-                    let rows = plan.total_rows();
-                    assistant_layouts[idx] = Some(plan);
-                    default_layouts[idx] = None;
-                    if let (true, Some(start)) = (perf_enabled, t0) {
-                        let dt = start.elapsed().as_nanos();
-                        let mut p = self.perf_state.stats.borrow_mut();
-                        p.record_total((idx, content_width), "assistant", dt);
-                    }
-                    rows
-                } else if can_use_layout_cache {
-                    let label = perf_enabled.then(|| self.perf_label_for_item(*item));
-                    let start = perf_enabled.then(Instant::now);
-                    let layout_ref = self
-                        .history_render
-                        .ensure_layout(idx, content_width, || item.display_lines_trimmed());
-                    if perf_enabled {
-                        let mut p = self.perf_state.stats.borrow_mut();
-                        if layout_ref.freshly_computed {
-                            p.height_misses_total = p.height_misses_total.saturating_add(1);
-                        } else {
-                            p.height_hits_total = p.height_hits_total.saturating_add(1);
-                        }
-                    }
-                    if layout_ref.freshly_computed {
-                        if let (true, Some(begin)) = (perf_enabled, start) {
-                            let dt = begin.elapsed().as_nanos();
-                            let mut p = self.perf_state.stats.borrow_mut();
-                            p.record_total(
-                                (idx, content_width),
-                                label.as_deref().unwrap_or("unknown"),
-                                dt,
-                            );
-                        }
-                    }
-                    let height = layout_ref
-                        .line_count()
-                        .min(u16::MAX as usize) as u16;
-                    default_layouts[idx] = Some(layout_ref.layout());
-                    height
-                } else {
-                    if perf_enabled {
-                        let mut p = self.perf_state.stats.borrow_mut();
-                        p.height_misses_total = p.height_misses_total.saturating_add(1);
-                    }
-                    let label = perf_enabled.then(|| self.perf_label_for_item(*item));
-                    let t0 = perf_enabled.then(Instant::now);
-                    let computed = item.desired_height(content_width);
-                    default_layouts[idx] = None;
-                    if let (true, Some(start)) = (perf_enabled, t0) {
-                        let dt = start.elapsed().as_nanos();
-                        let mut p = self.perf_state.stats.borrow_mut();
-                        p.record_total(
-                            (idx, content_width),
-                            label.as_deref().unwrap_or("unknown"),
-                            dt,
-                        );
-                    }
-                    computed
-                };
-                acc = acc.saturating_add(h);
-                let mut should_add_spacing = idx < all_content.len() - 1 && h > 0;
-                if should_add_spacing {
-                    let this_is_collapsed_reasoning = item
-                        .as_any()
-                        .downcast_ref::<crate::history_cell::CollapsibleReasoningCell>()
-                        .map(|rc| rc.is_collapsed())
-                        .unwrap_or(false);
-                    if this_is_collapsed_reasoning {
-                        if let Some(next_item) = all_content.get(idx + 1) {
-                            let next_is_collapsed_reasoning = next_item
+            let mut should_add_spacing = idx < rendered_cells.len() - 1 && line_count > 0;
+            if should_add_spacing {
+                let this_collapsed = cell
+                    .as_any()
+                    .downcast_ref::<crate::history_cell::CollapsibleReasoningCell>()
+                    .map(|rc| rc.is_collapsed())
+                    .unwrap_or(false);
+                if this_collapsed {
+                    if let Some(next_vis) = rendered_cells.get(idx + 1) {
+                        if let Some(next_cell) = next_vis.cell {
+                            let next_collapsed = next_cell
                                 .as_any()
                                 .downcast_ref::<crate::history_cell::CollapsibleReasoningCell>()
                                 .map(|rc| rc.is_collapsed())
                                 .unwrap_or(false);
-                            if next_is_collapsed_reasoning {
+                            if next_collapsed {
                                 should_add_spacing = false;
                             }
                         }
                     }
                 }
-                if should_add_spacing {
-                    acc = acc.saturating_add(spacing);
-                }
-                ps.push(acc);
             }
+            if should_add_spacing {
+                acc = acc.saturating_add(spacing);
+            }
+            ps.push(acc);
+        }
 
-            let total = *ps.last().unwrap_or(&0);
-            if let Some(start) = total_start {
-                if self.perf_state.enabled {
-                    let mut p = self.perf_state.stats.borrow_mut();
-                    p.ns_total_height =
-                        p.ns_total_height.saturating_add(start.elapsed().as_nanos());
-                }
+        let total_height = *ps.last().unwrap_or(&0);
+        if let Some(start) = total_start {
+            if self.perf_state.enabled {
+                let mut p = self.perf_state.stats.borrow_mut();
+                p.ns_total_height = p.ns_total_height.saturating_add(start.elapsed().as_nanos());
             }
-            // Update cache keys
-            self.history_render
-                .last_prefix_width
-                .set(content_area.width);
-            self.history_render
-                .last_prefix_count
-                .set(all_content.len());
-            self.history_render.prefix_valid.set(true);
-            total
-        } else {
-            // Use cached prefix sums
-            *self
-                .history_render
-                .prefix_sums
-                .borrow()
-                .last()
-                .unwrap_or(&0)
-        };
+        }
+        self.history_render
+            .last_prefix_width
+            .set(content_area.width);
+        self.history_render
+            .last_prefix_count
+            .set(rendered_cells.len());
+        self.history_render.prefix_valid.set(true);
 
         // Check for active animations using the trait method
         let has_active_animation = self.history_cells.iter().any(|cell| cell.is_animating());
@@ -20425,13 +20850,12 @@ impl WidgetRef for &ChatWidget<'_> {
             Ok(i) => i,
             Err(i) => i.saturating_sub(1),
         };
-        start_idx = start_idx.min(all_content.len());
+        start_idx = start_idx.min(rendered_cells.len());
         let mut end_idx = match ps.binary_search(&viewport_bottom) {
             Ok(i) => i,
             Err(i) => i,
         };
-        // Extend end_idx by one to include the next item when the viewport cuts into spacing
-        end_idx = end_idx.saturating_add(1).min(all_content.len());
+        end_idx = end_idx.saturating_add(1).min(rendered_cells.len());
 
         let render_loop_start = if self.perf_state.enabled {
             Some(std::time::Instant::now())
@@ -20439,7 +20863,10 @@ impl WidgetRef for &ChatWidget<'_> {
             None
         };
         for idx in start_idx..end_idx {
-            let item = all_content[idx];
+            let visible = &rendered_cells[idx];
+            let item = visible
+                .cell
+                .expect("visible cell missing backing cell for render");
             // Calculate height with reduced width due to gutter
             const GUTTER_WIDTH: u16 = 2;
             let content_width = content_area.width.saturating_sub(GUTTER_WIDTH);
@@ -20451,63 +20878,27 @@ impl WidgetRef for &ChatWidget<'_> {
                 .downcast_ref::<crate::history_cell::StreamingContentCell>()
                 .is_some();
 
-            let can_use_layout_cache = !item.has_custom_render()
-                && !item.is_animating()
-                && !is_streaming
-                && maybe_assistant.is_none();
+            let mut layout_for_render: Option<Rc<CachedLayout>> = visible
+                .layout
+                .as_ref()
+                .map(|lr| lr.layout());
 
-            let mut layout_for_render: Option<Rc<CachedLayout>> = None;
-
-            let item_height = if let Some(assistant) = maybe_assistant {
-                if self.perf_state.enabled {
-                    let mut p = self.perf_state.stats.borrow_mut();
-                    p.height_misses_render = p.height_misses_render.saturating_add(1);
-                }
-                let start = self.perf_state.enabled.then(Instant::now);
-                default_layouts[idx] = None;
-                let plan_ref = if let Some(plan) = assistant_layouts[idx].as_ref() {
-                    plan.clone()
-                } else {
-                    let new_plan = assistant.ensure_layout(content_width);
-                    assistant_layouts[idx] = Some(new_plan);
-                    assistant_layouts[idx].as_ref().unwrap().clone()
-                };
-                if let (true, Some(t0)) = (self.perf_state.enabled, start) {
-                    let dt = t0.elapsed().as_nanos();
-                    let mut p = self.perf_state.stats.borrow_mut();
-                    p.record_render((idx, content_width), "assistant", dt);
-                }
-                plan_ref.total_rows()
-            } else if can_use_layout_cache {
-                let mut timing: Option<Instant> = None;
-                let label = self
-                    .perf_state
-                    .enabled
-                    .then(|| self.perf_label_for_item(item));
-                let layout_ref = if let Some(existing) = default_layouts[idx].as_ref() {
-                    LayoutRef {
-                        data: Rc::clone(existing),
-                        freshly_computed: false,
-                    }
-                } else {
-                    timing = self.perf_state.enabled.then(Instant::now);
-                    let lr = self
-                        .history_render
-                        .ensure_layout(idx, content_width, || item.display_lines_trimmed());
-                    default_layouts[idx] = Some(lr.layout());
-                    lr
-                };
-
-                if self.perf_state.enabled {
-                    let mut p = self.perf_state.stats.borrow_mut();
-                    if layout_ref.freshly_computed {
+            let item_height = visible
+                .layout
+                .as_ref()
+                .map(|layout| layout.line_count().min(u16::MAX as usize) as u16)
+                .unwrap_or_else(|| {
+                    if self.perf_state.enabled {
+                        let mut p = self.perf_state.stats.borrow_mut();
                         p.height_misses_render = p.height_misses_render.saturating_add(1);
-                    } else {
-                        p.height_hits_render = p.height_hits_render.saturating_add(1);
                     }
-                }
-                if layout_ref.freshly_computed {
-                    if let (true, Some(t0)) = (self.perf_state.enabled, timing) {
+                    let label = self
+                        .perf_state
+                        .enabled
+                        .then(|| self.perf_label_for_item(item));
+                    let start = self.perf_state.enabled.then(Instant::now);
+                    let computed = item.desired_height(content_width);
+                    if let (true, Some(t0)) = (self.perf_state.enabled, start) {
                         let dt = t0.elapsed().as_nanos();
                         let mut p = self.perf_state.stats.borrow_mut();
                         p.record_render(
@@ -20516,34 +20907,8 @@ impl WidgetRef for &ChatWidget<'_> {
                             dt,
                         );
                     }
-                }
-                layout_for_render = Some(layout_ref.layout());
-                layout_ref
-                    .line_count()
-                    .min(u16::MAX as usize) as u16
-            } else {
-                if self.perf_state.enabled {
-                    let mut p = self.perf_state.stats.borrow_mut();
-                    p.height_misses_render = p.height_misses_render.saturating_add(1);
-                }
-                let label = self
-                    .perf_state
-                    .enabled
-                    .then(|| self.perf_label_for_item(item));
-                let start = self.perf_state.enabled.then(Instant::now);
-                let computed = item.desired_height(content_width);
-                if let (true, Some(t0)) = (self.perf_state.enabled, start) {
-                    let dt = t0.elapsed().as_nanos();
-                    let mut p = self.perf_state.stats.borrow_mut();
-                    p.record_render(
-                        (idx, content_width),
-                        label.as_deref().unwrap_or("unknown"),
-                        dt,
-                    );
-                }
-                default_layouts[idx] = None;
-                computed
-            };
+                    computed
+                });
 
             let content_y = ps[idx];
 
@@ -20801,22 +21166,16 @@ impl WidgetRef for &ChatWidget<'_> {
 
                 // Render the cell content first
                 let mut handled_assistant = false;
-                if let Some(assistant) = item
-                    .as_any()
-                    .downcast_ref::<crate::history_cell::AssistantMarkdownCell>()
-                {
-                    let plan_ref = if let Some(plan) = assistant_layouts[idx].as_ref() {
-                        plan
-                    } else {
-                        let new_plan = assistant.ensure_layout(content_width);
-                        assistant_layouts[idx] = Some(new_plan);
-                        assistant_layouts[idx].as_ref().unwrap()
-                    };
-                    if skip_rows >= plan_ref.total_rows() || item_area.height == 0 {
+                if let Some(plan) = visible.assistant_plan.as_ref() {
+                    if let Some(assistant) = visible
+                        .cell
+                        .and_then(|c| c.as_any().downcast_ref::<crate::history_cell::AssistantMarkdownCell>())
+                    {
+                        if skip_rows < plan.total_rows() && item_area.height > 0 {
+                            assistant.render_with_layout(plan, item_area, buf, skip_rows);
+                        }
                         handled_assistant = true;
-                    } else {
-                        assistant.render_with_layout(plan_ref, item_area, buf, skip_rows);
-                        handled_assistant = true;
+                        layout_for_render = None;
                     }
                 }
 
@@ -20880,7 +21239,7 @@ impl WidgetRef for &ChatWidget<'_> {
             // Add spacing only if something was actually rendered for this item.
             // Prevent a stray blank when zero-height, and suppress spacing between
             // consecutive collapsed reasoning titles so they appear as a tight list.
-            let mut should_add_spacing = idx < all_content.len() - 1 && visible_height > 0;
+            let mut should_add_spacing = idx < rendered_cells.len() - 1 && visible_height > 0;
             if should_add_spacing {
                 // Special-case: two adjacent collapsed reasoning cells → no spacer.
                 let this_is_collapsed_reasoning = item
@@ -20889,11 +21248,14 @@ impl WidgetRef for &ChatWidget<'_> {
                     .map(|rc| rc.is_collapsed())
                     .unwrap_or(false);
                 if this_is_collapsed_reasoning {
-                    if let Some(next_item) = all_content.get(idx + 1) {
-                        let next_is_collapsed_reasoning = next_item
-                            .as_any()
-                            .downcast_ref::<crate::history_cell::CollapsibleReasoningCell>()
-                            .map(|rc| rc.is_collapsed())
+                    if let Some(next_vis) = rendered_cells.get(idx + 1) {
+                        let next_is_collapsed_reasoning = next_vis
+                            .cell
+                            .and_then(|c| {
+                                c.as_any()
+                                    .downcast_ref::<crate::history_cell::CollapsibleReasoningCell>()
+                                    .map(|rc| rc.is_collapsed())
+                            })
                             .unwrap_or(false);
                         if next_is_collapsed_reasoning {
                             should_add_spacing = false;
@@ -20910,8 +21272,18 @@ impl WidgetRef for &ChatWidget<'_> {
         }
         if let Some(start) = render_loop_start {
             if self.perf_state.enabled {
-                let mut p = self.perf_state.stats.borrow_mut();
-                p.ns_render_loop = p.ns_render_loop.saturating_add(start.elapsed().as_nanos());
+                let elapsed = start.elapsed().as_nanos();
+                let pending_scroll = self.perf_state.pending_scroll_rows.get();
+                {
+                    let mut p = self.perf_state.stats.borrow_mut();
+                    p.ns_render_loop = p.ns_render_loop.saturating_add(elapsed);
+                    if pending_scroll > 0 {
+                        p.record_scroll_render(pending_scroll, elapsed);
+                    }
+                }
+                if pending_scroll > 0 {
+                    self.perf_state.pending_scroll_rows.set(0);
+                }
             }
         }
 
@@ -21887,6 +22259,7 @@ impl ExecState {
 pub(super) struct RunningToolEntry {
     order_key: OrderKey,
     fallback_index: usize,
+    history_id: Option<HistoryId>,
 }
 
 impl RunningToolEntry {
@@ -21894,7 +22267,13 @@ impl RunningToolEntry {
         Self {
             order_key,
             fallback_index,
+            history_id: None,
         }
+    }
+
+    fn with_history_id(mut self, id: Option<HistoryId>) -> Self {
+        self.history_id = id;
+        self
     }
 }
 
@@ -22171,7 +22550,8 @@ fn render_text_box(
 #[derive(Default)]
 struct PerfState {
     enabled: bool,
-    stats: std::cell::RefCell<PerfStats>,
+    stats: RefCell<PerfStats>,
+    pending_scroll_rows: Cell<u64>,
 }
 
 impl ChatWidget<'_> {
@@ -22233,7 +22613,7 @@ impl ChatWidget<'_> {
                             "⚠️ Failed to persist TUI notifications setting: {}",
                             err
                         );
-                        self.history_push(history_cell::new_error_event(msg));
+                        self.history_push_plain_state(history_cell::new_error_event(msg));
                     }
                 }
             }
@@ -22328,12 +22708,12 @@ impl ChatWidget<'_> {
                 }
                 Err(e) => {
                     let msg = format!("Failed to update MCP server '{}': {}", name, e);
-                    self.history_push(history_cell::new_error_event(msg));
+                    self.history_push_plain_state(history_cell::new_error_event(msg));
                 }
             },
             Err(e) => {
                 let msg = format!("Failed to locate CODEX_HOME: {}", e);
-                self.history_push(history_cell::new_error_event(msg));
+                self.history_push_plain_state(history_cell::new_error_event(msg));
             }
         }
     }

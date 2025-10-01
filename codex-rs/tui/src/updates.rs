@@ -2,7 +2,7 @@ use chrono::DateTime;
 use chrono::Utc;
 use serde::Deserialize;
 use serde::Serialize;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::fs;
 use std::io::ErrorKind;
 use std::io::Write;
@@ -19,22 +19,40 @@ use codex_core::default_client::create_client;
 use tokio::process::Command;
 use tracing::{info, warn};
 
-static FORCE_UPGRADE_PREVIEW: OnceLock<bool> = OnceLock::new();
+const FORCE_UPGRADE_UNSET: u8 = 0;
+const FORCE_UPGRADE_FALSE: u8 = 1;
+const FORCE_UPGRADE_TRUE: u8 = 2;
+
+static FORCE_UPGRADE_PREVIEW: AtomicU8 = AtomicU8::new(FORCE_UPGRADE_UNSET);
 
 fn force_upgrade_preview_enabled() -> bool {
-    *FORCE_UPGRADE_PREVIEW.get_or_init(|| {
-        std::env::var("SHOW_UPGRADE")
-            .map(|value| {
-                let normalized = value.trim().to_ascii_lowercase();
-                matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
-            })
-            .unwrap_or(false)
-    })
+    match FORCE_UPGRADE_PREVIEW.load(Ordering::Relaxed) {
+        FORCE_UPGRADE_TRUE => true,
+        FORCE_UPGRADE_FALSE => false,
+        _ => {
+            let computed = std::env::var("SHOW_UPGRADE")
+                .map(|value| {
+                    let normalized = value.trim().to_ascii_lowercase();
+                    matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+                })
+                .unwrap_or(false);
+
+            FORCE_UPGRADE_PREVIEW.store(
+                if computed {
+                    FORCE_UPGRADE_TRUE
+                } else {
+                    FORCE_UPGRADE_FALSE
+                },
+                Ordering::Relaxed,
+            );
+            computed
+        }
+    }
 }
 
 #[cfg(test)]
 pub(crate) fn reset_force_upgrade_preview_for_tests() {
-    FORCE_UPGRADE_PREVIEW.take();
+    FORCE_UPGRADE_PREVIEW.store(FORCE_UPGRADE_UNSET, Ordering::Relaxed);
 }
 
 pub fn upgrade_ui_enabled() -> bool {
