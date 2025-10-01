@@ -1493,6 +1493,10 @@ impl ChatComposer {
                 modifiers: KeyModifiers::NONE,
                 ..
             } => {
+                if self.try_handle_backslash_continuation() {
+                    return (InputResult::None, true);
+                }
+
                 // Record the exact text that was typed (before replacement)
                 let original_text = self.textarea.text().to_string();
 
@@ -1525,6 +1529,74 @@ impl ChatComposer {
             }
             input => self.handle_input_basic(input),
         }
+    }
+
+    /// Convert a trailing backslash into a newline continuation when appropriate.
+    fn try_handle_backslash_continuation(&mut self) -> bool {
+        let cursor = self.textarea.cursor();
+        let text = self.textarea.text();
+
+        if let Some((replace_range, indent)) =
+            Self::backslash_continuation_target(text, cursor)
+        {
+            let mut replacement = String::with_capacity(1 + indent.len());
+            replacement.push('\n');
+            replacement.push_str(&indent);
+
+            self.textarea.replace_range(replace_range, &replacement);
+            self.history.reset_navigation();
+            self.post_paste_space_guard = None;
+            self.pending_pastes
+                .retain(|(placeholder, _)| self.textarea.text().contains(placeholder));
+            if !self.textarea.text().is_empty() {
+                self.typed_anything = true;
+            }
+            self.next_down_scrolls_history = false;
+            return true;
+        }
+        false
+    }
+
+    /// Determine if the current cursor position qualifies for backslash continuation.
+    fn backslash_continuation_target(
+        text: &str,
+        cursor: usize,
+    ) -> Option<(std::ops::Range<usize>, String)> {
+        if cursor != text.len() || cursor == 0 {
+            return None;
+        }
+
+        let before_cursor = &text[..cursor];
+        let trimmed = before_cursor.trim_end_matches(' ');
+        if trimmed.len() != before_cursor.len() {
+            // Trailing spaces cancel continuation.
+            return None;
+        }
+
+        let mut backslash_count = 0usize;
+        for ch in trimmed.chars().rev() {
+            if ch == '\\' {
+                backslash_count += 1;
+            } else {
+                break;
+            }
+        }
+
+        if backslash_count == 0 || backslash_count % 2 == 0 {
+            return None;
+        }
+
+        let replace_start = trimmed.len() - '\\'.len_utf8();
+        let line_start = text[..replace_start]
+            .rfind('\n')
+            .map(|idx| idx + 1)
+            .unwrap_or(0);
+        let indent: String = text[line_start..replace_start]
+            .chars()
+            .take_while(|ch| matches!(ch, ' ' | '\t'))
+            .collect();
+
+        Some((replace_start..cursor, indent))
     }
 
     /// Handle generic Input events that modify the textarea content.
@@ -2303,10 +2375,6 @@ mod tests {
 
     #[test]
     fn handle_paste_small_inserts_text() {
-        use crossterm::event::KeyCode;
-        use crossterm::event::KeyEvent;
-        use crossterm::event::KeyModifiers;
-
         let (tx, _rx) = std::sync::mpsc::channel();
         let sender = AppEventSender::new(tx);
         let mut composer = ChatComposer::new(true, sender, false);
@@ -2322,6 +2390,81 @@ mod tests {
             InputResult::Submitted(text) => assert_eq!(text, "hello"),
             _ => panic!("expected Submitted"),
         }
+    }
+
+    #[test]
+    fn backslash_continuation_inserts_newline() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(true, sender, false);
+
+        composer.insert_str("Hello\\");
+        let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(composer.textarea.text(), "Hello\n");
+        assert_eq!(composer.textarea.cursor(), composer.textarea.text().len());
+    }
+
+    #[test]
+    fn backslash_continuation_even_count_submits() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(true, sender, false);
+
+        composer.insert_str("Path: C:\\\\");
+        let (result, _) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        match result {
+            InputResult::Submitted(text) => assert_eq!(text, "Path: C:\\\\\\\\"),
+            other => panic!("expected Submitted, got {other:?}"),
+        }
+        assert!(composer.textarea.text().is_empty());
+    }
+
+    #[test]
+    fn backslash_continuation_trailing_space_submits() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(true, sender, false);
+
+        composer.insert_str("Hello\\ ");
+        let (result, _) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        match result {
+            InputResult::Submitted(text) => assert_eq!(text, "Hello\\ "),
+            other => panic!("expected Submitted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn backslash_continuation_preserves_indent() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(true, sender, false);
+
+        composer.insert_str("    if foo {\\");
+        let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(composer.textarea.text(), "    if foo {\n    ");
+        assert_eq!(composer.textarea.cursor(), composer.textarea.text().len());
     }
 
     #[test]
