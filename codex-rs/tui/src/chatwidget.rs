@@ -7120,7 +7120,20 @@ impl ChatWidget<'_> {
                 // observed the corresponding TaskComplete event. Clear the active marker now so
                 // the status spinner can hide promptly when nothing else is running.
                 self.active_task_ids.remove(&id);
-                self.maybe_hide_spinner();
+                // Ensure the footer clears immediately when the answer ends without waiting
+                // for a TaskComplete event. This mirrors maybe_hide_spinner but avoids the
+                // extra call when we already know the UI is idle.
+                if !self.stream.is_write_cycle_active()
+                    && self.exec.running_commands.is_empty()
+                    && self.tools_state.running_custom_tools.is_empty()
+                    && self.tools_state.running_web_search.is_empty()
+                    && !self.agents_are_actively_running()
+                {
+                    self.bottom_pane.set_task_running(false);
+                    self.bottom_pane.update_status_text(String::new());
+                } else {
+                    self.maybe_hide_spinner();
+                }
                 self.auto_on_assistant_final();
             }
             EventMsg::ReplayHistory(ev) => {
