@@ -7,6 +7,7 @@
 //!      key. These override or extend the defaults at runtime.
 
 use crate::CodexAuth;
+use crate::error::EnvVarError;
 use codex_protocol::mcp_protocol::AuthMode;
 use serde::Deserialize;
 use serde::Serialize;
@@ -14,7 +15,6 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::env::VarError;
 use std::time::Duration;
-use crate::error::EnvVarError;
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_STREAM_MAX_RETRIES: u64 = 5;
 const DEFAULT_REQUEST_MAX_RETRIES: u64 = 4;
@@ -22,6 +22,10 @@ const DEFAULT_REQUEST_MAX_RETRIES: u64 = 4;
 const MAX_STREAM_MAX_RETRIES: u64 = 100;
 /// Hard cap for user-configured `request_max_retries`.
 const MAX_REQUEST_MAX_RETRIES: u64 = 100;
+const OPENROUTER_BASE_URL_ENV: &str = "OPENROUTER_BASE_URL";
+const OPENROUTER_API_KEY_ENV: &str = "OPENROUTER_API_KEY";
+const OPENROUTER_PROVIDER_ENV: &str = "OPENROUTER_PROVIDER";
+const OPENROUTER_ROUTE_ENV: &str = "OPENROUTER_ROUTE";
 
 /// Wire protocol that the provider speaks. Most third-party services only
 /// implement the classic OpenAI Chat Completions JSON schema, whereas OpenAI
@@ -367,63 +371,119 @@ pub const BUILT_IN_OSS_MODEL_PROVIDER_ID: &str = "oss";
 
 /// Built-in default provider list.
 pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
-    use ModelProviderInfo as P;
-
-    // We do not want to be in the business of adjucating which third-party
-    // providers are bundled with Codex CLI, so we only include the OpenAI and
-    // open source ("oss") providers by default. Users are encouraged to add to
-    // `model_providers` in config.toml to add their own providers.
+    // We do not want to be in the business of adjudicating which third-party
+    // providers are bundled with Codex CLI, so we only include the OpenAI,
+    // OpenRouter, and open source ("oss") providers by default. Users are
+    // encouraged to add to `model_providers` in config.toml to add their own
+    // providers.
     [
-        (
-            "openai",
-            P {
-                name: "OpenAI".into(),
-                // Allow users to override the default OpenAI endpoint by
-                // exporting `OPENAI_BASE_URL`. This is useful when pointing
-                // Codex at a proxy, mock server, or Azure-style deployment
-                // without requiring a full TOML override for the built-in
-                // OpenAI provider.
-                base_url: std::env::var("OPENAI_BASE_URL")
-                    .ok()
-                    .filter(|v| !v.trim().is_empty()),
-                env_key: None,
-                env_key_instructions: None,
-                wire_api: WireApi::Responses,
-                query_params: None,
-                http_headers: Some(
-                    [
-                        (
-                            "version".to_string(),
-                            codex_version::version().to_string(),
-                        ),
-                    ]
-                    .into_iter()
-                    .collect(),
-                ),
-                env_http_headers: Some(
-                    [
-                        (
-                            "OpenAI-Organization".to_string(),
-                            "OPENAI_ORGANIZATION".to_string(),
-                        ),
-                        ("OpenAI-Project".to_string(), "OPENAI_PROJECT".to_string()),
-                    ]
-                    .into_iter()
-                    .collect(),
-                ),
-                // Use global defaults for retry/timeout unless overridden in config.toml.
-                request_max_retries: None,
-                stream_max_retries: None,
-                stream_idle_timeout_ms: None,
-                requires_openai_auth: true,
-                openrouter: None,
-            },
-        ),
+        ("openai", create_openai_provider()),
+        ("openrouter", create_openrouter_provider()),
         (BUILT_IN_OSS_MODEL_PROVIDER_ID, create_oss_provider()),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
     .collect()
+}
+
+fn create_openai_provider() -> ModelProviderInfo {
+    let base_url = std::env::var("OPENAI_BASE_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+
+    let mut http_headers = HashMap::new();
+    http_headers.insert("version".to_string(), codex_version::version().to_string());
+
+    let mut env_http_headers = HashMap::new();
+    env_http_headers.insert("OpenAI-Organization".to_string(), "OPENAI_ORGANIZATION".to_string());
+    env_http_headers.insert("OpenAI-Project".to_string(), "OPENAI_PROJECT".to_string());
+
+    ModelProviderInfo {
+        name: "OpenAI".into(),
+        base_url,
+        env_key: None,
+        env_key_instructions: None,
+        wire_api: WireApi::Responses,
+        query_params: None,
+        http_headers: Some(http_headers),
+        env_http_headers: Some(env_http_headers),
+        request_max_retries: None,
+        stream_max_retries: None,
+        stream_idle_timeout_ms: None,
+        requires_openai_auth: true,
+        openrouter: None,
+    }
+}
+
+fn create_openrouter_provider() -> ModelProviderInfo {
+    let base_url = std::env::var(OPENROUTER_BASE_URL_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
+
+    let env_key_instructions = Some(
+        "Create an API key at https://openrouter.ai/keys and export it as OPENROUTER_API_KEY".to_string(),
+    );
+
+    let provider_config = std::env::var(OPENROUTER_PROVIDER_ENV)
+        .ok()
+        .and_then(|raw| {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                None
+            } else if trimmed.starts_with('{') {
+                match serde_json::from_str::<OpenRouterProviderConfig>(trimmed) {
+                    Ok(cfg) => Some(cfg),
+                    Err(err) => {
+                        tracing::warn!("Invalid JSON in OPENROUTER_PROVIDER ({}). Falling back to simple model selection.", err);
+                        let mut cfg = OpenRouterProviderConfig::default();
+                        cfg.only = Some(vec![trimmed.to_string()]);
+                        Some(cfg)
+                    }
+                }
+            } else {
+                let mut cfg = OpenRouterProviderConfig::default();
+                cfg.only = Some(vec![trimmed.to_string()]);
+                Some(cfg)
+            }
+        });
+
+    let route_config = std::env::var(OPENROUTER_ROUTE_ENV)
+        .ok()
+        .and_then(|raw| {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                serde_json::from_str(trimmed).ok()
+            }
+        });
+
+    let openrouter_config = if provider_config.is_some() || route_config.is_some() {
+        Some(OpenRouterConfig {
+            provider: provider_config,
+            route: route_config,
+            extra: BTreeMap::new(),
+        })
+    } else {
+        None
+    };
+
+    ModelProviderInfo {
+        name: "OpenRouter".into(),
+        base_url: Some(base_url),
+        env_key: Some(OPENROUTER_API_KEY_ENV.to_string()),
+        env_key_instructions,
+        wire_api: WireApi::Chat,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: None,
+        stream_max_retries: None,
+        stream_idle_timeout_ms: None,
+        requires_openai_auth: false,
+        openrouter: openrouter_config,
+    }
 }
 
 pub fn create_oss_provider() -> ModelProviderInfo {
