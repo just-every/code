@@ -5,6 +5,7 @@ use std::fs::{self};
 use std::io::Write;
 use std::path::Path;
 
+use serde_json::{json, Value};
 use tempfile::TempDir;
 use time::OffsetDateTime;
 use time::PrimitiveDateTime;
@@ -137,6 +138,136 @@ async fn test_list_conversations_latest_first() {
 
     assert_eq!(page, expected);
 }
+
+#[tokio::test]
+async fn test_list_conversations_latest_first_even_without_user_turn() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path();
+
+    let older_id = Uuid::from_u128(10);
+    let newer_id = Uuid::from_u128(20);
+
+    // Older session contains a user turn so it always qualifies.
+    write_session_file_with_items(
+        home,
+        "2025-05-01T09-00-00",
+        older_id,
+        &[
+            json!({
+                "timestamp": "2025-05-01T09-00-00",
+                "type": "session_meta",
+                "payload": {
+                    "meta": {
+                        "id": older_id,
+                        "timestamp": "2025-05-01T09-00-00",
+                        "cwd": "/tmp",
+                        "originator": "cli",
+                        "cli_version": "0.0.0",
+                        "instructions": null
+                    }
+                }
+            }),
+            json!({
+                "timestamp": "2025-05-01T09-00-05",
+                "type": "event",
+                "payload": {
+                    "msg": {
+                        "type": "user_message",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": "hi"
+                            }
+                        ]
+                    }
+                }
+            }),
+        ],
+    )
+    .unwrap();
+
+    // Newer session has only assistant deltas; prior behaviour skipped this file.
+    write_session_file_with_items(
+        home,
+        "2025-05-02T10-00-00",
+        newer_id,
+        &[
+            json!({
+                "timestamp": "2025-05-02T10-00-00",
+                "type": "session_meta",
+                "payload": {
+                    "meta": {
+                        "id": newer_id,
+                        "timestamp": "2025-05-02T10-00-00",
+                        "cwd": "/tmp",
+                        "originator": "cli",
+                        "cli_version": "0.0.0",
+                        "instructions": null
+                    }
+                }
+            }),
+            json!({
+                "timestamp": "2025-05-02T10-00-01",
+                "type": "event",
+                "payload": {
+                    "msg": {
+                        "type": "agent_message_delta",
+                        "delta": "working"
+                    }
+                }
+            }),
+        ],
+    )
+    .unwrap();
+
+    let page = get_conversations(home, 5, None).await.unwrap();
+
+    let newest_path = home
+        .join("sessions")
+        .join("2025")
+        .join("05")
+        .join("02")
+        .join(format!("rollout-2025-05-02T10-00-00-{newer_id}.jsonl"));
+    let older_path = home
+        .join("sessions")
+        .join("2025")
+        .join("05")
+        .join("01")
+        .join(format!("rollout-2025-05-01T09-00-00-{older_id}.jsonl"));
+
+    assert_eq!(page.items.len(), 2);
+    assert_eq!(page.items[0].path, newest_path);
+    assert_eq!(page.items[1].path, older_path);
+}
+
+fn write_session_file_with_items(
+    root: &Path,
+    ts_str: &str,
+    uuid: Uuid,
+    items: &[Value],
+) -> std::io::Result<()> {
+    let format: &[FormatItem] =
+        format_description!("[year]-[month]-[day]T[hour]-[minute]-[second]");
+    let dt = PrimitiveDateTime::parse(ts_str, format)
+        .unwrap()
+        .assume_utc();
+    let dir = root
+        .join("sessions")
+        .join(format!("{:04}", dt.year()))
+        .join(format!("{:02}", u8::from(dt.month())))
+        .join(format!("{:02}", dt.day()));
+    fs::create_dir_all(&dir)?;
+
+    let filename = format!("rollout-{ts_str}-{uuid}.jsonl");
+    let file_path = dir.join(filename);
+    let mut file = File::create(file_path)?;
+
+    for item in items {
+        writeln!(file, "{item}")?;
+    }
+    Ok(())
+}
+
 
 #[tokio::test]
 async fn test_pagination_cursor() {

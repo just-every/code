@@ -177,12 +177,12 @@ async fn traverse_directories_for_paths(
                     }
                     // Read head and simultaneously detect message events within the same
                     // first N JSONL records to avoid a second file read.
-                    let (head, saw_session_meta, saw_user_event) =
+                    let (head, saw_session_meta, saw_message_event) =
                         read_head_and_flags(&path, HEAD_RECORD_LIMIT)
                             .await
                             .unwrap_or((Vec::new(), false, false));
-                    // Apply filters: must have session meta and at least one user message event
-                    if saw_session_meta && saw_user_event {
+                    // Apply filters: must have session meta and at least one user/agent message event
+                    if saw_session_meta && saw_message_event {
                         items.push(ConversationItem { path, head });
                     }
                 }
@@ -298,7 +298,7 @@ async fn read_head_and_flags(
     let mut lines = reader.lines();
     let mut head: Vec<serde_json::Value> = Vec::new();
     let mut saw_session_meta = false;
-    let mut saw_user_event = false;
+    let mut saw_message_event = false;
 
     while head.len() < max_records {
         let line_opt = lines.next_line().await?;
@@ -325,17 +325,30 @@ async fn read_head_and_flags(
             }
             RolloutItem::Event(event) => {
                 if let Some(msg) = crate::protocol::event_msg_from_protocol(&event.msg) {
-                    if matches!(msg, crate::protocol::EventMsg::AgentMessage(_)) {
-                        saw_user_event = true;
+                    match msg {
+                        crate::protocol::EventMsg::AgentMessage(_)
+                        | crate::protocol::EventMsg::AgentMessageDelta(_)
+                        | crate::protocol::EventMsg::AgentReasoning(_)
+                        | crate::protocol::EventMsg::AgentReasoningDelta(_)
+                        | crate::protocol::EventMsg::AgentReasoningRawContent(_)
+                        | crate::protocol::EventMsg::AgentReasoningRawContentDelta(_)
+                        | crate::protocol::EventMsg::AgentReasoningSectionBreak(_)
+                        | crate::protocol::EventMsg::UserMessage(_) => {
+                            saw_message_event = true;
+                        }
+                        _ => {}
                     }
                 }
             }
             // Skip variants not displayed in list summaries.
             RolloutItem::Compacted(_) | RolloutItem::TurnContext(_) => {}
         }
+        if saw_session_meta && saw_message_event {
+            break;
+        }
     }
 
-    Ok((head, saw_session_meta, saw_user_event))
+    Ok((head, saw_session_meta, saw_message_event))
 }
 
 
