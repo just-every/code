@@ -145,6 +145,10 @@ pub enum SlashCommand {
     SpecOpsAudit,
     #[strum(serialize = "spec-ops-unlock")]
     SpecOpsUnlock,
+    #[strum(serialize = "spec-ops-auto")]
+    SpecOpsAuto,
+    #[strum(serialize = "spec-evidence-stats")]
+    SpecEvidenceStats,
     #[strum(serialize = "spec-consensus")]
     SpecConsensus,
     Logout,
@@ -202,6 +206,12 @@ impl SlashCommand {
             SlashCommand::SpecOpsUnlock => {
                 "unlock SPEC.md copy-on-write lock (requires SPEC ID)"
             }
+            SlashCommand::SpecOpsAuto => {
+                "run Spec Ops guardrail sequence (requires SPEC ID; optional --from)"
+            }
+            SlashCommand::SpecEvidenceStats => {
+                "summarize guardrail/consensus evidence sizes (optional --spec)"
+            }
             SlashCommand::SpecConsensus => "check multi-agent consensus via local-memory (requires SPEC ID & stage)",
             SlashCommand::Pro => "manage Pro mode (toggle/status/auto)",
             SlashCommand::Branch => {
@@ -246,6 +256,8 @@ impl SlashCommand {
                 | SlashCommand::SpecOpsValidate
                 | SlashCommand::SpecOpsAudit
                 | SlashCommand::SpecOpsUnlock
+                | SlashCommand::SpecOpsAuto
+                | SlashCommand::SpecEvidenceStats
         )
     }
 
@@ -275,6 +287,14 @@ impl SlashCommand {
             SlashCommand::SpecOpsUnlock => Some(SpecOpsCommand {
                 display: "unlock",
                 script: "spec_ops_unlock.sh",
+            }),
+            SlashCommand::SpecOpsAuto => Some(SpecOpsCommand {
+                display: "auto",
+                script: "spec_auto.sh",
+            }),
+            SlashCommand::SpecEvidenceStats => Some(SpecOpsCommand {
+                display: "evidence-stats",
+                script: "evidence_stats.sh",
             }),
             _ => None,
         }

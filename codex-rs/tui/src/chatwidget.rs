@@ -235,6 +235,7 @@ use ratatui::widgets::ScrollbarState;
 use ratatui::widgets::StatefulWidget;
 use serde::Deserialize;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct CachedConnection {
@@ -13856,7 +13857,13 @@ struct ConsensusArtifactData {
     content: Value,
 }
 
-#[derive(Serialize)]
+#[derive(Clone)]
+struct ConsensusEvidenceHandle {
+    path: PathBuf,
+    sha256: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 struct ConsensusArtifactVerdict {
     #[serde(skip_serializing_if = "Option::is_none")]
     memory_id: Option<String>,
@@ -13866,11 +13873,13 @@ struct ConsensusArtifactVerdict {
     content: Value,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct ConsensusVerdict {
     spec_id: String,
     stage: String,
     recorded_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_version: Option<String>,
     consensus_ok: bool,
     degraded: bool,
     required_fields_ok: bool,
@@ -13899,10 +13908,23 @@ fn parse_consensus_stage(stage: &str) -> Option<SpecStage> {
 }
 
 fn collect_consensus_artifacts(
+    evidence_root: &Path,
     spec_id: &str,
     stage: SpecStage,
 ) -> Result<(Vec<ConsensusArtifactData>, Vec<String>), String> {
-    let (entries, mut warnings) = fetch_memory_entries(spec_id, stage)?;
+    let mut warnings: Vec<String> = Vec::new();
+
+    match load_artifacts_from_evidence(evidence_root, spec_id, stage) {
+        Ok(Some((artifacts, mut evidence_warnings))) => {
+            warnings.append(&mut evidence_warnings);
+            return Ok((artifacts, warnings));
+        }
+        Ok(None) => {}
+        Err(err) => warnings.push(err),
+    }
+
+    let (entries, mut memory_warnings) = fetch_memory_entries(spec_id, stage)?;
+    warnings.append(&mut memory_warnings);
 
     let mut artifacts: Vec<ConsensusArtifactData> = Vec::new();
 
@@ -13984,6 +14006,91 @@ fn collect_consensus_artifacts(
     Ok((artifacts, warnings))
 }
 
+fn load_artifacts_from_evidence(
+    evidence_root: &Path,
+    spec_id: &str,
+    stage: SpecStage,
+) -> Result<Option<(Vec<ConsensusArtifactData>, Vec<String>)>, String> {
+    let spec_dir = evidence_root.join(spec_id);
+    if !spec_dir.exists() {
+        return Ok(None);
+    }
+
+    let stage_suffix = format!("-{}.json", stage.command_name());
+    let mut candidates: Vec<PathBuf> = fs::read_dir(&spec_dir)
+        .map_err(|e| {
+            format!(
+                "failed to read consensus evidence directory {}: {}",
+                spec_dir.display(),
+                e
+            )
+        })?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            if !path.is_file() {
+                return None;
+            }
+            let name = path.file_name()?.to_str()?;
+            if name.ends_with(&stage_suffix) {
+                Some(path)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+
+    candidates.sort();
+    let latest_path = candidates.pop().unwrap();
+
+    let mut file = fs::File::open(&latest_path).map_err(|e| {
+        format!(
+            "failed to open consensus evidence {}: {}",
+            latest_path.display(),
+            e
+        )
+    })?;
+
+    let mut buffer = String::new();
+    file.read_to_string(&mut buffer).map_err(|e| {
+        format!(
+            "failed to read consensus evidence {}: {}",
+            latest_path.display(),
+            e
+        )
+    })?;
+
+    let verdict: ConsensusVerdict = serde_json::from_str(&buffer).map_err(|e| {
+        format!(
+            "failed to parse consensus evidence {}: {}",
+            latest_path.display(),
+            e
+        )
+    })?;
+
+    let artifacts: Vec<ConsensusArtifactData> = verdict
+        .artifacts
+        .iter()
+        .map(|artifact| ConsensusArtifactData {
+            memory_id: artifact.memory_id.clone(),
+            agent: artifact.agent.clone(),
+            version: artifact.version.clone(),
+            content: artifact.content.clone(),
+        })
+        .collect();
+
+    let warnings = vec![format!(
+        "Loaded consensus evidence from {}",
+        latest_path.display()
+    )];
+
+    Ok(Some((artifacts, warnings)))
+}
+
 fn fetch_memory_entries(
     spec_id: &str,
     stage: SpecStage,
@@ -14003,12 +14110,10 @@ fn fetch_memory_entries(
 
 fn expected_agents_for_stage(stage: SpecStage) -> Vec<&'static str> {
     match stage {
-        SpecStage::Plan
-        | SpecStage::Tasks
-        | SpecStage::Implement
-        | SpecStage::Validate
-        | SpecStage::Audit
-        | SpecStage::Unlock => vec!["gemini", "claude", "gpt_pro"],
+        SpecStage::Implement => vec!["gemini", "claude", "gpt_codex", "gpt_pro"],
+        SpecStage::Plan | SpecStage::Tasks | SpecStage::Validate | SpecStage::Audit | SpecStage::Unlock => {
+            vec!["gemini", "claude", "gpt_pro"]
+        }
     }
 }
 
@@ -14636,54 +14741,80 @@ impl ChatWidget<'_> {
     pub(crate) fn handle_spec_ops_command(&mut self, command: SlashCommand, raw_args: String) {
         let Some(meta) = command.spec_ops() else { return; };
         let trimmed = raw_args.trim();
-        if trimmed.is_empty() {
-            self.history_push(crate::history_cell::new_error_event(format!(
-                "`/{}` requires a SPEC task ID (e.g. `/{} SPEC-OPS-005`).",
-                command.command(),
-                command.command()
-            )));
-            self.request_redraw();
-            return;
+        let is_stats = meta.script == "evidence_stats.sh";
+
+        let mut spec_id = String::new();
+        let mut remainder = String::new();
+        let mut spec_task = String::new();
+
+        if !is_stats {
+            if trimmed.is_empty() {
+                self.history_push(crate::history_cell::new_error_event(format!(
+                    "`/{}` requires a SPEC ID (e.g. `/{} SPEC-OPS-005`).",
+                    command.command(),
+                    command.command()
+                )));
+                self.request_redraw();
+                return;
+            }
+
+            let mut tokens = trimmed.split_whitespace();
+            spec_id = tokens.next().unwrap().to_string();
+            remainder = tokens.collect::<Vec<_>>().join(" ");
+            spec_task = if remainder.is_empty() {
+                spec_id.clone()
+            } else {
+                format!("{spec_id} {remainder}")
+            };
         }
 
-        let mut tokens = trimmed.split_whitespace();
-        let spec_id = tokens.next().unwrap().to_string();
-        let remainder = tokens.collect::<Vec<_>>().join(" ");
-        let spec_task = if remainder.is_empty() {
-            spec_id.clone()
+        let script_path = if meta.script == "spec_auto.sh" || meta.script == "evidence_stats.sh" {
+            format!("scripts/spec_ops_004/{}", meta.script)
         } else {
-            format!("{spec_id} {remainder}")
+            format!("scripts/spec_ops_004/commands/{}", meta.script)
         };
 
-        let resolution = codex_core::slash_commands::format_subagent_command(
-            command.command(),
-            &spec_task,
-            Some(&self.config.agents),
-            Some(&self.config.subagent_commands),
-        );
-
-        let agent_roster = if resolution.models.is_empty() {
-            "claude,gemini,code".to_string()
-        } else {
-            resolution.models.join(",")
-        };
-
-        let prompt_hint = if resolution.orchestrator_instructions.is_some()
-            || resolution.agent_instructions.is_some()
-        {
-            "custom prompt overrides"
-        } else {
-            "default prompt profile"
-        };
-
-        let script_path = format!("scripts/spec_ops_004/commands/{}", meta.script);
         let mut banner = String::new();
-        banner.push_str(&format!("Spec Ops /{} → {}\n", meta.display, spec_id));
+        if is_stats {
+            banner.push_str(&format!("Spec Ops /{}\n", meta.display));
+        } else {
+            banner.push_str(&format!("Spec Ops /{} → {}\n", meta.display, spec_id));
+        }
         banner.push_str(&format!("  Script: {}\n", script_path));
-        banner.push_str(&format!("  Agents: {}\n", agent_roster));
-        banner.push_str(&format!("  Prompt: {}\n", prompt_hint));
+
+        let mut stage_prompt_version: Option<String> = None;
+        if script_path.contains("/commands/") {
+            let resolution = codex_core::slash_commands::format_subagent_command(
+                command.command(),
+                &spec_task,
+                Some(&self.config.agents),
+                Some(&self.config.subagent_commands),
+            );
+
+            let agent_roster = if resolution.models.is_empty() {
+                "claude,gemini,code".to_string()
+            } else {
+                resolution.models.join(",")
+            };
+
+            let prompt_hint = if resolution.orchestrator_instructions.is_some()
+                || resolution.agent_instructions.is_some()
+            {
+                "custom prompt overrides"
+            } else {
+                "default prompt profile"
+            };
+
+            banner.push_str(&format!("  Agents: {}\n", agent_roster));
+            banner.push_str(&format!("  Prompt: {}\n", prompt_hint));
+        }
 
         if let Some(stage) = spec_stage_for_multi_agent_followup(command) {
+            let stage_version = spec_prompts::stage_version_enum(stage);
+            if let Some(version) = stage_version.clone() {
+                stage_prompt_version = Some(version.clone());
+                banner.push_str(&format!("  Prompt version: {}\n", version));
+            }
             if spec_prompts::agent_prompt(stage.key(), SpecAgent::Gemini).is_some() {
                 banner.push_str(&format!("  Multi-agent stage available: /{}\n", stage.command_name()));
             }
@@ -14701,12 +14832,15 @@ impl ChatWidget<'_> {
 
         self.insert_background_event_with_placement(banner, BackgroundPlacement::Tail);
 
-        let mut env = HashMap::new();
-        env.insert(
-            "SPEC_OPS_004_AGENTS_AVAILABLE".to_string(),
-            agent_roster.clone(),
-        );
+        // Commands with scripts (guardrails, automation) execute via shell; otherwise, comments/notes only.
+        if meta.script == "COMMENT_ONLY" {
+            return;
+        }
 
+        let mut env = HashMap::new();
+        if let Some(version) = stage_prompt_version {
+            env.insert("SPEC_OPS_004_PROMPT_VERSION".to_string(), version);
+        }
         if let Ok(prompt_version) = std::env::var("SPEC_OPS_004_PROMPT_VERSION") {
             env.insert("SPEC_OPS_004_PROMPT_VERSION".to_string(), prompt_version);
         }
@@ -14714,7 +14848,13 @@ impl ChatWidget<'_> {
             env.insert("SPEC_OPS_004_CODE_VERSION".to_string(), code_version);
         }
 
-        let command_line = if remainder.is_empty() {
+        let command_line = if is_stats {
+            if trimmed.is_empty() {
+                format!("scripts/env_run.sh {script_path}")
+            } else {
+                format!("scripts/env_run.sh {script_path} {trimmed}")
+            }
+        } else if remainder.is_empty() {
             format!("scripts/env_run.sh {script_path} {spec_id}")
         } else {
             format!("scripts/env_run.sh {script_path} {spec_id} {remainder}")
@@ -14792,7 +14932,13 @@ impl ChatWidget<'_> {
         spec_id: &str,
         stage: SpecStage,
     ) -> Result<(Vec<ratatui::text::Line<'static>>, bool), String> {
-        let (artifacts, mut warnings) = collect_consensus_artifacts(spec_id, stage)?;
+        let evidence_root = self
+            .config
+            .cwd
+            .join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus");
+
+        let (artifacts, mut warnings) =
+            collect_consensus_artifacts(&evidence_root, spec_id, stage)?;
         if artifacts.is_empty() {
             return Err(format!(
                 "No structured local-memory entries found for {} stage '{}'. Ensure agents stored their JSON via local-memory remember.",
@@ -14846,6 +14992,9 @@ impl ChatWidget<'_> {
         let consensus_ok =
             !aggregator_missing && conflicts.is_empty() && missing_agents.is_empty() && required_fields_ok;
 
+        let prompt_version = spec_prompts::stage_version_enum(stage)
+            .unwrap_or_else(|| "unversioned".to_string());
+
         let mut lines: Vec<ratatui::text::Line<'static>> = Vec::new();
         let status = if consensus_ok {
             "CONSENSUS OK"
@@ -14859,6 +15008,10 @@ impl ChatWidget<'_> {
             stage.display_name(),
             spec_id,
             status
+        )));
+        lines.push(ratatui::text::Line::from(format!(
+            "  Prompt version: {}",
+            prompt_version
         )));
 
         for warning in warnings.drain(..) {
@@ -14906,6 +15059,7 @@ impl ChatWidget<'_> {
             spec_id: spec_id.to_string(),
             stage: stage.command_name().to_string(),
             recorded_at,
+            prompt_version: Some(prompt_version.clone()),
             consensus_ok,
             degraded,
             required_fields_ok,
@@ -14927,13 +15081,13 @@ impl ChatWidget<'_> {
         };
 
         match self.persist_consensus_verdict(spec_id, stage, &verdict, &evidence_slug) {
-            Ok(path) => {
+            Ok(handle) => {
                 lines.push(ratatui::text::Line::from(format!(
                     "  Evidence: {}",
-                    path.display()
+                    handle.path.display()
                 )));
-                if let Err(err) =
-                    self.remember_consensus_verdict(spec_id, stage, &path, &verdict)
+                if let Err(err) = self
+                    .remember_consensus_verdict(spec_id, stage, &handle, &verdict)
                 {
                     lines.push(ratatui::text::Line::from(format!(
                         "  Warning: failed to store consensus verdict in local-memory: {}",
@@ -14958,7 +15112,7 @@ impl ChatWidget<'_> {
         stage: SpecStage,
         verdict: &ConsensusVerdict,
         slug: &str,
-    ) -> Result<PathBuf, String> {
+    ) -> Result<ConsensusEvidenceHandle, String> {
         let base = self
             .config
             .cwd
@@ -14978,23 +15132,27 @@ impl ChatWidget<'_> {
         let payload = serde_json::to_vec_pretty(verdict)
             .map_err(|e| format!("failed to serialize consensus verdict: {e}"))?;
 
+        let mut hasher = Sha256::new();
+        hasher.update(&payload);
+        let sha256 = format!("{:x}", hasher.finalize());
+
         let mut file = fs::File::create(&path)
             .map_err(|e| format!("failed to create {}: {e}", path.display()))?;
         file.write_all(&payload)
             .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
         file.write_all(b"\n").ok();
 
-        Ok(path)
+        Ok(ConsensusEvidenceHandle { path, sha256 })
     }
 
     fn remember_consensus_verdict(
         &self,
         spec_id: &str,
         stage: SpecStage,
-        evidence_path: &Path,
+        evidence: &ConsensusEvidenceHandle,
         verdict: &ConsensusVerdict,
     ) -> Result<(), String> {
-        let summary_value = serde_json::json!({
+        let mut summary_value = serde_json::json!({
             "kind": "spec-consensus-verdict",
             "specId": spec_id,
             "stage": stage.command_name(),
@@ -15005,9 +15163,19 @@ impl ChatWidget<'_> {
             "agreements": verdict.agreements,
             "conflicts": verdict.conflicts,
             "artifactsCount": verdict.artifacts.len(),
-            "evidencePath": evidence_path.to_string_lossy(),
+            "evidencePath": evidence.path.to_string_lossy(),
+            "payloadSha256": evidence.sha256,
             "recordedAt": verdict.recorded_at,
         });
+
+        if let Some(version) = verdict.prompt_version.as_ref() {
+            if let serde_json::Value::Object(obj) = &mut summary_value {
+                obj.insert(
+                    "promptVersion".to_string(),
+                    serde_json::Value::String(version.clone()),
+                );
+            }
+        }
 
         let summary = serde_json::to_string(&summary_value)
             .map_err(|e| format!("failed to serialize consensus summary: {e}"))?;
@@ -17365,13 +17533,23 @@ mod tests {
             "spec_id": spec_id,
             "stage": "spec-plan",
             "agent": agent,
+            "prompt_version": "20251002-plan-a",
             "model": match agent {
                 "gemini" => "gemini-2.5-pro",
-                "claude" => "claude-opus-4-1-20250805",
+                "claude" => "claude-4.5-sonnet",
+                "gpt_codex" => "gpt-5-codex",
                 _ => "gpt-5",
             },
-            "model_release": "2025-08-06",
-            "reasoning_mode": if agent == "gemini" { "thinking" } else { "auto" },
+            "model_release": match agent {
+                "claude" => "2025-09-29",
+                "gpt_codex" => "2025-09-29",
+                _ => "2025-08-06",
+            },
+            "reasoning_mode": match agent {
+                "gemini" => "thinking",
+                "gpt_pro" => "high",
+                _ => "auto",
+            },
             "final_plan": {
                 "work_breakdown": [ { "step": "Do the thing" } ]
             },
@@ -17418,6 +17596,11 @@ mod tests {
 
         let text_lines = flatten_lines(&lines);
         assert!(text_lines.iter().any(|l| l.contains("CONSENSUS OK")));
+        assert!(
+            text_lines
+                .iter()
+                .any(|l| l.contains("Prompt version: 20251002-plan-a"))
+        );
         assert!(text_lines.iter().any(|l| l.contains("Evidence:")));
 
         let verdict_dir = workspace
@@ -17435,6 +17618,7 @@ mod tests {
         )
         .expect("verdict json");
         assert_eq!(verdict_json["consensus_ok"], json!(true));
+        assert_eq!(verdict_json["prompt_version"], json!("20251002-plan-a"));
         assert_eq!(verdict_json["agent_models"]["gemini"], json!("gemini-2.5-pro"));
         assert_eq!(verdict_json["agent_models"]["gpt_pro"], json!("gpt-5"));
 
@@ -17444,12 +17628,14 @@ mod tests {
             .find(|item| item["agent"] == json!("gpt_pro"))
             .expect("aggregator artifact");
         assert_eq!(aggregator["model"], json!("gpt-5"));
-        assert_eq!(aggregator["reasoning_mode"], json!("auto"));
+        assert_eq!(aggregator["reasoning_mode"], json!("high"));
 
         let remember_log = fs::read_to_string(mock.remember_log()).expect("remember log");
         assert!(
-            !remember_log.trim().is_empty(),
-            "expected local-memory remember to be invoked"
+            remember_log
+                .lines()
+                .any(|line| line.contains("\"promptVersion\":\"20251002-plan-a\"")),
+            "expected local-memory remember to record promptVersion"
         );
     }
 
@@ -17493,6 +17679,7 @@ mod tests {
         )
         .expect("verdict json");
         assert_eq!(verdict_json["consensus_ok"], json!(false));
+        assert_eq!(verdict_json["prompt_version"], json!("20251002-plan-a"));
         assert_eq!(verdict_json["missing_agents"], json!(["claude"]));
         assert_eq!(verdict_json["agent_models"].as_object().unwrap().len(), 2);
     }

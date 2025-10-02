@@ -1601,7 +1601,9 @@ impl App<'_> {
                         | SlashCommand::SpecOpsImplement
                         | SlashCommand::SpecOpsValidate
                         | SlashCommand::SpecOpsAudit
-                        | SlashCommand::SpecOpsUnlock => {
+                        | SlashCommand::SpecOpsUnlock
+                        | SlashCommand::SpecOpsAuto
+                        | SlashCommand::SpecEvidenceStats => {
                             if let AppState::Chat { widget } = &mut self.app_state {
                                 widget.handle_spec_ops_command(command, command_args);
                             }

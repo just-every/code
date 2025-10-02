@@ -10,6 +10,7 @@
 
 ### Tooling Discipline
 - Data access and automation must flow through MCP/LLM tooling; avoid bespoke shell scripts for runtime evidence or API calls unless MCP cannot satisfy the requirement.
+- All user-facing operations (guardrails, telemetry snapshots, evidence collection) must be invocable via Codex TUI slash commands; add wrappers when a capability is only available as a shell script.
 
 ## Governance & Workflow
 - SPEC.md is the canonical tracker; keep one `In Progress` entry per active thread and update notes with dated evidence references.

@@ -14,12 +14,12 @@
 ## Command Alignment Matrix
 | Stage | Guardrail Wrapper (Shell) | Multi-Agent Command | Status | Notes |
 | --- | --- | --- | --- | --- |
-| Plan | `/spec-ops-plan` (`spec_ops_plan.sh`) | `/spec-plan <SPEC-ID> <prompt>` | Planned | `/spec-plan` will call Gemini/Claude/GPT trio, prep context, and write consensus to evidence tree. |
-| Tasks | `/spec-ops-tasks` (`spec_ops_tasks.sh`) | `/spec-tasks <SPEC-ID>` | Planned | Multi-agent synthesis generates `docs/SPEC-*/tasks.md` and acceptance mapping. |
-| Implement | `/spec-ops-implement` (`spec_ops_implement.sh`) | `/spec-implement <SPEC-ID> <prompt>` | Planned | GPT Pro executes diffs with guardrail lock; Claude MAX / Gemini supply solution summaries. |
-| Validate | `/spec-ops-validate` (`spec_ops_004_master.sh`) | `/spec-validate <SPEC-ID>` | Planned | Multi-agent stage compares telemetry vs acceptance criteria and queues regression tests. |
-| Audit | `/spec-ops-audit` (rename from `spec_ops_review.sh`) | `/spec-audit <SPEC-ID>` | Planned | Multi-agent audit generates consensus verdict JSON and blocks `/spec-auto` when agents disagree. |
-| Unlock | `/spec-ops-unlock` (`spec_ops_unlock.sh`) | `/spec-unlock <SPEC-ID>` | Planned | Agents produce unlock justification before shell command runs. |
+| Plan | `/spec-ops-plan` (`scripts/spec_ops_004/commands/spec_ops_plan.sh`) | `/spec-plan <SPEC-ID> <prompt>` | Live | Guardrail stage runs baseline audit + locks; multi-agent step writes `docs/SPEC-*/plan.md` and telemetry under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/`. |
+| Tasks | `/spec-ops-tasks` (`scripts/spec_ops_004/commands/spec_ops_tasks.sh`) | `/spec-tasks <SPEC-ID>` | Live | Guardrail seeds hooks/model budgets; agents emit SPEC.md updates and `docs/SPEC-*/tasks.md` acceptance mapping. |
+| Implement | `/spec-ops-implement` (`scripts/spec_ops_004/commands/spec_ops_implement.sh`) | `/spec-implement <SPEC-ID> <prompt>` | Live | Shell acquires locks + snapshot; agents collaborate on diffs, tests, and telemetry with consensus checks. |
+| Validate | `/spec-ops-validate` (`scripts/spec_ops_004/commands/spec_ops_validate.sh`) | `/spec-validate <SPEC-ID>` | Live | Shell drives HAL smoke + scenario telemetry; agents reconcile results vs acceptance criteria and log approvals. |
+| Audit | `/spec-ops-audit` (`scripts/spec_ops_004/commands/spec_ops_audit.sh`) | `/spec-audit <SPEC-ID>` | Live | Guardrail captures final evidence bundle; agents produce consensus verdict JSON gating `/spec-auto`. |
+| Unlock | `/spec-ops-unlock` (`scripts/spec_ops_004/commands/spec_ops_unlock.sh`) | `/spec-unlock <SPEC-ID>` | Live | Shell performs unlock after telemetry capture; agents justify unlock and sync notes to local-memory. |
 
 ## Agent Responsibilities
 - **Gemini Ultra (Researcher)**
@@ -68,12 +68,14 @@
 - **Local-Memory Sync**: nightly job verifies local-memory vs evidence logs; raise alert if stale.
 
 ## Open Questions
-- Which MCP server hosts long-term evidence (S3 vs git repo)?
-- Do we embed `/spec-auto` in CI or keep manual trigger?
-- How do we version agent prompts to audit historical runs?
+- Evidence currently lives in-repo (git). Revisit an external store if repository growth becomes problematic.
+- Do we embed `/spec-auto` in CI or keep manual trigger for multi-agent execution? (Guardrail workflow now exists; multi-agent remains manual.)
+- How do we version agent prompts to audit historical runs? (Initial `YYYYMMDD-stage-suffix` scheme is live; confirm it satisfies downstream analytics.)
 
 ## Next Steps
-See `SPEC-kit-tasks.md` for actionable work items and owners.
+- Monitor the new guardrail runner (`scripts/spec_ops_004/spec_auto.sh`) and expand coverage once telemetry capture proves stable (see `docs/spec-kit/spec-auto-automation.md`).
+- Track repository footprint using `scripts/spec_ops_004/evidence_stats.sh` and revisit external storage when per-SPEC consensus exceeds agreed thresholds (baseline in `docs/spec-kit/evidence-baseline.md`).
+- Execute `/spec-implement` with the GPT-5-Codex ⊕ Claude 4.5 ensemble and capture local-memory logs plus consensus evidence confirming all four agents (Gemini, Claude, GPT-5-Codex, GPT-5) participated (`docs/spec-kit/ensemble-run-checklist.md`).
 
 Refer to `docs/spec-kit/model-strategy.md` for the current model lineup,
 fallbacks, and escalation rules across the pipeline.

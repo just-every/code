@@ -23,8 +23,11 @@ pub struct AgentPrompt {
 #[derive(Debug, Deserialize, Clone, Default, PartialEq, Eq)]
 #[serde(default)]
 pub struct StagePrompts {
+    pub version: Option<String>,
     pub gemini: Option<AgentPrompt>,
     pub claude: Option<AgentPrompt>,
+    #[serde(rename = "gpt_codex")]
+    pub gpt_codex: Option<AgentPrompt>,
     #[serde(rename = "gpt_pro")]
     pub gpt_pro: Option<AgentPrompt>,
     pub orchestrator_notes: Option<Vec<String>>,
@@ -36,6 +39,7 @@ pub struct StagePrompts {
 pub enum SpecAgent {
     Gemini,
     Claude,
+    GptCodex,
     GptPro,
 }
 
@@ -62,11 +66,16 @@ pub fn registry() -> &'static PromptRegistry {
     PROMPT_DATA.get_or_init(PromptRegistry::load)
 }
 
+pub fn stage_version(stage: &str) -> Option<String> {
+    registry().stage(stage)?.version.clone()
+}
+
 pub fn agent_prompt(stage: &str, agent: SpecAgent) -> Option<AgentPrompt> {
     let stage = registry().stage(stage)?;
     let prompt = match agent {
         SpecAgent::Gemini => stage.gemini.clone(),
         SpecAgent::Claude => stage.claude.clone(),
+        SpecAgent::GptCodex => stage.gpt_codex.clone(),
         SpecAgent::GptPro => stage.gpt_pro.clone(),
     }?;
     Some(prompt)
@@ -83,6 +92,10 @@ pub fn render_prompt(stage: &str, agent: SpecAgent, vars: &[(&str, &str)]) -> Op
         let placeholder = format!("${{{}}}", key);
         text = text.replace(&placeholder, value);
     }
+    if text.contains("${PROMPT_VERSION}") {
+        let version = stage_version(stage).unwrap_or_else(|| "unversioned".to_string());
+        text = text.replace("${PROMPT_VERSION}", &version);
+    }
     Some(text)
 }
 
@@ -94,6 +107,7 @@ fn agent_env_prefix(agent: SpecAgent) -> &'static str {
     match agent {
         SpecAgent::Gemini => "GEMINI",
         SpecAgent::Claude => "CLAUDE",
+        SpecAgent::GptCodex => "GPT_CODEX",
         SpecAgent::GptPro => "GPT_PRO",
     }
 }
@@ -126,11 +140,15 @@ fn model_metadata(stage: SpecStage, agent: SpecAgent) -> Vec<(String, String)> {
         }
         (_, SpecAgent::Gemini) => ("gemini-2.5-pro", "2025-05-14", "thinking"),
         (SpecStage::Unlock, SpecAgent::Claude) => {
-            ("claude-sonnet-4-20250514", "2025-05-14", "balanced")
+            ("claude-4.5-sonnet", "2025-09-29", "balanced")
         }
-        (_, SpecAgent::Claude) => ("claude-opus-4-1-20250805", "2025-08-05", "balanced"),
-        (SpecStage::Implement, SpecAgent::GptPro) => ("gpt-5-pro", "2025-08-06", "thinking"),
-        (_, SpecAgent::GptPro) => ("gpt-5", "2025-08-06", "auto"),
+        (_, SpecAgent::Claude) => ("claude-4.5-sonnet", "2025-09-29", "balanced"),
+        (SpecStage::Implement, SpecAgent::GptCodex) => {
+            ("gpt-5-codex", "2025-09-29", "auto")
+        }
+        (_, SpecAgent::GptCodex) => ("gpt-5-codex", "2025-09-29", "auto"),
+        (SpecStage::Implement, SpecAgent::GptPro) => ("gpt-5", "2025-08-06", "high"),
+        (_, SpecAgent::GptPro) => ("gpt-5", "2025-08-06", "high"),
     };
 
     vec![
@@ -160,6 +178,17 @@ pub enum SpecStage {
 }
 
 impl SpecStage {
+    pub fn all() -> [SpecStage; 6] {
+        [
+            SpecStage::Plan,
+            SpecStage::Tasks,
+            SpecStage::Implement,
+            SpecStage::Validate,
+            SpecStage::Audit,
+            SpecStage::Unlock,
+        ]
+    }
+
     pub fn key(self) -> &'static str {
         match self {
             SpecStage::Plan => "spec-plan",
@@ -192,6 +221,10 @@ impl SpecStage {
             SpecStage::Unlock => "Unlock",
         }
     }
+}
+
+pub fn stage_version_enum(stage: SpecStage) -> Option<String> {
+    stage_version(stage.key())
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -282,13 +315,19 @@ pub fn build_stage_prompt(stage: SpecStage, raw_args: &str) -> Result<String, Pr
     let stage_prompts = registry
         .stage(stage.key())
         .ok_or(PromptBuildError::MissingStage(stage.key()))?;
+    let prompt_version = stage_prompts
+        .version
+        .clone()
+        .unwrap_or_else(|| "unversioned".to_string());
+    replacements.push(("PROMPT_VERSION".into(), prompt_version.clone()));
 
     let mut bundle = String::new();
     bundle.push_str(&format!("# /{} — {}\n\n", stage.command_name(), spec_id));
-    bundle.push_str("Leverage local-memory before starting, then run the three agents in parallel using these prompts. Record outputs back into local-memory (spec-tracker, impl-notes, docs-ops).\n\n");
+    bundle.push_str("Leverage local-memory before starting, then run the agents below in parallel using these prompts. Record outputs back into local-memory (spec-tracker, impl-notes, docs-ops).\n\n");
     if let SpecStage::Plan = stage {
         bundle.push_str(&format!("Goal: {}\n\n", goal_hint));
     }
+    bundle.push_str(&format!("Prompt version: {}\n\n", prompt_version));
 
     match gather_local_memory_context(spec_id, stage) {
         Ok(entries) if !entries.is_empty() => {
@@ -338,7 +377,20 @@ pub fn build_stage_prompt(stage: SpecStage, raw_args: &str) -> Result<String, Pr
             .collect();
         let rendered = render_prompt(stage.key(), SpecAgent::Claude, &claude_refs)
             .unwrap_or_else(|| prompt.prompt);
-        bundle.push_str("## Claude MAX — Synthesis\n");
+        bundle.push_str("## Claude Sonnet 4.5 — Synthesis\n");
+        bundle.push_str(&rendered);
+        bundle.push_str("\n\n");
+    }
+    if let Some(prompt) = stage_prompts.gpt_codex.clone() {
+        let mut codex_vars = replacements.clone();
+        codex_vars.extend(model_metadata(stage, SpecAgent::GptCodex));
+        let codex_refs: Vec<(&str, &str)> = codex_vars
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        let rendered = render_prompt(stage.key(), SpecAgent::GptCodex, &codex_refs)
+            .unwrap_or_else(|| prompt.prompt);
+        bundle.push_str("## GPT-5 Codex — Code Diff Proposal\n");
         bundle.push_str(&rendered);
         bundle.push_str("\n\n");
     }
@@ -351,7 +403,7 @@ pub fn build_stage_prompt(stage: SpecStage, raw_args: &str) -> Result<String, Pr
             .collect();
         let rendered = render_prompt(stage.key(), SpecAgent::GptPro, &gpt_refs)
             .unwrap_or_else(|| prompt.prompt);
-        bundle.push_str("## GPT Pro — Execution & QA\n");
+        bundle.push_str("## GPT-5 — Arbiter & QA\n");
         bundle.push_str(&rendered);
         bundle.push_str("\n");
     }
@@ -487,9 +539,10 @@ mod tests {
     fn build_stage_prompt_includes_agent_sections() {
         let prompt = build_stage_prompt(SpecStage::Plan, "SPEC-OPS-999 Align rollout").unwrap();
         assert!(prompt.contains("/spec-plan"));
+        assert!(prompt.contains("Prompt version: 20251002-plan-a"));
         assert!(prompt.contains("Gemini Ultra"));
-        assert!(prompt.contains("Claude MAX"));
-        assert!(prompt.contains("GPT Pro"));
+        assert!(prompt.contains("Claude Sonnet"));
+        assert!(prompt.contains("GPT-5"));
     }
 
     #[test]
@@ -543,6 +596,7 @@ mod tests {
         );
 
         assert!(prompt.contains("No stage-specific local-memory entries"));
+        assert!(prompt.contains("Prompt version: 20251002-tasks-a"));
     }
 
     #[test]
@@ -558,6 +612,34 @@ mod tests {
 
         assert!(prompt.contains("mem-tasks-01"));
         assert!(prompt.contains("Task breakdown from prior run"));
+        assert!(prompt.contains("Prompt version: 20251002-tasks-a"));
+    }
+
+    #[test]
+    fn all_versioned_prompts_include_placeholder() {
+        for stage in SpecStage::all() {
+            let stage_key = stage.key();
+            let version = stage_version(stage_key);
+            if version.is_none() {
+                continue;
+            }
+            let prompts = registry().stage(stage_key).expect("stage present");
+            for (agent, prompt_opt) in [
+                ("gemini", prompts.gemini.as_ref()),
+                ("claude", prompts.claude.as_ref()),
+                ("gpt_codex", prompts.gpt_codex.as_ref()),
+                ("gpt_pro", prompts.gpt_pro.as_ref()),
+            ] {
+                if let Some(prompt) = prompt_opt {
+                    assert!(
+                        prompt.prompt.contains("${PROMPT_VERSION}"),
+                        "prompt for stage {} agent {} missing ${{PROMPT_VERSION}}",
+                        stage_key,
+                        agent
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -569,12 +651,16 @@ mod tests {
         let claude = metadata_map(SpecStage::Implement, SpecAgent::Claude);
         assert_eq!(
             claude.get("MODEL_ID"),
-            Some(&"claude-opus-4-1-20250805".to_string())
+            Some(&"claude-4.5-sonnet".to_string())
         );
 
+        let codex = metadata_map(SpecStage::Implement, SpecAgent::GptCodex);
+        assert_eq!(codex.get("MODEL_ID"), Some(&"gpt-5-codex".to_string()));
+        assert_eq!(codex.get("REASONING_MODE"), Some(&"auto".to_string()));
+
         let gpt = metadata_map(SpecStage::Implement, SpecAgent::GptPro);
-        assert_eq!(gpt.get("MODEL_ID"), Some(&"gpt-5-pro".to_string()));
-        assert_eq!(gpt.get("REASONING_MODE"), Some(&"thinking".to_string()));
+        assert_eq!(gpt.get("MODEL_ID"), Some(&"gpt-5".to_string()));
+        assert_eq!(gpt.get("REASONING_MODE"), Some(&"high".to_string()));
     }
 
     #[test]

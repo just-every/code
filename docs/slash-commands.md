@@ -57,6 +57,8 @@ Evidence JSON and logs must live under `docs/SPEC-OPS-004-integrated-coder-hooks
 - `/spec-ops-audit <SPEC-ID> [--dry-run]`: Run the Spec Ops audit scenarios; telemetry mirrors Validate stage. `/spec-audit` performs the multi-agent consensus review and records verdict JSON (with model metadata) for `/spec-auto` gating.
 - `/spec-ops-unlock <SPEC-ID> [--spec-path <path>]`: Force-unlock SPEC.md after the guardrail workflow completes. Telemetry emits `unlock_status` and artifacts. Alias `/spec-unlock` is deprecated.
 - `/spec-auto <SPEC-ID> [goal] [--from <stage>]`: Orchestrate the end-to-end Spec Ops + multi-agent pipeline. The run halts if any guardrail JSON fails schema validation or if consensus metadata (see docs/spec-kit/model-strategy.md) is missing.
+- `/spec-ops-auto <SPEC-ID> [--from <stage>]`: Run the guardrail shell sequence only (plan → unlock) without expanding multi-agent prompts.
+- `/spec-evidence-stats [--spec <SPEC-ID>]`: Summarize guardrail and consensus evidence sizes from `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/`.
 - HAL HTTP MCP: configure `docs/hal/hal_config.toml` and `docs/hal/hal_profile.json`, then run `cargo run -p codex-mcp-client --bin call_tool -- --tool <request> … -- npx -y hal-mcp` (health/list_movies/indexer_test/graphql_ping) to capture healthy and degraded evidence for SPEC-KIT-018. Store the JSON responses alongside the guardrail telemetry so docs can reference real artifacts.
 
 ## UX & Display
