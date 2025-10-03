@@ -4421,10 +4421,24 @@ impl ChatWidget<'_> {
             }
         }
 
+        let stage_invocation = parse_spec_stage_invocation(original_trimmed);
+        if let Some(inv) = &stage_invocation {
+            if inv.consensus {
+                let mut sanitized = format!("/{} {}", inv.stage.command_name(), inv.spec_id);
+                if !inv.remainder.trim().is_empty() {
+                    sanitized.push(' ');
+                    sanitized.push_str(inv.remainder.trim());
+                }
+                text_only = sanitized;
+            }
+        }
+
         let processed = crate::slash_command::process_slash_command_message(&text_only);
         match processed {
             crate::slash_command::ProcessedCommand::ExpandedPrompt(expanded) => {
-                if let Some((stage, spec_id)) = parse_spec_stage_invocation(original_trimmed) {
+                if let Some(inv) = &stage_invocation {
+                    let stage = inv.stage;
+                    let spec_id = &inv.spec_id;
                     use ratatui::text::Line;
                     let mut lines: Vec<Line<'static>> = Vec::new();
                     lines.push(Line::from(format!("/{} prepared", stage.command_name())));
@@ -4432,6 +4446,22 @@ impl ChatWidget<'_> {
                     lines.push(Line::from(
                         "Prompts for Gemini, Claude, and GPT Pro inserted into the composer.",
                     ));
+                    if inv.consensus {
+                        let exec_note = if inv.consensus_execute {
+                            "execute"
+                        } else {
+                            "dry-run"
+                        };
+                        lines.push(Line::from(format!(
+                            "Consensus runner queued for this stage ({exec_note})."
+                        )));
+                        self.queue_consensus_runner(
+                            stage,
+                            spec_id,
+                            inv.consensus_execute,
+                            inv.allow_conflict,
+                        );
+                    }
                     self.history_push(crate::history_cell::PlainHistoryCell::new(
                         lines,
                         crate::history_cell::HistoryCellType::Notice,
@@ -15921,26 +15951,131 @@ fn spec_stage_for_multi_agent_followup(command: SlashCommand) -> Option<SpecStag
     }
 }
 
-fn parse_spec_stage_invocation(input: &str) -> Option<(SpecStage, String)> {
+#[derive(Debug, Clone)]
+struct SpecStageInvocation {
+    stage: SpecStage,
+    spec_id: String,
+    remainder: String,
+    consensus: bool,
+    consensus_execute: bool,
+    allow_conflict: bool,
+}
+
+fn parse_spec_stage_invocation(input: &str) -> Option<SpecStageInvocation> {
     let trimmed = input.trim();
-    let split_args = |prefix: &str, stage: SpecStage| -> Option<(SpecStage, String)> {
-        trimmed.strip_prefix(prefix).map(|rest| {
-            let spec = rest.trim().split_whitespace().next().unwrap_or("").to_string();
-            (stage, spec)
+    let parse_for_stage = |prefix: &str, stage: SpecStage| -> Option<SpecStageInvocation> {
+        let rest = trimmed.strip_prefix(prefix)?.trim();
+        if rest.is_empty() {
+            return None;
+        }
+
+        let mut tokens = rest.split_whitespace();
+        let mut consensus = false;
+        let mut execute_consensus = false;
+        let mut allow_conflict = false;
+        let mut spec_id: Option<String> = None;
+        let mut remainder_tokens: Vec<String> = Vec::new();
+
+        while let Some(token) = tokens.next() {
+            if spec_id.is_none() && token.starts_with("--") {
+                match token {
+                    "--consensus" => consensus = true,
+                    "--consensus-exec" => {
+                        consensus = true;
+                        execute_consensus = true;
+                    }
+                    "--consensus-dry-run" => {
+                        consensus = true;
+                        execute_consensus = false;
+                    }
+                    "--allow-conflict" => allow_conflict = true,
+                    _ => {}
+                }
+                continue;
+            }
+
+            if spec_id.is_none() {
+                spec_id = Some(token.to_string());
+            } else {
+                remainder_tokens.push(token.to_string());
+            }
+        }
+
+        let spec_id = spec_id?;
+        Some(SpecStageInvocation {
+            stage,
+            spec_id,
+            remainder: remainder_tokens.join(" "),
+            consensus,
+            consensus_execute: execute_consensus,
+            allow_conflict,
         })
     };
 
-    split_args("/spec-plan ", SpecStage::Plan)
-        .or_else(|| split_args("/spec-tasks ", SpecStage::Tasks))
-        .or_else(|| split_args("/spec-implement ", SpecStage::Implement))
-        .or_else(|| split_args("/spec-validate ", SpecStage::Validate))
-        .or_else(|| split_args("/spec-review ", SpecStage::Audit))
-        .or_else(|| split_args("/spec-audit ", SpecStage::Audit))
-        .or_else(|| split_args("/spec-unlock ", SpecStage::Unlock))
-        .and_then(|(stage, spec)| if spec.is_empty() { None } else { Some((stage, spec)) })
+    parse_for_stage("/spec-plan ", SpecStage::Plan)
+        .or_else(|| parse_for_stage("/spec-tasks ", SpecStage::Tasks))
+        .or_else(|| parse_for_stage("/spec-implement ", SpecStage::Implement))
+        .or_else(|| parse_for_stage("/spec-validate ", SpecStage::Validate))
+        .or_else(|| parse_for_stage("/spec-review ", SpecStage::Audit))
+        .or_else(|| parse_for_stage("/spec-audit ", SpecStage::Audit))
+        .or_else(|| parse_for_stage("/spec-unlock ", SpecStage::Unlock))
 }
 
 const SPEC_AUTO_MAX_VALIDATE_RETRIES: u32 = 2;
+
+impl ChatWidget<'_> {
+    fn queue_consensus_runner(
+        &mut self,
+        stage: SpecStage,
+        spec_id: &str,
+        execute: bool,
+        allow_conflict: bool,
+    ) {
+        let script = "scripts/spec_ops_004/consensus_runner.sh";
+        let mut command_line = format!(
+            "scripts/env_run.sh {} --stage {} --spec {}",
+            script,
+            stage.command_name(),
+            spec_id
+        );
+        if execute {
+            command_line.push_str(" --execute");
+        } else {
+            command_line.push_str(" --dry-run");
+        }
+        if allow_conflict {
+            command_line.push_str(" --allow-conflict");
+        }
+
+        let argv = wrap_command(&command_line);
+        if argv.is_empty() {
+            self.history_push(crate::history_cell::new_error_event(
+                "Unable to build consensus runner invocation.".to_string(),
+            ));
+            return;
+        }
+
+        let name = format!(
+            "spec_consensus_{}",
+            stage.command_name().replace('-', "_")
+        );
+        self.submit_op(Op::RunProjectCommand {
+            name,
+            command: Some(argv),
+            display: Some(command_line.clone()),
+            env: HashMap::new(),
+        });
+
+        self.insert_background_event_with_placement(
+            format!(
+                "Consensus runner queued for {} ({}).",
+                spec_id,
+                stage.display_name()
+            ),
+            BackgroundPlacement::Tail,
+        );
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SpecAutoPhase {
