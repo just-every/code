@@ -2294,8 +2294,8 @@ impl ChatWidget<'_> {
                 return;
             }
                 if role == "user" {
-                    let key = self.next_internal_key();
                     let state = history_cell::new_user_prompt(text.to_string());
+                    let key = self.next_internal_key();
                     let _ = self.history_insert_plain_state_with_key(state, key, "epilogue");
 
                     if let Some(front) = self.queued_user_messages.front() {
@@ -2307,11 +2307,11 @@ impl ChatWidget<'_> {
                 } else {
                     let mut lines = Vec::new();
                     crate::markdown::append_markdown(text, &mut lines, &self.config);
-                    let key = self.next_internal_key();
                     let state = history_cell::plain_message_state_from_lines(
                         lines,
                         history_cell::HistoryCellType::Assistant,
                     );
+                    let key = self.next_internal_key();
                     let _ = self.history_insert_plain_state_with_key(state, key, "epilogue");
                 }
             }
