@@ -2269,13 +2269,10 @@ impl Config {
     }
     
     fn load_instructions(codex_dir: Option<&Path>) -> Option<String> {
-        let mut p = match codex_dir {
-            Some(p) => p.to_path_buf(),
-            None => return None,
-        };
+        let codex_home = codex_dir?;
+        let instructions_path = resolve_codex_path_for_read(codex_home, Path::new("AGENTS.md"));
 
-        p.push("AGENTS.md");
-        std::fs::read_to_string(&p).ok().and_then(|s| {
+        std::fs::read_to_string(&instructions_path).ok().and_then(|s| {
             let s = s.trim();
             if s.is_empty() {
                 None
