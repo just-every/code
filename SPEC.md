@@ -1,27 +1,98 @@
 # Spec Tracker
 
-| Order | Task ID | Title | Status | Owners | PRD | Branch | PR | Last Validation | Evidence | Notes |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | T1 | Rename guardrail commands | Done | Code |  |  |  |  |  | Completed during initial rollout |
-| 2 | T2 | Update shell telemetry names | Done | Code |  |  |  | 2025-09-26 | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/20250926-024834Z-code-mcp-list.json | Renamed guardrail command to `/spec-ops-audit`, updated telemetry prefix + tests |
-| 3 | T3 | Implement `/spec-plan` prompt | Done | Claude MAX |  |  |  |  |  |  |
-| 4 | T4 | Implement `/spec-tasks` prompt | Done | Claude MAX |  |  |  |  |  |  |
-| 5 | T5 | Implement `/spec-implement` prompt | Done | Code |  |  |  |  |  |  |
-| 6 | T6 | Implement `/spec-validate` prompt | Done | Gemini Ultra |  |  |  |  |  |  |
-| 7 | T7 | Implement `/spec-audit` prompt | Done | Claude MAX |  |  |  |  |  |  |
-| 8 | T8 | Implement `/spec-unlock` prompt | Done | Gemini Ultra |  |  |  |  |  |  |
-| 9 | T9 | MCP server enablement | Done | Code |  |  |  | 2025-09-26 | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/20250926-231931Z-code-mcp-list.json | Added default MCP configs (repo_search/doc_index/shell_lite/git_status/uniprof/hal) and CLI documentation. |
-| 10 | T10 | Local-memory migration | Done | Code | docs/SPEC-KIT-010-local-memory-migration/PRD.md | feat/spec-auto-telemetry |  | 2025-09-28 | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-010/migration_apply_20250928T1800Z.json | Dry-run/apply evidence captured; runbook committed; `cargo test -p codex-tui spec_auto` |
-| 11 | T11 | `/spec-auto` orchestrator | Done | Code |  | feat/spec-auto-telemetry |  | 2025-09-26 | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/20250926-025004Z-codex-mcp-client-git-status.json | Wired MCP evidence lookup; `cargo test -p codex-tui spec_auto` |
-| 12 | T12 | Consensus diff reviewer | Done | Gemini Ultra |  |  |  | 2025-09-27 | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus | `/spec-auto` halts on degraded verdicts; prompts emit model metadata; integration tests cover happy/degraded consensus. |
-| 13 | T13 | Telemetry schema enforcement | Done | Code | docs/SPEC-KIT-013-telemetry-schema-guard/PRD.md | feat/spec-auto-telemetry |  | 2025-09-27 | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-013/spec-plan_2025-09-27T18:35:18Z-748128599.json | Schema validators + unit tests landed; `cargo test -p codex-tui spec_auto` |
-| 14 | T14 | Documentation updates | Done | Code | docs/SPEC-KIT-014-docs-refresh/PRD.md | feat/spec-auto-telemetry |  | 2025-09-29 | docs/SPEC-KIT-014-docs-refresh/spec.md | 2025-09-29: Slash-commands/AGENTS/getting-started/RESTART refreshed with telemetry + HAL workflow; `scripts/doc-structure-validate.sh --mode=templates`, `python3 scripts/spec-kit/lint_tasks.py` |
-| 15 | T15 | Nightly sync check | Done | Code | docs/SPEC-KIT-015-nightly-sync/PRD.md | feat/spec-auto-telemetry |  | 2025-09-27 | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-015/nightly_sync_detect_20250927T215031Z.log | Drift detector script implemented; sample run captures missing-memory report |
-| 16 | T18 | HAL HTTP MCP integration | Done | Code | docs/SPEC-KIT-018-hal-http-mcp/spec.md | feat/spec-auto-telemetry |  | 2025-09-29 | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/spec-validate_2025-09-29T16:34:21Z-229132461.json | 2025-09-29: HAL MCP config/profile + docs shipped; guardrail telemetry references degraded (`spec-validate_2025-09-29T16:25:38Z-2828521850.json`) and healthy (`spec-validate_2025-09-29T16:34:21Z-229132461.json`) runs |
-| 17 | T20 | Guardrail hardening | Done | Code | docs/SPEC-OPS-004-integrated-coder-hooks/spec.md | feat/spec-auto-telemetry |  | 2025-09-29 | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/spec-plan_2025-09-29T16:23:24Z-2625014190.json | 2025-09-29: Baseline/HAL enforcement live; coordination logged in notes/guardrail-hardening.md; CI opt-in deferred |
-| 18 | T21 | Multi-agent consensus automation | Done | Code | telemetry-tasks.md | feat/spec-auto-telemetry |  | 2025-10-05 | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-DEMO/spec-plan_2025-10-05T04:31:14Z_telemetry.jsonl | Telemetry v2 emitted for consensus (cost/tokens/latency) using CODEX stub; `python3 -m unittest scripts.spec_ops_004.tests.test_telemetry_utils` passes. |
-| 19 | T22 | Foundation documents baseline | In Progress | Code | product-requirements.md | feat/spec-auto-telemetry |  | 2025-10-02 | product-requirements.md | Draft product-requirements.md & PLANNING.md added 2025-10-02; needs peer review + prompt linkage |
-| 20 | T23 | Spec-kit telemetry hook (TUI) | Done | Code | docs/spec-kit/telemetry-schema-v2.md | feat/spec-auto-telemetry |  | 2025-10-04 | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus | 2025-10-04: ChatWidget persists per-agent JSON, telemetry.jsonl, and synthesis.json when SPEC_KIT_TELEMETRY_ENABLED=1 (see SPEC-KIT-DEMO captures). |
-| 21 | T24 | Consensus synthesis & halt gating | In Progress | Code | docs/spec-kit/model-strategy.md | feat/spec-auto-telemetry |  | 2025-10-04 |  | ChatWidget now ingests synthesis artifacts and pauses /spec-auto on degraded/conflict consensus; awaiting full TUI validation. |
-| 22 | T25 | Consensus integration tests & E2E | Backlog | Code | telemetry-tasks.md | feat/spec-auto-telemetry |  |  | docs/spec-kit/telemetry-schema-v2.md | Add TUI integration tests for consensus (happy/conflict/missing) + run end-to-end SPEC validation |
-| 23 | T26 | SPEC-KIT-DEMO guardrail baseline | In Progress | Code | docs/SPEC-KIT-DEMO/spec.md | feat/spec-auto-telemetry |  | 2025-10-04 | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-DEMO/spec-plan_2025-10-04T20:30:00Z_synthesis.json | 2025-10-04: foundational docs + tracker row seeded; next step is rerun `/spec-plan` and `/spec-auto --from plan` to confirm conflict halt. |
+## Current State (2025-10-05)
+
+**Vision:** Vague idea → auto-generate SPEC → automatic implementation with validation
+**Reality:** Manual SPEC setup → guardrails work → consensus exists but not auto-integrated → manual approval gates
+
+**Critical Blockers:**
+1. **T28** - spec_auto.sh doesn't call consensus_runner.sh (automation incomplete)
+2. **T29** - No unified intake flow (manual 4-step SPEC creation)
+3. **T30** - Hardcoded Rust commands (357 lines, rebase friction)
+
+---
+
+## Architecture Components
+
+### ✅ Fully Working
+- Guardrail scripts (plan/tasks/implement/validate/audit/unlock)
+- Multi-agent prompts (prompts.json with Gemini/Claude/GPT)
+- Consensus runner (can execute with --execute flag)
+- Telemetry schema v1 (JSON capture, validation)
+- Evidence capture (per-agent + synthesis + telemetry.jsonl)
+
+### ⚠️ Partially Working
+- `/spec-auto` - TUI state machine exists, inserts prompts but requires manual send
+- `/spec-ops-auto` - Bash orchestrator runs guardrails only, no consensus integration
+- Consensus synthesis - Written but not checked/halted automatically
+
+### ❌ Missing
+- Unified intake command (/new-spec)
+- Auto-execution without approval gates
+- Project Commands migration (still hardcoded in Rust)
+- Evidence archival strategy
+
+---
+
+## Tasks
+
+| Order | ID | Title | Status | Notes |
+|-------|-----|-------|--------|-------|
+| 1 | T28 | Integrate consensus into spec_auto.sh | **DONE** | Modified spec_auto.sh to call consensus_runner.sh --execute after each guardrail stage; added check_synthesis.py validator; halts on conflict/degraded. Default: consensus enabled. Use --skip-consensus for guardrails-only. Completed: 2025-10-05. |
+| 2 | T29 | Unified intake (/new-spec command) | **HIGH PRIORITY** | Create subagent command: takes feature description → auto-generates SPEC-ID → creates SPEC.md row → runs /specify + /plan + /tasks → presents package. **Eliminates 4 manual steps.** Effort: 1-2 days. |
+| 3 | T30 | Migrate to Project Commands | **MEDIUM PRIORITY** | Convert SpecOpsPlan, SpecOpsAuto, etc. from Rust enum to config.toml [[projects.commands]]. Remove 357 lines from slash_command.rs. **Reduces rebase friction.** Effort: 4-6 hours. |
+| 4 | T31 | Evidence compression & archival | **MEDIUM PRIORITY** | Implement: gzip *.json older than 7 days, rotation (keep last N runs), optional S3 upload. **Addresses 25MB limit.** Effort: 1 day. |
+| 5 | T32 | TUI /spec-auto full automation | **OPTIONAL** | Alternative to T28: Modify ChatWidget to auto-submit prompts instead of inserting. Requires 500-line TUI refactor. **Only if bash approach insufficient.** Effort: 3 days. |
+| 6 | T25 | Consensus integration tests | **BACKLOG** | Add TUI integration tests for consensus (happy/conflict/missing) + E2E validation. Effort: 1 day. |
+| 7 | T33 | Task format unification | **BACKLOG** | Single source (tasks.md), generate plan.md + SPEC.md views. Eliminates manual sync. Effort: 2-3 days. |
+| 8 | T34 | Conflict arbiter agent | **BACKLOG** | Auto-resolution: spawn gpt-5 arbiter when synthesis shows tie. Reduces manual intervention by ~60%. Effort: 2-3 days. |
+
+---
+
+## Completed Foundation (Archive)
+
+| ID | Title | Completion | Evidence |
+|----|-------|------------|----------|
+| T1-T2 | Guardrail command naming | 2025-09-26 | Renamed to /spec-ops-* pattern |
+| T3-T8 | Multi-agent prompts | 2025-09 | prompts.json implemented (plan/tasks/implement/validate/audit/unlock) |
+| T9 | MCP servers | 2025-09-26 | repo_search, doc_index, git_status, hal configured |
+| T10 | Local-memory migration | 2025-09-28 | Byterover → local-memory complete |
+| T11 | /spec-auto TUI infrastructure | 2025-09-26 | State machine exists, prompts insert (NOT auto-submit) |
+| T12 | Consensus diff reviewer | 2025-09-27 | Synthesis.json structure, conflict detection |
+| T13 | Telemetry schema v1 | 2025-09-27 | Validation + unit tests |
+| T14 | Documentation refresh | 2025-09-29 | CLAUDE.md, slash-commands.md, AGENTS.md synced |
+| T15 | Nightly sync check | 2025-09-27 | Drift detector script |
+| T18 | HAL HTTP MCP | 2025-09-29 | Health, list_movies, indexer_test, graphql_ping |
+| T20 | Guardrail hardening | 2025-09-29 | Baseline + HAL enforcement |
+| T21 | Consensus runner | 2025-10-05 | consensus_runner.sh works with --execute (NOT integrated into spec_auto.sh) |
+| T22 | Foundation docs | 2025-10-05 | product-requirements.md, PLANNING.md created |
+| T23 | Telemetry hook (TUI) | 2025-10-04 | ChatWidget persists consensus artifacts when SPEC_KIT_TELEMETRY_ENABLED=1 |
+| T24 | Consensus ingestion (TUI) | 2025-10-04 | ChatWidget reads synthesis, pauses on conflict (NOT auto-continues) |
+| T26 | SPEC-KIT-DEMO baseline | 2025-10-05 | Consensus bundle captured |
+| T27 | Hooks architecture investigation | 2025-10-05 | Investigated Project Hooks; tool.before/after don't fire (background exec bypass). Decision: Keep bash telemetry. Hooks provide 40% coverage, need +100 line core fix. Migration not justified. |
+
+---
+
+## Implementation Priority
+
+### Week 1-2: Enable Full Automation
+**T28** - Bash consensus integration
+**Goal:** `/spec-ops-auto SPEC-ID` runs plan→unlock without human input
+
+### Week 3: Unified Intake
+**T29** - /new-spec command
+**Goal:** Single command from feature description → ready-to-implement SPEC
+
+### Week 4: Cleanup
+**T30** - Project Commands migration
+**T31** - Evidence management
+
+---
+
+## Notes
+
+**Architecture decision (T27):** Keep bash telemetry architecture. Project Hooks migration not viable (tool hooks don't fire, provide only 40% of schema fields, require core modifications).
+
+**Automation status:** Guardrails work, consensus runner works, but NOT integrated. T28 is the critical path to full automation.
+
+**Intake flow:** Currently requires 4 manual steps (edit SPEC.md, /specify, /plan, /tasks). T29 unifies into single command.
