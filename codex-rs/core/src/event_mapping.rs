@@ -2,7 +2,9 @@ use crate::protocol::AgentMessageEvent;
 use crate::protocol::AgentReasoningEvent;
 use crate::protocol::AgentReasoningRawContentEvent;
 use crate::protocol::EventMsg;
-use crate::protocol::WebSearchCompleteEvent;
+use crate::protocol::InputMessageKind;
+use crate::protocol::UserMessageEvent;
+use crate::protocol::WebSearchEndEvent;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ReasoningItemReasoningSummary;
@@ -12,7 +14,6 @@ use codex_protocol::models::WebSearchAction;
 /// Convert a `ResponseItem` into zero or more `EventMsg` values that the UI can render.
 ///
 /// When `show_raw_agent_reasoning` is false, raw reasoning content events are omitted.
-#[allow(dead_code)]
 pub(crate) fn map_response_item_to_event_messages(
     item: &ResponseItem,
     show_raw_agent_reasoning: bool,
@@ -25,17 +26,53 @@ pub(crate) fn map_response_item_to_event_messages(
             }
 
             let mut events: Vec<EventMsg> = Vec::new();
+            let mut message_parts: Vec<String> = Vec::new();
+            let mut images: Vec<String> = Vec::new();
+            let mut kind: Option<InputMessageKind> = None;
 
             for content_item in content.iter() {
                 match content_item {
-                    ContentItem::InputText { .. } => {}
-                    ContentItem::InputImage { .. } => {}
+                    ContentItem::InputText { text } => {
+                        if kind.is_none() {
+                            let trimmed = text.trim_start();
+                            kind = if trimmed.starts_with("<environment_context>") {
+                                Some(InputMessageKind::EnvironmentContext)
+                            } else if trimmed.starts_with("<user_instructions>") {
+                                Some(InputMessageKind::UserInstructions)
+                            } else {
+                                Some(InputMessageKind::Plain)
+                            };
+                        }
+                        message_parts.push(text.clone());
+                    }
+                    ContentItem::InputImage { image_url } => {
+                        images.push(image_url.clone());
+                    }
                     ContentItem::OutputText { text } => {
                         events.push(EventMsg::AgentMessage(AgentMessageEvent {
                             message: text.clone(),
                         }));
                     }
                 }
+            }
+
+            if !message_parts.is_empty() || !images.is_empty() {
+                let message = if message_parts.is_empty() {
+                    String::new()
+                } else {
+                    message_parts.join("")
+                };
+                let images = if images.is_empty() {
+                    None
+                } else {
+                    Some(images)
+                };
+
+                events.push(EventMsg::UserMessage(UserMessageEvent {
+                    message,
+                    kind,
+                    images,
+                }));
             }
 
             events
@@ -67,9 +104,9 @@ pub(crate) fn map_response_item_to_event_messages(
         ResponseItem::WebSearchCall { id, action, .. } => match action {
             WebSearchAction::Search { query } => {
                 let call_id = id.clone().unwrap_or_else(|| "".to_string());
-                vec![EventMsg::WebSearchComplete(WebSearchCompleteEvent {
+                vec![EventMsg::WebSearchEnd(WebSearchEndEvent {
                     call_id,
-                    query: Some(query.clone()),
+                    query: query.clone(),
                 })]
             }
             WebSearchAction::Other => Vec::new(),
@@ -89,6 +126,7 @@ pub(crate) fn map_response_item_to_event_messages(
 mod tests {
     use super::map_response_item_to_event_messages;
     use crate::protocol::EventMsg;
+    use crate::protocol::InputMessageKind;
     use codex_protocol::models::ContentItem;
     use codex_protocol::models::ResponseItem;
     use pretty_assertions::assert_eq;
@@ -115,7 +153,15 @@ mod tests {
         };
 
         let events = map_response_item_to_event_messages(&item, false);
-        // No UI event is emitted for raw user input in this fork
-        assert!(events.is_empty());
+        assert_eq!(events.len(), 1, "expected a single user message event");
+
+        match &events[0] {
+            EventMsg::UserMessage(user) => {
+                assert_eq!(user.message, "Hello world");
+                assert!(matches!(user.kind, Some(InputMessageKind::Plain)));
+                assert_eq!(user.images, Some(vec![img1, img2]));
+            }
+            other => panic!("expected UserMessage, got {other:?}"),
+        }
     }
 }

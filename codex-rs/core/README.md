@@ -2,9 +2,6 @@
 
 This crate implements the business logic for Codex. It is designed to be used by the various Codex UIs written in Rust.
 
-See also: [Slash Commands](../../docs/slash-commands.md) for a complete list of
-interactive commands available in the TUI.
-
 ## Dependencies
 
 Note that `codex-core` makes some assumptions about certain helper utilities being available in the environment. Currently, this

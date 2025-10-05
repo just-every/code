@@ -11,7 +11,6 @@ use tokio::process::ChildStdout;
 
 use anyhow::Context;
 use assert_cmd::prelude::*;
-use codex_mcp_server::CodexToolCallParam;
 use codex_app_server_protocol::AddConversationListenerParams;
 use codex_app_server_protocol::CancelLoginChatGptParams;
 use codex_app_server_protocol::GetAuthStatusParams;
@@ -20,6 +19,7 @@ use codex_app_server_protocol::NewConversationParams;
 use codex_app_server_protocol::RemoveConversationListenerParams;
 use codex_app_server_protocol::SendUserMessageParams;
 use codex_app_server_protocol::SendUserTurnParams;
+use codex_mcp_server::CodexToolCallParam;
 
 use mcp_types::CallToolRequestParams;
 use mcp_types::ClientCapabilities;

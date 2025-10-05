@@ -4,7 +4,6 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use codex_core::auth::get_auth_file;
 use codex_core::auth::try_read_auth_json;
-use codex_core::default_client::DEFAULT_ORIGINATOR;
 use codex_login::ServerOptions;
 use codex_login::run_device_code_login;
 use serde_json::json;
@@ -101,7 +100,7 @@ fn server_opts(codex_home: &tempfile::TempDir, issuer: String) -> ServerOptions 
     let mut opts = ServerOptions::new(
         codex_home.path().to_path_buf(),
         "client-id".to_string(),
-        DEFAULT_ORIGINATOR.to_string(),
+        "test-originator".to_string(),
     );
     opts.issuer = issuer;
     opts.open_browser = false;
@@ -191,7 +190,7 @@ async fn device_code_login_integration_persists_without_api_key_on_exchange_fail
     let mut opts = ServerOptions::new(
         codex_home.path().to_path_buf(),
         "client-id".to_string(),
-        DEFAULT_ORIGINATOR.to_string(),
+        "test-originator".to_string(),
     );
     opts.issuer = issuer;
     opts.open_browser = false;
@@ -238,7 +237,7 @@ async fn device_code_login_integration_handles_error_payload() {
     let mut opts = ServerOptions::new(
         codex_home.path().to_path_buf(),
         "client-id".to_string(),
-        DEFAULT_ORIGINATOR.to_string(),
+        "test-originator".to_string(),
     );
     opts.issuer = issuer;
     opts.open_browser = false;

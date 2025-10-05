@@ -1,119 +1,62 @@
-use crate::config_types::ReasoningEffort as ReasoningEffortConfig;
-use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
-use crate::config_types::TextVerbosity as TextVerbosityConfig;
-use crate::environment_context::EnvironmentContext;
+use crate::client_common::tools::ToolSpec;
 use crate::error::Result;
 use crate::model_family::ModelFamily;
-use crate::openai_tools::OpenAiTool;
-use crate::protocol::RateLimitSnapshotEvent;
+use crate::protocol::RateLimitSnapshot;
 use crate::protocol::TokenUsage;
 use codex_apply_patch::APPLY_PATCH_TOOL_INSTRUCTIONS;
-use codex_protocol::models::ContentItem;
+use codex_protocol::config_types::ReasoningEffort as ReasoningEffortConfig;
+use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
+use codex_protocol::config_types::Verbosity as VerbosityConfig;
 use codex_protocol::models::ResponseItem;
 use futures::Stream;
+use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::ops::Deref;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 use tokio::sync::mpsc;
 
-/// Additional prompt for Code. Can not edit Codex instructions.
-const ADDITIONAL_INSTRUCTIONS: &str = include_str!("../prompt_coder.md");
-
-/// wraps environment context message in a tag for the model to parse more easily.
-const ENVIRONMENT_CONTEXT_START: &str = "<environment_context>\n\n";
-const ENVIRONMENT_CONTEXT_END: &str = "\n\n</environment_context>";
-
-/// wraps user instructions message in a tag for the model to parse more easily.
-const USER_INSTRUCTIONS_START: &str = "<user_instructions>\n\n";
-const USER_INSTRUCTIONS_END: &str = "\n\n</user_instructions>";
 /// Review thread system prompt. Edit `core/src/review_prompt.md` to customize.
-#[allow(dead_code)]
 pub const REVIEW_PROMPT: &str = include_str!("../review_prompt.md");
 
 /// API request payload for a single model turn
-#[derive(Debug, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct Prompt {
     /// Conversation context input items.
     pub input: Vec<ResponseItem>,
 
-    /// Whether to store response on server side (disable_response_storage = !store).
-    pub store: bool,
-
-    /// Model instructions that are appended to the base instructions.
-    pub user_instructions: Option<String>,
-
-    /// A list of key-value pairs that will be added as a developer message
-    /// for the model to use
-    pub(crate) environment_context: Option<EnvironmentContext>,
-
     /// Tools available to the model, including additional tools sourced from
     /// external MCP servers.
-    pub(crate) tools: Vec<OpenAiTool>,
-
-    /// Status items to be added at the end of the input
-    /// These are generated fresh for each request (screenshots, system status)
-    pub status_items: Vec<ResponseItem>,
+    pub(crate) tools: Vec<ToolSpec>,
 
     /// Optional override for the built-in BASE_INSTRUCTIONS.
     pub base_instructions_override: Option<String>,
 
-    /// Whether to prepend the default developer instructions block.
-    pub include_additional_instructions: bool,
-
-    /// Optional `text.format` for structured outputs (used by side-channel requests).
-    pub text_format: Option<TextFormat>,
-
-    /// Optional per-request model slug override.
-    pub model_override: Option<String>,
-
-    /// Optional per-request model family override matching `model_override`.
-    pub model_family_override: Option<ModelFamily>,
     /// Optional the output schema for the model's response.
     pub output_schema: Option<Value>,
 }
 
-impl Default for Prompt {
-    fn default() -> Self {
-        Self {
-            input: Vec::new(),
-            store: false,
-            user_instructions: None,
-            environment_context: None,
-            tools: Vec::new(),
-            status_items: Vec::new(),
-            base_instructions_override: None,
-            include_additional_instructions: true,
-            text_format: None,
-            model_override: None,
-            model_family_override: None,
-            output_schema: None,
-        }
-    }
-}
-
 impl Prompt {
     pub(crate) fn get_full_instructions<'a>(&'a self, model: &'a ModelFamily) -> Cow<'a, str> {
-        let effective_model = self.model_family_override.as_ref().unwrap_or(model);
         let base = self
             .base_instructions_override
             .as_deref()
-            .unwrap_or(effective_model.base_instructions.deref());
-        let _sections: Vec<&str> = vec![base];
+            .unwrap_or(model.base_instructions.deref());
         // When there are no custom instructions, add apply_patch_tool_instructions if:
         // - the model needs special instructions (4.1)
         // AND
         // - there is no apply_patch tool present
         let is_apply_patch_tool_present = self.tools.iter().any(|tool| match tool {
-            OpenAiTool::Function(f) => f.name == "apply_patch",
-            OpenAiTool::Freeform(f) => f.name == "apply_patch",
+            ToolSpec::Function(f) => f.name == "apply_patch",
+            ToolSpec::Freeform(f) => f.name == "apply_patch",
             _ => false,
         });
         if self.base_instructions_override.is_none()
-            && effective_model.needs_special_apply_patch_instructions
+            && model.needs_special_apply_patch_instructions
             && !is_apply_patch_tool_present
         {
             Cow::Owned(format!("{base}\n{APPLY_PATCH_TOOL_INSTRUCTIONS}"))
@@ -122,141 +65,131 @@ impl Prompt {
         }
     }
 
-    fn get_formatted_user_instructions(&self) -> Option<String> {
-        self.user_instructions
-            .as_ref()
-            .map(|ui| format!("{USER_INSTRUCTIONS_START}{ui}{USER_INSTRUCTIONS_END}"))
-    }
-
-    fn get_formatted_environment_context(&self) -> Option<String> {
-        self.environment_context.as_ref().map(|ec| {
-            let ec_str = serde_json::to_string_pretty(ec).unwrap_or_else(|_| format!("{:?}", ec));
-            format!("{ENVIRONMENT_CONTEXT_START}{ec_str}{ENVIRONMENT_CONTEXT_END}")
-        })
-    }
-
     pub(crate) fn get_formatted_input(&self) -> Vec<ResponseItem> {
-        let mut input_with_instructions =
-            Vec::with_capacity(self.input.len() + self.status_items.len() + 3);
-        if self.include_additional_instructions {
-            input_with_instructions.push(ResponseItem::Message {
-                id: None,
-                role: "developer".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: ADDITIONAL_INSTRUCTIONS.to_string(),
-                }],
-            });
-            if let Some(ec) = self.get_formatted_environment_context() {
-                let has_environment_context = self.input.iter().any(|item| {
-                    matches!(item, ResponseItem::Message { role, content, .. }
-                        if role == "user"
-                            && content.iter().any(|c| matches!(c,
-                                ContentItem::InputText { text } if text.contains(ENVIRONMENT_CONTEXT_START.trim())
-                            )))
-                });
-                if !has_environment_context {
-                    input_with_instructions.push(ResponseItem::Message {
-                        id: None,
-                        role: "user".to_string(),
-                        content: vec![ContentItem::InputText { text: ec }],
-                    });
-                }
-            }
-            if let Some(ui) = self.get_formatted_user_instructions() {
-                let has_user_instructions = self.input.iter().any(|item| {
-                    matches!(item, ResponseItem::Message { role, content, .. }
-                        if role == "user"
-                            && content.iter().any(|c| matches!(c,
-                                ContentItem::InputText { text } if text.contains(USER_INSTRUCTIONS_START)
-                            )))
-                });
-                if !has_user_instructions {
-                    input_with_instructions.push(ResponseItem::Message {
-                        id: None,
-                        role: "user".to_string(),
-                        content: vec![ContentItem::InputText { text: ui }],
-                    });
-                }
-            }
-        }
-        // Deduplicate function call outputs before adding to input
-        let mut seen_call_ids = std::collections::HashSet::new();
-        for item in &self.input {
-            match item {
-                ResponseItem::FunctionCallOutput { call_id, .. } => {
-                    if !seen_call_ids.insert(call_id.clone()) {
-                        // Skip duplicate function call output
-                        tracing::debug!(
-                            "Filtering duplicate FunctionCallOutput with call_id: {} from input",
-                            call_id
-                        );
-                        continue;
-                    }
-                }
-                _ => {}
-            }
-            input_with_instructions.push(item.clone());
+        let mut input = self.input.clone();
+
+        // when using the *Freeform* apply_patch tool specifically, tool outputs
+        // should be structured text, not json. Do NOT reserialize when using
+        // the Function tool - note that this differs from the check above for
+        // instructions. We declare the result as a named variable for clarity.
+        let is_freeform_apply_patch_tool_present = self.tools.iter().any(|tool| match tool {
+            ToolSpec::Freeform(f) => f.name == "apply_patch",
+            _ => false,
+        });
+        if is_freeform_apply_patch_tool_present {
+            reserialize_shell_outputs(&mut input);
         }
 
-        // Add status items at the end so they're fresh for each request
-        input_with_instructions.extend(self.status_items.clone());
+        input
+    }
+}
 
-        // Limit screenshots to maximum 5 (keep first and last 4)
-        limit_screenshots_in_input(&mut input_with_instructions);
+fn reserialize_shell_outputs(items: &mut [ResponseItem]) {
+    let mut shell_call_ids: HashSet<String> = HashSet::new();
 
-        input_with_instructions
+    items.iter_mut().for_each(|item| match item {
+        ResponseItem::LocalShellCall { call_id, id, .. } => {
+            if let Some(identifier) = call_id.clone().or_else(|| id.clone()) {
+                shell_call_ids.insert(identifier);
+            }
+        }
+        ResponseItem::CustomToolCall {
+            id: _,
+            status: _,
+            call_id,
+            name,
+            input: _,
+        } => {
+            if name == "apply_patch" {
+                shell_call_ids.insert(call_id.clone());
+            }
+        }
+        ResponseItem::CustomToolCallOutput { call_id, output } => {
+            if shell_call_ids.remove(call_id)
+                && let Some(structured) = parse_structured_shell_output(output)
+            {
+                *output = structured
+            }
+        }
+        ResponseItem::FunctionCall { name, call_id, .. }
+            if is_shell_tool_name(name) || name == "apply_patch" =>
+        {
+            shell_call_ids.insert(call_id.clone());
+        }
+        ResponseItem::FunctionCallOutput { call_id, output } => {
+            if shell_call_ids.remove(call_id)
+                && let Some(structured) = parse_structured_shell_output(&output.content)
+            {
+                output.content = structured
+            }
+        }
+        _ => {}
+    })
+}
+
+fn is_shell_tool_name(name: &str) -> bool {
+    matches!(name, "shell" | "container.exec")
+}
+
+#[derive(Deserialize)]
+struct ExecOutputJson {
+    output: String,
+    metadata: ExecOutputMetadataJson,
+}
+
+#[derive(Deserialize)]
+struct ExecOutputMetadataJson {
+    exit_code: i32,
+    duration_seconds: f32,
+}
+
+fn parse_structured_shell_output(raw: &str) -> Option<String> {
+    let parsed: ExecOutputJson = serde_json::from_str(raw).ok()?;
+    Some(build_structured_output(&parsed))
+}
+
+fn build_structured_output(parsed: &ExecOutputJson) -> String {
+    let mut sections = Vec::new();
+    sections.push(format!("Exit code: {}", parsed.metadata.exit_code));
+    sections.push(format!(
+        "Wall time: {} seconds",
+        parsed.metadata.duration_seconds
+    ));
+
+    if let Some(total_lines) = extract_total_output_lines(&parsed.output) {
+        sections.push(format!("Total output lines: {total_lines}"));
     }
 
-    /// Creates a formatted user instructions message from a string
-    #[allow(dead_code)]
-    pub(crate) fn format_user_instructions_message(ui: &str) -> ResponseItem {
-        ResponseItem::Message {
-            id: None,
-            role: "user".to_string(),
-            content: vec![ContentItem::InputText {
-                text: format!("{USER_INSTRUCTIONS_START}{ui}{USER_INSTRUCTIONS_END}"),
-            }],
-        }
-    }
+    sections.push("Output:".to_string());
+    sections.push(parsed.output.clone());
+
+    sections.join("\n")
+}
+
+fn extract_total_output_lines(output: &str) -> Option<u32> {
+    let marker_start = output.find("[... omitted ")?;
+    let marker = &output[marker_start..];
+    let (_, after_of) = marker.split_once(" of ")?;
+    let (total_segment, _) = after_of.split_once(' ')?;
+    total_segment.parse::<u32>().ok()
 }
 
 #[derive(Debug)]
 pub enum ResponseEvent {
     Created,
-    OutputItemDone { item: ResponseItem, sequence_number: Option<u64>, output_index: Option<u32> },
+    OutputItemDone(ResponseItem),
     Completed {
         response_id: String,
         token_usage: Option<TokenUsage>,
     },
-    OutputTextDelta {
-        delta: String,
-        item_id: Option<String>,
-        sequence_number: Option<u64>,
-        output_index: Option<u32>,
-    },
-    ReasoningSummaryDelta {
-        delta: String,
-        item_id: Option<String>,
-        sequence_number: Option<u64>,
-        output_index: Option<u32>,
-        summary_index: Option<u32>,
-    },
-    ReasoningContentDelta {
-        delta: String,
-        item_id: Option<String>,
-        sequence_number: Option<u64>,
-        output_index: Option<u32>,
-        content_index: Option<u32>,
-    },
+    OutputTextDelta(String),
+    ReasoningSummaryDelta(String),
+    ReasoningContentDelta(String),
     ReasoningSummaryPartAdded,
     WebSearchCallBegin {
         call_id: String,
     },
-    WebSearchCallCompleted {
-        call_id: String,
-        query: Option<String>,
-    },
-    RateLimits(RateLimitSnapshotEvent),
+    RateLimits(RateLimitSnapshot),
 }
 
 #[derive(Debug, Serialize)]
@@ -267,126 +200,47 @@ pub(crate) struct Reasoning {
     pub(crate) summary: Option<ReasoningSummaryConfig>,
 }
 
-/// Text configuration for verbosity/format in OpenAI API responses.
-#[derive(Debug)]
-pub(crate) struct Text {
-    pub(crate) verbosity: OpenAiTextVerbosity,
+#[derive(Debug, Serialize, Default, Clone)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TextFormatType {
+    #[default]
+    JsonSchema,
+}
+
+#[derive(Debug, Serialize, Default, Clone)]
+pub(crate) struct TextFormat {
+    pub(crate) r#type: TextFormatType,
+    pub(crate) strict: bool,
+    pub(crate) schema: Value,
+    pub(crate) name: String,
+}
+
+/// Controls under the `text` field in the Responses API for GPT-5.
+#[derive(Debug, Serialize, Default, Clone)]
+pub(crate) struct TextControls {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) verbosity: Option<OpenAiVerbosity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) format: Option<TextFormat>,
 }
 
-impl serde::Serialize for Text {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeMap;
-        let mut map = serializer.serialize_map(None)?;
-        if let Some(fmt) = &self.format {
-            // When a structured format is present, omit `verbosity` per API expectations.
-            map.serialize_entry("format", fmt)?;
-        } else {
-            map.serialize_entry("verbosity", &self.verbosity)?;
-        }
-        map.end()
-    }
-}
-
-/// OpenAI text verbosity level for serialization.
-#[derive(Debug, Serialize, Default, Clone, Copy)]
+#[derive(Debug, Serialize, Default, Clone)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum OpenAiTextVerbosity {
+pub(crate) enum OpenAiVerbosity {
     Low,
     #[default]
     Medium,
     High,
 }
 
-impl From<TextVerbosityConfig> for OpenAiTextVerbosity {
-    fn from(verbosity: TextVerbosityConfig) -> Self {
-        match verbosity {
-            TextVerbosityConfig::Low => OpenAiTextVerbosity::Low,
-            TextVerbosityConfig::Medium => OpenAiTextVerbosity::Medium,
-            TextVerbosityConfig::High => OpenAiTextVerbosity::High,
+impl From<VerbosityConfig> for OpenAiVerbosity {
+    fn from(v: VerbosityConfig) -> Self {
+        match v {
+            VerbosityConfig::Low => OpenAiVerbosity::Low,
+            VerbosityConfig::Medium => OpenAiVerbosity::Medium,
+            VerbosityConfig::High => OpenAiVerbosity::High,
         }
     }
-}
-
-/// Optional structured output format for `text.format` in the Responses API.
-#[derive(Debug, Serialize, Clone)]
-pub struct TextFormat {
-    #[serde(rename = "type")]
-    pub r#type: String, // e.g. "json_schema"
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub strict: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub schema: Option<serde_json::Value>,
-}
-
-/// Limits the number of screenshots in the input to a maximum of 5.
-/// Keeps the first screenshot and the last 4 screenshots.
-/// Replaces removed screenshots with a placeholder message.
-fn limit_screenshots_in_input(input: &mut Vec<ResponseItem>) {
-    // Find all screenshot positions
-    let mut screenshot_positions = Vec::new();
-    
-    for (idx, item) in input.iter().enumerate() {
-        if let ResponseItem::Message { content, .. } = item {
-            let has_screenshot = content
-                .iter()
-                .any(|c| matches!(c, ContentItem::InputImage { .. }));
-            if has_screenshot {
-                screenshot_positions.push(idx);
-            }
-        }
-    }
-    
-    // If we have 5 or fewer screenshots, no action needed
-    if screenshot_positions.len() <= 5 {
-        return;
-    }
-    
-    // Determine which screenshots to keep
-    let mut positions_to_keep = std::collections::HashSet::new();
-    
-    // Keep the first screenshot
-    if let Some(&first) = screenshot_positions.first() {
-        positions_to_keep.insert(first);
-    }
-    
-    // Keep the last 4 screenshots
-    let last_four_start = screenshot_positions.len().saturating_sub(4);
-    for &pos in &screenshot_positions[last_four_start..] {
-        positions_to_keep.insert(pos);
-    }
-    
-    // Replace screenshots that should be removed
-    for &pos in &screenshot_positions {
-        if !positions_to_keep.contains(&pos) {
-            if let Some(ResponseItem::Message { content, .. }) = input.get_mut(pos) {
-                // Replace image content with placeholder message
-                let mut new_content = Vec::new();
-                for item in content.iter() {
-                    match item {
-                        ContentItem::InputImage { .. } => {
-                            new_content.push(ContentItem::InputText {
-                                text: "[screenshot no longer available]".to_string(),
-                            });
-                        }
-                        other => new_content.push(other.clone()),
-                    }
-                }
-                *content = new_content;
-            }
-        }
-    }
-    
-    tracing::debug!(
-        "Limited screenshots from {} to {} (kept first and last 4)",
-        screenshot_positions.len(),
-        positions_to_keep.len()
-    );
 }
 
 /// Request object that is serialized as JSON and POST'ed when using the
@@ -403,14 +257,61 @@ pub(crate) struct ResponsesApiRequest<'a> {
     pub(crate) tool_choice: &'static str,
     pub(crate) parallel_tool_calls: bool,
     pub(crate) reasoning: Option<Reasoning>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) text: Option<Text>,
-    /// true when using the Responses API.
     pub(crate) store: bool,
     pub(crate) stream: bool,
     pub(crate) include: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) prompt_cache_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) text: Option<TextControls>,
+}
+
+pub(crate) mod tools {
+    use crate::openai_tools::JsonSchema;
+    use serde::Deserialize;
+    use serde::Serialize;
+
+    /// When serialized as JSON, this produces a valid "Tool" in the OpenAI
+    /// Responses API.
+    #[derive(Debug, Clone, Serialize, PartialEq)]
+    #[serde(tag = "type")]
+    pub(crate) enum ToolSpec {
+        #[serde(rename = "function")]
+        Function(ResponsesApiTool),
+        #[serde(rename = "local_shell")]
+        LocalShell {},
+        // TODO: Understand why we get an error on web_search although the API docs say it's supported.
+        // https://platform.openai.com/docs/guides/tools-web-search?api-mode=responses#:~:text=%7B%20type%3A%20%22web_search%22%20%7D%2C
+        #[serde(rename = "web_search")]
+        WebSearch {},
+        #[serde(rename = "custom")]
+        Freeform(FreeformTool),
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+    pub struct FreeformTool {
+        pub(crate) name: String,
+        pub(crate) description: String,
+        pub(crate) format: FreeformToolFormat,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+    pub struct FreeformToolFormat {
+        pub(crate) r#type: String,
+        pub(crate) syntax: String,
+        pub(crate) definition: String,
+    }
+
+    #[derive(Debug, Clone, Serialize, PartialEq)]
+    pub struct ResponsesApiTool {
+        pub(crate) name: String,
+        pub(crate) description: String,
+        /// TODO: Validation. When strict is set to true, the JSON schema,
+        /// `required` and `additional_properties` must be present. All fields in
+        /// `properties` must be present in `required`.
+        pub(crate) strict: bool,
+        pub(crate) parameters: JsonSchema,
+    }
 }
 
 pub(crate) fn create_reasoning_param_for_request(
@@ -428,7 +329,24 @@ pub(crate) fn create_reasoning_param_for_request(
     })
 }
 
-// Removed legacy TextControls helper; use `Text` with `OpenAiTextVerbosity` instead.
+pub(crate) fn create_text_param_for_request(
+    verbosity: Option<VerbosityConfig>,
+    output_schema: &Option<Value>,
+) -> Option<TextControls> {
+    if verbosity.is_none() && output_schema.is_none() {
+        return None;
+    }
+
+    Some(TextControls {
+        verbosity: verbosity.map(std::convert::Into::into),
+        format: output_schema.as_ref().map(|schema| TextFormat {
+            r#type: TextFormatType::JsonSchema,
+            strict: true,
+            schema: schema.clone(),
+            name: "codex_output_schema".to_string(),
+        }),
+    })
+}
 
 pub struct ResponseStream {
     pub(crate) rx_event: mpsc::Receiver<Result<ResponseEvent>>,
@@ -521,7 +439,10 @@ mod tests {
             stream: true,
             include: vec![],
             prompt_cache_key: None,
-            text: Some(Text { verbosity: OpenAiTextVerbosity::Low, format: None }),
+            text: Some(TextControls {
+                verbosity: Some(OpenAiVerbosity::Low),
+                format: None,
+            }),
         };
 
         let v = serde_json::to_value(&req).expect("json");
@@ -544,6 +465,9 @@ mod tests {
             },
             "required": ["answer"],
         });
+        let text_controls =
+            create_text_param_for_request(None, &Some(schema.clone())).expect("text controls");
+
         let req = ResponsesApiRequest {
             model: "gpt-5",
             instructions: "i",
@@ -556,15 +480,7 @@ mod tests {
             stream: true,
             include: vec![],
             prompt_cache_key: None,
-            text: Some(Text {
-                verbosity: OpenAiTextVerbosity::Medium,
-                format: Some(TextFormat {
-                    r#type: "json_schema".to_string(),
-                    name: Some("codex_output_schema".to_string()),
-                    strict: Some(true),
-                    schema: Some(schema.clone()),
-                }),
-            }),
+            text: Some(text_controls),
         };
 
         let v = serde_json::to_value(&req).expect("json");

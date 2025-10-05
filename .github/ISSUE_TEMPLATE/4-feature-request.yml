@@ -1,17 +1,16 @@
 name: 🎁 Feature Request
-description: Propose a new feature for Code
+description: Propose a new feature for Codex
 labels:
   - enhancement
-  - needs triage
 body:
   - type: markdown
     attributes:
       value: |
-        Is Code missing a feature that you'd like to see? Feel free to propose it here.
+        Is Codex missing a feature that you'd like to see? Feel free to propose it here.
 
         Before you submit a feature:
         1. Search existing issues for similar features. If you find one, 👍 it rather than opening a new one.
-        2. Please be aware that this feature may be automatically implemented through our Issue Triage - if this happens you will receive a reply to this issue with information on how to run it. We'd really appreciate any feedback on the implementation as it helps us improve the feature for everyone!
+        2. The Codex team will try to balance the varying needs of the community when prioritizing or rejecting new features. Not all features will be accepted. See [Contributing](https://github.com/openai/codex#contributing) for more details.
 
   - type: textarea
     id: feature
@@ -19,3 +18,8 @@ body:
       label: What feature would you like to see?
     validations:
       required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional information
+      description: Is there anything else you think we should know?

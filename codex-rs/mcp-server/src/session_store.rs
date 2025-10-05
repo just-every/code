@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use codex_core::config::Config;
 use codex_core::CodexConversation;
+use codex_core::config::Config;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 

@@ -169,9 +169,7 @@ pub enum Op {
     },
 
     /// Persist the full chat history snapshot for the current session.
-    PersistHistorySnapshot {
-        snapshot: serde_json::Value,
-    },
+    PersistHistorySnapshot { snapshot: serde_json::Value },
 
     /// Request a single history entry identified by `log_id` + `offset`.
     GetHistoryEntryRequest { offset: usize, log_id: u64 },
@@ -645,6 +643,31 @@ impl TokenUsageInfo {
     pub fn append_last_usage(&mut self, last: &TokenUsage) {
         self.total_token_usage.add_assign(last);
         self.last_token_usage = last.clone();
+    }
+
+    pub fn fill_to_context_window(&mut self, context_window: u64) {
+        let previous_total = self.total_token_usage.total_tokens;
+        let delta = context_window.saturating_sub(previous_total);
+
+        self.model_context_window = Some(context_window);
+        self.total_token_usage = TokenUsage {
+            total_tokens: context_window,
+            ..TokenUsage::default()
+        };
+        self.last_token_usage = TokenUsage {
+            total_tokens: delta,
+            ..TokenUsage::default()
+        };
+    }
+
+    pub fn full_context_window(context_window: u64) -> Self {
+        let mut info = Self {
+            total_token_usage: TokenUsage::default(),
+            last_token_usage: TokenUsage::default(),
+            model_context_window: Some(context_window),
+        };
+        info.fill_to_context_window(context_window);
+        info
     }
 }
 
@@ -1289,7 +1312,6 @@ pub struct GetHistoryEntryResponseEvent {
     pub entry: Option<HistoryEntry>,
 }
 
-/// Response payload for `Op::ListMcpTools`.
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
 pub struct McpListToolsResponseEvent {
     /// Fully qualified tool name -> tool definition.

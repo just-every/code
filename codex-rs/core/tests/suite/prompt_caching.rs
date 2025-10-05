@@ -1,10 +1,10 @@
 #![allow(clippy::unwrap_used)]
 
-use codex_core::environment_context::TOOL_CANDIDATES;
 use codex_core::CodexAuth;
 use codex_core::ConversationManager;
 use codex_core::ModelProviderInfo;
 use codex_core::built_in_model_providers;
+use codex_core::config::OPENAI_DEFAULT_MODEL;
 use codex_core::model_family::find_family_for_model;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::EventMsg;
@@ -17,16 +17,15 @@ use codex_core::shell::Shell;
 use codex_core::shell::default_user_shell;
 use core_test_support::load_default_config_for_test;
 use core_test_support::load_sse_fixture_with_id;
+use core_test_support::skip_if_no_network;
 use core_test_support::wait_for_event;
-use os_info::Type as OsType;
-use os_info::Version;
+use std::collections::HashMap;
 use tempfile::TempDir;
 use wiremock::Mock;
 use wiremock::MockServer;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
-use which::which;
 
 fn text_user_input(text: String) -> serde_json::Value {
     serde_json::json!({
@@ -36,127 +35,19 @@ fn text_user_input(text: String) -> serde_json::Value {
     })
 }
 
-fn render_env_context(
-    cwd: Option<String>,
-    approval_policy: Option<&str>,
-    sandbox_mode: Option<&str>,
-    network_access: Option<&str>,
-    writable_roots: Vec<String>,
-    shell_name: Option<String>,
-) -> String {
-    let mut lines = vec!["<environment_context>".to_string()];
-    if let Some(cwd) = cwd {
-        lines.push(format!("  <cwd>{cwd}</cwd>"));
-    }
-    if let Some(approval_policy) = approval_policy {
-        lines.push(format!("  <approval_policy>{approval_policy}</approval_policy>"));
-    }
-    if let Some(sandbox_mode) = sandbox_mode {
-        lines.push(format!("  <sandbox_mode>{sandbox_mode}</sandbox_mode>"));
-    }
-    if let Some(network_access) = network_access {
-        lines.push(format!("  <network_access>{network_access}</network_access>"));
-    }
-    if !writable_roots.is_empty() {
-        lines.push("  <writable_roots>".to_string());
-        for root in writable_roots {
-            lines.push(format!("    <root>{root}</root>"));
-        }
-        lines.push("  </writable_roots>".to_string());
-    }
-    if let Some(os_block) = operating_system_block() {
-        lines.push(os_block);
-    }
-    if let Some(tools_block) = common_tools_block() {
-        lines.push(tools_block);
-    }
-    if let Some(shell_name) = shell_name {
-        lines.push(format!("  <shell>{shell_name}</shell>"));
-    }
-    lines.push("</environment_context>".to_string());
-    lines.join("\n")
-}
-
-fn operating_system_block() -> Option<String> {
-    let info = os_info::get();
-    let family = match info.os_type() {
-        OsType::Unknown => None,
-        other => Some(other.to_string()),
-    };
-    let version = match info.version() {
-        Version::Unknown => None,
-        other => {
-            let text = other.to_string();
-            if text.trim().is_empty() {
-                None
-            } else {
-                Some(text)
-            }
-        }
-    };
-    let architecture = {
-        let arch = std::env::consts::ARCH;
-        if arch.is_empty() {
-            None
-        } else {
-            Some(arch.to_string())
-        }
-    };
-
-    if family.is_none() && version.is_none() && architecture.is_none() {
-        return None;
-    }
-
-    let mut lines = vec!["  <operating_system>".to_string()];
-    if let Some(family) = family {
-        lines.push(format!("    <family>{family}</family>"));
-    }
-    if let Some(version) = version {
-        lines.push(format!("    <version>{version}</version>"));
-    }
-    if let Some(architecture) = architecture {
-        lines.push(format!("    <architecture>{architecture}</architecture>"));
-    }
-    lines.push("  </operating_system>".to_string());
-    Some(lines.join("\n"))
-}
-
-fn common_tools_block() -> Option<String> {
-    let mut available = Vec::new();
-    for candidate in TOOL_CANDIDATES {
-        let detection_names = if candidate.detection_names.is_empty() {
-            &[candidate.label][..]
-        } else {
-            candidate.detection_names
-        };
-        if detection_names
-            .iter()
-            .any(|name| which(name).is_ok())
-        {
-            available.push(candidate.label);
-        }
-    }
-    if available.is_empty() {
-        return None;
-    }
-
-    let mut lines = vec!["  <common_tools>".to_string()];
-    for tool in available {
-        lines.push(format!("    <tool>{tool}</tool>"));
-    }
-    lines.push("  </common_tools>".to_string());
-    Some(lines.join("\n"))
-}
-
 fn default_env_context_str(cwd: &str, shell: &Shell) -> String {
-    let shell_name = shell.name();
-    render_env_context(
-        Some(cwd.to_string()),
-        Some("on-request"),
-        Some("read-only"),
-        Some("restricted"),
-        Vec::new(),
-        shell_name,
+    format!(
+        r#"<environment_context>
+  <cwd>{}</cwd>
+  <approval_policy>on-request</approval_policy>
+  <sandbox_mode>read-only</sandbox_mode>
+  <network_access>restricted</network_access>
+{}</environment_context>"#,
+        cwd,
+        match shell.name() {
+            Some(name) => format!("  <shell>{name}</shell>\n"),
+            None => String::new(),
+        }
     )
 }
 
@@ -179,6 +70,7 @@ fn assert_tool_names(body: &serde_json::Value, expected_names: &[&str]) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn codex_mini_latest_tools() {
+    skip_if_no_network!();
     use pretty_assertions::assert_eq;
 
     let server = MockServer::start().await;
@@ -263,6 +155,7 @@ async fn codex_mini_latest_tools() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn prompt_tools_are_consistent_across_requests() {
+    skip_if_no_network!();
     use pretty_assertions::assert_eq;
 
     let server = MockServer::start().await;
@@ -287,16 +180,16 @@ async fn prompt_tools_are_consistent_across_requests() {
 
     let cwd = TempDir::new().unwrap();
     let codex_home = TempDir::new().unwrap();
+
     let mut config = load_default_config_for_test(&codex_home);
     config.cwd = cwd.path().to_path_buf();
     config.model_provider = model_provider;
     config.user_instructions = Some("be consistent and helpful".to_string());
-    config.include_apply_patch_tool = true;
     config.include_plan_tool = true;
 
     let conversation_manager =
         ConversationManager::with_auth(CodexAuth::from_api_key("Test API Key"));
-    let expected_instructions = config.model_family.base_instructions.clone();
+    let base_instructions = config.model_family.base_instructions.clone();
     let codex = conversation_manager
         .new_conversation(config)
         .await
@@ -328,8 +221,29 @@ async fn prompt_tools_are_consistent_across_requests() {
 
     // our internal implementation is responsible for keeping tools in sync
     // with the OpenAI schema, so we just verify the tool presence here
-    let expected_tools_names: &[&str] = &["shell", "update_plan", "apply_patch", "view_image"];
+    let tools_by_model: HashMap<&'static str, Vec<&'static str>> = HashMap::from([
+        ("gpt-5", vec!["shell", "update_plan", "view_image"]),
+        (
+            "gpt-5-codex",
+            vec!["shell", "update_plan", "apply_patch", "view_image"],
+        ),
+    ]);
+    let expected_tools_names = tools_by_model
+        .get(OPENAI_DEFAULT_MODEL)
+        .unwrap_or_else(|| panic!("expected tools to be defined for model {OPENAI_DEFAULT_MODEL}"))
+        .as_slice();
     let body0 = requests[0].body_json::<serde_json::Value>().unwrap();
+
+    let expected_instructions = if expected_tools_names.contains(&"apply_patch") {
+        base_instructions
+    } else {
+        [
+            base_instructions.clone(),
+            include_str!("../../../apply-patch/apply_patch_tool_instructions.md").to_string(),
+        ]
+        .join("\n")
+    };
+
     assert_eq!(
         body0["instructions"],
         serde_json::json!(expected_instructions),
@@ -346,6 +260,7 @@ async fn prompt_tools_are_consistent_across_requests() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prefixes_context_and_instructions_once_and_consistently_across_requests() {
+    skip_if_no_network!();
     use pretty_assertions::assert_eq;
 
     let server = MockServer::start().await;
@@ -408,33 +323,35 @@ async fn prefixes_context_and_instructions_once_and_consistently_across_requests
 
     let shell = default_user_shell().await;
 
-    let expected_env_text = render_env_context(
-        Some(cwd.path().to_string_lossy().to_string()),
-        Some("on-request"),
-        Some("read-only"),
-        Some("restricted"),
-        Vec::new(),
-        shell.name(),
+    let expected_env_text = format!(
+        r#"<environment_context>
+  <cwd>{}</cwd>
+  <approval_policy>on-request</approval_policy>
+  <sandbox_mode>read-only</sandbox_mode>
+  <network_access>restricted</network_access>
+{}</environment_context>"#,
+        cwd.path().to_string_lossy(),
+        match shell.name() {
+            Some(name) => format!("  <shell>{name}</shell>\n"),
+            None => String::new(),
+        }
     );
     let expected_ui_text =
         "<user_instructions>\n\nbe consistent and helpful\n\n</user_instructions>";
 
     let expected_env_msg = serde_json::json!({
         "type": "message",
-        "id": serde_json::Value::Null,
         "role": "user",
         "content": [ { "type": "input_text", "text": expected_env_text } ]
     });
     let expected_ui_msg = serde_json::json!({
         "type": "message",
-        "id": serde_json::Value::Null,
         "role": "user",
         "content": [ { "type": "input_text", "text": expected_ui_text } ]
     });
 
     let expected_user_message_1 = serde_json::json!({
         "type": "message",
-        "id": serde_json::Value::Null,
         "role": "user",
         "content": [ { "type": "input_text", "text": "hello 1" } ]
     });
@@ -446,7 +363,6 @@ async fn prefixes_context_and_instructions_once_and_consistently_across_requests
 
     let expected_user_message_2 = serde_json::json!({
         "type": "message",
-        "id": serde_json::Value::Null,
         "role": "user",
         "content": [ { "type": "input_text", "text": "hello 2" } ]
     });
@@ -463,6 +379,7 @@ async fn prefixes_context_and_instructions_once_and_consistently_across_requests
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn overrides_turn_context_but_keeps_cached_prefix_and_key_constant() {
+    skip_if_no_network!();
     use pretty_assertions::assert_eq;
 
     let server = MockServer::start().await;
@@ -556,24 +473,25 @@ async fn overrides_turn_context_but_keeps_cached_prefix_and_key_constant() {
     // as the prefix of the second request, ensuring cache hit potential.
     let expected_user_message_2 = serde_json::json!({
         "type": "message",
-        "id": serde_json::Value::Null,
         "role": "user",
         "content": [ { "type": "input_text", "text": "hello 2" } ]
     });
     // After overriding the turn context, the environment context should be emitted again
     // reflecting the new approval policy and sandbox settings. Omit cwd because it did
     // not change.
-    let expected_env_text_2 = render_env_context(
-        None,
-        Some("never"),
-        Some("workspace-write"),
-        Some("enabled"),
-        vec![writable.path().to_string_lossy().to_string()],
-        None,
+    let expected_env_text_2 = format!(
+        r#"<environment_context>
+  <approval_policy>never</approval_policy>
+  <sandbox_mode>workspace-write</sandbox_mode>
+  <network_access>enabled</network_access>
+  <writable_roots>
+    <root>{}</root>
+  </writable_roots>
+</environment_context>"#,
+        writable.path().to_string_lossy()
     );
     let expected_env_msg_2 = serde_json::json!({
         "type": "message",
-        "id": serde_json::Value::Null,
         "role": "user",
         "content": [ { "type": "input_text", "text": expected_env_text_2 } ]
     });
@@ -589,6 +507,7 @@ async fn overrides_turn_context_but_keeps_cached_prefix_and_key_constant() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn per_turn_overrides_keep_cached_prefix_and_key_constant() {
+    skip_if_no_network!();
     use pretty_assertions::assert_eq;
 
     let server = MockServer::start().await;
@@ -679,17 +598,21 @@ async fn per_turn_overrides_keep_cached_prefix_and_key_constant() {
     // as the prefix of the second request.
     let expected_user_message_2 = serde_json::json!({
         "type": "message",
-        "id": serde_json::Value::Null,
         "role": "user",
         "content": [ { "type": "input_text", "text": "hello 2" } ]
     });
-    let expected_env_text_2 = render_env_context(
-        Some(new_cwd.path().to_string_lossy().to_string()),
-        Some("never"),
-        Some("workspace-write"),
-        Some("enabled"),
-        vec![writable.path().to_string_lossy().to_string()],
-        None,
+    let expected_env_text_2 = format!(
+        r#"<environment_context>
+  <cwd>{}</cwd>
+  <approval_policy>never</approval_policy>
+  <sandbox_mode>workspace-write</sandbox_mode>
+  <network_access>enabled</network_access>
+  <writable_roots>
+    <root>{}</root>
+  </writable_roots>
+</environment_context>"#,
+        new_cwd.path().to_string_lossy(),
+        writable.path().to_string_lossy(),
     );
     let expected_env_msg_2 = serde_json::json!({
         "type": "message",
@@ -708,6 +631,7 @@ async fn per_turn_overrides_keep_cached_prefix_and_key_constant() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_user_turn_with_no_changes_does_not_send_environment_context() {
+    skip_if_no_network!();
     use pretty_assertions::assert_eq;
 
     let server = MockServer::start().await;
@@ -821,6 +745,7 @@ async fn send_user_turn_with_no_changes_does_not_send_environment_context() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_user_turn_with_changes_sends_environment_context() {
+    skip_if_no_network!();
     use pretty_assertions::assert_eq;
 
     let server = MockServer::start().await;
@@ -922,13 +847,14 @@ async fn send_user_turn_with_changes_sends_environment_context() {
     ]);
     assert_eq!(body1["input"], expected_input_1);
 
-    let expected_env_msg_2 = text_user_input(render_env_context(
-        Some(default_cwd.to_string_lossy().to_string()),
-        Some("never"),
-        Some("danger-full-access"),
-        Some("enabled"),
-        Vec::new(),
-        shell.name(),
+    let expected_env_msg_2 = text_user_input(format!(
+        r#"<environment_context>
+  <cwd>{}</cwd>
+  <approval_policy>never</approval_policy>
+  <sandbox_mode>danger-full-access</sandbox_mode>
+  <network_access>enabled</network_access>
+</environment_context>"#,
+        default_cwd.to_string_lossy()
     ));
     let expected_user_message_2 = text_user_input("hello 2".to_string());
     let expected_input_2 = serde_json::Value::Array(vec![

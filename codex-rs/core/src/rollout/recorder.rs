@@ -7,8 +7,6 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use codex_protocol::ConversationId;
-use codex_protocol::protocol::SessionSource;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::OffsetDateTime;
 use time::format_description::FormatItem;
@@ -21,50 +19,33 @@ use tracing::info;
 use tracing::warn;
 
 use super::SESSIONS_SUBDIR;
-use super::list::get_conversations;
 use super::list::ConversationsPage;
 use super::list::Cursor;
-use super::policy::{should_persist_response_item, should_persist_rollout_item};
+use super::list::get_conversations;
+use super::policy::is_persisted_response_item;
 use crate::config::Config;
-use crate::default_client::DEFAULT_ORIGINATOR;
+use crate::default_client::originator;
 use crate::git_info::collect_git_info;
-use crate::history::HistorySnapshot;
-use crate::protocol::event_msg_from_protocol;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::ResumedHistory;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
-use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::SessionSource;
 
-#[derive(Serialize, Deserialize, Default, Clone)]
-pub struct SessionStateSnapshot {}
-
-#[derive(Serialize, Deserialize, Default, Clone)]
-pub struct SavedSession {
-    pub session: SessionMeta,
-    #[serde(default)]
-    pub items: Vec<RolloutItem>,
-    #[serde(default)]
-    pub history_snapshot: Option<HistorySnapshot>,
-    #[serde(default)]
-    pub state: SessionStateSnapshot,
-    pub session_id: uuid::Uuid,
-}
 /// Records all [`ResponseItem`]s for a session and flushes them to disk after
 /// every update.
 ///
 /// Rollouts are recorded as JSONL and can be inspected with tools such as:
 ///
 /// ```ignore
-/// $ jq -C . ~/.code/sessions/rollout-2025-05-07T17-24-21-5973b6c0-94b8-487b-a530-2aeb6098ae0e.jsonl
-/// $ fx ~/.code/sessions/rollout-2025-05-07T17-24-21-5973b6c0-94b8-487b-a530-2aeb6098ae0e.jsonl
+/// $ jq -C . ~/.codex/sessions/rollout-2025-05-07T17-24-21-5973b6c0-94b8-487b-a530-2aeb6098ae0e.jsonl
+/// $ fx ~/.codex/sessions/rollout-2025-05-07T17-24-21-5973b6c0-94b8-487b-a530-2aeb6098ae0e.jsonl
 /// ```
 #[derive(Clone)]
 pub struct RolloutRecorder {
     tx: Sender<RolloutCmd>,
-    #[allow(dead_code)]
     pub(crate) rollout_path: PathBuf,
 }
 
@@ -82,8 +63,13 @@ pub enum RolloutRecorderParams {
 
 enum RolloutCmd {
     AddItems(Vec<RolloutItem>),
-    SetSnapshot(serde_json::Value),
-    Shutdown { ack: oneshot::Sender<()> },
+    /// Ensure all prior writes are processed; respond when flushed.
+    Flush {
+        ack: oneshot::Sender<()>,
+    },
+    Shutdown {
+        ack: oneshot::Sender<()>,
+    },
 }
 
 impl RolloutRecorderParams {
@@ -99,7 +85,9 @@ impl RolloutRecorderParams {
         }
     }
 
-    // Note: older APIs used a different resume entrypoint; prefer RolloutRecorder::resume.
+    pub fn resume(path: PathBuf) -> Self {
+        Self::Resume { path }
+    }
 }
 
 impl RolloutRecorder {
@@ -145,7 +133,7 @@ impl RolloutRecorder {
                         id: session_id,
                         timestamp,
                         cwd: config.cwd.clone(),
-                        originator: DEFAULT_ORIGINATOR.to_string(),
+                        originator: originator().value.clone(),
                         cli_version: env!("CARGO_PKG_VERSION").to_string(),
                         instructions,
                         source,
@@ -164,7 +152,6 @@ impl RolloutRecorder {
 
         // Clone the cwd for the spawned task to collect git info asynchronously
         let cwd = config.cwd.clone();
-        let snapshot_path = rollout_path.with_extension("snapshot.json");
 
         // A reasonably-sized bounded channel. If the buffer fills up the send
         // future will yield, which is fine – we only need to ensure we do not
@@ -174,34 +161,18 @@ impl RolloutRecorder {
         // Spawn a Tokio task that owns the file handle and performs async
         // writes. Using `tokio::fs::File` keeps everything on the async I/O
         // driver instead of blocking the runtime.
-        tokio::task::spawn(rollout_writer(file, rx, meta, cwd, snapshot_path));
+        tokio::task::spawn(rollout_writer(file, rx, meta, cwd));
 
         Ok(Self { tx, rollout_path })
     }
 
-    pub(crate) async fn record_response_items(
-        &self,
-        items: &[ResponseItem],
-    ) -> std::io::Result<()> {
-        if items.is_empty() {
-            return Ok(());
-        }
-        let mut rollout_items: Vec<RolloutItem> = Vec::new();
-        for item in items {
-            if should_persist_response_item(item) {
-                rollout_items.push(RolloutItem::ResponseItem(item.clone()));
-            }
-        }
-        if rollout_items.is_empty() {
-            return Ok(());
-        }
-        self.record_items(&rollout_items).await
-    }
-
     pub(crate) async fn record_items(&self, items: &[RolloutItem]) -> std::io::Result<()> {
-        let mut filtered: Vec<RolloutItem> = Vec::new();
+        let mut filtered = Vec::new();
         for item in items {
-            if should_persist_rollout_item(item) {
+            // Note that function calls may look a bit strange if they are
+            // "fully qualified MCP tool calls," so we could consider
+            // reformatting them in that case.
+            if is_persisted_response_item(item) {
                 filtered.push(item.clone());
             }
         }
@@ -214,79 +185,15 @@ impl RolloutRecorder {
             .map_err(|e| IoError::other(format!("failed to queue rollout items: {e}")))
     }
 
-    pub(crate) async fn record_events(
-        &self,
-        events: &[codex_protocol::protocol::RecordedEvent],
-    ) -> std::io::Result<()> {
-        if events.is_empty() {
-            return Ok(());
-        }
-        let mut filtered = Vec::new();
-        for event in events {
-            if event_msg_from_protocol(&event.msg)
-                .is_some_and(|msg| crate::rollout::policy::should_persist_event_msg(&msg))
-            {
-                filtered.push(RolloutItem::Event(event.clone()));
-            }
-        }
-        if filtered.is_empty() {
-            return Ok(());
-        }
+    /// Flush all queued writes and wait until they are committed by the writer task.
+    pub async fn flush(&self) -> std::io::Result<()> {
+        let (tx, rx) = oneshot::channel();
         self.tx
-            .send(RolloutCmd::AddItems(filtered))
+            .send(RolloutCmd::Flush { ack: tx })
             .await
-            .map_err(|e| IoError::other(format!("failed to queue rollout events: {e}")))
-    }
-
-    pub(crate) async fn set_history_snapshot(
-        &self,
-        snapshot: serde_json::Value,
-    ) -> std::io::Result<()> {
-        self.tx
-            .send(RolloutCmd::SetSnapshot(snapshot))
-            .await
-            .map_err(|e| IoError::other(format!("failed to queue history snapshot: {e}")))
-    }
-
-    /// No-op compatibility shim for older APIs expecting a state snapshot.
-    pub async fn record_state(&self, _snapshot: SessionStateSnapshot) -> std::io::Result<()> {
-        Ok(())
-    }
-
-    /// Compatibility wrapper for older resume API used by codex.rs
-    pub async fn resume(config: &Config, path: &Path) -> std::io::Result<(Self, SavedSession)> {
-        let recorder = Self::new(config, RolloutRecorderParams::Resume { path: path.to_path_buf() }).await?;
-        let history = Self::get_rollout_history(path).await?;
-        let (session_id, items) = match history {
-            InitialHistory::Resumed(resumed) => {
-                (uuid::Uuid::from(resumed.conversation_id), resumed.history)
-            }
-            _ => (uuid::Uuid::new_v4(), Vec::new()),
-        };
-        let snapshot_path = path.with_extension("snapshot.json");
-        let history_snapshot = match tokio::fs::read_to_string(&snapshot_path).await {
-            Ok(json) => match serde_json::from_str::<crate::history::HistorySnapshot>(&json) {
-                Ok(snapshot) => Some(snapshot),
-                Err(e) => {
-                    warn!("failed to parse history snapshot from {:?}: {}", snapshot_path, e);
-                    None
-                }
-            },
-            Err(err) => {
-                if err.kind() != std::io::ErrorKind::NotFound {
-                    warn!("failed to read history snapshot from {:?}: {}", snapshot_path, err);
-                }
-                None
-            }
-        };
-        let saved = SavedSession {
-            session: SessionMeta::default(),
-            items,
-            history_snapshot,
-            state: SessionStateSnapshot::default(),
-            session_id,
-        };
-        Ok((recorder, saved))
+            .map_err(|e| IoError::other(format!("failed to queue rollout flush: {e}")))?;
+        rx.await
+            .map_err(|e| IoError::other(format!("failed waiting for rollout flush: {e}")))
     }
 
     pub(crate) async fn get_rollout_history(path: &Path) -> std::io::Result<InitialHistory> {
@@ -314,25 +221,24 @@ impl RolloutRecorder {
             match serde_json::from_value::<RolloutLine>(v.clone()) {
                 Ok(rollout_line) => match rollout_line.item {
                     RolloutItem::SessionMeta(session_meta_line) => {
-                        tracing::error!(
-                            "Parsed conversation ID from rollout file: {:?}",
-                            session_meta_line.meta.id
-                        );
-                        conversation_id = Some(session_meta_line.meta.id);
+                        // Use the FIRST SessionMeta encountered in the file as the canonical
+                        // conversation id and main session information. Keep all items intact.
+                        if conversation_id.is_none() {
+                            conversation_id = Some(session_meta_line.meta.id);
+                        }
                         items.push(RolloutItem::SessionMeta(session_meta_line));
                     }
                     RolloutItem::ResponseItem(item) => {
                         items.push(RolloutItem::ResponseItem(item));
                     }
-                    RolloutItem::Event(ev) => {
-                        items.push(RolloutItem::Event(ev));
+                    RolloutItem::Compacted(item) => {
+                        items.push(RolloutItem::Compacted(item));
                     }
-                    RolloutItem::Compacted(compacted) => {
-                        items.push(RolloutItem::Compacted(compacted));
+                    RolloutItem::TurnContext(item) => {
+                        items.push(RolloutItem::TurnContext(item));
                     }
-                    // Ignore variants not used by this fork when resuming.
-                    RolloutItem::TurnContext(_) => {
-                        // Skip
+                    RolloutItem::Event(_ev) => {
+                        items.push(RolloutItem::Event(_ev));
                     }
                 },
                 Err(e) => {
@@ -359,6 +265,10 @@ impl RolloutRecorder {
             history: items,
             rollout_path: path.to_path_buf(),
         }))
+    }
+
+    pub(crate) fn get_rollout_path(&self) -> PathBuf {
+        self.rollout_path.clone()
     }
 
     pub async fn shutdown(&self) -> std::io::Result<()> {
@@ -395,8 +305,7 @@ fn create_log_file(
     config: &Config,
     conversation_id: ConversationId,
 ) -> std::io::Result<LogFileInfo> {
-    // Resolve ~/.code/sessions/YYYY/MM/DD and create it if missing (Code still
-    // reads legacy ~/.codex/sessions/ paths).
+    // Resolve ~/.codex/sessions/YYYY/MM/DD and create it if missing.
     let timestamp = OffsetDateTime::now_local()
         .map_err(|e| IoError::other(format!("failed to get local time: {e}")))?;
     let mut dir = config.codex_home.clone();
@@ -435,7 +344,6 @@ async fn rollout_writer(
     mut rx: mpsc::Receiver<RolloutCmd>,
     mut meta: Option<SessionMeta>,
     cwd: std::path::PathBuf,
-    snapshot_path: PathBuf,
 ) -> std::io::Result<()> {
     let mut writer = JsonlWriter { file };
 
@@ -458,15 +366,18 @@ async fn rollout_writer(
         match cmd {
             RolloutCmd::AddItems(items) => {
                 for item in items {
-                    if should_persist_rollout_item(&item) {
+                    if is_persisted_response_item(&item) {
                         writer.write_rollout_item(item).await?;
                     }
                 }
             }
-            RolloutCmd::SetSnapshot(snapshot) => {
-                if let Err(err) = write_snapshot(&snapshot_path, &snapshot).await {
-                    warn!("failed to persist history snapshot: {err}");
+            RolloutCmd::Flush { ack } => {
+                // Ensure underlying file is flushed and then ack.
+                if let Err(e) = writer.file.flush().await {
+                    let _ = ack.send(());
+                    return Err(e);
                 }
+                let _ = ack.send(());
             }
             RolloutCmd::Shutdown { ack } => {
                 let _ = ack.send(());
@@ -475,12 +386,6 @@ async fn rollout_writer(
     }
 
     Ok(())
-}
-
-async fn write_snapshot(path: &Path, snapshot: &serde_json::Value) -> std::io::Result<()> {
-    let json = serde_json::to_vec(snapshot)
-        .map_err(|e| IoError::other(format!("failed to serialize history snapshot: {e}")))?;
-    tokio::fs::write(path, json).await
 }
 
 struct JsonlWriter {

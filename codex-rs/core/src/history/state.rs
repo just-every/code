@@ -1,6 +1,6 @@
-use crate::plan_tool::StepStatus;
 use crate::parse_command::ParsedCommand;
-use crate::protocol::{FileChange, RateLimitSnapshotEvent, TokenUsage};
+use crate::protocol::{FileChange, RateLimitSnapshot, RateLimitWindow, TokenUsage};
+use codex_protocol::plan_tool::StepStatus;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -44,9 +44,7 @@ pub enum HistoryDomainEvent {
         record: HistoryDomainRecord,
     },
     /// Remove the record at `index`.
-    Remove {
-        index: usize,
-    },
+    Remove { index: usize },
     /// Push incremental exec stream output onto an existing record.
     UpdateExecStream {
         index: usize,
@@ -595,7 +593,10 @@ pub enum ReasoningBlock {
         marker: BulletMarker,
         spans: Vec<InlineSpan>,
     },
-    Code { language: Option<String>, content: String },
+    Code {
+        language: Option<String>,
+        content: String,
+    },
     Quote(Vec<InlineSpan>),
     Separator,
 }
@@ -786,7 +787,7 @@ pub enum ExploreEntryStatus {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RateLimitsRecord {
     pub id: HistoryId,
-    pub snapshot: RateLimitSnapshotEvent,
+    pub snapshot: RateLimitSnapshot,
     pub legend: Vec<RateLimitLegendEntry>,
 }
 
@@ -914,8 +915,7 @@ impl HistoryState {
             metadata: metadata.cloned(),
         };
         match self.apply_domain_event(event) {
-            HistoryMutation::Inserted { id, .. }
-            | HistoryMutation::Replaced { id, .. } => id,
+            HistoryMutation::Inserted { id, .. } | HistoryMutation::Replaced { id, .. } => id,
             _ => HistoryId::ZERO,
         }
     }
@@ -1119,8 +1119,7 @@ impl HistoryState {
                 }
             }
             HistoryRecord::AssistantStream(state) => {
-                self.stream_lookup
-                    .insert(state.stream_id.clone(), state.id);
+                self.stream_lookup.insert(state.stream_id.clone(), state.id);
             }
             _ => {}
         }
@@ -1232,7 +1231,11 @@ impl HistoryState {
                 let idx = index.min(self.records.len());
                 self.records.insert(idx, record.clone());
                 self.register_record(&record);
-                HistoryMutation::Inserted { index: idx, id, record }
+                HistoryMutation::Inserted {
+                    index: idx,
+                    id,
+                    record,
+                }
             }
             HistoryEvent::Replace { index, record } => {
                 if let Some(existing) = self.records.get(index).cloned() {
@@ -1612,9 +1615,21 @@ pub enum HistoryEvent {
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub enum HistoryMutation {
-    Inserted { index: usize, id: HistoryId, record: HistoryRecord },
-    Replaced { index: usize, id: HistoryId, record: HistoryRecord },
-    Removed { index: usize, id: HistoryId, record: HistoryRecord },
+    Inserted {
+        index: usize,
+        id: HistoryId,
+        record: HistoryRecord,
+    },
+    Replaced {
+        index: usize,
+        id: HistoryId,
+        record: HistoryRecord,
+    },
+    Removed {
+        index: usize,
+        id: HistoryId,
+        record: HistoryRecord,
+    },
     Noop,
 }
 
@@ -1750,8 +1765,14 @@ mod tests {
                 assert_eq!(exec.wait_total, Some(Duration::from_secs(2)));
                 assert_eq!(exec.wait_active, false);
                 assert_eq!(exec.wait_notes.len(), 1);
-                assert_eq!(exec.stdout_chunks.last().map(|c| c.content.as_str()), Some("output"));
-                assert_eq!(exec.stderr_chunks.last().map(|c| c.content.as_str()), Some("warn"));
+                assert_eq!(
+                    exec.stdout_chunks.last().map(|c| c.content.as_str()),
+                    Some("output")
+                );
+                assert_eq!(
+                    exec.stderr_chunks.last().map(|c| c.content.as_str()),
+                    Some("warn")
+                );
             }
             other => panic!("expected exec record, got {:?}", other),
         }
@@ -1779,7 +1800,10 @@ mod tests {
         let mut restored = HistoryState::new();
         restored.restore(&snapshot);
 
-        assert_eq!(restored.history_id_for_exec_call("call-3"), Some(inserted_id));
+        assert_eq!(
+            restored.history_id_for_exec_call("call-3"),
+            Some(inserted_id)
+        );
         let record = restored.record(inserted_id).expect("restored exec");
         match record {
             HistoryRecord::Exec(exec) => {
@@ -1970,10 +1994,25 @@ mod tests {
         let mut restored = HistoryState::new();
         restored.restore(&snapshot);
 
-        assert_eq!(restored.history_id_for_exec_call("exec-call"), Some(exec_id));
-        assert_eq!(restored.history_id_for_tool_call("tool-call"), Some(tool_id));
+        assert_eq!(
+            restored.history_id_for_exec_call("exec-call"),
+            Some(exec_id)
+        );
+        assert_eq!(
+            restored.history_id_for_tool_call("tool-call"),
+            Some(tool_id)
+        );
         assert_eq!(restored.history_id_for_stream("stream-id"), Some(stream_id));
-        assert_eq!(restored.index_of(exec_id), Some(snapshot.records.iter().position(|r| r.id() == exec_id).unwrap()));
+        assert_eq!(
+            restored.index_of(exec_id),
+            Some(
+                snapshot
+                    .records
+                    .iter()
+                    .position(|r| r.id() == exec_id)
+                    .unwrap()
+            )
+        );
     }
 
     #[test]
@@ -2182,14 +2221,17 @@ mod tests {
 
         records.push(HistoryRecord::RateLimits(RateLimitsRecord {
             id: HistoryId(15),
-            snapshot: RateLimitSnapshotEvent {
-                primary_used_percent: 10.0,
-                secondary_used_percent: 20.0,
-                primary_to_secondary_ratio_percent: 50.0,
-                primary_window_minutes: 1,
-                secondary_window_minutes: 5,
-                primary_reset_after_seconds: Some(30),
-                secondary_reset_after_seconds: Some(60),
+            snapshot: RateLimitSnapshot {
+                primary: Some(RateLimitWindow {
+                    used_percent: 10.0,
+                    window_minutes: Some(1),
+                    resets_in_seconds: Some(30),
+                }),
+                secondary: Some(RateLimitWindow {
+                    used_percent: 20.0,
+                    window_minutes: Some(5),
+                    resets_in_seconds: Some(60),
+                }),
             },
             legend: vec![RateLimitLegendEntry {
                 label: "primary".into(),
@@ -2207,7 +2249,9 @@ mod tests {
         );
         records.push(HistoryRecord::Patch(PatchRecord {
             id: HistoryId(16),
-            patch_type: PatchEventType::ApplyBegin { auto_approved: true },
+            patch_type: PatchEventType::ApplyBegin {
+                auto_approved: true,
+            },
             changes: patch_changes,
             failure: None,
         }));

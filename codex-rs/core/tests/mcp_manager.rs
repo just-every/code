@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use codex_core::config_types::{McpServerConfig, McpServerTransportConfig};
-use std::time::Duration;
 use codex_core::mcp_connection_manager::McpConnectionManager;
+use std::time::Duration;
 
 fn server_bin_path() -> PathBuf {
     // Compute workspace root from this crate dir
@@ -26,7 +26,11 @@ fn server_bin_path() -> PathBuf {
 async fn mcp_manager_skips_slow_server_on_timeout() {
     // Ensure test server binary exists
     let server = server_bin_path();
-    assert!(server.exists(), "expected test server at {}", server.display());
+    assert!(
+        server.exists(),
+        "expected test server at {}",
+        server.display()
+    );
 
     // Slow server exceeds timeout (init/list 200ms vs 100ms timeout)
     let slow_cfg = McpServerConfig {
@@ -34,10 +38,7 @@ async fn mcp_manager_skips_slow_server_on_timeout() {
             command: "bash".to_string(),
             args: vec![
                 "-lc".to_string(),
-                format!(
-                    "SLOW_INIT_MS=200 SLOW_LIST_MS=200 {}",
-                    server.display()
-                ),
+                format!("SLOW_INIT_MS=200 SLOW_LIST_MS=200 {}", server.display()),
             ],
             env: None,
         },
@@ -77,7 +78,11 @@ async fn mcp_manager_skips_slow_server_on_timeout() {
 async fn mcp_manager_respects_extended_startup_timeout() {
     // Ensure test server binary exists
     let server = server_bin_path();
-    assert!(server.exists(), "expected test server at {}", server.display());
+    assert!(
+        server.exists(),
+        "expected test server at {}",
+        server.display()
+    );
 
     // Slow server within extended timeout (init/list 200ms vs 500ms)
     let slow_ok = McpServerConfig {
@@ -85,10 +90,7 @@ async fn mcp_manager_respects_extended_startup_timeout() {
             command: "bash".to_string(),
             args: vec![
                 "-lc".to_string(),
-                format!(
-                    "SLOW_INIT_MS=200 SLOW_LIST_MS=200 {}",
-                    server.display()
-                ),
+                format!("SLOW_INIT_MS=200 SLOW_LIST_MS=200 {}", server.display()),
             ],
             env: None,
         },

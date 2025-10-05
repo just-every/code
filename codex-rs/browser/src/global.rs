@@ -59,5 +59,9 @@ pub async fn set_last_connection(port: Option<u16>, ws: Option<String>) {
     // Clone ws for logging to avoid use after move
     let ws_for_log = ws.clone();
     *guard = (port, ws);
-    tracing::debug!("Updated last Chrome connection cache: port={:?}, ws={:?}", port, ws_for_log);
+    tracing::debug!(
+        "Updated last Chrome connection cache: port={:?}, ws={:?}",
+        port,
+        ws_for_log
+    );
 }

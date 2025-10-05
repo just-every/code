@@ -2,14 +2,16 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use codex_common::CliConfigOverrides;
-use codex_core::config::Config;
-use codex_core::config::ConfigOverrides;
+use codex_core::AuthManager;
 use codex_core::ModelClient;
 use codex_core::ModelProviderInfo;
-use codex_core::AuthManager;
 use codex_core::Prompt;
-use codex_core::TextFormat;
+use codex_core::config::Config;
+use codex_core::config::ConfigOverrides;
+// TextFormat is not exported from codex_core, define inline if needed
+// use codex_core::TextFormat;
 use codex_app_server_protocol::AuthMode;
+use codex_otel::otel_event_manager::OtelEventManager;
 use codex_protocol::models::{ContentItem, ResponseItem};
 use futures::StreamExt;
 
@@ -51,11 +53,11 @@ pub struct RequestArgs {
     pub format_strict: bool,
 
     /// Inline JSON for the schema (mutually exclusive with --schema-file)
-    #[arg(long = "schema-json")] 
+    #[arg(long = "schema-json")]
     pub schema_json: Option<String>,
 
     /// Path to a JSON schema file (mutually exclusive with --schema-json)
-    #[arg(long = "schema-file")] 
+    #[arg(long = "schema-file")]
     pub schema_file: Option<PathBuf>,
 
     /// Optional model override (e.g. gpt-4.1, gpt-5)
@@ -73,28 +75,39 @@ async fn run_llm_request(
     cli_overrides: CliConfigOverrides,
     args: RequestArgs,
 ) -> anyhow::Result<()> {
-    let overrides_vec = cli_overrides.parse_overrides().map_err(anyhow::Error::msg)?;
+    let overrides_vec = cli_overrides
+        .parse_overrides()
+        .map_err(anyhow::Error::msg)?;
 
     let overrides = if let Some(model) = &args.model {
-        ConfigOverrides { model: Some(model.clone()), ..ConfigOverrides::default() }
-    } else { ConfigOverrides::default() };
+        ConfigOverrides {
+            model: Some(model.clone()),
+            ..ConfigOverrides::default()
+        }
+    } else {
+        ConfigOverrides::default()
+    };
 
-    let config = Config::load_with_cli_overrides(overrides_vec, overrides)?;
+    let config = Config::load_with_cli_overrides(overrides_vec, overrides).await?;
 
     // Build Prompt with custom developer + user messages, no extra tools
     let mut input: Vec<ResponseItem> = Vec::new();
     input.push(ResponseItem::Message {
         id: None,
         role: "developer".to_string(),
-        content: vec![ContentItem::InputText { text: args.developer.clone() }],
+        content: vec![ContentItem::InputText {
+            text: args.developer.clone(),
+        }],
     });
     input.push(ResponseItem::Message {
         id: None,
         role: "user".to_string(),
-        content: vec![ContentItem::InputText { text: args.message.clone() }],
+        content: vec![ContentItem::InputText {
+            text: args.message.clone(),
+        }],
     });
 
-    // Resolve schema
+    // Resolve schema for output_schema
     let schema_val: Option<serde_json::Value> = if let Some(s) = &args.schema_json {
         Some(serde_json::from_str::<serde_json::Value>(s)?)
     } else if let Some(p) = &args.schema_file {
@@ -104,38 +117,42 @@ async fn run_llm_request(
         None
     };
 
-    let text_format = TextFormat {
-        r#type: args.format_type.clone(),
-        name: args.format_name.clone(),
-        strict: Some(args.format_strict),
-        schema: schema_val,
-    };
-
+    // Note: TextFormat is not exposed, and Prompt doesn't have text_format field
+    // We'll use output_schema instead which is the correct field
     let mut prompt = Prompt::default();
     prompt.input = input;
-    prompt.store = true;
-    prompt.user_instructions = None;
-    prompt.status_items = vec![];
     prompt.base_instructions_override = None;
-    prompt.text_format = Some(text_format);
+    prompt.output_schema = schema_val;
 
     // Auth + provider
-    let auth_mgr = AuthManager::shared_with_mode_and_originator(
+    // AuthManager::shared takes (codex_home, enable_codex_api_key_env)
+    let auth_mgr = AuthManager::shared(
         config.codex_home.clone(),
-        AuthMode::ApiKey,
-        config.responses_originator_header.clone(),
+        true, // enable_codex_api_key_env
     );
     let provider: ModelProviderInfo = config.model_provider.clone();
+    let conversation_id = uuid::Uuid::new_v4().into();
+
+    // Create OtelEventManager
+    let otel_event_manager = OtelEventManager::new(
+        conversation_id,
+        &config.model,
+        &config.model, // use model as slug
+        None,          // account_id
+        Some(AuthMode::ApiKey),
+        false,             // log_user_prompts
+        "cli".to_string(), // terminal_type
+    );
+
+    // ModelClient::new signature: (config, auth_manager, otel_event_manager, provider, effort, summary, conversation_id)
     let client = ModelClient::new(
         std::sync::Arc::new(config.clone()),
         Some(auth_mgr),
-        None,
+        otel_event_manager,
         provider,
         config.model_reasoning_effort,
         config.model_reasoning_summary,
-        config.model_text_verbosity,
-        uuid::Uuid::new_v4(),
-        std::sync::Arc::new(std::sync::Mutex::new(codex_core::debug_logger::DebugLogger::new(false)?)),
+        conversation_id,
     );
 
     // Collect the assistant message text from the stream (no TUI events)
@@ -145,9 +162,13 @@ async fn run_llm_request(
     while let Some(ev) = stream.next().await {
         let ev = ev?;
         match ev {
-            codex_core::ResponseEvent::ReasoningSummaryDelta { delta, .. } => { tracing::info!(target: "llm", "thinking: {}", delta); }
-            codex_core::ResponseEvent::ReasoningContentDelta { delta, .. } => { tracing::info!(target: "llm", "reasoning: {}", delta); }
-            codex_core::ResponseEvent::OutputItemDone { item, .. } => {
+            codex_core::ResponseEvent::ReasoningSummaryDelta(delta) => {
+                tracing::info!(target: "llm", "thinking: {}", delta);
+            }
+            codex_core::ResponseEvent::ReasoningContentDelta(delta) => {
+                tracing::info!(target: "llm", "reasoning: {}", delta);
+            }
+            codex_core::ResponseEvent::OutputItemDone(item) => {
                 if let ResponseItem::Message { content, .. } = item {
                     for c in content {
                         if let ContentItem::OutputText { text } = c {
@@ -156,12 +177,15 @@ async fn run_llm_request(
                     }
                 }
             }
-            codex_core::ResponseEvent::OutputTextDelta { delta, .. } => {
+            codex_core::ResponseEvent::OutputTextDelta(delta) => {
                 tracing::info!(target: "llm", "delta: {}", delta);
                 // For completeness, but we only print at the end to stay simple
                 final_text.push_str(&delta);
             }
-            codex_core::ResponseEvent::Completed { .. } => { tracing::info!("LLM: completed"); break; }
+            codex_core::ResponseEvent::Completed { .. } => {
+                tracing::info!("LLM: completed");
+                break;
+            }
             _ => {}
         }
     }

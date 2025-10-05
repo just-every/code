@@ -18,8 +18,7 @@ fn codex_core_public_api_reexports_exist() {
 
 #[test]
 fn codex_core_protocol_models_are_exposed() {
-    // The models namespace should remain accessible via codex_core::models
+    // Protocol model types are re-exported directly from codex_core
     // to keep imports stable in TUI/tests.
-    assert_type::<codex_core::models::ResponseItem>();
+    assert_type::<codex_core::ResponseItem>();
 }
-

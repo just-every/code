@@ -2,18 +2,17 @@
 //!
 //! Providers can be defined in two places:
 //!   1. Built-in defaults compiled into the binary so Codex works out-of-the-box.
-//!   2. User-defined entries inside `~/.code/config.toml` under the `model_providers`
-//!      table (Code also reads legacy `~/.codex/config.toml`).
+//!   2. User-defined entries inside `~/.codex/config.toml` under the `model_providers`
 //!      key. These override or extend the defaults at runtime.
 
 use crate::CodexAuth;
 use codex_app_server_protocol::AuthMode;
 use serde::Deserialize;
 use serde::Serialize;
-use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::env::VarError;
 use std::time::Duration;
+
 use crate::error::EnvVarError;
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_STREAM_MAX_RETRIES: u64 = 5;
@@ -81,102 +80,12 @@ pub struct ModelProviderInfo {
     /// the connection as lost.
     pub stream_idle_timeout_ms: Option<u64>,
 
-    /// Whether this provider requires some form of standard authentication (API key, ChatGPT token).
+    /// Does this provider require an OpenAI API Key or ChatGPT login token? If true,
+    /// user is presented with login screen on first run, and login preference and token/key
+    /// are stored in auth.json. If false (which is the default), login screen is skipped,
+    /// and API key (if needed) comes from the "env_key" environment variable.
     #[serde(default)]
     pub requires_openai_auth: bool,
-
-    /// Optional OpenRouter-specific configuration for routing preferences and metadata.
-    #[serde(default)]
-    pub openrouter: Option<OpenRouterConfig>,
-}
-
-/// OpenRouter-specific configuration, allowing users to control routing and pricing metadata.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
-#[serde(default)]
-pub struct OpenRouterConfig {
-    /// Provider-level routing preferences forwarded to OpenRouter.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<OpenRouterProviderConfig>,
-
-    /// Optional `route` payload forwarded as-is to OpenRouter for advanced routing.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub route: Option<Value>,
-
-    /// Additional top-level fields that may be forwarded to OpenRouter as the API evolves.
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
-}
-
-/// Provider routing preferences supported by OpenRouter.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
-#[serde(default)]
-pub struct OpenRouterProviderConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub order: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub allow_fallbacks: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub require_parameters: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data_collection: Option<OpenRouterDataCollectionPolicy>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub zdr: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub only: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ignore: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub quantizations: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sort: Option<OpenRouterProviderSort>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_price: Option<OpenRouterMaxPrice>,
-
-    /// Catch-all for additional provider keys so new OpenRouter features do not break deserialization.
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum OpenRouterDataCollectionPolicy {
-    Allow,
-    Deny,
-}
-
-impl Default for OpenRouterDataCollectionPolicy {
-    fn default() -> Self {
-        OpenRouterDataCollectionPolicy::Allow
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum OpenRouterProviderSort {
-    Price,
-    Throughput,
-    Latency,
-}
-
-impl Default for OpenRouterProviderSort {
-    fn default() -> Self {
-        OpenRouterProviderSort::Price
-    }
-}
-
-/// `max_price` envelope for OpenRouter provider routing controls.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
-#[serde(default)]
-pub struct OpenRouterMaxPrice {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub total: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prompt: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub completion: Option<f64>,
-
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
 }
 
 impl ModelProviderInfo {
@@ -207,36 +116,13 @@ impl ModelProviderInfo {
 
         let url = self.get_full_url(&effective_auth);
 
-        let mut builder = client.post(&url);
-
-        // Always set an explicit Host header that matches the upstream target.
-        // Some forward proxies incorrectly reuse the inbound Host header
-        // (e.g. "127.0.0.1:5055") for TLS SNI when connecting to the
-        // upstream server, which causes handshake failures. By setting
-        // Host to the authority derived from the final URL here, we ensure
-        // the proxy sees the correct host and can forward/SNI appropriately.
-        if let Ok(parsed) = url::Url::parse(&url) {
-            if let Some(host) = parsed.host_str() {
-                let authority = match parsed.port() {
-                    Some(port) => format!("{host}:{port}"),
-                    None => host.to_string(),
-                };
-                if let Ok(hv) = reqwest::header::HeaderValue::from_str(&authority) {
-                    builder = builder.header(reqwest::header::HOST, hv);
-                }
-            }
-        }
+        let mut builder = client.post(url);
 
         if let Some(auth) = effective_auth.as_ref() {
             builder = builder.bearer_auth(auth.get_token().await?);
         }
 
         Ok(self.apply_http_headers(builder))
-    }
-
-    /// Returns the OpenRouter-specific configuration, if this provider declares one.
-    pub fn openrouter_config(&self) -> Option<&OpenRouterConfig> {
-        self.openrouter.as_ref()
     }
 
     fn get_query_string(&self) -> String {
@@ -303,10 +189,10 @@ impl ModelProviderInfo {
 
         if let Some(env_headers) = &self.env_http_headers {
             for (header, env_var) in env_headers {
-                if let Ok(val) = std::env::var(env_var) {
-                    if !val.trim().is_empty() {
-                        builder = builder.header(header, val);
-                    }
+                if let Ok(val) = std::env::var(env_var)
+                    && !val.trim().is_empty()
+                {
+                    builder = builder.header(header, val);
                 }
             }
         }
@@ -391,14 +277,9 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 wire_api: WireApi::Responses,
                 query_params: None,
                 http_headers: Some(
-                    [
-                        (
-                            "version".to_string(),
-                            codex_version::version().to_string(),
-                        ),
-                    ]
-                    .into_iter()
-                    .collect(),
+                    [("version".to_string(), env!("CARGO_PKG_VERSION").to_string())]
+                        .into_iter()
+                        .collect(),
                 ),
                 env_http_headers: Some(
                     [
@@ -416,7 +297,6 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 stream_max_retries: None,
                 stream_idle_timeout_ms: None,
                 requires_openai_auth: true,
-                openrouter: None,
             },
         ),
         (BUILT_IN_OSS_MODEL_PROVIDER_ID, create_oss_provider()),
@@ -461,7 +341,6 @@ pub fn create_oss_provider_with_base_url(base_url: &str) -> ModelProviderInfo {
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
         requires_openai_auth: false,
-        openrouter: None,
     }
 }
 
@@ -501,7 +380,6 @@ base_url = "http://localhost:11434/v1"
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             requires_openai_auth: false,
-            openrouter: None,
         };
 
         let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
@@ -531,7 +409,6 @@ query_params = { api-version = "2025-04-01-preview" }
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             requires_openai_auth: false,
-            openrouter: None,
         };
 
         let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
@@ -564,7 +441,6 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             requires_openai_auth: false,
-            openrouter: None,
         };
 
         let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
@@ -587,7 +463,6 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
                 stream_max_retries: None,
                 stream_idle_timeout_ms: None,
                 requires_openai_auth: false,
-                openrouter: None,
             }
         }
 
@@ -620,7 +495,6 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             requires_openai_auth: false,
-            openrouter: None,
         };
         assert!(named_provider.is_azure_responses_endpoint());
 

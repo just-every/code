@@ -1,11 +1,11 @@
 use std::path::Path;
 
-use codex_core::auth::login_with_api_key;
 use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::GetAuthStatusParams;
 use codex_app_server_protocol::GetAuthStatusResponse;
-use mcp_test_support::McpProcess;
-use mcp_test_support::to_response;
+use codex_core::auth::login_with_api_key;
+use app_test_support::McpProcess;
+use app_test_support::to_response;
 use mcp_types::JSONRPCResponse;
 use mcp_types::RequestId;
 use pretty_assertions::assert_eq;

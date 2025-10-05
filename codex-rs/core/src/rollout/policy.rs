@@ -1,19 +1,17 @@
-use crate::protocol::event_msg_from_protocol;
 use crate::protocol::EventMsg;
+use crate::protocol::RolloutItem;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::RolloutItem;
 
 /// Whether a rollout `item` should be persisted in rollout files.
 #[inline]
-pub(crate) fn should_persist_rollout_item(item: &RolloutItem) -> bool {
+pub(crate) fn is_persisted_response_item(item: &RolloutItem) -> bool {
     match item {
         RolloutItem::ResponseItem(item) => should_persist_response_item(item),
-        RolloutItem::Event(ev) => event_msg_from_protocol(&ev.msg)
-            .is_some_and(|msg| should_persist_event_msg(&msg)),
-        // Always persist session meta
-        RolloutItem::SessionMeta(_) => true,
-        // Persist compacted summaries and turn context for accurate history reconstruction.
-        RolloutItem::Compacted(_) | RolloutItem::TurnContext(_) => true,
+        RolloutItem::Event(ev) => should_persist_event_msg(&ev.msg),
+        // Persist Codex executive markers so we can analyze flows (e.g., compaction, API turns).
+        RolloutItem::Compacted(_) | RolloutItem::TurnContext(_) | RolloutItem::SessionMeta(_) => {
+            true
+        }
     }
 }
 
@@ -33,13 +31,46 @@ pub(crate) fn should_persist_response_item(item: &ResponseItem) -> bool {
     }
 }
 
-/// Whether an [`EventMsg`] should be persisted.
+/// Whether an `EventMsg` should be persisted in rollout files.
 #[inline]
 pub(crate) fn should_persist_event_msg(ev: &EventMsg) -> bool {
-    !matches!(
-        ev,
-        EventMsg::AgentMessageDelta(_)
-            | EventMsg::AgentReasoningDelta(_)
-            | EventMsg::AgentReasoningRawContentDelta(_)
-    )
+    match ev {
+        EventMsg::UserMessage(_)
+        | EventMsg::AgentMessage(_)
+        | EventMsg::AgentReasoning(_)
+        | EventMsg::AgentReasoningRawContent(_)
+        | EventMsg::TokenCount(_)
+        | EventMsg::EnteredReviewMode(_)
+        | EventMsg::ExitedReviewMode(_)
+        | EventMsg::TurnAborted(_) => true,
+        EventMsg::Error(_)
+        | EventMsg::TaskStarted(_)
+        | EventMsg::TaskComplete(_)
+        | EventMsg::AgentMessageDelta(_)
+        | EventMsg::AgentReasoningDelta(_)
+        | EventMsg::AgentReasoningRawContentDelta(_)
+        | EventMsg::AgentReasoningSectionBreak(_)
+        | EventMsg::SessionConfigured(_)
+        | EventMsg::McpToolCallBegin(_)
+        | EventMsg::McpToolCallEnd(_)
+        | EventMsg::WebSearchBegin(_)
+        | EventMsg::WebSearchEnd(_)
+        | EventMsg::ExecCommandBegin(_)
+        | EventMsg::ExecCommandOutputDelta(_)
+        | EventMsg::ExecCommandEnd(_)
+        | EventMsg::ExecApprovalRequest(_)
+        | EventMsg::ApplyPatchApprovalRequest(_)
+        | EventMsg::BackgroundEvent(_)
+        | EventMsg::StreamError(_)
+        | EventMsg::PatchApplyBegin(_)
+        | EventMsg::PatchApplyEnd(_)
+        | EventMsg::TurnDiff(_)
+        | EventMsg::GetHistoryEntryResponse(_)
+        | EventMsg::McpListToolsResponse(_)
+        | EventMsg::ListCustomPromptsResponse(_)
+        | EventMsg::PlanUpdate(_)
+        | EventMsg::ShutdownComplete
+        | EventMsg::ViewImageToolCall(_)
+        | EventMsg::ConversationPath(_) => false,
+    }
 }

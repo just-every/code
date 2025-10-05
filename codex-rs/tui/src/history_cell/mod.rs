@@ -1,53 +1,36 @@
 use crate::account_label::key_suffix;
-use crate::diff_render::create_diff_summary_with_width;
+use crate::diff_render::create_diff_summary; // _with_width suffix removed
 use crate::exec_command::strip_bash_lc_and_escape;
+use crate::history::state::{ArgumentValue, ToolArgument, ToolResultPreview};
+use crate::history::state::{
+    AssistantStreamState, BackgroundEventRecord, ExecAction, ExecRecord, ExecStatus, HistoryId,
+    HistoryRecord, ImageRecord, MergedExecRecord, PatchEventType as HistoryPatchEventType,
+    PatchRecord, PlainMessageState, PlanIcon, PlanProgress, PlanStep, PlanUpdateState,
+    RunningToolState, ToolCallState, ToolStatus as HistoryToolStatus,
+};
 use crate::sanitize::Mode as SanitizeMode;
 use crate::sanitize::Options as SanitizeOptions;
 use crate::sanitize::sanitize_for_tui;
 use crate::slash_command::SlashCommand;
-use crate::util::buffer::{fill_rect, write_line};
-use crate::insert_history::word_wrap_lines;
 use crate::text_formatting::format_json_compact;
-use crate::history::state::{
-    AssistantStreamState,
-    BackgroundEventRecord,
-    ExecAction,
-    ExecRecord,
-    ExecStatus,
-    HistoryId,
-    HistoryRecord,
-    MergedExecRecord,
-    RunningToolState,
-    PatchEventType as HistoryPatchEventType,
-    PatchRecord,
-    ImageRecord,
-    PlanIcon,
-    PlanProgress,
-    PlanStep,
-    PlanUpdateState,
-    PlainMessageState,
-    ToolCallState,
-    ToolStatus as HistoryToolStatus,
-    UpgradeNoticeState,
-};
-use crate::history::state::{ArgumentValue, ToolArgument, ToolResultPreview};
+use crate::util::buffer::{fill_rect, write_line};
+use crate::wrapping::word_wrap_lines; // moved from insert_history to wrapping
+use ::image::ImageReader;
 use base64::Engine;
 use codex_ansi_escape::ansi_escape_line;
 use codex_common::create_config_summary_entries;
 use codex_common::elapsed::format_duration;
 use codex_core::config::Config;
-use codex_core::config_types::ReasoningEffort;
 use codex_core::parse_command::ParsedCommand;
-use codex_core::plan_tool::PlanItemArg;
-use codex_core::plan_tool::StepStatus;
-use codex_core::plan_tool::UpdatePlanArgs;
 use codex_core::protocol::FileChange;
 use codex_core::protocol::McpInvocation;
 use codex_core::protocol::SessionConfiguredEvent;
 use codex_core::protocol::TokenUsage;
+use codex_protocol::config_types::ReasoningEffort;
 use codex_protocol::num_format::format_with_separators;
-use ::image::ImageReader;
-use sha2::{Digest, Sha256};
+use codex_protocol::plan_tool::PlanItemArg;
+use codex_protocol::plan_tool::StepStatus;
+use codex_protocol::plan_tool::UpdatePlanArgs;
 use mcp_types::EmbeddedResourceResource;
 use mcp_types::ResourceLink;
 use ratatui::prelude::*;
@@ -59,6 +42,7 @@ use ratatui::widgets::Padding;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::WidgetRef;
 use ratatui::widgets::Wrap;
+use sha2::{Digest, Sha256};
 use shlex::Shlex;
 
 use std::collections::HashMap;
@@ -70,68 +54,44 @@ use std::time::Instant;
 use std::time::SystemTime;
 use tracing::error;
 
-mod assistant;
 mod animated;
+mod assistant;
 mod background;
-mod exec;
 mod diff;
+mod exec;
 mod explore;
 mod image;
 mod loading;
-mod reasoning;
-mod tool;
-mod wait_status;
+mod plain;
 mod plan_update;
 mod rate_limits;
-mod plain;
-mod upgrade;
+mod reasoning;
 mod stream;
 mod text;
+mod tool;
+mod upgrade;
+mod wait_status;
 
-pub(crate) use assistant::{
-    assistant_markdown_lines,
-    compute_assistant_layout,
-    AssistantLayoutCache,
-    AssistantMarkdownCell,
-};
 pub(crate) use animated::AnimatedWelcomeCell;
+pub(crate) use assistant::AssistantMarkdownCell;
 pub(crate) use background::BackgroundEventCell;
-pub(crate) use exec::{
-    display_lines_from_record as exec_display_lines_from_record,
-    new_active_exec_command,
-    new_completed_exec_command,
-    ExecCell,
-    ParsedExecMetadata,
-};
 pub(crate) use diff::{
-    diff_lines_from_record,
-    diff_record_from_string,
-    new_diff_cell_from_string,
-    DiffCell,
+    DiffCell, new_diff_cell_from_string,
 };
-pub(crate) use explore::{
-    explore_lines_from_record,
-    explore_lines_from_record_with_force,
-    explore_record_push_from_parsed,
-    explore_record_update_status,
-    ExploreAggregationCell,
+pub(crate) use exec::{
+    ExecCell, ParsedExecMetadata,
 };
-pub(crate) use rate_limits::RateLimitsCell;
-pub(crate) use crate::history::state::ExploreEntryStatus;
+pub(crate) use explore::explore_lines_from_record;
 pub(crate) use image::ImageOutputCell;
 pub(crate) use loading::LoadingCell;
-pub(crate) use reasoning::CollapsibleReasoningCell;
-pub(crate) use tool::{RunningToolCallCell, ToolCallCell};
-pub(crate) use wait_status::WaitStatusCell;
-pub(crate) use plan_update::PlanUpdateCell;
 pub(crate) use plain::{
-    plain_message_state_from_lines,
-    plain_message_state_from_paragraphs,
-    plain_role_for_kind,
-    PlainHistoryCell,
+    PlainHistoryCell, plain_message_state_from_lines, plain_message_state_from_paragraphs,
 };
-pub(crate) use stream::{stream_lines_from_state, StreamingContentCell};
+pub(crate) use plan_update::PlanUpdateCell;
+pub(crate) use stream::StreamingContentCell;
+pub(crate) use tool::{RunningToolCallCell, ToolCallCell};
 pub(crate) use upgrade::UpgradeNoticeCell;
+pub(crate) use wait_status::WaitStatusCell;
 
 // ==================== Core Types ====================
 
@@ -169,6 +129,7 @@ pub(crate) enum HistoryCellType {
     Image,
     AnimatedWelcome,
     Loading,
+    Status,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -200,7 +161,6 @@ impl From<ExecKind> for ExecAction {
         }
     }
 }
-
 
 pub(crate) fn action_enum_from_parsed(
     parsed: &[codex_core::parse_command::ParsedCommand],
@@ -247,7 +207,7 @@ pub(crate) enum PatchKind {
 /// Represents an event to display in the conversation history.
 /// Returns its `Vec<Line<'static>>` representation to make it easier
 /// to display in a scrollable list.
-pub(crate) trait HistoryCell {
+pub(crate) trait HistoryCell: Send + Sync {
     fn display_lines(&self) -> Vec<Line<'static>>;
     /// A required, explicit type descriptor for the history cell.
     fn kind(&self) -> HistoryCellType;
@@ -383,6 +343,7 @@ pub(crate) trait HistoryCell {
             HistoryCellType::Image => None,
             HistoryCellType::AnimatedWelcome => None,
             HistoryCellType::Loading => None,
+            HistoryCellType::Status => Some("ℹ"),
         }
     }
 }
@@ -530,7 +491,13 @@ impl MergedExecSegment {
         Self { record }
     }
 
-    fn exec_parts(&self) -> (Vec<Line<'static>>, Vec<Line<'static>>, Option<Line<'static>>) {
+    fn exec_parts(
+        &self,
+    ) -> (
+        Vec<Line<'static>>,
+        Vec<Line<'static>>,
+        Option<Line<'static>>,
+    ) {
         let exec_cell = ExecCell::from_record(self.record.clone());
         exec_cell.exec_render_parts()
     }
@@ -687,8 +654,46 @@ impl MergedExecCell {
 }
 
 #[cfg(test)]
+pub fn new_user_approval_decision(lines: Vec<ratatui::text::Line<'static>>) -> plain::PlainHistoryCell {
+    use crate::history::state::{InlineSpan, MessageLine, MessageLineKind, PlainMessageKind, PlainMessageRole, TextTone, TextEmphasis};
+
+    // Convert ratatui Lines to MessageLines
+    let message_lines: Vec<MessageLine> = lines
+        .into_iter()
+        .map(|line| {
+            let spans: Vec<InlineSpan> = line
+                .spans
+                .into_iter()
+                .map(|span| InlineSpan {
+                    text: span.content.to_string(),
+                    tone: TextTone::Default,
+                    emphasis: TextEmphasis::default(),
+                    entity: None,
+                })
+                .collect();
+            MessageLine {
+                kind: MessageLineKind::Paragraph,
+                spans,
+            }
+        })
+        .collect();
+
+    let state = PlainMessageState {
+        id: HistoryId::ZERO,
+        role: PlainMessageRole::System,
+        kind: PlainMessageKind::Notice,
+        header: None,
+        lines: message_lines,
+        metadata: None,
+    };
+
+    plain::PlainHistoryCell::from_state(state)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::history_cell::exec::{new_active_exec_command, new_completed_exec_command};
     use codex_core::parse_command::ParsedCommand;
 
     #[test]
@@ -746,7 +751,10 @@ config.toml.example\tNOTICE\r\n";
         assert!(first_line.contains("AGENTS.md"));
         assert!(first_line.contains("docs"));
         assert!(first_line.contains("package.json"));
-        assert!(first_line.contains("  docs"), "expected spaces between ls columns: {first_line:?}");
+        assert!(
+            first_line.contains("  docs"),
+            "expected spaces between ls columns: {first_line:?}"
+        );
     }
 
     #[test]
@@ -798,16 +806,12 @@ config.toml.example\tNOTICE\r\n";
         assert!(formatted.contains("    for path in root.rglob(*.py):"));
         assert!(formatted.contains("        try:"));
         assert!(formatted.contains("            size = path.stat().st_size"));
-        assert!(formatted.contains(
-            "        except (PermissionError, FileNotFoundError):"
-        ));
+        assert!(formatted.contains("        except (PermissionError, FileNotFoundError):"));
         assert!(formatted.contains("            continue"));
         assert!(formatted.contains("    candidates.append((size, path))"));
         assert!(formatted.contains("    candidates.sort(reverse=True)"));
         assert!(formatted.contains("    for size, path in candidates[:10]:"));
-        assert!(formatted.contains(
-            "        print(f{size:>9} bytes - {path})"
-        ));
+        assert!(formatted.contains("        print(f{size:>9} bytes - {path})"));
         assert!(formatted.trim_end().ends_with("PY"));
     }
 
@@ -818,13 +822,15 @@ config.toml.example\tNOTICE\r\n";
         assert!(formatted.contains("    py_count = 0"));
         assert!(formatted.contains("    total_size = 0"));
         assert!(formatted.contains("            py_count += 1"));
-        assert!(formatted.contains(
-            "            total_size += os.path.getsize(os.path.join(root, name))"
-        ));
+        assert!(
+            formatted
+                .contains("            total_size += os.path.getsize(os.path.join(root, name))")
+        );
         assert!(formatted.contains("        print(Total Python files:, py_count)"));
-        assert!(formatted.contains(
-            "        print(Approx total size (KB):, round(total_size / 1024, 1))"
-        ));
+        assert!(
+            formatted
+                .contains("        print(Approx total size (KB):, round(total_size / 1024, 1))")
+        );
     }
 
     #[test]
@@ -834,7 +840,10 @@ config.toml.example\tNOTICE\r\n";
         assert!(formatted.contains("node -e '\n"));
         assert!(formatted.contains("    const fs = require(fs);"));
         assert!(formatted.contains("    let count = 0;"));
-        assert!(formatted.contains("    [a.js, b.js].forEach(file => { count += 1; console.log(file); });"));
+        assert!(
+            formatted
+                .contains("    [a.js, b.js].forEach(file => { count += 1; console.log(file); });")
+        );
         assert!(formatted.contains("    if (count > 0) { console.log(`Total: ${count}`); }"));
     }
 
@@ -1627,7 +1636,9 @@ fn exec_render_parts_parsed_with_meta(
                     (None, None) => ("Search".to_string(), cmd.clone()),
                 }
             }
-            ParsedCommand::ReadCommand { cmd } => ("Run".to_string(), cmd.clone()),
+            // TODO: ReadCommand variant removed
+            // ParsedCommand::ReadCommand { cmd } => ("Run".to_string(), cmd.clone()),
+
             // Upstream variants not present in our core parser are ignored or treated as generic runs
             ParsedCommand::Unknown { cmd } => {
                 // Suppress separator helpers like `echo ---` which are used
@@ -2026,7 +2037,58 @@ impl WidgetRef for &ExecCell {
 ///
 /// Improvements here could be to condition this behavior on terminal,
 /// or possibly on emoji.
-// Removed unused helpers padded_emoji and padded_emoji_with.
+pub(crate) fn padded_emoji(emoji: &str) -> String {
+    format!("{emoji}\u{200A} ")
+}
+
+/// Render `lines` inside a border whose inner width is at least `inner_width`.
+///
+/// This is useful when callers have already clamped their content to a
+/// specific width and want the border math centralized here instead of
+/// duplicating padding logic in the TUI widgets themselves.
+pub(crate) fn with_border_with_inner_width(
+    lines: Vec<Line<'static>>,
+    inner_width: usize,
+) -> Vec<Line<'static>> {
+    let max_line_width = lines
+        .iter()
+        .map(|line| {
+            line.iter()
+                .map(|span| span.content.len())
+                .sum::<usize>()
+        })
+        .max()
+        .unwrap_or(0);
+    let content_width = inner_width.max(max_line_width);
+
+    let mut out = Vec::with_capacity(lines.len() + 2);
+    let border_inner_width = content_width + 2;
+
+    // Top border
+    out.push(Line::from(format!(
+        "┌{}┐",
+        "─".repeat(border_inner_width)
+    )));
+
+    // Content lines with left/right borders
+    for line in lines {
+        let line_width: usize = line.iter().map(|span| span.content.len()).sum();
+        let padding = content_width.saturating_sub(line_width);
+        let mut spans = vec![Span::raw("│ ")];
+        spans.extend(line.spans);
+        spans.push(Span::raw(" ".repeat(padding.saturating_add(1))));
+        spans.push(Span::raw("│"));
+        out.push(Line::from(spans));
+    }
+
+    // Bottom border
+    out.push(Line::from(format!(
+        "└{}┘",
+        "─".repeat(border_inner_width)
+    )));
+
+    out
+}
 
 pub(crate) fn new_completed_wait_tool_call(target: String, duration: Duration) -> WaitStatusCell {
     let mut duration_str = format_duration(duration);
@@ -2445,12 +2507,6 @@ fn popular_commands_lines(_latest_version: Option<&str>) -> Vec<Line<'static>> {
         Style::default().fg(crate::colors::text_bright()),
     ));
     lines.push(Line::from(vec![
-        Span::styled("/agents", Style::default().fg(crate::colors::primary())),
-        Span::from(" - "),
-        Span::from(SlashCommand::Agents.description())
-            .style(Style::default().add_modifier(Modifier::DIM)),
-    ]));
-    lines.push(Line::from(vec![
         Span::styled("/model", Style::default().fg(crate::colors::primary())),
         Span::from(" - "),
         Span::from(SlashCommand::Model.description())
@@ -2461,57 +2517,10 @@ fn popular_commands_lines(_latest_version: Option<&str>) -> Vec<Line<'static>> {
         ),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("/chrome", Style::default().fg(crate::colors::primary())),
-        Span::from(" - "),
-        Span::from(SlashCommand::Chrome.description())
-            .style(Style::default().add_modifier(Modifier::DIM)),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("/plan", Style::default().fg(crate::colors::primary())),
-        Span::from(" - "),
-        Span::from(SlashCommand::Plan.description())
-            .style(Style::default().add_modifier(Modifier::DIM)),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("/code", Style::default().fg(crate::colors::primary())),
-        Span::from(" - "),
-        Span::from(SlashCommand::Code.description())
-            .style(Style::default().add_modifier(Modifier::DIM)),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("/branch", Style::default().fg(crate::colors::primary())),
-        Span::from(" - "),
-        Span::from(SlashCommand::Branch.description())
-            .style(Style::default().add_modifier(Modifier::DIM)),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("/limits", Style::default().fg(crate::colors::primary())),
-        Span::from(" - "),
-        Span::from(SlashCommand::Limits.description())
-            .style(Style::default().add_modifier(Modifier::DIM)),
-    ]));
-    lines.push(Line::from(vec![
         Span::styled("/review", Style::default().fg(crate::colors::primary())),
         Span::from(" - "),
         Span::from(SlashCommand::Review.description())
             .style(Style::default().add_modifier(Modifier::DIM)),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("/auto", Style::default().fg(crate::colors::primary())),
-        Span::from(" - "),
-        Span::from(SlashCommand::Auto.description())
-            .style(Style::default().add_modifier(Modifier::DIM)),
-        Span::styled(
-            " Experimental",
-            Style::default().fg(crate::colors::primary()),
-        ),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("/cloud", Style::default().fg(crate::colors::primary())),
-        Span::from(" - "),
-        Span::from(SlashCommand::Cloud.description())
-            .style(Style::default().add_modifier(Modifier::DIM)),
-        Span::styled(" NEW", Style::default().fg(crate::colors::primary())),
     ]));
 
     lines
@@ -2520,30 +2529,37 @@ fn popular_commands_lines(_latest_version: Option<&str>) -> Vec<Line<'static>> {
 /// Create a notice cell that shows the "Popular commands" immediately.
 /// If `connecting_mcp` is true, include a dim status line to inform users
 /// that external MCP servers are being connected in the background.
-pub(crate) fn new_upgrade_prelude(
-    latest_version: Option<&str>,
-) -> Option<UpgradeNoticeCell> {
-    if !crate::updates::upgrade_ui_enabled() {
-        return None;
-    }
-    let latest = latest_version?.trim();
-    if latest.is_empty() {
+pub(crate) fn new_upgrade_prelude(latest_version: Option<&str>) -> Option<UpgradeNoticeCell> {
+    #[cfg(debug_assertions)]
+    {
         return None;
     }
 
-    let current = codex_version::version();
-    if latest == current {
-        return None;
+    #[cfg(not(debug_assertions))]
+    {
+        if !crate::updates::upgrade_ui_enabled() {
+            return None;
+        }
+
+        let latest = latest_version?.trim();
+        if latest.is_empty() {
+            return None;
+        }
+
+        let current = codex_version::version();
+        if latest == current {
+            return None;
+        }
+
+        let state = UpgradeNoticeState {
+            id: HistoryId::ZERO,
+            current_version: current.trim().to_string(),
+            latest_version: latest.trim().to_string(),
+            message: "Use /upgrade to upgrade now or enable auto-update.".to_string(),
+        };
+
+        return Some(UpgradeNoticeCell::new(state));
     }
-
-    let state = UpgradeNoticeState {
-        id: HistoryId::ZERO,
-        current_version: current.trim().to_string(),
-        latest_version: latest.trim().to_string(),
-        message: "Use /upgrade to upgrade now or enable auto-update.".to_string(),
-    };
-
-    Some(UpgradeNoticeCell::new(state))
 }
 
 pub(crate) fn new_popular_commands_notice(
@@ -3108,11 +3124,7 @@ fn heredoc_delimiter(token: &str) -> Option<String> {
     } else if delim.starts_with('\'') && delim.ends_with('\'') && delim.len() >= 2 {
         delim = delim[1..delim.len() - 1].to_string();
     }
-    if delim.is_empty() {
-        None
-    } else {
-        Some(delim)
-    }
+    if delim.is_empty() { None } else { Some(delim) }
 }
 
 fn split_heredoc_script_lines(script_tokens: &[String]) -> Vec<String> {
@@ -3124,16 +3136,11 @@ fn split_heredoc_script_lines(script_tokens: &[String]) -> Vec<String> {
     let mut current_has_assignment = false;
 
     for (idx, token) in script_tokens.iter().enumerate() {
-        if !current.is_empty()
-            && paren_depth == 0
-            && bracket_depth == 0
-            && brace_depth == 0
-        {
+        if !current.is_empty() && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 {
             let token_lower = token.to_ascii_lowercase();
             let current_first = current.first().map(|s| s.to_ascii_lowercase());
             let should_flush_before = is_statement_boundary_token(token)
-                && !(token_lower == "import"
-                    && current_first.as_deref() == Some("from"));
+                && !(token_lower == "import" && current_first.as_deref() == Some("from"));
             if should_flush_before {
                 let line = current.join(" ");
                 lines.push(line.trim().to_string());
@@ -3143,7 +3150,12 @@ fn split_heredoc_script_lines(script_tokens: &[String]) -> Vec<String> {
         }
 
         current.push(token.clone());
-        adjust_bracket_depth(token, &mut paren_depth, &mut bracket_depth, &mut brace_depth);
+        adjust_bracket_depth(
+            token,
+            &mut paren_depth,
+            &mut bracket_depth,
+            &mut brace_depth,
+        );
 
         if is_assignment_operator(token) {
             current_has_assignment = true;
@@ -3323,11 +3335,7 @@ fn merge_from_import_lines(lines: Vec<String>) -> Vec<String> {
             && idx + 1 < lines.len()
             && lines[idx + 1].trim_start().starts_with("import ")
         {
-            let combined = format!(
-                "{} {}",
-                line.trim_end(),
-                lines[idx + 1].trim_start()
-            );
+            let combined = format!("{} {}", line.trim_end(), lines[idx + 1].trim_start());
             merged.push(combined);
             idx += 2;
         } else {
@@ -3341,19 +3349,7 @@ fn merge_from_import_lines(lines: Vec<String>) -> Vec<String> {
 fn is_assignment_operator(token: &str) -> bool {
     matches!(
         token,
-        "="
-            | "+="
-            | "-="
-            | "*="
-            | "/="
-            | "//="
-            | "%="
-            | "^="
-            | "|="
-            | "&="
-            | "**="
-            | "<<="
-            | ">>="
+        "=" | "+=" | "-=" | "*=" | "/=" | "//=" | "%=" | "^=" | "|=" | "&=" | "**=" | "<<=" | ">>="
     )
 }
 
@@ -3845,24 +3841,26 @@ fn escape_token_for_display(token: &str) -> String {
 }
 
 fn is_shell_word(token: &str) -> bool {
-    token.chars().all(|ch| matches!(
-        ch,
-        'a'..='z'
-            | 'A'..='Z'
-            | '0'..='9'
-            | '_'
-            | '-'
-            | '.'
-            | '/'
-            | ':'
-            | ','
-            | '@'
-            | '%'
-            | '+'
-            | '='
-            | '['
-            | ']'
-    ))
+    token.chars().all(|ch| {
+        matches!(
+            ch,
+            'a'..='z'
+                | 'A'..='Z'
+                | '0'..='9'
+                | '_'
+                | '-'
+                | '.'
+                | '/'
+                | ':'
+                | ','
+                | '@'
+                | '%'
+                | '+'
+                | '='
+                | '['
+                | ']'
+        )
+    })
 }
 
 fn script_has_semicolon_outside_quotes(script: &str) -> bool {
@@ -4163,7 +4161,9 @@ fn new_parsed_command(
                     (None, None) => ("Search".to_string(), cmd.clone()),
                 }
             }
-            ParsedCommand::ReadCommand { cmd } => ("Run".to_string(), cmd.clone()),
+            // TODO: ReadCommand variant removed
+            // ParsedCommand::ReadCommand { cmd } => ("Run".to_string(), cmd.clone()),
+
             // Upstream-only variants handled as generic runs in this fork
             ParsedCommand::Unknown { cmd } => {
                 let t = cmd.trim();
@@ -4528,10 +4528,7 @@ fn arguments_from_json(value: &serde_json::Value) -> Vec<ToolArgument> {
     arguments_from_json_excluding(value, &[])
 }
 
-fn arguments_from_json_excluding(
-    value: &serde_json::Value,
-    exclude: &[&str],
-) -> Vec<ToolArgument> {
+fn arguments_from_json_excluding(value: &serde_json::Value, exclude: &[&str]) -> Vec<ToolArgument> {
     match value {
         serde_json::Value::Object(map) => map
             .iter()
@@ -5148,7 +5145,7 @@ fn build_web_fetch_sectioned_preview(md: &str, cfg: &Config) -> Vec<Line<'static
         let end = end_excl.min(lines.len());
         let segment = lines[start..end].join("\n");
         let mut seg_lines: Vec<Line<'static>> = Vec::new();
-        crate::markdown::append_markdown(&segment, &mut seg_lines, cfg);
+        crate::markdown::append_markdown(&segment, None, &mut seg_lines, cfg);
         // Trim leading/trailing empties per segment to keep things tight
         out.extend(trim_empty_lines(seg_lines));
     };
@@ -5199,7 +5196,7 @@ fn build_web_fetch_sectioned_preview(md: &str, cfg: &Config) -> Vec<Line<'static
     if out.is_empty() {
         // Fallback: if nothing matched, show head/tail preview
         let mut all_md_lines: Vec<Line<'static>> = Vec::new();
-        crate::markdown::append_markdown(md, &mut all_md_lines, cfg);
+        crate::markdown::append_markdown(md, None, &mut all_md_lines, cfg);
         return select_preview_from_lines(
             &all_md_lines,
             WEB_FETCH_HEAD_LINES,
@@ -5276,8 +5273,7 @@ fn lines_to_plain_text(lines: &[Line<'_>]) -> String {
 }
 
 fn line_to_plain_text(line: &Line<'_>) -> String {
-    line
-        .spans
+    line.spans
         .iter()
         .map(|sp| sp.content.as_ref())
         .collect::<String>()
@@ -5491,15 +5487,14 @@ fn try_new_completed_mcp_tool_call_with_image_output(
     match result {
         Ok(mcp_types::CallToolResult { content, .. }) => {
             if let Some(mcp_types::ContentBlock::ImageContent(image_block)) = content.first() {
-                let raw_data = match base64::engine::general_purpose::STANDARD
-                    .decode(&image_block.data)
-                {
-                    Ok(data) => data,
-                    Err(e) => {
-                        error!("Failed to decode image data: {e}");
-                        return None;
-                    }
-                };
+                let raw_data =
+                    match base64::engine::general_purpose::STANDARD.decode(&image_block.data) {
+                        Ok(data) => data,
+                        Err(e) => {
+                            error!("Failed to decode image data: {e}");
+                            return None;
+                        }
+                    };
                 let reader = match ImageReader::new(Cursor::new(&raw_data)).with_guessed_format() {
                     Ok(reader) => reader,
                     Err(e) => {
@@ -5754,11 +5749,7 @@ pub(crate) fn new_status_output(
         use codex_login::try_read_auth_json;
 
         // Determine effective auth mode the core would choose
-        let auth_result = CodexAuth::from_codex_home(
-            &config.codex_home,
-            AuthMode::ChatGPT,
-            &config.responses_originator_header,
-        );
+        let auth_result = CodexAuth::from_codex_home(&config.codex_home);
 
         match auth_result {
             Ok(Some(auth)) => match auth.mode {
@@ -5863,7 +5854,9 @@ pub(crate) fn new_status_output(
                     format_with_separators(remaining)
                 )));
                 if total_usage.total_tokens > limit_u64 {
-                    lines.push(Line::from("    • Compacting will trigger on the next turn".dim()));
+                    lines.push(Line::from(
+                        "    • Compacting will trigger on the next turn".dim(),
+                    ));
                 }
             }
             _ => {
@@ -5886,12 +5879,18 @@ pub(crate) fn new_status_output(
                             "  • {} tokens before overflow",
                             format_with_separators(remaining)
                         )));
-                        lines.push(Line::from("  • Auto-compaction runs after overflow errors".to_string()));
+                        lines.push(Line::from(
+                            "  • Auto-compaction runs after overflow errors".to_string(),
+                        ));
                     } else {
-                        lines.push(Line::from("  • Auto-compaction runs after overflow errors".to_string()));
+                        lines.push(Line::from(
+                            "  • Auto-compaction runs after overflow errors".to_string(),
+                        ));
                     }
                 } else {
-                    lines.push(Line::from("  • Auto-compaction runs after overflow errors".to_string()));
+                    lines.push(Line::from(
+                        "  • Auto-compaction runs after overflow errors".to_string(),
+                    ));
                 }
             }
         }
@@ -5904,7 +5903,10 @@ pub(crate) fn new_warning_event(message: String) -> PlainMessageState {
     let warn_style = Style::default().fg(crate::colors::warning());
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(2);
     lines.push(Line::from("notice"));
-    lines.push(Line::from(vec![Span::styled(format!("⚠ {message}"), warn_style)]));
+    lines.push(Line::from(vec![Span::styled(
+        format!("⚠ {message}"),
+        warn_style,
+    )]));
     plain_message_state_from_lines(lines, HistoryCellType::Notice)
 }
 
@@ -6079,19 +6081,15 @@ impl PatchSummaryCell {
 
     fn build_lines(&self, width: u16) -> Vec<Line<'static>> {
         let effective_width = width.max(1);
-        let mut lines: Vec<Line<'static>> = create_diff_summary_with_width(
-            &self.title,
+        let mut lines: Vec<Line<'static>> = create_diff_summary(
             &self.record.changes,
-            self.ui_event_type(),
-            Some(effective_width as usize),
+            std::path::Path::new("."), // cwd - using current dir as placeholder
+            effective_width as usize,
         )
         .into_iter()
         .collect();
 
-        if matches!(
-            self.record.patch_type,
-            HistoryPatchEventType::ApplyFailure
-        ) {
+        if matches!(self.record.patch_type, HistoryPatchEventType::ApplyFailure) {
             if let Some(metadata) = &self.record.failure {
                 if !lines.is_empty() {
                     lines.push(Line::default());
@@ -6279,18 +6277,29 @@ pub(crate) fn trim_empty_lines(mut lines: Vec<Line<'static>>) -> Vec<Line<'stati
     result
 }
 
-pub(crate) fn cell_from_record(record: &crate::history::state::HistoryRecord, cfg: &Config) -> Box<dyn HistoryCell> {
+pub(crate) fn cell_from_record(
+    record: &crate::history::state::HistoryRecord,
+    cfg: &Config,
+) -> Box<dyn HistoryCell> {
     match record {
         HistoryRecord::PlainMessage(state) => Box::new(PlainHistoryCell::from_state(state.clone())),
-        HistoryRecord::WaitStatus(state) => Box::new(wait_status::WaitStatusCell::from_state(state.clone())),
+        HistoryRecord::WaitStatus(state) => {
+            Box::new(wait_status::WaitStatusCell::from_state(state.clone()))
+        }
         HistoryRecord::Loading(state) => Box::new(loading::LoadingCell::from_state(state.clone())),
         HistoryRecord::RunningTool(state) => {
             Box::new(tool::RunningToolCallCell::from_state(state.clone()))
         }
         HistoryRecord::ToolCall(state) => Box::new(tool::ToolCallCell::from_state(state.clone())),
-        HistoryRecord::PlanUpdate(state) => Box::new(plan_update::PlanUpdateCell::from_state(state.clone())),
-        HistoryRecord::UpgradeNotice(state) => Box::new(upgrade::UpgradeNoticeCell::from_state(state.clone())),
-        HistoryRecord::Reasoning(state) => Box::new(reasoning::CollapsibleReasoningCell::from_state(state.clone())),
+        HistoryRecord::PlanUpdate(state) => {
+            Box::new(plan_update::PlanUpdateCell::from_state(state.clone()))
+        }
+        HistoryRecord::UpgradeNotice(state) => {
+            Box::new(upgrade::UpgradeNoticeCell::from_state(state.clone()))
+        }
+        HistoryRecord::Reasoning(state) => Box::new(
+            reasoning::CollapsibleReasoningCell::from_state(state.clone()),
+        ),
         HistoryRecord::Exec(state) => Box::new(exec::ExecCell::from_record(state.clone())),
         HistoryRecord::MergedExec(state) => Box::new(MergedExecCell::from_state(state.clone())),
         HistoryRecord::AssistantStream(state) => {
@@ -6300,22 +6309,31 @@ pub(crate) fn cell_from_record(record: &crate::history::state::HistoryRecord, cf
                 cfg.cwd.clone(),
             ))
         }
-        HistoryRecord::AssistantMessage(state) => {
-            Box::new(assistant::AssistantMarkdownCell::from_state(state.clone(), cfg))
-        }
+        HistoryRecord::AssistantMessage(state) => Box::new(
+            assistant::AssistantMarkdownCell::from_state(state.clone(), cfg),
+        ),
         HistoryRecord::Diff(state) => Box::new(diff::DiffCell::from_record(state.clone())),
         HistoryRecord::Image(state) => Box::new(image::ImageOutputCell::from_record(state.clone())),
         HistoryRecord::Explore(state) => {
             Box::new(explore::ExploreAggregationCell::from_record(state.clone()))
         }
-        HistoryRecord::RateLimits(state) => Box::new(rate_limits::RateLimitsCell::from_record(state.clone())),
+        HistoryRecord::RateLimits(state) => {
+            Box::new(rate_limits::RateLimitsCell::from_record(state.clone()))
+        }
         HistoryRecord::Patch(state) => Box::new(PatchSummaryCell::from_record(state.clone())),
-        HistoryRecord::BackgroundEvent(state) => Box::new(background::BackgroundEventCell::new(state.clone())),
-        HistoryRecord::Notice(state) => Box::new(PlainHistoryCell::from_notice_record(state.clone())),
+        HistoryRecord::BackgroundEvent(state) => {
+            Box::new(background::BackgroundEventCell::new(state.clone()))
+        }
+        HistoryRecord::Notice(state) => {
+            Box::new(PlainHistoryCell::from_notice_record(state.clone()))
+        }
     }
 }
 
-pub(crate) fn lines_from_record(record: &crate::history::state::HistoryRecord, cfg: &Config) -> Vec<Line<'static>> {
+pub(crate) fn lines_from_record(
+    record: &crate::history::state::HistoryRecord,
+    cfg: &Config,
+) -> Vec<Line<'static>> {
     match record {
         HistoryRecord::Explore(state) => return explore_lines_from_record(state),
         _ => {}
@@ -6355,10 +6373,7 @@ pub(crate) fn record_from_cell(cell: &dyn HistoryCell) -> Option<HistoryRecord> 
     if let Some(tool_call) = cell.as_any().downcast_ref::<tool::ToolCallCell>() {
         return Some(HistoryRecord::ToolCall(tool_call.state().clone()));
     }
-    if let Some(running_tool) = cell
-        .as_any()
-        .downcast_ref::<tool::RunningToolCallCell>()
-    {
+    if let Some(running_tool) = cell.as_any().downcast_ref::<tool::RunningToolCallCell>() {
         return Some(HistoryRecord::RunningTool(running_tool.state().clone()));
     }
     if let Some(plan) = cell.as_any().downcast_ref::<plan_update::PlanUpdateCell>() {
@@ -6376,10 +6391,7 @@ pub(crate) fn record_from_cell(cell: &dyn HistoryCell) -> Option<HistoryRecord> 
     if let Some(exec) = cell.as_any().downcast_ref::<exec::ExecCell>() {
         return Some(HistoryRecord::Exec(exec.record.clone()));
     }
-    if let Some(stream) = cell
-        .as_any()
-        .downcast_ref::<stream::StreamingContentCell>()
-    {
+    if let Some(stream) = cell.as_any().downcast_ref::<stream::StreamingContentCell>() {
         return Some(HistoryRecord::AssistantStream(stream.state().clone()));
     }
     if let Some(assistant) = cell
@@ -6397,10 +6409,7 @@ pub(crate) fn record_from_cell(cell: &dyn HistoryCell) -> Option<HistoryRecord> 
     if let Some(patch) = cell.as_any().downcast_ref::<PatchSummaryCell>() {
         return Some(HistoryRecord::Patch(patch.record().clone()));
     }
-    if let Some(rate_limits) = cell
-        .as_any()
-        .downcast_ref::<rate_limits::RateLimitsCell>()
-    {
+    if let Some(rate_limits) = cell.as_any().downcast_ref::<rate_limits::RateLimitsCell>() {
         return Some(HistoryRecord::RateLimits(rate_limits.record().clone()));
     }
     None
@@ -6440,9 +6449,7 @@ fn format_inline_shell_for_display(command_escaped: &str) -> Option<String> {
         return None;
     }
 
-    let shell_idx = tokens
-        .iter()
-        .position(|t| is_shell_invocation_token(t))?;
+    let shell_idx = tokens.iter().position(|t| is_shell_invocation_token(t))?;
 
     let flag_idx = shell_idx + 1;
     if flag_idx >= tokens.len() {

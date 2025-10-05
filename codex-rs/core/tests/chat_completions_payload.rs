@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use codex_app_server_protocol::AuthMode;
 use codex_core::ContentItem;
@@ -7,20 +7,17 @@ use codex_core::LocalShellExecAction;
 use codex_core::LocalShellStatus;
 use codex_core::ModelClient;
 use codex_core::ModelProviderInfo;
-use codex_core::OpenRouterConfig;
-use codex_core::OpenRouterProviderConfig;
 use codex_core::Prompt;
 use codex_core::ReasoningItemContent;
 use codex_core::ResponseItem;
 use codex_core::WireApi;
-use codex_core::debug_logger::DebugLogger;
 use codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR;
+use codex_otel::otel_event_manager::OtelEventManager;
+use codex_protocol::ConversationId;
 use core_test_support::load_default_config_for_test;
 use futures::StreamExt;
-use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use serde_json::Value;
 use tempfile::TempDir;
-use uuid::Uuid;
 use wiremock::Mock;
 use wiremock::MockServer;
 use wiremock::ResponseTemplate;
@@ -32,16 +29,6 @@ fn network_disabled() -> bool {
 }
 
 async fn run_request(input: Vec<ResponseItem>) -> Value {
-    run_request_with_provider(input, |_| {}).await
-}
-
-async fn run_request_with_provider<F>(
-    input: Vec<ResponseItem>,
-    mutator: F,
-) -> Value
-where
-    F: FnOnce(&mut ModelProviderInfo),
-{
     let server = MockServer::start().await;
 
     let template = ResponseTemplate::new(200)
@@ -58,7 +45,7 @@ where
         .mount(&server)
         .await;
 
-    let mut provider = ModelProviderInfo {
+    let provider = ModelProviderInfo {
         name: "mock".into(),
         base_url: Some(format!("{}/v1", server.uri())),
         env_key: None,
@@ -71,9 +58,7 @@ where
         stream_max_retries: Some(0),
         stream_idle_timeout_ms: Some(5_000),
         requires_openai_auth: false,
-        openrouter: None,
     };
-    mutator(&mut provider);
 
     let codex_home = match TempDir::new() {
         Ok(dir) => dir,
@@ -85,20 +70,28 @@ where
     config.show_raw_agent_reasoning = true;
     let effort = config.model_reasoning_effort;
     let summary = config.model_reasoning_summary;
-    let verbosity = config.model_text_verbosity;
     let config = Arc::new(config);
-    let debug_logger = Arc::new(Mutex::new(DebugLogger::new(false).unwrap()));
+
+    let conversation_id = ConversationId::new();
+
+    let otel_event_manager = OtelEventManager::new(
+        conversation_id,
+        config.model.as_str(),
+        config.model_family.slug.as_str(),
+        None,
+        Some(AuthMode::ChatGPT),
+        false,
+        "test".to_string(),
+    );
 
     let client = ModelClient::new(
         Arc::clone(&config),
         None,
-        None,
+        otel_event_manager,
         provider,
         effort,
         summary,
-        verbosity,
-        Uuid::new_v4(),
-        debug_logger,
+        conversation_id,
     );
 
     let mut prompt = Prompt::default();
@@ -208,39 +201,6 @@ async fn omits_reasoning_when_none_present() {
 
     assert_eq!(assistant["content"], Value::String("a1".into()));
     assert!(assistant.get("reasoning").is_none());
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn openrouter_provider_metadata_is_forwarded() {
-    if network_disabled() {
-        println!(
-            "Skipping test because it cannot execute when network is disabled in a Codex sandbox."
-        );
-        return;
-    }
-
-    let body = run_request_with_provider(vec![user_message("hello")], |provider| {
-        let mut extra = BTreeMap::new();
-        extra.insert("dry_run".to_string(), Value::Bool(true));
-        provider.openrouter = Some(OpenRouterConfig {
-            provider: Some(OpenRouterProviderConfig {
-                order: Some(vec!["openai/gpt-4o-mini".to_string()]),
-                allow_fallbacks: Some(false),
-                ..OpenRouterProviderConfig::default()
-            }),
-            route: Some(json!({ "path": ["primary", "secondary"] })),
-            extra,
-        });
-    })
-    .await;
-
-    assert_eq!(body["provider"]["order"], json!(["openai/gpt-4o-mini"]));
-    assert_eq!(body["provider"]["allow_fallbacks"], Value::Bool(false));
-    assert_eq!(
-        body["route"],
-        json!({ "path": ["primary", "secondary"] })
-    );
-    assert_eq!(body["dry_run"], Value::Bool(true));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

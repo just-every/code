@@ -1,11 +1,7 @@
 use codex_common::elapsed::format_duration;
 use codex_common::elapsed::format_elapsed;
 use codex_core::config::Config;
-use codex_core::plan_tool::UpdatePlanArgs;
-use codex_core::protocol::AgentMessageDeltaEvent;
 use codex_core::protocol::AgentMessageEvent;
-use codex_core::protocol::AgentReasoningDeltaEvent;
-use codex_core::protocol::AgentReasoningRawContentDeltaEvent;
 use codex_core::protocol::AgentReasoningRawContentEvent;
 use codex_core::protocol::BackgroundEventEvent;
 use codex_core::protocol::ErrorEvent;
@@ -20,17 +16,17 @@ use codex_core::protocol::McpToolCallEndEvent;
 use codex_core::protocol::PatchApplyBeginEvent;
 use codex_core::protocol::PatchApplyEndEvent;
 use codex_core::protocol::SessionConfiguredEvent;
+use codex_core::protocol::StreamErrorEvent;
 use codex_core::protocol::TaskCompleteEvent;
-use codex_protocol::protocol::TurnAbortReason;
+use codex_core::protocol::TurnAbortReason;
 use codex_core::protocol::TurnDiffEvent;
 use codex_core::protocol::WebSearchBeginEvent;
-use codex_core::protocol::WebSearchCompleteEvent;
+use codex_core::protocol::WebSearchEndEvent;
 use codex_protocol::num_format::format_with_separators;
 use owo_colors::OwoColorize;
 use owo_colors::Style;
 use shlex::try_join;
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -38,12 +34,13 @@ use crate::event_processor::CodexStatus;
 use crate::event_processor::EventProcessor;
 use crate::event_processor::handle_last_message;
 use codex_common::create_config_summary_entries;
+use codex_protocol::plan_tool::StepStatus;
+use codex_protocol::plan_tool::UpdatePlanArgs;
 
 /// This should be configurable. When used in CI, users may not want to impose
 /// a limit so they can see the full transcript.
 const MAX_OUTPUT_LINES_FOR_EXEC_TOOL_CALL: usize = 20;
 pub(crate) struct EventProcessorWithHumanOutput {
-    call_id_to_command: HashMap<String, ExecCommandBegin>,
     call_id_to_patch: HashMap<String, PatchApplyBegin>,
 
     // To ensure that --color=never is respected, ANSI escapes _must_ be added
@@ -61,10 +58,9 @@ pub(crate) struct EventProcessorWithHumanOutput {
     /// Whether to include `AgentReasoning` events in the output.
     show_agent_reasoning: bool,
     show_raw_agent_reasoning: bool,
-    answer_started: bool,
-    reasoning_started: bool,
-    raw_reasoning_started: bool,
     last_message_path: Option<PathBuf>,
+    last_total_token_usage: Option<codex_core::protocol::TokenUsageInfo>,
+    final_message: Option<String>,
 }
 
 impl EventProcessorWithHumanOutput {
@@ -73,12 +69,10 @@ impl EventProcessorWithHumanOutput {
         config: &Config,
         last_message_path: Option<PathBuf>,
     ) -> Self {
-        let call_id_to_command = HashMap::new();
         let call_id_to_patch = HashMap::new();
 
         if with_ansi {
             Self {
-                call_id_to_command,
                 call_id_to_patch,
                 bold: Style::new().bold(),
                 italic: Style::new().italic(),
@@ -89,14 +83,12 @@ impl EventProcessorWithHumanOutput {
                 cyan: Style::new().cyan(),
                 show_agent_reasoning: !config.hide_agent_reasoning,
                 show_raw_agent_reasoning: config.show_raw_agent_reasoning,
-                answer_started: false,
-                reasoning_started: false,
-                raw_reasoning_started: false,
                 last_message_path,
+                last_total_token_usage: None,
+                final_message: None,
             }
         } else {
             Self {
-                call_id_to_command,
                 call_id_to_patch,
                 bold: Style::new(),
                 italic: Style::new(),
@@ -107,17 +99,12 @@ impl EventProcessorWithHumanOutput {
                 cyan: Style::new(),
                 show_agent_reasoning: !config.hide_agent_reasoning,
                 show_raw_agent_reasoning: config.show_raw_agent_reasoning,
-                answer_started: false,
-                reasoning_started: false,
-                raw_reasoning_started: false,
                 last_message_path,
+                last_total_token_usage: None,
+                final_message: None,
             }
         }
     }
-}
-
-struct ExecCommandBegin {
-    command: Vec<String>,
 }
 
 struct PatchApplyBegin {
@@ -125,14 +112,10 @@ struct PatchApplyBegin {
     auto_approved: bool,
 }
 
-// Timestamped println helper. The timestamp is styled with self.dimmed.
-#[macro_export]
-macro_rules! ts_println {
+/// Timestamped helper. The timestamp is styled with self.dimmed.
+macro_rules! ts_msg {
     ($self:ident, $($arg:tt)*) => {{
-        let now = chrono::Utc::now();
-        let formatted = now.format("[%Y-%m-%dT%H:%M:%S]");
-        print!("{} ", formatted.style($self.dimmed));
-        println!($($arg)*);
+        eprintln!($($arg)*);
     }};
 }
 
@@ -142,7 +125,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
     /// screen.
     fn print_config_summary(&mut self, config: &Config, prompt: &str) {
         const VERSION: &str = env!("CARGO_PKG_VERSION");
-        ts_println!(
+        ts_msg!(
             self,
             "OpenAI Codex v{} (research preview)\n--------",
             VERSION
@@ -151,20 +134,15 @@ impl EventProcessor for EventProcessorWithHumanOutput {
         let entries = create_config_summary_entries(config);
 
         for (key, value) in entries {
-            println!("{} {}", format!("{key}:").style(self.bold), value);
+            eprintln!("{} {}", format!("{key}:").style(self.bold), value);
         }
 
-        println!("--------");
+        eprintln!("--------");
 
         // Echo the prompt that will be sent to the agent so it is visible in the
         // transcript/logs before any events come in. Note the prompt may have been
         // read from stdin, so it may not be visible in the terminal otherwise.
-        ts_println!(
-            self,
-            "{}\n{}",
-            "User instructions:".style(self.bold).style(self.cyan),
-            prompt
-        );
+        ts_msg!(self, "{}\n{}", "user".style(self.cyan), prompt);
     }
 
     fn process_event(&mut self, event: Event) -> CodexStatus {
@@ -172,173 +150,94 @@ impl EventProcessor for EventProcessorWithHumanOutput {
         match msg {
             EventMsg::Error(ErrorEvent { message }) => {
                 let prefix = "ERROR:".style(self.red);
-                ts_println!(self, "{prefix} {message}");
+                ts_msg!(self, "{prefix} {message}");
             }
             EventMsg::BackgroundEvent(BackgroundEventEvent { message }) => {
-                ts_println!(self, "{}", message.style(self.dimmed));
+                ts_msg!(self, "{}", message.style(self.dimmed));
             }
-            EventMsg::TaskStarted => {
+            EventMsg::StreamError(StreamErrorEvent { message }) => {
+                ts_msg!(self, "{}", message.style(self.dimmed));
+            }
+            EventMsg::TaskStarted(_) => {
                 // Ignore.
             }
             EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
+                let last_message = last_agent_message.as_deref();
                 if let Some(output_file) = self.last_message_path.as_deref() {
-                    handle_last_message(last_agent_message.as_deref(), output_file);
+                    handle_last_message(last_message, output_file);
                 }
+
+                self.final_message = last_agent_message;
+
                 return CodexStatus::InitiateShutdown;
             }
             EventMsg::TokenCount(ev) => {
-                if let Some(usage_info) = ev.info {
-                    ts_println!(
-                        self,
-                        "tokens used: {}",
-                        format_with_separators(usage_info.total_token_usage.blended_total())
-                    );
-                }
+                self.last_total_token_usage = ev.info;
             }
-            EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { delta }) => {
-                if !self.answer_started {
-                    ts_println!(self, "{}\n", "codex".style(self.italic).style(self.magenta));
-                    self.answer_started = true;
-                }
-                print!("{delta}");
-                #[expect(clippy::expect_used)]
-                std::io::stdout().flush().expect("could not flush stdout");
-            }
-            EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent { delta }) => {
-                if !self.show_agent_reasoning {
-                    return CodexStatus::Running;
-                }
-                if !self.reasoning_started {
-                    ts_println!(
-                        self,
-                        "{}\n",
-                        "thinking".style(self.italic).style(self.magenta),
-                    );
-                    self.reasoning_started = true;
-                }
-                print!("{delta}");
-                #[expect(clippy::expect_used)]
-                std::io::stdout().flush().expect("could not flush stdout");
-            }
+
             EventMsg::AgentReasoningSectionBreak(_) => {
                 if !self.show_agent_reasoning {
                     return CodexStatus::Running;
                 }
-                println!();
-                #[expect(clippy::expect_used)]
-                std::io::stdout().flush().expect("could not flush stdout");
+                eprintln!();
             }
             EventMsg::AgentReasoningRawContent(AgentReasoningRawContentEvent { text }) => {
-                if !self.show_raw_agent_reasoning {
-                    return CodexStatus::Running;
-                }
-                if !self.raw_reasoning_started {
-                    print!("{text}");
-                    #[expect(clippy::expect_used)]
-                    std::io::stdout().flush().expect("could not flush stdout");
-                } else {
-                    println!();
-                    self.raw_reasoning_started = false;
-                }
-            }
-            EventMsg::AgentReasoningRawContentDelta(AgentReasoningRawContentDeltaEvent {
-                delta,
-            }) => {
-                if !self.show_raw_agent_reasoning {
-                    return CodexStatus::Running;
-                }
-                if !self.raw_reasoning_started {
-                    self.raw_reasoning_started = true;
-                }
-                print!("{delta}");
-                #[expect(clippy::expect_used)]
-                std::io::stdout().flush().expect("could not flush stdout");
-            }
-            EventMsg::AgentMessage(AgentMessageEvent { message }) => {
-                // if answer_started is false, this means we haven't received any
-                // delta. Thus, we need to print the message as a new answer.
-                if !self.answer_started {
-                    ts_println!(
+                if self.show_raw_agent_reasoning {
+                    ts_msg!(
                         self,
                         "{}\n{}",
-                        "codex".style(self.italic).style(self.magenta),
-                        message,
+                        "thinking".style(self.italic).style(self.magenta),
+                        text,
                     );
-                } else {
-                    println!();
-                    self.answer_started = false;
                 }
             }
-            EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
-                call_id,
-                command,
-                cwd,
-                parsed_cmd: _,
-            }) => {
-                self.call_id_to_command.insert(
-                    call_id,
-                    ExecCommandBegin {
-                        command: command.clone(),
-                    },
-                );
-                ts_println!(
+            EventMsg::AgentMessage(AgentMessageEvent { message }) => {
+                ts_msg!(
                     self,
-                    "{} {} in {}",
-                    "exec".style(self.magenta),
+                    "{}\n{}",
+                    "codex".style(self.italic).style(self.magenta),
+                    message,
+                );
+            }
+            EventMsg::ExecCommandBegin(ExecCommandBeginEvent { command, cwd, .. }) => {
+                eprint!(
+                    "{}\n{} in {}",
+                    "exec".style(self.italic).style(self.magenta),
                     escape_command(&command).style(self.bold),
                     cwd.to_string_lossy(),
                 );
             }
             EventMsg::ExecCommandOutputDelta(_) => {}
-            EventMsg::ExecCommandEnd(ExecCommandEndEvent { call_id, stdout, stderr, duration, exit_code }) => {
-                let exec_command = self.call_id_to_command.remove(&call_id);
-                let (duration, call) = if let Some(ExecCommandBegin { command, .. }) = exec_command
-                {
-                    (
-                        format!(" in {}", format_duration(duration)),
-                        format!("{}", escape_command(&command).style(self.bold)),
-                    )
-                } else {
-                    ("".to_string(), format!("exec('{call_id}')"))
-                };
+            EventMsg::ExecCommandEnd(ExecCommandEndEvent {
+                aggregated_output,
+                duration,
+                exit_code,
+                ..
+            }) => {
+                let duration = format!(" in {}", format_duration(duration));
 
-                let truncated_stdout = stdout
-                    .lines()
-                    .take(MAX_OUTPUT_LINES_FOR_EXEC_TOOL_CALL)
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let truncated_stderr = stderr
+                let truncated_output = aggregated_output
                     .lines()
                     .take(MAX_OUTPUT_LINES_FOR_EXEC_TOOL_CALL)
                     .collect::<Vec<_>>()
                     .join("\n");
                 match exit_code {
                     0 => {
-                        let title = format!("{call} succeeded{duration}:");
-                        ts_println!(self, "{}", title.style(self.green));
-                        if !truncated_stdout.is_empty() {
-                            println!("{}", truncated_stdout.style(self.dimmed));
-                        }
+                        let title = format!(" succeeded{duration}:");
+                        ts_msg!(self, "{}", title.style(self.green));
                     }
                     _ => {
-                        let title = format!("{call} exited {exit_code}{duration}:");
-                        ts_println!(self, "{}", title.style(self.red));
-                        if !truncated_stdout.is_empty() {
-                            println!("{}", truncated_stdout.style(self.dimmed));
-                            println!();
-                        }
-                        println!("ERROR");
-                        if !truncated_stderr.is_empty() {
-                            println!("{}", truncated_stderr);
-                        }
+                        let title = format!(" exited {exit_code}{duration}:");
+                        ts_msg!(self, "{}", title.style(self.red));
                     }
                 }
+                eprintln!("{}", truncated_output.style(self.dimmed));
             }
             EventMsg::McpToolCallBegin(McpToolCallBeginEvent {
                 call_id: _,
                 invocation,
             }) => {
-                ts_println!(
+                ts_msg!(
                     self,
                     "{} {}",
                     "tool".style(self.magenta),
@@ -363,7 +262,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     format_mcp_invocation(&invocation)
                 );
 
-                ts_println!(self, "{}", title.style(title_style));
+                ts_msg!(self, "{}", title.style(title_style));
 
                 if let Ok(res) = result {
                     let val: serde_json::Value = res.into();
@@ -371,15 +270,13 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                         serde_json::to_string_pretty(&val).unwrap_or_else(|_| val.to_string());
 
                     for line in pretty.lines().take(MAX_OUTPUT_LINES_FOR_EXEC_TOOL_CALL) {
-                        println!("{}", line.style(self.dimmed));
+                        eprintln!("{}", line.style(self.dimmed));
                     }
                 }
             }
-            EventMsg::WebSearchBegin(WebSearchBeginEvent { call_id: _, .. }) => {}
-            EventMsg::WebSearchComplete(WebSearchCompleteEvent { call_id: _, query }) => {
-                if let Some(query) = query {
-                    ts_println!(self, "🌐 Search: {query}");
-                }
+            EventMsg::WebSearchBegin(WebSearchBeginEvent { call_id: _ }) => {}
+            EventMsg::WebSearchEnd(WebSearchEndEvent { call_id: _, query }) => {
+                ts_msg!(self, "🌐 Searched: {query}");
             }
             EventMsg::PatchApplyBegin(PatchApplyBeginEvent {
                 call_id,
@@ -396,11 +293,10 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     },
                 );
 
-                ts_println!(
+                ts_msg!(
                     self,
-                    "{} auto_approved={}:",
-                    "apply_patch".style(self.magenta),
-                    auto_approved,
+                    "{}",
+                    "file update".style(self.magenta).style(self.italic),
                 );
 
                 // Pretty-print the patch summary with colored diff markers so
@@ -413,18 +309,21 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                                 format_file_change(change),
                                 path.to_string_lossy()
                             );
-                            println!("{}", header.style(self.magenta));
+                            eprintln!("{}", header.style(self.magenta));
                             for line in content.lines() {
-                                println!("{}", line.style(self.green));
+                                eprintln!("{}", line.style(self.green));
                             }
                         }
-                        FileChange::Delete => {
+                        FileChange::Delete { content } => {
                             let header = format!(
                                 "{} {}",
                                 format_file_change(change),
                                 path.to_string_lossy()
                             );
-                            println!("{}", header.style(self.magenta));
+                            eprintln!("{}", header.style(self.magenta));
+                            for line in content.lines() {
+                                eprintln!("{}", line.style(self.red));
+                            }
                         }
                         FileChange::Update {
                             unified_diff,
@@ -441,20 +340,20 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                             } else {
                                 format!("{} {}", format_file_change(change), path.to_string_lossy())
                             };
-                            println!("{}", header.style(self.magenta));
+                            eprintln!("{}", header.style(self.magenta));
 
                             // Colorize diff lines. We keep file header lines
                             // (--- / +++) without extra coloring so they are
                             // still readable.
                             for diff_line in unified_diff.lines() {
                                 if diff_line.starts_with('+') && !diff_line.starts_with("+++") {
-                                    println!("{}", diff_line.style(self.green));
+                                    eprintln!("{}", diff_line.style(self.green));
                                 } else if diff_line.starts_with('-')
                                     && !diff_line.starts_with("---")
                                 {
-                                    println!("{}", diff_line.style(self.red));
+                                    eprintln!("{}", diff_line.style(self.red));
                                 } else {
-                                    println!("{diff_line}");
+                                    eprintln!("{diff_line}");
                                 }
                             }
                         }
@@ -491,14 +390,18 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 };
 
                 let title = format!("{label} exited {exit_code}{duration}:");
-                ts_println!(self, "{}", title.style(title_style));
+                ts_msg!(self, "{}", title.style(title_style));
                 for line in output.lines() {
-                    println!("{}", line.style(self.dimmed));
+                    eprintln!("{}", line.style(self.dimmed));
                 }
             }
             EventMsg::TurnDiff(TurnDiffEvent { unified_diff }) => {
-                ts_println!(self, "{}", "turn diff:".style(self.magenta));
-                println!("{unified_diff}");
+                ts_msg!(
+                    self,
+                    "{}",
+                    "file update:".style(self.magenta).style(self.italic)
+                );
+                eprintln!("{unified_diff}");
             }
             EventMsg::ExecApprovalRequest(_) => {
                 // Should we exit?
@@ -508,103 +411,94 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             }
             EventMsg::AgentReasoning(agent_reasoning_event) => {
                 if self.show_agent_reasoning {
-                    if !self.reasoning_started {
-                        ts_println!(
-                            self,
-                            "{}\n{}",
-                            "codex".style(self.italic).style(self.magenta),
-                            agent_reasoning_event.text,
-                        );
-                    } else {
-                        println!();
-                        self.reasoning_started = false;
-                    }
+                    ts_msg!(
+                        self,
+                        "{}\n{}",
+                        "thinking".style(self.italic).style(self.magenta),
+                        agent_reasoning_event.text,
+                    );
                 }
             }
             EventMsg::SessionConfigured(session_configured_event) => {
-                let SessionConfiguredEvent { session_id: conversation_id, model, .. } = session_configured_event;
+                let SessionConfiguredEvent {
+                    session_id: conversation_id,
+                    model,
+                    reasoning_effort: _,
+                    history_log_id: _,
+                    history_entry_count: _,
+                    initial_messages: _,
+                    rollout_path: _,
+                } = session_configured_event;
 
-                ts_println!(
+                ts_msg!(
                     self,
                     "{} {}",
                     "codex session".style(self.magenta).style(self.bold),
                     conversation_id.to_string().style(self.dimmed)
                 );
 
-                ts_println!(self, "model: {}", model);
-                println!();
+                ts_msg!(self, "model: {}", model);
+                eprintln!();
             }
             EventMsg::PlanUpdate(plan_update_event) => {
                 let UpdatePlanArgs { name, plan } = plan_update_event;
-                ts_println!(self, "name: {name:?}");
-                ts_println!(self, "plan: {plan:?}");
+
+                // Header
+                ts_msg!(self, "{}", "Plan update".style(self.magenta));
+
+                // Optional explanation
+                if let Some(name_text) = name
+                    && !name_text.trim().is_empty()
+                {
+                    ts_msg!(self, "{}", name_text.style(self.italic));
+                }
+
+                // Pretty-print the plan items with simple status markers.
+                for item in plan {
+                    match item.status {
+                        StepStatus::Completed => {
+                            ts_msg!(self, "  {} {}", "✓".style(self.green), item.step);
+                        }
+                        StepStatus::InProgress => {
+                            ts_msg!(self, "  {} {}", "→".style(self.cyan), item.step);
+                        }
+                        StepStatus::Pending => {
+                            ts_msg!(
+                                self,
+                                "  {} {}",
+                                "•".style(self.dimmed),
+                                item.step.style(self.dimmed)
+                            );
+                        }
+                    }
+                }
             }
             EventMsg::GetHistoryEntryResponse(_) => {
                 // Currently ignored in exec output.
             }
-            EventMsg::ReplayHistory(_) => {
-                // Replay is a TUI concern; ignore in headless output
-            }
-            EventMsg::BrowserScreenshotUpdate(_) => {
+            EventMsg::McpListToolsResponse(_) => {
                 // Currently ignored in exec output.
             }
-            EventMsg::AgentStatusUpdate(_) => {
+            EventMsg::ListCustomPromptsResponse(_) => {
                 // Currently ignored in exec output.
             }
-            EventMsg::CustomToolCallBegin(event) => {
-                ts_println!(
+            EventMsg::ViewImageToolCall(view) => {
+                ts_msg!(
                     self,
                     "{} {}",
-                    "tool".style(self.magenta),
-                    event.tool_name.style(self.bold),
+                    "viewed image".style(self.magenta),
+                    view.path.display()
                 );
-                if let Some(params) = &event.parameters {
-                    if let Ok(formatted) = serde_json::to_string_pretty(params) {
-                        for line in formatted.lines() {
-                            println!("{}", line.style(self.dimmed));
-                        }
-                    }
-                }
-            }
-            EventMsg::CustomToolCallEnd(event) => {
-                let status = if event.result.is_ok() {
-                    "success".style(self.green)
-                } else {
-                    "failed".style(self.red)
-                };
-                ts_println!(
-                    self,
-                    "{} {} {}",
-                    "tool".style(self.magenta),
-                    event.tool_name.style(self.bold),
-                    status,
-                );
-                match &event.result {
-                    Ok(content) => {
-                        if !content.is_empty() {
-                            for line in content.lines() {
-                                println!("{}", line.style(self.dimmed));
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        if !err.is_empty() {
-                            for line in err.lines() {
-                                println!("{}", line.style(self.red));
-                            }
-                        }
-                    }
-                }
             }
             EventMsg::TurnAborted(abort_reason) => match abort_reason.reason {
                 TurnAbortReason::Interrupted => {
-                    ts_println!(self, "task interrupted");
+                    ts_msg!(self, "task interrupted");
                 }
                 TurnAbortReason::Replaced => {
-                    ts_println!(self, "task aborted: replaced by a new task");
+                    ts_msg!(self, "task aborted: replaced by a new task");
                 }
                 TurnAbortReason::ReviewEnded => {
-                    ts_println!(self, "task aborted: review ended");
+                    ts_msg!(self, "task aborted: review ended");
                 }
             },
             EventMsg::ShutdownComplete => return CodexStatus::Shutdown,
@@ -612,8 +506,36 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::UserMessage(_) => {}
             EventMsg::EnteredReviewMode(_) => {}
             EventMsg::ExitedReviewMode(_) => {}
+            EventMsg::AgentMessageDelta(_) => {}
+            EventMsg::AgentReasoningDelta(_) => {}
+            EventMsg::AgentReasoningRawContentDelta(_) => {}
         }
         CodexStatus::Running
+    }
+}
+
+impl EventProcessorWithHumanOutput {
+    pub(crate) fn print_final_output(&mut self) {
+        if let Some(usage_info) = &self.last_total_token_usage {
+            eprintln!(
+                "{}\n{}",
+                "tokens used".style(self.magenta).style(self.italic),
+                format_with_separators(usage_info.total_token_usage.blended_total())
+            );
+        }
+
+        // If the user has not piped the final message to a file, they will see
+        // it twice: once written to stderr as part of the normal event
+        // processing, and once here on stdout. We print the token summary above
+        // to help break up the output visually in that case.
+        #[allow(clippy::print_stdout)]
+        if let Some(message) = &self.final_message {
+            if message.ends_with('\n') {
+                print!("{message}");
+            } else {
+                println!("{message}");
+            }
+        }
     }
 }
 

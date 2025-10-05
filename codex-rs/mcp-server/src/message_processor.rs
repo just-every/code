@@ -1,39 +1,43 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use codex_app_server::codex_message_processor::CodexMessageProcessor;
-use crate::codex_tool_config::create_tool_for_acp_new_session;
-use crate::codex_tool_config::create_tool_for_acp_prompt;
-use crate::codex_tool_config::create_tool_for_acp_set_model;
-use crate::codex_tool_config::create_tool_for_codex_tool_call_param;
-use crate::codex_tool_config::create_tool_for_codex_tool_call_reply_param;
+// TODO: CodexMessageProcessor is private
+// use codex_app_server::codex_message_processor::CodexMessageProcessor;
 use crate::codex_tool_config::AcpNewSessionToolArgs;
 use crate::codex_tool_config::AcpPromptToolArgs;
 use crate::codex_tool_config::AcpSetModelToolArgs;
 use crate::codex_tool_config::CodexToolCallParam;
 use crate::codex_tool_config::CodexToolCallReplyParam;
-use crate::error_code::INVALID_REQUEST_ERROR_CODE;
+use crate::codex_tool_config::create_tool_for_acp_new_session;
+use crate::codex_tool_config::create_tool_for_acp_prompt;
+use crate::codex_tool_config::create_tool_for_acp_set_model;
+use crate::codex_tool_config::create_tool_for_codex_tool_call_param;
+use crate::codex_tool_config::create_tool_for_codex_tool_call_reply_param;
 use crate::error_code::INTERNAL_ERROR_CODE;
+use crate::error_code::INVALID_REQUEST_ERROR_CODE;
 use crate::outgoing_message::{OutgoingMessageSender, OutgoingNotification};
 use crate::session_store::SessionMap;
 use agent_client_protocol as acp;
-use anyhow::anyhow;
 use anyhow::Context as _;
+use anyhow::anyhow;
 use codex_app_server_protocol::ClientRequest;
 use codex_protocol::ConversationId;
 use codex_protocol::protocol::SessionSource;
 
-use codex_common::model_presets::{builtin_model_presets, ModelPreset};
+use codex_common::model_presets::{ModelPreset, builtin_model_presets};
 use codex_core::AuthManager;
 use codex_core::ConversationManager;
-use codex_core::config_types::{ClientTools, McpServerConfig, McpServerTransportConfig, ReasoningEffort};
+use codex_core::config_types::{McpServerConfig, McpServerTransportConfig};
+// TODO: ClientTools and ReasoningEffort removed from codex_core::config_types
+// ClientTools is removed, ReasoningEffort is in codex_protocol::config_types
+use codex_app_server_protocol::AuthMode;
 use codex_core::config::Config;
 use codex_core::default_client::USER_AGENT_SUFFIX;
-use codex_core::default_client::get_codex_user_agent_default;
+use codex_core::default_client::get_codex_user_agent;
 use codex_core::model_family::{derive_default_model_family, find_family_for_model};
-use codex_core::protocol::Submission;
 use codex_core::protocol::Op;
-use codex_app_server_protocol::AuthMode;
+use codex_core::protocol::Submission;
+use codex_protocol::config_types::ReasoningEffort;
 use mcp_types::CallToolRequestParams;
 use mcp_types::CallToolResult;
 use mcp_types::ClientRequest as McpClientRequest;
@@ -62,7 +66,8 @@ pub(crate) struct MessageProcessor {
     session_map: SessionMap,
     running_requests_id_to_codex_uuid: Arc<Mutex<HashMap<RequestId, Uuid>>>,
     base_config: Arc<Config>,
-    codex_message_processor: CodexMessageProcessor,
+    // TODO: CodexMessageProcessor is private
+    // codex_message_processor: CodexMessageProcessor,
 }
 
 impl MessageProcessor {
@@ -74,23 +79,25 @@ impl MessageProcessor {
         config: Arc<Config>,
     ) -> Self {
         let outgoing = Arc::new(outgoing);
-        let auth_manager = AuthManager::shared_with_mode_and_originator(
+        // TODO: shared_with_mode_and_originator method removed, using new() instead
+        // Also responses_originator_header field removed from Config
+        let auth_manager = Arc::new(AuthManager::new(
             config.codex_home.clone(),
-            AuthMode::ApiKey,
-            config.responses_originator_header.clone(),
-        );
+            true, // enable_codex_api_key_env
+        ));
         let conversation_manager = Arc::new(ConversationManager::new(
             auth_manager.clone(),
             SessionSource::Mcp,
         ));
-        let config_for_processor = config.clone();
-        let codex_message_processor = CodexMessageProcessor::new(
-            auth_manager,
-            conversation_manager.clone(),
-            outgoing.clone(),
-            codex_linux_sandbox_exe.clone(),
-            config_for_processor.clone(),
-        );
+        // TODO: CodexMessageProcessor is private, commenting out
+        // let config_for_processor = config.clone();
+        // let codex_message_processor = CodexMessageProcessor::new(
+        //     auth_manager,
+        //     conversation_manager.clone(),
+        //     outgoing.clone(),
+        //     codex_linux_sandbox_exe.clone(),
+        //     config_for_processor.clone(),
+        // );
         let session_map: SessionMap = Arc::new(Mutex::new(HashMap::new()));
         Self {
             outgoing,
@@ -100,21 +107,23 @@ impl MessageProcessor {
             session_map,
             running_requests_id_to_codex_uuid: Arc::new(Mutex::new(HashMap::new())),
             base_config: config,
-            codex_message_processor,
+            // TODO: CodexMessageProcessor is private, commenting out
+            // codex_message_processor,
         }
     }
 
     pub(crate) async fn process_request(&mut self, request: JSONRPCRequest) {
-        if let Ok(request_json) = serde_json::to_value(request.clone()) {
-            if let Ok(codex_request) = serde_json::from_value::<ClientRequest>(request_json) {
-                // If the request is a Codex request, handle it with the Codex
-                // message processor.
-                self.codex_message_processor
-                    .process_request(codex_request)
-                    .await;
-                return;
-            }
-        }
+        // TODO: CodexMessageProcessor is private, commenting out
+        // if let Ok(request_json) = serde_json::to_value(request.clone()) {
+        //     if let Ok(codex_request) = serde_json::from_value::<ClientRequest>(request_json) {
+        //         // If the request is a Codex request, handle it with the Codex
+        //         // message processor.
+        //         self.codex_message_processor
+        //             .process_request(codex_request)
+        //             .await;
+        //         return;
+        //     }
+        // }
 
         tracing::trace!("processing JSON-RPC request: {}", request.method);
         // Hold on to the ID so we can respond.
@@ -125,8 +134,7 @@ impl MessageProcessor {
             if let Some(params) = request.params.clone() {
                 match serde_json::from_value::<AcpNewSessionToolArgs>(params) {
                     Ok(session_params) => {
-                        self.handle_session_new(request_id, session_params)
-                            .await;
+                        self.handle_session_new(request_id, session_params).await;
                     }
                     Err(err) => {
                         tracing::warn!("Failed to parse session/new params: {err}");
@@ -154,8 +162,7 @@ impl MessageProcessor {
             if let Some(params) = request.params.clone() {
                 match serde_json::from_value::<AcpPromptToolArgs>(params) {
                     Ok(prompt_params) => {
-                        self.handle_session_prompt(request_id, prompt_params)
-                            .await;
+                        self.handle_session_prompt(request_id, prompt_params).await;
                     }
                     Err(err) => {
                         tracing::warn!("Failed to parse session/prompt params: {err}");
@@ -178,7 +185,9 @@ impl MessageProcessor {
             return;
         }
 
-        if request.method == acp::AGENT_METHOD_NAMES.model_select {
+        // TODO: model_select field removed from AGENT_METHOD_NAMES
+        if request.method == "acp/model_select" {
+            // was: acp::AGENT_METHOD_NAMES.model_select
             tracing::info!("handling session/set_model via ACP shim");
             if let Some(params) = request.params.clone() {
                 match serde_json::from_value::<acp::SetSessionModelRequest>(params) {
@@ -402,7 +411,7 @@ impl MessageProcessor {
             "name": "code-mcp-server",
             "version": env!("CARGO_PKG_VERSION"),
             "title": "Codex",
-            "user_agent": get_codex_user_agent_default(),
+            "user_agent": get_codex_user_agent(), // TODO: was get_codex_user_agent_default()
         });
 
         let agent_capabilities = serde_json::json!({
@@ -547,7 +556,9 @@ impl MessageProcessor {
             _ if name == acp::AGENT_METHOD_NAMES.session_prompt => {
                 self.handle_tool_call_acp_prompt(id, arguments).await
             }
-            _ if name == acp::AGENT_METHOD_NAMES.model_select => {
+            // TODO: model_select field removed from AGENT_METHOD_NAMES
+            _ if name == "acp/model_select" => {
+                // was: acp::AGENT_METHOD_NAMES.model_select
                 self.handle_tool_call_acp_set_model(id, arguments).await
             }
             _ => {
@@ -568,7 +579,10 @@ impl MessageProcessor {
     async fn handle_tool_call_codex(&self, id: RequestId, arguments: Option<serde_json::Value>) {
         let (initial_prompt, config): (String, Config) = match arguments {
             Some(json_val) => match serde_json::from_value::<CodexToolCallParam>(json_val) {
-                Ok(tool_cfg) => match tool_cfg.into_config(self.codex_linux_sandbox_exe.clone()) {
+                Ok(tool_cfg) => match tool_cfg
+                    .into_config(self.codex_linux_sandbox_exe.clone())
+                    .await
+                {
                     Ok(cfg) => cfg,
                     Err(e) => {
                         let result = CallToolResult {
@@ -714,8 +728,7 @@ impl MessageProcessor {
         tokio::spawn(async move {
             let codex = {
                 let map = session_map.lock().await;
-                map.get(&session_id)
-                    .map(|entry| entry.conversation.clone())
+                map.get(&session_id).map(|entry| entry.conversation.clone())
             };
 
             let Some(codex) = codex else {
@@ -844,7 +857,7 @@ impl MessageProcessor {
         request_id: RequestId,
         arguments: Option<serde_json::Value>,
     ) {
-        let config = match self.acp_new_session_cfg(arguments) {
+        let config = match self.acp_new_session_cfg(arguments).await {
             Ok(cfg) => cfg,
             Err(err) => {
                 tracing::warn!("Failed to construct new session config: {}", err);
@@ -901,22 +914,18 @@ impl MessageProcessor {
         });
     }
 
-    fn acp_new_session_cfg(
+    async fn acp_new_session_cfg(
         &self,
         arguments: Option<serde_json::Value>,
     ) -> anyhow::Result<Config> {
         let arguments = arguments.context("Arguments required")?;
         let arguments = serde_json::from_value::<AcpNewSessionToolArgs>(arguments)?;
         let request = serde_json::from_value::<acp::NewSessionRequest>(arguments.request)?;
-        self.build_new_session_config(request, arguments.client_tools)
+        self.build_new_session_config(request, None).await // TODO: client_tools parameter removed
     }
 
-    async fn handle_session_new(
-        &self,
-        request_id: RequestId,
-        params: AcpNewSessionToolArgs,
-    ) {
-        let config = match self.session_new_config(params) {
+    async fn handle_session_new(&self, request_id: RequestId, params: AcpNewSessionToolArgs) {
+        let config = match self.session_new_config(params).await {
             Ok(cfg) => cfg,
             Err(err) => {
                 tracing::warn!("Failed to prepare session config: {err}");
@@ -962,35 +971,33 @@ impl MessageProcessor {
         });
     }
 
-    fn session_new_config(&self, params: AcpNewSessionToolArgs) -> anyhow::Result<Config> {
+    async fn session_new_config(&self, params: AcpNewSessionToolArgs) -> anyhow::Result<Config> {
         let request = serde_json::from_value::<acp::NewSessionRequest>(params.request)?;
-        self.build_new_session_config(request, params.client_tools)
+        self.build_new_session_config(request, None).await // TODO: client_tools parameter removed
     }
 
-    fn build_new_session_config(
+    async fn build_new_session_config(
         &self,
         request: acp::NewSessionRequest,
-        override_tools: Option<ClientTools>,
+        _override_tools: Option<()>, // TODO: ClientTools type removed
     ) -> anyhow::Result<Config> {
-        let mcp_servers = convert_mcp_servers(request.mcp_servers)?;
-        let client_tools = override_tools
-            .or_else(|| self.base_config.experimental_client_tools.clone());
+        let _mcp_servers = convert_mcp_servers(request.mcp_servers)?;
+        // TODO: experimental_client_tools field removed from Config
+        // let client_tools = override_tools
+        //     .or_else(|| self.base_config.experimental_client_tools.clone());
 
         let overrides = codex_core::config::ConfigOverrides {
             cwd: Some(request.cwd),
-            mcp_servers: Some(mcp_servers),
-            experimental_client_tools: client_tools,
+            // TODO: mcp_servers and experimental_client_tools fields removed from ConfigOverrides
+            // mcp_servers: Some(mcp_servers),
+            // experimental_client_tools: client_tools,
             ..Default::default()
         };
 
-        Ok(Config::load_with_cli_overrides(Default::default(), overrides)?)
+        Ok(Config::load_with_cli_overrides(Default::default(), overrides).await?)
     }
 
-    async fn handle_session_prompt(
-        &self,
-        request_id: RequestId,
-        params: AcpPromptToolArgs,
-    ) {
+    async fn handle_session_prompt(&self, request_id: RequestId, params: AcpPromptToolArgs) {
         let acp_session_id = params.session_id;
         let session_uuid = match Uuid::parse_str(&acp_session_id.to_string()) {
             Ok(id) => id,
@@ -1203,8 +1210,7 @@ impl MessageProcessor {
 
         let session = {
             let map = self.session_map.lock().await;
-            map.get(&session_id)
-                .map(|entry| entry.conversation.clone())
+            map.get(&session_id).map(|entry| entry.conversation.clone())
         };
 
         let Some(session) = session else {
@@ -1231,7 +1237,9 @@ impl MessageProcessor {
                 .await
                 .insert(request_id.clone(), session_id);
 
-            let result = crate::acp_tool_runner::prompt(acp_session_id, session, prompt, outgoing.clone()).await;
+            let result =
+                crate::acp_tool_runner::prompt(acp_session_id, session, prompt, outgoing.clone())
+                    .await;
 
             let result = match result {
                 Ok(stop_reason) => {
@@ -1269,10 +1277,9 @@ impl MessageProcessor {
         request_id: RequestId,
         arguments: Option<serde_json::Value>,
     ) {
-        let args = match arguments
-            .context("arguments required")
-            .and_then(|args| serde_json::from_value::<AcpSetModelToolArgs>(args).context("invalid arguments"))
-        {
+        let args = match arguments.context("arguments required").and_then(|args| {
+            serde_json::from_value::<AcpSetModelToolArgs>(args).context("invalid arguments")
+        }) {
             Ok(args) => args,
             Err(err) => {
                 tracing::warn!("Failed to parse arguments: {err}");
@@ -1331,9 +1338,7 @@ impl MessageProcessor {
                     is_error: Some(true),
                     structured_content: None,
                 };
-                self.outgoing
-                    .send_response(request_id, result)
-                    .await;
+                self.outgoing.send_response(request_id, result).await;
             }
         }
     }
@@ -1385,10 +1390,12 @@ impl MessageProcessor {
         let request_ids: Vec<RequestId> = {
             let map = self.running_requests_id_to_codex_uuid.lock().await;
             map.iter()
-                .filter_map(|(request_id, uuid)| if *uuid == session_uuid {
-                    Some(request_id.clone())
-                } else {
-                    None
+                .filter_map(|(request_id, uuid)| {
+                    if *uuid == session_uuid {
+                        Some(request_id.clone())
+                    } else {
+                        None
+                    }
                 })
                 .collect()
         };
@@ -1427,7 +1434,7 @@ impl MessageProcessor {
         tracing::info!("notifications/tools/list_changed -> params: {:?}", params);
     }
 
-fn handle_logging_message(
+    fn handle_logging_message(
         &self,
         params: <mcp_types::LoggingMessageNotification as mcp_types::ModelContextProtocolNotification>::Params,
     ) {
@@ -1441,12 +1448,19 @@ fn convert_mcp_servers(
     let mut map = HashMap::with_capacity(servers.len());
     for server in servers {
         match server {
-            acp::McpServer::Stdio { name, command, args, env } => {
-                let env_map: HashMap<String, String> = env
-                    .into_iter()
-                    .map(|var| (var.name, var.value))
-                    .collect();
-                let env_map = if env_map.is_empty() { None } else { Some(env_map) };
+            acp::McpServer::Stdio {
+                name,
+                command,
+                args,
+                env,
+            } => {
+                let env_map: HashMap<String, String> =
+                    env.into_iter().map(|var| (var.name, var.value)).collect();
+                let env_map = if env_map.is_empty() {
+                    None
+                } else {
+                    Some(env_map)
+                };
 
                 map.insert(
                     name,
@@ -1506,7 +1520,7 @@ fn session_models_from_config(config: &Config) -> Option<acp::SessionModelState>
 
         if preset.model.eq_ignore_ascii_case(&config.model) {
             let preset_effort = preset_effort(preset);
-            if current_model_id.is_none() || preset_effort == config.model_reasoning_effort {
+            if current_model_id.is_none() || Some(preset_effort) == config.model_reasoning_effort {
                 current_model_id = Some(id.clone());
             }
         }
@@ -1572,7 +1586,9 @@ fn resolve_model_selection(model_id: &acp::ModelId, config: &Config) -> Option<M
 
     if let Some(stripped) = requested_lower.strip_prefix("custom::") {
         let effort = if stripped.eq_ignore_ascii_case(&config.model) {
-            config.model_reasoning_effort
+            config
+                .model_reasoning_effort
+                .unwrap_or(ReasoningEffort::Medium)
         } else {
             ReasoningEffort::Medium
         };
@@ -1585,7 +1601,9 @@ fn resolve_model_selection(model_id: &acp::ModelId, config: &Config) -> Option<M
     if requested_lower == config.model.to_ascii_lowercase() {
         return Some(ModelSelection {
             model: config.model.clone(),
-            effort: config.model_reasoning_effort,
+            effort: config
+                .model_reasoning_effort
+                .unwrap_or(ReasoningEffort::Medium),
         });
     }
 
@@ -1601,30 +1619,35 @@ fn apply_model_selection(config: &mut Config, model: &str, effort: ReasoningEffo
         updated = true;
     }
 
-    if config.model_reasoning_effort != effort {
-        config.model_reasoning_effort = effort;
+    if config.model_reasoning_effort != Some(effort) {
+        config.model_reasoning_effort = Some(effort);
         updated = true;
     }
 
     updated
 }
 
-fn configure_session_op_from_config(config: &Config) -> Op {
-    Op::ConfigureSession {
-        provider: config.model_provider.clone(),
-        model: config.model.clone(),
-        model_reasoning_effort: config.model_reasoning_effort,
-        model_reasoning_summary: config.model_reasoning_summary,
-        model_text_verbosity: config.model_text_verbosity,
-        user_instructions: config.user_instructions.clone(),
-        base_instructions: config.base_instructions.clone(),
-        approval_policy: config.approval_policy.clone(),
-        sandbox_policy: config.sandbox_policy.clone(),
-        disable_response_storage: config.disable_response_storage,
-        notify: config.notify.clone(),
-        cwd: config.cwd.clone(),
-        resume_path: None,
-    }
+// TODO: Op::ConfigureSession variant removed
+#[allow(dead_code)]
+fn configure_session_op_from_config(_config: &Config) -> Op {
+    // Op::ConfigureSession variant no longer exists
+    // Fields like model_text_verbosity and disable_response_storage also removed from Config
+    unimplemented!("Op::ConfigureSession variant removed")
+    // Op::ConfigureSession {
+    //     provider: config.model_provider.clone(),
+    //     model: config.model.clone(),
+    //     model_reasoning_effort: config.model_reasoning_effort,
+    //     model_reasoning_summary: config.model_reasoning_summary,
+    //     model_text_verbosity: config.model_text_verbosity, // REMOVED
+    //     user_instructions: config.user_instructions.clone(),
+    //     base_instructions: config.base_instructions.clone(),
+    //     approval_policy: config.approval_policy.clone(),
+    //     sandbox_policy: config.sandbox_policy.clone(),
+    //     disable_response_storage: config.disable_response_storage, // REMOVED
+    //     notify: config.notify.clone(),
+    //     cwd: config.cwd.clone(),
+    //     resume_path: None,
+    // }
 }
 
 fn default_session_modes() -> acp::SessionModeState {

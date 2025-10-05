@@ -1,5 +1,5 @@
-use anyhow::anyhow;
 use anyhow::Context;
+use anyhow::anyhow;
 use clap::CommandFactory;
 use clap::Parser;
 use clap_complete::Shell;
@@ -16,16 +16,15 @@ use codex_cli::login::run_login_with_chatgpt;
 use codex_cli::login::run_login_with_device_code;
 use codex_cli::login::run_logout;
 mod llm;
-use llm::{LlmCli, run_llm};
-use codex_common::CliConfigOverrides;
-use codex_core::find_conversation_path_by_id_str;
-use codex_core::RolloutRecorder;
 use codex_cloud_tasks::Cli as CloudTasksCli;
+use codex_common::CliConfigOverrides;
+use codex_core::RolloutRecorder;
+use codex_core::find_conversation_path_by_id_str;
 use codex_exec::Cli as ExecCli;
 use codex_responses_api_proxy::Args as ResponsesApiProxyArgs;
+use codex_tui::AppExitInfo;
 use codex_tui::Cli as TuiCli;
-use codex_tui::ExitSummary;
-use codex_tui::RESUME_COMMAND_NAME;
+use llm::{LlmCli, run_llm};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process;
@@ -279,17 +278,15 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
         subcommand,
     } = MultitoolCli::parse();
 
-    interactive.finalize_defaults();
-
     match subcommand {
         None => {
             prepend_config_flags(
                 &mut interactive.config_overrides,
                 root_config_overrides.clone(),
             );
-            let ExitSummary {
+            let AppExitInfo {
                 token_usage,
-                session_id,
+                conversation_id,
             } = codex_tui::run_main(interactive, codex_linux_sandbox_exe).await?;
             if !token_usage.is_zero() {
                 println!(
@@ -297,11 +294,10 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                     codex_core::protocol::FinalOutput::from(token_usage.clone())
                 );
             }
-            if let Some(session_id) = session_id {
+            if let Some(session_id) = conversation_id {
                 println!(
                     "To continue this session, run {} resume {}.",
-                    RESUME_COMMAND_NAME,
-                    session_id
+                    CLI_COMMAND_NAME, session_id
                 );
             }
         }
@@ -326,9 +322,8 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
         Some(Subcommand::Resume(ResumeCommand {
             session_id,
             last,
-            mut config_overrides,
+            config_overrides,
         })) => {
-            config_overrides.finalize_defaults();
             interactive = finalize_resume_interactive(
                 interactive,
                 root_config_overrides.clone(),
@@ -336,9 +331,9 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                 last,
                 config_overrides,
             );
-            let ExitSummary {
+            let AppExitInfo {
                 token_usage,
-                session_id,
+                conversation_id,
             } = codex_tui::run_main(interactive, codex_linux_sandbox_exe).await?;
             if !token_usage.is_zero() {
                 println!(
@@ -346,11 +341,10 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                     codex_core::protocol::FinalOutput::from(token_usage.clone())
                 );
             }
-            if let Some(session_id) = session_id {
+            if let Some(session_id) = conversation_id {
                 println!(
                     "To continue this session, run {} resume {}.",
-                    RESUME_COMMAND_NAME,
-                    session_id
+                    CLI_COMMAND_NAME, session_id
                 );
             }
         }
@@ -450,10 +444,7 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
             preview_main(args).await?;
         }
         Some(Subcommand::Llm(mut llm_cli)) => {
-            prepend_config_flags(
-                &mut llm_cli.config_overrides,
-                root_config_overrides.clone(),
-            );
+            prepend_config_flags(&mut llm_cli.config_overrides, root_config_overrides.clone());
             run_llm(llm_cli).await?;
         }
     }
@@ -478,13 +469,10 @@ fn finalize_resume_interactive(
     root_config_overrides: CliConfigOverrides,
     session_id: Option<String>,
     last: bool,
-    mut resume_cli: TuiCli,
+    resume_cli: TuiCli,
 ) -> TuiCli {
     // Our fork does not expose explicit resume fields on the TUI CLI.
     // We simply merge resume-scoped flags and root overrides and run the TUI.
-
-    interactive.finalize_defaults();
-    resume_cli.finalize_defaults();
 
     // Merge resume-scoped flags and overrides with highest precedence.
     merge_resume_cli_flags(&mut interactive, resume_cli);
@@ -535,9 +523,7 @@ fn merge_resume_cli_flags(interactive: &mut TuiCli, resume_cli: TuiCli) {
         interactive.prompt = Some(prompt);
     }
 
-    if resume_cli.enable_web_search || resume_cli.disable_web_search {
-        interactive.enable_web_search = resume_cli.enable_web_search;
-        interactive.disable_web_search = resume_cli.disable_web_search;
+    if resume_cli.web_search {
         interactive.web_search = resume_cli.web_search;
     }
 
@@ -564,8 +550,9 @@ fn apply_resume_directives(
             push_experimental_resume_override(interactive, &path);
         }
         (None, true) => {
-            let path = resolve_resume_path(None, true)?
-                .ok_or_else(|| anyhow!("No recent sessions found to resume. Start a session with `code` first."))?;
+            let path = resolve_resume_path(None, true)?.ok_or_else(|| {
+                anyhow!("No recent sessions found to resume. Start a session with `code` first.")
+            })?;
             interactive.resume_last = true;
             push_experimental_resume_override(interactive, &path);
         }
@@ -582,8 +569,8 @@ fn resolve_resume_path(session_id: Option<&str>, last: bool) -> anyhow::Result<O
         return Ok(None);
     }
 
-    let codex_home = codex_core::config::find_codex_home()
-        .context("failed to locate Codex home directory")?;
+    let codex_home =
+        codex_core::config::find_codex_home().context("failed to locate Codex home directory")?;
 
     // Build the async work once, then execute it either on the existing
     // runtime (from a helper thread) or a fresh current-thread runtime.
@@ -647,7 +634,11 @@ fn order_replay_main(args: OrderReplayArgs) -> anyhow::Result<()> {
     fn parse_response_expected(path: &std::path::Path) -> Result<Vec<(u64, u64)>> {
         let data = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
         let v: Value = serde_json::from_str(&data)?;
-        let events = v.get("events").and_then(|e| e.as_array()).cloned().unwrap_or_default();
+        let events = v
+            .get("events")
+            .and_then(|e| e.as_array())
+            .cloned()
+            .unwrap_or_default();
         let mut items: Vec<(u64, u64)> = Vec::new();
         for ev in events {
             let data = ev.get("data");
@@ -664,7 +655,13 @@ fn order_replay_main(args: OrderReplayArgs) -> anyhow::Result<()> {
     }
 
     #[derive(Debug)]
-    struct InsertLog { ordered: bool, req: u64, out: u64, item_seq: u64, raw: u64 }
+    struct InsertLog {
+        ordered: bool,
+        req: u64,
+        out: u64,
+        item_seq: u64,
+        raw: u64,
+    }
 
     fn parse_tui_inserts(path: &std::path::Path) -> Result<Vec<InsertLog>> {
         let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
@@ -680,9 +677,19 @@ fn order_replay_main(args: OrderReplayArgs) -> anyhow::Result<()> {
                     let iseq = caps.name("iseq").unwrap().as_str().parse().unwrap_or(0);
                     (req, out_idx, iseq)
                 } else {
-                    (0, 0, caps.name("uval").unwrap().as_str().parse().unwrap_or(0))
+                    (
+                        0,
+                        0,
+                        caps.name("uval").unwrap().as_str().parse().unwrap_or(0),
+                    )
                 };
-                out.push(InsertLog { ordered, req, out: out_idx, item_seq, raw: seq });
+                out.push(InsertLog {
+                    ordered,
+                    req,
+                    out: out_idx,
+                    item_seq,
+                    raw: seq,
+                });
             }
         }
         Ok(out)
@@ -699,25 +706,39 @@ fn order_replay_main(args: OrderReplayArgs) -> anyhow::Result<()> {
     println!("\nActual inserts (first 40):");
     for (i, log) in actual.iter().take(40).enumerate() {
         if log.ordered {
-            println!("  {:>3}: O:req={} out={} seq={} (raw={})", i, log.req, log.out, log.item_seq, log.raw);
+            println!(
+                "  {:>3}: O:req={} out={} seq={} (raw={})",
+                i, log.req, log.out, log.item_seq, log.raw
+            );
         } else {
             println!("  {:>3}: U:{}", i, log.item_seq);
         }
     }
 
     // Simple check: assistant (out=1) should appear before tool (out=2) within same req
-    let pos_out1 = actual.iter().position(|l| l.ordered && l.req == 1 && l.out == 1);
-    let pos_out2 = actual.iter().position(|l| l.ordered && l.req == 1 && l.out == 2);
-    println!("\nCheck (req=1): first out=1 at {:?}, first out=2 at {:?}", pos_out1, pos_out2);
+    let pos_out1 = actual
+        .iter()
+        .position(|l| l.ordered && l.req == 1 && l.out == 1);
+    let pos_out2 = actual
+        .iter()
+        .position(|l| l.ordered && l.req == 1 && l.out == 2);
+    println!(
+        "\nCheck (req=1): first out=1 at {:?}, first out=2 at {:?}",
+        pos_out1, pos_out2
+    );
     if let (Some(p1), Some(p2)) = (pos_out1, pos_out2) {
-        if p1 < p2 { println!("Result: OK (assistant precedes tool)"); } else { println!("Result: WRONG (tool precedes assistant)"); }
+        if p1 < p2 {
+            println!("Result: OK (assistant precedes tool)");
+        } else {
+            println!("Result: WRONG (tool precedes assistant)");
+        }
     }
 
     Ok(())
 }
 
 async fn preview_main(args: PreviewArgs) -> anyhow::Result<()> {
-    use anyhow::{bail, Context};
+    use anyhow::{Context, bail};
     use flate2::read::GzDecoder;
     use std::env;
     use std::fs;
@@ -745,7 +766,9 @@ async fn preview_main(args: PreviewArgs) -> anyhow::Result<()> {
         _ => bail!(format!("Unsupported platform: {}/{}", os, arch)),
     };
 
-    let client = reqwest::Client::builder().user_agent("codex-preview/1").build()?;
+    let client = reqwest::Client::builder()
+        .user_agent("codex-preview/1")
+        .build()?;
 
     // Resolve slug/tag from id
     let id = args.slug.trim().to_string();
@@ -753,10 +776,17 @@ async fn preview_main(args: PreviewArgs) -> anyhow::Result<()> {
         let r = client.get(url).send().await?;
         let s = r.status();
         let t = r.text().await?;
-        if !s.is_success() { anyhow::bail!(format!("GET {} -> {} {}", url, s.as_u16(), t)); }
+        if !s.is_success() {
+            anyhow::bail!(format!("GET {} -> {} {}", url, s.as_u16(), t));
+        }
         Ok(serde_json::from_str(&t).unwrap_or(serde_json::Value::Null))
     }
-    async fn latest_tag_for_slug(client: &reqwest::Client, owner: &str, name: &str, slug: &str) -> anyhow::Result<String> {
+    async fn latest_tag_for_slug(
+        client: &reqwest::Client,
+        owner: &str,
+        name: &str,
+        slug: &str,
+    ) -> anyhow::Result<String> {
         let base = format!("preview-{}", slug);
         let url = format!("https://api.github.com/repos/{owner}/{name}/releases?per_page=100");
         let v = fetch_json(client, &url).await?;
@@ -766,10 +796,17 @@ async fn preview_main(args: PreviewArgs) -> anyhow::Result<()> {
             let re = regex::Regex::new(&format!(r"^{}-(\\d+)$", regex::escape(&base))).unwrap();
             for it in arr {
                 if let Some(tag) = it.get("tag_name").and_then(|x| x.as_str()) {
-                    if tag == base { if max_n < 1 { max_n = 1; latest = base.clone(); } }
-                    else if let Some(c) = re.captures(tag) {
+                    if tag == base {
+                        if max_n < 1 {
+                            max_n = 1;
+                            latest = base.clone();
+                        }
+                    } else if let Some(c) = re.captures(tag) {
                         let n: u64 = c.get(1).unwrap().as_str().parse().unwrap_or(0);
-                        if n > max_n { max_n = n; latest = tag.to_string(); }
+                        if n > max_n {
+                            max_n = n;
+                            latest = tag.to_string();
+                        }
                     }
                 }
             }
@@ -811,7 +848,9 @@ async fn preview_main(args: PreviewArgs) -> anyhow::Result<()> {
         for entry in fs::read_dir(dir).ok()? {
             let p = entry.ok()?.path();
             if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
-                if name.starts_with(pat) { return Some(p); }
+                if name.starts_with(pat) {
+                    return Some(p);
+                }
             }
         }
         None
@@ -835,9 +874,12 @@ async fn preview_main(args: PreviewArgs) -> anyhow::Result<()> {
     let _ = fs::create_dir_all(&out_dir);
 
     #[cfg(target_family = "unix")]
-    fn make_exec(p: &Path) { use std::os::unix::fs::PermissionsExt; let _ = fs::set_permissions(p, fs::Permissions::from_mode(0o755)); }
+    fn make_exec(p: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(p, fs::Permissions::from_mode(0o755));
+    }
     #[cfg(target_family = "windows")]
-    fn make_exec(_p: &Path) { }
+    fn make_exec(_p: &Path) {}
 
     if os != "windows" {
         // If we downloaded a tar.gz, extract
@@ -849,13 +891,21 @@ async fn preview_main(args: PreviewArgs) -> anyhow::Result<()> {
             ar.unpack(&out_dir)?;
             // Find extracted binary
             let bin = first_match(&out_dir, "code-").unwrap_or(out_dir.join("code"));
-            let dest_name = format!("{}-{}", bin.file_name().and_then(|s| s.to_str()).unwrap_or("code"), slug);
+            let dest_name = format!(
+                "{}-{}",
+                bin.file_name().and_then(|s| s.to_str()).unwrap_or("code"),
+                slug
+            );
             let dest = out_dir.join(dest_name);
             // Rename/move to include PR number suffix
-            let _ = fs::rename(&bin, &dest).or_else(|_| { fs::copy(&bin, &dest).map(|_| () ) });
+            let _ = fs::rename(&bin, &dest).or_else(|_| fs::copy(&bin, &dest).map(|_| ()));
             make_exec(&dest);
             println!("Downloaded preview to {}", dest.display());
-            if !args.extra.is_empty() { let _ = std::process::Command::new(&dest).args(&args.extra).status(); } else { let _ = std::process::Command::new(&dest).status(); }
+            if !args.extra.is_empty() {
+                let _ = std::process::Command::new(&dest).args(&args.extra).status();
+            } else {
+                let _ = std::process::Command::new(&dest).status();
+            }
             return Ok(());
         }
     } else {
@@ -871,41 +921,70 @@ async fn preview_main(args: PreviewArgs) -> anyhow::Result<()> {
                     let stem = exe.file_stem().and_then(|s| s.to_str()).unwrap_or("code");
                     out_dir.join(format!("{}-{}.{}", stem, slug, ext))
                 }
-                None => out_dir.join(format!("{}-{}", exe.file_name().and_then(|s| s.to_str()).unwrap_or("code"), slug)),
+                None => out_dir.join(format!(
+                    "{}-{}",
+                    exe.file_name().and_then(|s| s.to_str()).unwrap_or("code"),
+                    slug
+                )),
             };
-            let _ = fs::rename(&exe, &dest).or_else(|_| { fs::copy(&exe, &dest).map(|_| () ) });
+            let _ = fs::rename(&exe, &dest).or_else(|_| fs::copy(&exe, &dest).map(|_| ()));
             println!("Downloaded preview to {}", dest.display());
-            if !args.extra.is_empty() { let _ = std::process::Command::new(&dest).args(&args.extra).spawn(); } else { let _ = std::process::Command::new(&dest).spawn(); }
+            if !args.extra.is_empty() {
+                let _ = std::process::Command::new(&dest).args(&args.extra).spawn();
+            } else {
+                let _ = std::process::Command::new(&dest).spawn();
+            }
             return Ok(());
         }
     }
 
     // Fallback: raw 'code' file (after .zst) if present
-    if path.file_name().and_then(|s| s.to_str()).map(|n| n.ends_with(".zst")).unwrap_or(false) {
+    if path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|n| n.ends_with(".zst"))
+        .unwrap_or(false)
+    {
         // Try to decompress .zst to 'code'
         if which::which("zstd").is_ok() {
             // Derive base name from archive (e.g., code-aarch64-apple-darwin.zst -> code-aarch64-apple-darwin-<slug>.{exe?})
-            let stem = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("code");
-            let dest = if cfg!(windows) { out_dir.join(format!("{}-{}.exe", stem, slug)) } else { out_dir.join(format!("{}-{}", stem, slug)) };
-            let status = std::process::Command::new("zstd").arg("-d").arg(&path).arg("-o").arg(&dest).status()?;
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("code");
+            let dest = if cfg!(windows) {
+                out_dir.join(format!("{}-{}.exe", stem, slug))
+            } else {
+                out_dir.join(format!("{}-{}", stem, slug))
+            };
+            let status = std::process::Command::new("zstd")
+                .arg("-d")
+                .arg(&path)
+                .arg("-o")
+                .arg(&dest)
+                .status()?;
             if status.success() {
                 make_exec(&dest);
                 println!("Downloaded preview from {} to {}", url_used, dest.display());
-                if !args.extra.is_empty() { let _ = std::process::Command::new(&dest).args(&args.extra).status(); } else { let _ = std::process::Command::new(&dest).status(); }
+                if !args.extra.is_empty() {
+                    let _ = std::process::Command::new(&dest).args(&args.extra).status();
+                } else {
+                    let _ = std::process::Command::new(&dest).status();
+                }
                 return Ok(());
             }
         }
         // If zstd missing, tell the user
-        bail!("Downloaded .zst but 'zstd' is not installed. Install zstd or download the .tar.gz/.zip asset instead.");
+        bail!(
+            "Downloaded .zst but 'zstd' is not installed. Install zstd or download the .tar.gz/.zip asset instead."
+        );
     } else if let Some(bin) = first_match(tmp.path(), "code") {
         let dest = out_dir.join(bin.file_name().unwrap_or_default());
         fs::copy(&bin, &dest)?;
         make_exec(&dest);
         println!("Downloaded preview to {}", dest.display());
-        if !args.extra.is_empty() { let _ = std::process::Command::new(&dest).args(&args.extra).status(); } else { let _ = std::process::Command::new(&dest).status(); }
+        if !args.extra.is_empty() {
+            let _ = std::process::Command::new(&dest).args(&args.extra).status();
+        } else {
+            let _ = std::process::Command::new(&dest).status();
+        }
         return Ok(());
     }
 
@@ -942,8 +1021,15 @@ async fn doctor_main() -> anyhow::Result<()> {
     let which_all = |name: &str| {
         let name = name.to_string();
         async move {
-            let out = run_cmd("/bin/bash", &["-lc", &format!("which -a {} 2>/dev/null || true", name)]).await;
-            out.split('\n').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect::<Vec<_>>()
+            let out = run_cmd(
+                "/bin/bash",
+                &["-lc", &format!("which -a {} 2>/dev/null || true", name)],
+            )
+            .await;
+            out.split('\n')
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
         }
     };
     #[cfg(target_family = "windows")]
@@ -951,7 +1037,10 @@ async fn doctor_main() -> anyhow::Result<()> {
         let name = name.to_string();
         async move {
             let out = run_cmd("where", &[&name]).await;
-            out.split('\n').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect::<Vec<_>>()
+            out.split('\n')
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
         }
     };
 
@@ -963,13 +1052,17 @@ async fn doctor_main() -> anyhow::Result<()> {
     if code_paths.is_empty() {
         println!("  <none>");
     } else {
-        for p in &code_paths { println!("  {}", p); }
+        for p in &code_paths {
+            println!("  {}", p);
+        }
     }
     println!("\nFound 'coder' on PATH (in order):");
     if coder_paths.is_empty() {
         println!("  <none>");
     } else {
-        for p in &coder_paths { println!("  {}", p); }
+        for p in &coder_paths {
+            println!("  {}", p);
+        }
     }
 
     // Try to run --version for each resolved binary to show where mismatches come from
@@ -988,9 +1081,9 @@ async fn doctor_main() -> anyhow::Result<()> {
     show_versions("coder --version by path", &coder_paths).await;
 
     // Detect Bun shims
-    let bun_home = env::var("BUN_INSTALL").ok().or_else(|| {
-        env::var("HOME").ok().map(|h| format!("{}/.bun", h))
-    });
+    let bun_home = env::var("BUN_INSTALL")
+        .ok()
+        .or_else(|| env::var("HOME").ok().map(|h| format!("{}/.bun", h)));
     if let Some(bun) = bun_home {
         let bun_bin = format!("{}/bin", bun);
         let bun_coder = format!("{}/coder", bun_bin);
@@ -1008,11 +1101,17 @@ async fn doctor_main() -> anyhow::Result<()> {
     // Detect Homebrew overshadow of VS Code
     #[cfg(target_os = "macos")]
     {
-        let brew_code = code_paths.iter().find(|p| p.contains("/homebrew/bin/code") || p.contains("/Cellar/code/"));
-        let vscode_code = code_paths.iter().find(|p| p.contains("/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"));
+        let brew_code = code_paths
+            .iter()
+            .find(|p| p.contains("/homebrew/bin/code") || p.contains("/Cellar/code/"));
+        let vscode_code = code_paths.iter().find(|p| {
+            p.contains("/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code")
+        });
         if brew_code.is_some() && vscode_code.is_some() {
             println!("\nHomebrew 'code' precedes VS Code CLI in PATH.");
-            println!("Suggestion: uninstall Homebrew formula 'code' (brew uninstall code) or reorder PATH so /usr/local/bin comes before /usr/local/homebrew/bin.");
+            println!(
+                "Suggestion: uninstall Homebrew formula 'code' (brew uninstall code) or reorder PATH so /usr/local/bin comes before /usr/local/homebrew/bin."
+            );
         }
     }
 
@@ -1043,8 +1142,14 @@ mod tests {
         let mut buf = Vec::new();
         write_completion(Shell::Bash, &mut buf);
         let script = String::from_utf8(buf).expect("completion output should be valid UTF-8");
-        assert!(script.contains("_code()"), "expected bash completion function to be named _code");
-        assert!(!script.contains("_codex()"), "bash completion output should not use legacy codex prefix");
+        assert!(
+            script.contains("_code()"),
+            "expected bash completion function to be named _code"
+        );
+        assert!(
+            !script.contains("_codex()"),
+            "bash completion output should not use legacy codex prefix"
+        );
     }
 
     fn finalize_from_args(args: &[&str]) -> TuiCli {

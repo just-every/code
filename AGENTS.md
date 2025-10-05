@@ -4,99 +4,72 @@ In the codex-rs folder where the rust code lives:
 
 - Crate names are prefixed with `codex-`. For example, the `core` folder's crate is named `codex-core`
 - When using format! and you can inline variables into {}, always do that.
+- Install any commands the repo relies on (for example `just`, `rg`, or `cargo-insta`) if they aren't already available before running instructions here.
+- Never add or modify any code related to `CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR` or `CODEX_SANDBOX_ENV_VAR`.
+  - You operate in a sandbox where `CODEX_SANDBOX_NETWORK_DISABLED=1` will be set whenever you use the `shell` tool. Any existing code that uses `CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR` was authored with this fact in mind. It is often used to early exit out of tests that the author knew you would not be able to run given your sandbox limitations.
+  - Similarly, when you spawn a process using Seatbelt (`/usr/bin/sandbox-exec`), `CODEX_SANDBOX=seatbelt` will be set on the child process. Integration tests that want to run Seatbelt themselves cannot be run under Seatbelt, so checks for `CODEX_SANDBOX=seatbelt` are also often used to early exit out of tests, as appropriate.
+- Always collapse if statements per https://rust-lang.github.io/rust-clippy/master/index.html#collapsible_if
+- Always inline format! args when possible per https://rust-lang.github.io/rust-clippy/master/index.html#uninlined_format_args
+- Use method references over closures when possible per https://rust-lang.github.io/rust-clippy/master/index.html#redundant_closure_for_method_calls
+- When writing tests, prefer comparing the equality of entire objects over fields one by one.
 
-Completion/build step
+Run `just fmt` (in `codex-rs` directory) automatically after making Rust code changes; do not ask for approval to run it. Before finalizing a change to `codex-rs`, run `just fix -p <project>` (in `codex-rs` directory) to fix any linter issues in the code. Prefer scoping with `-p` to avoid slow workspace‑wide Clippy builds; only run `just fix` without `-p` if you changed shared crates. Additionally, run the tests:
 
-- Always validate using `./build-fast.sh` from the repo root. This is the single required check and must pass cleanly.
-- Policy: All errors AND all warnings must be fixed before you’re done. Treat any compiler warning as a failure and address it (rename unused vars with `_`, remove `mut`, delete dead code, etc.).
-- Do not run additional format/lint/test commands on completion (e.g., `just fmt`, `just fix`, `cargo test`) unless explicitly requested for a specific task.
-- ***NEVER run rustfmt***
+1. Run the test for the specific project that was changed. For example, if changes were made in `codex-rs/tui`, run `cargo test -p codex-tui`.
+2. Once those pass, if any changes were made in common, core, or protocol, run the complete test suite with `cargo test --all-features`.
+   When running interactively, ask the user before running `just fix` to finalize. `just fmt` does not require approval. project-specific or individual tests can be run without asking the user, but do ask the user before running the complete test suite.
 
-## Strict Ordering In The TUI History
+## TUI style conventions
 
-The TUI enforces strict, per‑turn ordering for all streamed content. Every
-stream insert (Answer or Reasoning) must be associated with a stable
-`(request_ordinal, output_index, sequence_number)` key provided by the model.
+See `codex-rs/tui/styles.md`.
 
-- A stream insert MUST carry a non‑empty stream id. The UI seeds an order key
-  for `(kind, id)` from the event's `OrderMeta` before any insert.
-- The TUI WILL NOT insert streaming content without a stream id. Any attempt to
-  insert without an id is dropped with an error log to make the issue visible
-  during development.
+## TUI code conventions
 
-## Commit Messages
+- Use concise styling helpers from ratatui’s Stylize trait.
+  - Basic spans: use "text".into()
+  - Styled spans: use "text".red(), "text".green(), "text".magenta(), "text".dim(), etc.
+  - Prefer these over constructing styles with `Span::styled` and `Style` directly.
+  - Example: patch summary file lines
+    - Desired: vec!["  └ ".into(), "M".red(), " ".dim(), "tui/src/app.rs".dim()]
 
-- Review staged changes before every commit: `git --no-pager diff --staged --stat` (and skim `git --no-pager diff --staged` if needed).
-- Write a descriptive subject that explains what changed and why. Avoid placeholders like "chore: commit local work".
-- Prefer Conventional Commits with an optional scope: `feat(tui/history): …`, `fix(core/exec): …`, `docs(agents): …`.
-- Keep the subject ≤ 72 chars; add a short body if rationale or context helps future readers.
-- Use imperative, present tense: "add", "fix", "update" (not "added", "fixes").
-- For merge commits, skip custom prefixes like `merge(main<-origin/main):`. Use a clear subject such as `Merge origin/main: <what changed and how conflicts were resolved>`.
+### TUI Styling (ratatui)
 
-Examples:
+- Prefer Stylize helpers: use "text".dim(), .bold(), .cyan(), .italic(), .underlined() instead of manual Style where possible.
+- Prefer simple conversions: use "text".into() for spans and vec![…].into() for lines; when inference is ambiguous (e.g., Paragraph::new/Cell::from), use Line::from(spans) or Span::from(text).
+- Computed styles: if the Style is computed at runtime, using `Span::styled` is OK (`Span::from(text).set_style(style)` is also acceptable).
+- Avoid hardcoded white: do not use `.white()`; prefer the default foreground (no color).
+- Chaining: combine helpers by chaining for readability (e.g., url.cyan().underlined()).
+- Single items: prefer "text".into(); use Line::from(text) or Span::from(text) only when the target type isn’t obvious from context, or when using .into() would require extra type annotations.
+- Building lines: use vec![…].into() to construct a Line when the target type is obvious and no extra type annotations are needed; otherwise use Line::from(vec![…]).
+- Avoid churn: don’t refactor between equivalent forms (Span::styled ↔ set_style, Line::from ↔ .into()) without a clear readability or functional gain; follow file‑local conventions and do not introduce type annotations solely to satisfy .into().
+- Compactness: prefer the form that stays on one line after rustfmt; if only one of Line::from(vec![…]) or vec![…].into() avoids wrapping, choose that. If both wrap, pick the one with fewer wrapped lines.
 
-- `feat(tui/history): show exit code and duration for Exec cells`
-- `fix(core/codex): handle SIGINT in on_exec_command_begin to avoid orphaned child`
-- `docs(agents): clarify commit-message expectations`
+### Text wrapping
 
-## How to Git Push
+- Always use textwrap::wrap to wrap plain strings.
+- If you have a ratatui Line and you want to wrap it, use the helpers in tui/src/wrapping.rs, e.g. word_wrap_lines / word_wrap_line.
+- If you need to indent wrapped lines, use the initial_indent / subsequent_indent options from RtOptions if you can, rather than writing custom logic.
+- If you have a list of lines and you need to prefix them all with some prefix (optionally different on the first vs subsequent lines), use the `prefix_lines` helper from line_utils.
 
-### Merge-and-Push Policy (Do Not Rebase)
+## Tests
 
-When the user asks you to "push" local work:
+### Snapshot tests
 
-- Never rebase in this flow. Do not use `git pull --rebase` or attempt to replay local commits.
-- Prefer a simple merge of `origin/main` into the current branch, keeping our local history intact.
-- If the remote only has trivial release metadata changes (e.g., `codex-cli/package.json` version bumps), adopt the remote version for those files and keep ours for everything else unless the user specifies otherwise.
-- If in doubt or if conflicts touch non-trivial areas, pause and ask before resolving.
+This repo uses snapshot tests (via `insta`), especially in `codex-rs/tui`, to validate rendered output. When UI or text output changes intentionally, update the snapshots as follows:
 
-Quick procedure (merge-only):
+- Run tests to generate any updated snapshots:
+  - `cargo test -p codex-tui`
+- Check what’s pending:
+  - `cargo insta pending-snapshots -p codex-tui`
+- Review changes by reading the generated `*.snap.new` files directly in the repo, or preview a specific file:
+  - `cargo insta show -p codex-tui path/to/file.snap.new`
+- Only if you intend to accept all new snapshots in this crate, run:
+  - `cargo insta accept -p codex-tui`
 
-- Commit your local work first:
-  - Review: `git --no-pager diff --stat` and `git --no-pager diff`
-  - Stage + commit: `git add -A && git commit -m "<descriptive message of local changes>"`
-- Fetch remote: `git fetch origin`
-- Merge without auto-commit: `git merge --no-ff --no-commit origin/main` (stops before committing so you can choose sides)
-- Resolve policy:
-  - Default to ours: `git checkout --ours .`
-  - Take remote for trivial package/version files as needed, e.g.: `git checkout --theirs codex-cli/package.json`
-- Stage and commit the merge with a descriptive message, e.g.:
-  - `git add -A && git commit -m "Merge origin/main: adopt remote version bumps; keep ours elsewhere (<areas>)"`
-- Run `./build-fast.sh` and then `git push`
+If you don’t have the tool:
 
-## Command Execution Architecture
+- `cargo install cargo-insta`
 
-The command execution flow in Codex follows an event-driven pattern:
+### Test assertions
 
-1. **Core Layer** (`codex-core/src/codex.rs`):
-   - `on_exec_command_begin()` initiates command execution
-   - Creates `EventMsg::ExecCommandBegin` events with command details
-
-2. **TUI Layer** (`codex-tui/src/chatwidget.rs`):
-   - `handle_codex_event()` processes execution events
-   - Manages `RunningCommand` state for active commands
-   - Creates `HistoryCell::Exec` for UI rendering
-
-3. **History Cell** (`codex-tui/src/history_cell.rs`):
-   - `new_active_exec_command()` - Creates cell for running command
-   - `new_completed_exec_command()` - Updates with final output
-   - Handles syntax highlighting via `ParsedCommand`
-
-This architecture separates concerns between execution logic (core), UI state management (chatwidget), and rendering (history_cell).
-
-## Writing New UI Regression Tests
-
-- Start with `make_chatwidget_manual()` (or `make_chatwidget_manual_with_sender()`) to build a `ChatWidget` in isolation with in-memory channels.
-- Simulate user input by defining a small enum (`ScriptStep`) and feeding key events via `chat.handle_key_event()`; see `run_script()` in `tests.rs` for a ready-to-use helper that also pumps `AppEvent`s.
-- After the scripted interaction, render with a `ratatui::Terminal`/`TestBackend`, then use `buffer_to_string()` (wraps `strip_ansi_escapes`) to normalize ANSI output before asserting.
-- Prefer snapshot assertions (`assert_snapshot!`) or rich string comparisons so UI regressions are obvious. Keep snapshots deterministic by trimming trailing space and driving commit ticks just like the existing tests do.
-- When adding fixtures or updating snapshots, gate rewrites behind an opt-in env var (e.g., `UPDATE_IDEAL=1`) so baseline refreshes remain explicit.
-
-### Monitor Release Workflows After Pushing
-
-- Use `scripts/wait-for-gh-run.sh` to follow GitHub Actions releases without spamming manual `gh` commands.
-- Typical release check right after a push: `scripts/wait-for-gh-run.sh --workflow Release --branch main`.
-- If you already know the run ID (e.g., from webhook output), run `scripts/wait-for-gh-run.sh --run <run-id>`.
-- Adjust the poll cadence via `--interval <seconds>` (defaults to 8). The script exits 0 on success and 1 on failure, so it can gate local automation.
-- Pass `--failure-logs` to automatically dump logs for any job that does not finish successfully.
-- Dependencies: GitHub CLI (`gh`) and `jq` must be available in `PATH`.
+- Tests should use pretty_assertions::assert_eq for clearer diffs. Import this at the top of the test module if it isn't already.

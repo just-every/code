@@ -28,11 +28,11 @@ pub async fn login_with_chatgpt(codex_home: PathBuf, originator: String) -> std:
 }
 
 pub async fn run_login_with_chatgpt(cli_config_overrides: CliConfigOverrides) -> ! {
-    let config = load_config_or_exit(cli_config_overrides);
+    let config = load_config_or_exit(cli_config_overrides).await;
 
     match login_with_chatgpt(
         config.codex_home,
-        config.responses_originator_header.clone(),
+        codex_core::default_client::originator().value.clone(),
     )
     .await
     {
@@ -51,7 +51,7 @@ pub async fn run_login_with_api_key(
     cli_config_overrides: CliConfigOverrides,
     api_key: String,
 ) -> ! {
-    let config = load_config_or_exit(cli_config_overrides);
+    let config = load_config_or_exit(cli_config_overrides).await;
 
     match login_with_api_key(&config.codex_home, &api_key) {
         Ok(_) => {
@@ -98,11 +98,11 @@ pub async fn run_login_with_device_code(
     issuer_base_url: Option<String>,
     client_id: Option<String>,
 ) -> ! {
-    let config = load_config_or_exit(cli_config_overrides);
+    let config = load_config_or_exit(cli_config_overrides).await;
     let mut opts = ServerOptions::new(
         config.codex_home,
         client_id.unwrap_or(CLIENT_ID.to_string()),
-        config.responses_originator_header.clone(),
+        codex_core::default_client::originator().value.clone(),
     );
     if let Some(iss) = issuer_base_url {
         opts.issuer = iss;
@@ -120,13 +120,9 @@ pub async fn run_login_with_device_code(
 }
 
 pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
-    let config = load_config_or_exit(cli_config_overrides);
+    let config = load_config_or_exit(cli_config_overrides).await;
 
-    match CodexAuth::from_codex_home(
-        &config.codex_home,
-        AuthMode::ApiKey,
-        &config.responses_originator_header,
-    ) {
+    match CodexAuth::from_codex_home(&config.codex_home) {
         Ok(Some(auth)) => match auth.mode {
             AuthMode::ApiKey => match auth.get_token().await {
                 Ok(api_key) => {
@@ -134,10 +130,10 @@ pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
 
                     if let Ok(env_api_key) = env::var(OPENAI_API_KEY_ENV_VAR) {
                         if env_api_key == api_key {
-                        eprintln!(
-                            "   API loaded from OPENAI_API_KEY environment variable or .env file"
-                        );
-                    }
+                            eprintln!(
+                                "   API loaded from OPENAI_API_KEY environment variable or .env file"
+                            );
+                        }
                     }
                     std::process::exit(0);
                 }
@@ -163,7 +159,7 @@ pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
 }
 
 pub async fn run_logout(cli_config_overrides: CliConfigOverrides) -> ! {
-    let config = load_config_or_exit(cli_config_overrides);
+    let config = load_config_or_exit(cli_config_overrides).await;
 
     match logout(&config.codex_home) {
         Ok(true) => {
@@ -181,7 +177,7 @@ pub async fn run_logout(cli_config_overrides: CliConfigOverrides) -> ! {
     }
 }
 
-fn load_config_or_exit(cli_config_overrides: CliConfigOverrides) -> Config {
+async fn load_config_or_exit(cli_config_overrides: CliConfigOverrides) -> Config {
     let cli_overrides = match cli_config_overrides.parse_overrides() {
         Ok(v) => v,
         Err(e) => {
@@ -191,7 +187,7 @@ fn load_config_or_exit(cli_config_overrides: CliConfigOverrides) -> Config {
     };
 
     let config_overrides = ConfigOverrides::default();
-    match Config::load_with_cli_overrides(cli_overrides, config_overrides) {
+    match Config::load_with_cli_overrides(cli_overrides, config_overrides).await {
         Ok(config) => config,
         Err(e) => {
             eprintln!("Error loading configuration: {e}");

@@ -76,12 +76,12 @@ pub fn create_ghost_commit(
 
     let repo_root = resolve_repository_root(options.repo_path)?;
     let repo_prefix = repo_subdir(repo_root.as_path(), options.repo_path);
-    let parent_override = options.parent.map(|value| value.to_string());
+    let parent_override = options.parent.map(ToString::to_string);
     let resolved_parent = resolve_head(repo_root.as_path())?;
     let parent_ref = parent_override
         .as_deref()
         .or(resolved_parent.as_deref())
-        .map(|value| value.to_string());
+        .map(ToString::to_string);
 
     let normalized_force = options
         .force_include

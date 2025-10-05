@@ -113,6 +113,8 @@ impl Session {
         drop(active);
         let event = Event {
             id: sub_id,
+            event_seq: 0,
+            order: None,
             msg: EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }),
         };
         self.send_event(event).await;
@@ -156,6 +158,8 @@ impl Session {
 
         let event = Event {
             id: sub_id.clone(),
+            event_seq: 0,
+            order: None,
             msg: EventMsg::TurnAborted(TurnAbortedEvent { reason }),
         };
         self.send_event(event).await;

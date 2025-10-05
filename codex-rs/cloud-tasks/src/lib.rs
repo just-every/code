@@ -7,6 +7,7 @@ mod ui;
 pub mod util;
 pub use cli::Cli;
 
+use codex_tui::public_widgets::composer_input::ComposerAction;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -15,7 +16,6 @@ use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
-use codex_tui::public_widgets::composer_input::ComposerAction;
 use util::append_error_log;
 use util::set_user_agent_suffix;
 
@@ -182,7 +182,7 @@ pub async fn run_main(cli: Cli, _codex_linux_sandbox_exe: Option<PathBuf>) -> an
         // Build an HTTP client against the configured (or default) base URL.
         let base_url = std::env::var("CODEX_CLOUD_TASKS_BASE_URL")
             .unwrap_or_else(|_| "https://chatgpt.com/backend-api".to_string());
-        let ua = codex_core::default_client::get_codex_user_agent(None);
+        let ua = codex_core::default_client::get_codex_user_agent();
         let mut http =
             codex_cloud_tasks_client::HttpClient::new(base_url.clone())?.with_user_agent(ua);
         // Log which base URL and path style we're going to use.
@@ -198,9 +198,7 @@ pub async fn run_main(cli: Cli, _codex_linux_sandbox_exe: Option<PathBuf>) -> an
             .ok()
             .map(|home| {
                 codex_login::AuthManager::new(
-                    home,
-                    codex_login::AuthMode::ChatGPT,
-                    codex_core::default_client::DEFAULT_ORIGINATOR.to_string(),
+                    home, false, // enable_codex_api_key_env
                 )
             })
             .and_then(|am| am.auth())
@@ -284,7 +282,7 @@ pub async fn run_main(cli: Cli, _codex_linux_sandbox_exe: Option<PathBuf>) -> an
     append_error_log(format!(
         "startup: wham_force_internal={} ua={}",
         force_internal,
-        codex_core::default_client::get_codex_user_agent(None)
+        codex_core::default_client::get_codex_user_agent()
     ));
     // Non-blocking initial load so the in-box spinner can animate
     app.status = "Loading tasks…".to_string();
@@ -1512,18 +1510,16 @@ async fn run_submit(args: crate::cli::SubmitArgs) -> anyhow::Result<()> {
     } else {
         let base_url = std::env::var("CODEX_CLOUD_TASKS_BASE_URL")
             .unwrap_or_else(|_| "https://chatgpt.com/backend-api".to_string());
-        let ua = codex_core::default_client::get_codex_user_agent(None);
-        let mut http = codex_cloud_tasks_client::HttpClient::new(base_url.clone())?
-            .with_user_agent(ua);
+        let ua = codex_core::default_client::get_codex_user_agent();
+        let mut http =
+            codex_cloud_tasks_client::HttpClient::new(base_url.clone())?.with_user_agent(ua);
 
         // Attach ChatGPT auth (required in production)
         let _token = match codex_core::config::find_codex_home()
             .ok()
             .map(|home| {
                 codex_login::AuthManager::new(
-                    home,
-                    codex_login::AuthMode::ChatGPT,
-                    codex_core::default_client::DEFAULT_ORIGINATOR.to_string(),
+                    home, false, // enable_codex_api_key_env
                 )
             })
             .and_then(|am| am.auth())
@@ -1553,7 +1549,9 @@ async fn run_submit(args: crate::cli::SubmitArgs) -> anyhow::Result<()> {
     };
 
     // Resolve target environment id
-    let env_id = if let Some(e) = args.env.clone() { e } else {
+    let env_id = if let Some(e) = args.env.clone() {
+        e
+    } else {
         let base_url = util::normalize_base_url(
             &std::env::var("CODEX_CLOUD_TASKS_BASE_URL")
                 .unwrap_or_else(|_| "https://chatgpt.com/backend-api".to_string()),
@@ -1587,14 +1585,15 @@ async fn run_submit(args: crate::cli::SubmitArgs) -> anyhow::Result<()> {
     }
 
     // Poll for completion and output a friendly summary when done
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
     eprintln!("Created task {}; waiting for completion…", created.id.0);
     let task_id = created.id;
     let mut seen_msgs = 0usize;
     loop {
-        let text = codex_cloud_tasks_client::CloudBackend::get_task_text(&*backend, task_id.clone())
-            .await
-            .unwrap_or_default();
+        let text =
+            codex_cloud_tasks_client::CloudBackend::get_task_text(&*backend, task_id.clone())
+                .await
+                .unwrap_or_default();
 
         // Emit progress hints to stderr so stdout remains the final result only
         if text.messages.len() > seen_msgs {
@@ -1607,10 +1606,13 @@ async fn run_submit(args: crate::cli::SubmitArgs) -> anyhow::Result<()> {
         match text.attempt_status {
             S::Completed => {
                 // Try to get a diff snapshot if available
-                let diff_opt = codex_cloud_tasks_client::CloudBackend::get_task_diff(&*backend, task_id.clone())
-                    .await
-                    .ok()
-                    .flatten();
+                let diff_opt = codex_cloud_tasks_client::CloudBackend::get_task_diff(
+                    &*backend,
+                    task_id.clone(),
+                )
+                .await
+                .ok()
+                .flatten();
 
                 // Build final output as plain text for the agent result
                 let mut out = String::new();
@@ -1765,8 +1767,8 @@ fn pretty_lines_from_error(raw: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use codex_tui::public_widgets::composer_input::ComposerAction;
     use codex_tui::ComposerInput;
+    use codex_tui::public_widgets::composer_input::ComposerAction;
     use crossterm::event::KeyCode;
     use crossterm::event::KeyEvent;
     use crossterm::event::KeyModifiers;

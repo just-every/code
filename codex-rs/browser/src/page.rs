@@ -13,12 +13,12 @@ use chromiumoxide::cdp::browser_protocol::input::MouseButton;
 // Import AddScriptToEvaluateOnNewDocumentParams (New)
 use base64::Engine as _;
 use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
+use chromiumoxide::cdp::browser_protocol::log as cdp_log;
 use chromiumoxide::cdp::browser_protocol::page::AddScriptToEvaluateOnNewDocumentParams;
 use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
 use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotParams;
-use chromiumoxide::page::Page as CdpPage;
 use chromiumoxide::cdp::js_protocol::runtime as cdp_runtime;
-use chromiumoxide::cdp::browser_protocol::log as cdp_log;
+use chromiumoxide::page::Page as CdpPage;
 use futures::StreamExt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -100,8 +100,12 @@ impl Page {
         let logs_buf = page.console_logs.clone();
         tokio::spawn(async move {
             // Best-effort enable; ignore failures silently to avoid breaking page creation.
-            let _ = cdp_page_events.execute(cdp_runtime::EnableParams::default()).await;
-            let _ = cdp_page_events.execute(cdp_log::EnableParams::default()).await;
+            let _ = cdp_page_events
+                .execute(cdp_runtime::EnableParams::default())
+                .await;
+            let _ = cdp_page_events
+                .execute(cdp_log::EnableParams::default())
+                .await;
 
             // Listen for Runtime.consoleAPICalled
             if let Ok(mut stream) = cdp_page_events
@@ -126,7 +130,9 @@ impl Page {
                     });
                     let mut buf = logs_buf.lock().await;
                     buf.push(item);
-                    if buf.len() > 2000 { buf.remove(0); }
+                    if buf.len() > 2000 {
+                        buf.remove(0);
+                    }
                 }
             }
 
@@ -151,7 +157,9 @@ impl Page {
                     });
                     let mut buf = logs_buf.lock().await;
                     buf.push(item);
-                    if buf.len() > 2000 { buf.remove(0); }
+                    if buf.len() > 2000 {
+                        buf.remove(0);
+                    }
                 }
             }
         });
@@ -513,10 +521,7 @@ impl Page {
             match eval {
                 Ok(v) => {
                     let obj = v.value().cloned().unwrap_or(serde_json::Value::Null);
-                    let hidden = obj
-                        .get("hidden")
-                        .and_then(|x| x.as_bool())
-                        .unwrap_or(false);
+                    let hidden = obj.get("hidden").and_then(|x| x.as_bool()).unwrap_or(false);
                     let vs = obj.get("vs").and_then(|x| x.as_str()).unwrap_or("visible");
                     !(hidden || vs != "visible")
                 }
@@ -560,13 +565,19 @@ impl Page {
                             scale: 1.0,
                         })
                         .build();
-                    let probe = tokio::time::timeout(Duration::from_millis(350), self.cdp_page.execute(probe_params)).await;
+                    let probe = tokio::time::timeout(
+                        Duration::from_millis(350),
+                        self.cdp_page.execute(probe_params),
+                    )
+                    .await;
                     let ok = matches!(probe, Ok(Ok(_)));
                     let mut cache = self.preflight_cache.lock().await;
                     *cache = Some((Instant::now(), ok));
                     prefer_false = ok;
                     if !prefer_false {
-                        debug!("Preflight suggests compositor path unavailable; non-visible context will use from_surface(true)");
+                        debug!(
+                            "Preflight suggests compositor path unavailable; non-visible context will use from_surface(true)"
+                        );
                     }
                 }
             }
@@ -576,13 +587,26 @@ impl Page {
         // - Visible: Always start with from_surface(false) and a short timeout to minimize flash risk.
         // - Not visible: Use preflight outcome; allow from_surface(true) immediately when compositor is unavailable.
         let (first_params, first_timeout, first_is_false) = if is_visible {
-            (params_builder.clone().from_surface(false).build(), Duration::from_secs(3), true)
+            (
+                params_builder.clone().from_surface(false).build(),
+                Duration::from_secs(3),
+                true,
+            )
         } else if prefer_false {
-            (params_builder.clone().from_surface(false).build(), Duration::from_secs(6), true)
+            (
+                params_builder.clone().from_surface(false).build(),
+                Duration::from_secs(6),
+                true,
+            )
         } else {
-            (params_builder.clone().from_surface(true).build(), Duration::from_secs(6), false)
+            (
+                params_builder.clone().from_surface(true).build(),
+                Duration::from_secs(6),
+                false,
+            )
         };
-        let first_attempt = tokio::time::timeout(first_timeout, self.cdp_page.execute(first_params)).await;
+        let first_attempt =
+            tokio::time::timeout(first_timeout, self.cdp_page.execute(first_params)).await;
 
         match first_attempt {
             Ok(Ok(resp)) => Ok(resp.result),
@@ -635,7 +659,8 @@ impl Page {
                                 Ok(Ok(resp)) => Ok(resp.result),
                                 Ok(Err(e3)) => Err(e3.into()),
                                 Err(_) => Err(BrowserError::ScreenshotError(
-                                    "Screenshot timed out (final from_surface=true fallback)".to_string(),
+                                    "Screenshot timed out (final from_surface=true fallback)"
+                                        .to_string(),
                                 )),
                             }
                         }
@@ -706,7 +731,8 @@ impl Page {
                                 Ok(Ok(resp)) => Ok(resp.result),
                                 Ok(Err(e3)) => Err(e3.into()),
                                 Err(_) => Err(BrowserError::ScreenshotError(
-                                    "Screenshot timed out after retries (final from_surface=true)".to_string(),
+                                    "Screenshot timed out after retries (final from_surface=true)"
+                                        .to_string(),
                                 )),
                             }
                         }
@@ -864,9 +890,7 @@ impl Page {
         // The JS must define `window.__vcInstall(x,y)` and create window.__vc with __version=11.
         let external = format!(
             "{}\n;(()=>{{ try {{ return (window.__vcInstall ? window.__vcInstall : function(x,y){{}})({:.0},{:.0}); }} catch (e) {{ return String(e && e.message || e); }} }})()",
-            VIRTUAL_CURSOR_JS,
-            cursor_x,
-            cursor_y
+            VIRTUAL_CURSOR_JS, cursor_x, cursor_y
         );
         if let Ok(res) = self.cdp_page.evaluate(external).await {
             let status = res
@@ -885,7 +909,9 @@ impl Page {
             }
         }
         warn!("Virtual cursor injection failed: no response");
-        Err(BrowserError::CdpError("Virtual cursor injection failed: no response".into()))
+        Err(BrowserError::CdpError(
+            "Virtual cursor injection failed: no response".into(),
+        ))
     }
 
     /// Ensures an editable element is focused before typing without stealing focus.
@@ -1407,7 +1433,9 @@ impl Page {
             .device_scale_factor(viewport.device_scale_factor.unwrap_or(1.0))
             .mobile(viewport.mobile.unwrap_or(false))
             .build()
-            .map_err(|e| BrowserError::CdpError(format!("Failed to build viewport params: {}", e)))?;
+            .map_err(|e| {
+                BrowserError::CdpError(format!("Failed to build viewport params: {}", e))
+            })?;
         self.cdp_page.execute(params).await?;
 
         Ok(ViewportResult {
@@ -1616,7 +1644,11 @@ impl Page {
 
         // Wait briefly so the page processes the click; avoid long animation waits
         let is_external = self.config.connect_port.is_some() || self.config.connect_ws.is_some();
-        let settle_ms = if is_external { click_ms_val.min(240) } else { 40 };
+        let settle_ms = if is_external {
+            click_ms_val.min(240)
+        } else {
+            40
+        };
         if settle_ms > 0 {
             tokio::time::sleep(tokio::time::Duration::from_millis(settle_ms)).await;
         }
@@ -1750,7 +1782,11 @@ impl Page {
 
         // Wait briefly so the page processes the click; avoid long animation waits
         let is_external = self.config.connect_port.is_some() || self.config.connect_ws.is_some();
-        let settle_ms = if is_external { click_ms_val.min(240) } else { 40 };
+        let settle_ms = if is_external {
+            click_ms_val.min(240)
+        } else {
+            40
+        };
         if settle_ms > 0 {
             tokio::time::sleep(tokio::time::Duration::from_millis(settle_ms)).await;
         }
@@ -1914,7 +1950,8 @@ impl Page {
     return {{ success: false, reason: 'unsupported' }};
   }} catch (e) {{ return {{ success: false, error: String(e) }}; }}
 }})()"#,
-                text_json = serde_json::to_string(&processed_text).unwrap_or_else(|_| "".to_string())
+                text_json =
+                    serde_json::to_string(&processed_text).unwrap_or_else(|_| "".to_string())
             );
 
             let _ = self.execute_javascript(&js).await;

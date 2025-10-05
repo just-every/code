@@ -1,8 +1,8 @@
 use std::sync::OnceLock;
 
+use icu_decimal::DecimalFormatter;
 use icu_decimal::input::Decimal;
 use icu_decimal::options::DecimalFormatterOptions;
-use icu_decimal::DecimalFormatter;
 use icu_locale_core::Locale;
 
 fn make_local_formatter() -> Option<DecimalFormatter> {
@@ -96,4 +96,3 @@ mod tests {
         assert_eq!(fmt(1_234_000_000_000), "1,234G");
     }
 }
-

@@ -85,4 +85,6 @@
 ; Needed for python multiprocessing on MacOS for the SemLock
 (allow ipc-posix-sem)
 
-; (fork) Additional mach-lookup allowances merged above; keep single block.
+(allow mach-lookup
+  (global-name "com.apple.PowerManagement.control")
+)

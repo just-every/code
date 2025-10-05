@@ -1,38 +1,32 @@
 use std::sync::Arc;
 
-use super::AgentTask;
 use super::Session;
 use super::TurnContext;
 use super::get_last_assistant_message_from_turn;
 use crate::Prompt;
 use crate::client_common::ResponseEvent;
-use crate::environment_context::EnvironmentContext;
 use crate::error::CodexErr;
 use crate::error::Result as CodexResult;
 use crate::protocol::AgentMessageEvent;
+use crate::protocol::CompactedItem;
 use crate::protocol::ErrorEvent;
+use crate::protocol::Event;
 use crate::protocol::EventMsg;
 use crate::protocol::InputItem;
-use crate::protocol::TaskCompleteEvent;
+use crate::protocol::InputMessageKind;
+use crate::protocol::TaskStartedEvent;
+use crate::protocol::TurnContextItem;
 use crate::truncate::truncate_middle;
 use crate::util::backoff;
 use askama::Template;
 use codex_protocol::models::ContentItem;
-use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::CompactedItem;
-use codex_protocol::protocol::InputMessageKind;
 use codex_protocol::protocol::RolloutItem;
-use base64::Engine;
 use futures::prelude::*;
 
 pub const SUMMARIZATION_PROMPT: &str = include_str!("../../templates/compact/prompt.md");
 const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
-const COMPACT_TEXT_CONTENT_MAX_BYTES: usize = 8 * 1024;
-const COMPACT_TOOL_ARGS_MAX_BYTES: usize = 4 * 1024;
-const COMPACT_TOOL_OUTPUT_MAX_BYTES: usize = 4 * 1024;
-const COMPACT_IMAGE_URL_MAX_BYTES: usize = 512;
 
 #[derive(Template)]
 #[template(path = "compact/history_bridge.md", escape = "none")]
@@ -41,283 +35,140 @@ struct HistoryBridgeTemplate<'a> {
     summary_text: &'a str,
 }
 
-pub(super) fn spawn_compact_task(
+pub(crate) async fn run_inline_auto_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
-    sub_id: String,
-    input: Vec<InputItem>,
 ) {
-    let task = AgentTask::compact(
-        sess.clone(),
-        turn_context,
-        sub_id,
-        input,
-        SUMMARIZATION_PROMPT.to_string(),
-    );
-    // set_task is synchronous in our fork
-    sess.set_task(task);
-}
-
-pub(super) async fn run_inline_auto_compact_task(
-    sess: Arc<Session>,
-    turn_context: Arc<TurnContext>,
-) -> Vec<ResponseItem> {
     let sub_id = sess.next_internal_sub_id();
-    let input = vec![InputItem::Text { text: SUMMARIZATION_PROMPT.to_string() }];
-    run_compact_task_inner_inline(
-        sess,
-        turn_context,
-        sub_id,
-        input,
-        SUMMARIZATION_PROMPT.to_string(),
-    )
-    .await
+    let input = vec![InputItem::Text {
+        text: SUMMARIZATION_PROMPT.to_string(),
+    }];
+    run_compact_task_inner(sess, turn_context, sub_id, input).await;
 }
 
-pub(super) async fn run_compact_task(
+pub(crate) async fn run_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
     sub_id: String,
     input: Vec<InputItem>,
-    compact_instructions: String,
-) {
-    let start_event = sess.make_event(&sub_id, EventMsg::TaskStarted);
+) -> Option<String> {
+    let start_event = Event {
+        id: sub_id.clone(),
+        event_seq: 0,
+        order: None,
+        msg: EventMsg::TaskStarted(TaskStartedEvent {
+            model_context_window: turn_context.client.get_model_context_window(),
+        }),
+    };
     sess.send_event(start_event).await;
-    let _ = perform_compaction(
-        sess.clone(),
-        turn_context,
-        sub_id.clone(),
-        input,
-        compact_instructions,
-        true,
-    )
-    .await;
-    let event = sess.make_event(
-        &sub_id,
-        EventMsg::TaskComplete(TaskCompleteEvent {
-            last_agent_message: None,
-        }),
-    );
-    sess.send_event(event).await;
+    run_compact_task_inner(sess.clone(), turn_context, sub_id.clone(), input).await;
+    None
 }
 
-/// Perform compaction as a background task that updates session history in-place.
-pub(super) async fn perform_compaction(
+async fn run_compact_task_inner(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
     sub_id: String,
     input: Vec<InputItem>,
-    compact_instructions: String,
-    remove_task_on_completion: bool,
-) -> CodexResult<()> {
-    // Convert core InputItem -> ResponseInputItem using the same logic as the main turn flow
-    let initial_input_for_turn: ResponseInputItem = response_input_from_core_items(input);
-    let turn_input = sess.turn_input_with_history(vec![initial_input_for_turn.clone().into()]);
-
-    let turn_input = sanitize_items_for_compact(turn_input);
+) {
+    let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
+    let turn_input = sess
+        .turn_input_with_history(vec![initial_input_for_turn.clone().into()])
+        .await;
 
     let prompt = Prompt {
         input: turn_input,
-        store: !sess.disable_response_storage,
-        user_instructions: turn_context.user_instructions.clone(),
-        environment_context: Some(EnvironmentContext::new(
-            Some(turn_context.cwd.clone()),
-            Some(turn_context.approval_policy),
-            Some(turn_context.sandbox_policy.clone()),
-            Some(sess.user_shell.clone()),
-        )),
-        tools: Vec::new(),
-        status_items: Vec::new(),
-        base_instructions_override: Some(compact_instructions),
-        include_additional_instructions: true,
-        text_format: None,
-        model_override: None,
-        model_family_override: None,
-        output_schema: None,
+        ..Default::default()
     };
 
     let max_retries = turn_context.client.get_provider().stream_max_retries();
     let mut retries = 0;
 
-    // Do not persist a TurnContext rollout item here; inline compaction is a
-    // background maintenance task and should not affect rollout reconstruction.
+    let rollout_item = RolloutItem::TurnContext(TurnContextItem {
+        cwd: turn_context.cwd.clone(),
+        approval_policy: turn_context.approval_policy,
+        sandbox_policy: turn_context.sandbox_policy.clone(),
+        model: turn_context.client.get_model(),
+        effort: turn_context.client.get_reasoning_effort(),
+        summary: turn_context.client.get_reasoning_summary(),
+    });
+    sess.persist_rollout_items(&[rollout_item]).await;
 
     loop {
-        match drain_to_completed(&sess, turn_context.as_ref(), &prompt).await {
-            Ok(()) => break,
-            Err(CodexErr::Interrupted) => return Err(CodexErr::Interrupted),
+        let attempt_result =
+            drain_to_completed(&sess, turn_context.as_ref(), &sub_id, &prompt).await;
+
+        match attempt_result {
+            Ok(()) => {
+                break;
+            }
+            Err(CodexErr::Interrupted) => {
+                return;
+            }
+            Err(e @ CodexErr::ContextWindowExceeded) => {
+                sess.set_total_tokens_full(&sub_id, turn_context.as_ref())
+                    .await;
+                let event = Event {
+                    id: sub_id.clone(),
+                    event_seq: 0,
+                    order: None,
+                    msg: EventMsg::Error(ErrorEvent {
+                        message: e.to_string(),
+                    }),
+                };
+                sess.send_event(event).await;
+                return;
+            }
             Err(e) => {
                 if retries < max_retries {
                     retries += 1;
                     let delay = backoff(retries);
-                    sess
-                        .notify_stream_error(
-                            &sub_id,
-                            format!(
-                                "stream error: {e}; retrying {retries}/{max_retries} in {delay:?}…"
-                            ),
-                        )
-                        .await;
+                    sess.notify_stream_error(
+                        &sub_id,
+                        format!(
+                            "stream error: {e}; retrying {retries}/{max_retries} in {delay:?}…"
+                        ),
+                    )
+                    .await;
                     tokio::time::sleep(delay).await;
                     continue;
                 } else {
-                    let event = sess.make_event(
-                        &sub_id,
-                        EventMsg::Error(ErrorEvent {
+                    let event = Event {
+                        id: sub_id.clone(),
+                        event_seq: 0,
+                        order: None,
+                        msg: EventMsg::Error(ErrorEvent {
                             message: e.to_string(),
                         }),
-                    );
+                    };
                     sess.send_event(event).await;
-                    return Err(e);
+                    return;
                 }
             }
         }
     }
 
-    if remove_task_on_completion {
-        sess.remove_task(&sub_id);
-    }
-
-    // Snapshot history and compute a compacted version
-    let history_snapshot = {
-        let state = sess.state.lock().unwrap();
-        state.history.contents()
-    };
+    let history_snapshot = sess.history_snapshot().await;
     let summary_text = get_last_assistant_message_from_turn(&history_snapshot).unwrap_or_default();
     let user_messages = collect_user_messages(&history_snapshot);
     let initial_context = sess.build_initial_context(turn_context.as_ref());
     let new_history = build_compacted_history(initial_context, &user_messages, &summary_text);
-
-    // Replace session history in-place
-    {
-        let mut state = sess.state.lock().unwrap();
-        // Replace entire history with the compacted one
-        state.history = crate::conversation_history::ConversationHistory::new();
-        state.history.record_items(new_history.iter());
-    }
+    sess.replace_history(new_history).await;
 
     let rollout_item = RolloutItem::Compacted(CompactedItem {
         message: summary_text.clone(),
     });
     sess.persist_rollout_items(&[rollout_item]).await;
 
-    let display_message = if summary_text.trim().is_empty() {
-        "Compact task completed.".to_string()
-    } else {
-        summary_text.clone()
-    };
-    let event = sess.make_event(
-        &sub_id,
-        EventMsg::AgentMessage(AgentMessageEvent {
-            message: display_message,
+    let event = Event {
+        id: sub_id.clone(),
+        event_seq: 0,
+        order: None,
+        msg: EventMsg::AgentMessage(AgentMessageEvent {
+            message: "Compact task completed".to_string(),
         }),
-    );
+    };
     sess.send_event(event).await;
-    Ok(())
-}
-
-/// Run compaction inline, update the session history in-place, and return the rebuilt compact history.
-async fn run_compact_task_inner_inline(
-    sess: Arc<Session>,
-    turn_context: Arc<TurnContext>,
-    sub_id: String,
-    input: Vec<InputItem>,
-    compact_instructions: String,
-) -> Vec<ResponseItem> {
-    // Convert core InputItem -> ResponseInputItem and build prompt
-    let initial_input_for_turn: ResponseInputItem = response_input_from_core_items(input);
-    let turn_input = sess.turn_input_with_history(vec![initial_input_for_turn.clone().into()]);
-
-    let turn_input = sanitize_items_for_compact(turn_input);
-
-    let prompt = Prompt {
-        input: turn_input,
-        store: !sess.disable_response_storage,
-        user_instructions: turn_context.user_instructions.clone(),
-        environment_context: Some(EnvironmentContext::new(
-            Some(turn_context.cwd.clone()),
-            Some(turn_context.approval_policy),
-            Some(turn_context.sandbox_policy.clone()),
-            Some(sess.user_shell.clone()),
-        )),
-        tools: Vec::new(),
-        status_items: Vec::new(),
-        base_instructions_override: Some(compact_instructions),
-        include_additional_instructions: true,
-        text_format: None,
-        model_override: None,
-        model_family_override: None,
-        output_schema: None,
-    };
-
-    let max_retries = turn_context.client.get_provider().stream_max_retries();
-    let mut retries = 0;
-    loop {
-        match drain_to_completed(&sess, turn_context.as_ref(), &prompt).await {
-            Ok(()) => break,
-            Err(CodexErr::Interrupted) => return Vec::new(),
-            Err(e) => {
-                if retries < max_retries {
-                    retries += 1;
-                    let delay = backoff(retries);
-                    sess
-                        .notify_stream_error(
-                            &sub_id,
-                            format!(
-                                "stream error: {e}; retrying {retries}/{max_retries} in {delay:?}…"
-                            ),
-                        )
-                        .await;
-                    tokio::time::sleep(delay).await;
-                    continue;
-                } else {
-                    let event = sess.make_event(
-                        &sub_id,
-                        EventMsg::Error(ErrorEvent {
-                            message: e.to_string(),
-                        }),
-                    );
-                    sess.send_event(event).await;
-                    return Vec::new();
-                }
-            }
-        }
-    }
-
-    let history_snapshot = {
-        let state = sess.state.lock().unwrap();
-        state.history.contents()
-    };
-    let summary_text = get_last_assistant_message_from_turn(&history_snapshot).unwrap_or_default();
-    let user_messages = collect_user_messages(&history_snapshot);
-    let initial_context = sess.build_initial_context(turn_context.as_ref());
-    let new_history = build_compacted_history(initial_context, &user_messages, &summary_text);
-
-    {
-        let mut state = sess.state.lock().unwrap();
-        state.history = crate::conversation_history::ConversationHistory::new();
-        state.history.record_items(new_history.iter());
-    }
-
-    let rollout_item = RolloutItem::Compacted(CompactedItem {
-        message: summary_text.clone(),
-    });
-    sess.persist_rollout_items(&[rollout_item]).await;
-
-    let display_message = if summary_text.trim().is_empty() {
-        "Compact task completed.".to_string()
-    } else {
-        summary_text.clone()
-    };
-    let event = sess.make_event(
-        &sub_id,
-        EventMsg::AgentMessage(AgentMessageEvent {
-            message: display_message,
-        }),
-    );
-    sess.send_event(event).await;
-
-    new_history
 }
 
 pub fn content_items_to_text(content: &[ContentItem]) -> Option<String> {
@@ -337,110 +188,6 @@ pub fn content_items_to_text(content: &[ContentItem]) -> Option<String> {
     } else {
         Some(pieces.join("\n"))
     }
-}
-
-fn truncate_for_compact(text: String, max_bytes: usize) -> String {
-    if text.len() <= max_bytes {
-        return text;
-    }
-    truncate_middle(&text, max_bytes).0
-}
-
-fn sanitize_items_for_compact(items: Vec<ResponseItem>) -> Vec<ResponseItem> {
-    items
-        .into_iter()
-        .filter_map(|item| match item {
-            ResponseItem::Message { id, role, content } => {
-                let mut filtered_content = Vec::with_capacity(content.len());
-                for content_item in content {
-                    match content_item {
-                        ContentItem::InputText { text } => {
-                            filtered_content.push(ContentItem::InputText {
-                                text: truncate_for_compact(text, COMPACT_TEXT_CONTENT_MAX_BYTES),
-                            });
-                        }
-                        ContentItem::OutputText { text } => {
-                            filtered_content.push(ContentItem::OutputText {
-                                text: truncate_for_compact(text, COMPACT_TEXT_CONTENT_MAX_BYTES),
-                            });
-                        }
-                        ContentItem::InputImage { image_url } => {
-                            if image_url.starts_with("data:")
-                                || image_url.len() > COMPACT_IMAGE_URL_MAX_BYTES
-                            {
-                                let bytes = image_url.len();
-                                filtered_content.push(ContentItem::InputText {
-                                    text: format!(
-                                        "(image omitted for compaction; {bytes} bytes)",
-                                    ),
-                                });
-                            } else {
-                                filtered_content.push(ContentItem::InputImage { image_url });
-                            }
-                        }
-                    }
-                }
-                if filtered_content.is_empty() {
-                    None
-                } else {
-                    Some(ResponseItem::Message {
-                        id,
-                        role,
-                        content: filtered_content,
-                    })
-                }
-            }
-            ResponseItem::FunctionCall {
-                id,
-                name,
-                arguments,
-                call_id,
-            } => {
-                let arguments = truncate_for_compact(arguments, COMPACT_TOOL_ARGS_MAX_BYTES);
-                Some(ResponseItem::FunctionCall {
-                    id,
-                    name,
-                    arguments,
-                    call_id,
-                })
-            }
-            ResponseItem::FunctionCallOutput { call_id, output } => {
-                let FunctionCallOutputPayload { content, success } = output;
-                let content = truncate_for_compact(content, COMPACT_TOOL_OUTPUT_MAX_BYTES);
-                Some(ResponseItem::FunctionCallOutput {
-                    call_id,
-                    output: FunctionCallOutputPayload { content, success },
-                })
-            }
-            ResponseItem::CustomToolCall {
-                id,
-                status,
-                call_id,
-                name,
-                input,
-            } => {
-                let input = truncate_for_compact(input, COMPACT_TOOL_ARGS_MAX_BYTES);
-                Some(ResponseItem::CustomToolCall {
-                    id,
-                    status,
-                    call_id,
-                    name,
-                    input,
-                })
-            }
-            ResponseItem::CustomToolCallOutput { call_id, output } => {
-                let output = truncate_for_compact(output, COMPACT_TOOL_OUTPUT_MAX_BYTES);
-                Some(ResponseItem::CustomToolCallOutput { call_id, output })
-            }
-            ResponseItem::Reasoning { id, summary, .. } => Some(ResponseItem::Reasoning {
-                id,
-                summary,
-                content: None,
-                encrypted_content: None,
-            }),
-            other => Some(other),
-        })
-        .collect()
 }
 
 pub(crate) fn collect_user_messages(items: &[ResponseItem]) -> Vec<String> {
@@ -503,6 +250,7 @@ pub(crate) fn build_compacted_history(
 async fn drain_to_completed(
     sess: &Session,
     turn_context: &TurnContext,
+    sub_id: &str,
     prompt: &Prompt,
 ) -> CodexResult<()> {
     let mut stream = turn_context.client.clone().stream(prompt).await?;
@@ -515,82 +263,20 @@ async fn drain_to_completed(
             ));
         };
         match event {
-            Ok(ResponseEvent::OutputItemDone { item, .. }) => {
-                let mut state = sess.state.lock().unwrap();
-                state.history.record_items(std::slice::from_ref(&item));
+            Ok(ResponseEvent::OutputItemDone(item)) => {
+                sess.record_into_history(std::slice::from_ref(&item)).await;
             }
-            Ok(ResponseEvent::Completed { .. }) => {
+            Ok(ResponseEvent::RateLimits(snapshot)) => {
+                sess.update_rate_limits(sub_id, snapshot).await;
+            }
+            Ok(ResponseEvent::Completed { token_usage, .. }) => {
+                sess.update_token_usage_info(sub_id, turn_context, token_usage.as_ref())
+                    .await;
                 return Ok(());
             }
             Ok(_) => continue,
             Err(e) => return Err(e),
         }
-    }
-}
-
-// Helper copied from codex.rs (private there): convert core InputItem -> ResponseInputItem
-fn response_input_from_core_items(items: Vec<InputItem>) -> ResponseInputItem {
-    let mut content_items = Vec::new();
-
-    for item in items {
-        match item {
-            InputItem::Text { text } => {
-                content_items.push(ContentItem::InputText { text });
-            }
-            InputItem::Image { image_url } => {
-                content_items.push(ContentItem::InputImage { image_url });
-            }
-            InputItem::LocalImage { path } => match std::fs::read(&path) {
-                Ok(bytes) => {
-                    let mime = mime_guess::from_path(&path)
-                        .first()
-                        .map(|m| m.essence_str().to_owned())
-                        .unwrap_or_else(|| "application/octet-stream".to_string());
-                    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-                    content_items.push(ContentItem::InputImage {
-                        image_url: format!("data:{mime};base64,{encoded}"),
-                    });
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        "Skipping image {} – could not read file: {}",
-                        path.display(),
-                        err
-                    );
-                }
-            },
-            InputItem::EphemeralImage { path, metadata } => {
-                if let Some(meta) = metadata {
-                    content_items.push(ContentItem::InputText {
-                        text: format!("[EPHEMERAL:{}]", meta),
-                    });
-                }
-                match std::fs::read(&path) {
-                    Ok(bytes) => {
-                        let mime = mime_guess::from_path(&path)
-                            .first()
-                            .map(|m| m.essence_str().to_owned())
-                            .unwrap_or_else(|| "application/octet-stream".to_string());
-                        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-                        content_items.push(ContentItem::InputImage {
-                            image_url: format!("data:{mime};base64,{encoded}"),
-                        });
-                    }
-                    Err(err) => {
-                        tracing::error!(
-                            "Failed to read ephemeral image {} – {}",
-                            path.display(),
-                            err
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    ResponseInputItem::Message {
-        role: "user".to_string(),
-        content: content_items,
     }
 }
 

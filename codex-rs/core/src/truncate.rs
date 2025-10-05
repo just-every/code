@@ -5,7 +5,6 @@
 /// preserving the beginning and the end. Returns the possibly truncated
 /// string and `Some(original_token_count)` (estimated at 4 bytes/token)
 /// if truncation occurred; otherwise returns the original string and `None`.
-#[allow(dead_code)]
 pub(crate) fn truncate_middle(s: &str, max_bytes: usize) -> (String, Option<u64>) {
     if s.len() <= max_bytes {
         return (s.to_string(), None);

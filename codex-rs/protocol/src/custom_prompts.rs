@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use serde::Serialize;
-use ts_rs::TS;
 use std::path::PathBuf;
+use ts_rs::TS;
 
 /// Base namespace for custom prompt slash commands (without trailing colon).
 /// Example usage forms constructed in code:

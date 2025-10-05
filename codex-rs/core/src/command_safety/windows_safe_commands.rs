@@ -35,18 +35,13 @@ fn parse_powershell_invocation(args: &[String]) -> Option<Vec<Vec<String>>> {
         let lower = arg.to_ascii_lowercase();
         match lower.as_str() {
             "-command" | "/command" | "-c" => {
-                let script_args = args.get(idx + 1..)?;
-                if script_args.is_empty() {
+                let script = args.get(idx + 1)?;
+                if idx + 2 != args.len() {
+                    // Reject if there is more than one token representing the actual command.
+                    // Examples rejected here: "pwsh -Command foo bar" and "powershell -c ls extra".
                     return None;
                 }
-
-                if script_args.len() == 1 {
-                    if let Some(commands) = parse_powershell_script(&script_args[0]) {
-                        return Some(commands);
-                    }
-                }
-
-                return split_into_commands(script_args.to_vec());
+                return parse_powershell_script(script);
             }
             _ if lower.starts_with("-command:") || lower.starts_with("/command:") => {
                 if idx + 1 != args.len() {
@@ -244,11 +239,8 @@ fn is_safe_git_command(words: &[String]) -> bool {
 
         if arg.starts_with('-') {
             if arg.eq_ignore_ascii_case("-c") || arg.eq_ignore_ascii_case("--config") {
-                let Some(value) = iter.next() else {
+                if iter.next().is_none() {
                     // Examples rejected here: "pwsh -Command 'git -c'" and "pwsh -Command 'git --config'".
-                    return false;
-                };
-                if !is_safe_git_config_override(value) {
                     return false;
                 }
                 continue;
@@ -259,14 +251,6 @@ fn is_safe_git_command(words: &[String]) -> bool {
                 || arg_lc.starts_with("--git-dir=")
                 || arg_lc.starts_with("--work-tree=")
             {
-                if arg_lc.starts_with("-c=") || arg_lc.starts_with("--config=") {
-                    let Some((_, value)) = arg.split_once('=') else {
-                        return false;
-                    };
-                    if !is_safe_git_config_override(value) {
-                        return false;
-                    }
-                }
                 continue;
             }
 
@@ -286,24 +270,6 @@ fn is_safe_git_command(words: &[String]) -> bool {
 
     // Examples rejected here: "pwsh -Command 'git'" and "pwsh -Command 'git status --short | Remove-Item foo'".
     false
-}
-
-fn is_safe_git_config_override(raw: &str) -> bool {
-    let (key, value) = match raw.split_once('=') {
-        Some(parts) => parts,
-        None => return false,
-    };
-
-    let key = key.trim().to_ascii_lowercase();
-    let value = value
-        .trim()
-        .trim_matches(|c| matches!(c, '"' | '\''));
-    let value_lc = value.to_ascii_lowercase();
-
-    matches!(
-        (key.as_str(), value_lc.as_str()),
-        ("core.pager", "cat") | ("core.pager", "type")
-    )
 }
 
 #[cfg(test)]
@@ -336,14 +302,6 @@ mod tests {
             "powershell.exe",
             "Get-Content",
             "Cargo.toml",
-        ])));
-
-        assert!(is_safe_command_windows(&vec_str(&[
-            "powershell.exe",
-            "-Command",
-            "Get-ChildItem",
-            "-Path",
-            ".",
         ])));
 
         // pwsh parity
@@ -468,18 +426,6 @@ mod tests {
             "powershell.exe",
             "-Command",
             "Get-Content (New-Item bar.txt)",
-        ])));
-
-        assert!(!is_safe_command_windows(&vec_str(&[
-            "powershell.exe",
-            "-Command",
-            "git -c core.pager=\"powershell -Command Remove-Item foo\" status",
-        ])));
-
-        assert!(!is_safe_command_windows(&vec_str(&[
-            "powershell.exe",
-            "-Command",
-            "git -c color.ui=always status",
         ])));
     }
 }

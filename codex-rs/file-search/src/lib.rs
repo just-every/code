@@ -11,7 +11,7 @@ use std::cell::UnsafeCell;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::num::{NonZero, NonZeroUsize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
@@ -285,10 +285,26 @@ pub fn run(
     })
 }
 
+/// Options for the streaming file search variant.
+#[derive(Debug)]
+pub struct StreamingSearchOptions {
+    pub pattern_text: String,
+    pub limit: NonZeroUsize,
+    pub search_directory: PathBuf,
+    pub exclude: Vec<String>,
+    pub threads: NonZeroUsize,
+    pub cancel_flag: Arc<AtomicBool>,
+    pub compute_indices: bool,
+    pub part_tx: std::sync::mpsc::Sender<Vec<FileMatch>>,
+    pub update_interval: std::time::Duration,
+    pub prefer_cwd: bool,
+}
+
 /// Streaming variant used by the TUI. For now, this is a thin wrapper around
 /// `run` that sends one final batch of results over the provided channel.
 ///
 /// Parameters mirror the upstream API for compatibility.
+#[allow(clippy::too_many_arguments)]
 pub fn run_streaming(
     pattern_text: &str,
     limit: NonZeroUsize,
@@ -302,7 +318,10 @@ pub fn run_streaming(
     _prefer_cwd: bool,
 ) -> anyhow::Result<FileSearchResults> {
     if cancel_flag.load(Ordering::Relaxed) {
-        return Ok(FileSearchResults { matches: Vec::new(), total_match_count: 0 });
+        return Ok(FileSearchResults {
+            matches: Vec::new(),
+            total_match_count: 0,
+        });
     }
 
     // Convert NonZeroUsize → NonZero<usize>

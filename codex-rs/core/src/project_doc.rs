@@ -1,7 +1,7 @@
 //! Project-level documentation discovery.
 //!
-//! Project-level documentation can be stored in files named `AGENTS.md` and
-//! Auto Drive can use specialised guidance stored in `AUTO_AGENTS.md`.
+//! Project-level documentation is primarily stored in files named `AGENTS.md`.
+//! Additional fallback filenames can be configured via `project_doc_fallback_filenames`.
 //! We include the concatenation of all files found along the path from the
 //! repository root to the current working directory as follows:
 //!
@@ -14,15 +14,13 @@
 //! 3.  We do **not** walk past the Git root.
 
 use crate::config::Config;
+use dunce::canonicalize as normalize_path;
 use std::path::PathBuf;
 use tokio::io::AsyncReadExt;
 use tracing::error;
 
-/// Filenames recognised for standard agent instructions.
-const AGENT_FILENAMES: &[&str] = &["AGENTS.md"];
-
-/// Filenames recognised for Auto Drive instructions.
-const AUTO_AGENT_FILENAMES: &[&str] = &["AUTO_AGENTS.md"];
+/// Default filename scanned for project-level docs.
+pub const DEFAULT_PROJECT_DOC_FILENAME: &str = "AGENTS.md";
 
 /// When both `Config::instructions` and the project doc are present, they will
 /// be concatenated with the following separator.
@@ -52,17 +50,14 @@ pub(crate) async fn get_user_instructions(config: &Config) -> Option<String> {
 /// concatenation of all discovered docs. If no documentation file is found the
 /// function returns `Ok(None)`. Unexpected I/O failures bubble up as `Err` so
 /// callers can decide how to handle them.
-async fn read_project_docs_with_candidates(
-    config: &Config,
-    candidate_filenames: &[&str],
-) -> std::io::Result<Option<String>> {
+pub async fn read_project_docs(config: &Config) -> std::io::Result<Option<String>> {
     let max_total = config.project_doc_max_bytes;
 
     if max_total == 0 {
         return Ok(None);
     }
 
-    let paths = discover_project_doc_paths_with_candidates(config, candidate_filenames)?;
+    let paths = discover_project_doc_paths(config)?;
     if paths.is_empty() {
         return Ok(None);
     }
@@ -108,32 +103,21 @@ async fn read_project_docs_with_candidates(
     }
 }
 
-pub async fn read_project_docs(config: &Config) -> std::io::Result<Option<String>> {
-    read_project_docs_with_candidates(config, AGENT_FILENAMES).await
-}
-
-pub async fn read_auto_drive_docs(config: &Config) -> std::io::Result<Option<String>> {
-    read_project_docs_with_candidates(config, AUTO_AGENT_FILENAMES).await
-}
-
 /// Discover the list of AGENTS.md files using the same search rules as
 /// `read_project_docs`, but return the file paths instead of concatenated
 /// contents. The list is ordered from repository root to the current working
 /// directory (inclusive). Symlinks are allowed. When `project_doc_max_bytes`
 /// is zero, returns an empty list.
-fn discover_project_doc_paths_with_candidates(
-    config: &Config,
-    candidate_filenames: &[&str],
-) -> std::io::Result<Vec<PathBuf>> {
+pub fn discover_project_doc_paths(config: &Config) -> std::io::Result<Vec<PathBuf>> {
     let mut dir = config.cwd.clone();
-    if let Ok(canon) = dir.canonicalize() {
+    if let Ok(canon) = normalize_path(&dir) {
         dir = canon;
     }
 
     // Build chain from cwd upwards and detect git root.
     let mut chain: Vec<PathBuf> = vec![dir.clone()];
     let mut git_root: Option<PathBuf> = None;
-    let mut cursor = dir.clone();
+    let mut cursor = dir;
     while let Some(parent) = cursor.parent() {
         let git_marker = cursor.join(".git");
         let git_exists = match std::fs::metadata(&git_marker) {
@@ -170,8 +154,9 @@ fn discover_project_doc_paths_with_candidates(
     };
 
     let mut found: Vec<PathBuf> = Vec::new();
+    let candidate_filenames = candidate_filenames(config);
     for d in search_dirs {
-        for name in candidate_filenames {
+        for name in &candidate_filenames {
             let candidate = d.join(name);
             match std::fs::symlink_metadata(&candidate) {
                 Ok(md) => {
@@ -191,12 +176,20 @@ fn discover_project_doc_paths_with_candidates(
     Ok(found)
 }
 
-pub fn discover_project_doc_paths(config: &Config) -> std::io::Result<Vec<PathBuf>> {
-    discover_project_doc_paths_with_candidates(config, AGENT_FILENAMES)
-}
-
-pub fn discover_auto_drive_doc_paths(config: &Config) -> std::io::Result<Vec<PathBuf>> {
-    discover_project_doc_paths_with_candidates(config, AUTO_AGENT_FILENAMES)
+fn candidate_filenames<'a>(config: &'a Config) -> Vec<&'a str> {
+    let mut names: Vec<&'a str> =
+        Vec::with_capacity(1 + config.project_doc_fallback_filenames.len());
+    names.push(DEFAULT_PROJECT_DOC_FILENAME);
+    for candidate in &config.project_doc_fallback_filenames {
+        let candidate = candidate.as_str();
+        if candidate.is_empty() {
+            continue;
+        }
+        if !names.contains(&candidate) {
+            names.push(candidate);
+        }
+    }
+    names
 }
 
 #[cfg(test)]
@@ -225,6 +218,20 @@ mod tests {
         config.project_doc_max_bytes = limit;
 
         config.user_instructions = instructions.map(ToOwned::to_owned);
+        config
+    }
+
+    fn make_config_with_fallback(
+        root: &TempDir,
+        limit: usize,
+        instructions: Option<&str>,
+        fallbacks: &[&str],
+    ) -> Config {
+        let mut config = make_config(root, limit, instructions);
+        config.project_doc_fallback_filenames = fallbacks
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         config
     }
 
@@ -374,38 +381,44 @@ mod tests {
         assert_eq!(res, "root doc\n\ncrate doc");
     }
 
+    /// When AGENTS.md is absent but a configured fallback exists, the fallback is used.
     #[tokio::test]
-    async fn auto_drive_doc_missing_returns_none() {
+    async fn uses_configured_fallback_when_agents_missing() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let cfg = make_config(&tmp, 4096, None);
-        let res = read_auto_drive_docs(&cfg).await;
-        assert!(res.expect("auto docs read").is_none());
+        fs::write(tmp.path().join("EXAMPLE.md"), "example instructions").unwrap();
+
+        let cfg = make_config_with_fallback(&tmp, 4096, None, &["EXAMPLE.md"]);
+
+        let res = get_user_instructions(&cfg)
+            .await
+            .expect("fallback doc expected");
+
+        assert_eq!(res, "example instructions");
     }
 
+    /// AGENTS.md remains preferred when both AGENTS.md and fallbacks are present.
     #[tokio::test]
-    async fn auto_drive_docs_follow_same_lookup_rules() {
-        let repo = tempfile::tempdir().expect("tempdir");
+    async fn agents_md_preferred_over_fallbacks() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        fs::write(tmp.path().join("AGENTS.md"), "primary").unwrap();
+        fs::write(tmp.path().join("EXAMPLE.md"), "secondary").unwrap();
 
-        std::fs::write(
-            repo.path().join(".git"),
-            "gitdir: /path/to/actual/git/dir\n",
-        )
-        .unwrap();
+        let cfg = make_config_with_fallback(&tmp, 4096, None, &["EXAMPLE.md", ".example.md"]);
 
-        fs::write(repo.path().join("AUTO_AGENTS.md"), "root auto").unwrap();
-
-        let nested = repo.path().join("workspace/crate_a");
-        std::fs::create_dir_all(&nested).unwrap();
-        fs::write(nested.join("AUTO_AGENTS.md"), "nested auto").unwrap();
-
-        let mut cfg = make_config(&repo, 4096, None);
-        cfg.cwd = nested;
-
-        let res = read_auto_drive_docs(&cfg)
+        let res = get_user_instructions(&cfg)
             .await
-            .expect("auto doc expected")
-            .expect("auto doc should be present");
+            .expect("AGENTS.md should win");
 
-        assert_eq!(res, "root auto\n\nnested auto");
+        assert_eq!(res, "primary");
+
+        let discovery = discover_project_doc_paths(&cfg).expect("discover paths");
+        assert_eq!(discovery.len(), 1);
+        assert!(
+            discovery[0]
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .eq(DEFAULT_PROJECT_DOC_FILENAME)
+        );
     }
 }

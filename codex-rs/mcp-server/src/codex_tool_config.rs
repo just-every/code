@@ -1,7 +1,8 @@
 //! Configuration object accepted by the `codex` MCP tool-call.
 
 use agent_client_protocol as acp;
-use codex_core::config_types::ClientTools;
+// TODO: ClientTools removed from codex_core::config_types
+// use codex_core::config_types::ClientTools;
 use codex_core::protocol::AskForApproval;
 use codex_protocol::config_types::SandboxMode;
 use codex_utils_json_to_toml::json_to_toml;
@@ -12,9 +13,9 @@ use schemars::JsonSchema;
 use schemars::r#gen::SchemaSettings;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use serde_json::json;
 
 /// Client-supplied configuration for a `codex` tool-call.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
@@ -183,6 +184,8 @@ pub(crate) fn create_tool_for_acp_prompt() -> Tool {
 }
 
 /// Builds a `Tool` definition for the `acp/set_model` tool-call.
+/// TODO: model_select field removed from AGENT_METHOD_NAMES
+#[allow(dead_code)]
 pub(crate) fn create_tool_for_acp_set_model() -> Tool {
     let input_schema = ToolInputSchema {
         r#type: "object".to_string(),
@@ -194,8 +197,8 @@ pub(crate) fn create_tool_for_acp_set_model() -> Tool {
     };
 
     Tool {
-        name: acp::AGENT_METHOD_NAMES.model_select.to_string(),
-        title: Some(acp::AGENT_METHOD_NAMES.model_select.to_string()),
+        name: "acp/model_select".to_string(), // TODO: was acp::AGENT_METHOD_NAMES.model_select
+        title: Some("acp/model_select".to_string()),
         input_schema,
         output_schema: None,
         description: Some("Select a model for an existing ACP Codex session.".to_string()),
@@ -208,8 +211,9 @@ pub(crate) fn create_tool_for_acp_set_model() -> Tool {
 pub struct AcpNewSessionToolArgs {
     #[serde(flatten)]
     pub request: serde_json::Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_tools: Option<ClientTools>,
+    // TODO: ClientTools type removed
+    // #[serde(default, skip_serializing_if = "Option::is_none")]
+    // pub client_tools: Option<ClientTools>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -234,7 +238,7 @@ pub struct AcpSetModelToolArgs {
 impl CodexToolCallParam {
     /// Returns the initial user prompt to start the Codex conversation and the
     /// effective Config object generated from the supplied parameters.
-    pub fn into_config(
+    pub async fn into_config(
         self,
         codex_linux_sandbox_exe: Option<PathBuf>,
     ) -> std::io::Result<(String, codex_core::config::Config)> {
@@ -264,12 +268,13 @@ impl CodexToolCallParam {
             include_plan_tool,
             include_apply_patch_tool: None,
             include_view_image_tool: None,
-            disable_response_storage: None,
+            // TODO: Fields removed from ConfigOverrides
+            // disable_response_storage: None,
             show_raw_agent_reasoning: None,
-            debug: None,
+            // debug: None,
             tools_web_search_request: None,
-            mcp_servers: None,
-            experimental_client_tools: None,
+            // mcp_servers: None,
+            // experimental_client_tools: None,
         };
 
         let cli_overrides = cli_overrides
@@ -278,7 +283,8 @@ impl CodexToolCallParam {
             .map(|(k, v)| (k, json_to_toml(v)))
             .collect();
 
-        let cfg = codex_core::config::Config::load_with_cli_overrides(cli_overrides, overrides)?;
+        let cfg =
+            codex_core::config::Config::load_with_cli_overrides(cli_overrides, overrides).await?;
 
         Ok((prompt, cfg))
     }

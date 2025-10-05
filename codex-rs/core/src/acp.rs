@@ -9,7 +9,6 @@ use mcp_types::CallToolResult;
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
-use std::time::Duration;
 use uuid::Uuid;
 
 use crate::config_types::{ClientTools, McpToolId};
@@ -60,7 +59,7 @@ impl<'a> AcpFileSystem<'a> {
                 &tool.mcp_server,
                 &tool.tool_name,
                 Some(serde_json::to_value(arguments).unwrap_or_default()),
-                Some(Duration::from_secs(15)),
+
             )
             .await?;
 
@@ -98,7 +97,7 @@ impl<'a> AcpFileSystem<'a> {
                 &tool.mcp_server,
                 &tool.tool_name,
                 Some(serde_json::to_value(arguments).unwrap_or_default()),
-                Some(Duration::from_secs(15)),
+
             )
             .await?;
 
@@ -175,7 +174,6 @@ pub(crate) async fn request_permission(
             &permission_tool.mcp_server,
             &permission_tool.tool_name,
             Some(serde_json::to_value(arguments).unwrap_or_default()),
-            Some(Duration::from_secs(15)),
         )
         .await?;
 
@@ -230,7 +228,7 @@ pub fn new_patch_tool_call(
         let file_name = path.file_name().unwrap_or_default().display().to_string();
 
         match change {
-            FileChange::Delete => {
+            FileChange::Delete { content: _ } => {
                 return acp::ToolCall {
                     id: acp::ToolCallId(call_id.into()),
                     title: format!("Delete “`{file_name}`”"),
@@ -290,7 +288,7 @@ pub fn new_patch_tool_call(
                     meta: None,
                 });
             }
-            FileChange::Delete => {
+            FileChange::Delete { content: _ } => {
                 content.push(
                     format!(
                         "Delete “`{}`”\n\n",

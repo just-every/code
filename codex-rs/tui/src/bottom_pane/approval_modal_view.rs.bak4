@@ -1,0 +1,126 @@
+use crossterm::event::KeyEvent;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::widgets::WidgetRef;
+
+use crate::app_event_sender::AppEventSender;
+use crate::chatwidget::BackgroundOrderTicket;
+use crate::user_approval_widget::ApprovalRequest;
+use crate::user_approval_widget::UserApprovalWidget;
+
+use super::BottomPane;
+use super::BottomPaneView;
+use super::CancellationEvent;
+use std::collections::VecDeque;
+
+/// Modal overlay asking the user to approve/deny a sequence of requests.
+pub(crate) struct ApprovalModalView<'a> {
+    current: UserApprovalWidget<'a>,
+    queue: VecDeque<(ApprovalRequest, BackgroundOrderTicket)>,
+    app_event_tx: AppEventSender,
+}
+
+impl ApprovalModalView<'_> {
+    pub fn new(
+        request: ApprovalRequest,
+        ticket: BackgroundOrderTicket,
+        app_event_tx: AppEventSender,
+    ) -> Self {
+        Self {
+            current: UserApprovalWidget::new(request, ticket, app_event_tx.clone()),
+            queue: VecDeque::new(),
+            app_event_tx,
+        }
+    }
+
+    pub fn enqueue_request(
+        &mut self,
+        req: ApprovalRequest,
+        ticket: BackgroundOrderTicket,
+    ) {
+        self.queue.push_back((req, ticket));
+    }
+
+    /// Advance to next request if the current one is finished.
+    fn maybe_advance(&mut self) {
+        if self.current.is_complete() {
+            if let Some((req, ticket)) = self.queue.pop_front() {
+                self.current =
+                    UserApprovalWidget::new(req, ticket, self.app_event_tx.clone());
+            }
+        }
+    }
+}
+
+impl<'a> BottomPaneView<'a> for ApprovalModalView<'a> {
+    fn handle_key_event(&mut self, _pane: &mut BottomPane<'a>, key_event: KeyEvent) {
+        self.current.handle_key_event(key_event);
+        self.maybe_advance();
+    }
+
+    fn on_ctrl_c(&mut self, _pane: &mut BottomPane<'a>) -> CancellationEvent {
+        self.current.on_ctrl_c();
+        self.queue.clear();
+        CancellationEvent::Handled
+    }
+
+    fn is_complete(&self) -> bool {
+        self.current.is_complete() && self.queue.is_empty()
+    }
+
+    fn desired_height(&self, width: u16) -> u16 {
+        self.current.desired_height(width)
+    }
+
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        (&self.current).render_ref(area, buf);
+    }
+
+    fn try_consume_approval_request(
+        &mut self,
+        req: ApprovalRequest,
+        ticket: BackgroundOrderTicket,
+    ) -> Option<(ApprovalRequest, BackgroundOrderTicket)> {
+        self.enqueue_request(req, ticket);
+        None
+    }
+}
+
+#[cfg(all(test, feature = "legacy_tests"))]
+mod tests {
+    use super::*;
+    use crate::app_event::AppEvent;
+    use std::sync::mpsc::channel;
+
+    fn make_exec_request() -> ApprovalRequest {
+        ApprovalRequest::Exec {
+            id: "test".to_string(),
+            command: vec!["echo".to_string(), "hi".to_string()],
+            reason: None,
+        }
+    }
+
+    #[test]
+    fn ctrl_c_aborts_and_clears_queue() {
+        let (tx_raw, _rx) = channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let first = make_exec_request();
+        let ticket = BackgroundOrderTicket::test_for_request(1);
+        let mut view = ApprovalModalView::new(first, ticket, tx);
+        let ticket2 = BackgroundOrderTicket::test_for_request(2);
+        view.enqueue_request(make_exec_request(), ticket2);
+
+        let (tx_raw2, _rx2) = channel::<AppEvent>();
+        let mut pane = BottomPane::new(super::super::BottomPaneParams {
+            app_event_tx: AppEventSender::new(tx_raw2),
+            has_input_focus: true,
+            enhanced_keys_supported: false,
+            placeholder_text: "Ask Codex to do anything".to_string(),
+            disable_paste_burst: false,
+        });
+        assert_eq!(CancellationEvent::Handled, view.on_ctrl_c(&mut pane));
+        assert!(view.queue.is_empty());
+        assert!(view.current.is_complete());
+        assert!(view.is_complete());
+    }
+}

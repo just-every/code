@@ -17,9 +17,9 @@ use std::time::Duration;
 
 use codex_app_server_protocol::AuthMode;
 
+use crate::token_data::PlanType;
 use crate::token_data::TokenData;
 use crate::token_data::parse_id_token;
-use crate::config::resolve_codex_path_for_read;
 
 #[derive(Debug, Clone)]
 pub struct CodexAuth {
@@ -71,14 +71,9 @@ impl CodexAuth {
         Ok(access)
     }
 
-    /// Loads the available auth information from the auth.json or
-    /// OPENAI_API_KEY environment variable.
-    pub fn from_codex_home(
-        codex_home: &Path,
-        preferred_auth_method: AuthMode,
-        originator: &str,
-    ) -> std::io::Result<Option<CodexAuth>> {
-        load_auth(codex_home, true, preferred_auth_method, originator)
+    /// Loads the available auth information from the auth.json.
+    pub fn from_codex_home(codex_home: &Path) -> std::io::Result<Option<CodexAuth>> {
+        load_auth(codex_home, false)
     }
 
     pub async fn get_token_data(&self) -> Result<TokenData, std::io::Error> {
@@ -137,13 +132,12 @@ impl CodexAuth {
     }
 
     pub fn get_account_id(&self) -> Option<String> {
-        self.get_current_token_data()
-            .and_then(|t| t.account_id.clone())
+        self.get_current_token_data().and_then(|t| t.account_id)
     }
 
-    pub fn get_plan_type(&self) -> Option<String> {
+    pub(crate) fn get_plan_type(&self) -> Option<PlanType> {
         self.get_current_token_data()
-            .and_then(|t| t.id_token.chatgpt_plan_type.as_ref().map(|p| p.as_string()))
+            .and_then(|t| t.id_token.chatgpt_plan_type)
     }
 
     fn get_current_auth_json(&self) -> Option<AuthDotJson> {
@@ -152,7 +146,7 @@ impl CodexAuth {
     }
 
     fn get_current_token_data(&self) -> Option<TokenData> {
-        self.get_current_auth_json().and_then(|t| t.tokens.clone())
+        self.get_current_auth_json().and_then(|t| t.tokens)
     }
 
     /// Consider this private to integration tests.
@@ -174,7 +168,7 @@ impl CodexAuth {
             mode: AuthMode::ChatGPT,
             auth_file: PathBuf::new(),
             auth_dot_json,
-            client: crate::default_client::create_client("codex_cli_rs"),
+            client: crate::default_client::create_client(),
         }
     }
 
@@ -189,20 +183,18 @@ impl CodexAuth {
     }
 
     pub fn from_api_key(api_key: &str) -> Self {
-        Self::from_api_key_with_client(
-            api_key,
-            crate::default_client::create_client(crate::default_client::DEFAULT_ORIGINATOR),
-        )
+        Self::from_api_key_with_client(api_key, crate::default_client::create_client())
     }
 }
 
 pub const OPENAI_API_KEY_ENV_VAR: &str = "OPENAI_API_KEY";
 pub const CODEX_API_KEY_ENV_VAR: &str = "CODEX_API_KEY";
 
-fn read_openai_api_key_from_env() -> Option<String> {
+pub fn read_openai_api_key_from_env() -> Option<String> {
     env::var(OPENAI_API_KEY_ENV_VAR)
         .ok()
-        .filter(|s| !s.is_empty())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 pub fn read_codex_api_key_from_env() -> Option<String> {
@@ -220,97 +212,39 @@ pub fn get_auth_file(codex_home: &Path) -> PathBuf {
 /// if a file was removed, `Ok(false)` if no auth file was present.
 pub fn logout(codex_home: &Path) -> std::io::Result<bool> {
     let auth_file = get_auth_file(codex_home);
-    let removed = match std::fs::remove_file(&auth_file) {
-        Ok(_) => true,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
-        Err(err) => return Err(err),
-    };
-
-    let _ = crate::auth_accounts::set_active_account_id(codex_home, None)?;
-    Ok(removed)
+    match std::fs::remove_file(&auth_file) {
+        Ok(_) => Ok(true),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err),
+    }
 }
 
-/// Writes an `auth.json` that contains only the API key. Intended for CLI use.
+/// Writes an `auth.json` that contains only the API key.
 pub fn login_with_api_key(codex_home: &Path, api_key: &str) -> std::io::Result<()> {
     let auth_dot_json = AuthDotJson {
         openai_api_key: Some(api_key.to_string()),
         tokens: None,
         last_refresh: None,
     };
-    write_auth_json(&get_auth_file(codex_home), &auth_dot_json)?;
-    let _ = crate::auth_accounts::upsert_api_key_account(
-        codex_home,
-        api_key.to_string(),
-        None,
-        true,
-    )?;
-    Ok(())
-}
-
-/// Activate a stored account by writing its credentials to auth.json and
-/// marking it active in the account store.
-pub fn activate_account(codex_home: &Path, account_id: &str) -> std::io::Result<()> {
-    let Some(account) = crate::auth_accounts::find_account(codex_home, account_id)? else {
-        return Err(std::io::Error::other(format!(
-            "account with id {account_id} was not found"
-        )));
-    };
-
-    let auth_file = get_auth_file(codex_home);
-    let account_id_owned = account.id.clone();
-    match account.mode {
-        AuthMode::ApiKey => {
-            let api_key = account.openai_api_key.clone().ok_or_else(|| {
-                std::io::Error::other("stored API key account is missing the key value")
-            })?;
-            let auth = AuthDotJson {
-                openai_api_key: Some(api_key),
-                tokens: None,
-                last_refresh: None,
-            };
-            write_auth_json(&auth_file, &auth)?;
-        }
-        AuthMode::ChatGPT => {
-            let tokens = account.tokens.clone().ok_or_else(|| {
-                std::io::Error::other("stored ChatGPT account is missing token data")
-            })?;
-            let auth = AuthDotJson {
-                openai_api_key: None,
-                tokens: Some(tokens),
-                last_refresh: account.last_refresh,
-            };
-            write_auth_json(&auth_file, &auth)?;
-        }
-    }
-
-    let _ = crate::auth_accounts::set_active_account_id(codex_home, Some(account_id_owned))?;
-    Ok(())
+    write_auth_json(&get_auth_file(codex_home), &auth_dot_json)
 }
 
 fn load_auth(
     codex_home: &Path,
-    include_env_var: bool,
-    preferred_auth_method: AuthMode,
-    originator: &str,
+    enable_codex_api_key_env: bool,
 ) -> std::io::Result<Option<CodexAuth>> {
-    // First, check to see if there is a valid auth.json file. If not, we fall
-    // back to AuthMode::ApiKey using the OPENAI_API_KEY environment variable
-    // (if it is set).
+    if enable_codex_api_key_env && let Some(api_key) = read_codex_api_key_from_env() {
+        let client = crate::default_client::create_client();
+        return Ok(Some(CodexAuth::from_api_key_with_client(
+            api_key.as_str(),
+            client,
+        )));
+    }
+
     let auth_file = get_auth_file(codex_home);
-    let auth_read_path = resolve_codex_path_for_read(codex_home, Path::new("auth.json"));
-    let client = crate::default_client::create_client(originator);
-    let auth_dot_json = match try_read_auth_json(&auth_read_path) {
+    let client = crate::default_client::create_client();
+    let auth_dot_json = match try_read_auth_json(&auth_file) {
         Ok(auth) => auth,
-        // If auth.json does not exist, try to read the OPENAI_API_KEY from the
-        // environment variable.
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound && include_env_var => {
-            return match read_openai_api_key_from_env() {
-                Some(api_key) => Ok(Some(CodexAuth::from_api_key_with_client(&api_key, client))),
-                None => Ok(None),
-            };
-        }
-        // Though if auth.json exists but is malformed, do not fall back to the
-        // env var because the user may be expecting to use AuthMode::ChatGPT.
         Err(e) => {
             return Err(e);
         }
@@ -322,33 +256,11 @@ fn load_auth(
         last_refresh,
     } = auth_dot_json;
 
-    // If the auth.json has an API key, decide whether to use it.
+    // Prefer AuthMode.ApiKey if it's set in the auth.json.
     if let Some(api_key) = &auth_json_api_key {
-        // Should any of these be AuthMode::ChatGPT with the api_key set?
-        // Does AuthMode::ChatGPT indicate that there is an auth.json that is
-        // "refreshable" even if we are using the API key for auth?
-        match &tokens {
-            Some(_tokens) => {
-                // When tokens are present, honor the caller's preference strictly:
-                // - If the caller prefers API key, use it.
-                // - Otherwise, prefer ChatGPT and ignore the API key.
-                if preferred_auth_method == AuthMode::ApiKey {
-                    return Ok(Some(CodexAuth::from_api_key_with_client(api_key, client)));
-                }
-                // else: fall through to ChatGPT auth
-            }
-            None => {
-                // We have an API key but no tokens in the auth.json file.
-                // Perhaps the user ran `codex login --api-key <KEY>` or updated
-                // auth.json by hand. Either way, let's assume they are trying
-                // to use their API key.
-                return Ok(Some(CodexAuth::from_api_key_with_client(api_key, client)));
-            }
-        }
+        return Ok(Some(CodexAuth::from_api_key_with_client(api_key, client)));
     }
 
-    // For the AuthMode::ChatGPT variant, perhaps neither api_key nor
-    // openai_api_key should exist?
     Ok(Some(CodexAuth {
         api_key: None,
         mode: AuthMode::ChatGPT,
@@ -374,6 +286,9 @@ pub fn try_read_auth_json(auth_file: &Path) -> std::io::Result<AuthDotJson> {
 }
 
 pub fn write_auth_json(auth_file: &Path, auth_dot_json: &AuthDotJson) -> std::io::Result<()> {
+    if let Some(parent) = auth_file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let json_data = serde_json::to_string_pretty(auth_dot_json)?;
     let mut options = OpenOptions::new();
     options.truncate(true).write(true).create(true);
@@ -398,29 +313,13 @@ async fn update_tokens(
     let tokens = auth_dot_json.tokens.get_or_insert_with(TokenData::default);
     tokens.id_token = parse_id_token(&id_token).map_err(std::io::Error::other)?;
     if let Some(access_token) = access_token {
-        tokens.access_token = access_token.to_string();
+        tokens.access_token = access_token;
     }
     if let Some(refresh_token) = refresh_token {
-        tokens.refresh_token = refresh_token.to_string();
+        tokens.refresh_token = refresh_token;
     }
     auth_dot_json.last_refresh = Some(Utc::now());
     write_auth_json(auth_file, &auth_dot_json)?;
-
-    if let Some(codex_home) = auth_file.parent() {
-        if let Some(tokens) = auth_dot_json.tokens.clone() {
-            let last_refresh = auth_dot_json
-                .last_refresh
-                .unwrap_or_else(Utc::now);
-            let email = tokens.id_token.email.clone();
-            let _ = crate::auth_accounts::upsert_chatgpt_account(
-                codex_home,
-                tokens,
-                last_refresh,
-                email,
-                true,
-            )?;
-        }
-    }
     Ok(auth_dot_json)
 }
 
@@ -494,7 +393,6 @@ use std::sync::RwLock;
 /// Internal cached auth state.
 #[derive(Clone, Debug)]
 struct CachedAuth {
-    preferred_auth_mode: AuthMode,
     auth: Option<CodexAuth>,
 }
 
@@ -576,9 +474,7 @@ mod tests {
             auth_dot_json,
             auth_file: _,
             ..
-        } = super::load_auth(codex_home.path(), false, AuthMode::ChatGPT, "codex_cli_rs")
-            .unwrap()
-            .unwrap();
+        } = super::load_auth(codex_home.path(), false).unwrap().unwrap();
         assert_eq!(None, api_key);
         assert_eq!(AuthMode::ChatGPT, mode);
 
@@ -605,88 +501,6 @@ mod tests {
             },
             auth_dot_json
         )
-    }
-
-    /// Even if the OPENAI_API_KEY is set in auth.json, if the plan is not in
-    /// [`TokenData::is_plan_that_should_use_api_key`], it should use
-    /// [`AuthMode::ChatGPT`].
-    #[tokio::test]
-    async fn pro_account_with_api_key_still_uses_chatgpt_auth() {
-        let codex_home = tempdir().unwrap();
-        let fake_jwt = write_auth_file(
-            AuthFileParams {
-                openai_api_key: Some("sk-test-key".to_string()),
-                chatgpt_plan_type: "pro".to_string(),
-            },
-            codex_home.path(),
-        )
-        .expect("failed to write auth file");
-
-        let CodexAuth {
-            api_key,
-            mode,
-            auth_dot_json,
-            auth_file: _,
-            ..
-        } = super::load_auth(codex_home.path(), false, AuthMode::ChatGPT, "codex_cli_rs")
-            .unwrap()
-            .unwrap();
-        assert_eq!(None, api_key);
-        assert_eq!(AuthMode::ChatGPT, mode);
-
-        let guard = auth_dot_json.lock().unwrap();
-        let auth_dot_json = guard.as_ref().expect("AuthDotJson should exist");
-        assert_eq!(
-            &AuthDotJson {
-                openai_api_key: None,
-                tokens: Some(TokenData {
-                    id_token: IdTokenInfo {
-                        email: Some("user@example.com".to_string()),
-                        chatgpt_plan_type: Some(PlanType::Known(KnownPlan::Pro)),
-                        raw_jwt: fake_jwt,
-                    },
-                    access_token: "test-access-token".to_string(),
-                    refresh_token: "test-refresh-token".to_string(),
-                    account_id: None,
-                }),
-                last_refresh: Some(
-                    DateTime::parse_from_rfc3339(LAST_REFRESH)
-                        .unwrap()
-                        .with_timezone(&Utc)
-                ),
-            },
-            auth_dot_json
-        )
-    }
-
-    /// If the OPENAI_API_KEY is set in auth.json and it is an enterprise
-    /// account, then it should use [`AuthMode::ApiKey`].
-    #[tokio::test]
-    async fn enterprise_account_with_api_key_uses_apikey_auth() {
-        let codex_home = tempdir().unwrap();
-        write_auth_file(
-            AuthFileParams {
-                openai_api_key: Some("sk-test-key".to_string()),
-                chatgpt_plan_type: "enterprise".to_string(),
-            },
-            codex_home.path(),
-        )
-        .expect("failed to write auth file");
-
-        let CodexAuth {
-            api_key,
-            mode,
-            auth_dot_json,
-            auth_file: _,
-            ..
-        } = super::load_auth(codex_home.path(), false, AuthMode::ChatGPT, "codex_cli_rs")
-            .unwrap()
-            .unwrap();
-        assert_eq!(Some("sk-test-key".to_string()), api_key);
-        assert_eq!(AuthMode::ApiKey, mode);
-
-        let guard = auth_dot_json.lock().expect("should unwrap");
-        assert!(guard.is_none(), "auth_dot_json should be None");
     }
 
     #[tokio::test]
@@ -699,9 +513,7 @@ mod tests {
         )
         .unwrap();
 
-        let auth = super::load_auth(dir.path(), false, AuthMode::ChatGPT, "codex_cli_rs")
-            .unwrap()
-            .unwrap();
+        let auth = super::load_auth(dir.path(), false).unwrap().unwrap();
         assert_eq!(auth.mode, AuthMode::ApiKey);
         assert_eq!(auth.api_key, Some("sk-test-key".to_string()));
 
@@ -783,7 +595,6 @@ mod tests {
 #[derive(Debug)]
 pub struct AuthManager {
     codex_home: PathBuf,
-    originator: String,
     inner: RwLock<CachedAuth>,
     enable_codex_api_key_env: bool,
 }
@@ -793,37 +604,22 @@ impl AuthManager {
     /// preferred auth method. Errors loading auth are swallowed; `auth()` will
     /// simply return `None` in that case so callers can treat it as an
     /// unauthenticated state.
-    pub fn new(codex_home: PathBuf, preferred_auth_mode: AuthMode, originator: String) -> Self {
-        let mut effective_mode = preferred_auth_mode;
-        let auth = if let Some(api_key) = read_codex_api_key_from_env() {
-            effective_mode = AuthMode::ApiKey;
-            Some(CodexAuth::from_api_key(&api_key))
-        } else {
-            CodexAuth::from_codex_home(&codex_home, preferred_auth_mode, &originator)
-                .ok()
-                .flatten()
-        };
+    pub fn new(codex_home: PathBuf, enable_codex_api_key_env: bool) -> Self {
+        let auth = load_auth(&codex_home, enable_codex_api_key_env)
+            .ok()
+            .flatten();
         Self {
             codex_home,
-            originator,
-            inner: RwLock::new(CachedAuth {
-                preferred_auth_mode: effective_mode,
-                auth,
-            }),
-            enable_codex_api_key_env: true,
+            inner: RwLock::new(CachedAuth { auth }),
+            enable_codex_api_key_env,
         }
     }
 
     /// Create an AuthManager with a specific CodexAuth, for testing only.
     pub fn from_auth_for_testing(auth: CodexAuth) -> Arc<Self> {
-        let preferred_auth_mode = auth.mode;
-        let cached = CachedAuth {
-            preferred_auth_mode,
-            auth: Some(auth),
-        };
+        let cached = CachedAuth { auth: Some(auth) };
         Arc::new(Self {
             codex_home: PathBuf::new(),
-            originator: "codex_cli_rs".to_string(),
             inner: RwLock::new(cached),
             enable_codex_api_key_env: false,
         })
@@ -834,35 +630,15 @@ impl AuthManager {
         self.inner.read().ok().and_then(|c| c.auth.clone())
     }
 
-    /// Preferred auth method used when (re)loading.
-    pub fn preferred_auth_method(&self) -> AuthMode {
-        self.inner
-            .read()
-            .map(|c| c.preferred_auth_mode)
-            .unwrap_or(AuthMode::ApiKey)
-    }
-
-    /// Force a reload using the existing preferred auth method. Returns
+    /// Force a reload of the auth information from auth.json. Returns
     /// whether the auth value changed.
     pub fn reload(&self) -> bool {
-        let preferred = self.preferred_auth_method();
-        let env_auth = if self.enable_codex_api_key_env {
-            read_codex_api_key_from_env().map(|api_key| CodexAuth::from_api_key(&api_key))
-        } else {
-            None
-        };
-        let new_auth = env_auth.clone().or_else(|| {
-            CodexAuth::from_codex_home(&self.codex_home, preferred, &self.originator)
-                .ok()
-                .flatten()
-        });
+        let new_auth = load_auth(&self.codex_home, self.enable_codex_api_key_env)
+            .ok()
+            .flatten();
         if let Ok(mut guard) = self.inner.write() {
             let changed = !AuthManager::auths_equal(&guard.auth, &new_auth);
             guard.auth = new_auth;
-            guard.preferred_auth_mode = env_auth
-                .as_ref()
-                .map(|auth| auth.mode)
-                .unwrap_or(preferred);
             changed
         } else {
             false
@@ -877,22 +653,9 @@ impl AuthManager {
         }
     }
 
-    /// Convenience constructor returning an `Arc` wrapper with default auth mode + originator.
-    pub fn shared(codex_home: PathBuf) -> Arc<Self> {
-        Arc::new(Self::new(
-            codex_home,
-            AuthMode::ApiKey,
-            crate::default_client::DEFAULT_ORIGINATOR.to_string(),
-        ))
-    }
-
-    /// Convenience constructor returning an `Arc` wrapper with explicit auth mode and originator.
-    pub fn shared_with_mode_and_originator(
-        codex_home: PathBuf,
-        preferred_auth_mode: AuthMode,
-        originator: String,
-    ) -> Arc<Self> {
-        Arc::new(Self::new(codex_home, preferred_auth_mode, originator))
+    /// Convenience constructor returning an `Arc` wrapper.
+    pub fn shared(codex_home: PathBuf, enable_codex_api_key_env: bool) -> Arc<Self> {
+        Arc::new(Self::new(codex_home, enable_codex_api_key_env))
     }
 
     /// Attempt to refresh the current auth token (if any). On success, reload

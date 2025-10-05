@@ -241,9 +241,11 @@ impl OllamaClient {
         // Try a few known locations/keys that different Ollama versions expose.
         // Prefer numeric values; fall back to parsing strings if needed.
         fn get_u64(v: &JsonValue, key: &str) -> Option<u64> {
-            v.get(key)
-                .and_then(|x| x.as_u64())
-                .or_else(|| v.get(key).and_then(|x| x.as_str()).and_then(|s| s.parse::<u64>().ok()))
+            v.get(key).and_then(|x| x.as_u64()).or_else(|| {
+                v.get(key)
+                    .and_then(|x| x.as_str())
+                    .and_then(|s| s.parse::<u64>().ok())
+            })
         }
 
         // 1) Top-level `details.context_length` (observed in newer builds)

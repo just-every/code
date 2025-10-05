@@ -4,7 +4,7 @@ use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Timelike, Utc};
-use crate::protocol::RateLimitSnapshotEvent;
+use crate::protocol::RateLimitSnapshot;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json;
@@ -93,7 +93,7 @@ struct AggregatedUsageEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct RateLimitInfo {
     #[serde(default)]
-    snapshot: Option<RateLimitSnapshotEvent>,
+    snapshot: Option<RateLimitSnapshot>,
     #[serde(default)]
     observed_at: Option<DateTime<Utc>>,
     #[serde(default, alias = "next_reset_at")]
@@ -310,7 +310,7 @@ fn truncate_to_month(ts: DateTime<Utc>) -> DateTime<Utc> {
 pub struct StoredRateLimitSnapshot {
     pub account_id: String,
     pub plan: Option<String>,
-    pub snapshot: Option<RateLimitSnapshotEvent>,
+    pub snapshot: Option<RateLimitSnapshot>,
     pub observed_at: Option<DateTime<Utc>>,
     pub primary_next_reset_at: Option<DateTime<Utc>>,
     pub secondary_next_reset_at: Option<DateTime<Utc>>,
@@ -440,7 +440,7 @@ pub fn record_rate_limit_snapshot(
     codex_home: &Path,
     account_id: &str,
     plan: Option<&str>,
-    snapshot: &RateLimitSnapshotEvent,
+    snapshot: &RateLimitSnapshot,
     observed_at: DateTime<Utc>,
 ) -> std::io::Result<()> {
     with_usage_file(codex_home, account_id, plan, |data| {
@@ -449,10 +449,14 @@ pub fn record_rate_limit_snapshot(
         info.snapshot = Some(snapshot.clone());
         info.observed_at = Some(observed_at);
         info.primary_next_reset_at = snapshot
-            .primary_reset_after_seconds
+            .primary
+            .as_ref()
+            .and_then(|w| w.resets_in_seconds)
             .map(|seconds| observed_at + Duration::seconds(seconds as i64));
         info.secondary_next_reset_at = snapshot
-            .secondary_reset_after_seconds
+            .secondary
+            .as_ref()
+            .and_then(|w| w.resets_in_seconds)
             .map(|seconds| observed_at + Duration::seconds(seconds as i64));
         data.rate_limit = Some(info);
     })

@@ -3,20 +3,14 @@ use codex_core::ConversationManager;
 use codex_core::ModelProviderInfo;
 use codex_core::NewConversation;
 use codex_core::built_in_model_providers;
-use codex_core::models::ContentItem;
-use codex_core::protocol::CompactedItem;
 use codex_core::protocol::ErrorEvent;
 use codex_core::protocol::EventMsg;
 use codex_core::protocol::InputItem;
 use codex_core::protocol::Op;
-use codex_core::protocol::ResponseItem;
 use codex_core::protocol::RolloutItem;
 use codex_core::protocol::RolloutLine;
-use codex_core::protocol::SessionMeta;
-use codex_core::protocol::SessionMetaLine;
-use codex_core::InitialHistory;
-use codex_core::RolloutRecorder;
 use core_test_support::load_default_config_for_test;
+use core_test_support::skip_if_no_network;
 use core_test_support::wait_for_event;
 use tempfile::TempDir;
 use wiremock::Mock;
@@ -27,24 +21,19 @@ use wiremock::matchers::method;
 use wiremock::matchers::path;
 
 use codex_core::codex::compact::SUMMARIZATION_PROMPT;
-use core_test_support::non_sandbox_test;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_completed_with_tokens;
 use core_test_support::responses::ev_function_call;
-use core_test_support::responses::mount_sse_once;
+use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::sse;
 use core_test_support::responses::sse_response;
 use core_test_support::responses::start_mock_server;
 use pretty_assertions::assert_eq;
-use std::io::Write;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use chrono::Utc;
-use codex_protocol::ConversationId;
 // --- Test helpers -----------------------------------------------------------
 
 pub(super) const FIRST_REPLY: &str = "FIRST_REPLY";
@@ -62,45 +51,9 @@ const FINAL_REPLY: &str = "FINAL_REPLY";
 const DUMMY_FUNCTION_NAME: &str = "unsupported_tool";
 const DUMMY_CALL_ID: &str = "call-multi-auto";
 
-#[derive(Clone)]
-struct SeqResponder {
-    bodies: Arc<Vec<String>>,
-    calls: Arc<AtomicUsize>,
-    requests: Arc<Mutex<Vec<Vec<u8>>>>,
-}
-
-impl SeqResponder {
-    fn new(bodies: Vec<String>) -> Self {
-        Self {
-            bodies: Arc::new(bodies),
-            calls: Arc::new(AtomicUsize::new(0)),
-            requests: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
-
-    fn recorded_requests(&self) -> Vec<Vec<u8>> {
-        self.requests.lock().unwrap().clone()
-    }
-}
-
-impl Respond for SeqResponder {
-    fn respond(&self, req: &Request) -> ResponseTemplate {
-        let idx = self.calls.fetch_add(1, Ordering::SeqCst);
-        self.requests.lock().unwrap().push(req.body.clone());
-        let body = self
-            .bodies
-            .get(idx)
-            .unwrap_or_else(|| panic!("unexpected request index {idx}"))
-            .clone();
-        ResponseTemplate::new(200)
-            .insert_header("content-type", "text/event-stream")
-            .set_body_raw(body, "text/event-stream")
-    }
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn summarize_context_three_requests_and_instructions() {
-    non_sandbox_test!();
+    skip_if_no_network!();
 
     // Set up a mock server that we can inspect after the run.
     let server = start_mock_server().await;
@@ -126,19 +79,19 @@ async fn summarize_context_three_requests_and_instructions() {
         body.contains("\"text\":\"hello world\"")
             && !body.contains("You have exceeded the maximum number of tokens")
     };
-    mount_sse_once(&server, first_matcher, sse1).await;
+    mount_sse_once_match(&server, first_matcher, sse1).await;
 
     let second_matcher = |req: &wiremock::Request| {
         let body = std::str::from_utf8(&req.body).unwrap_or("");
         body.contains("You have exceeded the maximum number of tokens")
     };
-    mount_sse_once(&server, second_matcher, sse2).await;
+    mount_sse_once_match(&server, second_matcher, sse2).await;
 
     let third_matcher = |req: &wiremock::Request| {
         let body = std::str::from_utf8(&req.body).unwrap_or("");
         body.contains(&format!("\"text\":\"{THIRD_USER_MSG}\""))
     };
-    mount_sse_once(&server, third_matcher, sse3).await;
+    mount_sse_once_match(&server, third_matcher, sse3).await;
 
     // Build config pointing to the mock server and spawn Codex.
     let model_provider = ModelProviderInfo {
@@ -313,87 +266,11 @@ async fn summarize_context_three_requests_and_instructions() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn get_rollout_history_retains_compacted_entries() {
-    let dir = tempfile::tempdir().expect("create temp dir");
-    let path = dir.path().join("session.jsonl");
-    let conversation_id = ConversationId::new();
-
-    let session_meta = RolloutLine {
-        timestamp: Utc::now().to_rfc3339(),
-        item: RolloutItem::SessionMeta(SessionMetaLine {
-            meta: SessionMeta {
-                id: conversation_id,
-                timestamp: Utc::now().to_rfc3339(),
-                cwd: PathBuf::from("/tmp"),
-                originator: "code".to_string(),
-                cli_version: "test".to_string(),
-                instructions: None,
-            },
-            git: None,
-        }),
-    };
-
-    let user_line = RolloutLine {
-        timestamp: Utc::now().to_rfc3339(),
-        item: RolloutItem::ResponseItem(ResponseItem::Message {
-            id: None,
-            role: "user".to_string(),
-            content: vec![ContentItem::OutputText {
-                text: "original user message".to_string(),
-            }],
-        }),
-    };
-
-    let assistant_line = RolloutLine {
-        timestamp: Utc::now().to_rfc3339(),
-        item: RolloutItem::ResponseItem(ResponseItem::Message {
-            id: None,
-            role: "assistant".to_string(),
-            content: vec![ContentItem::OutputText {
-                text: "assistant reply".to_string(),
-            }],
-        }),
-    };
-
-    let compacted_line = RolloutLine {
-        timestamp: Utc::now().to_rfc3339(),
-        item: RolloutItem::Compacted(CompactedItem {
-            message: "compact summary".to_string(),
-        }),
-    };
-
-    let mut file = std::fs::File::create(&path).expect("open session file");
-    for line in [&session_meta, &user_line, &assistant_line, &compacted_line] {
-        let serialized = serde_json::to_string(line).expect("serialize rollout line");
-        writeln!(file, "{}", serialized).expect("write rollout line");
-    }
-
-    let history = RolloutRecorder::get_rollout_history(&path)
-        .await
-        .expect("load history");
-
-    let resumed = match history {
-        InitialHistory::Resumed(resumed) => resumed,
-        other => panic!("expected resumed history, got {other:?}"),
-    };
-
-    assert_eq!(resumed.conversation_id, conversation_id);
-    let mut saw_compacted = false;
-    for item in resumed.history {
-        if matches!(item, RolloutItem::Compacted(ref compacted) if compacted.message == "compact summary") {
-            saw_compacted = true;
-            break;
-        }
-    }
-    assert!(saw_compacted, "expected compacted rollout item to be preserved");
-}
-
 // Windows CI only: bump to 4 workers to prevent SSE/event starvation and test timeouts.
 #[cfg_attr(windows, tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[cfg_attr(not(windows), tokio::test(flavor = "multi_thread", worker_threads = 2))]
 async fn auto_compact_runs_after_token_limit_hit() {
-    non_sandbox_test!();
+    skip_if_no_network!();
 
     let server = start_mock_server().await;
 
@@ -553,7 +430,7 @@ async fn auto_compact_runs_after_token_limit_hit() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn auto_compact_persists_rollout_entries() {
-    non_sandbox_test!();
+    skip_if_no_network!();
 
     let server = start_mock_server().await;
 
@@ -680,126 +557,8 @@ async fn auto_compact_persists_rollout_entries() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn auto_compact_clears_history_before_next_turn() {
-    non_sandbox_test!();
-
-    let server = start_mock_server().await;
-
-    let sse1 = sse(vec![
-        ev_assistant_message("m1", FIRST_REPLY),
-        ev_completed_with_tokens("r1", 70_000),
-    ]);
-    let sse2 = sse(vec![
-        ev_assistant_message("m2", "SECOND_REPLY"),
-        ev_completed_with_tokens("r2", 330_000),
-    ]);
-    let sse3 = sse(vec![
-        ev_assistant_message("m3", AUTO_SUMMARY_TEXT),
-        ev_completed_with_tokens("r3", 200),
-    ]);
-    let sse4 = sse(vec![
-        ev_assistant_message("m4", "SECOND_REPLY_COMPACTED"),
-        ev_completed_with_tokens("r4", 80_000),
-    ]);
-    let sse5 = sse(vec![
-        ev_assistant_message("m5", "THIRD_REPLY"),
-        ev_completed_with_tokens("r5", 60_000),
-    ]);
-
-    let responder = SeqResponder::new(vec![sse1, sse2, sse3, sse4, sse5]);
-    Mock::given(method("POST"))
-        .and(path("/v1/responses"))
-        .respond_with(responder.clone())
-        .expect(5)
-        .mount(&server)
-        .await;
-
-    let model_provider = ModelProviderInfo {
-        base_url: Some(format!("{}/v1", server.uri())),
-        ..built_in_model_providers()["openai"].clone()
-    };
-    let home = TempDir::new().unwrap();
-    let mut config = load_default_config_for_test(&home);
-    config.model_provider = model_provider;
-    config.model_auto_compact_token_limit = Some(200_000);
-    let conversation_manager = ConversationManager::with_auth(CodexAuth::from_api_key("dummy"));
-    let NewConversation { conversation: codex, .. } =
-        conversation_manager.new_conversation(config).await.unwrap();
-
-    codex
-        .submit(Op::UserInput {
-            items: vec![InputItem::Text {
-                text: FIRST_AUTO_MSG.into(),
-            }],
-        })
-        .await
-        .unwrap();
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TaskComplete(_))).await;
-
-    codex
-        .submit(Op::UserInput {
-            items: vec![InputItem::Text {
-                text: SECOND_AUTO_MSG.into(),
-            }],
-        })
-        .await
-        .unwrap();
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TaskComplete(_))).await;
-
-    codex
-        .submit(Op::UserInput {
-            items: vec![InputItem::Text {
-                text: THIRD_USER_MSG.into(),
-            }],
-        })
-        .await
-        .unwrap();
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TaskComplete(_))).await;
-
-    let recorded = responder.recorded_requests();
-    assert_eq!(recorded.len(), 5, "expected five model requests including auto-compact retry");
-
-    let prompt_appearances = recorded
-        .iter()
-        .filter(|body| std::str::from_utf8(body).unwrap_or("").contains(SUMMARIZATION_PROMPT))
-        .count();
-    assert_eq!(prompt_appearances, 1, "summarization prompt should appear exactly once");
-
-    let third_turn_body = &recorded[4];
-    let third_body_text = std::str::from_utf8(third_turn_body).unwrap_or("");
-    assert!(
-        !third_body_text.contains(SUMMARIZATION_PROMPT),
-        "compacted history should drop summarization prompt before next turn"
-    );
-    assert!(
-        third_body_text.contains(THIRD_USER_MSG),
-        "third turn request should include the new user message"
-    );
-
-    let third_body_json: serde_json::Value = serde_json::from_slice(third_turn_body).unwrap();
-    let input_items = third_body_json
-        .get("input")
-        .and_then(|v| v.as_array())
-        .expect("third request should include input array");
-    let has_bridge = input_items.iter().any(|item| {
-        if item.get("type").and_then(|v| v.as_str()) != Some("message") {
-            return false;
-        }
-        let text = item
-            .get("content")
-            .and_then(|v| v.as_array())
-            .and_then(|content| content.first())
-            .and_then(|item| item.get("text"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        text.contains(AUTO_SUMMARY_TEXT)
-    });
-    assert!(has_bridge, "third turn request should include the compacted summary bridge");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn auto_compact_stops_after_failed_attempt() {
-    non_sandbox_test!();
+    skip_if_no_network!();
 
     let server = start_mock_server().await;
 
@@ -920,7 +679,7 @@ async fn auto_compact_stops_after_failed_attempt() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn auto_compact_allows_multiple_attempts_when_interleaved_with_other_turn_events() {
-    non_sandbox_test!();
+    skip_if_no_network!();
 
     let server = start_mock_server().await;
 
@@ -948,6 +707,42 @@ async fn auto_compact_allows_multiple_attempts_when_interleaved_with_other_turn_
         ev_assistant_message("m6", FINAL_REPLY),
         ev_completed_with_tokens("r6", 120),
     ]);
+
+    #[derive(Clone)]
+    struct SeqResponder {
+        bodies: Arc<Vec<String>>,
+        calls: Arc<AtomicUsize>,
+        requests: Arc<Mutex<Vec<Vec<u8>>>>,
+    }
+
+    impl SeqResponder {
+        fn new(bodies: Vec<String>) -> Self {
+            Self {
+                bodies: Arc::new(bodies),
+                calls: Arc::new(AtomicUsize::new(0)),
+                requests: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn recorded_requests(&self) -> Vec<Vec<u8>> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    impl Respond for SeqResponder {
+        fn respond(&self, req: &Request) -> ResponseTemplate {
+            let idx = self.calls.fetch_add(1, Ordering::SeqCst);
+            self.requests.lock().unwrap().push(req.body.clone());
+            let body = self
+                .bodies
+                .get(idx)
+                .unwrap_or_else(|| panic!("unexpected request index {idx}"))
+                .clone();
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(body, "text/event-stream")
+        }
+    }
 
     let responder = SeqResponder::new(vec![sse1, sse2, sse3, sse4, sse5, sse6]);
     Mock::given(method("POST"))

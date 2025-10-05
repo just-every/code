@@ -1,0 +1,988 @@
+use std::collections::HashSet;
+use std::sync::RwLock;
+use std::time::{Duration, Instant, SystemTime};
+
+use codex_common::elapsed::format_duration;
+use codex_core::parse_command::ParsedCommand;
+use ratatui::prelude::{Buffer, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Padding, Widget};
+
+use crate::exec_command::strip_bash_lc_and_escape;
+use crate::history::state::{
+    ExecAction, ExecRecord, ExecStatus, ExecStreamChunk, ExecWaitNote as RecordExecWaitNote,
+    HistoryId, TextTone,
+};
+use crate::util::buffer::{fill_rect, write_line};
+use crate::wrapping::word_wrap_lines; // moved from insert_history to wrapping
+
+use super::{
+    CommandOutput, ExecKind, HistoryCell, HistoryCellType, action_enum_from_parsed,
+    emphasize_shell_command_name, exec_command_lines, exec_render_parts_parsed,
+    exec_render_parts_parsed_with_meta, first_context_path, format_inline_script_for_display,
+    insert_line_breaks_after_double_ampersand, normalize_shell_command_display, output_lines,
+    running_status_line, trim_empty_lines,
+};
+
+// ==================== ExecCell ====================
+
+#[derive(Clone, PartialEq, Eq)]
+struct ExecWaitNote {
+    text: String,
+    is_error: bool,
+}
+
+#[derive(Clone, Default)]
+struct ExecWaitState {
+    total_wait: Option<Duration>,
+    run_duration: Option<Duration>,
+    waiting: bool,
+    notes: Vec<ExecWaitNote>,
+}
+
+pub(crate) struct ExecCell {
+    pub(crate) record: ExecRecord,
+    pub(crate) command: Vec<String>,
+    pub(crate) parsed: Vec<ParsedCommand>,
+    pub(crate) output: Option<CommandOutput>,
+    pub(crate) start_time: Option<Instant>,
+    pub(crate) stream_preview: Option<CommandOutput>,
+    parsed_meta: Option<ParsedExecMetadata>,
+    has_bold_command: bool,
+    wait_state: RwLock<ExecWaitState>,
+}
+
+const STREAMING_EXIT_CODE: i32 = i32::MIN;
+
+#[derive(Clone)]
+pub(crate) struct ParsedExecMetadata {
+    pub(crate) action: ExecAction,
+    pub(crate) ctx_path: Option<String>,
+    pub(crate) search_paths: HashSet<String>,
+}
+
+impl ParsedExecMetadata {
+    pub(crate) fn from_commands(parsed: &[ParsedCommand]) -> Self {
+        let action = action_enum_from_parsed(parsed);
+        let ctx_path = first_context_path(parsed);
+        let mut search_paths: HashSet<String> = HashSet::new();
+        for pc in parsed {
+            if let ParsedCommand::Search { path: Some(p), .. } = pc {
+                search_paths.insert(p.to_string());
+            }
+        }
+        Self {
+            action,
+            ctx_path,
+            search_paths,
+        }
+    }
+}
+
+struct ExecRenderLayout {
+    pre_lines: Vec<Line<'static>>,
+    out_lines: Vec<Line<'static>>,
+    pre_total: u16,
+    out_block_total: u16,
+    status_line: Option<Line<'static>>,
+}
+
+fn chunks_to_string(chunks: &[ExecStreamChunk]) -> String {
+    if chunks.is_empty() {
+        return String::new();
+    }
+    let mut sorted = chunks.to_vec();
+    sorted.sort_by_key(|chunk| chunk.offset);
+    let mut combined = String::new();
+    for chunk in sorted {
+        combined.push_str(&chunk.content);
+    }
+    combined
+}
+
+fn wait_notes_from_record(notes: &[RecordExecWaitNote]) -> Vec<ExecWaitNote> {
+    notes
+        .iter()
+        .map(|note| ExecWaitNote {
+            text: note.message.clone(),
+            is_error: matches!(note.tone, TextTone::Error),
+        })
+        .collect()
+}
+
+fn record_output(record: &ExecRecord) -> Option<CommandOutput> {
+    if !matches!(record.status, ExecStatus::Running) {
+        let stdout = chunks_to_string(&record.stdout_chunks);
+        let stderr = chunks_to_string(&record.stderr_chunks);
+        let exit_code = record.exit_code.unwrap_or_default();
+        return Some(CommandOutput {
+            exit_code,
+            stdout,
+            stderr,
+        });
+    }
+    None
+}
+
+impl HistoryCell for ExecCell {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn kind(&self) -> HistoryCellType {
+        let kind = match self.parsed_action() {
+            ExecAction::Read => ExecKind::Read,
+            ExecAction::Search => ExecKind::Search,
+            ExecAction::List => ExecKind::List,
+            ExecAction::Run => ExecKind::Run,
+        };
+        let status = self.record.status;
+        HistoryCellType::Exec { kind, status }
+    }
+    fn gutter_symbol(&self) -> Option<&'static str> {
+        match self.kind() {
+            HistoryCellType::Exec {
+                kind: ExecKind::Run,
+                status,
+            } => {
+                if matches!(status, ExecStatus::Error) {
+                    Some("✖")
+                } else if self.has_bold_command {
+                    Some("❯")
+                } else {
+                    None
+                }
+            }
+            HistoryCellType::Exec { .. } => None,
+            _ => None,
+        }
+    }
+    fn display_lines(&self) -> Vec<Line<'static>> {
+        exec_command_lines(
+            &self.command,
+            &self.parsed,
+            self.output.as_ref(),
+            self.stream_preview.as_ref(),
+            self.start_time,
+        )
+    }
+    fn has_custom_render(&self) -> bool {
+        true
+    }
+    fn is_animating(&self) -> bool {
+        matches!(self.record.status, ExecStatus::Running) && self.start_time.is_some()
+    }
+    fn desired_height(&self, width: u16) -> u16 {
+        let layout = self.layout_for_width(width);
+        let mut total = layout.pre_total.saturating_add(layout.out_block_total);
+        if layout.status_line.is_some() {
+            total = total.saturating_add(1);
+        }
+        total
+    }
+    fn custom_render_with_skip(&self, area: Rect, buf: &mut Buffer, skip_rows: u16) {
+        let layout = self.layout_for_width(area.width);
+
+        let pre_total = layout.pre_total;
+        let out_block_total = layout.out_block_total;
+
+        let pre_skip = skip_rows.min(pre_total);
+        let after_pre_skip = skip_rows.saturating_sub(pre_total);
+        let block_skip = after_pre_skip.min(out_block_total);
+        let after_block_skip = after_pre_skip.saturating_sub(block_skip);
+
+        let pre_height = pre_total.saturating_sub(pre_skip).min(area.height);
+        let mut remaining_height = area.height.saturating_sub(pre_height);
+
+        let block_height = out_block_total
+            .saturating_sub(block_skip)
+            .min(remaining_height);
+        remaining_height = remaining_height.saturating_sub(block_height);
+
+        let status_line_to_render = if after_block_skip == 0 && remaining_height > 0 {
+            layout.status_line.clone()
+        } else {
+            None
+        };
+        let status_height = status_line_to_render.is_some().then_some(1).unwrap_or(0);
+
+        let mut cur_y = area.y;
+
+        if pre_height > 0 {
+            let pre_area = Rect {
+                x: area.x,
+                y: cur_y,
+                width: area.width,
+                height: pre_height,
+            };
+            let bg_style = Style::default()
+                .bg(crate::colors::background())
+                .fg(crate::colors::text());
+            fill_rect(buf, pre_area, Some(' '), bg_style);
+            for (idx, line) in layout
+                .pre_lines
+                .iter()
+                .skip(pre_skip as usize)
+                .take(pre_height as usize)
+                .enumerate()
+            {
+                let y = pre_area.y.saturating_add(idx as u16);
+                if y >= pre_area.y.saturating_add(pre_area.height) {
+                    break;
+                }
+                write_line(buf, pre_area.x, y, pre_area.width, line, bg_style);
+            }
+            cur_y = cur_y.saturating_add(pre_height);
+        }
+
+        if block_height > 0 && area.width > 0 {
+            let out_area = Rect {
+                x: area.x,
+                y: cur_y,
+                width: area.width,
+                height: block_height,
+            };
+            let bg_style = Style::default()
+                .bg(crate::colors::background())
+                .fg(crate::colors::text_dim());
+            fill_rect(buf, out_area, Some(' '), bg_style);
+            let block = Block::default()
+                .borders(Borders::LEFT)
+                .border_style(
+                    Style::default()
+                        .fg(crate::colors::border_dim())
+                        .bg(crate::colors::background()),
+                )
+                .style(Style::default().bg(crate::colors::background()))
+                .padding(Padding {
+                    left: 1,
+                    right: 0,
+                    top: 0,
+                    bottom: 0,
+                });
+            let inner_rect = block.inner(out_area);
+            block.render(out_area, buf);
+
+            if inner_rect.width > 0 {
+                for (idx, line) in layout
+                    .out_lines
+                    .iter()
+                    .skip(block_skip as usize)
+                    .take(block_height as usize)
+                    .enumerate()
+                {
+                    let y = inner_rect.y.saturating_add(idx as u16);
+                    if y >= inner_rect.y.saturating_add(inner_rect.height) {
+                        break;
+                    }
+                    write_line(buf, inner_rect.x, y, inner_rect.width, line, bg_style);
+                }
+            }
+            cur_y = cur_y.saturating_add(block_height);
+        }
+
+        if let Some(line) = status_line_to_render {
+            if status_height > 0 {
+                let status_area = Rect {
+                    x: area.x,
+                    y: cur_y,
+                    width: area.width,
+                    height: status_height,
+                };
+                let bg_style = Style::default().bg(crate::colors::background());
+                fill_rect(buf, status_area, Some(' '), bg_style);
+                write_line(
+                    buf,
+                    status_area.x,
+                    status_area.y,
+                    status_area.width,
+                    &line,
+                    bg_style,
+                );
+            }
+        }
+    }
+}
+
+impl ExecCell {
+    pub(crate) fn from_record(record: ExecRecord) -> Self {
+        let command = record.command.clone();
+        let parsed = record.parsed.clone();
+        let output = record_output(&record);
+        let stream_preview = if matches!(record.status, ExecStatus::Running) {
+            let stdout = chunks_to_string(&record.stdout_chunks);
+            let stderr = chunks_to_string(&record.stderr_chunks);
+            if stdout.is_empty() && stderr.is_empty() {
+                None
+            } else {
+                Some(CommandOutput {
+                    exit_code: STREAMING_EXIT_CODE,
+                    stdout,
+                    stderr,
+                })
+            }
+        } else {
+            None
+        };
+        let has_bold_command = command_has_bold_token(&command);
+        let parsed_meta = if parsed.is_empty() {
+            None
+        } else {
+            Some(ParsedExecMetadata::from_commands(&parsed))
+        };
+        let run_duration = record
+            .completed_at
+            .and_then(|done| done.duration_since(record.started_at).ok());
+        let wait_state = ExecWaitState {
+            total_wait: record.wait_total,
+            run_duration,
+            waiting: record.wait_active,
+            notes: wait_notes_from_record(&record.wait_notes),
+        };
+        let start_time = if matches!(record.status, ExecStatus::Running) {
+            Some(Instant::now())
+        } else {
+            None
+        };
+
+        Self {
+            record,
+            command,
+            parsed,
+            output,
+            start_time,
+            stream_preview,
+            parsed_meta,
+            has_bold_command,
+            wait_state: RwLock::new(wait_state),
+        }
+    }
+
+    pub(crate) fn parsed_action(&self) -> ExecAction {
+        self.parsed_meta
+            .as_ref()
+            .map(|meta| meta.action)
+            .unwrap_or(ExecAction::Run)
+    }
+
+    pub(crate) fn set_waiting(&mut self, waiting: bool) {
+        let mut changed = false;
+        {
+            let mut state = self.wait_state.write().unwrap();
+            if state.waiting != waiting {
+                state.waiting = waiting;
+                changed = true;
+            }
+        }
+        if changed {
+            self.record.wait_active = waiting;
+        }
+    }
+
+    pub(crate) fn set_wait_total(&mut self, total: Option<Duration>) {
+        let mut changed = false;
+        {
+            let mut state = self.wait_state.write().unwrap();
+            if state.total_wait != total {
+                state.total_wait = total;
+                changed = true;
+            }
+        }
+        if changed {
+            self.record.wait_total = total;
+        }
+    }
+
+    pub(crate) fn set_run_duration(&self, duration: Option<Duration>) {
+        let mut state = self.wait_state.write().unwrap();
+        if state.run_duration != duration {
+            state.run_duration = duration;
+            drop(state);
+        }
+    }
+
+    pub(crate) fn set_wait_notes(&mut self, notes: &[(String, bool)]) {
+        let mut state = self.wait_state.write().unwrap();
+        let mut changed = state.notes.len() != notes.len();
+        if !changed {
+            for (existing, (text, is_error)) in state.notes.iter().zip(notes.iter()) {
+                if existing.text != text.trim() || existing.is_error != *is_error {
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        if !changed {
+            return;
+        }
+        state.notes = notes
+            .iter()
+            .map(|(text, is_error)| ExecWaitNote {
+                text: text.trim().to_string(),
+                is_error: *is_error,
+            })
+            .filter(|note| !note.text.is_empty())
+            .collect();
+        drop(state);
+        self.record.wait_notes = notes
+            .iter()
+            .filter_map(|(text, is_error)| {
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(RecordExecWaitNote {
+                        message: trimmed.to_string(),
+                        tone: if *is_error {
+                            TextTone::Error
+                        } else {
+                            TextTone::Info
+                        },
+                        timestamp: SystemTime::now(),
+                    })
+                }
+            })
+            .collect();
+    }
+
+    fn wait_note_lines(&self, state: &ExecWaitState) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        for note in &state.notes {
+            let mut line = Line::from(note.text.clone());
+            let mut style = Style::default().fg(if note.is_error {
+                crate::colors::error()
+            } else {
+                crate::colors::text_dim()
+            });
+            if note.is_error {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            for span in line.spans.iter_mut() {
+                span.style = style;
+            }
+            lines.push(line);
+        }
+        lines
+    }
+
+    fn wait_state_snapshot(&self) -> ExecWaitState {
+        self.wait_state.read().unwrap().clone()
+    }
+
+    fn wait_summary_line(&self, state: &ExecWaitState) -> Option<Line<'static>> {
+        if state.waiting {
+            return None;
+        }
+        if let Some(run_duration) = state.run_duration {
+            if run_duration.is_zero() {
+                return None;
+            }
+            let text = format!("Ran for {}", format_duration(run_duration));
+            return Some(Line::styled(
+                text,
+                Style::default().fg(crate::colors::text_dim()),
+            ));
+        }
+        let total = state.total_wait?;
+        if total.is_zero() {
+            return None;
+        }
+        let text = format!("Waited {}", format_duration(total));
+        Some(Line::styled(
+            text,
+            Style::default().fg(crate::colors::text_dim()),
+        ))
+    }
+
+    fn wait_extras(&self, state: &ExecWaitState) -> Vec<Line<'static>> {
+        let mut extra_lines: Vec<Line<'static>> = Vec::new();
+        if let Some(summary_line) = self.wait_summary_line(state) {
+            extra_lines.push(summary_line);
+        }
+        extra_lines.extend(self.wait_note_lines(state));
+        extra_lines
+    }
+
+    #[cfg(test)]
+    fn has_bold_command(&self) -> bool {
+        self.has_bold_command
+    }
+
+    pub(crate) fn replace_command_metadata(
+        &mut self,
+        command: Vec<String>,
+        parsed: Vec<ParsedCommand>,
+    ) {
+        self.command = command;
+        self.parsed = parsed;
+        self.record.command = self.command.clone();
+        self.record.parsed = self.parsed.clone();
+        self.record.action = action_enum_from_parsed(&self.record.parsed);
+        self.has_bold_command = command_has_bold_token(&self.command);
+        self.parsed_meta = if self.parsed.is_empty() {
+            None
+        } else {
+            Some(ParsedExecMetadata::from_commands(&self.parsed))
+        };
+    }
+    fn layout_for_width(&self, width: u16) -> ExecRenderLayout {
+        let (pre_raw, out_raw, status_line) = self.exec_render_parts();
+        let pre_trimmed = trim_empty_lines(pre_raw);
+        let out_trimmed = trim_empty_lines(out_raw);
+
+        let wrap_and_clamp =
+            |lines: Vec<Line<'static>>, wrap_width: u16| -> (Vec<Line<'static>>, u16) {
+                if wrap_width == 0 {
+                    return (Vec::new(), 0);
+                }
+                let wrapped = word_wrap_lines(&lines, wrap_width as usize);
+                let total = wrapped.len().min(u16::MAX as usize) as u16;
+                (wrapped, total)
+            };
+
+        let (pre_lines, pre_total) = wrap_and_clamp(pre_trimmed, width);
+        let (out_lines, out_block_total) = wrap_and_clamp(out_trimmed, width.saturating_sub(2));
+
+        ExecRenderLayout {
+            pre_lines,
+            out_lines,
+            pre_total,
+            out_block_total,
+            status_line,
+        }
+    }
+
+    // Build separate segments: (preamble lines, output lines)
+    pub(crate) fn exec_render_parts(
+        &self,
+    ) -> (
+        Vec<Line<'static>>,
+        Vec<Line<'static>>,
+        Option<Line<'static>>,
+    ) {
+        let wait_state = self.wait_state_snapshot();
+        let status_label = if wait_state.waiting {
+            "Waiting"
+        } else {
+            "Running"
+        };
+
+        let elapsed_since_start = self.elapsed_since_start();
+        let (pre, mut out, status) = if self.parsed.is_empty() {
+            self.exec_render_parts_generic(status_label)
+        } else {
+            match self.parsed_meta.as_ref() {
+                Some(meta) => exec_render_parts_parsed_with_meta(
+                    &self.parsed,
+                    meta,
+                    self.output.as_ref(),
+                    self.stream_preview.as_ref(),
+                    elapsed_since_start,
+                    status_label,
+                ),
+                None => exec_render_parts_parsed(
+                    &self.parsed,
+                    self.output.as_ref(),
+                    self.stream_preview.as_ref(),
+                    elapsed_since_start,
+                    status_label,
+                ),
+            }
+        };
+
+        if self.output.is_some() {
+            let extra_lines = self.wait_extras(&wait_state);
+            if !extra_lines.is_empty() {
+                let is_blank_line = |line: &Line<'static>| {
+                    line.spans
+                        .iter()
+                        .all(|span| span.content.as_ref().trim().is_empty())
+                };
+                let is_error_line = |line: &Line<'static>| {
+                    line.spans
+                        .first()
+                        .map(|span| span.content.as_ref().starts_with("Error (exit code"))
+                        .unwrap_or(false)
+                };
+                let insert_at = out.iter().position(is_error_line).unwrap_or(out.len());
+
+                let mut block: Vec<Line<'static>> = Vec::new();
+                if insert_at > 0 && !is_blank_line(&out[insert_at - 1]) {
+                    block.push(Line::from(""));
+                }
+                block.extend(extra_lines.into_iter());
+                if insert_at < out.len() {
+                    if !is_blank_line(&out[insert_at]) {
+                        block.push(Line::from(""));
+                    }
+                } else {
+                    block.push(Line::from(""));
+                }
+
+                out.splice(insert_at..insert_at, block);
+            }
+        }
+
+        (pre, out, if self.output.is_none() { status } else { None })
+    }
+
+    pub(crate) fn sync_from_record(&mut self, record: &ExecRecord) {
+        self.record = record.clone();
+        self.command = record.command.clone();
+        self.parsed = record.parsed.clone();
+        self.has_bold_command = command_has_bold_token(&self.command);
+
+        let run_duration = record
+            .completed_at
+            .and_then(|done| done.duration_since(record.started_at).ok());
+        {
+            let mut wait_state = self.wait_state.write().unwrap();
+            wait_state.total_wait = record.wait_total;
+            wait_state.waiting = record.wait_active;
+            wait_state.run_duration = run_duration;
+            wait_state.notes = wait_notes_from_record(&record.wait_notes);
+        }
+
+        if matches!(record.status, ExecStatus::Running) {
+            let stdout = chunks_to_string(&record.stdout_chunks);
+            let stderr = chunks_to_string(&record.stderr_chunks);
+            if stdout.is_empty() && stderr.is_empty() {
+                self.stream_preview = None;
+            } else {
+                self.stream_preview = Some(CommandOutput {
+                    exit_code: STREAMING_EXIT_CODE,
+                    stdout,
+                    stderr,
+                });
+            }
+        } else {
+            self.stream_preview = None;
+        }
+    }
+
+    fn exec_render_parts_generic(
+        &self,
+        status_label: &str,
+    ) -> (
+        Vec<Line<'static>>,
+        Vec<Line<'static>>,
+        Option<Line<'static>>,
+    ) {
+        let mut pre = self.generic_command_lines();
+        let display_output = self.output.as_ref().or(self.stream_preview.as_ref());
+        let mut out = output_lines(display_output, false, false);
+        let has_output = !trim_empty_lines(out.clone()).is_empty();
+
+        if self.output.is_none() && has_output {
+            if let Some(last) = pre.last_mut() {
+                last.spans.insert(
+                    0,
+                    Span::styled("┌ ", Style::default().fg(crate::colors::text_dim())),
+                );
+            }
+        }
+
+        let mut status = None;
+        if self.output.is_none() {
+            let status_line = self.streaming_status_line_for_label(status_label);
+            if status_line.is_some() {
+                if let Some(last) = out.last() {
+                    let is_blank = last
+                        .spans
+                        .iter()
+                        .all(|sp| sp.content.as_ref().trim().is_empty());
+                    if is_blank {
+                        out.pop();
+                    }
+                }
+            }
+            status = status_line;
+        }
+
+        (pre, out, status)
+    }
+
+    fn generic_command_lines(&self) -> Vec<Line<'static>> {
+        let command_escaped = strip_bash_lc_and_escape(&self.command);
+        let formatted = format_inline_script_for_display(&command_escaped);
+        let normalized = normalize_shell_command_display(&formatted);
+        let command_display = insert_line_breaks_after_double_ampersand(&normalized);
+
+        let mut highlighted_cmd =
+            crate::syntax_highlight::highlight_code_block(&command_display, Some("bash"));
+        for (idx, line) in highlighted_cmd.iter_mut().enumerate() {
+            emphasize_shell_command_name(line);
+            if idx > 0 {
+                line.spans.insert(
+                    0,
+                    Span::styled("  ", Style::default().fg(crate::colors::text())),
+                );
+            }
+        }
+
+        highlighted_cmd
+    }
+
+    fn elapsed_since_start(&self) -> Option<Duration> {
+        if !matches!(self.record.status, ExecStatus::Running) {
+            return None;
+        }
+        match SystemTime::now().duration_since(self.record.started_at) {
+            Ok(duration) => Some(duration),
+            Err(_) => self.start_time.map(|start| start.elapsed()),
+        }
+    }
+
+    fn streaming_status_line_for_label(&self, status_label: &str) -> Option<Line<'static>> {
+        if self.output.is_some() {
+            return None;
+        }
+
+        if self.parsed.is_empty() {
+            let mut message = format!("{status_label}...");
+            if let Some(elapsed) = self.elapsed_since_start() {
+                if !elapsed.is_zero() {
+                    message = format!("{message} ({})", format_duration(elapsed));
+                }
+            }
+            return Some(running_status_line(message));
+        }
+
+        let meta = match self.parsed_meta.as_ref() {
+            Some(meta) => meta,
+            None => return None,
+        };
+        if !matches!(meta.action, ExecAction::Run) {
+            return None;
+        }
+
+        let mut message = match meta.ctx_path.as_deref() {
+            Some(p) => format!("{status_label}... in {p}"),
+            None => format!("{status_label}..."),
+        };
+        if let Some(elapsed) = self.elapsed_since_start() {
+            if !elapsed.is_zero() {
+                message = format!("{message} ({})", format_duration(elapsed));
+            }
+        }
+        Some(running_status_line(message))
+    }
+}
+
+fn chunk_from_text(text: &str) -> Vec<ExecStreamChunk> {
+    if text.is_empty() {
+        Vec::new()
+    } else {
+        vec![ExecStreamChunk {
+            offset: 0,
+            content: text.to_string(),
+        }]
+    }
+}
+
+fn build_exec_record(
+    command: Vec<String>,
+    parsed: Vec<ParsedCommand>,
+    output: Option<CommandOutput>,
+) -> ExecRecord {
+    let action = action_enum_from_parsed(&parsed);
+    let started_at = SystemTime::now();
+    match output {
+        Some(output) => {
+            let exit_code = output.exit_code;
+            let status = if exit_code == 0 {
+                ExecStatus::Success
+            } else {
+                ExecStatus::Error
+            };
+            ExecRecord {
+                id: HistoryId::ZERO,
+                call_id: None,
+                command,
+                parsed,
+                action,
+                status,
+                stdout_chunks: chunk_from_text(&output.stdout),
+                stderr_chunks: chunk_from_text(&output.stderr),
+                exit_code: Some(exit_code),
+                wait_total: None,
+                wait_active: false,
+                wait_notes: Vec::new(),
+                started_at,
+                completed_at: Some(SystemTime::now()),
+                working_dir: None,
+                env: Vec::new(),
+                tags: Vec::new(),
+            }
+        }
+        None => ExecRecord {
+            id: HistoryId::ZERO,
+            call_id: None,
+            command,
+            parsed,
+            action,
+            status: ExecStatus::Running,
+            stdout_chunks: Vec::new(),
+            stderr_chunks: Vec::new(),
+            exit_code: None,
+            wait_total: None,
+            wait_active: false,
+            wait_notes: Vec::new(),
+            started_at,
+            completed_at: None,
+            working_dir: None,
+            env: Vec::new(),
+            tags: Vec::new(),
+        },
+    }
+}
+
+pub(crate) fn new_active_exec_command(
+    command: Vec<String>,
+    parsed: Vec<ParsedCommand>,
+) -> ExecCell {
+    let record = build_exec_record(command, parsed, None);
+    ExecCell::from_record(record)
+}
+
+pub(crate) fn new_completed_exec_command(
+    command: Vec<String>,
+    parsed: Vec<ParsedCommand>,
+    output: CommandOutput,
+) -> ExecCell {
+    let record = build_exec_record(command, parsed, Some(output));
+    ExecCell::from_record(record)
+}
+
+pub(crate) fn display_lines_from_record(record: &ExecRecord) -> Vec<Line<'static>> {
+    ExecCell::from_record(record.clone()).display_lines_trimmed()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    #[test]
+    fn render_running_exec_includes_stream_output() {
+        let record = ExecRecord {
+            id: HistoryId(1),
+            call_id: Some("call-1".into()),
+            command: vec!["echo".into(), "hello".into()],
+            parsed: Vec::new(),
+            action: ExecAction::Run,
+            status: ExecStatus::Running,
+            stdout_chunks: vec![ExecStreamChunk {
+                offset: 0,
+                content: "partial".into(),
+            }],
+            stderr_chunks: Vec::new(),
+            exit_code: None,
+            wait_total: None,
+            wait_active: true,
+            wait_notes: Vec::new(),
+            started_at: SystemTime::UNIX_EPOCH,
+            completed_at: None,
+            working_dir: None,
+            env: Vec::new(),
+            tags: Vec::new(),
+        };
+        let lines = display_lines_from_record(&record);
+        assert!(lines.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.as_ref().contains("partial"))
+        }));
+    }
+
+    #[test]
+    fn render_completed_exec_shows_exit_code() {
+        let record = ExecRecord {
+            id: HistoryId(2),
+            call_id: Some("call-2".into()),
+            command: vec!["ls".into()],
+            parsed: Vec::new(),
+            action: ExecAction::Run,
+            status: ExecStatus::Error,
+            stdout_chunks: chunk_from_text("one\ntwo"),
+            stderr_chunks: chunk_from_text("fail"),
+            exit_code: Some(1),
+            wait_total: Some(Duration::from_secs(2)),
+            wait_active: false,
+            wait_notes: Vec::new(),
+            started_at: SystemTime::UNIX_EPOCH,
+            completed_at: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
+            working_dir: None,
+            env: Vec::new(),
+            tags: Vec::new(),
+        };
+        let lines = display_lines_from_record(&record);
+        assert!(lines.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.as_ref().contains("Error (exit code 1)"))
+        }));
+    }
+
+    #[test]
+    fn render_completed_exec_draws_left_border() {
+        let record = ExecRecord {
+            id: HistoryId(3),
+            call_id: Some("call-3".into()),
+            command: vec!["echo".into(), "done".into()],
+            parsed: Vec::new(),
+            action: ExecAction::Run,
+            status: ExecStatus::Success,
+            stdout_chunks: chunk_from_text(
+                "Using rustup toolchain: 1.90.0\n\
+                 rustc 1.90.0 (1159e78c4 2025-09-14)",
+            ),
+            stderr_chunks: Vec::new(),
+            exit_code: Some(0),
+            wait_total: None,
+            wait_active: false,
+            wait_notes: Vec::new(),
+            started_at: SystemTime::UNIX_EPOCH,
+            completed_at: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
+            working_dir: None,
+            env: Vec::new(),
+            tags: Vec::new(),
+        };
+        let cell = ExecCell::from_record(record);
+        let width = 80;
+        let height = cell.desired_height(width).max(3);
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+        cell.custom_render_with_skip(Rect::new(0, 0, width, height), &mut buf, 0);
+
+        let mut border_found = false;
+        for y in 0..height {
+            if buf[(0, y as u16)].symbol() == "│" {
+                border_found = true;
+                break;
+            }
+        }
+
+        assert!(
+            border_found,
+            "expected left border glyph to be rendered for exec output"
+        );
+    }
+}
+
+fn command_has_bold_token(command: &[String]) -> bool {
+    let command_escaped = strip_bash_lc_and_escape(command);
+    let normalized = normalize_shell_command_display(&command_escaped);
+    let trimmed = normalized.trim_start();
+    if trimmed.is_empty() {
+        return false;
+    }
+    trimmed.chars().take_while(|ch| !ch.is_whitespace()).count() > 4
+}
+
+// ==================== MergedExecCell ====================
+// Represents multiple completed exec results merged into one cell while preserving
+// the bordered, dimmed output styling for each command's stdout/stderr preview.

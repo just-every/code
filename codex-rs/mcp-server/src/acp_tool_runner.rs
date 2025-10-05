@@ -140,13 +140,17 @@ pub async fn prompt(
                 }))
             }
             EventMsg::ExecApprovalRequest(_) | EventMsg::ApplyPatchApprovalRequest(_) => None,
-            EventMsg::ExecCommandBegin(event) => Some(acp::SessionUpdate::ToolCall(
-                codex_core::acp::new_execute_tool_call(
-                    &event.call_id,
-                    &event.command,
-                    acp::ToolCallStatus::InProgress,
-                ),
-            )),
+            EventMsg::ExecCommandBegin(_event) => {
+                // TODO: codex_core::acp module is private/removed
+                // Some(acp::SessionUpdate::ToolCall(
+                //     codex_core::acp::new_execute_tool_call(
+                //         &event.call_id,
+                //         &event.command,
+                //         acp::ToolCallStatus::InProgress,
+                //     ),
+                // ))
+                None
+            }
             EventMsg::ExecCommandEnd(event) => {
                 let call_id = acp::ToolCallId(event.call_id.clone().into());
                 Some(acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate {
@@ -163,13 +167,17 @@ pub async fn prompt(
                     meta: None,
                 }))
             }
-            EventMsg::PatchApplyBegin(event) => Some(acp::SessionUpdate::ToolCall(
-                codex_core::acp::new_patch_tool_call(
-                    &event.call_id,
-                    &event.changes,
-                    acp::ToolCallStatus::InProgress,
-                ),
-            )),
+            EventMsg::PatchApplyBegin(_event) => {
+                // TODO: codex_core::acp module is private/removed
+                // Some(acp::SessionUpdate::ToolCall(
+                //     codex_core::acp::new_patch_tool_call(
+                //         &event.call_id,
+                //         &event.changes,
+                //         acp::ToolCallStatus::InProgress,
+                //     ),
+                // ))
+                None
+            }
             EventMsg::PatchApplyEnd(event) => {
                 let call_id = acp::ToolCallId(event.call_id.clone().into());
                 Some(acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate {
@@ -194,7 +202,7 @@ pub async fn prompt(
             EventMsg::TaskComplete(_) => return Ok(stop_reason),
             EventMsg::SessionConfigured(_)
             | EventMsg::TokenCount(_)
-            | EventMsg::TaskStarted
+            | EventMsg::TaskStarted(_) // TODO: TaskStarted is tuple variant, not unit
             | EventMsg::GetHistoryEntryResponse(_)
             | EventMsg::BackgroundEvent(_)
             | EventMsg::ShutdownComplete => None,

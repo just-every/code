@@ -9,6 +9,7 @@ path = "lib.rs"
 [dependencies]
 anyhow = { workspace = true }
 assert_cmd = { workspace = true }
+codex-app-server-protocol = { workspace = true }
 codex-core = { workspace = true }
 codex-mcp-server = { workspace = true }
 mcp-types = { workspace = true }

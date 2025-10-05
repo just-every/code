@@ -18,9 +18,9 @@ use serde_bytes::ByteBuf;
 use strum_macros::Display;
 use uuid::Uuid;
 
-use crate::config_types::ReasoningEffort as ReasoningEffortConfig;
-use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
-use crate::config_types::TextVerbosity as TextVerbosityConfig;
+use codex_protocol::config_types::ReasoningEffort as ReasoningEffortConfig;
+use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
+use codex_protocol::config_types::Verbosity as TextVerbosityConfig;
 use crate::message_history::HistoryEntry;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::parse_command::ParsedCommand;

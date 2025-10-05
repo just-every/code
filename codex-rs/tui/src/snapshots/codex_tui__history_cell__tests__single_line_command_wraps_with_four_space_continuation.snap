@@ -2,8 +2,7 @@
 source: tui/src/history_cell.rs
 expression: rendered
 ---
-• Ran
-  └ a_very_long_toke
-        n_without_spaces
-        _to_force_wrappi
-        ng
+• Ran a_very_long_token_
+  │ without_spaces_to_
+  │ force_wrapping
+  └ (no output)

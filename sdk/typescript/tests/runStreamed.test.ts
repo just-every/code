@@ -13,7 +13,7 @@ import {
   startResponsesTestProxy,
 } from "./responsesProxy";
 
-const codexExecPath = path.join(process.cwd(), "..", "..", "codex-rs", "target", "debug", "code");
+const codexExecPath = path.join(process.cwd(), "..", "..", "codex-rs", "target", "debug", "codex");
 
 describe("Codex", () => {
   it("returns thread events", async () => {
@@ -33,24 +33,31 @@ describe("Codex", () => {
         events.push(event);
       }
 
-      const eventTypes = events.map((event) => event.type);
-      expect(eventTypes).toEqual([
-        "thread.started",
-        "turn.started",
-        "item.completed",
-        "turn.completed",
-      ]);
-
-      const assistantMessage = events.find(
-        (event) => event.type === "item.completed" && event.item.type === "agent_message",
-      );
-      expect(assistantMessage).toEqual(
-        expect.objectContaining({
+      expect(events).toEqual([
+        {
+          type: "thread.started",
+          thread_id: expect.any(String),
+        },
+        {
+          type: "turn.started",
+        },
+        {
           type: "item.completed",
-          item: expect.objectContaining({ text: "Hi!" }),
-        }),
-      );
-
+          item: {
+            id: "item_0",
+            type: "agent_message",
+            text: "Hi!",
+          },
+        },
+        {
+          type: "turn.completed",
+          usage: {
+            cached_input_tokens: 12,
+            input_tokens: 42,
+            output_tokens: 5,
+          },
+        },
+      ]);
       expect(thread.id).toEqual(expect.any(String));
     } finally {
       await close();
@@ -78,26 +85,26 @@ describe("Codex", () => {
       const client = new Codex({ codexPathOverride: codexExecPath, baseUrl: url, apiKey: "test" });
 
       const thread = client.startThread();
-      const firstRun = await thread.runStreamed("first input");
-      await drainEvents(firstRun.events);
+      const first = await thread.runStreamed("first input");
+      await drainEvents(first.events);
 
-      const secondRun = await thread.runStreamed("second input");
-      const collected: ThreadEvent[] = [];
-      for await (const event of secondRun.events) {
-        collected.push(event);
-      }
+      const second = await thread.runStreamed("second input");
+      await drainEvents(second.events);
 
-      const finalMessage = collected.find(
-        (event) => event.type === "item.completed" && event.item.type === "agent_message",
-      );
-      expect(finalMessage).toEqual(
-        expect.objectContaining({
-          type: "item.completed",
-          item: expect.objectContaining({ text: "Second response" }),
-        }),
-      );
-
+      // Check second request continues the same thread
       expect(requests.length).toBeGreaterThanOrEqual(2);
+      const secondRequest = requests[1];
+      expect(secondRequest).toBeDefined();
+      const payload = secondRequest!.json;
+
+      const assistantEntry = payload.input.find(
+        (entry: { role: string }) => entry.role === "assistant",
+      );
+      expect(assistantEntry).toBeDefined();
+      const assistantText = assistantEntry?.content?.find(
+        (item: { type: string; text: string }) => item.type === "output_text",
+      )?.text;
+      expect(assistantText).toBe("First response");
     } finally {
       await close();
     }
@@ -124,28 +131,28 @@ describe("Codex", () => {
       const client = new Codex({ codexPathOverride: codexExecPath, baseUrl: url, apiKey: "test" });
 
       const originalThread = client.startThread();
-      const firstRun = await originalThread.runStreamed("first input");
-      await drainEvents(firstRun.events);
+      const first = await originalThread.runStreamed("first input");
+      await drainEvents(first.events);
 
       const resumedThread = client.resumeThread(originalThread.id!);
-      const secondRun = await resumedThread.runStreamed("second input");
-      const collected: ThreadEvent[] = [];
-      for await (const event of secondRun.events) {
-        collected.push(event);
-      }
+      const second = await resumedThread.runStreamed("second input");
+      await drainEvents(second.events);
 
       expect(resumedThread.id).toBe(originalThread.id);
-      const finalMessage = collected.find(
-        (event) => event.type === "item.completed" && event.item.type === "agent_message",
-      );
-      expect(finalMessage).toEqual(
-        expect.objectContaining({
-          type: "item.completed",
-          item: expect.objectContaining({ text: "Second response" }),
-        }),
-      );
 
       expect(requests.length).toBeGreaterThanOrEqual(2);
+      const secondRequest = requests[1];
+      expect(secondRequest).toBeDefined();
+      const payload = secondRequest!.json;
+
+      const assistantEntry = payload.input.find(
+        (entry: { role: string }) => entry.role === "assistant",
+      );
+      expect(assistantEntry).toBeDefined();
+      const assistantText = assistantEntry?.content?.find(
+        (item: { type: string; text: string }) => item.type === "output_text",
+      )?.text;
+      expect(assistantText).toBe("First response");
     } finally {
       await close();
     }

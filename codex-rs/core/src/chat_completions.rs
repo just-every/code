@@ -1,7 +1,21 @@
 use std::time::Duration;
 
+use crate::ModelProviderInfo;
+use crate::client_common::Prompt;
+use crate::client_common::ResponseEvent;
+use crate::client_common::ResponseStream;
+use crate::error::CodexErr;
+use crate::error::Result;
+use crate::error::RetryLimitReachedError;
+use crate::error::UnexpectedResponseError;
+use crate::model_family::ModelFamily;
+use crate::openai_tools::create_tools_json_for_chat_completions_api;
+use crate::util::backoff;
 use bytes::Bytes;
 use codex_otel::otel_event_manager::OtelEventManager;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ReasoningItemContent;
+use codex_protocol::models::ResponseItem;
 use eventsource_stream::Eventsource;
 use futures::Stream;
 use futures::StreamExt;
@@ -16,35 +30,13 @@ use tokio::time::timeout;
 use tracing::debug;
 use tracing::trace;
 
-use crate::auth::AuthManager;
-use crate::ModelProviderInfo;
-use crate::client_common::Prompt;
-use crate::client_common::ResponseEvent;
-use crate::client_common::ResponseStream;
-use crate::debug_logger::DebugLogger;
-use crate::error::CodexErr;
-use crate::error::Result;
-use crate::error::RetryLimitReachedError;
-use crate::error::UnexpectedResponseError;
-use crate::model_family::ModelFamily;
-use crate::openai_tools::create_tools_json_for_chat_completions_api;
-use crate::util::backoff;
-use std::sync::{Arc, Mutex};
-use codex_app_server_protocol::AuthMode;
-use codex_protocol::models::ContentItem;
-use codex_protocol::models::ReasoningItemContent;
-use codex_protocol::models::ResponseItem;
-
 /// Implementation for the classic Chat Completions API.
 pub(crate) async fn stream_chat_completions(
     prompt: &Prompt,
     model_family: &ModelFamily,
-    model_slug: &str,
     client: &reqwest::Client,
     provider: &ModelProviderInfo,
-    debug_logger: &Arc<Mutex<DebugLogger>>,
-    auth_manager: Option<Arc<AuthManager>>,
-    otel_event_manager: Option<OtelEventManager>,
+    otel_event_manager: &OtelEventManager,
 ) -> Result<ResponseStream> {
     if prompt.output_schema.is_some() {
         return Err(CodexErr::UnsupportedOperation(
@@ -87,10 +79,10 @@ pub(crate) async fn stream_chat_completions(
     // Find the last user message index in the input.
     let mut last_user_index: Option<usize> = None;
     for (idx, item) in input.iter().enumerate() {
-        if let ResponseItem::Message { role, .. } = item {
-            if role == "user" {
-                last_user_index = Some(idx);
-            }
+        if let ResponseItem::Message { role, .. } = item
+            && role == "user"
+        {
+            last_user_index = Some(idx);
         }
     }
 
@@ -98,10 +90,10 @@ pub(crate) async fn stream_chat_completions(
     if !matches!(last_emitted_role, Some("user")) {
         for (idx, item) in input.iter().enumerate() {
             // Only consider reasoning that appears after the last user message.
-            if let Some(u_idx) = last_user_index {
-                if idx <= u_idx {
-                    continue;
-                }
+            if let Some(u_idx) = last_user_index
+                && idx <= u_idx
+            {
+                continue;
             }
 
             if let ResponseItem::Reasoning {
@@ -122,16 +114,15 @@ pub(crate) async fn stream_chat_completions(
 
                 // Prefer immediate previous assistant message (stop turns)
                 let mut attached = false;
-                if idx > 0 {
-                    if let ResponseItem::Message { role, .. } = &input[idx - 1] {
-                        if role == "assistant" {
-                            reasoning_by_anchor_index
-                                .entry(idx - 1)
-                                .and_modify(|v| v.push_str(&text))
-                                .or_insert(text.clone());
-                            attached = true;
-                        }
-                    }
+                if idx > 0
+                    && let ResponseItem::Message { role, .. } = &input[idx - 1]
+                    && role == "assistant"
+                {
+                    reasoning_by_anchor_index
+                        .entry(idx - 1)
+                        .and_modify(|v| v.push_str(&text))
+                        .or_insert(text.clone());
+                    attached = true;
                 }
 
                 // Otherwise, attach to immediate next assistant anchor (tool-calls or assistant message)
@@ -159,50 +150,39 @@ pub(crate) async fn stream_chat_completions(
     // Track last assistant text we emitted to avoid duplicate assistant messages
     // in the outbound Chat Completions payload (can happen if a final
     // aggregated assistant message was recorded alongside an earlier partial).
-    let _last_assistant_text: Option<String> = None;
+    let mut last_assistant_text: Option<String> = None;
 
     for (idx, item) in input.iter().enumerate() {
         match item {
             ResponseItem::Message { role, content, .. } => {
-                // If the message contains any images, we must use the
-                // multi-modal array form supported by Chat Completions:
-                //   [{ type: "text", text: "..." }, { type: "image_url", image_url: { url: "data:..." } }]
-                let contains_image = content
-                    .iter()
-                    .any(|c| matches!(c, ContentItem::InputImage { .. }));
-
-                if contains_image {
-                    let mut parts = Vec::<serde_json::Value>::new();
-                    for c in content {
-                        match c {
-                            ContentItem::InputText { text } | ContentItem::OutputText { text } => {
-                                parts.push(json!({ "type": "text", "text": text }));
-                            }
-                            ContentItem::InputImage { image_url } => {
-                                parts.push(json!({
-                                    "type": "image_url",
-                                    "image_url": { "url": image_url }
-                                }));
-                            }
+                let mut text = String::new();
+                for c in content {
+                    match c {
+                        ContentItem::InputText { text: t }
+                        | ContentItem::OutputText { text: t } => {
+                            text.push_str(t);
                         }
+                        _ => {}
                     }
-                    messages.push(json!({"role": role, "content": parts}));
-                } else {
-                    // Text-only messages can be sent as a single string for
-                    // maximal compatibility with providers that only accept
-                    // plain text in Chat Completions.
-                    let mut text = String::new();
-                    for c in content {
-                        match c {
-                            ContentItem::InputText { text: t }
-                            | ContentItem::OutputText { text: t } => {
-                                text.push_str(t);
-                            }
-                            _ => {}
-                        }
-                    }
-                    messages.push(json!({"role": role, "content": text}));
                 }
+                // Skip exact-duplicate assistant messages.
+                if role == "assistant" {
+                    if let Some(prev) = &last_assistant_text
+                        && prev == &text
+                    {
+                        continue;
+                    }
+                    last_assistant_text = Some(text.clone());
+                }
+
+                let mut msg = json!({"role": role, "content": text});
+                if role == "assistant"
+                    && let Some(reasoning) = reasoning_by_anchor_index.get(&idx)
+                    && let Some(obj) = msg.as_object_mut()
+                {
+                    obj.insert("reasoning".to_string(), json!(reasoning));
+                }
+                messages.push(msg);
             }
             ResponseItem::FunctionCall {
                 name,
@@ -222,10 +202,10 @@ pub(crate) async fn stream_chat_completions(
                         }
                     }]
                 });
-                if let Some(reasoning) = reasoning_by_anchor_index.get(&idx) {
-                    if let Some(obj) = msg.as_object_mut() {
-                        obj.insert("reasoning".to_string(), json!(reasoning));
-                    }
+                if let Some(reasoning) = reasoning_by_anchor_index.get(&idx)
+                    && let Some(obj) = msg.as_object_mut()
+                {
+                    obj.insert("reasoning".to_string(), json!(reasoning));
                 }
                 messages.push(msg);
             }
@@ -246,10 +226,10 @@ pub(crate) async fn stream_chat_completions(
                         "action": action,
                     }]
                 });
-                if let Some(reasoning) = reasoning_by_anchor_index.get(&idx) {
-                    if let Some(obj) = msg.as_object_mut() {
-                        obj.insert("reasoning".to_string(), json!(reasoning));
-                    }
+                if let Some(reasoning) = reasoning_by_anchor_index.get(&idx)
+                    && let Some(obj) = msg.as_object_mut()
+                {
+                    obj.insert("reasoning".to_string(), json!(reasoning));
                 }
                 messages.push(msg);
             }
@@ -297,106 +277,43 @@ pub(crate) async fn stream_chat_completions(
     }
 
     let tools_json = create_tools_json_for_chat_completions_api(&prompt.tools)?;
-    let mut payload = json!({
-        "model": model_slug,
+    let payload = json!({
+        "model": model_family.slug,
         "messages": messages,
         "stream": true,
         "tools": tools_json,
     });
 
-    if let Some(openrouter_cfg) = provider.openrouter_config() {
-        if let Some(obj) = payload.as_object_mut() {
-            if let Some(provider_cfg) = &openrouter_cfg.provider {
-                obj.insert(
-                    "provider".to_string(),
-                    serde_json::to_value(provider_cfg)?
-                );
-            }
-            if let Some(route) = &openrouter_cfg.route {
-                obj.insert("route".to_string(), route.clone());
-            }
-            for (key, value) in &openrouter_cfg.extra {
-                obj.entry(key.clone()).or_insert(value.clone());
-            }
-        }
-    }
-
-    // If an Ollama context override is present, propagate it. Some Ollama
-    // builds honor `num_ctx` directly in OpenAI-compatible Chat Completions,
-    // and others accept it under an `options` object – include both.
-    if let Ok(val) = std::env::var("CODEX_OLLAMA_NUM_CTX") {
-        if let Ok(n) = val.parse::<u64>() {
-            if let Some(obj) = payload.as_object_mut() {
-                obj.insert("num_ctx".to_string(), json!(n));
-                // Also set options.num_ctx for native-style compatibility.
-                let mut options = serde_json::Map::new();
-                options.insert("num_ctx".to_string(), json!(n));
-                obj.entry("options").or_insert(json!(options));
-            }
-        }
-    }
-
-    let endpoint = provider.get_full_url(&None);
     debug!(
         "POST to {}: {}",
-        endpoint,
+        provider.get_full_url(&None),
         serde_json::to_string_pretty(&payload).unwrap_or_default()
     );
-
-    // Start logging the request and get a request_id to track the response
-    let request_id = if let Ok(logger) = debug_logger.lock() {
-        logger
-            .start_request_log(&endpoint, &payload)
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
 
     let mut attempt = 0;
     let max_retries = provider.request_max_retries();
     loop {
         attempt += 1;
 
-        let auth = auth_manager.as_ref().and_then(|m| m.auth());
-        let mut req_builder = provider.create_request_builder(client, &auth).await?;
+        let req_builder = provider.create_request_builder(client, &None).await?;
 
-        if let Some(auth) = auth.as_ref() {
-            if auth.mode == AuthMode::ChatGPT {
-                if let Some(account_id) = auth.get_account_id() {
-                    req_builder = req_builder.header("chatgpt-account-id", account_id);
-                }
-            }
-        }
-
-        let res = req_builder
-            .header(reqwest::header::ACCEPT, "text/event-stream")
-            .json(&payload)
-            .send()
+        let res = otel_event_manager
+            .log_request(attempt, || {
+                req_builder
+                    .header(reqwest::header::ACCEPT, "text/event-stream")
+                    .json(&payload)
+                    .send()
+            })
             .await;
 
         match res {
             Ok(resp) if resp.status().is_success() => {
-                // Log successful response initiation
-                if let Ok(logger) = debug_logger.lock() {
-                    let _ = logger.append_response_event(
-                        &request_id,
-                        "stream_initiated",
-                        &serde_json::json!({
-                            "status": "success",
-                            "status_code": resp.status().as_u16()
-                        }),
-                    );
-                }
                 let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent>>(1600);
                 let stream = resp.bytes_stream().map_err(CodexErr::Reqwest);
-                let debug_logger_clone = Arc::clone(&debug_logger);
-                let request_id_clone = request_id.clone();
                 tokio::spawn(process_chat_sse(
                     stream,
                     tx_event,
                     provider.stream_idle_timeout(),
-                    debug_logger_clone,
-                    request_id_clone,
                     otel_event_manager.clone(),
                 ));
                 return Ok(ResponseStream { rx_event });
@@ -405,17 +322,6 @@ pub(crate) async fn stream_chat_completions(
                 let status = res.status();
                 if !(status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()) {
                     let body = (res.text().await).unwrap_or_default();
-                    if let Ok(logger) = debug_logger.lock() {
-                        let _ = logger.append_response_event(
-                            &request_id,
-                            "error",
-                            &serde_json::json!({
-                                "status": status.as_u16(),
-                                "body": body
-                            }),
-                        );
-                        let _ = logger.end_request_log(&request_id);
-                    }
                     return Err(CodexErr::UnexpectedStatus(UnexpectedResponseError {
                         status,
                         body,
@@ -443,17 +349,6 @@ pub(crate) async fn stream_chat_completions(
             }
             Err(e) => {
                 if attempt > max_retries {
-                    // Log network error
-                    if let Ok(logger) = debug_logger.lock() {
-                        let _ = logger.append_response_event(
-                            &request_id,
-                            "network_error",
-                            &serde_json::json!({
-                                "error": e.to_string()
-                            }),
-                        );
-                        let _ = logger.end_request_log(&request_id);
-                    }
                     return Err(e.into());
                 }
                 let delay = backoff(attempt);
@@ -470,9 +365,7 @@ async fn process_chat_sse<S>(
     stream: S,
     tx_event: mpsc::Sender<Result<ResponseEvent>>,
     idle_timeout: Duration,
-    debug_logger: Arc<Mutex<DebugLogger>>,
-    request_id: String,
-    otel_event_manager: Option<OtelEventManager>,
+    otel_event_manager: OtelEventManager,
 ) where
     S: Stream<Item = Result<Bytes>> + Unpin,
 {
@@ -494,18 +387,12 @@ async fn process_chat_sse<S>(
     let mut fn_call_state = FunctionCallState::default();
     let mut assistant_text = String::new();
     let mut reasoning_text = String::new();
-    let mut current_item_id: Option<String> = None;
 
     loop {
-        let next_event = if let Some(manager) = otel_event_manager.as_ref() {
-            manager
-                .log_sse_event(|| timeout(idle_timeout, stream.next()))
-                .await
-        } else {
-            timeout(idle_timeout, stream.next()).await
-        };
-
-        let sse = match next_event {
+        let sse = match otel_event_manager
+            .log_sse_event(|| timeout(idle_timeout, stream.next()))
+            .await
+        {
             Ok(Some(Ok(ev))) => ev,
             Ok(Some(Err(e))) => {
                 let _ = tx_event
@@ -514,27 +401,13 @@ async fn process_chat_sse<S>(
                 return;
             }
             Ok(None) => {
-                // Stream closed by server without an explicit end marker – log for diagnostics
-                tracing::debug!("chat SSE stream closed without [DONE] marker");
-                if let Ok(logger) = debug_logger.lock() {
-                    let _ = logger.append_response_event(
-                        &request_id,
-                        "stream_closed_without_done",
-                        &serde_json::json!({
-                            "assistant_len": assistant_text.len(),
-                            "reasoning_len": reasoning_text.len(),
-                        }),
-                    );
-                }
+                // Stream closed gracefully – emit Completed with dummy id.
                 let _ = tx_event
                     .send(Ok(ResponseEvent::Completed {
                         response_id: String::new(),
                         token_usage: None,
                     }))
                     .await;
-                if let Ok(logger) = debug_logger.lock() {
-                    let _ = logger.end_request_log(&request_id);
-                }
                 return;
             }
             Err(_) => {
@@ -558,21 +431,21 @@ async fn process_chat_sse<S>(
                     content: vec![ContentItem::OutputText {
                         text: std::mem::take(&mut assistant_text),
                     }],
-                    id: current_item_id.clone(),
+                    id: None,
                 };
-                let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone { item, sequence_number: None, output_index: None })).await;
+                let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone(item))).await;
             }
 
             if !reasoning_text.is_empty() {
                 let item = ResponseItem::Reasoning {
-                    id: current_item_id.clone().unwrap_or_else(String::new),
+                    id: String::new(),
                     summary: Vec::new(),
                     content: Some(vec![ReasoningItemContent::ReasoningText {
                         text: std::mem::take(&mut reasoning_text),
                     }]),
                     encrypted_content: None,
                 };
-                let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone { item, sequence_number: None, output_index: None })).await;
+                let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone(item))).await;
             }
 
             let _ = tx_event
@@ -581,72 +454,30 @@ async fn process_chat_sse<S>(
                     token_usage: None,
                 }))
                 .await;
-            // Mark the request log as complete
-            if let Ok(logger) = debug_logger.lock() {
-                let _ = logger.end_request_log(&request_id);
-            }
             return;
         }
 
         // Parse JSON chunk
         let chunk: serde_json::Value = match serde_json::from_str(&sse.data) {
             Ok(v) => v,
-            Err(e) => {
-                // Surface parse errors to logs and debug logger for diagnostics, then skip
-                let mut excerpt = sse.data.clone();
-                const MAX: usize = 600;
-                if excerpt.len() > MAX { excerpt.truncate(MAX); }
-                tracing::debug!("chat SSE parse error: {} | data: {}", e, excerpt);
-                if let Ok(logger) = debug_logger.lock() {
-                    let _ = logger.append_response_event(
-                        &request_id,
-                        "sse_parse_error",
-                        &serde_json::json!({
-                            "error": e.to_string(),
-                            "data_excerpt": excerpt,
-                        }),
-                    );
-                }
-                continue;
-            }
+            Err(_) => continue,
         };
         trace!("chat_completions received SSE chunk: {chunk:?}");
-
-        // Log the SSE chunk to debug log
-        if let Ok(logger) = debug_logger.lock() {
-            let _ = logger.append_response_event(&request_id, "sse_event", &chunk);
-        }
-
-        // Extract item_id if present at the top level or in choice
-        if let Some(item_id) = chunk.get("item_id").and_then(|id| id.as_str()) {
-            current_item_id = Some(item_id.to_string());
-        }
 
         let choice_opt = chunk.get("choices").and_then(|c| c.get(0));
 
         if let Some(choice) = choice_opt {
-            // Check for item_id in the choice as well
-            if let Some(item_id) = choice.get("item_id").and_then(|id| id.as_str()) {
-                current_item_id = Some(item_id.to_string());
-            }
-
             // Handle assistant content tokens as streaming deltas.
             if let Some(content) = choice
                 .get("delta")
                 .and_then(|d| d.get("content"))
                 .and_then(|c| c.as_str())
+                && !content.is_empty()
             {
-                if !content.is_empty() {
-                    assistant_text.push_str(content);
-                    let _ = tx_event
-                        .send(Ok(ResponseEvent::OutputTextDelta {
-                            delta: content.to_string(),
-                            item_id: current_item_id.clone(),
-                            sequence_number: None,
-                            output_index: None,
-                        }))
-                        .await;
-                }
+                assistant_text.push_str(content);
+                let _ = tx_event
+                    .send(Ok(ResponseEvent::OutputTextDelta(content.to_string())))
+                    .await;
             }
 
             // Forward any reasoning/thinking deltas if present.
@@ -678,13 +509,7 @@ async fn process_chat_sse<S>(
                     // Accumulate so we can emit a terminal Reasoning item at the end.
                     reasoning_text.push_str(&reasoning);
                     let _ = tx_event
-                        .send(Ok(ResponseEvent::ReasoningContentDelta {
-                            delta: reasoning,
-                            item_id: current_item_id.clone(),
-                            sequence_number: None,
-                            output_index: None,
-                            content_index: None,
-                        }))
+                        .send(Ok(ResponseEvent::ReasoningContentDelta(reasoning)))
                         .await;
                 }
             }
@@ -697,34 +522,20 @@ async fn process_chat_sse<S>(
                     if !s.is_empty() {
                         reasoning_text.push_str(s);
                         let _ = tx_event
-                            .send(Ok(ResponseEvent::ReasoningContentDelta {
-                                delta: s.to_string(),
-                                item_id: current_item_id.clone(),
-                                sequence_number: None,
-                                output_index: None,
-                                content_index: None,
-                            }))
+                            .send(Ok(ResponseEvent::ReasoningContentDelta(s.to_string())))
                             .await;
                     }
-                } else if let Some(obj) = message_reasoning.as_object() {
-                    if let Some(s) = obj
+                } else if let Some(obj) = message_reasoning.as_object()
+                    && let Some(s) = obj
                         .get("text")
                         .and_then(|v| v.as_str())
                         .or_else(|| obj.get("content").and_then(|v| v.as_str()))
-                    {
-                        if !s.is_empty() {
-                            reasoning_text.push_str(s);
-                            let _ = tx_event
-                                .send(Ok(ResponseEvent::ReasoningContentDelta {
-                                    delta: s.to_string(),
-                                    item_id: current_item_id.clone(),
-                                    sequence_number: None,
-                                    output_index: None,
-                                    content_index: None,
-                                }))
-                                .await;
-                        }
-                    }
+                    && !s.is_empty()
+                {
+                    reasoning_text.push_str(s);
+                    let _ = tx_event
+                        .send(Ok(ResponseEvent::ReasoningContentDelta(s.to_string())))
+                        .await;
                 }
             }
 
@@ -733,27 +544,25 @@ async fn process_chat_sse<S>(
                 .get("delta")
                 .and_then(|d| d.get("tool_calls"))
                 .and_then(|tc| tc.as_array())
+                && let Some(tool_call) = tool_calls.first()
             {
-                if let Some(tool_call) = tool_calls.first() {
-                    // Mark that we have an active function call in progress.
-                    fn_call_state.active = true;
+                // Mark that we have an active function call in progress.
+                fn_call_state.active = true;
 
-                    // Extract call_id if present.
-                    if let Some(id) = tool_call.get("id").and_then(|v| v.as_str()) {
-                        fn_call_state.call_id.get_or_insert_with(|| id.to_string());
+                // Extract call_id if present.
+                if let Some(id) = tool_call.get("id").and_then(|v| v.as_str()) {
+                    fn_call_state.call_id.get_or_insert_with(|| id.to_string());
+                }
+
+                // Extract function details if present.
+                if let Some(function) = tool_call.get("function") {
+                    if let Some(name) = function.get("name").and_then(|n| n.as_str()) {
+                        fn_call_state.name.get_or_insert_with(|| name.to_string());
                     }
 
-                    // Extract function details if present.
-                    if let Some(function) = tool_call.get("function") {
-                        if let Some(name) = function.get("name").and_then(|n| n.as_str()) {
-                            fn_call_state.name.get_or_insert_with(|| name.to_string());
-                        }
-
-                        if let Some(args_fragment) =
-                            function.get("arguments").and_then(|a| a.as_str())
-                        {
-                            fn_call_state.arguments.push_str(args_fragment);
-                        }
+                    if let Some(args_fragment) = function.get("arguments").and_then(|a| a.as_str())
+                    {
+                        fn_call_state.arguments.push_str(args_fragment);
                     }
                 }
             }
@@ -766,25 +575,25 @@ async fn process_chat_sse<S>(
                         // the reasoning stream before any exec/tool events begin.
                         if !reasoning_text.is_empty() {
                             let item = ResponseItem::Reasoning {
-                                id: current_item_id.clone().unwrap_or_else(String::new),
+                                id: String::new(),
                                 summary: Vec::new(),
                                 content: Some(vec![ReasoningItemContent::ReasoningText {
                                     text: std::mem::take(&mut reasoning_text),
                                 }]),
                                 encrypted_content: None,
                             };
-                            let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone { item, sequence_number: None, output_index: None })).await;
+                            let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone(item))).await;
                         }
 
                         // Then emit the FunctionCall response item.
                         let item = ResponseItem::FunctionCall {
-                            id: current_item_id.clone(),
+                            id: None,
                             name: fn_call_state.name.clone().unwrap_or_else(|| "".to_string()),
                             arguments: fn_call_state.arguments.clone(),
                             call_id: fn_call_state.call_id.clone().unwrap_or_else(String::new),
                         };
 
-                        let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone { item, sequence_number: None, output_index: None })).await;
+                        let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone(item))).await;
                     }
                     "stop" => {
                         // Regular turn without tool-call. Emit the final assistant message
@@ -795,21 +604,21 @@ async fn process_chat_sse<S>(
                                 content: vec![ContentItem::OutputText {
                                     text: std::mem::take(&mut assistant_text),
                                 }],
-                                id: current_item_id.clone(),
+                                id: None,
                             };
-                            let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone { item, sequence_number: None, output_index: None })).await;
+                            let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone(item))).await;
                         }
                         // Also emit a terminal Reasoning item so UIs can finalize raw reasoning.
                         if !reasoning_text.is_empty() {
                             let item = ResponseItem::Reasoning {
-                                id: current_item_id.clone().unwrap_or_else(String::new),
+                                id: String::new(),
                                 summary: Vec::new(),
                                 content: Some(vec![ReasoningItemContent::ReasoningText {
                                     text: std::mem::take(&mut reasoning_text),
                                 }]),
                                 encrypted_content: None,
                             };
-                            let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone { item, sequence_number: None, output_index: None })).await;
+                            let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone(item))).await;
                         }
                     }
                     _ => {}
@@ -825,11 +634,6 @@ async fn process_chat_sse<S>(
 
                 // Prepare for potential next turn (should not happen in same stream).
                 // fn_call_state = FunctionCallState::default();
-
-                // Mark the request log as complete
-                if let Ok(logger) = debug_logger.lock() {
-                    let _ = logger.end_request_log(&request_id);
-                }
 
                 return; // End processing for this SSE stream.
             }
@@ -862,7 +666,6 @@ pub(crate) struct AggregatedChatStream<S> {
     inner: S,
     cumulative: String,
     cumulative_reasoning: String,
-    cumulative_item_id: Option<String>,
     pending: std::collections::VecDeque<ResponseEvent>,
     mode: AggregateMode,
 }
@@ -886,43 +689,56 @@ where
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(None) => return Poll::Ready(None),
                 Poll::Ready(Some(Err(e))) => return Poll::Ready(Some(Err(e))),
-                Poll::Ready(Some(Ok(ResponseEvent::OutputItemDone { item, sequence_number: _, .. }))) => {
+                Poll::Ready(Some(Ok(ResponseEvent::OutputItemDone(item)))) => {
                     // If this is an incremental assistant message chunk, accumulate but
                     // do NOT emit yet. Forward any other item (e.g. FunctionCall) right
                     // away so downstream consumers see it.
 
-                    let is_assistant_delta = matches!(&item, codex_protocol::models::ResponseItem::Message { role, .. } if role == "assistant");
+                    let is_assistant_message = matches!(
+                        &item,
+                        codex_protocol::models::ResponseItem::Message { role, .. } if role == "assistant"
+                    );
 
-                    if is_assistant_delta {
-                        // Only use the final assistant message if we have not
-                        // seen any deltas; otherwise, deltas already built the
-                        // cumulative text and this would duplicate it.
-                        if this.cumulative.is_empty() {
-                            if let ResponseItem::Message { content, id, .. } = &item
-                            {
-                                // Capture the item_id if present
-                                if let Some(item_id) = id {
-                                    this.cumulative_item_id = Some(item_id.clone());
-                                }
-                                if let Some(text) = content.iter().find_map(|c| match c {
-                                    ContentItem::OutputText { text } => Some(text),
-                                    _ => None,
-                                }) {
+                    if is_assistant_message {
+                        match this.mode {
+                            AggregateMode::AggregatedOnly => {
+                                // Only use the final assistant message if we have not
+                                // seen any deltas; otherwise, deltas already built the
+                                // cumulative text and this would duplicate it.
+                                if this.cumulative.is_empty()
+                                    && let codex_protocol::models::ResponseItem::Message {
+                                        content,
+                                        ..
+                                    } = &item
+                                    && let Some(text) = content.iter().find_map(|c| match c {
+                                        codex_protocol::models::ContentItem::OutputText {
+                                            text,
+                                        } => Some(text),
+                                        _ => None,
+                                    })
+                                {
                                     this.cumulative.push_str(text);
+                                }
+                                // Swallow assistant message here; emit on Completed.
+                                continue;
+                            }
+                            AggregateMode::Streaming => {
+                                // In streaming mode, if we have not seen any deltas, forward
+                                // the final assistant message directly. If deltas were seen,
+                                // suppress the final message to avoid duplication.
+                                if this.cumulative.is_empty() {
+                                    return Poll::Ready(Some(Ok(ResponseEvent::OutputItemDone(
+                                        item,
+                                    ))));
+                                } else {
+                                    continue;
                                 }
                             }
                         }
                     }
 
-                    // Also capture item_id from Reasoning items
-                    if let ResponseItem::Reasoning { id, .. } = &item {
-                        if !id.is_empty() {
-                            this.cumulative_item_id = Some(id.clone());
-                        }
-                    }
-
                     // Not an assistant message – forward immediately.
-                    return Poll::Ready(Some(Ok(ResponseEvent::OutputItemDone { item, sequence_number: None, output_index: None })));
+                    return Poll::Ready(Some(Ok(ResponseEvent::OutputItemDone(item))));
                 }
                 Poll::Ready(Some(Ok(ResponseEvent::RateLimits(snapshot)))) => {
                     return Poll::Ready(Some(Ok(ResponseEvent::RateLimits(snapshot))));
@@ -937,18 +753,19 @@ where
                     if !this.cumulative_reasoning.is_empty()
                         && matches!(this.mode, AggregateMode::AggregatedOnly)
                     {
-                        let aggregated_reasoning = ResponseItem::Reasoning {
-                            id: this.cumulative_item_id.clone().unwrap_or_else(String::new),
-                            summary: Vec::new(),
-                            content: Some(vec![
-                                ReasoningItemContent::ReasoningText {
-                                    text: std::mem::take(&mut this.cumulative_reasoning),
-                                },
-                            ]),
-                            encrypted_content: None,
-                        };
+                        let aggregated_reasoning =
+                            codex_protocol::models::ResponseItem::Reasoning {
+                                id: String::new(),
+                                summary: Vec::new(),
+                                content: Some(vec![
+                                    codex_protocol::models::ReasoningItemContent::ReasoningText {
+                                        text: std::mem::take(&mut this.cumulative_reasoning),
+                                    },
+                                ]),
+                                encrypted_content: None,
+                            };
                         this.pending
-                            .push_back(ResponseEvent::OutputItemDone { item: aggregated_reasoning, sequence_number: None, output_index: None });
+                            .push_back(ResponseEvent::OutputItemDone(aggregated_reasoning));
                         emitted_any = true;
                     }
 
@@ -958,15 +775,15 @@ where
                     // the streamed deltas into a terminal OutputItemDone so callers
                     // can persist/render the message once per turn.
                     if !this.cumulative.is_empty() {
-                        let aggregated_message = ResponseItem::Message {
-                            id: this.cumulative_item_id.clone(),
+                        let aggregated_message = codex_protocol::models::ResponseItem::Message {
+                            id: None,
                             role: "assistant".to_string(),
                             content: vec![codex_protocol::models::ContentItem::OutputText {
                                 text: std::mem::take(&mut this.cumulative),
                             }],
                         };
                         this.pending
-                            .push_back(ResponseEvent::OutputItemDone { item: aggregated_message, sequence_number: None, output_index: None });
+                            .push_back(ResponseEvent::OutputItemDone(aggregated_message));
                         emitted_any = true;
                     }
 
@@ -993,46 +810,27 @@ where
                     // will never appear in a Chat Completions stream.
                     continue;
                 }
-                Poll::Ready(Some(Ok(ResponseEvent::OutputTextDelta { delta, item_id, sequence_number, .. }))) => {
+                Poll::Ready(Some(Ok(ResponseEvent::OutputTextDelta(delta)))) => {
                     // Always accumulate deltas so we can emit a final OutputItemDone at Completed.
                     this.cumulative.push_str(&delta);
-                    // Capture the item_id if we haven't already
-                    if item_id.is_some() && this.cumulative_item_id.is_none() {
-                        this.cumulative_item_id = item_id.clone();
-                    }
                     if matches!(this.mode, AggregateMode::Streaming) {
                         // In streaming mode, also forward the delta immediately.
-                        return Poll::Ready(Some(Ok(ResponseEvent::OutputTextDelta {
-                            delta,
-                            item_id,
-                            sequence_number,
-                            output_index: None,
-                        })));
+                        return Poll::Ready(Some(Ok(ResponseEvent::OutputTextDelta(delta))));
                     } else {
                         continue;
                     }
                 }
-                Poll::Ready(Some(Ok(ResponseEvent::ReasoningContentDelta { delta, item_id, sequence_number, .. }))) => {
+                Poll::Ready(Some(Ok(ResponseEvent::ReasoningContentDelta(delta)))) => {
                     // Always accumulate reasoning deltas so we can emit a final Reasoning item at Completed.
                     this.cumulative_reasoning.push_str(&delta);
-                    // Capture the item_id if we haven't already
-                    if item_id.is_some() && this.cumulative_item_id.is_none() {
-                        this.cumulative_item_id = item_id.clone();
-                    }
                     if matches!(this.mode, AggregateMode::Streaming) {
                         // In streaming mode, also forward the delta immediately.
-                        return Poll::Ready(Some(Ok(ResponseEvent::ReasoningContentDelta {
-                            delta,
-                            item_id,
-                            sequence_number,
-                            output_index: None,
-                            content_index: None,
-                        })));
+                        return Poll::Ready(Some(Ok(ResponseEvent::ReasoningContentDelta(delta))));
                     } else {
                         continue;
                     }
                 }
-                Poll::Ready(Some(Ok(ResponseEvent::ReasoningSummaryDelta { .. }))) => {
+                Poll::Ready(Some(Ok(ResponseEvent::ReasoningSummaryDelta(_)))) => {
                     continue;
                 }
                 Poll::Ready(Some(Ok(ResponseEvent::ReasoningSummaryPartAdded))) => {
@@ -1040,12 +838,6 @@ where
                 }
                 Poll::Ready(Some(Ok(ResponseEvent::WebSearchCallBegin { call_id }))) => {
                     return Poll::Ready(Some(Ok(ResponseEvent::WebSearchCallBegin { call_id })));
-                }
-                Poll::Ready(Some(Ok(ResponseEvent::WebSearchCallCompleted { call_id, query }))) => {
-                    return Poll::Ready(Some(Ok(ResponseEvent::WebSearchCallCompleted {
-                        call_id,
-                        query,
-                    })));
                 }
             }
         }
@@ -1059,7 +851,7 @@ pub(crate) trait AggregateStreamExt: Stream<Item = Result<ResponseEvent>> + Size
     /// `ResponseEvent` sequence for a typical text turn looks like:
     ///
     /// ```ignore
-    ///     OutputItemDone { item: <full message>, .. }
+    ///     OutputItemDone(<full message>)
     ///     Completed
     /// ```
     ///
@@ -1086,7 +878,6 @@ impl<S> AggregatedChatStream<S> {
             inner,
             cumulative: String::new(),
             cumulative_reasoning: String::new(),
-            cumulative_item_id: None,
             pending: std::collections::VecDeque::new(),
             mode,
         }

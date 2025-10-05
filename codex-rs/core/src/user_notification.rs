@@ -3,12 +3,10 @@ use tracing::error;
 use tracing::warn;
 
 #[derive(Debug, Default)]
-#[allow(dead_code)]
 pub(crate) struct UserNotifier {
     notify_command: Option<Vec<String>>,
 }
 
-#[allow(dead_code)]
 impl UserNotifier {
     pub(crate) fn notify(&self, notification: &UserNotification) {
         if let Some(notify_command) = &self.notify_command

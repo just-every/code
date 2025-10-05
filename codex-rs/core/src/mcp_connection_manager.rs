@@ -42,6 +42,9 @@ const MAX_TOOL_NAME_LENGTH: usize = 64;
 /// Default timeout for initializing MCP server & initially listing tools.
 const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Default timeout for individual tool calls.
+const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Map that holds a startup error for every MCP server that could **not** be
 /// spawned successfully.
 pub type ClientStartErrors = HashMap<String, anyhow::Error>;
@@ -105,9 +108,6 @@ impl McpClientAdapter {
         params: mcp_types::InitializeRequestParams,
         startup_timeout: Duration,
     ) -> Result<Self> {
-        tracing::debug!(
-            "new_stdio_client use_rmcp_client: {use_rmcp_client} program: {program:?} args: {args:?} env: {env:?} params: {params:?} startup_timeout: {startup_timeout:?}"
-        );
         if use_rmcp_client {
             let client = Arc::new(RmcpClient::new_stdio_client(program, args, env).await?);
             client.initialize(params, Some(startup_timeout)).await?;
@@ -120,12 +120,15 @@ impl McpClientAdapter {
     }
 
     async fn new_streamable_http_client(
+        server_name: String,
         url: String,
         bearer_token: Option<String>,
         params: mcp_types::InitializeRequestParams,
         startup_timeout: Duration,
     ) -> Result<Self> {
-        let client = Arc::new(RmcpClient::new_streamable_http_client(url, bearer_token)?);
+        let client = Arc::new(
+            RmcpClient::new_streamable_http_client(&server_name, &url, bearer_token).await?,
+        );
         client.initialize(params, Some(startup_timeout)).await?;
         Ok(McpClientAdapter::Rmcp(client))
     }
@@ -179,7 +182,6 @@ impl McpConnectionManager {
     pub async fn new(
         mcp_servers: HashMap<String, McpServerConfig>,
         use_rmcp_client: bool,
-        excluded_tools: HashSet<(String, String)>,
     ) -> Result<(Self, ClientStartErrors)> {
         // Early exit if no servers are configured.
         if mcp_servers.is_empty() {
@@ -200,22 +202,9 @@ impl McpConnectionManager {
                 continue;
             }
 
-            if matches!(
-                cfg.transport,
-                McpServerTransportConfig::StreamableHttp { .. }
-            ) && !use_rmcp_client
-            {
-                info!(
-                    "skipping MCP server `{}` configured with url because rmcp client is disabled",
-                    server_name
-                );
-                continue;
-            }
-
             let startup_timeout = cfg.startup_timeout_sec.unwrap_or(DEFAULT_STARTUP_TIMEOUT);
-            let tool_timeout = cfg.tool_timeout_sec;
+            let tool_timeout = cfg.tool_timeout_sec.unwrap_or(DEFAULT_TOOL_TIMEOUT);
 
-            let use_rmcp_client_flag = use_rmcp_client;
             join_set.spawn(async move {
                 let McpServerConfig { transport, .. } = cfg;
                 let params = mcp_types::InitializeRequestParams {
@@ -244,17 +233,18 @@ impl McpConnectionManager {
                         let command_os: OsString = command.into();
                         let args_os: Vec<OsString> = args.into_iter().map(Into::into).collect();
                         McpClientAdapter::new_stdio_client(
-                            use_rmcp_client_flag,
+                            use_rmcp_client,
                             command_os,
                             args_os,
                             env,
-                            params.clone(),
+                            params,
                             startup_timeout,
                         )
                         .await
                     }
                     McpServerTransportConfig::StreamableHttp { url, bearer_token } => {
                         McpClientAdapter::new_streamable_http_client(
+                            server_name.clone(),
                             url,
                             bearer_token,
                             params,
@@ -287,7 +277,7 @@ impl McpConnectionManager {
                         ManagedClient {
                             client,
                             startup_timeout,
-                            tool_timeout,
+                            tool_timeout: Some(tool_timeout),
                         },
                     );
                 }
@@ -297,7 +287,13 @@ impl McpConnectionManager {
             }
         }
 
-        let all_tools = list_all_tools(&clients, &excluded_tools, &mut errors).await;
+        let all_tools = match list_all_tools(&clients).await {
+            Ok(tools) => tools,
+            Err(e) => {
+                warn!("Failed to list tools from some MCP servers: {e:#}");
+                Vec::new()
+            }
+        };
 
         let tools = qualify_tools(all_tools);
 
@@ -319,14 +315,13 @@ impl McpConnectionManager {
         server: &str,
         tool: &str,
         arguments: Option<serde_json::Value>,
-        timeout_override: Option<Duration>,
     ) -> Result<mcp_types::CallToolResult> {
         let managed = self
             .clients
             .get(server)
             .ok_or_else(|| anyhow!("unknown MCP server '{server}'"))?;
         let client = managed.client.clone();
-        let timeout = timeout_override.or(managed.tool_timeout);
+        let timeout = managed.tool_timeout;
 
         client
             .call_tool(tool.to_string(), arguments, timeout)
@@ -343,11 +338,7 @@ impl McpConnectionManager {
 
 /// Query every server for its available tools and return a single map that
 /// contains **all** tools. Each key is the fully-qualified name for the tool.
-async fn list_all_tools(
-    clients: &HashMap<String, ManagedClient>,
-    excluded_tools: &HashSet<(String, String)>,
-    errors: &mut ClientStartErrors,
-) -> Vec<ToolInfo> {
+async fn list_all_tools(clients: &HashMap<String, ManagedClient>) -> Result<Vec<ToolInfo>> {
     let mut join_set = JoinSet::new();
 
     // Spawn one task per server so we can query them concurrently. This
@@ -373,26 +364,20 @@ async fn list_all_tools(
             continue;
         };
 
-        match list_result {
-            Ok(result) => {
-                for tool in result.tools {
-                    if excluded_tools.contains(&(server_name.clone(), tool.name.clone())) {
-                        continue;
-                    }
-                    let tool_info = ToolInfo {
-                        server_name: server_name.clone(),
-                        tool_name: tool.name.clone(),
-                        tool,
-                    };
-                    aggregated.push(tool_info);
-                }
-            }
-            Err(err) => {
-                warn!(
-                    "Failed to list tools for MCP server '{server_name}': {err:#?}"
-                );
-                errors.insert(server_name, err.into());
-            }
+        let list_result = if let Ok(result) = list_result {
+            result
+        } else {
+            warn!("Failed to list tools for MCP server '{server_name}': {list_result:#?}");
+            continue;
+        };
+
+        for tool in list_result.tools {
+            let tool_info = ToolInfo {
+                server_name: server_name.clone(),
+                tool_name: tool.name.clone(),
+                tool,
+            };
+            aggregated.push(tool_info);
         }
     }
 
@@ -402,7 +387,7 @@ async fn list_all_tools(
         clients.len()
     );
 
-    aggregated
+    Ok(aggregated)
 }
 
 fn is_valid_mcp_server_name(server_name: &str) -> bool {

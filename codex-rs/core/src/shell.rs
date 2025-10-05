@@ -1,7 +1,6 @@
 use serde::Deserialize;
 use serde::Serialize;
 use shlex;
-use std::path::Path;
 use std::path::PathBuf;
 
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
@@ -128,24 +127,12 @@ fn strip_bash_lc(command: &[String]) -> Option<String> {
         // exactly three items
         [first, second, third]
             // first two must be "bash", "-lc"
-            if is_bash_like(first) && second == "-lc" =>
+            if first == "bash" && second == "-lc" =>
         {
             Some(third.clone())
         }
         _ => None,
     }
-}
-
-fn is_bash_like(cmd: &str) -> bool {
-    let trimmed = cmd.trim_matches('"').trim_matches('\'');
-    if trimmed.eq_ignore_ascii_case("bash") || trimmed.eq_ignore_ascii_case("bash.exe") {
-        return true;
-    }
-    Path::new(trimmed)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .map(|name| name.eq_ignore_ascii_case("bash") || name.eq_ignore_ascii_case("bash.exe"))
-        .unwrap_or(false)
 }
 
 #[cfg(unix)]
@@ -344,10 +331,7 @@ mod tests {
                 .format_default_shell_invocation(input.iter().map(ToString::to_string).collect());
             let expected_cmd = expected_cmd
                 .iter()
-                .map(|s| {
-                    s.replace("BASHRC_PATH", bashrc_path.to_str().unwrap())
-                        .to_string()
-                })
+                .map(|s| s.replace("BASHRC_PATH", bashrc_path.to_str().unwrap()))
                 .collect();
 
             assert_eq!(actual_cmd, Some(expected_cmd));
@@ -455,10 +439,7 @@ mod macos_tests {
                 .format_default_shell_invocation(input.iter().map(ToString::to_string).collect());
             let expected_cmd = expected_cmd
                 .iter()
-                .map(|s| {
-                    s.replace("ZSHRC_PATH", zshrc_path.to_str().unwrap())
-                        .to_string()
-                })
+                .map(|s| s.replace("ZSHRC_PATH", zshrc_path.to_str().unwrap()))
                 .collect();
 
             assert_eq!(actual_cmd, Some(expected_cmd));
@@ -566,12 +547,12 @@ mod tests_windows {
                     bash_exe_fallback: Some(PathBuf::from("bash.exe")),
                 }),
                 vec![
-                    "code-mcp-server.exe",
+                    "codex-mcp-server.exe",
                     "--codex-run-as-apply-patch",
                     "*** Begin Patch\n*** Update File: C:\\Users\\person\\destination_file.txt\n-original content\n+modified content\n*** End Patch",
                 ],
                 vec![
-                    "code-mcp-server.exe",
+                    "codex-mcp-server.exe",
                     "--codex-run-as-apply-patch",
                     "*** Begin Patch\n*** Update File: C:\\Users\\person\\destination_file.txt\n-original content\n+modified content\n*** End Patch",
                 ],

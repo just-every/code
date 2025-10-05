@@ -266,7 +266,7 @@ async fn run_codex_tool_session_inner(
                     }
                     EventMsg::AgentReasoningRawContent(_)
                     | EventMsg::AgentReasoningRawContentDelta(_)
-                    | EventMsg::TaskStarted
+                    | EventMsg::TaskStarted(_) // TODO: TaskStarted is tuple variant, not unit
                     | EventMsg::TokenCount(_)
                     | EventMsg::AgentReasoning(_)
                     | EventMsg::AgentReasoningSectionBreak(_)
@@ -281,26 +281,31 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::PatchApplyEnd(_)
                     | EventMsg::TurnDiff(_)
                     | EventMsg::WebSearchBegin(_)
-                    | EventMsg::WebSearchComplete(_)
+                    // TODO: Removed EventMsg variants
+                    // | EventMsg::WebSearchComplete(_)
                     | EventMsg::GetHistoryEntryResponse(_)
-                    | EventMsg::ReplayHistory(_)
+                    // | EventMsg::ReplayHistory(_)
                     | EventMsg::PlanUpdate(_)
-                    | EventMsg::BrowserScreenshotUpdate(_)
-                    | EventMsg::AgentStatusUpdate(_)
+                    // | EventMsg::BrowserScreenshotUpdate(_)
+                    // | EventMsg::AgentStatusUpdate(_)
                     | EventMsg::TurnAborted(_)
                     | EventMsg::ConversationPath(_)
                     | EventMsg::UserMessage(_)
                     | EventMsg::ShutdownComplete
                     | EventMsg::EnteredReviewMode(_)
                     | EventMsg::ExitedReviewMode(_)
-                    | EventMsg::CustomToolCallBegin(_)
-                    | EventMsg::CustomToolCallEnd(_) => {
+                    // | EventMsg::CustomToolCallBegin(_)
+                    // | EventMsg::CustomToolCallEnd(_)
+                     => {
                         // For now, we do not do anything extra for these
                         // events. Note that
                         // send(codex_event_to_notification(&event)) above has
                         // already dispatched these events as notifications,
                         // though we may want to do give different treatment to
                         // individual events in the future.
+                    }
+                    _ => {
+                        // TODO: Catch-all for new EventMsg variants (WebSearchEnd, ViewImageToolCall, StreamError, etc.)
                     }
                 }
             }

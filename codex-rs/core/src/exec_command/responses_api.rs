@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
+use crate::client_common::tools::ResponsesApiTool;
 use crate::openai_tools::JsonSchema;
-use crate::openai_tools::ResponsesApiTool;
 
 pub const EXEC_COMMAND_TOOL_NAME: &str = "exec_command";
 pub const WRITE_STDIN_TOOL_NAME: &str = "write_stdin";
@@ -12,7 +12,6 @@ pub fn create_exec_command_tool_for_responses_api() -> ResponsesApiTool {
         "cmd".to_string(),
         JsonSchema::String {
             description: Some("The shell command to execute.".to_string()),
-            allowed_values: None,
         },
     );
     properties.insert(
@@ -31,7 +30,6 @@ pub fn create_exec_command_tool_for_responses_api() -> ResponsesApiTool {
         "shell".to_string(),
         JsonSchema::String {
             description: Some("The shell to use. Defaults to \"/bin/bash\".".to_string()),
-            allowed_values: None,
         },
     );
     properties.insert(
@@ -68,7 +66,6 @@ pub fn create_write_stdin_tool_for_responses_api() -> ResponsesApiTool {
         "chars".to_string(),
         JsonSchema::String {
             description: Some("The characters to write to stdin.".to_string()),
-            allowed_values: None,
         },
     );
     properties.insert(

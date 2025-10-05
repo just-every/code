@@ -37,10 +37,11 @@ impl MessageProcessor {
         config: Arc<Config>,
     ) -> Self {
         let outgoing = Arc::new(outgoing);
-        let auth_manager = AuthManager::shared_with_mode_and_originator(
+        // shared_with_mode_and_originator removed, using shared() instead
+        // responses_originator_header field removed from Config
+        let auth_manager = AuthManager::shared(
             config.codex_home.clone(),
-            AuthMode::ApiKey,
-            config.responses_originator_header.clone(),
+            true, // enable_codex_api_key_env
         );
         let conversation_manager = Arc::new(ConversationManager::new(
             auth_manager.clone(),
@@ -91,9 +92,8 @@ impl MessageProcessor {
                             *suffix = Some(user_agent_suffix);
                         }
 
-                        let user_agent = get_codex_user_agent(Some(
-                            &self.base_config.responses_originator_header,
-                        ));
+                        // responses_originator_header removed from Config
+                        let user_agent = get_codex_user_agent();
                         let response = InitializeResponse { user_agent };
                         self.outgoing.send_response(request_id, response).await;
 

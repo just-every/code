@@ -89,16 +89,18 @@ mod tests {
         let outgoing_message_sender = OutgoingMessageSender::new(outgoing_tx);
 
         let conversation_id = ConversationId::new();
-        let session_uuid: Uuid = conversation_id.into();
         let event = Event {
             id: "1".to_string(),
             event_seq: 0,
             order: None,
             msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
-                session_id: session_uuid,
+                session_id: conversation_id,
                 model: "gpt-4o".to_string(),
+                reasoning_effort: None,
                 history_log_id: 1,
                 history_entry_count: 1000,
+                initial_messages: None,
+                rollout_path: std::path::PathBuf::new(),
             }),
         };
 
@@ -124,12 +126,14 @@ mod tests {
         let outgoing_message_sender = OutgoingMessageSender::new(outgoing_tx);
 
         let conversation_id = ConversationId::new();
-        let session_uuid: Uuid = conversation_id.into();
         let session_configured_event = SessionConfiguredEvent {
-            session_id: session_uuid,
+            session_id: conversation_id,
             model: "gpt-4o".to_string(),
+            reasoning_effort: None,
             history_log_id: 1,
             history_entry_count: 1000,
+            initial_messages: None,
+            rollout_path: std::path::PathBuf::new(),
         };
         let event = Event {
             id: "1".to_string(),

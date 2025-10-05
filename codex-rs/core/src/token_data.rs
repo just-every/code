@@ -2,8 +2,6 @@ use base64::Engine;
 use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
-use tracing::Level;
-
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Default)]
 pub struct TokenData {
@@ -20,15 +18,6 @@ pub struct TokenData {
     pub refresh_token: String,
 
     pub account_id: Option<String>,
-}
-
-impl TokenData {
-    pub fn is_openai_email(&self) -> bool {
-        self.id_token
-            .email
-            .as_deref()
-            .is_some_and(|email| email.trim().to_ascii_lowercase().ends_with("@openai.com"))
-    }
 }
 
 /// Flat subset of useful claims in id_token from auth.json.
@@ -56,15 +45,6 @@ impl IdTokenInfo {
 pub(crate) enum PlanType {
     Known(KnownPlan),
     Unknown(String),
-}
-
-impl PlanType {
-    pub fn as_string(&self) -> String {
-        match self {
-            Self::Known(known) => format!("{known:?}").to_lowercase(),
-            Self::Unknown(s) => s.clone(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -113,23 +93,10 @@ pub fn parse_id_token(id_token: &str) -> Result<IdTokenInfo, IdTokenInfoError> {
 
     let payload_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload_b64)?;
     let claims: IdClaims = serde_json::from_slice(&payload_bytes)?;
-    if tracing::enabled!(Level::DEBUG) {
-        let plan = claims
-            .auth
-            .as_ref()
-            .and_then(|a| a.chatgpt_plan_type.as_ref())
-            .map(|plan| plan.as_string());
-        tracing::debug!(
-            email = claims.email.as_deref().unwrap_or("<missing>"),
-            chatgpt_plan_type = plan.as_deref().unwrap_or("unknown"),
-            "decoded ChatGPT id_token claims"
-        );
-    }
-    let IdClaims { email, auth } = claims;
 
     Ok(IdTokenInfo {
-        email,
-        chatgpt_plan_type: auth.and_then(|a| a.chatgpt_plan_type),
+        email: claims.email,
+        chatgpt_plan_type: claims.auth.and_then(|a| a.chatgpt_plan_type),
         raw_jwt: id_token.to_string(),
     })
 }

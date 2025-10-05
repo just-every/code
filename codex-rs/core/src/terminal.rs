@@ -22,61 +22,51 @@ fn sanitize_header_value(value: String) -> String {
 }
 
 fn detect_terminal() -> String {
-    let result = if let Ok(tp) = std::env::var("TERM_PROGRAM") {
-        let tp_trimmed = tp.trim();
-        if !tp_trimmed.is_empty() {
+    sanitize_header_value(
+        if let Ok(tp) = std::env::var("TERM_PROGRAM")
+            && !tp.trim().is_empty()
+        {
             let ver = std::env::var("TERM_PROGRAM_VERSION").ok();
             match ver {
                 Some(v) if !v.trim().is_empty() => format!("{tp}/{v}"),
                 _ => tp,
             }
+        } else if let Ok(v) = std::env::var("WEZTERM_VERSION") {
+            if !v.trim().is_empty() {
+                format!("WezTerm/{v}")
+            } else {
+                "WezTerm".to_string()
+            }
+        } else if std::env::var("KITTY_WINDOW_ID").is_ok()
+            || std::env::var("TERM")
+                .map(|t| t.contains("kitty"))
+                .unwrap_or(false)
+        {
+            "kitty".to_string()
+        } else if std::env::var("ALACRITTY_SOCKET").is_ok()
+            || std::env::var("TERM")
+                .map(|t| t == "alacritty")
+                .unwrap_or(false)
+        {
+            "Alacritty".to_string()
+        } else if let Ok(v) = std::env::var("KONSOLE_VERSION") {
+            if !v.trim().is_empty() {
+                format!("Konsole/{v}")
+            } else {
+                "Konsole".to_string()
+            }
+        } else if std::env::var("GNOME_TERMINAL_SCREEN").is_ok() {
+            return "gnome-terminal".to_string();
+        } else if let Ok(v) = std::env::var("VTE_VERSION") {
+            if !v.trim().is_empty() {
+                format!("VTE/{v}")
+            } else {
+                "VTE".to_string()
+            }
+        } else if std::env::var("WT_SESSION").is_ok() {
+            return "WindowsTerminal".to_string();
         } else {
-            // fall through to other detectors
-            String::new()
-        }
-    } else {
-        String::new()
-    };
-
-    let detected = if !result.is_empty() {
-        result
-    } else if let Ok(v) = std::env::var("WEZTERM_VERSION") {
-        if !v.trim().is_empty() {
-            format!("WezTerm/{v}")
-        } else {
-            "WezTerm".to_string()
-        }
-    } else if std::env::var("KITTY_WINDOW_ID").is_ok()
-        || std::env::var("TERM")
-            .map(|t| t.contains("kitty"))
-            .unwrap_or(false)
-    {
-        "kitty".to_string()
-    } else if std::env::var("ALACRITTY_SOCKET").is_ok()
-        || std::env::var("TERM")
-            .map(|t| t == "alacritty")
-            .unwrap_or(false)
-    {
-        "Alacritty".to_string()
-    } else if let Ok(v) = std::env::var("KONSOLE_VERSION") {
-        if !v.trim().is_empty() {
-            format!("Konsole/{v}")
-        } else {
-            "Konsole".to_string()
-        }
-    } else if std::env::var("GNOME_TERMINAL_SCREEN").is_ok() {
-        "gnome-terminal".to_string()
-    } else if let Ok(v) = std::env::var("VTE_VERSION") {
-        if !v.trim().is_empty() {
-            format!("VTE/{v}")
-        } else {
-            "VTE".to_string()
-        }
-    } else if std::env::var("WT_SESSION").is_ok() {
-        "WindowsTerminal".to_string()
-    } else {
-        std::env::var("TERM").unwrap_or_else(|_| "unknown".to_string())
-    };
-
-    sanitize_header_value(detected)
+            std::env::var("TERM").unwrap_or_else(|_| "unknown".to_string())
+        },
+    )
 }

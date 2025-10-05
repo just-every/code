@@ -14,8 +14,6 @@ use time::macros::format_description;
 use uuid::Uuid;
 
 use super::SESSIONS_SUBDIR;
-use crate::config::resolve_codex_path_for_read;
-use crate::protocol::event_msg_from_protocol;
 use crate::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
@@ -112,7 +110,8 @@ pub(crate) async fn get_conversations(
     cursor: Option<&Cursor>,
     allowed_sources: &[SessionSource],
 ) -> io::Result<ConversationsPage> {
-    let root = resolve_codex_path_for_read(codex_home, Path::new(SESSIONS_SUBDIR));
+    let mut root = codex_home.to_path_buf();
+    root.push(SESSIONS_SUBDIR);
 
     if !root.exists() {
         return Ok(ConversationsPage {
@@ -197,6 +196,8 @@ async fn traverse_directories_for_paths(
                     if items.len() == page_size {
                         break 'outer;
                     }
+                    // Read head and simultaneously detect message events within the same
+                    // first N JSONL records to avoid a second file read.
                     let summary = read_head_and_tail(&path, HEAD_RECORD_LIMIT, TAIL_RECORD_LIMIT)
                         .await
                         .unwrap_or_default();
@@ -207,6 +208,7 @@ async fn traverse_directories_for_paths(
                     {
                         continue;
                     }
+                    // Apply filters: must have session meta and at least one user message event
                     if summary.saw_session_meta && summary.saw_user_event {
                         let HeadTailSummary {
                             head,
@@ -238,13 +240,9 @@ async fn traverse_directories_for_paths(
     })
 }
 
-fn build_next_cursor(items: &[ConversationItem]) -> Option<Cursor> {
-    let last = items.last()?;
-    let file_name = last.path.file_name()?.to_string_lossy();
-    let (ts, id) = parse_timestamp_uuid_from_filename(&file_name)?;
-    Some(Cursor::new(ts, id))
-}
-
+/// Pagination cursor token format: "<file_ts>|<uuid>" where `file_ts` matches the
+/// filename timestamp portion (YYYY-MM-DDThh-mm-ss) used in rollout filenames.
+/// The cursor orders files by timestamp desc, then UUID desc.
 fn parse_cursor(token: &str) -> Option<Cursor> {
     let (file_ts, uuid_str) = token.split_once('|')?;
 
@@ -259,6 +257,15 @@ fn parse_cursor(token: &str) -> Option<Cursor> {
     Some(Cursor::new(ts, uuid))
 }
 
+fn build_next_cursor(items: &[ConversationItem]) -> Option<Cursor> {
+    let last = items.last()?;
+    let file_name = last.path.file_name()?.to_string_lossy();
+    let (ts, id) = parse_timestamp_uuid_from_filename(&file_name)?;
+    Some(Cursor::new(ts, id))
+}
+
+/// Collects immediate subdirectories of `parent`, parses their (string) names with `parse`,
+/// and returns them sorted descending by the parsed key.
 async fn collect_dirs_desc<T, F>(parent: &Path, parse: F) -> io::Result<Vec<(T, PathBuf)>>
 where
     T: Ord + Copy,
@@ -282,6 +289,7 @@ where
     Ok(vec)
 }
 
+/// Collects files in a directory and parses them with `parse`.
 async fn collect_files<T, F>(parent: &Path, parse: F) -> io::Result<Vec<T>>
 where
     F: Fn(&str, &Path) -> Option<T>,
@@ -304,8 +312,10 @@ where
 }
 
 fn parse_timestamp_uuid_from_filename(name: &str) -> Option<(OffsetDateTime, Uuid)> {
+    // Expected: rollout-YYYY-MM-DDThh-mm-ss-<uuid>.jsonl
     let core = name.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
 
+    // Scan from the right for a '-' such that the suffix parses as a UUID.
     let (sep_idx, uuid) = core
         .match_indices('-')
         .rev()
@@ -341,52 +351,133 @@ async fn read_head_and_tail(
         let parsed: Result<RolloutLine, _> = serde_json::from_str(trimmed);
         let Ok(rollout_line) = parsed else { continue };
 
-        match &rollout_line.item {
+        match rollout_line.item {
             RolloutItem::SessionMeta(session_meta_line) => {
                 summary.source = Some(session_meta_line.meta.source);
                 summary.created_at = summary
                     .created_at
                     .clone()
                     .or_else(|| Some(rollout_line.timestamp.clone()));
-                summary.updated_at = Some(rollout_line.timestamp.clone());
-                summary.saw_session_meta = true;
-            }
-            RolloutItem::Event(event) => {
-                if let Some(msg) = event_msg_from_protocol(&event.msg) {
-                    if matches!(msg, EventMsg::UserMessage(_) | EventMsg::AgentMessage(_)) {
-                        summary.saw_user_event = true;
-                        summary.updated_at = Some(rollout_line.timestamp.clone());
-                    }
+                if let Ok(val) = serde_json::to_value(session_meta_line) {
+                    summary.head.push(val);
+                    summary.saw_session_meta = true;
                 }
             }
-            RolloutItem::ResponseItem(_) | RolloutItem::Compacted(_) | RolloutItem::TurnContext(_) => {}
+            RolloutItem::ResponseItem(item) => {
+                summary.created_at = summary
+                    .created_at
+                    .clone()
+                    .or_else(|| Some(rollout_line.timestamp.clone()));
+                if let Ok(val) = serde_json::to_value(item) {
+                    summary.head.push(val);
+                }
+            }
+            RolloutItem::TurnContext(_) => {
+                // Not included in `head`; skip.
+            }
+            RolloutItem::Compacted(_) => {
+                // Not included in `head`; skip.
+            }
+            RolloutItem::Event(ev) => {
+                if matches!(&ev.msg, EventMsg::UserMessage(_)) {
+                    summary.saw_user_event = true;
+                }
+            }
         }
-
-        summary
-            .head
-            .push(serde_json::to_value(&rollout_line.item).unwrap_or_default());
     }
 
-    // Collect tail by reading entire file (bounded by TAIL_RECORD_LIMIT).
-    let tail_lines = tokio::fs::read_to_string(path).await?;
-    let mut tail_events = Vec::new();
-    for line in tail_lines.lines().rev() {
-        if tail_events.len() >= tail_limit {
-            break;
+    if tail_limit != 0 {
+        let (tail, updated_at) = read_tail_records(path, tail_limit).await?;
+        summary.tail = tail;
+        summary.updated_at = updated_at;
+    }
+    Ok(summary)
+}
+
+async fn read_tail_records(
+    path: &Path,
+    max_records: usize,
+) -> io::Result<(Vec<serde_json::Value>, Option<String>)> {
+    use std::io::SeekFrom;
+    use tokio::io::AsyncReadExt;
+    use tokio::io::AsyncSeekExt;
+
+    if max_records == 0 {
+        return Ok((Vec::new(), None));
+    }
+
+    const CHUNK_SIZE: usize = 8192;
+
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut pos = file.seek(SeekFrom::End(0)).await?;
+    if pos == 0 {
+        return Ok((Vec::new(), None));
+    }
+
+    let mut buffer: Vec<u8> = Vec::new();
+    let mut latest_timestamp: Option<String> = None;
+
+    loop {
+        let slice_start = match (pos > 0, buffer.iter().position(|&b| b == b'\n')) {
+            (true, Some(idx)) => idx + 1,
+            _ => 0,
+        };
+        let (tail, newest_ts) = collect_last_response_values(&buffer[slice_start..], max_records);
+        if latest_timestamp.is_none() {
+            latest_timestamp = newest_ts.clone();
         }
+        if tail.len() >= max_records || pos == 0 {
+            return Ok((tail, latest_timestamp.or(newest_ts)));
+        }
+
+        let read_size = CHUNK_SIZE.min(pos as usize);
+        if read_size == 0 {
+            return Ok((tail, latest_timestamp.or(newest_ts)));
+        }
+        pos -= read_size as u64;
+        file.seek(SeekFrom::Start(pos)).await?;
+        let mut chunk = vec![0; read_size];
+        file.read_exact(&mut chunk).await?;
+        chunk.extend_from_slice(&buffer);
+        buffer = chunk;
+    }
+}
+
+fn collect_last_response_values(
+    buffer: &[u8],
+    max_records: usize,
+) -> (Vec<serde_json::Value>, Option<String>) {
+    use std::borrow::Cow;
+
+    if buffer.is_empty() || max_records == 0 {
+        return (Vec::new(), None);
+    }
+
+    let text: Cow<'_, str> = String::from_utf8_lossy(buffer);
+    let mut collected_rev: Vec<serde_json::Value> = Vec::new();
+    let mut latest_timestamp: Option<String> = None;
+    for line in text.lines().rev() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
-        let parsed: Result<RolloutLine, _> = serde_json::from_str(trimmed);
-        if parsed.is_ok() {
-            tail_events.push(serde_json::from_str(trimmed).unwrap_or_default());
+        let parsed: serde_json::Result<RolloutLine> = serde_json::from_str(trimmed);
+        let Ok(rollout_line) = parsed else { continue };
+        let RolloutLine { timestamp, item } = rollout_line;
+        if let RolloutItem::ResponseItem(item) = item
+            && let Ok(val) = serde_json::to_value(&item)
+        {
+            if latest_timestamp.is_none() {
+                latest_timestamp = Some(timestamp.clone());
+            }
+            collected_rev.push(val);
+            if collected_rev.len() == max_records {
+                break;
+            }
         }
     }
-    tail_events.reverse();
-    summary.tail = tail_events;
-
-    Ok(summary)
+    collected_rev.reverse();
+    (collected_rev, latest_timestamp)
 }
 
 /// Locate a recorded conversation rollout file by its UUID string using the existing
