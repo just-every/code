@@ -63,6 +63,15 @@ spec_ops_prepare_stage "spec-plan" "${SPEC_ID}"
 spec_ops_write_log "baseline mode=${BASELINE_MODE}"
 spec_ops_write_log "using manifest $(spec_ops_manifest_path)"
 
+spec_ops_init_policy_layers
+if ! spec_ops_run_policy_prefilter "${SPEC_ID}" "spec-plan"; then
+  spec_ops_write_log "policy prefilter reported failure"
+fi
+if ! spec_ops_run_policy_final "${SPEC_ID}" "spec-plan"; then
+  spec_ops_write_log "policy final review reported failure"
+fi
+POLICY_JSON="$(spec_ops_policy_layers_json)"
+
 BASELINE_OUT="${SPEC_OPS_STAGE_DIR}/baseline_${SPEC_OPS_SESSION_ID}.md"
 BASELINE_EXIT=0
 
@@ -117,6 +126,7 @@ read -r -d '' TELEMETRY <<JSON || true
   "hooks": {
     "session.start": "${HOOK_SESSION_START}"
   },
+  "policy": ${POLICY_JSON},
   "artifacts": [
     { "path": "${BASELINE_OUT}" },
     { "path": "${SPEC_OPS_LOG}" }

@@ -11,6 +11,117 @@ SPEC_OPS_HAL_ARTIFACTS=()
 SPEC_OPS_HAL_FAILED_CHECKS=()
 SPEC_OPS_HAL_STATUS="skipped"
 
+SPEC_OPS_POLICY_PREFILTER_MODEL="gpt-5-codex"
+SPEC_OPS_POLICY_PREFILTER_STATUS="skipped"
+SPEC_OPS_POLICY_PREFILTER_NOTE="not run"
+SPEC_OPS_POLICY_FINAL_MODEL="gpt-5"
+SPEC_OPS_POLICY_FINAL_STATUS="skipped"
+SPEC_OPS_POLICY_FINAL_NOTE="not run"
+
+spec_ops_init_policy_layers() {
+  SPEC_OPS_POLICY_PREFILTER_STATUS="skipped"
+  SPEC_OPS_POLICY_PREFILTER_NOTE="not configured"
+  SPEC_OPS_POLICY_FINAL_STATUS="skipped"
+  SPEC_OPS_POLICY_FINAL_NOTE="not configured"
+}
+
+spec_ops_policy_layers_json() {
+  SPEC_OPS_POLICY_PREFILTER_MODEL="${SPEC_OPS_POLICY_PREFILTER_MODEL}" \
+  SPEC_OPS_POLICY_PREFILTER_STATUS="${SPEC_OPS_POLICY_PREFILTER_STATUS}" \
+  SPEC_OPS_POLICY_PREFILTER_NOTE="${SPEC_OPS_POLICY_PREFILTER_NOTE}" \
+  SPEC_OPS_POLICY_FINAL_MODEL="${SPEC_OPS_POLICY_FINAL_MODEL}" \
+  SPEC_OPS_POLICY_FINAL_STATUS="${SPEC_OPS_POLICY_FINAL_STATUS}" \
+  SPEC_OPS_POLICY_FINAL_NOTE="${SPEC_OPS_POLICY_FINAL_NOTE}" \
+    python3 - <<'PYJSON'
+import json
+import os
+
+payload = {
+    "prefilter": {
+        "model": os.environ.get("SPEC_OPS_POLICY_PREFILTER_MODEL", ""),
+        "status": os.environ.get("SPEC_OPS_POLICY_PREFILTER_STATUS", ""),
+        "note": os.environ.get("SPEC_OPS_POLICY_PREFILTER_NOTE", ""),
+    },
+    "final": {
+        "model": os.environ.get("SPEC_OPS_POLICY_FINAL_MODEL", ""),
+        "status": os.environ.get("SPEC_OPS_POLICY_FINAL_STATUS", ""),
+        "note": os.environ.get("SPEC_OPS_POLICY_FINAL_NOTE", ""),
+    },
+}
+
+print(json.dumps(payload, indent=2, ensure_ascii=False))
+PYJSON
+}
+
+spec_ops__render_policy_command() {
+  local template="$1"
+  local spec="$2"
+  local stage="$3"
+  template="${template//\{spec_id\}/$spec}"
+  template="${template//\{stage\}/$stage}"
+  printf '%s' "${template}"
+}
+
+spec_ops_run_policy_prefilter() {
+  local spec="$1"
+  local stage="$2"
+  local cmd_template="${SPEC_OPS_POLICY_PREFILTER_CMD:-}"
+
+  if [[ -z "${cmd_template}" ]]; then
+    local code_cli="${SPEC_OPS_CODE_CLI:-${REPO_ROOT}/codex-rs/target/dev-fast/code}"
+    if [[ ! -x "${code_cli}" ]]; then
+      SPEC_OPS_POLICY_PREFILTER_STATUS="skipped"
+      SPEC_OPS_POLICY_PREFILTER_NOTE="code CLI not available; set SPEC_OPS_CODE_CLI or SPEC_OPS_POLICY_PREFILTER_CMD"
+      return 0
+    fi
+    cmd_template="${code_cli} exec --sandbox read-only --model ${SPEC_OPS_POLICY_PREFILTER_MODEL} -- \"Policy prefilter for ${spec}/${stage}\""
+  fi
+
+  local command
+  command=$(spec_ops__render_policy_command "${cmd_template}" "${spec}" "${stage}")
+  spec_ops_write_log "policy prefilter command: ${command}"
+
+  if bash -lc "${command}" >>"${SPEC_OPS_LOG}" 2>&1; then
+    SPEC_OPS_POLICY_PREFILTER_STATUS="passed"
+    SPEC_OPS_POLICY_PREFILTER_NOTE="${command}"
+    return 0
+  else
+    SPEC_OPS_POLICY_PREFILTER_STATUS="failed"
+    SPEC_OPS_POLICY_PREFILTER_NOTE="command failed: ${command}"
+    return 1
+  fi
+}
+
+spec_ops_run_policy_final() {
+  local spec="$1"
+  local stage="$2"
+  local cmd_template="${SPEC_OPS_POLICY_FINAL_CMD:-}"
+
+  if [[ -z "${cmd_template}" ]]; then
+    local code_cli="${SPEC_OPS_CODE_CLI:-${REPO_ROOT}/codex-rs/target/dev-fast/code}"
+    if [[ ! -x "${code_cli}" ]]; then
+      SPEC_OPS_POLICY_FINAL_STATUS="skipped"
+      SPEC_OPS_POLICY_FINAL_NOTE="code CLI not available; set SPEC_OPS_CODE_CLI or SPEC_OPS_POLICY_FINAL_CMD"
+      return 0
+    fi
+    cmd_template="${code_cli} exec --sandbox read-only --model ${SPEC_OPS_POLICY_FINAL_MODEL} -- \"Policy final check for ${spec}/${stage}\""
+  fi
+
+  local command
+  command=$(spec_ops__render_policy_command "${cmd_template}" "${spec}" "${stage}")
+  spec_ops_write_log "policy final command: ${command}"
+
+  if bash -lc "${command}" >>"${SPEC_OPS_LOG}" 2>&1; then
+    SPEC_OPS_POLICY_FINAL_STATUS="passed"
+    SPEC_OPS_POLICY_FINAL_NOTE="${command}"
+    return 0
+  else
+    SPEC_OPS_POLICY_FINAL_STATUS="failed"
+    SPEC_OPS_POLICY_FINAL_NOTE="command failed: ${command}"
+    return 1
+  fi
+}
+
 spec_ops_timestamp() {
   date -u "+%Y-%m-%dT%H:%M:%SZ"
 }

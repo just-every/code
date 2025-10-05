@@ -35,6 +35,15 @@ spec_ops_prepare_stage "spec-audit" "${SPEC_ID}"
 spec_ops_write_log "audit guardrail ready"
 spec_ops_write_log "using manifest $(spec_ops_manifest_path)"
 
+spec_ops_init_policy_layers
+if ! spec_ops_run_policy_prefilter "${SPEC_ID}" "spec-audit"; then
+  spec_ops_write_log "policy prefilter reported failure"
+fi
+if ! spec_ops_run_policy_final "${SPEC_ID}" "spec-audit"; then
+  spec_ops_write_log "policy final review reported failure"
+fi
+POLICY_JSON="$(spec_ops_policy_layers_json)"
+
 SPEC_OPS_HAL_ARTIFACTS=()
 
 HAL_FAILURE=0
@@ -66,6 +75,7 @@ read -r -d '' TELEMETRY <<JSON || true
       "status": "${SCENARIO_STATUS}"
     }
   ],
+  "policy": ${POLICY_JSON},
   "artifacts": [
     { "path": "${SPEC_OPS_LOG}" }$(
       for artifact in "${SPEC_OPS_HAL_ARTIFACTS[@]}"; do

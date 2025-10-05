@@ -35,6 +35,15 @@ spec_ops_prepare_stage "spec-tasks" "${SPEC_ID}"
 spec_ops_write_log "initialising tasks guardrail"
 spec_ops_write_log "using manifest $(spec_ops_manifest_path)"
 
+spec_ops_init_policy_layers
+if ! spec_ops_run_policy_prefilter "${SPEC_ID}" "spec-tasks"; then
+  spec_ops_write_log "policy prefilter reported failure"
+fi
+if ! spec_ops_run_policy_final "${SPEC_ID}" "spec-tasks"; then
+  spec_ops_write_log "policy final review reported failure"
+fi
+POLICY_JSON="$(spec_ops_policy_layers_json)"
+
 SCHEMA_VERSION=1
 TOOL_STATUS="ready"
 
@@ -48,6 +57,7 @@ read -r -d '' TELEMETRY <<JSON || true
   "tool": {
     "status": "${TOOL_STATUS}"
   },
+  "policy": ${POLICY_JSON},
   "artifacts": [
     { "path": "${SPEC_OPS_LOG}" }
   ]

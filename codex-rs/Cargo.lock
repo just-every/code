@@ -1250,6 +1250,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "shlex",
  "strip-ansi-escapes",
  "strum 0.27.2",

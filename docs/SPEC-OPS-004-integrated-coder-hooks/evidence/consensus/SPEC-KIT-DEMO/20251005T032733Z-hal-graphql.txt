@@ -1,0 +1,8 @@
+{
+  "content": [
+    {
+      "text": "Status: 401 Unauthorized\n\nHeaders:\naccess-control-allow-credentials: true\naccess-control-expose-headers: content-type,content-length\ncontent-length: 0\ncontent-security-policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'\ndate: Sun, 05 Oct 2025 03:27:34 GMT\nvary: origin, access-control-request-method, access-control-request-headers\nx-content-type-options: nosniff\nx-correlation-id: d4a917d3-6d20-43fd-9a3c-12e40d1948e1\nx-frame-options: DENY\nx-ratelimit-limit: 60\nx-ratelimit-remaining: 119\nx-xss-protection: 1; mode=block\n\nBody:\n",
+      "type": "text"
+    }
+  ]
+}

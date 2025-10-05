@@ -9,7 +9,7 @@ command = "claude"
 enabled = true
 read-only = false
 description = "Claude AI assistant with full capabilities"
-args = ["--dangerously-skip-permissions", "-m", "claude-opus-4-1-20250805"]
+args = ["--dangerously-skip-permissions", "-m", "claude-4.5-sonnet"]
 
 [[agents]]
 name = "claude-safe"
@@ -20,12 +20,12 @@ description = "Claude AI assistant in read-only mode"
 args = []
 
 [[agents]]
-name = "claude-sonnet-4"
+name = "claude-opus-4-1"
 command = "claude"
 enabled = true
 read-only = false
-description = "Claude Sonnet 4 (lower-latency fallback)"
-args = ["-m", "claude-sonnet-4-20250514"]
+description = "Claude Opus 4.1 fallback for premium synthesis"
+args = ["-m", "claude-opus-4-1-20250805"]
 
 [[agents]]
 name = "gemini"
@@ -122,15 +122,15 @@ command = "gpt"
 enabled = true
 read-only = false
 description = "OpenAI GPT-5 router (auto reasoning)"
-args = ["--model", "gpt-5", "--auto-thinking"]
+args = ["--model", "gpt-5", "--reasoning", "high"]
 
 [[agents]]
-name = "gpt-5-pro"
+name = "gpt-5-codex"
 command = "gpt"
 enabled = true
 read-only = false
-description = "OpenAI GPT-5 Pro for escalated reasoning"
-args = ["--model", "gpt-5-pro", "--thinking" ]
+description = "OpenAI GPT-5 Codex tier for code-gen ensembles"
+args = ["--model", "gpt-5-codex"]
 
 [[agents]]
 name = "gpt-5-mini"

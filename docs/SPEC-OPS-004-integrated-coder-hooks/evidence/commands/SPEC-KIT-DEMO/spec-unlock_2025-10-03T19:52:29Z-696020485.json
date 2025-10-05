@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "command": "spec-ops-unlock",
+  "specId": "SPEC-KIT-DEMO",
+  "sessionId": "2025-10-03T19:52:29Z-696020485",
+  "timestamp": "2025-10-03T19:52:50Z",
+  "unlock_status": "unlocked",
+  "policy": {
+  "prefilter": {
+    "model": "o4-mini-high",
+    "status": "passed",
+    "note": "/home/thetu/code/codex-rs/target/dev-fast/code exec --sandbox read-only --model o4-mini-high -- \"Policy prefilter for SPEC-KIT-DEMO/spec-unlock\""
+  },
+  "final": {
+    "model": "o4-mini-high",
+    "status": "passed",
+    "note": "/home/thetu/code/codex-rs/target/dev-fast/code exec --sandbox read-only --model o4-mini-high -- \"Policy final check for SPEC-KIT-DEMO/spec-unlock\""
+  }
+},
+  "artifacts": [
+    { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-DEMO/spec-unlock_2025-10-03T19:52:29Z-696020485.log" }
+  ]
+}

@@ -570,8 +570,29 @@ mod tests {
     #[test]
     fn parse_spec_auto_args_supports_from_flag() {
         let auto = parse_spec_auto_args("SPEC-OPS-007 --from tasks align checkout").unwrap();
-        assert_eq!(auto.spec_id, "SPEC-OPS-007");
-        assert_eq!(auto.goal, "align checkout");
-        assert_eq!(auto.resume_from, SpecStage::Tasks);
+       assert_eq!(auto.spec_id, "SPEC-OPS-007");
+       assert_eq!(auto.goal, "align checkout");
+       assert_eq!(auto.resume_from, SpecStage::Tasks);
+    }
+
+    #[test]
+    fn spec_ops_auto_maps_to_spec_auto_script() {
+        let command = SlashCommand::SpecOpsAuto;
+        assert!(command.is_spec_ops(), "/spec-ops-auto should be recognized as Spec Ops command");
+        let meta = command.spec_ops().expect("Spec Ops metadata");
+        assert_eq!(meta.display, "auto");
+        assert_eq!(meta.script, "spec_auto.sh");
+    }
+
+    #[test]
+    fn spec_evidence_stats_maps_to_evidence_stats_script() {
+        let command = SlashCommand::SpecEvidenceStats;
+        assert!(
+            command.is_spec_ops(),
+            "/spec-evidence-stats should be recognized as Spec Ops command"
+        );
+        let meta = command.spec_ops().expect("Spec Ops metadata");
+        assert_eq!(meta.display, "evidence-stats");
+        assert_eq!(meta.script, "evidence_stats.sh");
     }
 }

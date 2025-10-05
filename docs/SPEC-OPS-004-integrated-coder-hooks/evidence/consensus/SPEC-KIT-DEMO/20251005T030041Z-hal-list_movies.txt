@@ -1,0 +1,8 @@
+{
+  "content": [
+    {
+      "text": "Status: 200 OK\n\nHeaders:\naccess-control-allow-credentials: true\naccess-control-expose-headers: content-type,content-length\ncache-control: no-store, no-cache, must-revalidate, private\ncontent-length: 51\ncontent-security-policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' ws: wss:\ncontent-type: application/json\ndate: Sun, 05 Oct 2025 03:00:43 GMT\nreferrer-policy: strict-origin-when-cross-origin\nstrict-transport-security: max-age=31536000\nvary: origin, access-control-request-method, access-control-request-headers, origin, access-control-request-method, access-control-request-headers\nx-content-type-options: nosniff\nx-correlation-id: f3e4231b-6b4e-4180-8404-74ea9ef2eef4\nx-frame-options: DENY\nx-xss-protection: 1; mode=block\n\nBody:\n{\n  \"page\": 1,\n  \"pageSize\": 1,\n  \"records\": [],\n  \"totalCount\": 0\n}",
+      "type": "text"
+    }
+  ]
+}

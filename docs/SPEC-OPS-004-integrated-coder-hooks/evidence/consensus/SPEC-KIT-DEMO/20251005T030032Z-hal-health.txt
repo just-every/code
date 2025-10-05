@@ -1,0 +1,8 @@
+{
+  "content": [
+    {
+      "text": "Status: 200 OK\n\nHeaders:\naccess-control-allow-credentials: true\naccess-control-expose-headers: content-type,content-length\ncontent-length: 714\ncontent-security-policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'\ncontent-type: application/json\ndate: Sun, 05 Oct 2025 03:00:33 GMT\nvary: origin, access-control-request-method, access-control-request-headers\nx-content-type-options: nosniff\nx-correlation-id: 0b1399f9-c571-437d-995d-3ccb288fdd82\nx-frame-options: DENY\nx-xss-protection: 1; mode=block\n\nBody:\n{\n  \"capabilities\": {\n    \"core\": {\n      \"enabled\": true,\n      \"reason\": \"All core services operational\"\n    },\n    \"discovery\": {\n      \"enabled\": true,\n      \"reason\": \"Indexers (HDBits+BTN) connected\"\n    },\n    \"download\": {\n      \"enabled\": true,\n      \"reason\": \"qBittorrent connected\"\n    },\n    \"learning\": {\n      \"enabled\": true,\n      \"reason\": \"Reputation service enabled\"\n    }\n  },\n  \"configuration\": {\n    \"cors\": {\n      \"ready\": true,\n      \"reason\": \"CORS configured for known origins\"\n    },\n    \"introspection\": {\n      \"ready\": true,\n      \"reason\": \"Available in development\"\n    },\n    \"rate_limits\": {\n      \"ready\": true,\n      \"reason\": \"GraphQL rate limiting active\"\n    },\n    \"request_size\": {\n      \"ready\": true,\n      \"reason\": \"Size limits configured (16777216 bytes)\"\n    }\n  },\n  \"service\": \"radarr-mvp\",\n  \"status\": \"healthy\",\n  \"timestamp\": \"2025-10-05T03:00:33.877518612+00:00\",\n  \"uptime\": 1759633233,\n  \"version\": \"1.0.0\"\n}",
+      "type": "text"
+    }
+  ]
+}
