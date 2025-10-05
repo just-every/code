@@ -39,7 +39,7 @@
 | Order | ID | Title | Status | Notes |
 |-------|-----|-------|--------|-------|
 | 1 | T28 | Integrate consensus into spec_auto.sh | **DONE** | Modified spec_auto.sh to call consensus_runner.sh --execute after each guardrail stage; added check_synthesis.py validator; halts on conflict/degraded. Default: consensus enabled. Use --skip-consensus for guardrails-only. Completed: 2025-10-05. |
-| 2 | T29 | Unified intake (/new-spec command) | **HIGH PRIORITY** | Create subagent command: takes feature description → auto-generates SPEC-ID → creates SPEC.md row → runs /specify + /plan + /tasks → presents package. **Eliminates 4 manual steps.** Effort: 1-2 days. |
+| 2 | T29 | Unified intake (/new-spec command) | **DONE** | Created /new-spec subagent command + generate_spec_id.py helper. Takes feature description → generates SPEC-ID → creates directory → runs /specify + /plan + /tasks → presents package. Eliminates 4 manual steps. Usage: /new-spec <description>. Completed: 2025-10-05. |
 | 3 | T30 | Migrate to Project Commands | **MEDIUM PRIORITY** | Convert SpecOpsPlan, SpecOpsAuto, etc. from Rust enum to config.toml [[projects.commands]]. Remove 357 lines from slash_command.rs. **Reduces rebase friction.** Effort: 4-6 hours. |
 | 4 | T31 | Evidence compression & archival | **MEDIUM PRIORITY** | Implement: gzip *.json older than 7 days, rotation (keep last N runs), optional S3 upload. **Addresses 25MB limit.** Effort: 1 day. |
 | 5 | T32 | TUI /spec-auto full automation | **OPTIONAL** | Alternative to T28: Modify ChatWidget to auto-submit prompts instead of inserting. Requires 500-line TUI refactor. **Only if bash approach insufficient.** Effort: 3 days. |

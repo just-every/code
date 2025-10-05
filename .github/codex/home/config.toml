@@ -1,5 +1,34 @@
 model = "gpt-5"
 
+[subagents]
+
+[[subagents.commands]]
+name = "new-spec"
+read-only = false
+agents = ["code", "gemini", "claude"]
+orchestrator-instructions = """
+Unified SPEC creation from feature description. Entry point for new features.
+
+Phase 1: Generate SPEC-ID and scaffold
+1. Run: python3 scripts/spec_ops_004/generate_spec_id.py "<feature-description>"
+2. Store result as SPEC_ID
+3. Create directory: docs/${SPEC_ID}/
+4. Add SPEC.md table row
+
+Phase 2: Generate PRD (via /specify)
+5. Invoke /specify ${SPEC_ID} <feature-description>
+
+Phase 3: Multi-agent planning (via /plan)
+6. Invoke /plan ${SPEC_ID}
+
+Phase 4: Task breakdown (via /tasks)
+7. Invoke /tasks ${SPEC_ID}
+
+Phase 5: Present package
+8. Show summary and ask: "Ready to implement? Run: /spec-auto ${SPEC_ID}"
+
+Never auto-run /spec-auto - always require explicit approval."""
+
 [mcp_servers.repo_search]
 command = "uvx"
 args = ["awslabs.git-repo-research-mcp-server@latest"]
