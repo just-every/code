@@ -1,0 +1,12 @@
+{
+  "agent": "stub",
+  "model": "stub-model",
+  "model_release": "1970-01-01",
+  "reasoning_mode": "auto",
+  "consensus": {
+    "agreements": [
+      "stub"
+    ],
+    "conflicts": []
+  }
+}

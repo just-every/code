@@ -70,8 +70,8 @@ Add per-stage and per-SPEC metrics to telemetry schema:
 ```
 
 **Acceptance Criteria:**
-- [ ] Schema v2 documented in `docs/spec-kit/telemetry-schema-v2.md`
-- [ ] Backwards compatible with schema v1
+- [x] Schema v2 documented in `docs/spec-kit/telemetry-schema-v2.md`
+- [x] Backwards compatible with schema v1
 - [ ] Validator script updated: `scripts/spec_ops_004/validate_telemetry.py`
 - [ ] Example fixtures added for testing
 
@@ -110,10 +110,10 @@ extract_metrics() {
 ```
 
 **Acceptance Criteria:**
-- [ ] Telemetry JSON written to `evidence/consensus/<SPEC-ID>/<stage>_<timestamp>_telemetry.json`
-- [ ] All agent metrics captured (tokens, cost, latency)
-- [ ] Disagreement detection logic implemented
-- [ ] Unit tests for metric extraction functions
+- [x] Telemetry JSON written to `evidence/consensus/<SPEC-ID>/<stage>_<timestamp>_telemetry.json`
+- [x] All agent metrics captured (tokens, cost, latency)
+- [x] Disagreement detection logic implemented
+- [x] Unit tests for metric extraction functions
 
 ---
 

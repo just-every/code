@@ -159,6 +159,7 @@ agent_reasoning[gpt_codex]="high"
 
 declare -A previous_outputs
 declare -A prompt_files
+declare -a agent_metrics_files=()
 
 timestamp_run="$(timestamp)"
 
@@ -196,6 +197,7 @@ run_agent() {
   local agent="$1"
   local prompt_content="$2"
   local output_file="${output_dir}/${stage_slug}_${timestamp_run}_${agent}.json"
+  local metrics_file="${output_dir}/${stage_slug}_${timestamp_run}_${agent}_metrics.json"
 
   if [[ ${dry_run} -eq 1 ]]; then
     write_prompt_file "${agent}" "${prompt_content}"
@@ -219,6 +221,10 @@ run_agent() {
 
   local last_message_file
   last_message_file="$(mktemp)"
+  local events_file
+  events_file="$(mktemp)"
+  local stderr_file
+  stderr_file="$(mktemp)"
 
   echo "Executing ${agent} via ${CODEX_BIN}" >&2
   local reasoning_effort="${agent_reasoning[$agent]}"
@@ -253,6 +259,13 @@ run_agent() {
     mcp_args=(-c "mcp_servers={}")
   fi
 
+  local start_ms
+  start_ms="$(python3 - <<'PY'
+import time
+print(int(time.time() * 1000))
+PY
+)"
+
   local exec_status=0
   if ! cat "${prompt_file}" | "${CODEX_BIN}" \
       exec \
@@ -264,10 +277,21 @@ run_agent() {
       --skip-git-repo-check \
       --cd "${REPO_ROOT}" \
       --json \
-      - 2>&1; then
+      - \
+      >"${events_file}" \
+      2>"${stderr_file}"; then
     exec_status=$?
     echo "WARNING: agent ${agent} execution failed with status ${exec_status}" >&2
   fi
+
+  local end_ms
+  end_ms="$(python3 - <<'PY'
+import time
+print(int(time.time() * 1000))
+PY
+)"
+
+  local latency_ms=$(( end_ms - start_ms ))
 
   rm -f "${prompt_file}"
 
@@ -301,8 +325,28 @@ PY
     echo "Agent ${agent} output saved to ${output_file}" >&2
   fi
 
+  if [[ -s "${stderr_file}" ]]; then
+    cat "${stderr_file}" >&2
+  fi
+
   rm -f "${last_message_file}"
+  rm -f "${stderr_file}"
+
   previous_outputs["${agent}"]="$(cat "${output_file}")"
+
+  python3 "${SCRIPT_DIR}/telemetry_utils.py" extract-agent \
+    --events "${events_file}" \
+    --output-path "${output_file}" \
+    --out "${metrics_file}" \
+    --agent "${agent}" \
+    --model-id "${agent_model_id[$agent]}" \
+    --model-release "${agent_model_release[$agent]}" \
+    --reasoning-mode "${agent_reasoning[$agent]}" \
+    --latency-ms "${latency_ms}" \
+    --exec-status "${exec_status}"
+
+  agent_metrics_files+=("${metrics_file}")
+  rm -f "${events_file}"
 }
 
 IFS=' ' read -r -a agents_array <<<"${agents}"
@@ -388,29 +432,16 @@ fi
 echo "Consensus synthesis written to ${synthesis_file}"
 
 telemetry_file="${output_dir}/${stage_slug}_${timestamp_run}_telemetry.jsonl"
-AGENT_LIST_JSON="${agent_list_json}" python3 - "${telemetry_file}" <<'PY'
-import json
-import sys
-from pathlib import Path
-import os
 
-telemetry_path = Path(sys.argv[1])
-record = {
-    "schemaVersion": "1.0",
-    "stage": "${stage}",
-    "specId": "${spec}",
-    "timestamp": "${timestamp_run}",
-    "promptVersion": "${prompt_version}",
-    "agents": [
-        {
-            "agent": name,
-            "path": f"${output_dir}/${stage_slug}_${timestamp_run}_{name}.json"
-        }
-        for name in json.loads(os.environ["AGENT_LIST_JSON"])
-    ],
-    "synthesisPath": "${output_dir}/${stage_slug}_${timestamp_run}_synthesis.json",
-}
-with telemetry_path.open("a", encoding="utf-8") as fh:
-    fh.write(json.dumps(record) + "\n")
-PY
+python3 "${SCRIPT_DIR}/telemetry_utils.py" write-telemetry \
+  --telemetry-file "${telemetry_file}" \
+  --stage "${stage}" \
+  --command "${stage}" \
+  --spec "${spec}" \
+  --timestamp "${timestamp_run}" \
+  --session-id "${timestamp_run}" \
+  --prompt-version "${prompt_version}" \
+  --synthesis "${synthesis_file}" \
+  $(for metrics in "${agent_metrics_files[@]}"; do printf ' --metrics-file %q' "${metrics}"; done)
+
 echo "Consensus telemetry appended to ${telemetry_file}"

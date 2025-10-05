@@ -22,7 +22,7 @@
   - `prompt_tokens` (int)
   - `completion_tokens` (int)
   - `latency_ms` (int)
-  - `cost_usd` (float)
+  - `cost_usd` (float, optional)
   - `cache_hit` (bool, optional)
   - `arbiter_override` (bool, optional)
   - `override_reason` (string, optional)
@@ -33,6 +33,7 @@
 - `synthesis_status` (string → `ok|conflict|degraded`)
 - `total_tokens` (int)
 - `total_latency_ms` (int)
+- `total_cost_usd` (float, optional)
 
 ## Stage Metrics
 - `quality_metrics`
@@ -46,7 +47,7 @@
   - `policy_model` (string)
   - `policy_status` (string)
   - `latency_ms` (int)
-  - `cost_usd` (float)
+  - `cost_usd` (float, optional)
 
 ## Stage-Specific Fields
 - Plan → retain baseline fields from schema v1
