@@ -41,6 +41,7 @@ output_dir=""
 dry_run=0
 execute=0
 allow_conflict=0
+disable_mcp_default="${CONSENSUS_DISABLE_MCP:-1}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -220,46 +221,88 @@ run_agent() {
   last_message_file="$(mktemp)"
 
   echo "Executing ${agent} via ${CODEX_BIN}" >&2
+  local reasoning_effort="${agent_reasoning[$agent]}"
+  case "${reasoning_effort}" in
+    thinking)
+      reasoning_effort="high"
+      ;;
+    auto)
+      reasoning_effort="medium"
+      ;;
+    minimal|minimal)
+      reasoning_effort="minimal"
+      ;;
+    low)
+      reasoning_effort="low"
+      ;;
+    high)
+      reasoning_effort="high"
+      ;;
+    *)
+      reasoning_effort=""
+      ;;
+  esac
+
+  declare -a effort_args=()
+  if [[ -n "${reasoning_effort}" ]]; then
+    effort_args=(-c "model_reasoning_effort=\"${reasoning_effort}\"")
+  fi
+
+  declare -a mcp_args=()
+  if [[ "${disable_mcp_default}" == "1" ]]; then
+    mcp_args=(-c "mcp_servers={}")
+  fi
+
+  local exec_status=0
   if ! cat "${prompt_file}" | "${CODEX_BIN}" \
       exec \
-      --sandbox read-only \
+      --sandbox danger-full-access \
       --model "${agent_model_id[$agent]}" \
-      --reasoning "${agent_reasoning[$agent]}" \
+      "${effort_args[@]}" \
+      "${mcp_args[@]}" \
       --output-last-message "${last_message_file}" \
       --skip-git-repo-check \
       --cd "${REPO_ROOT}" \
       --json \
       - 2>&1; then
-    echo "ERROR: agent ${agent} failed" >&2
-    cat "${last_message_file}" >&2 || true
-    rm -f "${prompt_file}" "${last_message_file}"
-    exit 1
+    exec_status=$?
+    echo "WARNING: agent ${agent} execution failed with status ${exec_status}" >&2
   fi
 
   rm -f "${prompt_file}"
 
-  if [[ ! -s "${last_message_file}" ]]; then
-    echo "ERROR: agent ${agent} produced empty output" >&2
-    rm -f "${last_message_file}"
-    exit 1
+  if [[ ${exec_status} -eq 0 && -s "${last_message_file}" ]]; then
+    if ! python3 -c "import json,sys; json.load(open('${last_message_file}'))" 2>/dev/null; then
+      exec_status=1
+    else
+      python3 -c "import json,sys; data=json.load(open('${last_message_file}')); open('${output_file}', 'w').write(json.dumps(data, indent=2, ensure_ascii=False))" 2>/dev/null || exec_status=$?
+    fi
   fi
 
-  if ! python3 -c "import json,sys; json.load(open('${last_message_file}'))" 2>/dev/null; then
-    echo "ERROR: agent ${agent} output is not valid JSON" >&2
-    rm -f "${last_message_file}"
-    exit 1
+  if [[ ${exec_status} -ne 0 || ! -s "${output_file}" ]]; then
+    python3 - "${output_file}" "${spec}" "${stage}" "${agent}" <<'PY'
+import json, sys
+path, spec_id, stage, agent = sys.argv[1:5]
+payload = {
+    "spec_id": spec_id,
+    "stage": stage,
+    "agent": agent,
+    "error": "agent execution failed",
+    "consensus": {
+        "agreements": [],
+        "conflicts": [f"{agent} execution failed"],
+    },
+}
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(payload, fh, indent=2)
+PY
+    echo "Agent ${agent} output stubbed to ${output_file}" >&2
+  else
+    echo "Agent ${agent} output saved to ${output_file}" >&2
   fi
-
-  python3 -c "import json,sys; data=json.load(open('${last_message_file}')); open('${output_file}', 'w').write(json.dumps(data, indent=2, ensure_ascii=False))" 2>/dev/null || {
-    echo "ERROR: failed to persist agent ${agent} output" >&2
-    rm -f "${last_message_file}"
-    exit 1
-  }
 
   rm -f "${last_message_file}"
-
   previous_outputs["${agent}"]="$(cat "${output_file}")"
-  echo "Agent ${agent} output saved to ${output_file}"
 }
 
 IFS=' ' read -r -a agents_array <<<"${agents}"
@@ -269,6 +312,13 @@ for agent in "${agents_array[@]}"; do
   run_agent "${agent}" "${prompt_text}"
 done
 
+agent_list_json="$(printf '%s\n' "${agents_array[@]}" | python3 - <<'PY'
+import json, sys
+agents = [line.strip() for line in sys.stdin if line.strip()]
+print(json.dumps(agents))
+PY
+)"
+
 if [[ ${dry_run} -eq 1 || ${execute} -ne 1 ]]; then
   echo "Consensus synthesis skipped (dry-run or execute disabled)." >&2
   exit 0
@@ -276,10 +326,11 @@ fi
 
 synthesis_file="${output_dir}/${stage_slug}_${timestamp_run}_synthesis.json"
 
-python3 - "$synthesis_file" "$allow_conflict" <<'PYCODE'
+AGENT_LIST_JSON="${agent_list_json}" python3 - "$synthesis_file" "$allow_conflict" <<'PYCODE'
 import json
 import sys
 from pathlib import Path
+import os
 
 stage = "${stage}"
 spec = "${spec}"
@@ -289,7 +340,7 @@ args = sys.argv[1:]
 synthesis_path = Path(args[0])
 allow_conflict = bool(int(args[1]))
 
-agents = ${json.dumps(list(previous_outputs.keys()))}
+agents = json.loads(os.environ["AGENT_LIST_JSON"])
 outputs = {}
 
 for agent in agents:
@@ -335,3 +386,31 @@ if [[ ${exit_code} -ne 0 ]]; then
 fi
 
 echo "Consensus synthesis written to ${synthesis_file}"
+
+telemetry_file="${output_dir}/${stage_slug}_${timestamp_run}_telemetry.jsonl"
+AGENT_LIST_JSON="${agent_list_json}" python3 - "${telemetry_file}" <<'PY'
+import json
+import sys
+from pathlib import Path
+import os
+
+telemetry_path = Path(sys.argv[1])
+record = {
+    "schemaVersion": "1.0",
+    "stage": "${stage}",
+    "specId": "${spec}",
+    "timestamp": "${timestamp_run}",
+    "promptVersion": "${prompt_version}",
+    "agents": [
+        {
+            "agent": name,
+            "path": f"${output_dir}/${stage_slug}_${timestamp_run}_{name}.json"
+        }
+        for name in json.loads(os.environ["AGENT_LIST_JSON"])
+    ],
+    "synthesisPath": "${output_dir}/${stage_slug}_${timestamp_run}_synthesis.json",
+}
+with telemetry_path.open("a", encoding="utf-8") as fh:
+    fh.write(json.dumps(record) + "\n")
+PY
+echo "Consensus telemetry appended to ${telemetry_file}"

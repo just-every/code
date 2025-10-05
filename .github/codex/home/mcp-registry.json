@@ -16,14 +16,6 @@
         "/home/thetu/.npm-global/bin/npx -y open-docs-mcp --docsDir /home/thetu/code/docs"
       ]
     },
-    "shell-lite": {
-      "type": "stdio",
-      "command": "/usr/bin/zsh",
-      "args": [
-        "-c",
-        "/home/thetu/.npm-global/bin/npx -y super-shell-mcp"
-      ]
-    },
     "git-status": {
       "type": "stdio",
       "command": "/usr/bin/zsh",

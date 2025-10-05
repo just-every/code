@@ -209,12 +209,6 @@ args = ["-y", "open-docs-mcp", "--docsDir", "/path/to/docs"]
 startup_timeout_sec = 20
 tool_timeout_sec = 60
 
-[mcp_servers.shell_lite]
-command = "npx"
-args = ["-y", "super-shell-mcp"]
-startup_timeout_sec = 20
-tool_timeout_sec = 300
-
 [mcp_servers.git_status]
 command = "uvx"
 args = ["mcp-server-git", "--repository", "/path/to/repo"]
