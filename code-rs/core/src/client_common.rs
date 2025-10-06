@@ -112,10 +112,13 @@ impl Prompt {
             OpenAiTool::Freeform(f) => f.name == "apply_patch",
             _ => false,
         });
-        if self.base_instructions_override.is_none()
-            && effective_model.needs_special_apply_patch_instructions
-            && !is_apply_patch_tool_present
-        {
+        if self.base_instructions_override.is_some() {
+            return Cow::Borrowed(base);
+        }
+
+        let should_append_apply_patch =
+            effective_model.needs_special_apply_patch_instructions || !is_apply_patch_tool_present;
+        if should_append_apply_patch {
             Cow::Owned(format!("{base}\n{APPLY_PATCH_TOOL_INSTRUCTIONS}"))
         } else {
             Cow::Borrowed(base)
