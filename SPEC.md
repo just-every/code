@@ -42,7 +42,7 @@
 | 2 | T29 | Unified intake (/new-spec command) | **DONE** | Created /new-spec subagent command + generate_spec_id.py helper. Takes feature description → generates SPEC-ID → creates directory → runs /specify + /plan + /tasks → presents package. Eliminates 4 manual steps. Usage: /new-spec <description>. Completed: 2025-10-05. |
 | 3 | T30 | Migrate to Project Commands | **MEDIUM PRIORITY** | Convert SpecOpsPlan, SpecOpsAuto, etc. from Rust enum to config.toml [[projects.commands]]. Remove 357 lines from slash_command.rs. **Reduces rebase friction.** Effort: 4-6 hours. |
 | 4 | T31 | Evidence compression & archival | **MEDIUM PRIORITY** | Implement: gzip *.json older than 7 days, rotation (keep last N runs), optional S3 upload. **Addresses 25MB limit.** Effort: 1 day. |
-| 5 | T32 | TUI /spec-auto full automation | **OPTIONAL** | Alternative to T28: Modify ChatWidget to auto-submit prompts instead of inserting. Requires 500-line TUI refactor. **Only if bash approach insufficient.** Effort: 3 days. |
+| 5 | T32 | Orchestrator /spec-auto implementation | **DONE** | Created /spec-auto subagent orchestrator. Runs guardrails visibly, spawns agents natively, synthesizes consensus, auto-advances. Full visibility without TUI code changes. Completed: 2025-10-06. |
 | 6 | T25 | Consensus integration tests | **BACKLOG** | Add TUI integration tests for consensus (happy/conflict/missing) + E2E validation. Effort: 1 day. |
 | 7 | T33 | Task format unification | **BACKLOG** | Single source (tasks.md), generate plan.md + SPEC.md views. Eliminates manual sync. Effort: 2-3 days. |
 | 8 | T34 | Conflict arbiter agent | **BACKLOG** | Auto-resolution: spawn gpt-5 arbiter when synthesis shows tie. Reduces manual intervention by ~60%. Effort: 2-3 days. |

@@ -3,6 +3,22 @@ model = "gpt-5"
 [subagents]
 
 [[subagents.commands]]
+name = "spec-auto"
+read-only = false
+agents = ["code", "gemini", "claude"]
+orchestrator-instructions = """
+Execute full spec-kit pipeline with visible agent execution.
+Loop through stages (plan, tasks, implement, validate, audit, unlock):
+1. Run guardrail bash script (visible)
+2. Load prompts from prompts.json
+3. Spawn agents visibly (agent_run)
+4. Synthesize consensus
+5. Validate (halt on conflict)
+6. Advance to next stage
+Show all work. User must see bash output, agent execution, synthesis.
+"""
+
+[[subagents.commands]]
 name = "new-spec"
 read-only = false
 agents = ["code", "gemini", "claude"]
