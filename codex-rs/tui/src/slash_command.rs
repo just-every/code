@@ -119,6 +119,10 @@ pub enum SlashCommand {
     Plan,
     Solve,
     Code,
+    // === FORK-SPECIFIC: spec-kit slash commands ===
+    // Upstream: Does not have spec-kit automation
+    // Preserve: All spec-* commands during rebases
+    // Migration: T30 will move these to Project Commands (config.toml)
     #[strum(serialize = "spec-plan")]
     SpecPlan,
     #[strum(serialize = "spec-tasks")]
@@ -151,6 +155,7 @@ pub enum SlashCommand {
     SpecEvidenceStats,
     #[strum(serialize = "spec-consensus")]
     SpecConsensus,
+    // === END FORK-SPECIFIC: spec-kit commands ===
     Logout,
     Quit,
     #[cfg(debug_assertions)]

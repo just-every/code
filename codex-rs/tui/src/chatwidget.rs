@@ -544,8 +544,11 @@ pub(crate) struct ChatWidget<'a> {
     // user's visible prompt.
     pending_agent_notes: Vec<String>,
 
-    // Spec Ops automation pipeline state (/spec-auto)
+    // === FORK-SPECIFIC: spec-kit automation state ===
+    // Upstream: Does not have /spec-auto pipeline
+    // Preserve: This field and all SpecAutoState/SpecAutoPhase code during rebases
     spec_auto_state: Option<SpecAutoState>,
+    // === END FORK-SPECIFIC ===
 
     // Stable synthetic request bucket for pre‑turn system notices (set on first use)
     synthetic_system_req: Option<u64>,
@@ -14857,6 +14860,9 @@ impl ChatWidget<'_> {
         });
     }
 
+    // === FORK-SPECIFIC: spec-kit guardrail command handler ===
+    // Upstream: Does not have spec-ops commands
+    // Preserve: This entire function during rebases
     pub(crate) fn handle_spec_ops_command(&mut self, command: SlashCommand, raw_args: String) {
         let Some(meta) = command.spec_ops() else { return; };
         let trimmed = raw_args.trim();
@@ -14996,7 +15002,11 @@ impl ChatWidget<'_> {
         });
         self.request_redraw();
     }
+    // === END FORK-SPECIFIC: handle_spec_ops_command ===
 
+    // === FORK-SPECIFIC: spec-kit consensus lookup ===
+    // Upstream: Does not have /spec-consensus command
+    // Preserve: This entire function during rebases
     pub(crate) fn handle_spec_consensus_command(&mut self, raw_args: String) {
         let trimmed = raw_args.trim();
         if trimmed.is_empty() {
@@ -17118,9 +17128,17 @@ impl SpecAutoState {
     fn current_stage(&self) -> Option<SpecStage> {
         self.stages.get(self.current_index).copied()
     }
+
+    fn is_executing_agents(&self) -> bool {
+        matches!(self.phase, SpecAutoPhase::ExecutingAgents { .. })
+    }
 }
 
+// ChatWidget methods for spec-kit automation
 impl ChatWidget<'_> {
+    // === FORK-SPECIFIC: spec-kit /spec-auto pipeline methods ===
+    // Upstream: Does not have these methods
+    // Preserve: handle_spec_auto_command, advance_spec_auto, and related during rebases
     fn handle_spec_auto_command(&mut self, invocation: SpecAutoInvocation) {
         let SpecAutoInvocation {
             spec_id,
