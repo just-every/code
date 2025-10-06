@@ -74,7 +74,7 @@ spec_ops_run_policy_prefilter() {
       SPEC_OPS_POLICY_PREFILTER_NOTE="code CLI not available; set SPEC_OPS_CODE_CLI or SPEC_OPS_POLICY_PREFILTER_CMD"
       return 0
     fi
-    cmd_template="${code_cli} exec --sandbox read-only --model ${SPEC_OPS_POLICY_PREFILTER_MODEL} -- \"Policy prefilter for ${spec}/${stage}\""
+    cmd_template="${code_cli} exec --sandbox workspace-write --model ${SPEC_OPS_POLICY_PREFILTER_MODEL} -- \"Policy prefilter for ${spec}/${stage}\""
   fi
 
   local command
@@ -104,7 +104,7 @@ spec_ops_run_policy_final() {
       SPEC_OPS_POLICY_FINAL_NOTE="code CLI not available; set SPEC_OPS_CODE_CLI or SPEC_OPS_POLICY_FINAL_CMD"
       return 0
     fi
-    cmd_template="${code_cli} exec --sandbox read-only --model ${SPEC_OPS_POLICY_FINAL_MODEL} -- \"Policy final check for ${spec}/${stage}\""
+    cmd_template="${code_cli} exec --sandbox workspace-write --model ${SPEC_OPS_POLICY_FINAL_MODEL} -- \"Policy final check for ${spec}/${stage}\""
   fi
 
   local command
