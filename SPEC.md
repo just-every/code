@@ -1,9 +1,9 @@
 # Spec Tracker
 
-## Reality Check (2025-10-06)
+## Reality Check (2025-10-06 03:20)
 
 **Vision:** Vague idea → visible automation → implementation
-**Current state:** 70% there - agents visible, guardrails opaque
+**Current state:** ✅ **WORKING** - Orchestrator provides full visibility + auto-resolution
 
 ### What Actually Works
 
@@ -14,22 +14,26 @@
 ✅ Auto-advancement - Loops through stages without manual approval
 ✅ Halt on failure - Guardrail or consensus failure stops pipeline
 
-### What's Broken
+### What Works (As of 2025-10-06 03:20)
 
-❌ **Guardrail visibility** - Runs in background, user sees nothing for 2-3 minutes per stage
-❌ **Guardrail streaming** - No live output, just final completion
-❌ **Progress indication** - No "Stage 2/6" or substep status
-❌ **Guardrail cancellation** - Can't interrupt individual checks
+✅ **Full visibility** - Orchestrator runs bash guardrails AND agents in visible conversation
+✅ **Automatic conflict resolution** - Arbiter agent resolves disagreements, doesn't halt
+✅ **Iterative consensus** - Agents debate, reach resolution, only halt on true deadlock
+✅ **Clear progress** - Each step visible (bash, agents, synthesis, decisions)
 
-### Critical Gap
+### How It Works
 
-**Guardrails run as background `RunProjectCommand`:**
-- Submit bash script → returns immediately → runs hidden
-- Output goes to log files only
-- User has no idea what's happening
-- Bash stdout/stderr invisible until completion
+**`/spec-auto` delegates to orchestrator (like `/plan` and `/solve`):**
 
-**This defeats the purpose of TUI implementation.**
+Per stage:
+1. Bash guardrail executes (visible in conversation)
+2. Agents spawn (Gemini → Claude → GPT)
+3. Conflicts detected → Arbiter spawns automatically
+4. Arbiter resolves → Consensus reached
+5. Only halts if arbiter can't resolve (rare deadlock)
+6. Auto-advances to next stage
+
+**User sees everything:** Bash output, agent work, arbiter decisions, synthesis.
 
 ---
 
