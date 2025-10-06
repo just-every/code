@@ -196,7 +196,7 @@ impl SlashCommand {
             SlashCommand::SpecValidate => "multi-agent validation consensus (requires SPEC ID)",
             SlashCommand::SpecAudit => "multi-agent audit/go-no-go (requires SPEC ID)",
             SlashCommand::SpecUnlock => "multi-agent unlock justification (requires SPEC ID)",
-            SlashCommand::SpecAuto => "drive Spec Ops + multi-agent pipeline (requires SPEC ID)",
+            SlashCommand::SpecAuto => "full automated pipeline with visible agents (orchestrator-driven)",
             SlashCommand::SpecOpsPlan => "run Spec Ops plan automation (requires SPEC ID)",
             SlashCommand::SpecOpsTasks => "run Spec Ops tasks automation (requires SPEC ID)",
             SlashCommand::SpecOpsImplement => {
