@@ -767,6 +767,39 @@ pub(super) fn handle_exec_end_now(
         chat.bottom_pane
             .update_status_text(format!("command failed (exit {})", exit_code));
     }
+
+    // === FORK-SPECIFIC: spec-auto guardrail completion handler ===
+    // Check if this exec completion is for a spec-auto guardrail command
+    if let Some(ref state) = chat.spec_auto_state {
+        if let Some(ref wait) = state.waiting_guardrail {
+            // Check if this is the guardrail we're waiting for
+            // Project commands have call_id pattern: "project_cmd_spec_ops_*"
+            if call_id.starts_with("project_cmd_spec_ops") {
+                if exit_code == 0 {
+                    // Guardrail succeeded - transition to agent execution phase
+                    let stage = wait.stage;
+                    let spec_id = state.spec_id.clone();
+
+                    // Clear waiting state
+                    if let Some(state_mut) = chat.spec_auto_state.as_mut() {
+                        state_mut.waiting_guardrail = None;
+                    }
+
+                    // Spawn agents for this stage
+                    chat.auto_submit_spec_stage_prompt(stage, &spec_id);
+                } else {
+                    // Guardrail failed - halt pipeline
+                    chat.halt_spec_auto_with_error(format!(
+                        "Guardrail {} failed with exit code {}",
+                        wait.stage.display_name(),
+                        exit_code
+                    ));
+                }
+            }
+        }
+    }
+    // === END FORK-SPECIFIC ===
+
     chat.maybe_hide_spinner();
 }
 
