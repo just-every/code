@@ -46,6 +46,8 @@
 | 6 | T25 | Consensus integration tests | **BACKLOG** | Add TUI integration tests for consensus (happy/conflict/missing) + E2E validation. Effort: 1 day. |
 | 7 | T33 | Task format unification | **BACKLOG** | Single source (tasks.md), generate plan.md + SPEC.md views. Eliminates manual sync. Effort: 2-3 days. |
 | 8 | T34 | Conflict arbiter agent | **BACKLOG** | Auto-resolution: spawn gpt-5 arbiter when synthesis shows tie. Reduces manual intervention by ~60%. Effort: 2-3 days. |
+| 9 | T35 | SPEC-KIT-020 automated conflict resolution intake | **BACKLOG** | SPEC-KIT-020-add-automated-conflict-resolution-with created via /new-spec on 2025-10-05. |
+| 10 | T36 | SPEC-KIT-025 automated conflict resolution arbiter agent | **BACKLOG** | SPEC-KIT-025-add-automated-conflict-resolution-with generated via /new-spec on 2025-10-05; tasks tracked in docs/SPEC-KIT-025-add-automated-conflict-resolution-with/tasks.md. |
 
 ---
 

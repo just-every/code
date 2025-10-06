@@ -81,5 +81,20 @@
 - How do we capture cost telemetry for high-reasoning runs to feed into governance? (Mentioned in model strategy but not implemented.)
 - Do we separate guardrail tooling into a dedicated repo to avoid coupling with Codex CLI updates?
 
+## 10. Review Notes
+
+**Reviewed by:** Project maintainer + Claude Code analysis (Sonnet 4.5)
+**Review date:** 2025-10-05
+**Review verdict:** Draft v0.1 approved for consensus prompt usage
+**Changes from review:**
+- Added section 10 (this review section) to document validation
+- Confirmed architectural decisions align with actual implementation
+- Validated Cargo workspace location guidance matches current setup
+- Verified constraints and risks are accurately documented
+
+**Next review trigger:** After architectural changes (repo separation decision, Cargo workspace restructure) or after 5+ SPECs validate the planning assumptions
+
+**Prompt linkage status:** ✅ Linked via `scripts/spec_ops_004/consensus_runner.sh` `collect_context()` function as of 2025-10-05
+
 Document owner: @just-every/automation
 

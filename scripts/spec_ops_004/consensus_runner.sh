@@ -122,6 +122,15 @@ collect_context() {
     done
   fi
 
+  # Load foundation documents to provide canonical product context
+  for fname in product-requirements.md PLANNING.md; do
+    if [[ -f "${REPO_ROOT}/${fname}" ]]; then
+      ctx+=$'\n\n'
+      ctx+="===== ${fname} =====\n"
+      ctx+="$(cat "${REPO_ROOT}/${fname}")"
+    fi
+  done
+
   if [[ -n "${context_file}" ]]; then
     if [[ -f "${context_file}" ]]; then
       ctx+=$'\n\n'

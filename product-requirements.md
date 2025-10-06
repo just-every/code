@@ -70,5 +70,19 @@
 - What is the archival policy for evidence once repo size exceeds agreed thresholds?
 - How do we measure cost impact of high-reasoning runs (`gpt-5 --reasoning high`, `gemini-2.5-pro thinking`)?
 
+## 11. Review Notes
+
+**Reviewed by:** Project maintainer + Claude Code analysis (Sonnet 4.5)
+**Review date:** 2025-10-05
+**Review verdict:** Draft v0.1 approved for consensus prompt usage
+**Changes from review:**
+- Added section 11 (this review section) to document validation
+- Confirmed alignment with PLANNING.md and constitution.md
+- Validated that prompt linkage now loads this doc into agent context
+
+**Next review trigger:** After first 5 SPECs use these foundation docs in consensus runs, or when product scope significantly changes
+
+**Prompt linkage status:** ✅ Linked via `scripts/spec_ops_004/consensus_runner.sh` `collect_context()` function as of 2025-10-05
+
 Document owner: @just-every/automation
 

@@ -1,0 +1,17 @@
+Inputs:
+- SPEC packet
+- Gemini research ()
+
+Produce JSON:
+{
+  "stage": "spec-plan",
+  "prompt_version": "20251002-plan-a",
+  "agent": "claude",
+  "model": "claude-4.5-sonnet",
+  "model_release": "2025-09-29",
+  "reasoning_mode": "auto",
+  "work_breakdown": [ { "step": string, "rationale": string, "success_signal": string } ],
+  "acceptance_mapping": [ { "requirement": string, "validation_step": string, "artifact": string } ],
+  "risks": [ { "risk": string, "owner": string, "mitigation": string } ]
+}
+Fill arrays even if empty. Use  for context references.

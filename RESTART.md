@@ -1,57 +1,56 @@
 # Restart Plan: Spec Kit Telemetry & Consensus
 
-## Status Snapshot (2025-10-04)
-- **T23 – Telemetry Hook**: ✅ Complete. ChatWidget now writes per-agent JSON, append-only `*_telemetry.jsonl`, and `*_synthesis.json` when `SPEC_KIT_TELEMETRY_ENABLED=1`. Latest artefacts live under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-DEMO/`.
-- **T24 – Consensus Halt Gating**: ⚙️ In progress. ChatWidget loads the synthesis artefact, annotates history with its status, and clears `/spec-auto` when consensus is degraded or conflicting. Needs interactive validation from the TUI.
-- **T25 – Tests & E2E**: ⏳ Blocked pending a successful multi-agent run. Unit tests that hit `run_spec_consensus_*` still lack a Tokio runtime wrapper.
-- Current branch: `feat/spec-auto-telemetry` (dirty worktree with telemetry/gating code and outstanding doc edits).
+## Status Snapshot (2025-10-05)
+- **T21 – Multi-agent consensus automation**: ✅ Done. Consensus runner now emits per-agent metrics (tokens/latency/optional cost) and schema‑v2 telemetry JSONL. Unit tests live in `scripts/spec_ops_004/tests/test_telemetry_utils.py`.
+- **T22 – Foundation documents baseline**: ✅ Done. `product-requirements.md`, `PLANNING.md`, and `docs/SPEC-KIT-DEMO/{spec.md,plan.md,tasks.md}` are published and linked from `SPEC.md`.
+- **T24 – Consensus halt gating**: ⚙️ Still in flight. ChatWidget surfaces synthesis status and should halt `/spec-auto`, but we need a live TUI run (with real agents) to confirm behaviour and capture evidence.
+- **T25 – Consensus integration tests & E2E**: ⏳ Not started. Awaiting the halt validation so we know what to assert.
+- **T26 – SPEC-KIT-DEMO guardrail baseline**: ⚙️ In progress. Latest consensus bundle is `spec-plan_2025-10-05T04:31:14Z_*`; we still owe the conflict-halt screenshot and HAL follow-up notes.
+- Branch: `feat/spec-auto-telemetry` (clean after the last push).
 
 ## What We Just Verified
-- `SPEC_KIT_TELEMETRY_ENABLED=1 SPEC_OPS_ALLOW_DIRTY=1 ./scripts/spec_ops_004/spec_auto.sh SPEC-KIT-DEMO` runs plan → tasks, producing fresh guardrail telemetry JSON/logs. The script times out waiting for implement (expected; requires manual diff acceptance).
-- No new consensus synthesis files were produced because the TUI hook is the mechanism that writes them. Remaining validation must happen inside the Codex TUI.
+- `scripts/spec_ops_004/consensus_runner.sh` (with the stub Codex binary) writes full telemetry bundles under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-DEMO/`, proving the shell path works.
+- `python3 -m unittest scripts.spec_ops_004.tests.test_telemetry_utils` passes, validating token/cost extraction and telemetry assembly.
 
 ## Immediate Next Steps
-1. **Drive `/spec-plan --consensus` via TUI**
+1. **Run real `/spec-plan --consensus` via TUI**
    ```bash
-   cd codex-rs
    SPEC_KIT_TELEMETRY_ENABLED=1 cargo run -p codex-tui --bin code
    ```
-   Then run `/spec-plan SPEC-KIT-DEMO --consensus "Telemetry MVP verification"` and inspect the resulting history cell plus artefacts in `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-DEMO/`.
-2. **Force a degraded/conflict scenario**
-   - Delete or edit one of the agent JSON files before rerunning `/spec-plan --consensus`.
-   - Confirm `/spec-auto` halts and surfaces the synthesis path.
-3. **Wrap consensus unit tests with Tokio**
-   - Add `#[tokio::test(flavor = "current_thread")]` to `run_spec_consensus_*` tests so they exercise the async paths without panicking.
-4. **Update docs once behaviour is confirmed**
-   - Refresh `docs/spec-kit/model-strategy.md`, `docs/slash-commands.md`, and `AGENTS.md` to mention telemetry and halt requirements.
+   Command inside TUI: `/spec-plan SPEC-KIT-DEMO --consensus "halt gating validation"`
+   Capture the history cell + verify artefacts (JSON, synthesis, telemetry) timestamped with the live run.
+2. **Trigger a conflict/degraded verdict**
+   - Use the adversarial prompt in local-memory or temporarily modify one agent’s output.
+   - Re-run `/spec-auto SPEC-KIT-DEMO --from plan` and confirm it halts, saving a screenshot for T26.
+3. **Document HAL fallback**
+   - Either run the HAL MCP checks or explicitly record why they’re skipped (task 3 in `docs/SPEC-KIT-DEMO/tasks.md`).
+4. **Plan follow-up tests (T25)**
+   - Once halt behaviour is confirmed, scope the integration tests (happy/conflict/missing agent) so we can queue them up next session.
 
 ## Validation Checklist
-- `/spec-auto SPEC-KIT-DEMO --from plan` (after TUI run) should display the new consensus notice and halt on degraded/conflict.
-- `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-DEMO/` must contain:
-  - `spec-plan_<timestamp>_<agent>.json`
-  - `spec-plan_<timestamp>_telemetry.jsonl`
-  - `spec-plan_<timestamp>_synthesis.json`
-- `local-memory search --tags consensus --limit 5` should show the latest consensus verdict JSON with `synthesisPath` populated.
+- `/spec-plan SPEC-KIT-DEMO --consensus ...` from the TUI produces fresh artefacts dated ≥2025-10-05 with real model metadata.
+- `/spec-auto SPEC-KIT-DEMO --from plan` halts on conflict/degraded and the UI highlights the synthesis/telemetry paths.
+- `docs/SPEC-KIT-DEMO/tasks.md` reflects the new evidence and notes (Task 2 moves to Done once screenshot attached; Task 3 tracks HAL notes).
+- `python3 scripts/spec-kit/lint_tasks.py` stays green after doc updates.
 
 ## Useful Commands
 - List consensus artefacts: `find docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-DEMO -maxdepth 1 -type f | sort`
-- Check for degraded/conflict status quickly:
+- Inspect metrics quickly:
   ```bash
-  jq '.status, .missing_agents, .consensus.conflicts' \
-     docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-DEMO/spec-plan_*_synthesis.json
+  jq '.consensus.status, .consensus.total_tokens, .consensus.total_cost_usd' \
+     docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-DEMO/spec-plan_2025-10-05T04:31:14Z_telemetry.jsonl
   ```
-- Tail telemetry: `tail -n 20 docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-DEMO/spec-plan_*_telemetry.jsonl`
+- Verify agent usage: `jq '.prompt_tokens, .completion_tokens' specs-ops..._metrics.json`
 
 ## Next Session Prompt
 ```
 /set-env SPEC_KIT_TELEMETRY_ENABLED=1
-/spec-plan SPEC-KIT-DEMO --consensus "Validate halt gating"
+/spec-plan SPEC-KIT-DEMO --consensus "halt gating validation"
 /spec-auto SPEC-KIT-DEMO --from plan
 ```
-(Stop immediately if `/spec-auto` does *not* halt on conflict; capture the history cell and the offending synthesis JSON.)
+Bring back the consensus history cell and the resulting telemetry JSONL path; stop if `/spec-auto` does **not** halt.
 
 ## Troubleshooting Notes
-- **No synthesis file**: Ensure you are running through the Codex TUI, not the shell scripts; the telemetry hook lives in ChatWidget.
-- **Tokenizer warnings**: `cargo check -p codex-tui` still emits the pre-existing `GuardrailWait` unused field warning—safe to ignore during validation.
-- **Tests crashing**: Wrap `run_spec_consensus_*` tests in a Tokio runtime before rerunning.
-- **Dirty tree**: Guardrails normally insist on a clean worktree. Export `SPEC_OPS_ALLOW_DIRTY=1` during local validation to suppress the check (already done for the last run).
+- **No synthesis/telemetry output**: Ensure you’re in the Codex TUI; the shell runner only emits telemetry when `CODEX_BIN` returns JSON events.
+- **Agent stubs lingering**: Delete any `_metrics.json` files before re-running with real models to avoid mixing stub data with production evidence.
+- **Guardrail dirty tree**: Use `SPEC_OPS_ALLOW_DIRTY=1` if you need to iterate locally, but capture clean evidence for commits.

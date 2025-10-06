@@ -6768,6 +6768,9 @@ impl ChatWidget<'_> {
                         if !(any_tools_running || any_streaming) {
                             self.bottom_pane.set_task_running(false);
                             self.bottom_pane.update_status_text(String::new());
+
+                            // NEW: Check if this is part of spec-auto pipeline
+                            self.on_spec_auto_agents_complete();
                         }
                     }
                 }
@@ -16595,10 +16598,16 @@ impl ChatWidget<'_> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum SpecAutoPhase {
     Guardrail,
-    Prompt,
+    ExecutingAgents {
+        // Track which agents we're waiting for completion
+        expected_agents: Vec<String>,
+        // Track which agents have completed (populated from AgentStatusUpdateEvent)
+        completed_agents: std::collections::HashSet<String>,
+    },
+    CheckingConsensus,
 }
 
 fn guardrail_for_stage(stage: SpecStage) -> SlashCommand {
@@ -17105,6 +17114,10 @@ impl SpecAutoState {
             pending_prompt_summary: None,
         }
     }
+
+    fn current_stage(&self) -> Option<SpecStage> {
+        self.stages.get(self.current_index).copied()
+    }
 }
 
 impl ChatWidget<'_> {
@@ -17152,12 +17165,6 @@ impl ChatWidget<'_> {
         enum NextAction {
             PipelineComplete,
             RunGuardrail { command: SlashCommand, args: String },
-            PresentPrompt {
-                stage: SpecStage,
-                spec_id: String,
-                goal: String,
-                summary: Option<String>,
-            },
         }
 
         loop {
@@ -17168,7 +17175,7 @@ impl ChatWidget<'_> {
                     NextAction::PipelineComplete
                 } else {
                     let stage = state.stages[state.current_index];
-                    match state.phase {
+                    match &state.phase {
                         SpecAutoPhase::Guardrail => {
                             let command = guardrail_for_stage(stage);
                             let args = state.spec_id.clone();
@@ -17177,21 +17184,18 @@ impl ChatWidget<'_> {
                                 command,
                                 task_id: None,
                             });
-                            state.phase = SpecAutoPhase::Prompt;
+                            // Stay in Guardrail phase; will transition after guardrail completes
                             NextAction::RunGuardrail { command, args }
                         }
-                        SpecAutoPhase::Prompt => {
-                            let summary = state.pending_prompt_summary.take();
-                            let spec_id = state.spec_id.clone();
-                            let goal = state.goal.clone();
-                            state.phase = SpecAutoPhase::Guardrail;
-                            state.current_index += 1;
-                            NextAction::PresentPrompt {
-                                stage,
-                                spec_id,
-                                goal,
-                                summary,
-                            }
+                        SpecAutoPhase::ExecutingAgents { .. } => {
+                            // Waiting for agents to complete
+                            // This is an async wait state - return and let agent completion trigger advance
+                            return;
+                        }
+                        SpecAutoPhase::CheckingConsensus => {
+                            // Consensus check should trigger immediately
+                            // This state is transient - handled by on_spec_auto_agents_complete
+                            return;
                         }
                     }
                 }
@@ -17209,15 +17213,6 @@ impl ChatWidget<'_> {
                 NextAction::RunGuardrail { command, args } => {
                     self.handle_spec_ops_command(command, args);
                     return;
-                }
-                NextAction::PresentPrompt {
-                    stage,
-                    spec_id,
-                    goal,
-                    summary,
-                } => {
-                    self.present_spec_prompt(stage, &spec_id, &goal, summary);
-                    continue;
                 }
             }
         }
@@ -17428,7 +17423,8 @@ impl ChatWidget<'_> {
                     }
                 }
 
-                self.advance_spec_auto();
+                // After guardrail success and consensus check OK, auto-submit multi-agent prompt
+                self.auto_submit_spec_stage_prompt(stage, &spec_id);
             }
             Err(err) => {
                 self.history_push(crate::history_cell::new_error_event(format!(
@@ -17437,6 +17433,217 @@ impl ChatWidget<'_> {
                     err
                 )));
                 self.spec_auto_state = None;
+            }
+        }
+    }
+
+    fn auto_submit_spec_stage_prompt(&mut self, stage: SpecStage, spec_id: &str) {
+        let goal = self.spec_auto_state.as_ref()
+            .map(|s| s.goal.clone())
+            .unwrap_or_default();
+
+        let mut arg = spec_id.to_string();
+        if !goal.trim().is_empty() {
+            arg.push(' ');
+            arg.push_str(goal.trim());
+        }
+
+        match spec_prompts::build_stage_prompt(stage, &arg) {
+            Ok(prompt) => {
+                // Show that we're auto-submitting
+                let mut lines: Vec<ratatui::text::Line<'static>> = Vec::new();
+                lines.push(ratatui::text::Line::from(format!(
+                    "Auto-executing multi-agent {} for {}",
+                    stage.display_name(),
+                    spec_id
+                )));
+                lines.push(ratatui::text::Line::from(
+                    "Launching Gemini, Claude, and GPT Pro..."
+                ));
+
+                self.history_push(crate::history_cell::PlainHistoryCell::new(
+                    lines,
+                    crate::history_cell::HistoryCellType::Notice,
+                ));
+
+                // Update state to ExecutingAgents phase BEFORE submitting
+                if let Some(state) = self.spec_auto_state.as_mut() {
+                    state.phase = SpecAutoPhase::ExecutingAgents {
+                        expected_agents: vec![
+                            "gemini".to_string(),
+                            "claude".to_string(),
+                            "gpt_pro".to_string(),
+                        ],
+                        completed_agents: std::collections::HashSet::new(),
+                    };
+                }
+
+                // Create and submit user message
+                let user_msg = UserMessage {
+                    display_text: format!(
+                        "[spec-auto] {} stage for {}",
+                        stage.display_name(),
+                        spec_id
+                    ),
+                    ordered_items: vec![InputItem::Text { text: prompt }],
+                };
+
+                self.submit_user_message(user_msg);
+            }
+            Err(err) => {
+                self.halt_spec_auto_with_error(format!(
+                    "Failed to build {} prompt: {}",
+                    stage.display_name(),
+                    err
+                ));
+            }
+        }
+    }
+
+    fn halt_spec_auto_with_error(&mut self, reason: String) {
+        let resume_hint = self.spec_auto_state.as_ref()
+            .and_then(|s| s.current_stage())
+            .map(|stage| format!("/spec-auto {} --from {}",
+                self.spec_auto_state.as_ref().unwrap().spec_id,
+                stage.command_name()
+            ))
+            .unwrap_or_default();
+
+        self.history_push(crate::history_cell::PlainHistoryCell::new(
+            vec![
+                ratatui::text::Line::from("⚠ /spec-auto halted"),
+                ratatui::text::Line::from(reason),
+                ratatui::text::Line::from(""),
+                ratatui::text::Line::from("Resume with:"),
+                ratatui::text::Line::from(resume_hint),
+            ],
+            crate::history_cell::HistoryCellType::Error,
+        ));
+
+        self.spec_auto_state = None;
+    }
+
+    fn on_spec_auto_agents_complete(&mut self) {
+        let Some(state) = self.spec_auto_state.as_ref() else { return; };
+
+        // Only proceed if we're in ExecutingAgents phase
+        let expected_agents = match &state.phase {
+            SpecAutoPhase::ExecutingAgents { expected_agents, .. } => expected_agents.clone(),
+            _ => return,  // Not in agent execution phase
+        };
+
+        // Collect which agents completed successfully
+        let mut completed_names = std::collections::HashSet::new();
+        for agent_info in &self.active_agents {
+            if matches!(agent_info.status, AgentStatus::Completed) {
+                // Normalize to lowercase for comparison
+                completed_names.insert(agent_info.name.to_lowercase());
+            }
+        }
+
+        // Update completed agents in state
+        if let Some(state) = self.spec_auto_state.as_mut() {
+            if let SpecAutoPhase::ExecutingAgents { completed_agents, .. } = &mut state.phase {
+                *completed_agents = completed_names.clone();
+            }
+        }
+
+        // Check if all expected agents completed
+        let all_expected_complete = expected_agents.iter()
+            .all(|expected| completed_names.contains(&expected.to_lowercase()));
+
+        if all_expected_complete {
+            // All agents done - trigger consensus check
+            if let Some(state) = self.spec_auto_state.as_mut() {
+                state.phase = SpecAutoPhase::CheckingConsensus;
+            }
+
+            self.check_consensus_and_advance_spec_auto();
+        } else {
+            // Check for failed agents
+            let has_failures = self.active_agents.iter()
+                .any(|a| matches!(a.status, AgentStatus::Failed));
+
+            if has_failures {
+                let missing: Vec<_> = expected_agents.iter()
+                    .filter(|exp| !completed_names.contains(&exp.to_lowercase()))
+                    .map(|s| s.as_str())
+                    .collect();
+
+                self.halt_spec_auto_with_error(format!(
+                    "Agent execution incomplete. Missing/failed: {:?}",
+                    missing
+                ));
+            }
+            // Else: still waiting for some agents to complete
+        }
+    }
+
+    fn check_consensus_and_advance_spec_auto(&mut self) {
+        let Some(state) = self.spec_auto_state.as_ref() else { return; };
+
+        let Some(current_stage) = state.current_stage() else {
+            self.halt_spec_auto_with_error("Invalid stage index".to_string());
+            return;
+        };
+
+        let spec_id = state.spec_id.clone();
+
+        // Show checking status
+        self.history_push(crate::history_cell::PlainHistoryCell::new(
+            vec![ratatui::text::Line::from(format!(
+                "Checking consensus for {}...",
+                current_stage.display_name()
+            ))],
+            crate::history_cell::HistoryCellType::Notice,
+        ));
+
+        // Run consensus check (reuse existing logic)
+        match self.run_spec_consensus(&spec_id, current_stage) {
+            Ok((consensus_lines, consensus_ok)) => {
+                // Show consensus results
+                self.history_push(crate::history_cell::PlainHistoryCell::new(
+                    consensus_lines,
+                    if consensus_ok {
+                        crate::history_cell::HistoryCellType::Notice
+                    } else {
+                        crate::history_cell::HistoryCellType::Error
+                    },
+                ));
+
+                if consensus_ok {
+                    // Consensus OK - advance to next stage
+                    self.history_push(crate::history_cell::PlainHistoryCell::new(
+                        vec![ratatui::text::Line::from(format!(
+                            "✓ {} consensus OK - advancing to next stage",
+                            current_stage.display_name()
+                        ))],
+                        crate::history_cell::HistoryCellType::Notice,
+                    ));
+
+                    // Move to next stage
+                    if let Some(state) = self.spec_auto_state.as_mut() {
+                        state.phase = SpecAutoPhase::Guardrail;
+                        state.current_index += 1;
+                    }
+
+                    // Trigger next stage
+                    self.advance_spec_auto();
+                } else {
+                    // Consensus degraded/conflict - HALT
+                    self.halt_spec_auto_with_error(format!(
+                        "Consensus failed for {} - see evidence above",
+                        current_stage.display_name()
+                    ));
+                }
+            }
+            Err(err) => {
+                // Error reading/parsing consensus - HALT
+                self.halt_spec_auto_with_error(format!(
+                    "Failed to check consensus for {}: {}",
+                    current_stage.display_name(),
+                    err
+                ));
             }
         }
     }
