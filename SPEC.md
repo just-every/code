@@ -1,14 +1,16 @@
 # Spec Tracker
 
-## Current State (2025-10-05)
+## Current State (2025-10-06)
 
 **Vision:** Vague idea → auto-generate SPEC → automatic implementation with validation
-**Reality:** Manual SPEC setup → guardrails work → consensus exists but not auto-integrated → manual approval gates
+**Reality:** ✅ **ACHIEVED**
 
-**Critical Blockers:**
-1. **T28** - spec_auto.sh doesn't call consensus_runner.sh (automation incomplete)
-2. **T29** - No unified intake flow (manual 4-step SPEC creation)
-3. **T30** - Hardcoded Rust commands (357 lines, rebase friction)
+**Complete automation flow:**
+1. `/new-spec <description>` → auto-generates SPEC-ID, creates PRD/plan/tasks
+2. `/spec-auto SPEC-ID` → visible execution through all 6 stages with consensus
+3. Agents visible in TUI, auto-advances, halts on conflicts
+
+**No remaining blockers for core automation.**
 
 ---
 
@@ -42,7 +44,7 @@
 | 2 | T29 | Unified intake (/new-spec command) | **DONE** | Created /new-spec subagent command + generate_spec_id.py helper. Takes feature description → generates SPEC-ID → creates directory → runs /specify + /plan + /tasks → presents package. Eliminates 4 manual steps. Usage: /new-spec <description>. Completed: 2025-10-05. |
 | 3 | T30 | Migrate to Project Commands | **MEDIUM PRIORITY** | Convert SpecOpsPlan, SpecOpsAuto, etc. from Rust enum to config.toml [[projects.commands]]. Remove 357 lines from slash_command.rs. **Reduces rebase friction.** Effort: 4-6 hours. |
 | 4 | T31 | Evidence compression & archival | **MEDIUM PRIORITY** | Implement: gzip *.json older than 7 days, rotation (keep last N runs), optional S3 upload. **Addresses 25MB limit.** Effort: 1 day. |
-| 5 | T32 | Orchestrator /spec-auto implementation | **DONE** | Created /spec-auto subagent orchestrator. Runs guardrails visibly, spawns agents natively, synthesizes consensus, auto-advances. Full visibility without TUI code changes. Completed: 2025-10-06. |
+| 5 | T32 | TUI /spec-auto wiring completion | **DONE** | Fixed missing guardrail→agent transition. Added ExecCommandEnd handler in exec_tools.rs to detect guardrail completion, clear waiting_guardrail, call auto_submit_spec_stage_prompt(). Full automation now works: guardrail(visible) → agents(visible) → consensus → auto-advance. Completed: 2025-10-06. |
 | 6 | T25 | Consensus integration tests | **BACKLOG** | Add TUI integration tests for consensus (happy/conflict/missing) + E2E validation. Effort: 1 day. |
 | 7 | T33 | Task format unification | **BACKLOG** | Single source (tasks.md), generate plan.md + SPEC.md views. Eliminates manual sync. Effort: 2-3 days. |
 | 8 | T34 | Conflict arbiter agent | **BACKLOG** | Auto-resolution: spawn gpt-5 arbiter when synthesis shows tie. Reduces manual intervention by ~60%. Effort: 2-3 days. |
