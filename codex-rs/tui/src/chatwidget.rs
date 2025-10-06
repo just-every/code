@@ -17485,13 +17485,15 @@ impl ChatWidget<'_> {
                 ));
 
                 // Update state to ExecutingAgents phase BEFORE submitting
+                // Use configured agents from /agents settings
+                let expected_agents: Vec<String> = self.config.agents.iter()
+                    .filter(|a| a.enabled)
+                    .map(|a| a.name.clone())
+                    .collect();
+
                 if let Some(state) = self.spec_auto_state.as_mut() {
                     state.phase = SpecAutoPhase::ExecutingAgents {
-                        expected_agents: vec![
-                            "gemini".to_string(),
-                            "claude".to_string(),
-                            "gpt_pro".to_string(),
-                        ],
+                        expected_agents,
                         completed_agents: std::collections::HashSet::new(),
                     };
                 }
