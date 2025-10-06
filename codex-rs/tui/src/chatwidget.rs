@@ -4567,8 +4567,20 @@ impl ChatWidget<'_> {
                 return;
             }
             crate::slash_command::ProcessedCommand::SpecAuto(invocation) => {
-                // Use TUI native implementation (guardrail → agents → consensus)
-                self.handle_spec_auto_command(invocation);
+                // Delegate to spec-auto orchestrator (runs in visible conversation)
+                let prompt = format!("{}", invocation.spec_id);
+                let expanded = codex_core::slash_commands::format_subagent_command(
+                    "spec-auto",
+                    &prompt,
+                    Some(&self.config.agents),
+                    Some(&self.config.subagent_commands),
+                );
+
+                // Submit as expanded prompt - orchestrator executes visibly
+                self.submit_user_message(UserMessage {
+                    display_text: format!("/spec-auto {}", invocation.spec_id),
+                    ordered_items: vec![InputItem::Text { text: expanded.prompt }],
+                });
                 return;
             }
             crate::slash_command::ProcessedCommand::Error(error_msg) => {
