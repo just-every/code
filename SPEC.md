@@ -1,102 +1,170 @@
 # Spec Tracker
 
-## Current State (2025-10-06)
+## Reality Check (2025-10-06)
 
-**Vision:** Vague idea → auto-generate SPEC → automatic implementation with validation
-**Reality:** ✅ **ACHIEVED**
+**Vision:** Vague idea → visible automation → implementation
+**Current state:** 70% there - agents visible, guardrails opaque
 
-**Complete automation flow:**
-1. `/new-spec <description>` → auto-generates SPEC-ID, creates PRD/plan/tasks
-2. `/spec-auto SPEC-ID` → visible execution through all 6 stages with consensus
-3. Agents visible in TUI, auto-advances, halts on conflicts
+### What Actually Works
 
-**No remaining blockers for core automation.**
+✅ `/new-spec` - Creates SPEC from description (PRD, plan, tasks)
+✅ Agent spawning - Gemini, Claude, GPT visible in TUI
+✅ Consensus checking - Reads synthesis.json, halts on conflict
+✅ Agent completion detection - Triggers consensus automatically
+✅ Auto-advancement - Loops through stages without manual approval
+✅ Halt on failure - Guardrail or consensus failure stops pipeline
 
----
+### What's Broken
 
-## Architecture Components
+❌ **Guardrail visibility** - Runs in background, user sees nothing for 2-3 minutes per stage
+❌ **Guardrail streaming** - No live output, just final completion
+❌ **Progress indication** - No "Stage 2/6" or substep status
+❌ **Guardrail cancellation** - Can't interrupt individual checks
 
-### ✅ Fully Working
-- Guardrail scripts (plan/tasks/implement/validate/audit/unlock)
-- Multi-agent prompts (prompts.json with Gemini/Claude/GPT)
-- Consensus runner (can execute with --execute flag)
-- Telemetry schema v1 (JSON capture, validation)
-- Evidence capture (per-agent + synthesis + telemetry.jsonl)
+### Critical Gap
 
-### ⚠️ Partially Working
-- `/spec-auto` - TUI state machine exists, inserts prompts but requires manual send
-- `/spec-ops-auto` - Bash orchestrator runs guardrails only, no consensus integration
-- Consensus synthesis - Written but not checked/halted automatically
+**Guardrails run as background `RunProjectCommand`:**
+- Submit bash script → returns immediately → runs hidden
+- Output goes to log files only
+- User has no idea what's happening
+- Bash stdout/stderr invisible until completion
 
-### ❌ Missing
-- Unified intake command (/new-spec)
-- Auto-execution without approval gates
-- Project Commands migration (still hardcoded in Rust)
-- Evidence archival strategy
+**This defeats the purpose of TUI implementation.**
 
 ---
 
-## Tasks
+## Active Work
 
-| Order | ID | Title | Status | Notes |
-|-------|-----|-------|--------|-------|
-| 1 | T28 | Integrate consensus into spec_auto.sh | **DONE** | Modified spec_auto.sh to call consensus_runner.sh --execute after each guardrail stage; added check_synthesis.py validator; halts on conflict/degraded. Default: consensus enabled. Use --skip-consensus for guardrails-only. Completed: 2025-10-05. |
-| 2 | T29 | Unified intake (/new-spec command) | **DONE** | Created /new-spec subagent command + generate_spec_id.py helper. Takes feature description → generates SPEC-ID → creates directory → runs /specify + /plan + /tasks → presents package. Eliminates 4 manual steps. Usage: /new-spec <description>. Completed: 2025-10-05. |
-| 3 | T30 | Migrate to Project Commands | **MEDIUM PRIORITY** | Convert SpecOpsPlan, SpecOpsAuto, etc. from Rust enum to config.toml [[projects.commands]]. Remove 357 lines from slash_command.rs. **Reduces rebase friction.** Effort: 4-6 hours. |
-| 4 | T31 | Evidence compression & archival | **MEDIUM PRIORITY** | Implement: gzip *.json older than 7 days, rotation (keep last N runs), optional S3 upload. **Addresses 25MB limit.** Effort: 1 day. |
-| 5 | T32 | TUI /spec-auto wiring completion | **DONE** | Fixed missing guardrail→agent transition. Added ExecCommandEnd handler in exec_tools.rs to detect guardrail completion, clear waiting_guardrail, call auto_submit_spec_stage_prompt(). Full automation now works: guardrail(visible) → agents(visible) → consensus → auto-advance. Completed: 2025-10-06. |
-| 6 | T25 | Consensus integration tests | **BACKLOG** | Add TUI integration tests for consensus (happy/conflict/missing) + E2E validation. Effort: 1 day. |
-| 7 | T33 | Task format unification | **BACKLOG** | Single source (tasks.md), generate plan.md + SPEC.md views. Eliminates manual sync. Effort: 2-3 days. |
-| 8 | T34 | Conflict arbiter agent | **BACKLOG** | Auto-resolution: spawn gpt-5 arbiter when synthesis shows tie. Reduces manual intervention by ~60%. Effort: 2-3 days. |
-| 9 | T35 | SPEC-KIT-020 automated conflict resolution intake | **BACKLOG** | SPEC-KIT-020-add-automated-conflict-resolution-with created via /new-spec on 2025-10-05. |
-| 10 | T36 | SPEC-KIT-025 automated conflict resolution arbiter agent | **BACKLOG** | SPEC-KIT-025-add-automated-conflict-resolution-with generated via /new-spec on 2025-10-05; tasks tracked in docs/SPEC-KIT-025-add-automated-conflict-resolution-with/tasks.md. |
+### Current Sprint: Streaming Guardrail Output
 
----
+**Goal:** Make guardrails visible during execution, not just after.
 
-## Completed Foundation (Archive)
+**Task:** Change guardrails from background `RunProjectCommand` to streaming `Op::Exec`
 
-| ID | Title | Completion | Evidence |
-|----|-------|------------|----------|
-| T1-T2 | Guardrail command naming | 2025-09-26 | Renamed to /spec-ops-* pattern |
-| T3-T8 | Multi-agent prompts | 2025-09 | prompts.json implemented (plan/tasks/implement/validate/audit/unlock) |
-| T9 | MCP servers | 2025-09-26 | repo_search, doc_index, git_status, hal configured |
-| T10 | Local-memory migration | 2025-09-28 | Byterover → local-memory complete |
-| T11 | /spec-auto TUI infrastructure | 2025-09-26 | State machine exists, prompts insert (NOT auto-submit) |
-| T12 | Consensus diff reviewer | 2025-09-27 | Synthesis.json structure, conflict detection |
-| T13 | Telemetry schema v1 | 2025-09-27 | Validation + unit tests |
-| T14 | Documentation refresh | 2025-09-29 | CLAUDE.md, slash-commands.md, AGENTS.md synced |
-| T15 | Nightly sync check | 2025-09-27 | Drift detector script |
-| T18 | HAL HTTP MCP | 2025-09-29 | Health, list_movies, indexer_test, graphql_ping |
-| T20 | Guardrail hardening | 2025-09-29 | Baseline + HAL enforcement |
-| T21 | Consensus runner | 2025-10-05 | consensus_runner.sh works with --execute (NOT integrated into spec_auto.sh) |
-| T22 | Foundation docs | 2025-10-05 | product-requirements.md, PLANNING.md created |
-| T23 | Telemetry hook (TUI) | 2025-10-04 | ChatWidget persists consensus artifacts when SPEC_KIT_TELEMETRY_ENABLED=1 |
-| T24 | Consensus ingestion (TUI) | 2025-10-04 | ChatWidget reads synthesis, pauses on conflict (NOT auto-continues) |
-| T26 | SPEC-KIT-DEMO baseline | 2025-10-05 | Consensus bundle captured |
-| T27 | Hooks architecture investigation | 2025-10-05 | Investigated Project Hooks; tool.before/after don't fire (background exec bypass). Decision: Keep bash telemetry. Hooks provide 40% coverage, need +100 line core fix. Migration not justified. |
+**File:** `codex-rs/tui/src/chatwidget.rs` line 14997
+
+**Change:**
+```rust
+// Current: Background (OPAQUE)
+self.submit_op(Op::RunProjectCommand { ... });
+
+// Target: Streaming (VISIBLE)
+self.submit_op(Op::Exec {
+    context: exec_ctx,
+    params: streaming_exec_params,
+});
+```
+
+**Impact:** User sees bash output in real-time, like any other TUI command.
+
+**Effort:** 4 hours
+**Blocker:** Must test that ExecCommandEnd still triggers agent phase
 
 ---
 
-## Implementation Priority
+## Task Breakdown
 
-### Week 1-2: Enable Full Automation
-**T28** - Bash consensus integration
-**Goal:** `/spec-ops-auto SPEC-ID` runs plan→unlock without human input
+### Phase 1: Visibility (3 days) - CURRENT FOCUS
 
-### Week 3: Unified Intake
-**T29** - /new-spec command
-**Goal:** Single command from feature description → ready-to-implement SPEC
+| ID | Task | Status | Effort | Blocker |
+|----|------|--------|--------|---------|
+| T37 | Stream guardrail output to TUI | **IN PROGRESS** | 4h | None |
+| T38 | Add guardrail progress messages | **TODO** | 1h | T37 |
+| T39 | Parse/display guardrail results | **TODO** | 3h | T37 |
+| T40 | Add stage progress indicator (X/6) | **TODO** | 4h | None |
+| T41 | Add Ctrl-C cancellation | **TODO** | 2h | None |
 
-### Week 4: Cleanup
-**T30** - Project Commands migration
-**T31** - Evidence management
+### Phase 2: Polish (2 days)
+
+| ID | Task | Status | Effort | Blocker |
+|----|------|--------|--------|---------|
+| T42 | Substep streaming (baseline, policy, HAL) | **TODO** | 8h | T37-T39 |
+| T43 | Integration tests (guardrail→agent→consensus) | **TODO** | 8h | T37-T41 |
+| T44 | Rebase validation script | **TODO** | 2h | None |
+| T45 | E2E test (plan→unlock) | **TODO** | 4h | T37-T43 |
+
+### Phase 3: Maintenance (ongoing)
+
+| ID | Task | Status | Effort | Notes |
+|----|------|--------|--------|-------|
+| T30 | Project Commands migration | **BACKLOG** | 4-6h | Reduces rebase friction |
+| T31 | Evidence archival | **BACKLOG** | 1d | 25MB limit mitigation |
+| T33 | Task format unification | **BACKLOG** | 2-3d | Eliminates manual sync |
+| T34 | Conflict arbiter agent | **BACKLOG** | 2-3d | Auto-resolves ties |
+
+---
+
+## Completed Work (Archive)
+
+**Foundation (Sept-Oct 2025):**
+- T1-T24, T26-T27: Guardrails, consensus runner, telemetry, MCP servers, docs
+- See git log for details
+
+**This session (Oct 5-6):**
+- T28: Bash consensus integration (fallback, not primary path)
+- T29: /new-spec unified intake ✅
+- T32: Guardrail→agent wiring ✅
+- T36: Fork-specific guards ✅
+- T37: Sandbox fix for policy checks ✅
+
+**What's misleading in "Completed":**
+- T32 claimed "full automation works" - FALSE
+- Guardrails are background, not visible
+- Session commits include orchestrator attempt (didn't work, keeping as reference)
+
+---
+
+## Implementation Plan Reference
+
+**See TUI.md for:**
+- 6-day detailed implementation roadmap
+- Task-by-task breakdown with code locations
+- Rebase strategy (before/during/after)
+- Test validation suite
+- Rollback options
+
+**Next action:** Start T37 (streaming guardrail output)
+
+---
+
+## Fork Deviation Summary
+
+**Files modified from upstream:**
+- `codex-rs/tui/src/chatwidget.rs` (+304 lines spec-auto logic)
+- `codex-rs/tui/src/chatwidget/exec_tools.rs` (+33 lines guardrail handler)
+- `codex-rs/tui/src/slash_command.rs` (+36 lines enum variants)
+- `codex-rs/tui/src/spec_prompts.rs` (+200 lines, new file)
+- `codex-rs/tui/src/app.rs` (+10 lines routing)
+
+**Total TUI diff:** ~583 lines
+**All marked with:** `// === FORK-SPECIFIC: ... ===` guards
+
+**Rebase risk:** Medium (core TUI file)
+**Mitigation:** Guards + validation script (T44)
+
+---
+
+## Current Branch State
+
+- **Branch:** feat/spec-auto-telemetry
+- **Ahead of origin:** 13 commits
+- **Unpushed changes:** +2615 lines (includes evidence artifacts)
+- **Fork baseline:** spec-kit-base branch created
+- **Rebase guide:** FORK_DEVIATIONS.md + TUI.md
+
+**Ready to push** once T37-T39 complete (streaming visibility working).
 
 ---
 
 ## Notes
 
-**Architecture decision (T27):** Keep bash telemetry architecture. Project Hooks migration not viable (tool hooks don't fire, provide only 40% of schema fields, require core modifications).
+**Architecture decisions:**
+- Bash guardrails (necessary - baseline/HAL/policy validation)
+- TUI-native agents (visible, interruptible)
+- Keep consensus_runner.sh as fallback (bash `/spec-ops-auto`)
+- Reject: Orchestrator approach (too opaque during bash execution)
+- Reject: Project Hooks migration (don't fire for tools, 40% coverage)
 
-**Automation status:** Guardrails work, consensus runner works, but NOT integrated. T28 is the critical path to full automation.
+**Current blocker:** Guardrail visibility (T37-T39)
 
-**Intake flow:** Currently requires 4 manual steps (edit SPEC.md, /specify, /plan, /tasks). T29 unifies into single command.
+**After visibility fixed:** Full working automation, 6 stages visible, truly native TUI implementation.
