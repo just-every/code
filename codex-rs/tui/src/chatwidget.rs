@@ -4567,6 +4567,7 @@ impl ChatWidget<'_> {
                 return;
             }
             crate::slash_command::ProcessedCommand::SpecAuto(invocation) => {
+                // Use TUI native implementation (guardrail → agents → consensus)
                 self.handle_spec_auto_command(invocation);
                 return;
             }
