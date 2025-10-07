@@ -1603,7 +1603,8 @@ impl App<'_> {
                         | SlashCommand::SpecOpsAudit
                         | SlashCommand::SpecOpsUnlock
                         | SlashCommand::SpecOpsAuto
-                        | SlashCommand::SpecEvidenceStats => {
+                        | SlashCommand::SpecEvidenceStats
+                        | SlashCommand::SpecStatus => {
                             if let AppState::Chat { widget } = &mut self.app_state {
                                 widget.handle_spec_ops_command(command, command_args);
                             }
