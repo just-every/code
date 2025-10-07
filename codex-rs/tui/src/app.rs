@@ -1593,7 +1593,8 @@ impl App<'_> {
                         | SlashCommand::SpecValidate
                         | SlashCommand::SpecAudit
                         | SlashCommand::SpecUnlock
-                        | SlashCommand::SpecAuto => {
+                        | SlashCommand::SpecAuto
+                        | SlashCommand::SpecStatus => {
                             // Prompt-expanded in the chat widget; no additional dispatch required here.
                         }
                         SlashCommand::SpecOpsPlan
