@@ -155,6 +155,8 @@ pub enum SlashCommand {
     SpecEvidenceStats,
     #[strum(serialize = "spec-consensus")]
     SpecConsensus,
+    #[strum(serialize = "spec-status")]
+    SpecStatus,
     // === END FORK-SPECIFIC: spec-kit commands ===
     Logout,
     Quit,
@@ -218,6 +220,7 @@ impl SlashCommand {
                 "summarize guardrail/consensus evidence sizes (optional --spec)"
             }
             SlashCommand::SpecConsensus => "check multi-agent consensus via local-memory (requires SPEC ID & stage)",
+            SlashCommand::SpecStatus => "show comprehensive SPEC status (guardrails, consensus, agents)",
             SlashCommand::Pro => "manage Pro mode (toggle/status/auto)",
             SlashCommand::Branch => {
                 "work in an isolated /branch then /merge when done (great for parallel work)"
@@ -300,6 +303,10 @@ impl SlashCommand {
             SlashCommand::SpecEvidenceStats => Some(SpecOpsCommand {
                 display: "evidence-stats",
                 script: "evidence_stats.sh",
+            }),
+            SlashCommand::SpecStatus => Some(SpecOpsCommand {
+                display: "status",
+                script: "spec_ops_status.sh",
             }),
             _ => None,
         }
