@@ -246,12 +246,18 @@ impl SlashCommand {
 
     /// Returns true if this command should expand into a prompt for the LLM.
     pub fn is_prompt_expanding(self) -> bool {
-        matches!(self, SlashCommand::Plan | SlashCommand::Solve | SlashCommand::Code)
+        matches!(
+            self,
+            SlashCommand::Plan | SlashCommand::Solve | SlashCommand::Code | SlashCommand::SpecStatus
+        )
     }
 
     /// Returns true if this command requires additional arguments after the command.
     pub fn requires_arguments(self) -> bool {
-        matches!(self, SlashCommand::Plan | SlashCommand::Solve | SlashCommand::Code)
+        matches!(
+            self,
+            SlashCommand::Plan | SlashCommand::Solve | SlashCommand::Code | SlashCommand::SpecStatus
+        )
     }
 
     /// Returns true when this command maps to Spec Ops automation.
@@ -352,6 +358,12 @@ impl SlashCommand {
             SlashCommand::Code => Some(codex_core::slash_commands::format_code_command(
                 args, None, None,
             )),
+            SlashCommand::SpecStatus => Some(codex_core::slash_commands::format_subagent_command(
+                "spec-status",
+                args,
+                None,
+                None,
+            ).prompt),
             _ => None,
         }
     }
