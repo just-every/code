@@ -1,0 +1,29 @@
+{
+  "stage": "spec-implement",
+  "status": "blocked",
+  "agreements": [
+    "All agents identify Arbiter gating (T46.1) and feat/spec-auto-telemetry completion as prerequisites before implementation work can proceed.",
+    "Validation must include doc lint, tasks lint, nightly drift dry-run, and HAL telemetry capture with artifacts stored under docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-030-add-documentation-for-rebasing-from/."
+  ],
+  "conflicts": [
+    {
+      "issue": "Gemini/Claude/gpt_codex outputs recommend placeholder docs, but policy final checks show implement stage remains gated.",
+      "resolution": "Treat diff proposals as scaffolding only; no documentation should be committed until T46.1 decisions are recorded and policy final passes.",
+      "status": "unresolved"
+    }
+  ],
+  "open_actions": [
+    "Resolve T46.1 Arbiter decisions and update docs/SPEC-KIT-030-add-documentation-for-rebasing-from/arbiter-decisions.md.",
+    "Capture missing implement-stage agent outputs (gemini/claude/gpt_codex) after gating clears and store them alongside synthesis.",
+    "Rerun spec-ops-implement to achieve passing policy final check and log evidence (.log files) in the tracked directory."
+  ],
+  "outputs": {
+    "gemini": "docs/SPEC-KIT-030-add-documentation-for-rebasing-from/spec-implement-gemini.json",
+    "claude": "docs/SPEC-KIT-030-add-documentation-for-rebasing-from/spec-implement-claude.json",
+    "gpt_pro": "docs/SPEC-KIT-030-add-documentation-for-rebasing-from/spec-implement-gpt.json",
+    "gpt_codex": "docs/SPEC-KIT-030-add-documentation-for-rebasing-from/spec-implement-gpt-codex.json"
+  },
+  "telemetry": {
+    "guardrail": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-030-add-documentation-for-rebasing-from/spec-implement_2025-10-07T00:48:07Z-823811124.json"
+  }
+}

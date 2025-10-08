@@ -27,30 +27,41 @@ pub fn default_params_for(name: &str, read_only: bool) -> Vec<String> {
         // Gemini CLI: pin to a stable model by default; write mode adds -y
         "gemini" => {
             let mut v = vec!["-m".to_string(), "gemini-2.5-pro".to_string()];
-            if !read_only { v.push("-y".into()); }
+            if !read_only {
+                v.push("-y".into());
+            }
             v
         }
         // Qwen CLI: do not pin a model by default; write mode adds -y
         "qwen" => {
-            if read_only { Vec::new() } else { vec!["-y".into()] }
+            if read_only {
+                Vec::new()
+            } else {
+                vec!["-y".into()]
+            }
         }
         // Built-in codex/code: map to our exec subcommand with appropriate sandbox
         "codex" | "code" => {
             if read_only {
                 vec![
-                    "-s".into(), "read-only".into(),
-                    "-a".into(), "never".into(),
-                    "exec".into(), "--skip-git-repo-check".into(),
+                    "-s".into(),
+                    "read-only".into(),
+                    "-a".into(),
+                    "never".into(),
+                    "exec".into(),
+                    "--skip-git-repo-check".into(),
                 ]
             } else {
                 vec![
-                    "-s".into(), "workspace-write".into(),
-                    "-a".into(), "never".into(),
-                    "exec".into(), "--skip-git-repo-check".into(),
+                    "-s".into(),
+                    "workspace-write".into(),
+                    "-a".into(),
+                    "never".into(),
+                    "exec".into(),
+                    "--skip-git-repo-check".into(),
                 ]
             }
         }
         _ => Vec::new(),
     }
 }
-

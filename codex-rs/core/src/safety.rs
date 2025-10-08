@@ -35,7 +35,8 @@ pub fn assess_patch_safety(
     if matches!(sandbox_policy, SandboxPolicy::ReadOnly) {
         return match policy {
             AskForApproval::Never => SafetyCheck::Reject {
-                reason: "write operations require approval but approval policy is set to never".to_string(),
+                reason: "write operations require approval but approval policy is set to never"
+                    .to_string(),
             },
             _ => SafetyCheck::AskUser,
         };
@@ -109,9 +110,7 @@ pub fn assess_command_safety(
     // would probably be fine to run the command in a sandbox, but when
     // `approved.contains(command)` is `true`, the user may have approved it for
     // the session _because_ they know it needs to run outside a sandbox.
-    if is_known_safe_command(command)
-        || approved.iter().any(|pattern| pattern.matches(command))
-    {
+    if is_known_safe_command(command) || approved.iter().any(|pattern| pattern.matches(command)) {
         return SafetyCheck::AutoApprove {
             sandbox_type: SandboxType::None,
         };

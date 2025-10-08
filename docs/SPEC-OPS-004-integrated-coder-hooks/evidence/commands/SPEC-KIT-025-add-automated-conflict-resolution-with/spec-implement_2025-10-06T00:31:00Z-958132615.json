@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "command": "spec-ops-implement",
+  "specId": "SPEC-KIT-025-add-automated-conflict-resolution-with",
+  "sessionId": "2025-10-06T00:31:00Z-958132615",
+  "timestamp": "2025-10-06T00:36:46Z",
+  "lock_status": "locked",
+  "hook_status": "ok",
+  "policy": {
+  "prefilter": {
+    "model": "gpt-5-codex",
+    "status": "passed",
+    "note": "/home/thetu/code/codex-rs/target/dev-fast/code exec --sandbox read-only --model gpt-5-codex -- \"Policy prefilter for SPEC-KIT-025-add-automated-conflict-resolution-with/spec-implement\""
+  },
+  "final": {
+    "model": "gpt-5",
+    "status": "passed",
+    "note": "/home/thetu/code/codex-rs/target/dev-fast/code exec --sandbox read-only --model gpt-5 -- \"Policy final check for SPEC-KIT-025-add-automated-conflict-resolution-with/spec-implement\""
+  }
+},
+  "artifacts": [
+    { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-025-add-automated-conflict-resolution-with/spec-implement_2025-10-06T00:31:00Z-958132615.log" }
+  ]
+}

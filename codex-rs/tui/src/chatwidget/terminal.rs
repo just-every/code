@@ -10,7 +10,7 @@ use vt100::Parser as VtParser;
 
 use crate::app_event::{TerminalAfter, TerminalCommandGate};
 use crate::colors;
-use crate::sanitize::{sanitize_for_tui, Mode as SanitizeMode, Options as SanitizeOptions};
+use crate::sanitize::{Mode as SanitizeMode, Options as SanitizeOptions, sanitize_for_tui};
 
 pub(crate) const TERMINAL_MAX_LINES: usize = 10_000;
 pub(crate) const TERMINAL_MAX_RAW: usize = 1_048_576;
@@ -182,7 +182,11 @@ impl TerminalOverlay {
         self.rebuild_lines();
     }
 
-    pub(crate) fn set_pending_command(&mut self, suggestion: String, ack: Sender<TerminalCommandGate>) {
+    pub(crate) fn set_pending_command(
+        &mut self,
+        suggestion: String,
+        ack: Sender<TerminalCommandGate>,
+    ) {
         self.cancel_pending_command();
         self.pending_command = Some(PendingCommand::new(suggestion, ack));
     }
@@ -246,10 +250,7 @@ impl TerminalOverlay {
         let mut line = ansi_escape_line(&sanitized);
         line.spans.insert(
             0,
-            ratatui::text::Span::styled(
-                "• ",
-                ratatui::style::Style::default().fg(colors::text()),
-            ),
+            ratatui::text::Span::styled("• ", ratatui::style::Style::default().fg(colors::text())),
         );
         if emphasize {
             for span in line.spans.iter_mut() {
@@ -388,8 +389,7 @@ impl TerminalOverlay {
     }
 
     pub(crate) fn rebuild_lines(&mut self) {
-        let mut combined: VecDeque<RtLine<'static>> =
-            self.terminal_lines.iter().cloned().collect();
+        let mut combined: VecDeque<RtLine<'static>> = self.terminal_lines.iter().cloned().collect();
         for info in &self.info_lines {
             combined.push_back(info.clone());
         }
@@ -594,10 +594,7 @@ fn blank_line() -> RtLine<'static> {
 }
 
 fn line_is_blank(line: &RtLine<'_>) -> bool {
-    line
-        .spans
-        .iter()
-        .all(|span| span.content.trim().is_empty())
+    line.spans.iter().all(|span| span.content.trim().is_empty())
 }
 
 fn strip_non_sgr_csi(input: &str) -> String {
@@ -683,7 +680,10 @@ cliff.toml          flake.lock          NOTICE              \x1b[34mrelease-note
         let idx_c = first.find("codex-rs").unwrap();
         assert!(idx_c > idx_a);
         let between = &first[idx_a + "AGENTS.md".len()..idx_c];
-        assert!(between.chars().all(|ch| ch == ' '), "expected padding between columns, got {between:?}");
+        assert!(
+            between.chars().all(|ch| ch == ' '),
+            "expected padding between columns, got {between:?}"
+        );
 
         // Ensure later rows keep column spacing as well
         let last = overlay
@@ -694,6 +694,9 @@ cliff.toml          flake.lock          NOTICE              \x1b[34mrelease-note
         let idx_pkg = last.find("package.json").unwrap();
         let idx_scripts = last.find("scripts").unwrap();
         let between_tail = &last[idx_pkg + "package.json".len()..idx_scripts];
-        assert!(between_tail.chars().all(|ch| ch == ' '), "expected padding between package.json and scripts, got {between_tail:?}");
+        assert!(
+            between_tail.chars().all(|ch| ch == ' '),
+            "expected padding between package.json and scripts, got {between_tail:?}"
+        );
     }
 }

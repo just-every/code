@@ -56,10 +56,7 @@ pub async fn new_session(
     };
 
     let session_uuid: Uuid = conversation_id.into();
-    session_map
-        .lock()
-        .await
-        .insert(session_uuid, conversation);
+    session_map.lock().await.insert(session_uuid, conversation);
 
     Some(session_uuid)
 }

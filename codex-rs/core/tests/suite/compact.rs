@@ -1,7 +1,9 @@
 use codex_core::CodexAuth;
 use codex_core::ConversationManager;
+use codex_core::InitialHistory;
 use codex_core::ModelProviderInfo;
 use codex_core::NewConversation;
+use codex_core::RolloutRecorder;
 use codex_core::built_in_model_providers;
 use codex_core::models::ContentItem;
 use codex_core::protocol::CompactedItem;
@@ -14,8 +16,6 @@ use codex_core::protocol::RolloutItem;
 use codex_core::protocol::RolloutLine;
 use codex_core::protocol::SessionMeta;
 use codex_core::protocol::SessionMetaLine;
-use codex_core::InitialHistory;
-use codex_core::RolloutRecorder;
 use core_test_support::load_default_config_for_test;
 use core_test_support::wait_for_event;
 use tempfile::TempDir;
@@ -26,7 +26,9 @@ use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
+use chrono::Utc;
 use codex_core::codex::compact::SUMMARIZATION_PROMPT;
+use codex_protocol::mcp_protocol::ConversationId;
 use core_test_support::non_sandbox_test;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
@@ -43,8 +45,6 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use chrono::Utc;
-use codex_protocol::mcp_protocol::ConversationId;
 // --- Test helpers -----------------------------------------------------------
 
 pub(super) const FIRST_REPLY: &str = "FIRST_REPLY";
@@ -345,12 +345,16 @@ async fn get_rollout_history_retains_compacted_entries() {
     assert_eq!(resumed.conversation_id, conversation_id);
     let mut saw_compacted = false;
     for item in resumed.history {
-        if matches!(item, RolloutItem::Compacted(ref compacted) if compacted.message == "compact summary") {
+        if matches!(item, RolloutItem::Compacted(ref compacted) if compacted.message == "compact summary")
+        {
             saw_compacted = true;
             break;
         }
     }
-    assert!(saw_compacted, "expected compacted rollout item to be preserved");
+    assert!(
+        saw_compacted,
+        "expected compacted rollout item to be preserved"
+    );
 }
 
 // Windows CI only: bump to 4 workers to prevent SSE/event starvation and test timeouts.

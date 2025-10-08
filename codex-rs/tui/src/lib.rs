@@ -59,6 +59,7 @@ mod render;
 mod session_log;
 mod shimmer;
 mod slash_command;
+pub mod spec_status;
 mod spec_prompts;
 mod rate_limits_view;
 mod resume;
@@ -87,11 +88,6 @@ mod greeting;
 mod status_indicator_widget;
 #[cfg(target_os = "macos")]
 mod agent_install_helpers;
-
-// Internal vt100-based replay tests live as a separate source file to keep them
-// close to the widget code. Include them in unit tests.
-#[cfg(all(test, feature = "legacy_tests"))]
-mod chatwidget_stream_tests;
 
 mod updates;
 

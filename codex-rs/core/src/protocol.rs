@@ -11,9 +11,9 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use mcp_types::CallToolResult;
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_bytes::ByteBuf;
 use strum_macros::Display;
 use uuid::Uuid;
@@ -28,17 +28,17 @@ use crate::plan_tool::UpdatePlanArgs;
 
 // Re-export review types from the shared protocol crate so callers can use
 // `codex_core::protocol::ReviewFinding` and friends.
+pub use codex_protocol::protocol::ConversationPathResponseEvent;
+pub use codex_protocol::protocol::ENVIRONMENT_CONTEXT_OPEN_TAG;
+pub use codex_protocol::protocol::ExitedReviewModeEvent;
+pub use codex_protocol::protocol::GitInfo;
 pub use codex_protocol::protocol::ReviewCodeLocation;
 pub use codex_protocol::protocol::ReviewFinding;
 pub use codex_protocol::protocol::ReviewLineRange;
 pub use codex_protocol::protocol::ReviewOutputEvent;
-pub use codex_protocol::protocol::{ReviewContextMetadata, ReviewRequest};
-pub use codex_protocol::protocol::GitInfo;
 pub use codex_protocol::protocol::RolloutItem;
 pub use codex_protocol::protocol::RolloutLine;
-pub use codex_protocol::protocol::ConversationPathResponseEvent;
-pub use codex_protocol::protocol::ENVIRONMENT_CONTEXT_OPEN_TAG;
-pub use codex_protocol::protocol::ExitedReviewModeEvent;
+pub use codex_protocol::protocol::{ReviewContextMetadata, ReviewRequest};
 
 /// Submission Queue Entry - requests from user
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -153,10 +153,7 @@ pub enum Op {
     },
 
     /// Update a specific validation tool toggle for the session.
-    UpdateValidationTool {
-        name: String,
-        enable: bool,
-    },
+    UpdateValidationTool { name: String, enable: bool },
 
     /// Update a validation group toggle for the session.
     UpdateValidationGroup {
@@ -174,9 +171,7 @@ pub enum Op {
     },
 
     /// Toggle or query Pro Mode state.
-    Pro {
-        action: ProAction,
-    },
+    Pro { action: ProAction },
 
     /// Execute a project-scoped custom command defined in configuration.
     /// When `command` is provided, run that argv directly (allowing built-in
@@ -305,7 +300,9 @@ pub enum SandboxPolicy {
 }
 
 // Serde helper: default to true for flags where we want historical permissive behavior.
-pub(crate) const fn default_true_bool() -> bool { true }
+pub(crate) const fn default_true_bool() -> bool {
+    true
+}
 
 /// A writable root path accompanied by a list of subpaths that should remain
 /// read‑only even when the root is writable. This is primarily used to ensure
@@ -514,7 +511,6 @@ pub fn event_msg_to_protocol(msg: &EventMsg) -> Option<codex_protocol::protocol:
     }
 }
 
-
 pub fn event_msg_from_protocol(msg: &codex_protocol::protocol::EventMsg) -> Option<EventMsg> {
     match msg {
         codex_protocol::protocol::EventMsg::TokenCount(payload) => {
@@ -535,10 +531,7 @@ pub fn event_msg_from_protocol(msg: &codex_protocol::protocol::EventMsg) -> Opti
     }
 }
 
-
-pub fn order_meta_to_protocol(
-    order: &OrderMeta,
-) -> codex_protocol::protocol::OrderMeta {
+pub fn order_meta_to_protocol(order: &OrderMeta) -> codex_protocol::protocol::OrderMeta {
     codex_protocol::protocol::OrderMeta {
         request_ordinal: order.request_ordinal,
         output_index: order.output_index,
@@ -546,9 +539,7 @@ pub fn order_meta_to_protocol(
     }
 }
 
-pub fn order_meta_from_protocol(
-    order: &codex_protocol::protocol::OrderMeta,
-) -> OrderMeta {
+pub fn order_meta_from_protocol(order: &codex_protocol::protocol::OrderMeta) -> OrderMeta {
     OrderMeta {
         request_ordinal: order.request_ordinal,
         output_index: order.output_index,
@@ -556,15 +547,11 @@ pub fn order_meta_from_protocol(
     }
 }
 
-
 pub fn recorded_event_to_protocol(
     event: &RecordedEvent,
 ) -> Option<codex_protocol::protocol::RecordedEvent> {
     let msg = event_msg_to_protocol(&event.msg)?;
-    let order = event
-        .order
-        .as_ref()
-        .map(order_meta_to_protocol);
+    let order = event.order.as_ref().map(order_meta_to_protocol);
     Some(codex_protocol::protocol::RecordedEvent {
         id: event.id.clone(),
         event_seq: event.event_seq,
@@ -572,7 +559,6 @@ pub fn recorded_event_to_protocol(
         msg,
     })
 }
-
 
 pub fn recorded_event_from_protocol(
     src: codex_protocol::protocol::RecordedEvent,
@@ -824,14 +810,9 @@ pub struct TokenUsage {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProEvent {
     /// Toggled Pro Mode state
-    Toggled {
-        enabled: bool,
-    },
+    Toggled { enabled: bool },
     /// Periodic status tick
-    Status {
-        phase: ProPhase,
-        stats: ProStats,
-    },
+    Status { phase: ProPhase, stats: ProStats },
     /// A helper agent was spawned
     AgentSpawned {
         id: String,

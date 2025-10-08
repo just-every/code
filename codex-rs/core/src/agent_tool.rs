@@ -3,7 +3,6 @@ use chrono::Duration;
 use chrono::Utc;
 use serde::Deserialize;
 use serde::Serialize;
-use uuid::Uuid;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -12,6 +11,7 @@ use tokio::process::Command;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use uuid::Uuid;
 
 use crate::config_types::AgentConfig;
 use crate::openai_tools::JsonSchema;
@@ -114,14 +114,13 @@ impl AgentManager {
                 .values()
                 .next()
                 .map(|agent| {
-                    let context = agent
-                        .context
-                        .as_ref()
-                        .and_then(|value| if value.trim().is_empty() {
+                    let context = agent.context.as_ref().and_then(|value| {
+                        if value.trim().is_empty() {
                             None
                         } else {
                             Some(value.clone())
-                        });
+                        }
+                    });
                     let task = if agent.prompt.trim().is_empty() {
                         None
                     } else {
@@ -130,7 +129,11 @@ impl AgentManager {
                     (context, task)
                 })
                 .unwrap_or((None, None));
-            let payload = AgentStatusUpdatePayload { agents, context, task };
+            let payload = AgentStatusUpdatePayload {
+                agents,
+                context,
+                task,
+            };
             let _ = sender.send(payload);
         }
     }
@@ -554,8 +557,14 @@ async fn execute_model_with_permissions(
             // On Windows, ensure we only accept spawnable extensions. PowerShell
             // scripts like .ps1 are not directly spawnable via Command::new.
             if let Ok(p) = which::which(cmd) {
-                if !p.is_file() { return false; }
-                match p.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) {
+                if !p.is_file() {
+                    return false;
+                }
+                match p
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|s| s.to_ascii_lowercase())
+                {
                     Some(ext) if matches!(ext.as_str(), "exe" | "com" | "cmd" | "bat") => true,
                     _ => false,
                 }
@@ -567,14 +576,20 @@ async fn execute_model_with_permissions(
         #[cfg(not(target_os = "windows"))]
         {
             use std::os::unix::fs::PermissionsExt;
-            let Some(path_os) = std::env::var_os("PATH") else { return false; };
+            let Some(path_os) = std::env::var_os("PATH") else {
+                return false;
+            };
             for dir in std::env::split_paths(&path_os) {
-                if dir.as_os_str().is_empty() { continue; }
+                if dir.as_os_str().is_empty() {
+                    continue;
+                }
                 let candidate = dir.join(cmd);
                 if let Ok(meta) = std::fs::metadata(&candidate) {
                     if meta.is_file() {
                         let mode = meta.permissions().mode();
-                        if mode & 0o111 != 0 { return true; }
+                        if mode & 0o111 != 0 {
+                            return true;
+                        }
                     }
                 }
             }
@@ -619,20 +634,32 @@ async fn execute_model_with_permissions(
         // Add any configured args first, preferring mode‑specific values
         if read_only {
             if let Some(ro) = cfg.args_read_only.as_ref() {
-                for arg in ro { cmd.arg(arg); }
+                for arg in ro {
+                    cmd.arg(arg);
+                }
             } else {
-                for arg in &cfg.args { cmd.arg(arg); }
+                for arg in &cfg.args {
+                    cmd.arg(arg);
+                }
             }
         } else if let Some(w) = cfg.args_write.as_ref() {
-            for arg in w { cmd.arg(arg); }
+            for arg in w {
+                cmd.arg(arg);
+            }
         } else {
-            for arg in &cfg.args { cmd.arg(arg); }
+            for arg in &cfg.args {
+                cmd.arg(arg);
+            }
         }
     }
 
     // Build command based on model and permissions
     // Use command instead of model for matching if config provided
-    let model_name = if config.is_some() { command.as_str() } else { model_lower.as_str() };
+    let model_name = if config.is_some() {
+        command.as_str()
+    } else {
+        model_lower.as_str()
+    };
 
     match model_name {
         "claude" | "gemini" | "qwen" => {
@@ -643,7 +670,16 @@ async fn execute_model_with_permissions(
         }
         "codex" | "code" => {
             // If config provided explicit args for this mode, do not append defaults.
-            let have_mode_args = config.as_ref().map(|c| if read_only { c.args_read_only.is_some() } else { c.args_write.is_some() }).unwrap_or(false);
+            let have_mode_args = config
+                .as_ref()
+                .map(|c| {
+                    if read_only {
+                        c.args_read_only.is_some()
+                    } else {
+                        c.args_write.is_some()
+                    }
+                })
+                .unwrap_or(false);
             if have_mode_args {
                 cmd.arg(prompt);
             } else {
@@ -652,14 +688,19 @@ async fn execute_model_with_permissions(
                 cmd.args(defaults);
             }
         }
-        _ => { return Err(format!("Unknown model: {}", model)); }
+        _ => {
+            return Err(format!("Unknown model: {}", model));
+        }
     }
 
     // Proactively check for presence of external command before spawn when not
     // using the current executable fallback. This avoids confusing OS errors
     // like "program not found" and lets us surface a cleaner message.
     if model_name != "codex" && model_name != "code" && !command_exists(&command) {
-        return Err(format!("Required agent '{}' is not installed or not in PATH", command));
+        return Err(format!(
+            "Required agent '{}' is not installed or not in PATH",
+            command
+        ));
     }
 
     // Agents: run without OS sandboxing; rely on per-branch worktrees for isolation.
@@ -670,40 +711,54 @@ async fn execute_model_with_permissions(
         let mut env: std::collections::HashMap<String, String> = std::env::vars().collect();
         let orig_home: Option<String> = env.get("HOME").cloned();
         if let Some(ref cfg) = config {
-            if let Some(ref e) = cfg.env { for (k, v) in e { env.insert(k.clone(), v.clone()); } }
+            if let Some(ref e) = cfg.env {
+                for (k, v) in e {
+                    env.insert(k.clone(), v.clone());
+                }
+            }
         }
 
         // Convenience: map common key names so external CLIs "just work".
         if let Some(google_key) = env.get("GOOGLE_API_KEY").cloned() {
-            env.entry("GEMINI_API_KEY".to_string()).or_insert(google_key);
+            env.entry("GEMINI_API_KEY".to_string())
+                .or_insert(google_key);
         }
         if let Some(claude_key) = env.get("CLAUDE_API_KEY").cloned() {
-            env.entry("ANTHROPIC_API_KEY".to_string()).or_insert(claude_key);
+            env.entry("ANTHROPIC_API_KEY".to_string())
+                .or_insert(claude_key);
         }
         if let Some(anthropic_key) = env.get("ANTHROPIC_API_KEY").cloned() {
-            env.entry("CLAUDE_API_KEY".to_string()).or_insert(anthropic_key);
+            env.entry("CLAUDE_API_KEY".to_string())
+                .or_insert(anthropic_key);
         }
         if let Some(anthropic_base) = env.get("ANTHROPIC_BASE_URL").cloned() {
-            env.entry("CLAUDE_BASE_URL".to_string()).or_insert(anthropic_base);
+            env.entry("CLAUDE_BASE_URL".to_string())
+                .or_insert(anthropic_base);
         }
         // Qwen/DashScope convenience: mirror API keys and base URLs both ways so
         // either variable name works across tools.
         if let Some(qwen_key) = env.get("QWEN_API_KEY").cloned() {
-            env.entry("DASHSCOPE_API_KEY".to_string()).or_insert(qwen_key);
+            env.entry("DASHSCOPE_API_KEY".to_string())
+                .or_insert(qwen_key);
         }
         if let Some(dashscope_key) = env.get("DASHSCOPE_API_KEY").cloned() {
-            env.entry("QWEN_API_KEY".to_string()).or_insert(dashscope_key);
+            env.entry("QWEN_API_KEY".to_string())
+                .or_insert(dashscope_key);
         }
         if let Some(qwen_base) = env.get("QWEN_BASE_URL").cloned() {
-            env.entry("DASHSCOPE_BASE_URL".to_string()).or_insert(qwen_base);
+            env.entry("DASHSCOPE_BASE_URL".to_string())
+                .or_insert(qwen_base);
         }
         if let Some(ds_base) = env.get("DASHSCOPE_BASE_URL").cloned() {
             env.entry("QWEN_BASE_URL".to_string()).or_insert(ds_base);
         }
         // Reduce startup overhead for Claude CLI: disable auto-updater/telemetry.
-        env.entry("DISABLE_AUTOUPDATER".to_string()).or_insert("1".to_string());
-        env.entry("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC".to_string()).or_insert("1".to_string());
-        env.entry("DISABLE_ERROR_REPORTING".to_string()).or_insert("1".to_string());
+        env.entry("DISABLE_AUTOUPDATER".to_string())
+            .or_insert("1".to_string());
+        env.entry("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC".to_string())
+            .or_insert("1".to_string());
+        env.entry("DISABLE_ERROR_REPORTING".to_string())
+            .or_insert("1".to_string());
         // Prefer explicit Claude config dir to avoid touching $HOME/.claude.json.
         // Do not force CLAUDE_CONFIG_DIR here; leave CLI free to use its default
         // (including Keychain) unless we explicitly redirect HOME below.
@@ -732,7 +787,8 @@ async fn execute_model_with_permissions(
         // We reconstruct to run under our sandbox helpers.
         let program = if (model_lower == "code" || model_lower == "codex") && config.is_none() {
             // Use current exe path
-            std::env::current_exe().map_err(|e| format!("Failed to resolve current executable: {}", e))?
+            std::env::current_exe()
+                .map_err(|e| format!("Failed to resolve current executable: {}", e))?
         } else {
             // Use program name; PATH resolution will be handled by spawn helper with provided env.
             std::path::PathBuf::from(&command)
@@ -764,11 +820,21 @@ async fn execute_model_with_permissions(
                 args.extend(defaults);
             }
             "codex" | "code" => {
-                let have_mode_args = config.as_ref().map(|c| if read_only { c.args_read_only.is_some() } else { c.args_write.is_some() }).unwrap_or(false);
+                let have_mode_args = config
+                    .as_ref()
+                    .map(|c| {
+                        if read_only {
+                            c.args_read_only.is_some()
+                        } else {
+                            c.args_write.is_some()
+                        }
+                    })
+                    .unwrap_or(false);
                 if have_mode_args {
                     args.push(prompt.to_string());
                 } else {
-                    let mut defaults = crate::agent_defaults::default_params_for(model_name, read_only);
+                    let mut defaults =
+                        crate::agent_defaults::default_params_for(model_name, read_only);
                     defaults.push(prompt.to_string());
                     args.extend(defaults);
                 }
@@ -781,12 +847,16 @@ async fn execute_model_with_permissions(
 
         // Spawn via helpers and capture output
         let child_result: std::io::Result<tokio::process::Child> = match sandbox_type {
-            crate::exec::SandboxType::None | crate::exec::SandboxType::MacosSeatbelt | crate::exec::SandboxType::LinuxSeccomp => {
+            crate::exec::SandboxType::None
+            | crate::exec::SandboxType::MacosSeatbelt
+            | crate::exec::SandboxType::LinuxSeccomp => {
                 crate::spawn::spawn_child_async(
                     program.clone(),
                     args.clone(),
                     Some(&program.to_string_lossy()),
-                    working_dir.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))),
+                    working_dir.clone().unwrap_or_else(|| {
+                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    }),
                     &SandboxPolicy::DangerFullAccess,
                     StdioPolicy::RedirectForShellTool,
                     env.clone(),
@@ -821,15 +891,33 @@ async fn execute_model_with_permissions(
                 }
                 let mut fb = match std::env::current_exe() {
                     Ok(p) => Command::new(p),
-                    Err(e2) => return Err(format!(
-                        "Failed to execute {} and could not resolve built-in fallback: {} / {}",
-                        model, e, e2
-                    )),
+                    Err(e2) => {
+                        return Err(format!(
+                            "Failed to execute {} and could not resolve built-in fallback: {} / {}",
+                            model, e, e2
+                        ));
+                    }
                 };
                 if read_only {
-                    fb.args(["-s", "read-only", "-a", "never", "exec", "--skip-git-repo-check", prompt]);
+                    fb.args([
+                        "-s",
+                        "read-only",
+                        "-a",
+                        "never",
+                        "exec",
+                        "--skip-git-repo-check",
+                        prompt,
+                    ]);
                 } else {
-                    fb.args(["-s", "workspace-write", "-a", "never", "exec", "--skip-git-repo-check", prompt]);
+                    fb.args([
+                        "-s",
+                        "workspace-write",
+                        "-a",
+                        "never",
+                        "exec",
+                        "--skip-git-repo-check",
+                        prompt,
+                    ]);
                 }
                 fb.output().await.map_err(|e2| {
                     format!(
@@ -873,7 +961,8 @@ pub fn create_run_agent_tool() -> OpenAiTool {
         JsonSchema::Array {
             items: Box::new(JsonSchema::String { description: None }),
             description: Some(
-                "Optional: Array of model names (e.g., ['claude','gemini','qwen','code'])".to_string(),
+                "Optional: Array of model names (e.g., ['claude','gemini','qwen','code'])"
+                    .to_string(),
             ),
         },
     );

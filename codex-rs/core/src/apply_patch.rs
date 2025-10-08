@@ -1,12 +1,12 @@
-use anyhow::Context as _;
-use anyhow::Result;
 use crate::acp::AcpFileSystem;
 use crate::codex::Session;
 use crate::patch_harness::run_patch_harness;
 use crate::protocol::FileChange;
 use crate::protocol::ReviewDecision;
-use crate::safety::assess_patch_safety;
 use crate::safety::SafetyCheck;
+use crate::safety::assess_patch_safety;
+use anyhow::Context as _;
+use anyhow::Result;
 use codex_apply_patch::AffectedPaths;
 use codex_apply_patch::ApplyPatchAction;
 use codex_apply_patch::ApplyPatchFileChange;
@@ -47,12 +47,9 @@ pub(crate) async fn apply_patch(
         let validation_cfg = sess.validation_config();
         let github_cfg = sess.get_github_config();
         if let (Ok(validation_cfg), Ok(github_cfg)) = (validation_cfg.read(), github_cfg.read()) {
-            if let Some((mut findings, mut ran_checks)) = run_patch_harness(
-                &action,
-                sess.get_cwd(),
-                &*validation_cfg,
-                &*github_cfg,
-            ) {
+            if let Some((mut findings, mut ran_checks)) =
+                run_patch_harness(&action, sess.get_cwd(), &*validation_cfg, &*github_cfg)
+            {
                 const MAX_ISSUES: usize = 12;
                 let total_issues = findings.len();
                 let truncated = total_issues > MAX_ISSUES;
@@ -170,10 +167,15 @@ pub(crate) async fn apply_patch(
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let result = if let Some(client_tools) = sess.client_tools() {
-        let fs = AcpFileSystem::new(sess.session_uuid(), client_tools, sess.mcp_connection_manager());
+        let fs = AcpFileSystem::new(
+            sess.session_uuid(),
+            client_tools,
+            sess.mcp_connection_manager(),
+        );
         apply_changes_from_apply_patch_and_report(&action, &mut stdout, &mut stderr, &fs).await
     } else {
-        apply_changes_from_apply_patch_and_report(&action, &mut stdout, &mut stderr, &StdFileSystem).await
+        apply_changes_from_apply_patch_and_report(&action, &mut stdout, &mut stderr, &StdFileSystem)
+            .await
     };
 
     let stdout = String::from_utf8_lossy(&stdout).to_string();
@@ -290,7 +292,10 @@ async fn apply_changes_from_apply_patch(
                     if let Some(parent) = move_path.parent() {
                         if !parent.as_os_str().is_empty() {
                             std::fs::create_dir_all(parent).with_context(|| {
-                                format!("Failed to create parent directories for {}", move_path.display())
+                                format!(
+                                    "Failed to create parent directories for {}",
+                                    move_path.display()
+                                )
                             })?;
                         }
                     }

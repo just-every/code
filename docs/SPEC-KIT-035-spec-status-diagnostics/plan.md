@@ -1,39 +1,39 @@
 # Plan: SPEC-KIT-035 spec-status diagnostics
 ## Inputs
-- Spec: docs/SPEC-KIT-035-spec-status-diagnostics/spec.md (pending; interim requirements from product owner brief dated 2025-10-07)
-- Constitution: memory/constitution.md (4e159c7eccd2cba0114315e385584abc0106834c)
+- Spec: docs/SPEC-KIT-035-spec-status-diagnostics/spec.md (2025-10-08 revision)
+- Constitution: memory/constitution.md (hash 4e159c7eccd2cba0114315e385584abc0106834c)
 
 ## Work Breakdown
-1. **Establish baseline context and artifacts.** Confirm SPEC packet scaffolding (PRD/spec/plan/tasks) and SPEC.md tracker row exist for SPEC-KIT-035; capture any gaps as blockers. Audit current `scripts/spec_ops_004/commands/spec_ops_status.sh` output and evidence directories to catalogue missing data points called out in the brief and, according to Byterover memory layer, prior telemetry coverage gaps (HAL summaries, policy layers, checksum manifests).
-2. **Design data ingestion & modeling layer.** Introduce a Rust module (e.g., `codex-rs/tui/src/spec_status.rs`) that discovers SPEC packets, loads guardrail telemetry (schema v1 + v2), consensus synthesis, agent artifacts, and evidence sizes. Model stage health, agent activity, policy/HAL/baseline verdicts, timestamps, and degradation states with graceful fallbacks for missing or malformed JSON.
-3. **Implement TUI-facing report generation.** Wire `/spec-status` to call the new aggregator and render a structured dashboard in the chat output. Prioritize an MVP markdown-style layout (header, SPEC packet health, SPEC.md tracker, stage table, blockers) that fits within existing TUI ergonomics, while documenting optional enhancements (collapsible sections, richer agent tables) for a follow-on iteration.
-4. **Refine guardrail scripts & telemetry hooks.** Extend shared helpers (`scripts/spec_ops_004/common.sh`) or stage scripts as needed to emit machine-readable timestamps, HAL/policy summaries, agent metadata, and evidence footprint hints so the dashboard does not rely on brittle text parsing. Keep `spec_ops_status.sh` as a CLI fallback but align its sections with the new data model.
-5. **Build validation & fixture suite.** Create unit tests for telemetry/consensus parsing, SPEC packet checks, and formatter helpers; add integration tests with fixture evidence trees that cover healthy, stale, failing, and conflict scenarios. Exercise `/spec-status SPEC-KIT-DEMO` manually during guardrail runs to ensure read safety while guardrails stream.
-6. **Document workflows and ship readiness.** Update `docs/slash-commands.md`, CLAUDE.md troubleshooting, and a new SPEC-KIT-035 page describing interpretation of the dashboard and remediation steps (stale telemetry, HAL failures, consensus conflicts, oversized evidence). Ensure SPEC.md tasks lint passes once tracker notes are updated and capture next-actions guidance in local-memory.
+1. **Baseline inventory.** Verify SPEC packet scaffolding (PRD/spec/plan/tasks) and SPEC.md tracker entries exist; record any gaps the dashboard should surface.
+2. **Rust telemetry reader.** Implement `codex-rs/tui/src/spec_status.rs` to gather packet health, guardrail baseline results (schema v1/v2), consensus verdicts/conflicts, agent participation, timestamps, and evidence directory sizes.
+3. **Quick-view scoring.** Translate telemetry into simple status cues (✅/⚠/⏳) plus configurable stale indicators (default 24 h) without referencing HAL or policy feeds.
+4. **Evidence footprint sentinel.** Compute combined evidence sizes (commands + consensus) inside Rust, raise warnings at ≥20 MB and critical alerts at ≥25 MB, and list the heaviest directories for clean-up.
+5. **TUI rendering.** Wire `/spec-status <SPEC-ID>` through slash command plumbing and chat rendering to display a concise markdown summary—packet health, SPEC.md tracker note, evidence warnings, per-stage table, agent mix, stale badges—entirely inside the TUI.
+6. **Fixtures & automated tests.** Create fixtures for healthy, stale, missing-consensus, missing-doc, and oversized-evidence scenarios; add unit tests for parsing/scoring/footprint thresholds and integration tests asserting rendered cues.
+7. **Documentation & evidence.** Update `docs/slash-commands.md` and `docs/spec-kit/spec-status-diagnostics.md` with interpretation guidance; capture example screenshots/logs for evidence once implementation lands.
 
 ## Acceptance Mapping
 | Requirement (Spec) | Validation Step | Test/Check Artifact |
 | --- | --- | --- |
-| R1: Stage/guardrail/consensus status visible for all six stages | Integration test invoking `/spec-status` against fixtures with pass/fail/conflict telemetry | `codex-rs/tui/tests/spec_status_integration.rs` (fixture bundle) |
-| R2: SPEC packet & SPEC.md tracker verification | Unit test for packet checker + manual invocation on SPEC-KIT-DEMO missing files | `spec_status::packet_checks` unit test & CLI screenshot |
-| R3: Execution timeline and evidence footprint reported | Fixture with synthetic timestamps and large artifacts to assert warning thresholds | `tests/fixtures/spec_status/stale_and_large` dataset + snapshot |
-| R4: Failure diagnostics and remediation hints surfaced | Inject malformed baseline/HAL telemetry and confirm blockers list actionable guidance | Integration scenario `spec_status_failures.json` |
-| R5: Agent tracking and policy/HAL summaries aggregated | Unit tests covering consensus synthesis parsing and policy/hal blocks; manual run with `SPEC_OPS_TELEMETRY_HAL=1` | `spec_status::consensus_from_json` tests + guardrail log capture |
+| R1: Packet & tracker health reported | `cargo test -p codex-tui spec_status::tests::packet_health` using missing-doc fixture | Unit test log |
+| R2: Stage cues show guardrail + consensus status | Integration test `spec_status_integration.rs` renders ✅/⚠ per stage | Integration test log + snapshot |
+| R3: Stale telemetry flagged | Fixture older than threshold triggers stale badge in integration test | Integration test log |
+| R4: Evidence footprint warnings raised at ≥20 MB/≥25 MB | Oversized fixture triggers warning banner listing top directories | Integration test log |
+| R5: Agent participation listed | Integration test validates agent mix taken from consensus artifacts | Integration test log |
+| R6: Docs refreshed | `scripts/doc-structure-validate.sh --mode=templates` after updating docs | Doc lint log |
 
 ## Risks & Unknowns
-- Spec packet for SPEC-KIT-035 not yet generated (`/specify` pending); treat creation of PRD/spec/tasks as gating prerequisite for implementation.
-- Telemetry schemas may drift; parsing must handle legacy schema v1, optional HAL summaries, and absent policy layers without crashing.
-- Evidence trees can be large; need efficient discovery (latest file per stage) to avoid TUI lag, especially while guardrails stream.
-- HAL access and policy commands remain conditional on secrets/tool availability; dashboard must clearly mark "skipped" vs "failed" to avoid confusion.
-- Scope creep toward fully interactive UI or live refresh could delay delivery; enforce MVP boundary and track enhancements separately.
+- Telemetry schema drift beyond v2 could break parsing; add version guards and fixtures for new fields.
+- Evidence directories may become large; optimise both latest-artifact lookup and footprint calculations to keep the TUI responsive.
+- Missing docs or tracker rows must produce actionable guidance instead of panics to avoid blocking operators.
+- Potential scope creep toward live-refresh dashboards should be tracked separately once the quick view ships.
 
 ## Consensus & Risks (Multi-AI)
-- Agreement: All agents converged on building a Rust aggregation layer, presenting a concise TUI dashboard with SPEC packet checks, stage health, agent metrics, and blockers, plus investing in thorough fixtures/tests and documentation to support debugging workflows.
-- Disagreement & resolution: Gemini and Code favored delivering a markdown-style report first, while Claude advocated for a richer interactive overlay. We will ship the textual dashboard MVP now and log interactive controls and live refresh as follow-up enhancements to keep timelines controllable.
+- Agreement: Agents aligned on a Rust-first, TUI-only snapshot that reuses existing telemetry, highlights stage freshness, and surfaces evidence footprint warnings without Bash dependencies.
+- Disagreement & resolution: Claude requested deeper evidence drilldowns; consensus kept a lightweight warning banner. Gemini proposed HAL summaries (omitted per clarified scope).
 
 ## Exit Criteria (Done)
-- `/spec-status SPEC-ID` renders the MVP dashboard with packet health, tracker row, stage table, agent summaries, timeline, and blockers populated from real telemetry.
-- Parsers tolerate schema v1/v2 artifacts, surfacing clear degraded states rather than panicking on gaps.
-- Unit, integration, and doc validators pass; manual runs on at least SPEC-KIT-DEMO and one active SPEC match expectations.
-- Guardrail telemetry updates (if any) merged with shellcheck coverage and evidence directory growth documented.
-- Slash-command docs, CLAUDE.md, and SPEC.md notes updated with new workflow guidance; local-memory captures decision history and remediation playbooks.
+- `/spec-status SPEC-ID` renders the quick-view dashboard with packet health, stage cues, evidence warnings, agent mix, and stale indicators.
+- Telemetry parsing handles schema v1/v2 gracefully; unit/integration suites (including footprint thresholds) pass with new fixtures.
+- Documentation updates land with supporting evidence artifacts and doc lint success.
+- SPEC.md tracker updated post-implementation with validation evidence.

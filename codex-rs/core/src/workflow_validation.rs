@@ -1,12 +1,16 @@
-use codex_apply_patch::{ApplyPatchAction, ApplyPatchFileChange};
 use crate::config_types::GithubConfig;
+use codex_apply_patch::{ApplyPatchAction, ApplyPatchFileChange};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 fn is_workflow_path(path: &Path, cwd: &Path) -> bool {
-    let absolute = if path.is_absolute() { path.to_path_buf() } else { cwd.join(path) };
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
     let mut saw_dot_github = false;
     let mut saw_workflows = false;
     for component in absolute.components() {
@@ -30,7 +34,11 @@ fn is_workflow_path(path: &Path, cwd: &Path) -> bool {
 }
 
 fn is_in_github_dir(path: &Path, cwd: &Path) -> bool {
-    let absolute = if path.is_absolute() { path.to_path_buf() } else { cwd.join(path) };
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
     if let Ok(relative) = absolute.strip_prefix(cwd) {
         return relative.starts_with(".github");
     }
@@ -89,7 +97,11 @@ pub fn maybe_run_actionlint(
                     let _ = stage_file_with_contents(temp_root, cwd, path, content);
                 }
             }
-            ApplyPatchFileChange::Update { new_content, move_path, .. } => {
+            ApplyPatchFileChange::Update {
+                new_content,
+                move_path,
+                ..
+            } => {
                 let dest_path = move_path.as_ref().unwrap_or(path);
                 let dest_in_github = is_in_github_dir(dest_path, cwd);
                 if !dest_in_github && !path_in_github {
@@ -125,16 +137,20 @@ pub fn maybe_run_actionlint(
 
     let mut lines: Vec<String> = Vec::new();
     if !output.stdout.is_empty() {
-        lines.extend(String::from_utf8_lossy(&output.stdout).lines().map(|s| s.to_string()));
+        lines.extend(
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(|s| s.to_string()),
+        );
     }
     if !output.stderr.is_empty() {
-        lines.extend(String::from_utf8_lossy(&output.stderr).lines().map(|s| s.to_string()));
+        lines.extend(
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .map(|s| s.to_string()),
+        );
     }
-    if lines.is_empty() {
-        None
-    } else {
-        Some(lines)
-    }
+    if lines.is_empty() { None } else { Some(lines) }
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {

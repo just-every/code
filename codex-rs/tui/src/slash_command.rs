@@ -310,10 +310,7 @@ impl SlashCommand {
                 display: "evidence-stats",
                 script: "evidence_stats.sh",
             }),
-            SlashCommand::SpecStatus => Some(SpecOpsCommand {
-                display: "status",
-                script: "spec_ops_status.sh",
-            }),
+            SlashCommand::SpecStatus => None,
             _ => None,
         }
     }

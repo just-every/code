@@ -1,0 +1,43 @@
+{
+  "stage": "spec-tasks",
+  "prompt_version": "20251002-tasks-a",
+  "agent": "gpt_pro",
+  "model": "gpt-5",
+  "model_release": "2025-09-29",
+  "reasoning_mode": "high",
+  "validated_tasks": [
+    "Docs present: docs/SPEC-KIT-025-add-automated-conflict-resolution-with/spec.md, plan.md, tasks.md (OK)",
+    "Evidence present: docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-025-add-automated-conflict-resolution-with/spec-tasks_2025-10-06T00:27:16Z_{gemini,claude}.json (both exist but report agent execution failed)",
+    "Baseline audit artifact present: docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-025-add-automated-conflict-resolution-with/baseline_2025-10-06T00:13:38Z-208265660.md (OK)",
+    "SPEC.md tracker contains T36 referencing this SPEC (OK) — file: SPEC.md",
+    "SPEC.md Tasks table schema check (FAIL): scripts/spec-kit/lint_tasks.py SPEC.md → 'Tasks table header not found'; current table lacks required columns (Owners, PRD, Branch, PR, Last Validation, Evidence)",
+    "Branch guardrail (PARTIAL): on feature branch 'feat/spec-auto-telemetry' (OK), but working tree not clean (untracked: SPEC_AUTO_ORCHESTRATOR_DESIGN.md and evidence dirs under docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/ and .../evidence/consensus/)",
+    "Hooks guardrail (FAIL): core.hooksPath unset; .githooks/ missing; pre-commit/pre-push not installed; required checks (cargo fmt/clippy/test no-run, scripts/doc-structure-validate.sh, scripts/spec-kit/lint_tasks.py) not enforced",
+    "Tasks content validation (OK): docs/SPEC-KIT-025-add-automated-conflict-resolution-with/tasks.md includes ordered steps, validation commands, and Byterover note; status values currently 'Backlog' and should move to 'In Progress' once SPEC.md table is aligned",
+    "SPEC.md update steps: add/align T36 row to Spec Kit schema (Owners, PRD=docs/SPEC-KIT-025-add-automated-conflict-resolution-with/PRD.md, Branch=feat/spec-auto-telemetry, PR blank, Last Validation=YYYY-MM-DD, Evidence=docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-025-add-automated-conflict-resolution-with/spec-tasks_*.json, Notes brief); set Status to 'In Progress'"
+  ],
+  "command_plan": [
+    "git status --porcelain=v1 -b",
+    "python3 scripts/spec-kit/lint_tasks.py SPEC.md",
+    "bash scripts/spec_ops_004/baseline_audit.sh --spec SPEC-KIT-025-add-automated-conflict-resolution-with --out docs/SPEC-OPS-004-integrated-coder-hooks/baseline.md",
+    "bash scripts/spec_ops_004/consensus_runner.sh --stage spec-tasks --spec SPEC-KIT-025-add-automated-conflict-resolution-with --execute --allow-conflict",
+    "MANUAL: Align SPEC.md Tasks table to expected schema (add columns: Owners, PRD, Branch, PR, Last Validation, Evidence) and update T36 → Status 'In Progress', PRD path docs/SPEC-KIT-025-add-automated-conflict-resolution-with/PRD.md, Branch 'feat/spec-auto-telemetry', Last Validation YYYY-MM-DD, Evidence path under docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-025-add-automated-conflict-resolution-with/, Notes short summary",
+    "git add SPEC.md docs/SPEC-KIT-025-add-automated-conflict-resolution-with/tasks.md docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-025-add-automated-conflict-resolution-with/",
+    "git commit -m \"docs(spec-tasks): validate SPEC-KIT-025 tasks; tracker update; baseline evidence\"",
+    "MANUAL: Install local hooks guardrail — set core.hooksPath to .githooks and add pre-commit (cargo fmt, cargo clippy -- -D warnings, cargo test --workspace --no-run, scripts/doc-structure-validate.sh --mode=templates, python3 scripts/spec-kit/lint_tasks.py) and pre-push (cargo fmt --check, cargo clippy -- -D warnings, cargo build -p kavedarr-core -p kavedarr-infrastructure -p kavedarr-downloaders -p kavedarr-api --all-features). If scripts/setup-hooks.sh is missing, configure via 'git config core.hooksPath .githooks' and create .githooks/* executables."
+  ],
+  "consensus": {
+    "agreements": [
+      "SPEC docs directory and files exist for SPEC-KIT-025",
+      "Evidence directories populated for spec-tasks stage",
+      "On a feature branch (feat/spec-auto-telemetry), satisfying branch naming guardrail"
+    ],
+    "conflicts": [
+      "Gemini spec-tasks execution failed (agent output marked error)",
+      "Claude spec-tasks execution failed (agent output marked error)",
+      "Working tree not clean (untracked files/dirs present)",
+      "Git hooks not installed (core.hooksPath unset; .githooks missing)",
+      "SPEC.md Tasks table fails linter schema (missing required columns)"
+    ]
+  }
+}

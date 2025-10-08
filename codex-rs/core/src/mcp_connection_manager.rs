@@ -138,7 +138,9 @@ impl McpConnectionManager {
             per_server_timeout.insert(server_name.clone(), timeout);
 
             join_set.spawn(async move {
-                let McpServerConfig { command, args, env, .. } = cfg;
+                let McpServerConfig {
+                    command, args, env, ..
+                } = cfg;
                 let client_res = McpClient::new_stdio_client(
                     command.into(),
                     args.into_iter().map(OsString::from).collect(),
@@ -202,7 +204,8 @@ impl McpConnectionManager {
         // Query tools from each server. Do not fail the entire manager if a
         // server fails to list tools within its startup timeout; instead,
         // record the error and continue.
-        let (all_tools, list_errors) = list_all_tools(&clients, &per_server_timeout, &excluded_tools).await;
+        let (all_tools, list_errors) =
+            list_all_tools(&clients, &per_server_timeout, &excluded_tools).await;
 
         // Remove clients that failed to list tools so they are not used later.
         for (server_name, err) in list_errors {
@@ -271,9 +274,7 @@ async fn list_all_tools(
             .copied()
             .unwrap_or(DEFAULT_STARTUP_TIMEOUT);
         join_set.spawn(async move {
-            let res = client_clone
-                .list_tools(None, Some(timeout))
-                .await;
+            let res = client_clone.list_tools(None, Some(timeout)).await;
             (server_name_cloned, res)
         });
     }

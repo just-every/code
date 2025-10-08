@@ -86,7 +86,10 @@ impl ProjectCommand {
     }
 }
 
-pub fn load_project_commands(configs: &[ProjectCommandConfig], project_root: &Path) -> Vec<ProjectCommand> {
+pub fn load_project_commands(
+    configs: &[ProjectCommandConfig],
+    project_root: &Path,
+) -> Vec<ProjectCommand> {
     let mut commands: Vec<ProjectCommand> = Vec::new();
     for cfg in configs {
         let name = cfg.name.trim();

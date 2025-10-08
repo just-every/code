@@ -1,10 +1,10 @@
 #![allow(clippy::unwrap_used)]
 
-use codex_core::environment_context::TOOL_CANDIDATES;
 use codex_core::CodexAuth;
 use codex_core::ConversationManager;
 use codex_core::ModelProviderInfo;
 use codex_core::built_in_model_providers;
+use codex_core::environment_context::TOOL_CANDIDATES;
 use codex_core::model_family::find_family_for_model;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::EventMsg;
@@ -21,12 +21,12 @@ use core_test_support::wait_for_event;
 use os_info::Type as OsType;
 use os_info::Version;
 use tempfile::TempDir;
+use which::which;
 use wiremock::Mock;
 use wiremock::MockServer;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
-use which::which;
 
 fn text_user_input(text: String) -> serde_json::Value {
     serde_json::json!({
@@ -49,13 +49,17 @@ fn render_env_context(
         lines.push(format!("  <cwd>{cwd}</cwd>"));
     }
     if let Some(approval_policy) = approval_policy {
-        lines.push(format!("  <approval_policy>{approval_policy}</approval_policy>"));
+        lines.push(format!(
+            "  <approval_policy>{approval_policy}</approval_policy>"
+        ));
     }
     if let Some(sandbox_mode) = sandbox_mode {
         lines.push(format!("  <sandbox_mode>{sandbox_mode}</sandbox_mode>"));
     }
     if let Some(network_access) = network_access {
-        lines.push(format!("  <network_access>{network_access}</network_access>"));
+        lines.push(format!(
+            "  <network_access>{network_access}</network_access>"
+        ));
     }
     if !writable_roots.is_empty() {
         lines.push("  <writable_roots>".to_string());
@@ -129,10 +133,7 @@ fn common_tools_block() -> Option<String> {
         } else {
             candidate.detection_names
         };
-        if detection_names
-            .iter()
-            .any(|name| which(name).is_ok())
-        {
+        if detection_names.iter().any(|name| which(name).is_ok()) {
             available.push(candidate.label);
         }
     }

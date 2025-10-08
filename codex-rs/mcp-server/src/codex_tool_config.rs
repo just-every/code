@@ -11,9 +11,9 @@ use schemars::JsonSchema;
 use schemars::r#gen::SchemaSettings;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use serde_json::json;
 
 use crate::json_to_toml::json_to_toml;
 
@@ -342,7 +342,8 @@ pub(crate) fn create_tool_for_spec_consensus_check() -> Tool {
         input_schema,
         output_schema: Some(output_schema),
         description: Some(
-            "Compare multi-agent outputs for a Spec Kit stage and report consensus/conflicts.".to_string(),
+            "Compare multi-agent outputs for a Spec Kit stage and report consensus/conflicts."
+                .to_string(),
         ),
         annotations: None,
     }

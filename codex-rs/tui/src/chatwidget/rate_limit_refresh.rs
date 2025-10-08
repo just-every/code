@@ -1,11 +1,11 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use codex_core::{AuthManager, ModelClient, Prompt, ResponseEvent};
 use codex_core::config::Config;
 use codex_core::config_types::ReasoningEffort;
 use codex_core::debug_logger::DebugLogger;
 use codex_core::protocol::{Event, EventMsg, RateLimitSnapshotEvent, TokenCountEvent};
+use codex_core::{AuthManager, ModelClient, Prompt, ResponseEvent};
 use codex_protocol::models::{ContentItem, ResponseItem};
 use futures::StreamExt;
 use tokio::runtime::Runtime;
@@ -30,11 +30,7 @@ pub(super) fn start_rate_limit_refresh(
     });
 }
 
-fn run_refresh(
-    app_event_tx: AppEventSender,
-    config: Config,
-    debug_enabled: bool,
-) -> Result<()> {
+fn run_refresh(app_event_tx: AppEventSender, config: Config, debug_enabled: bool) -> Result<()> {
     let runtime = build_runtime()?;
     runtime.block_on(async move {
         let auth_mode = if config.using_chatgpt_auth {
@@ -98,12 +94,10 @@ fn run_refresh(
 }
 
 fn build_runtime() -> Result<Runtime> {
-    Ok(
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .context("building rate limit refresh runtime")?,
-    )
+    Ok(tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("building rate limit refresh runtime")?)
 }
 
 fn build_model_client(

@@ -17,6 +17,7 @@ use crate::protocol::TaskCompleteEvent;
 use crate::truncate::truncate_middle;
 use crate::util::backoff;
 use askama::Template;
+use base64::Engine;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
@@ -24,7 +25,6 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::InputMessageKind;
 use codex_protocol::protocol::RolloutItem;
-use base64::Engine;
 use futures::prelude::*;
 
 pub const SUMMARIZATION_PROMPT: &str = include_str!("../../templates/compact/prompt.md");
@@ -63,7 +63,9 @@ pub(super) async fn run_inline_auto_compact_task(
     turn_context: Arc<TurnContext>,
 ) -> Vec<ResponseItem> {
     let sub_id = sess.next_internal_sub_id();
-    let input = vec![InputItem::Text { text: SUMMARIZATION_PROMPT.to_string() }];
+    let input = vec![InputItem::Text {
+        text: SUMMARIZATION_PROMPT.to_string(),
+    }];
     run_compact_task_inner_inline(
         sess,
         turn_context,
@@ -150,14 +152,13 @@ pub(super) async fn perform_compaction(
                 if retries < max_retries {
                     retries += 1;
                     let delay = backoff(retries);
-                    sess
-                        .notify_stream_error(
-                            &sub_id,
-                            format!(
-                                "stream error: {e}; retrying {retries}/{max_retries} in {delay:?}…"
-                            ),
-                        )
-                        .await;
+                    sess.notify_stream_error(
+                        &sub_id,
+                        format!(
+                            "stream error: {e}; retrying {retries}/{max_retries} in {delay:?}…"
+                        ),
+                    )
+                    .await;
                     tokio::time::sleep(delay).await;
                     continue;
                 } else {
@@ -260,14 +261,13 @@ async fn run_compact_task_inner_inline(
                 if retries < max_retries {
                     retries += 1;
                     let delay = backoff(retries);
-                    sess
-                        .notify_stream_error(
-                            &sub_id,
-                            format!(
-                                "stream error: {e}; retrying {retries}/{max_retries} in {delay:?}…"
-                            ),
-                        )
-                        .await;
+                    sess.notify_stream_error(
+                        &sub_id,
+                        format!(
+                            "stream error: {e}; retrying {retries}/{max_retries} in {delay:?}…"
+                        ),
+                    )
+                    .await;
                     tokio::time::sleep(delay).await;
                     continue;
                 } else {
@@ -359,9 +359,7 @@ fn sanitize_items_for_compact(items: Vec<ResponseItem>) -> Vec<ResponseItem> {
                             {
                                 let bytes = image_url.len();
                                 filtered_content.push(ContentItem::InputText {
-                                    text: format!(
-                                        "(image omitted for compaction; {bytes} bytes)",
-                                    ),
+                                    text: format!("(image omitted for compaction; {bytes} bytes)",),
                                 });
                             } else {
                                 filtered_content.push(ContentItem::InputImage { image_url });

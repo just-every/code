@@ -161,4 +161,3 @@ async fn get_config_toml_empty() {
 
     assert_eq!(config, expected);
 }
-

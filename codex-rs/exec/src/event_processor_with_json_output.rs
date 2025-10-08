@@ -19,7 +19,10 @@ pub(crate) struct EventProcessorWithJsonOutput {
 
 impl EventProcessorWithJsonOutput {
     pub fn new(last_message_path: Option<PathBuf>) -> Self {
-        Self { last_message_path, had_error: false }
+        Self {
+            last_message_path,
+            had_error: false,
+        }
     }
 }
 
@@ -42,7 +45,10 @@ impl EventProcessor for EventProcessorWithJsonOutput {
 
     fn process_event(&mut self, event: Event) -> CodexStatus {
         match event.msg {
-            EventMsg::Error(_) => { self.had_error = true; CodexStatus::Running }
+            EventMsg::Error(_) => {
+                self.had_error = true;
+                CodexStatus::Running
+            }
             EventMsg::AgentMessageDelta(_) | EventMsg::AgentReasoningDelta(_) => {
                 // Suppress streaming events in JSON mode.
                 CodexStatus::Running

@@ -7,6 +7,10 @@ version = { workspace = true }
 name = "code-tui"
 path = "src/main.rs"
 
+[[bin]]
+name = "spec-status-dump"
+path = "src/bin/spec-status-dump.rs"
+
 [lib]
 name = "codex_tui"
 path = "src/lib.rs"
@@ -67,6 +71,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 shlex = "1.3.0"
 sha2 = "0.10"
 tempfile = "3"
+walkdir = "2"
 arboard = "3"
 strum = "0.27.2"
 strum_macros = "0.27.2"

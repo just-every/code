@@ -1,4 +1,4 @@
-use codex_core::protocol::{event_msg_to_protocol, AgentMessageEvent, EventMsg, RecordedEvent};
+use codex_core::protocol::{AgentMessageEvent, EventMsg, RecordedEvent, event_msg_to_protocol};
 use codex_core::rollout::RolloutRecorder;
 use codex_core::rollout::recorder::RolloutRecorderParams;
 use codex_protocol::mcp_protocol::ConversationId;

@@ -37,11 +37,7 @@ impl<'a> AcpFileSystem<'a> {
         }
     }
 
-    async fn read_text_file_impl(
-        &self,
-        tool: &McpToolId,
-        path: &Path,
-    ) -> Result<String> {
+    async fn read_text_file_impl(&self, tool: &McpToolId, path: &Path) -> Result<String> {
         let arguments = acp::ReadTextFileRequest {
             session_id: acp::SessionId(self.session_id.to_string().into()),
             path: path.to_path_buf(),
@@ -274,7 +270,9 @@ pub fn new_patch_tool_call(
 
     for (path, change) in changes.iter() {
         match change {
-            FileChange::Add { content: new_content } => {
+            FileChange::Add {
+                content: new_content,
+            } => {
                 content.push(acp::ToolCallContent::Diff {
                     diff: acp::Diff {
                         path: path.clone(),

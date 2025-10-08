@@ -113,13 +113,18 @@ pub async fn upsert_subagent_command(codex_home: &Path, cmd: &SubagentCommandCon
     // Ensure [subagents] exists
     if !doc.as_table().contains_key("subagents") {
         doc["subagents"] = toml_edit::table();
-        if let Some(t) = doc["subagents"].as_table_mut() { t.set_implicit(false); }
+        if let Some(t) = doc["subagents"].as_table_mut() {
+            t.set_implicit(false);
+        }
     }
 
     // Search for existing by name (case-insensitive) and rebuild commands array
     let mut updated = false;
     let mut new_commands = toml_edit::ArrayOfTables::new();
-    if let Some(arr) = doc["subagents"].get("commands").and_then(|i| i.as_array_of_tables()) {
+    if let Some(arr) = doc["subagents"]
+        .get("commands")
+        .and_then(|i| i.as_array_of_tables())
+    {
         for tbl_ref in arr.iter() {
             let mut tbl = tbl_ref.clone();
             let same = tbl
@@ -133,8 +138,16 @@ pub async fn upsert_subagent_command(codex_home: &Path, cmd: &SubagentCommandCon
                 tbl["read-only"] = toml_edit::value(cmd.read_only);
                 let agents = toml_edit::Array::from_iter(cmd.agents.iter().cloned());
                 tbl["agents"] = toml_edit::Item::Value(toml_edit::Value::Array(agents));
-                if let Some(s) = &cmd.orchestrator_instructions { tbl["orchestrator-instructions"] = toml_edit::value(s.clone()); } else { tbl.remove("orchestrator-instructions"); }
-                if let Some(s) = &cmd.agent_instructions { tbl["agent-instructions"] = toml_edit::value(s.clone()); } else { tbl.remove("agent-instructions"); }
+                if let Some(s) = &cmd.orchestrator_instructions {
+                    tbl["orchestrator-instructions"] = toml_edit::value(s.clone());
+                } else {
+                    tbl.remove("orchestrator-instructions");
+                }
+                if let Some(s) = &cmd.agent_instructions {
+                    tbl["agent-instructions"] = toml_edit::value(s.clone());
+                } else {
+                    tbl.remove("agent-instructions");
+                }
                 updated = true;
             }
             new_commands.push(tbl);
@@ -175,7 +188,10 @@ pub async fn delete_subagent_command(codex_home: &Path, name: &str) -> Result<bo
         Err(e) => return Err(e.into()),
     };
 
-    let Some(arr) = doc["subagents"].get_mut("commands").and_then(|i| i.as_array_of_tables_mut()) else {
+    let Some(arr) = doc["subagents"]
+        .get_mut("commands")
+        .and_then(|i| i.as_array_of_tables_mut())
+    else {
         return Ok(false);
     };
 
@@ -223,7 +239,21 @@ pub async fn upsert_agent_config(
     // Search existing [[agents]] for a case‑insensitive name match
     let mut found = false;
     if let Some(item) = doc.as_table().get("agents").cloned() {
-        let Some(arr) = item.as_array_of_tables() else { /* not an array, treat as missing */ return write_new_or_append(doc, codex_home, config_path, name, enabled, args, args_read_only, args_write, instructions).await };
+        let Some(arr) = item.as_array_of_tables() else {
+            /* not an array, treat as missing */
+            return write_new_or_append(
+                doc,
+                codex_home,
+                config_path,
+                name,
+                enabled,
+                args,
+                args_read_only,
+                args_write,
+                instructions,
+            )
+            .await;
+        };
         let mut new_arr = toml_edit::ArrayOfTables::new();
         for tbl_ref in arr.iter() {
             let mut tbl = tbl_ref.clone();
@@ -233,17 +263,26 @@ pub async fn upsert_agent_config(
                 .map(|s| s.eq_ignore_ascii_case(name))
                 .unwrap_or(false);
             if same {
-                if let Some(val) = enabled { tbl["enabled"] = toml_edit::value(val); }
-                if let Some(a) = args { tbl["args"] = toml_edit::value(toml_edit::Array::from_iter(a.iter().cloned())); }
+                if let Some(val) = enabled {
+                    tbl["enabled"] = toml_edit::value(val);
+                }
+                if let Some(a) = args {
+                    tbl["args"] = toml_edit::value(toml_edit::Array::from_iter(a.iter().cloned()));
+                }
                 if let Some(ro) = args_read_only {
-                    tbl["args-read-only"] = toml_edit::value(toml_edit::Array::from_iter(ro.iter().cloned()));
+                    tbl["args-read-only"] =
+                        toml_edit::value(toml_edit::Array::from_iter(ro.iter().cloned()));
                 }
                 if let Some(w) = args_write {
-                    tbl["args-write"] = toml_edit::value(toml_edit::Array::from_iter(w.iter().cloned()));
+                    tbl["args-write"] =
+                        toml_edit::value(toml_edit::Array::from_iter(w.iter().cloned()));
                 }
                 if let Some(instr) = instructions {
-                    if instr.trim().is_empty() { tbl.remove("instructions"); }
-                    else { tbl["instructions"] = toml_edit::value(instr.to_string()); }
+                    if instr.trim().is_empty() {
+                        tbl.remove("instructions");
+                    } else {
+                        tbl["instructions"] = toml_edit::value(instr.to_string());
+                    }
                 }
                 found = true;
             }
@@ -254,7 +293,15 @@ pub async fn upsert_agent_config(
 
     if !found {
         // Append a new entry safely
-        append_agent_entry(&mut doc, name, enabled, args, args_read_only, args_write, instructions);
+        append_agent_entry(
+            &mut doc,
+            name,
+            enabled,
+            args,
+            args_read_only,
+            args_write,
+            instructions,
+        );
     }
 
     // Write back atomically
@@ -277,11 +324,23 @@ fn append_agent_entry(
     let mut t = toml_edit::Table::new();
     t.set_implicit(true);
     t["name"] = toml_edit::value(name.to_string());
-    if let Some(val) = enabled { t["enabled"] = toml_edit::value(val); }
-    if let Some(a) = args { t["args"] = toml_edit::value(toml_edit::Array::from_iter(a.iter().cloned())); }
-    if let Some(ro) = args_read_only { t["args-read-only"] = toml_edit::value(toml_edit::Array::from_iter(ro.iter().cloned())); }
-    if let Some(w) = args_write { t["args-write"] = toml_edit::value(toml_edit::Array::from_iter(w.iter().cloned())); }
-    if let Some(instr) = instructions { if !instr.trim().is_empty() { t["instructions"] = toml_edit::value(instr.to_string()); } }
+    if let Some(val) = enabled {
+        t["enabled"] = toml_edit::value(val);
+    }
+    if let Some(a) = args {
+        t["args"] = toml_edit::value(toml_edit::Array::from_iter(a.iter().cloned()));
+    }
+    if let Some(ro) = args_read_only {
+        t["args-read-only"] = toml_edit::value(toml_edit::Array::from_iter(ro.iter().cloned()));
+    }
+    if let Some(w) = args_write {
+        t["args-write"] = toml_edit::value(toml_edit::Array::from_iter(w.iter().cloned()));
+    }
+    if let Some(instr) = instructions {
+        if !instr.trim().is_empty() {
+            t["instructions"] = toml_edit::value(instr.to_string());
+        }
+    }
 
     let mut arr = doc
         .as_table()
@@ -303,13 +362,20 @@ async fn write_new_or_append(
     args_write: Option<&[String]>,
     instructions: Option<&str>,
 ) -> Result<()> {
-    append_agent_entry(&mut doc, name, enabled, args, args_read_only, args_write, instructions);
+    append_agent_entry(
+        &mut doc,
+        name,
+        enabled,
+        args,
+        args_read_only,
+        args_write,
+        instructions,
+    );
     let tmp_file = NamedTempFile::new_in(codex_home)?;
     tokio::fs::write(tmp_file.path(), doc.to_string()).await?;
     tmp_file.persist(config_path)?;
     Ok(())
 }
-
 
 // Internal helper to support persist_* variants above.
 async fn persist_overrides_with_behavior(
@@ -337,7 +403,10 @@ async fn persist_overrides_with_behavior(
     let mut doc = match read_result {
         Ok(contents) => contents.parse::<DocumentMut>()?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            if overrides.iter().all(|(_, value)| value.is_none() && matches!(none_behavior, NoneBehavior::Remove)) {
+            if overrides
+                .iter()
+                .all(|(_, value)| value.is_none() && matches!(none_behavior, NoneBehavior::Remove))
+            {
                 return Ok(());
             }
             tokio::fs::create_dir_all(codex_home).await?;
@@ -346,7 +415,13 @@ async fn persist_overrides_with_behavior(
         Err(e) => return Err(e.into()),
     };
 
-    let effective_profile = if let Some(p) = profile { Some(p.to_owned()) } else { doc.get("profile").and_then(|i| i.as_str()).map(|s| s.to_string()) };
+    let effective_profile = if let Some(p) = profile {
+        Some(p.to_owned())
+    } else {
+        doc.get("profile")
+            .and_then(|i| i.as_str())
+            .map(|s| s.to_string())
+    };
 
     let mut mutated = false;
     for (segments, value) in overrides.iter().copied() {
@@ -376,13 +451,17 @@ async fn persist_overrides_with_behavior(
                 mutated = true;
             }
             None => {
-                if matches!(none_behavior, NoneBehavior::Remove) && remove_toml_edit_segments(&mut doc, segments_to_apply) {
+                if matches!(none_behavior, NoneBehavior::Remove)
+                    && remove_toml_edit_segments(&mut doc, segments_to_apply)
+                {
                     mutated = true;
                 }
             }
         }
     }
-    if !mutated { return Ok(()); }
+    if !mutated {
+        return Ok(());
+    }
     let tmp_file = NamedTempFile::new_in(codex_home)?;
     tokio::fs::write(tmp_file.path(), doc.to_string()).await?;
     tmp_file.persist(config_path)?;
@@ -391,11 +470,22 @@ async fn persist_overrides_with_behavior(
 
 fn remove_toml_edit_segments(doc: &mut DocumentMut, segments: &[&str]) -> bool {
     use toml_edit::Item;
-    if segments.is_empty() { return false; }
+    if segments.is_empty() {
+        return false;
+    }
     let mut current = doc.as_table_mut();
     for seg in &segments[..segments.len() - 1] {
-        let Some(item) = current.get_mut(seg) else { return false }; 
-        match item { Item::Table(table) => { current = table; } _ => { return false; } }
+        let Some(item) = current.get_mut(seg) else {
+            return false;
+        };
+        match item {
+            Item::Table(table) => {
+                current = table;
+            }
+            _ => {
+                return false;
+            }
+        }
     }
     current.remove(segments[segments.len() - 1]).is_some()
 }

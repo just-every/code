@@ -47,7 +47,10 @@ pub(crate) async fn handle_mcp_tool_call(
         arguments: arguments_value.clone(),
     };
 
-    let tool_call_begin_event = EventMsg::McpToolCallBegin(McpToolCallBeginEvent { call_id: ctx.call_id.clone(), invocation: invocation.clone() });
+    let tool_call_begin_event = EventMsg::McpToolCallBegin(McpToolCallBeginEvent {
+        call_id: ctx.call_id.clone(),
+        invocation: invocation.clone(),
+    });
     notify_mcp_tool_call_event(sess, ctx, tool_call_begin_event).await;
 
     let start = Instant::now();
@@ -56,11 +59,19 @@ pub(crate) async fn handle_mcp_tool_call(
         .call_tool(&server, &tool_name, arguments_value.clone(), timeout)
         .await
         .map_err(|e| format!("tool call error: {e}"));
-    let tool_call_end_event = EventMsg::McpToolCallEnd(McpToolCallEndEvent { call_id: ctx.call_id.clone(), invocation, duration: start.elapsed(), result: result.clone() });
+    let tool_call_end_event = EventMsg::McpToolCallEnd(McpToolCallEndEvent {
+        call_id: ctx.call_id.clone(),
+        invocation,
+        duration: start.elapsed(),
+        result: result.clone(),
+    });
 
     notify_mcp_tool_call_event(sess, ctx, tool_call_end_event.clone()).await;
 
-    ResponseInputItem::McpToolCallOutput { call_id: ctx.call_id.clone(), result }
+    ResponseInputItem::McpToolCallOutput {
+        call_id: ctx.call_id.clone(),
+        result,
+    }
 }
 
 async fn notify_mcp_tool_call_event(sess: &Session, ctx: &ToolCallCtx, event: EventMsg) {

@@ -7,8 +7,8 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use codex_protocol::mcp_protocol::ConversationId;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use serde::{Serialize, Deserialize};
 use time::OffsetDateTime;
 use time::format_description::FormatItem;
 use time::macros::format_description;
@@ -27,13 +27,13 @@ use super::policy::{should_persist_response_item, should_persist_rollout_item};
 use crate::config::Config;
 use crate::default_client::DEFAULT_ORIGINATOR;
 use crate::git_info::collect_git_info;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::ResumedHistory;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
-use codex_protocol::models::ResponseItem;
 
 #[derive(Serialize, Deserialize, Default, Clone)]
 pub struct SessionStateSnapshot {}
@@ -226,7 +226,13 @@ impl RolloutRecorder {
 
     /// Compatibility wrapper for older resume API used by codex.rs
     pub async fn resume(config: &Config, path: &Path) -> std::io::Result<(Self, SavedSession)> {
-        let recorder = Self::new(config, RolloutRecorderParams::Resume { path: path.to_path_buf() }).await?;
+        let recorder = Self::new(
+            config,
+            RolloutRecorderParams::Resume {
+                path: path.to_path_buf(),
+            },
+        )
+        .await?;
         let history = Self::get_rollout_history(path).await?;
         let (session_id, items, events) = match history {
             InitialHistory::Resumed(resumed) => {
@@ -234,11 +240,17 @@ impl RolloutRecorder {
                     .history
                     .iter()
                     .filter_map(|entry| match entry {
-                        RolloutItem::Event(ev) => crate::protocol::recorded_event_from_protocol(ev.clone()),
+                        RolloutItem::Event(ev) => {
+                            crate::protocol::recorded_event_from_protocol(ev.clone())
+                        }
                         _ => None,
                     })
                     .collect();
-                (uuid::Uuid::from(resumed.conversation_id), resumed.history, events)
+                (
+                    uuid::Uuid::from(resumed.conversation_id),
+                    resumed.history,
+                    events,
+                )
             }
             _ => (uuid::Uuid::new_v4(), Vec::new(), Vec::new()),
         };

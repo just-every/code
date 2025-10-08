@@ -31,7 +31,6 @@ use crate::client_common::ResponseStream;
 use crate::client_common::ResponsesApiRequest;
 use crate::client_common::create_reasoning_param_for_request;
 use crate::config::Config;
-use crate::openai_model_info::get_model_info;
 use crate::config_types::ReasoningEffort as ReasoningEffortConfig;
 use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use crate::config_types::TextVerbosity as TextVerbosityConfig;
@@ -44,6 +43,7 @@ use crate::flags::CODEX_RS_SSE_FIXTURE;
 use crate::model_family::ModelFamily;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
+use crate::openai_model_info::get_model_info;
 use crate::openai_tools::create_tools_json_for_responses_api;
 use crate::protocol::RateLimitSnapshotEvent;
 use crate::protocol::TokenUsage;
@@ -243,12 +243,15 @@ impl ModelClient {
         // - Only include `text.verbosity` for GPT-5 family models; warn and ignore otherwise.
         // - When a structured `format` is present, omit `verbosity` in serialization.
         let want_format = prompt.text_format.clone().or_else(|| {
-            prompt.output_schema.as_ref().map(|schema| crate::client_common::TextFormat {
-                r#type: "json_schema".to_string(),
-                name: Some("codex_output_schema".to_string()),
-                strict: Some(true),
-                schema: Some(schema.clone()),
-            })
+            prompt
+                .output_schema
+                .as_ref()
+                .map(|schema| crate::client_common::TextFormat {
+                    r#type: "json_schema".to_string(),
+                    name: Some("codex_output_schema".to_string()),
+                    strict: Some(true),
+                    schema: Some(schema.clone()),
+                })
         });
 
         let verbosity = match &self.config.model_family.family {
@@ -309,10 +312,7 @@ impl ModelClient {
         if let Some(openrouter_cfg) = self.provider.openrouter_config() {
             if let Some(obj) = payload_json.as_object_mut() {
                 if let Some(provider) = &openrouter_cfg.provider {
-                    obj.insert(
-                        "provider".to_string(),
-                        serde_json::to_value(provider)?
-                    );
+                    obj.insert("provider".to_string(), serde_json::to_value(provider)?);
                 }
                 if let Some(route) = &openrouter_cfg.route {
                     obj.insert("route".to_string(), route.clone());

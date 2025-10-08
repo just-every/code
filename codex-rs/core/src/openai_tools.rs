@@ -1671,7 +1671,10 @@ fn create_browser_console_tool() -> OpenAiTool {
     properties.insert(
         "lines".to_string(),
         JsonSchema::Number {
-            description: Some("Optional: Number of recent console lines to return (default: all available)".to_string()),
+            description: Some(
+                "Optional: Number of recent console lines to return (default: all available)"
+                    .to_string(),
+            ),
         },
     );
 
@@ -1705,7 +1708,9 @@ fn create_browser_cdp_tool() -> OpenAiTool {
     properties.insert(
         "method".to_string(),
         JsonSchema::String {
-            description: Some("CDP method name, e.g. 'Page.navigate' or 'Input.dispatchKeyEvent'".to_string()),
+            description: Some(
+                "CDP method name, e.g. 'Page.navigate' or 'Input.dispatchKeyEvent'".to_string(),
+            ),
         },
     );
     properties.insert(
@@ -1760,7 +1765,8 @@ fn create_web_fetch_tool() -> OpenAiTool {
 
     OpenAiTool::Function(ResponsesApiTool {
         name: "web_fetch".to_string(),
-        description: "Fetches a webpage over HTTP(S) and converts the HTML to Markdown using htmd.".to_string(),
+        description: "Fetches a webpage over HTTP(S) and converts the HTML to Markdown using htmd."
+            .to_string(),
         strict: false,
         parameters: JsonSchema::Object {
             properties,

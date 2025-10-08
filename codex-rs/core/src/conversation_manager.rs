@@ -159,7 +159,9 @@ impl ConversationManager {
 
         // If there is no prior history to seed, just start a fresh conversation.
         if matches!(history, InitialHistory::New) {
-            return self.spawn_conversation(config, self.auth_manager.clone()).await;
+            return self
+                .spawn_conversation(config, self.auth_manager.clone())
+                .await;
         }
 
         // Otherwise, create a temporary rollout with the truncated items and resume from it.

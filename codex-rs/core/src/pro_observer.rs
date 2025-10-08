@@ -5,19 +5,18 @@ use futures::StreamExt;
 use tokio::time::sleep;
 
 use codex_protocol::models::{
-    ContentItem,
-    ReasoningItemContent,
-    ReasoningItemReasoningSummary,
-    ResponseItem,
+    ContentItem, ReasoningItemContent, ReasoningItemReasoningSummary, ResponseItem,
 };
 use codex_protocol::models::{FunctionCallOutputPayload, ResponseInputItem};
 
-use crate::agent_tool::{create_run_agent_tool, AgentStatus, AGENT_MANAGER};
+use crate::agent_tool::{AGENT_MANAGER, AgentStatus, create_run_agent_tool};
 use crate::client_common::{Prompt, ResponseEvent, ResponseStream};
-use crate::codex::{Session, ToolCallCtx, PRO_SUBMISSION_ID};
+use crate::codex::{PRO_SUBMISSION_ID, Session, ToolCallCtx};
 use crate::environment_context::EnvironmentContext;
 use crate::openai_model_info::get_model_info;
-use crate::openai_tools::{create_assist_core_tool, create_pro_recommend_tool, create_pro_submit_user_tool, OpenAiTool};
+use crate::openai_tools::{
+    OpenAiTool, create_assist_core_tool, create_pro_recommend_tool, create_pro_submit_user_tool,
+};
 use crate::protocol::{ProEvent, ProPhase};
 
 /// Launch a background observer turn that mirrors the core session state.
@@ -66,8 +65,7 @@ pub(crate) async fn observe_now(sess: Arc<Session>, sub_id: String, reason: &'st
     let stream = match sess.model_client().stream(&prompt).await {
         Ok(stream) => stream,
         Err(err) => {
-            sess
-                .notify_background_event(&sub_id, format!("observer stream error: {}", err))
+            sess.notify_background_event(&sub_id, format!("observer stream error: {}", err))
                 .await;
             return;
         }
@@ -106,12 +104,27 @@ async fn run_observer_stream(sess: Arc<Session>, mut stream: ResponseStream, sub
     let mut pending_outputs: Vec<ResponseInputItem> = Vec::new();
 
     while let Some(item) = stream.next().await {
-        let Ok(event) = item else { break; };
+        let Ok(event) = item else {
+            break;
+        };
         match event {
             ResponseEvent::Created => {}
             ResponseEvent::OutputTextDelta { .. } => {}
-            ResponseEvent::OutputItemDone { item, sequence_number, output_index } => {
-                handle_output_item(&sess, &sub_id, &mut actions, &mut pending_outputs, item, sequence_number, output_index).await;
+            ResponseEvent::OutputItemDone {
+                item,
+                sequence_number,
+                output_index,
+            } => {
+                handle_output_item(
+                    &sess,
+                    &sub_id,
+                    &mut actions,
+                    &mut pending_outputs,
+                    item,
+                    sequence_number,
+                    output_index,
+                )
+                .await;
             }
             ResponseEvent::Completed { .. } => {
                 summarize_observer_run(&sess, &sub_id, started_at.elapsed(), &actions).await;
@@ -123,10 +136,7 @@ async fn run_observer_stream(sess: Arc<Session>, mut stream: ResponseStream, sub
     }
 
     if !pending_outputs.is_empty() {
-        let mut history = sess
-            .pro_observer_history()
-            .lock()
-            .expect("poisoned lock");
+        let mut history = sess.pro_observer_history().lock().expect("poisoned lock");
         for output in pending_outputs {
             history.record_items([&ResponseItem::from(output)]);
         }
@@ -143,7 +153,12 @@ async fn handle_output_item(
     output_index: Option<u32>,
 ) {
     match &item {
-        ResponseItem::FunctionCall { name, arguments, call_id, .. } => match name.as_str() {
+        ResponseItem::FunctionCall {
+            name,
+            arguments,
+            call_id,
+            ..
+        } => match name.as_str() {
             "pro_recommend" => {
                 let (title, note) = parse_recommend(arguments);
                 let full_note = if title.is_empty() {
@@ -226,7 +241,12 @@ async fn handle_output_item(
                 record_history_item(sess, &ResponseItem::from(output));
             }
             "agent_run" => {
-                let ctx = ToolCallCtx::new(sub_id.to_string(), call_id.clone(), sequence_number, output_index);
+                let ctx = ToolCallCtx::new(
+                    sub_id.to_string(),
+                    call_id.clone(),
+                    sequence_number,
+                    output_index,
+                );
                 let output = crate::codex::handle_run_agent(sess, &ctx, arguments.clone()).await;
                 pending_outputs.push(output.clone());
                 record_observer_log(sess, &item);
@@ -245,7 +265,10 @@ async fn handle_output_item(
                 if sess.pro_autonomous_enabled() {
                     if let Some(text) = parse_follow_up(arguments) {
                         sess.submit_follow_up_user_message(text.clone()).await;
-                        actions.push(format!("follow-up: {}", text.chars().take(40).collect::<String>()));
+                        actions.push(format!(
+                            "follow-up: {}",
+                            text.chars().take(40).collect::<String>()
+                        ));
                         let output = ResponseInputItem::FunctionCallOutput {
                             call_id: call_id.clone(),
                             output: FunctionCallOutputPayload {
@@ -284,14 +307,19 @@ async fn handle_output_item(
             }
         },
         ResponseItem::Message { role, .. } if role == "assistant" => {
-                record_observer_log(sess, &item);
+            record_observer_log(sess, &item);
             record_history_item(sess, &item);
         }
         _ => {}
     }
 }
 
-async fn summarize_observer_run(sess: &Session, sub_id: &str, elapsed: Duration, actions: &[String]) {
+async fn summarize_observer_run(
+    sess: &Session,
+    sub_id: &str,
+    elapsed: Duration,
+    actions: &[String],
+) {
     let mut lines = Vec::new();
     lines.push(format!("Observer completed in {}s", elapsed.as_secs()));
     if !actions.is_empty() {
@@ -300,33 +328,32 @@ async fn summarize_observer_run(sess: &Session, sub_id: &str, elapsed: Duration,
         }
     }
 
-    sess
-        .emit_pro_event(
-            sub_id,
-            ProEvent::DeveloperNote {
-                turn_id: "observer_summary".to_string(),
-                note: lines.join("\n"),
-                artifacts: Vec::new(),
-            },
-        )
-        .await;
+    sess.emit_pro_event(
+        sub_id,
+        ProEvent::DeveloperNote {
+            turn_id: "observer_summary".to_string(),
+            note: lines.join("\n"),
+            artifacts: Vec::new(),
+        },
+    )
+    .await;
 
-    sess
-        .emit_pro_event(
-            PRO_SUBMISSION_ID,
-            ProEvent::Status {
-                phase: if actions.is_empty() { ProPhase::Idle } else { ProPhase::Background },
-                stats: crate::protocol::ProStats::default(),
+    sess.emit_pro_event(
+        PRO_SUBMISSION_ID,
+        ProEvent::Status {
+            phase: if actions.is_empty() {
+                ProPhase::Idle
+            } else {
+                ProPhase::Background
             },
-        )
-        .await;
+            stats: crate::protocol::ProStats::default(),
+        },
+    )
+    .await;
 }
 
 fn record_observer_log(sess: &Session, item: &ResponseItem) {
-    let mut log = sess
-        .pro_observer_log()
-        .lock()
-        .expect("poisoned lock");
+    let mut log = sess.pro_observer_log().lock().expect("poisoned lock");
     log.push(item.clone());
     if log.len() > 80 {
         let drain = log.len() - 80;
@@ -335,10 +362,7 @@ fn record_observer_log(sess: &Session, item: &ResponseItem) {
 }
 
 fn record_history_item(sess: &Session, item: &ResponseItem) {
-    let mut history = sess
-        .pro_observer_history()
-        .lock()
-        .expect("poisoned lock");
+    let mut history = sess.pro_observer_history().lock().expect("poisoned lock");
     history.record_items([item]);
 }
 
@@ -407,7 +431,9 @@ fn summarize_item(item: &ResponseItem) -> Option<String> {
             encrypted_content,
             ..
         } => summarize_reasoning(summary, content, encrypted_content.as_deref()),
-        ResponseItem::FunctionCall { name, arguments, .. } => {
+        ResponseItem::FunctionCall {
+            name, arguments, ..
+        } => {
             let snippet = truncate_text(arguments, 300);
             let body = format!("{name}({snippet})");
             Some(format_prefixed("assistant tool_call", &body))
@@ -578,14 +604,24 @@ fn parse_recommend(arguments: &str) -> (String, String) {
 fn parse_instructions(arguments: &str) -> String {
     serde_json::from_str::<serde_json::Value>(arguments)
         .ok()
-        .and_then(|value| value.get("instructions").and_then(|s| s.as_str()).map(|s| s.to_string()))
+        .and_then(|value| {
+            value
+                .get("instructions")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string())
+        })
         .unwrap_or_default()
 }
 
 fn parse_follow_up(arguments: &str) -> Option<String> {
     serde_json::from_str::<serde_json::Value>(arguments)
         .ok()
-        .and_then(|value| value.get("text").and_then(|s| s.as_str()).map(|s| s.to_string()))
+        .and_then(|value| {
+            value
+                .get("text")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string())
+        })
 }
 
 async fn wait_for_agents() {

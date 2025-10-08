@@ -1,0 +1,57 @@
+{
+  "stage": "spec-implement",
+  "prompt_version": "20251002-implement-a",
+  "agent": "gpt_codex",
+  "model": "gpt-5-codex",
+  "model_release": "2025-09",
+  "reasoning_mode": "high",
+  "diff_proposals": [
+    {
+      "path": "docs/SPEC-KIT-030-add-documentation-for-rebasing-from/arbiter-decisions.md",
+      "change": "Placeholder document noting T46.1 remains blocked and will capture arbiter verdicts once available.",
+      "rationale": "Make gating dependency explicit without drafting premature guidance.",
+      "confidence": 0.3
+    },
+    {
+      "path": "docs/spec-kit/rebase-workflow.md",
+      "change": "Scaffold rebase workflow doc with status=blocked notes awaiting leadership decision.",
+      "rationale": "Reserve location for final content while signalling current blocker.",
+      "confidence": 0.3
+    },
+    {
+      "path": "docs/spec-kit/fork-assessment.md",
+      "change": "Add blocked placeholder referencing forthcoming fork markers inventory.",
+      "rationale": "Ensure fork assessment doc is tracked even though dependent on T46.2.",
+      "confidence": 0.3
+    },
+    {
+      "path": "docs/spec-kit/nightly-drift-detection.md",
+      "change": "Placeholder describing pending nightly automation guidance.",
+      "rationale": "Highlight requirement while noting dependency on gating decisions and feat/spec-auto-telemetry.",
+      "confidence": 0.3
+    },
+    {
+      "path": "docs/spec-kit/evidence-expectations.md",
+      "change": "Placeholder documenting need to define HAL telemetry evidence once decisions land.",
+      "rationale": "Anchor acceptance mapping for R4 without final content.",
+      "confidence": 0.3
+    }
+  ],
+  "test_commands": [
+    "scripts/doc-structure-validate.sh --mode=templates",
+    "python3 scripts/spec-kit/lint_tasks.py",
+    "python3 scripts/spec-kit/nightly_sync_detect.py --dry-run --spec SPEC-KIT-030"
+  ],
+  "tool_calls": [
+    "local-memory.search",
+    "repo_search.access_file",
+    "bash -lc ls",
+    "bash -lc find",
+    "bash -lc rg"
+  ],
+  "risks": [
+    "Placeholders may diverge from final guidance if leadership decisions change scope.",
+    "HAL telemetry requirements remain unresolved until secrets are available.",
+    "Fork marker search may miss malformed sentinels, risking incomplete documentation."
+  ]
+}

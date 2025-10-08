@@ -31,7 +31,6 @@ impl ConversationHistory {
             self.items.push(item.clone());
         }
     }
-
 }
 
 /// Anything that is not a system message or "reasoning" message is considered

@@ -313,9 +313,7 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
     // Send the prompt.
     let items: Vec<InputItem> = vec![InputItem::Text { text: prompt }];
     // Fallback for older core protocol: send only user input items.
-    let initial_prompt_task_id = conversation
-        .submit(Op::UserInput { items })
-        .await?;
+    let initial_prompt_task_id = conversation.submit(Op::UserInput { items }).await?;
     info!("Sent prompt with event ID: {initial_prompt_task_id}");
 
     // Run the loop until the task is complete.

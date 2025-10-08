@@ -32,8 +32,12 @@ fn assert_non_decreasing_order(prev: &OrderMeta, next: &OrderMeta) {
         return;
     }
 
-    let prev_output = prev.output_index.expect("missing output_index on prev order meta");
-    let next_output = next.output_index.expect("missing output_index on next order meta");
+    let prev_output = prev
+        .output_index
+        .expect("missing output_index on prev order meta");
+    let next_output = next
+        .output_index
+        .expect("missing output_index on next order meta");
     assert!(
         next_output >= prev_output,
         "output_index regressed: prev={prev:?}, next={next:?}"
@@ -58,9 +62,7 @@ fn assert_non_decreasing_order(prev: &OrderMeta, next: &OrderMeta) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn streaming_events_expose_monotonic_order_meta() {
     if sandbox_network_disabled() {
-        println!(
-            "Skipping event-order smoke test because network is disabled in this sandbox."
-        );
+        println!("Skipping event-order smoke test because network is disabled in this sandbox.");
         return;
     }
 

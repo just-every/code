@@ -1,0 +1,17 @@
+{
+  "stage": "spec-validate",
+  "status": "blocked",
+  "agreements": [
+    "Validation failed because HAL_SECRET_KAVEDARR_API_KEY is not configured, so HAL telemetry could not run.",
+    "Doc lint, nightly drift dry-run, and tasks completion remain pending until HAL prerequisites and Arbiter decisions resolve."
+  ],
+  "conflicts": [],
+  "next_steps": [
+    "Provide HAL_SECRET_KAVEDARR_API_KEY or formally adopt SPEC_OPS_HAL_SKIP=1 and document the policy.",
+    "Re-run SPEC_OPS_TELEMETRY_HAL=1 /spec-ops-validate after credentials are set to capture full telemetry.",
+    "Update SPEC.md/tasks.md once validation succeeds and evidence artifacts are archived."
+  ],
+  "telemetry": {
+    "guardrail": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-030-add-documentation-for-rebasing-from/spec-validate_2025-10-07T01:09:42Z-2339128117.json"
+  }
+}

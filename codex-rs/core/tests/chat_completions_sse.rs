@@ -310,12 +310,13 @@ async fn streams_reasoning_before_tool_call() {
 
     match &events[2] {
         ResponseEvent::OutputItemDone {
-            item: ResponseItem::FunctionCall {
-                name,
-                arguments,
-                call_id,
-                ..
-            },
+            item:
+                ResponseItem::FunctionCall {
+                    name,
+                    arguments,
+                    call_id,
+                    ..
+                },
             ..
         } => {
             assert_eq!(name, "run");

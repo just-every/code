@@ -1,0 +1,102 @@
+{
+  "stage": "spec-implement",
+  "prompt_version": "20251002-implement-a",
+  "agent": "claude",
+  "model": "claude-sonnet-4-5",
+  "model_release": "2025-09",
+  "reasoning_mode": "auto",
+  "approach": [
+    {
+      "task_id": "T46.1",
+      "summary": "BLOCKER: Arbiter gating step – requires leadership decisions on nightly job venue, snapshot strategy, HAL summary template, and rebase scope before documentation drafting can begin."
+    },
+    {
+      "task_id": "T46.2",
+      "summary": "Search for '// === FORK-SPECIFIC' markers, reconcile with FORK_DEVIATIONS.md, and produce initial deviation inventory."
+    },
+    {
+      "task_id": "T46.3",
+      "summary": "Draft docs/spec-kit/fork-assessment.md describing fork deviation taxonomy and remediation flow after T46.2 inventory is complete."
+    },
+    {
+      "task_id": "T46.4",
+      "summary": "Draft docs/spec-kit/rebase-workflow.md covering pre/post rebase checklists, /spec-ops-* integration, and conflict handling."
+    },
+    {
+      "task_id": "T46.5",
+      "summary": "Draft docs/spec-kit/nightly-drift-detection.md and confirm scripts/spec-kit/nightly_sync_detect.py behavior once telemetry patterns from feat/spec-auto-telemetry are available."
+    },
+    {
+      "task_id": "T46.6",
+      "summary": "Draft docs/spec-kit/evidence-expectations.md capturing HAL telemetry flow, evidence artifacts, and degraded behavior when secrets are absent."
+    }
+  ],
+  "operations": [
+    {
+      "file": "docs/SPEC-KIT-030-add-documentation-for-rebasing-from/arbiter-decisions.md",
+      "change_type": "create",
+      "description": "Record Arbiter verdicts and leadership decisions from T46.1."
+    },
+    {
+      "file": "docs/spec-kit/fork-assessment.md",
+      "change_type": "create",
+      "description": "Describe fork deviation taxonomy, assessment questions, and evidence collection process once unblocked."
+    },
+    {
+      "file": "docs/spec-kit/rebase-workflow.md",
+      "change_type": "create",
+      "description": "Document rebase steps, guardrail integration, and post-run validation requirements once scope approved."
+    },
+    {
+      "file": "docs/spec-kit/nightly-drift-detection.md",
+      "change_type": "create",
+      "description": "Detail nightly automation triggers, telemetry expectations, and alert pathways after T46.1 decisions."
+    },
+    {
+      "file": "scripts/spec-kit/nightly_sync_detect.py",
+      "change_type": "update",
+      "description": "Introduce drift detection logic and telemetry emission hooks derived from feat/spec-auto-telemetry patterns."
+    },
+    {
+      "file": "docs/spec-kit/evidence-expectations.md",
+      "change_type": "create",
+      "description": "Define evidence artifact schema, HAL usage, and degraded paths to satisfy R4."
+    },
+    {
+      "file": "SPEC.md",
+      "change_type": "update",
+      "description": "Track status transitions and evidence notes as tasks progress."
+    },
+    {
+      "file": "docs/SPEC-KIT-030-add-documentation-for-rebasing-from/tasks.md",
+      "change_type": "update",
+      "description": "Keep task ordering, owners, and evidence references aligned with SPEC.md."
+    }
+  ],
+  "validation_plan": [
+    {
+      "command": "scripts/doc-structure-validate.sh --mode=templates",
+      "purpose": "Ensure new documentation follows Spec Kit template standards."
+    },
+    {
+      "command": "python3 scripts/spec-kit/lint_tasks.py --spec SPEC-KIT-030-add-documentation-for-rebasing-from",
+      "purpose": "Verify SPEC.md and tasks.md remain in sync after updates."
+    },
+    {
+      "command": "rg --no-heading --line-number '\\// === FORK-SPECIFIC'",
+      "purpose": "Confirm fork marker inventory is complete before finalizing documentation."
+    },
+    {
+      "command": "python3 scripts/spec-kit/nightly_sync_detect.py --dry-run --spec SPEC-KIT-030",
+      "purpose": "Validate drift detector behavior and telemetry outputs once automation is in place."
+    },
+    {
+      "command": "SPEC_OPS_TELEMETRY_HAL=1 /spec-ops-implement SPEC-KIT-030-add-documentation-for-rebasing-from",
+      "purpose": "Capture HAL telemetry artifacts (or degraded notes) during validation."
+    },
+    {
+      "command": "/spec-evidence-stats --spec SPEC-KIT-030-add-documentation-for-rebasing-from",
+      "purpose": "Monitor evidence footprint and enforce <25 MB soft limit."
+    }
+  ]
+}

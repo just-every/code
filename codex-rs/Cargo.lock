@@ -1272,6 +1272,7 @@ dependencies = [
  "urlencoding",
  "uuid",
  "vt100",
+ "walkdir",
  "which",
 ]
 
