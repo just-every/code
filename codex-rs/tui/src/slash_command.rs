@@ -248,7 +248,7 @@ impl SlashCommand {
     pub fn is_prompt_expanding(self) -> bool {
         matches!(
             self,
-            SlashCommand::Plan | SlashCommand::Solve | SlashCommand::Code | SlashCommand::SpecStatus
+            SlashCommand::Plan | SlashCommand::Solve | SlashCommand::Code
         )
     }
 
@@ -256,7 +256,7 @@ impl SlashCommand {
     pub fn requires_arguments(self) -> bool {
         matches!(
             self,
-            SlashCommand::Plan | SlashCommand::Solve | SlashCommand::Code | SlashCommand::SpecStatus
+            SlashCommand::Plan | SlashCommand::Solve | SlashCommand::Code
         )
     }
 
@@ -358,12 +358,6 @@ impl SlashCommand {
             SlashCommand::Code => Some(codex_core::slash_commands::format_code_command(
                 args, None, None,
             )),
-            SlashCommand::SpecStatus => Some(codex_core::slash_commands::format_subagent_command(
-                "spec-status",
-                args,
-                None,
-                None,
-            ).prompt),
             _ => None,
         }
     }

@@ -271,9 +271,13 @@ spec_ops_run_hal_smoke() {
   local secret_env="${SPEC_OPS_HAL_SECRET_ENV:-HAL_SECRET_KAVEDARR_API_KEY}"
   local secret_value="${!secret_env:-}"
   if [[ -z "${secret_value}" ]]; then
+    if [[ "${SPEC_OPS_HAL_REQUIRE_SECRET:-0}" == "1" ]]; then
+      spec_ops_write_log "HAL secret ${secret_env} not set; failing HAL smoke (SPEC_OPS_HAL_REQUIRE_SECRET=1)"
+      SPEC_OPS_HAL_STATUS="failed"
+      return 1
+    fi
     spec_ops_write_log "HAL secret ${secret_env} not set; skipping HAL smoke"
-    SPEC_OPS_HAL_STATUS="failed"
-    return 1
+    return 0
   fi
 
   local base_url="${SPEC_OPS_HAL_BASE_URL:-http://127.0.0.1:7878}"
