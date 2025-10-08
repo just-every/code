@@ -868,11 +868,10 @@ pub struct HighlightConfig {
 }
 
 /// Available predefined themes
-#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub enum ThemeName {
     // Light themes (at top)
-    #[default]
     LightPhoton,
     LightPhotonAnsi16,
     LightPrismRainbow,
@@ -891,6 +890,10 @@ pub enum ThemeName {
     DarkZenGarden,
     DarkPaperLightPro,
     Custom,
+}
+
+impl Default for ThemeName {
+    fn default() -> Self { ThemeName::DarkCarbonNight }
 }
 
 /// Theme colors that can be customized

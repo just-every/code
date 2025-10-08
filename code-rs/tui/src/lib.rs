@@ -570,7 +570,7 @@ fn maybe_apply_terminal_theme_detection(config: &mut Config, theme_configured_ex
         return;
     }
 
-    if theme.name != ThemeName::LightPhoton {
+    if theme.name != ThemeName::default() {
         return;
     }
 
@@ -646,8 +646,9 @@ fn apply_detected_theme(theme: &mut ThemeConfig, is_dark: bool) {
             "Detected dark terminal background; switching default theme to Dark - Carbon Night"
         );
     } else {
+        theme.name = ThemeName::LightPhoton;
         tracing::info!(
-            "Detected light terminal background; keeping default Light - Photon theme"
+            "Detected light terminal background; switching default theme to Light - Photon"
         );
     }
 }
