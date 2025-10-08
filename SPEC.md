@@ -172,3 +172,10 @@ self.submit_op(Op::Exec {
 **Current blocker:** Guardrail visibility (T37-T39)
 
 **After visibility fixed:** Full working automation, 6 stages visible, truly native TUI implementation.
+
+## Tasks
+
+| Order | Task ID | Title | Status | Owners | PRD | Branch | PR | Last Validation | Evidence | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 11 | T46 | Add documentation for fork rebasing and nightly drift verification | Backlog | Code |  | feat/spec-auto-telemetry |  |  |  | Created via /new-spec on 2025-10-05 |
+| 12 | T47 | Spec status diagnostics dashboard | Backlog | Code | docs/SPEC-KIT-035-spec-status-diagnostics/PRD.md |  |  |  |  | 2025-10-07 /tasks: eight-slice plan covering telemetry ingestion, evidence sentinel, TUI/CLI parity, fixtures, docs; warning-only footprint policy, latest-snapshot view, HAL opt-in confirmed |
