@@ -178,4 +178,4 @@ self.submit_op(Op::Exec {
 | Order | Task ID | Title | Status | Owners | PRD | Branch | PR | Last Validation | Evidence | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 11 | T46 | Add documentation for fork rebasing and nightly drift verification | Backlog | Code |  | feat/spec-auto-telemetry |  |  |  | Created via /new-spec on 2025-10-05 |
-| 12 | T47 | Spec status diagnostics dashboard | In Progress | Code | docs/SPEC-KIT-035-spec-status-diagnostics/PRD.md | feat/spec-auto-telemetry |  |  |  | 2025-10-08 /tasks consensus: 8 slices covering telemetry aggregator, evidence sentinel, TUI & CLI parity, HAL messaging, fixtures/tests, docs, release validation |
+| 12 | T47 | Spec status diagnostics dashboard | **DONE** | Code | docs/SPEC-KIT-035-spec-status-diagnostics/PRD.md | feat/spec-auto-telemetry |  | 2025-10-08 |  | Native Rust spec-status-dump binary + bash wrapper. Shows: core files, tracker entry, stage-by-stage status (guardrail/consensus/agents), evidence footprint, recent activity. Completed: 2025-10-08. |
