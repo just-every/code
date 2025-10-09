@@ -68,33 +68,30 @@ self.submit_op(Op::Exec {
 
 ## Task Breakdown
 
-### Phase 1: Visibility (3 days) - CURRENT FOCUS
-
-| ID | Task | Status | Effort | Blocker |
-|----|------|--------|--------|---------|
-| T37 | Stream guardrail output to TUI | **IN PROGRESS** | 4h | None |
-| T38 | Add guardrail progress messages | **TODO** | 1h | T37 |
-| T39 | Parse/display guardrail results | **TODO** | 3h | T37 |
-| T40 | Add stage progress indicator (X/6) | **TODO** | 4h | None |
-| T41 | Add Ctrl-C cancellation | **TODO** | 2h | None |
-
-### Phase 2: Polish (2 days)
-
-| ID | Task | Status | Effort | Blocker |
-|----|------|--------|--------|---------|
-| T42 | Substep streaming (baseline, policy, HAL) | **TODO** | 8h | T37-T39 |
-| T43 | Integration tests (guardrail→agent→consensus) | **TODO** | 8h | T37-T41 |
-| T44 | Rebase validation script | **TODO** | 2h | None |
-| T45 | E2E test (plan→unlock) | **TODO** | 4h | T37-T43 |
-
-### Phase 3: Maintenance (ongoing)
+### Active Work
 
 | ID | Task | Status | Effort | Notes |
 |----|------|--------|--------|-------|
-| T30 | Project Commands migration | **BACKLOG** | 4-6h | Reduces rebase friction |
-| T31 | Evidence archival | **BACKLOG** | 1d | 25MB limit mitigation |
-| T33 | Task format unification | **BACKLOG** | 2-3d | Eliminates manual sync |
-| T34 | Conflict arbiter agent | **BACKLOG** | 2-3d | Auto-resolves ties |
+| T38 | Enhanced progress messages | **OPTIONAL** | 1h | Nice-to-have UI polish |
+| T39 | Parse/display guardrail results | **OPTIONAL** | 3h | Nice-to-have UI polish |
+| T43 | Integration tests | **BACKLOG** | 8h | Test coverage |
+| T44 | Rebase validation script | **BACKLOG** | 2h | Already documented in TUI.md |
+
+### Nice-to-Have (Low Priority)
+
+| ID | Task | Status | Notes |
+|----|------|--------|-------|
+| T31 | Evidence archival | **BACKLOG** | Address when hitting 25MB limit |
+| T33 | Task format unification | **BACKLOG** | Single source for plan/tasks/SPEC.md |
+| T34 | Conflict arbiter refinement | **BACKLOG** | Already auto-resolves, can enhance |
+
+### ~~Obsolete~~ (Removed)
+
+| ID | Task | Reason |
+|----|------|--------|
+| ~~T30~~ | ~~Project Commands migration~~ | Not applicable to orchestrator architecture. Project Commands can't invoke orchestrators. Current Rust enum needed for delegation. |
+| ~~T37~~ | ~~Stream guardrail output~~ | Orchestrator already provides visibility. |
+| ~~T40-T42~~ | ~~Progress indicators~~ | Orchestrator shows progress naturally. |
 
 ---
 
