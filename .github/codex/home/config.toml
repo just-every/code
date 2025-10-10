@@ -1,5 +1,45 @@
 model = "gpt-5"
 
+[[agents]]
+name = "gemini"
+enabled = true
+command-read-only = "gemini"
+command-write = "gemini"
+args-read-only = ["-y"]
+args-write = ["-y"]
+
+[[agents]]
+name = "claude"
+enabled = true
+command-read-only = "claude"
+command-write = "claude"
+args-read-only = ["--model", "sonnet"]
+args-write = ["--model", "sonnet"]
+
+[[agents]]
+name = "gpt_pro"
+enabled = true
+command-read-only = "codex"
+command-write = "codex"
+args-read-only = ["-s", "read-only", "-a", "never", "exec", "--skip-git-repo-check", "-m", "gpt-5", "-c", "model_reasoning_effort=\"high\""]
+args-write = ["-s", "workspace-write", "-a", "never", "exec", "--skip-git-repo-check", "-m", "gpt-5", "-c", "model_reasoning_effort=\"high\""]
+
+[[agents]]
+name = "gpt_codex"
+enabled = true
+command-read-only = "codex"
+command-write = "codex"
+args-read-only = ["-s", "read-only", "-a", "never", "exec", "--skip-git-repo-check", "-m", "gpt-5-codex", "-c", "model_reasoning_effort=\"high\""]
+args-write = ["-s", "workspace-write", "-a", "never", "exec", "--skip-git-repo-check", "-m", "gpt-5-codex", "-c", "model_reasoning_effort=\"high\""]
+
+[[agents]]
+name = "code"
+enabled = true
+command-read-only = "codex"
+command-write = "codex"
+args-read-only = ["-s", "read-only", "-a", "never", "exec", "--skip-git-repo-check", "-m", "gpt-5-codex"]
+args-write = ["-s", "workspace-write", "-a", "never", "exec", "--skip-git-repo-check", "-m", "gpt-5-codex"]
+
 [subagents]
 
 [[subagents.commands]]
