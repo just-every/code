@@ -4,12 +4,24 @@ use std::path::Path;
 use std::path::PathBuf;
 use tokio::fs;
 
-/// Return the default prompts directory: `$CODEX_HOME/prompts`.
-/// If `CODEX_HOME` cannot be resolved, returns `None`.
+/// Return the default prompts directory: `$CODE_HOME/prompts`.
+/// Falls back to `~/.codex/prompts` when the legacy directory exists and
+/// `CODE_HOME`/`CODEX_HOME` overrides are not present.
 pub fn default_prompts_dir() -> Option<PathBuf> {
-    crate::config::find_code_home()
-        .ok()
-        .map(|home| home.join("prompts"))
+    let home = crate::config::find_code_home().ok()?;
+    let default_dir = home.join("prompts");
+    if default_dir.exists() {
+        return Some(default_dir);
+    }
+
+    // Honor legacy ~/.codex/prompts when the default directory is missing and
+    // overrides were not used.
+    let legacy = crate::config::resolve_code_path_for_read(&home, Path::new("prompts"));
+    if legacy.exists() {
+        Some(legacy)
+    } else {
+        Some(default_dir)
+    }
 }
 
 /// Discover prompt files in the given directory, returning entries sorted by name.
