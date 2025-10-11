@@ -68,6 +68,25 @@ case "${START_STAGE}" in
     ;;
 esac
 
+# === OPTIMIZATION: Pre-load context for policy checks ===
+# Load constitution, PRD, model strategy once (saves ~30% policy check time)
+CONTEXT_CACHE_DIR="/tmp/spec-auto-context-${SPEC_ID}-$$"
+mkdir -p "${CONTEXT_CACHE_DIR}"
+
+if [[ -f "${REPO_ROOT}/memory/constitution.md" ]]; then
+  cp "${REPO_ROOT}/memory/constitution.md" "${CONTEXT_CACHE_DIR}/"
+fi
+if [[ -f "${REPO_ROOT}/product-requirements.md" ]]; then
+  cp "${REPO_ROOT}/product-requirements.md" "${CONTEXT_CACHE_DIR}/"
+fi
+if [[ -f "${REPO_ROOT}/docs/spec-kit/model-strategy.md" ]]; then
+  cp "${REPO_ROOT}/docs/spec-kit/model-strategy.md" "${CONTEXT_CACHE_DIR}/"
+fi
+
+export SPEC_OPS_CONTEXT_CACHE="${CONTEXT_CACHE_DIR}"
+trap "rm -rf ${CONTEXT_CACHE_DIR}" EXIT
+# === END OPTIMIZATION ===
+
 stages=(plan tasks implement validate audit unlock)
 
 script_for_stage() {

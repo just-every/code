@@ -74,7 +74,11 @@ spec_ops_run_policy_prefilter() {
       SPEC_OPS_POLICY_PREFILTER_NOTE="code CLI not available; set SPEC_OPS_CODE_CLI or SPEC_OPS_POLICY_PREFILTER_CMD"
       return 0
     fi
-    cmd_template="${code_cli} exec --sandbox workspace-write --model ${SPEC_OPS_POLICY_PREFILTER_MODEL} -- \"Policy prefilter for ${spec}/${stage}\""
+    local context_hint=""
+    if [[ -n "${SPEC_OPS_CONTEXT_CACHE:-}" ]] && [[ -d "${SPEC_OPS_CONTEXT_CACHE}" ]]; then
+      context_hint=" (context: ${SPEC_OPS_CONTEXT_CACHE})"
+    fi
+    cmd_template="${code_cli} exec --sandbox workspace-write --model ${SPEC_OPS_POLICY_PREFILTER_MODEL} -- \"Policy prefilter for ${spec}/${stage}${context_hint}\""
   fi
 
   local command
@@ -104,7 +108,11 @@ spec_ops_run_policy_final() {
       SPEC_OPS_POLICY_FINAL_NOTE="code CLI not available; set SPEC_OPS_CODE_CLI or SPEC_OPS_POLICY_FINAL_CMD"
       return 0
     fi
-    cmd_template="${code_cli} exec --sandbox workspace-write --model ${SPEC_OPS_POLICY_FINAL_MODEL} -- \"Policy final check for ${spec}/${stage}\""
+    local context_hint=""
+    if [[ -n "${SPEC_OPS_CONTEXT_CACHE:-}" ]] && [[ -d "${SPEC_OPS_CONTEXT_CACHE}" ]]; then
+      context_hint=" (context: ${SPEC_OPS_CONTEXT_CACHE})"
+    fi
+    cmd_template="${code_cli} exec --sandbox workspace-write --model ${SPEC_OPS_POLICY_FINAL_MODEL} -- \"Policy final check for ${spec}/${stage}${context_hint}\""
   fi
 
   local command
