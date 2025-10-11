@@ -9,7 +9,12 @@ rec {
     inherit env;
     pname = "code-rs";
     version = "0.1.0";
-    cargoLock.lockFile = ./Cargo.lock;
+    cargoLock = {
+      lockFile = ./Cargo.lock;
+      outputHashes = {
+        "ratatui-0.29.0" = "sha256-slLAIUXlq7/BcEZniLvutTozZfy8ilYh8o95ut0fanA=";
+      };
+    };
     doCheck = false;
     src = ./.;
     nativeBuildInputs = with pkgs; [
