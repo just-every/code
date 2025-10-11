@@ -176,3 +176,4 @@ self.submit_op(Op::Exec {
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 11 | T46 | Add documentation for fork rebasing and nightly drift verification | Backlog | Code |  | feat/spec-auto-telemetry |  |  |  | Created via /new-spec on 2025-10-05 |
 | 12 | T47 | Spec status diagnostics dashboard | **DONE** | Code | docs/SPEC-KIT-035-spec-status-diagnostics/PRD.md | feat/spec-auto-telemetry |  | 2025-10-08 |  | Native Rust spec-status-dump binary + bash wrapper. Shows: core files, tracker entry, stage-by-stage status (guardrail/consensus/agents), evidence footprint, recent activity. Completed: 2025-10-08. |
+| 13 | T48 | Add simple config validation utility | Backlog | Code | docs/SPEC-KIT-040-add-simple-config-validation-utility/PRD.md | feat/spec-auto-telemetry |  |  |  | Created via /new-spec |
