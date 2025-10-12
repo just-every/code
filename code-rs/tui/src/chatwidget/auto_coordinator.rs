@@ -43,6 +43,8 @@ use super::auto_observer::{
 const RATE_LIMIT_BUFFER: Duration = Duration::from_secs(120);
 const RATE_LIMIT_JITTER_MAX: Duration = Duration::from_secs(30);
 const MAX_RETRY_ELAPSED: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+const DEVELOPER_INTRO_START_MARKER: &str = "<!-- auto:developer-intro -->";
+const DEVELOPER_INTRO_END_MARKER: &str = "<!-- /auto:developer-intro -->";
 
 #[derive(Debug, thiserror::Error)]
 #[error("auto coordinator cancelled")]
@@ -117,6 +119,55 @@ struct ParsedCoordinatorDecision {
     cli_prompt: Option<String>,
     response_items: Vec<ResponseItem>,
     turn_config: Option<TurnConfig>,
+}
+
+#[derive(Debug, Clone)]
+enum DeveloperIntroOverride {
+    Empty,
+    Text(String),
+}
+
+#[derive(Debug, Clone, Default)]
+struct AutoDriveDocs {
+    instructions: Option<String>,
+    developer_intro: Option<DeveloperIntroOverride>,
+}
+
+impl AutoDriveDocs {
+    fn parse(text: &str) -> Self {
+        let mut remainder = text.to_string();
+        let mut developer_intro = None;
+
+        if let Some(start_idx) = remainder.find(DEVELOPER_INTRO_START_MARKER) {
+            let after_start = start_idx + DEVELOPER_INTRO_START_MARKER.len();
+            if let Some(rel_end) = remainder[after_start..].find(DEVELOPER_INTRO_END_MARKER) {
+                let end_idx = after_start + rel_end;
+                let block = &remainder[after_start..end_idx];
+                let trimmed = block.trim();
+                developer_intro = Some(if trimmed.is_empty() {
+                    DeveloperIntroOverride::Empty
+                } else {
+                    DeveloperIntroOverride::Text(trimmed.to_string())
+                });
+                let end_with_marker = end_idx + DEVELOPER_INTRO_END_MARKER.len();
+                remainder.replace_range(start_idx..end_with_marker, "");
+            } else {
+                warn!("AUTO_AGENTS developer intro override missing closing marker");
+            }
+        }
+
+        let instructions = remainder.trim();
+        let instructions = if instructions.is_empty() {
+            None
+        } else {
+            Some(instructions.to_string())
+        };
+
+        Self {
+            instructions,
+            developer_intro,
+        }
+    }
 }
 
 pub(super) fn start_auto_coordinator(
@@ -203,15 +254,8 @@ fn run_auto_loop(
         .build()
         .context("creating runtime for auto coordinator")?;
 
-    let auto_instructions = match runtime.block_on(read_auto_drive_docs(config.as_ref())) {
-        Ok(Some(text)) => {
-            let trimmed = text.trim().to_string();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed)
-            }
-        }
+    let auto_docs = match runtime.block_on(read_auto_drive_docs(config.as_ref())) {
+        Ok(Some(text)) => Some(AutoDriveDocs::parse(&text)),
         Ok(None) => None,
         Err(err) => {
             warn!("failed to read AUTO_AGENTS.md instructions: {err:#}");
@@ -227,6 +271,12 @@ fn run_auto_loop(
     let environment_details = format_environment_details(sandbox_label);
     let (base_developer_intro, primary_goal_message) =
         build_developer_message(&goal_text, &environment_details);
+    let developer_intro_override = auto_docs
+        .as_ref()
+        .and_then(|docs| docs.developer_intro.clone());
+    let auto_instructions = auto_docs
+        .as_ref()
+        .and_then(|docs| docs.instructions.as_deref());
     let schema = build_schema();
     let platform = std::env::consts::OS;
     debug!("[Auto coordinator] starting: goal={goal_text} platform={platform}");
@@ -263,8 +313,15 @@ fn run_auto_loop(
             }
 
             let conv_for_observer = conv.clone();
-            let developer_intro =
-                compose_developer_intro(&base_developer_intro, &observer_guidance);
+            let developer_intro = match developer_intro_override.as_ref() {
+                Some(DeveloperIntroOverride::Empty) => {
+                    compose_developer_intro("", &observer_guidance)
+                }
+                Some(DeveloperIntroOverride::Text(override_text)) => {
+                    compose_developer_intro(override_text, &observer_guidance)
+                }
+                None => compose_developer_intro(&base_developer_intro, &observer_guidance),
+            };
             match request_coordinator_decision(
                 &runtime,
                 client.as_ref(),
@@ -940,9 +997,12 @@ fn build_prompt_for_model(
                 .push(make_message("developer", trimmed.to_string()));
         }
     }
-    prompt
-        .input
-        .push(make_message("developer", developer_intro.to_string()));
+    let developer_intro_trimmed = developer_intro.trim();
+    if !developer_intro_trimmed.is_empty() {
+        prompt
+            .input
+            .push(make_message("developer", developer_intro_trimmed.to_string()));
+    }
     prompt
         .input
         .push(make_message("developer", primary_goal.to_string()));
