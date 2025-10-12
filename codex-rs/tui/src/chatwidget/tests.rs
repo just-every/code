@@ -338,7 +338,7 @@ pub(crate) fn make_chatwidget_manual_with_sender() -> (
 fn spec_plan_requires_task_id() {
     let (mut chat, rx, _op_rx) = make_chatwidget_manual();
 
-    chat.handle_spec_ops_command(SlashCommand::SpecOpsPlan, "   ".to_string());
+    chat.handle_spec_ops_command(SlashCommand::SpecOpsPlan, "   ".to_string(), None);
 
     let mut found_error = false;
     while let Ok(ev) = rx.try_recv() {
@@ -360,6 +360,7 @@ fn spec_plan_runs_project_command() {
     chat.handle_spec_ops_command(
         SlashCommand::SpecOpsPlan,
         "SPEC-OPS-005 --baseline-mode skip".to_string(),
+        None,
     );
 
     // Ack banner should be recorded in history
@@ -396,6 +397,29 @@ fn spec_plan_runs_project_command() {
                 env.get("SPEC_OPS_004_AGENTS_AVAILABLE"),
                 Some(&"claude,gemini,code".to_string())
             );
+        }
+        other => panic!("unexpected op forwarded: {other:?}"),
+    }
+}
+
+#[test]
+fn spec_plan_honours_hal_flag() {
+    let (mut chat, rx, mut op_rx) = make_chatwidget_manual();
+
+    chat.handle_spec_ops_command(
+        SlashCommand::SpecOpsPlan,
+        "SPEC-OPS-010 --hal live".to_string(),
+        None,
+    );
+
+    // drain ack banner to avoid leak
+    let _ = drain_insert_history(&rx);
+
+    let op = op_rx.try_recv().expect("expected RunProjectCommand");
+    match op {
+        Op::RunProjectCommand { env, .. } => {
+            assert_eq!(env.get("SPEC_OPS_HAL_MODE"), Some(&"live".to_string()));
+            assert_eq!(env.get("SPEC_OPS_TELEMETRY_HAL"), Some(&"1".to_string()));
         }
         other => panic!("unexpected op forwarded: {other:?}"),
     }

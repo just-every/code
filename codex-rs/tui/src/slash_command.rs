@@ -374,6 +374,29 @@ pub struct SpecOpsCommand {
     pub script: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HalMode {
+    Mock,
+    Live,
+}
+
+impl HalMode {
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "mock" | "skip" => Some(Self::Mock),
+            "live" | "real" => Some(Self::Live),
+            _ => None,
+        }
+    }
+
+    pub fn as_env_value(self) -> &'static str {
+        match self {
+            Self::Mock => "mock",
+            Self::Live => "live",
+        }
+    }
+}
+
 /// Process a message that might contain a slash command.
 /// Returns either the expanded prompt (for prompt-expanding commands) or the original message.
 pub fn process_slash_command_message(message: &str) -> ProcessedCommand {
@@ -498,10 +521,12 @@ pub enum ProcessedCommand {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct SpecAutoInvocation {
     pub spec_id: String,
     pub goal: String,
     pub resume_from: SpecStage,
+    pub hal_mode: Option<HalMode>,
 }
 
 #[derive(Debug, Error)]
@@ -512,6 +537,8 @@ pub enum SpecAutoParseError {
     MissingFromStage,
     #[error("Unknown stage '{0}'. Expected plan, tasks, implement, validate, review, or unlock.")]
     UnknownStage(String),
+    #[error("Unknown HAL mode '{0}'. Expected 'mock' or 'live'.")]
+    UnknownHalMode(String),
 }
 
 fn parse_spec_auto_args(args: &str) -> Result<SpecAutoInvocation, SpecAutoParseError> {
@@ -523,6 +550,8 @@ fn parse_spec_auto_args(args: &str) -> Result<SpecAutoInvocation, SpecAutoParseE
     let mut resume_from = SpecStage::Plan;
     let mut goal_tokens: Vec<String> = Vec::new();
     let mut pending_from = false;
+    let mut pending_hal = false;
+    let mut hal_mode: Option<HalMode> = None;
 
     for token in tokens {
         if pending_from {
@@ -532,9 +561,31 @@ fn parse_spec_auto_args(args: &str) -> Result<SpecAutoInvocation, SpecAutoParseE
             continue;
         }
 
+        if pending_hal {
+            hal_mode = Some(
+                HalMode::from_str(token)
+                    .ok_or_else(|| SpecAutoParseError::UnknownHalMode(token.to_string()))?,
+            );
+            pending_hal = false;
+            continue;
+        }
+
+        if let Some((flag, value)) = token.split_once('=') {
+            if matches!(flag, "--hal" | "--hal-mode") {
+                hal_mode = Some(
+                    HalMode::from_str(value)
+                        .ok_or_else(|| SpecAutoParseError::UnknownHalMode(value.to_string()))?,
+                );
+                continue;
+            }
+        }
+
         match token {
             "--from" | "--resume-from" => {
                 pending_from = true;
+            }
+            "--hal" | "--hal-mode" => {
+                pending_hal = true;
             }
             _ => goal_tokens.push(token.to_string()),
         }
@@ -543,11 +594,15 @@ fn parse_spec_auto_args(args: &str) -> Result<SpecAutoInvocation, SpecAutoParseE
     if pending_from {
         return Err(SpecAutoParseError::MissingFromStage);
     }
+    if pending_hal {
+        return Err(SpecAutoParseError::UnknownHalMode(String::new()));
+    }
 
     Ok(SpecAutoInvocation {
         spec_id: spec_token.to_string(),
         goal: goal_tokens.join(" "),
         resume_from,
+        hal_mode,
     })
 }
 
@@ -585,9 +640,24 @@ mod tests {
     #[test]
     fn parse_spec_auto_args_supports_from_flag() {
         let auto = parse_spec_auto_args("SPEC-OPS-007 --from tasks align checkout").unwrap();
-       assert_eq!(auto.spec_id, "SPEC-OPS-007");
-       assert_eq!(auto.goal, "align checkout");
-       assert_eq!(auto.resume_from, SpecStage::Tasks);
+        assert_eq!(auto.spec_id, "SPEC-OPS-007");
+        assert_eq!(auto.goal, "align checkout");
+        assert_eq!(auto.resume_from, SpecStage::Tasks);
+        assert!(auto.hal_mode.is_none());
+    }
+
+    #[test]
+    fn parse_spec_auto_args_supports_hal_flag() {
+        let auto = parse_spec_auto_args("SPEC-OPS-010 --hal live investigate").unwrap();
+        assert_eq!(auto.spec_id, "SPEC-OPS-010");
+        assert_eq!(auto.goal, "investigate");
+        assert_eq!(auto.hal_mode, Some(HalMode::Live));
+    }
+
+    #[test]
+    fn parse_spec_auto_args_rejects_unknown_hal() {
+        let err = parse_spec_auto_args("SPEC-OPS-010 --hal banana").unwrap_err();
+        assert!(matches!(err, SpecAutoParseError::UnknownHalMode(_)));
     }
 
     #[test]

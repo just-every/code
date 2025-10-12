@@ -76,7 +76,7 @@ The current Spec-Auto verification loop depends on long manual runs and ad-hoc i
 ## Fixtures
 - Synthetic SPEC directory (`docs/SPEC-KIT-045-mini/`) containing trimmed constitution excerpts, minimal spec/plan/tasks placeholders, and sample telemetry bundles.
 - Mock agent response files for each model and stage covering success, degraded, conflict, and timeout branches.
-- Fixture generation script (e.g., `scripts/spec_ops_004/generate_spec_auto_fixtures.sh`) to rebuild archives and enforce size limits.
+- Fixture regeneration guidance (manual today; future xtask optional) to rebuild archives and enforce size limits.
 - Telemetry baseline JSON templates capturing schema v1 fields with optional HAL sections.
 
 ## Risks and Mitigations
@@ -99,4 +99,3 @@ The current Spec-Auto verification loop depends on long manual runs and ad-hoc i
 - Do we persist summarised run metadata into local-memory after each automated suite to support `/spec-auto` resumability?
 - How should evidence diffs be surfaced to operators (CI artifact viewer, TUI notifications, or SPEC.md notes)?
 - Is additional tooling needed to replay historical evidence bundles against new validators to detect regressions retroactively?
-

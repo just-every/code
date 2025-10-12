@@ -19,6 +19,7 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 
 use crate::local_memory_util::{self, LocalMemorySearchResult};
+use crate::slash_command::HalMode;
 use crate::slash_command::SlashCommand;
 use crate::slash_command::SpecAutoInvocation;
 use crate::spec_prompts;
@@ -14848,7 +14849,12 @@ impl ChatWidget<'_> {
     // === FORK-SPECIFIC: spec-kit guardrail command handler ===
     // Upstream: Does not have spec-ops commands
     // Preserve: This entire function during rebases
-    pub(crate) fn handle_spec_ops_command(&mut self, command: SlashCommand, raw_args: String) {
+    pub(crate) fn handle_spec_ops_command(
+        &mut self,
+        command: SlashCommand,
+        raw_args: String,
+        hal_override: Option<HalMode>,
+    ) {
         let Some(meta) = command.spec_ops() else {
             return;
         };
@@ -14858,6 +14864,7 @@ impl ChatWidget<'_> {
         let mut spec_id = String::new();
         let mut remainder = String::new();
         let mut spec_task = String::new();
+        let mut hal_from_args: Option<HalMode> = None;
 
         if !is_stats {
             if trimmed.is_empty() {
@@ -14870,10 +14877,53 @@ impl ChatWidget<'_> {
                 return;
             }
 
-            let mut tokens = trimmed.split_whitespace();
+            let mut tokens = trimmed.split_whitespace().peekable();
             spec_id = tokens.next().unwrap().to_string();
-            remainder = tokens.collect::<Vec<_>>().join(" ");
-            spec_task = if remainder.is_empty() {
+
+            let mut remainder_tokens: Vec<String> = Vec::new();
+            while let Some(token) = tokens.next() {
+                if token == "--hal" || token == "--hal-mode" {
+                    let Some(value) = tokens.next() else {
+                        self.history_push(crate::history_cell::new_error_event(
+                            "`--hal` flag requires a value (mock|live).".to_string(),
+                        ));
+                        self.request_redraw();
+                        return;
+                    };
+                    hal_from_args = match HalMode::from_str(value) {
+                        Some(mode) => Some(mode),
+                        None => {
+                            self.history_push(crate::history_cell::new_error_event(format!(
+                                "Unknown HAL mode '{value}'. Expected 'mock' or 'live'."
+                            )));
+                            self.request_redraw();
+                            return;
+                        }
+                    };
+                    continue;
+                }
+
+                if let Some((flag, value)) = token.split_once('=') {
+                    if flag == "--hal" || flag == "--hal-mode" {
+                        hal_from_args = match HalMode::from_str(value) {
+                            Some(mode) => Some(mode),
+                            None => {
+                                self.history_push(crate::history_cell::new_error_event(format!(
+                                    "Unknown HAL mode '{value}'. Expected 'mock' or 'live'."
+                                )));
+                                self.request_redraw();
+                                return;
+                            }
+                        };
+                        continue;
+                    }
+                }
+
+                remainder_tokens.push(token.to_string());
+            }
+
+            remainder = remainder_tokens.join(" ");
+            spec_task = if remainder_tokens.is_empty() {
                 spec_id.clone()
             } else {
                 format!("{spec_id} {remainder}")
@@ -14921,6 +14971,12 @@ impl ChatWidget<'_> {
             banner.push_str(&format!("  Prompt: {}\n", prompt_hint));
         }
 
+        let hal_mode = if hal_override.is_some() {
+            hal_override
+        } else {
+            hal_from_args
+        };
+
         if let Some(stage) = spec_stage_for_multi_agent_followup(command) {
             let stage_version = spec_prompts::stage_version_enum(stage);
             if let Some(version) = stage_version.clone() {
@@ -14945,6 +15001,16 @@ impl ChatWidget<'_> {
             }
         }
 
+        if !is_stats {
+            match hal_mode {
+                Some(mode) => banner.push_str(&format!(
+                    "  HAL mode: {}\n",
+                    mode.as_env_value()
+                )),
+                None => banner.push_str("  HAL mode: mock (default)\n"),
+            }
+        }
+
         self.insert_background_event_with_placement(banner, BackgroundPlacement::Tail);
 
         // Commands with scripts (guardrails, automation) execute via shell; otherwise, comments/notes only.
@@ -14961,6 +15027,17 @@ impl ChatWidget<'_> {
         }
         if let Ok(code_version) = std::env::var("SPEC_OPS_004_CODE_VERSION") {
             env.insert("SPEC_OPS_004_CODE_VERSION".to_string(), code_version);
+        }
+
+        if let Some(mode) = hal_mode {
+            env.insert(
+                "SPEC_OPS_HAL_MODE".to_string(),
+                mode.as_env_value().to_string(),
+            );
+            if matches!(mode, HalMode::Live) {
+                env.entry("SPEC_OPS_TELEMETRY_HAL".to_string())
+                    .or_insert_with(|| "1".to_string());
+            }
         }
 
         let command_line = if is_stats {
@@ -17067,6 +17144,7 @@ fn evaluate_guardrail_value(stage: SpecStage, value: &Value) -> GuardrailEvaluat
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct GuardrailWait {
     stage: SpecStage,
     command: SlashCommand,
@@ -17083,6 +17161,7 @@ struct SpecAutoState {
     waiting_guardrail: Option<GuardrailWait>,
     validate_retries: u32,
     pending_prompt_summary: Option<String>,
+    hal_mode: Option<HalMode>,
 }
 
 #[derive(Debug, Clone)]
@@ -17094,7 +17173,8 @@ struct GuardrailOutcome {
 }
 
 impl SpecAutoState {
-    fn new(spec_id: String, goal: String, resume_from: SpecStage) -> Self {
+    #[allow(dead_code)]
+    fn new(spec_id: String, goal: String, resume_from: SpecStage, hal_mode: Option<HalMode>) -> Self {
         let stages = vec![
             SpecStage::Plan,
             SpecStage::Tasks,
@@ -17116,6 +17196,7 @@ impl SpecAutoState {
             waiting_guardrail: None,
             validate_retries: 0,
             pending_prompt_summary: None,
+            hal_mode,
         }
     }
 
@@ -17123,6 +17204,7 @@ impl SpecAutoState {
         self.stages.get(self.current_index).copied()
     }
 
+    #[allow(dead_code)]
     fn is_executing_agents(&self) -> bool {
         matches!(self.phase, SpecAutoPhase::ExecutingAgents { .. })
     }
@@ -17133,11 +17215,13 @@ impl ChatWidget<'_> {
     // === FORK-SPECIFIC: spec-kit /spec-auto pipeline methods ===
     // Upstream: Does not have these methods
     // Preserve: handle_spec_auto_command, advance_spec_auto, and related during rebases
+    #[allow(dead_code)]
     fn handle_spec_auto_command(&mut self, invocation: SpecAutoInvocation) {
         let SpecAutoInvocation {
             spec_id,
             goal,
             resume_from,
+            hal_mode,
         } = invocation;
 
         let mut header: Vec<ratatui::text::Line<'static>> = Vec::new();
@@ -17149,12 +17233,22 @@ impl ChatWidget<'_> {
             "Resume from: {}",
             resume_from.display_name()
         )));
+        match hal_mode {
+            Some(HalMode::Live) => header.push(ratatui::text::Line::from("HAL mode: live")),
+            Some(HalMode::Mock) => header.push(ratatui::text::Line::from("HAL mode: mock")),
+            None => header.push(ratatui::text::Line::from("HAL mode: mock (default)")),
+        }
         self.history_push(crate::history_cell::PlainHistoryCell::new(
             header,
             crate::history_cell::HistoryCellType::Notice,
         ));
 
-        self.spec_auto_state = Some(SpecAutoState::new(spec_id, goal, resume_from));
+        self.spec_auto_state = Some(SpecAutoState::new(
+            spec_id,
+            goal,
+            resume_from,
+            hal_mode,
+        ));
         self.advance_spec_auto();
     }
 
@@ -17173,7 +17267,11 @@ impl ChatWidget<'_> {
 
         enum NextAction {
             PipelineComplete,
-            RunGuardrail { command: SlashCommand, args: String },
+            RunGuardrail {
+                command: SlashCommand,
+                args: String,
+                hal_mode: Option<HalMode>,
+            },
         }
 
         loop {
@@ -17186,6 +17284,7 @@ impl ChatWidget<'_> {
                     NextAction::PipelineComplete
                 } else {
                     let stage = state.stages[state.current_index];
+                    let hal_mode = state.hal_mode;
                     match &state.phase {
                         SpecAutoPhase::Guardrail => {
                             let command = guardrail_for_stage(stage);
@@ -17196,7 +17295,11 @@ impl ChatWidget<'_> {
                                 task_id: None,
                             });
                             // Stay in Guardrail phase; will transition after guardrail completes
-                            NextAction::RunGuardrail { command, args }
+                            NextAction::RunGuardrail {
+                                command,
+                                args,
+                                hal_mode,
+                            }
                         }
                         SpecAutoPhase::ExecutingAgents { .. } => {
                             // Waiting for agents to complete
@@ -17221,14 +17324,19 @@ impl ChatWidget<'_> {
                     self.spec_auto_state = None;
                     return;
                 }
-                NextAction::RunGuardrail { command, args } => {
-                    self.handle_spec_ops_command(command, args);
+                NextAction::RunGuardrail {
+                    command,
+                    args,
+                    hal_mode,
+                } => {
+                    self.handle_spec_ops_command(command, args, hal_mode);
                     return;
                 }
             }
         }
     }
 
+    #[allow(dead_code)]
     fn present_spec_prompt(
         &mut self,
         stage: SpecStage,

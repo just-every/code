@@ -264,9 +264,25 @@ spec_ops_capture_hal() {
 spec_ops_run_hal_smoke() {
   SPEC_OPS_HAL_STATUS="skipped"
   SPEC_OPS_HAL_FAILED_CHECKS=()
+  SPEC_OPS_HAL_ARTIFACTS=()
 
   if [[ "${SPEC_OPS_HAL_SKIP:-0}" == "1" ]]; then
     spec_ops_write_log "SPEC_OPS_HAL_SKIP=1; skipping HAL smoke"
+    return 0
+  fi
+
+  local hal_mode="${SPEC_OPS_HAL_MODE:-mock}"
+  if [[ "${hal_mode}" != "live" && "${hal_mode}" != "real" ]]; then
+    spec_ops_write_log "SPEC_OPS_HAL_MODE=${hal_mode} -> using HAL mock responses; set SPEC_OPS_HAL_MODE=live to run real checks"
+    if [[ "${SPEC_OPS_TELEMETRY_HAL:-0}" == "1" ]]; then
+      local dest_dir
+      dest_dir="$(spec_ops_hal_evidence_dir)"
+      local ts
+      ts="$(date -u +%Y%m%d-%H%M%SZ)"
+      local mock_path="${dest_dir}/${ts}-hal-mock.json"
+      printf '{"status":"mocked","note":"HAL mock mode active"}\n' >"${mock_path}" 2>>"${SPEC_OPS_LOG}"
+      SPEC_OPS_HAL_ARTIFACTS=("${mock_path}")
+    fi
     return 0
   fi
 
