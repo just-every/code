@@ -22,6 +22,9 @@ const DEFAULT_REQUEST_MAX_RETRIES: u64 = 4;
 const MAX_STREAM_MAX_RETRIES: u64 = 100;
 /// Hard cap for user-configured `request_max_retries`.
 const MAX_REQUEST_MAX_RETRIES: u64 = 100;
+const OPENAI_WIRE_API_ENV: &str = "OPENAI_WIRE_API";
+const OPENAI_WIRE_API_CHAT: &str = "chat";
+const OPENAI_WIRE_API_RESPONSES: &str = "responses";
 
 /// Wire protocol that the provider speaks. Most third-party services only
 /// implement the classic OpenAI Chat Completions JSON schema, whereas OpenAI
@@ -369,6 +372,27 @@ pub const BUILT_IN_OSS_MODEL_PROVIDER_ID: &str = "oss";
 pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
     use ModelProviderInfo as P;
 
+    let wire_api_override_from_env = |var_name: &str| -> Option<WireApi> {
+        let raw_value = std::env::var(var_name).ok()?;
+        let trimmed = raw_value.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        match trimmed.to_ascii_lowercase().as_str() {
+            OPENAI_WIRE_API_CHAT => Some(WireApi::Chat),
+            OPENAI_WIRE_API_RESPONSES => Some(WireApi::Responses),
+            _ => {
+                tracing::warn!(
+                    value = trimmed,
+                    var_name,
+                    "Unsupported wire API override; using default"
+                );
+                None
+            }
+        }
+    };
+
     // We do not want to be in the business of adjucating which third-party
     // providers are bundled with Codex CLI, so we only include the OpenAI and
     // open source ("oss") providers by default. Users are encouraged to add to
@@ -388,7 +412,8 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                     .filter(|v| !v.trim().is_empty()),
                 env_key: None,
                 env_key_instructions: None,
-                wire_api: WireApi::Responses,
+                wire_api: wire_api_override_from_env(OPENAI_WIRE_API_ENV)
+                    .unwrap_or(WireApi::Responses),
                 query_params: None,
                 http_headers: Some(
                     [
