@@ -174,6 +174,7 @@ self.submit_op(Op::Exec {
 
 | Order | Task ID | Title | Status | Owners | PRD | Branch | PR | Last Validation | Evidence | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 26 | T26 | SPEC-KIT-DEMO Guardrail Baseline | In Progress | Code | docs/SPEC-KIT-DEMO/spec.md | spec-auto-telemetry |  | 2025-10-12 | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-DEMO/ | HAL secret still missing (SPEC_OPS_HAL_SKIP=1). Lint evidence captured (lint_tasks_2025-10-12T17-22-21Z.txt); halt screenshot and fresh four-model roster still pending. |
 | 11 | T46 | Add documentation for fork rebasing and nightly drift verification | Backlog | Code |  | feat/spec-auto-telemetry |  |  |  | Created via /new-spec on 2025-10-05 |
 | 12 | T47 | Spec status diagnostics dashboard | Done | Code | docs/SPEC-KIT-035-spec-status-diagnostics/PRD.md | feat/spec-auto-telemetry |  | 2025-10-08 |  | Native Rust spec-status-dump binary + bash wrapper. Shows: core files, tracker entry, stage-by-stage status (guardrail/consensus/agents), evidence footprint, recent activity. Completed: 2025-10-08. |
 | 13 | T48 | Add simple config validation utility | In Progress | Code | docs/SPEC-KIT-040-add-simple-config-validation-utility/PRD.md | feat/spec-auto-telemetry |  |  |  | 2025-10-11 plan/tasks docs drafted; consensus logged (validator module + validate-stage telemetry). |

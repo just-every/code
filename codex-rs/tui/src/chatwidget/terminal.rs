@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::sync::mpsc::Sender;
@@ -17,6 +18,7 @@ pub(crate) const TERMINAL_MAX_RAW: usize = 1_048_576;
 pub(crate) const TERMINAL_PTY_ROWS: u16 = 24;
 pub(crate) const TERMINAL_PTY_COLS: u16 = 80;
 pub(crate) const TERMINAL_SCROLLBACK: usize = TERMINAL_MAX_LINES;
+const TERMINAL_TABSTOP: usize = 4;
 
 #[derive(Default)]
 pub(crate) struct TerminalState {
@@ -76,6 +78,7 @@ pub(crate) struct TerminalOverlay {
     pub(crate) last_info_message: Option<String>,
     pub(crate) pty_rows: u16,
     pub(crate) pty_cols: u16,
+    tab_column: usize,
 }
 
 pub(crate) enum PendingCommandAction {
@@ -112,6 +115,7 @@ impl TerminalOverlay {
             last_info_message: None,
             pty_rows: TERMINAL_PTY_ROWS,
             pty_cols: TERMINAL_PTY_COLS,
+            tab_column: 0,
         }
     }
 
@@ -179,6 +183,7 @@ impl TerminalOverlay {
         self.truncated = false;
         self.pending_command = None;
         self.last_info_message = None;
+        self.tab_column = 0;
         self.rebuild_lines();
     }
 
@@ -293,13 +298,112 @@ impl TerminalOverlay {
         } else {
             None
         };
-        self.parser.process(chunk);
+        let processed = self.preprocess_chunk_for_parser(chunk);
+        self.parser.process(processed.as_ref());
         self.refresh_terminal_lines(is_stderr, previous_plain);
         if was_following {
             self.auto_follow(true);
         } else {
             self.clamp_scroll();
         }
+    }
+
+    fn preprocess_chunk_for_parser<'a>(&mut self, chunk: &'a [u8]) -> Cow<'a, [u8]> {
+        let mut idx = 0usize;
+        let mut col = self.tab_column;
+        let mut needs_expand = false;
+        while idx < chunk.len() {
+            match chunk[idx] {
+                b'\t' => {
+                    needs_expand = true;
+                    col += TERMINAL_TABSTOP - (col % TERMINAL_TABSTOP);
+                    idx += 1;
+                }
+                b'\n' | b'\r' => {
+                    col = 0;
+                    idx += 1;
+                }
+                0x1B => {
+                    let consumed = consume_escape_sequence(&chunk[idx..]);
+                    if consumed == 0 {
+                        break;
+                    }
+                    idx += consumed;
+                }
+                0x08 => {
+                    if col > 0 {
+                        col -= 1;
+                    }
+                    idx += 1;
+                }
+                byte if byte & 0xC0 == 0x80 => {
+                    idx += 1;
+                }
+                byte if byte < 0x20 || (0x80..=0x9F).contains(&byte) => {
+                    idx += 1;
+                }
+                _ => {
+                    col = col.saturating_add(1);
+                    idx += 1;
+                }
+            }
+        }
+
+        if !needs_expand {
+            self.tab_column = col;
+            return Cow::Borrowed(chunk);
+        }
+
+        let mut out = Vec::with_capacity(chunk.len() + 16);
+        let mut idx = 0usize;
+        let mut col = self.tab_column;
+        while idx < chunk.len() {
+            match chunk[idx] {
+                b'\t' => {
+                    let spaces = TERMINAL_TABSTOP - (col % TERMINAL_TABSTOP);
+                    out.extend(std::iter::repeat(b' ').take(spaces));
+                    col += spaces;
+                    idx += 1;
+                }
+                b'\n' => {
+                    out.push(b'\n');
+                    col = 0;
+                    idx += 1;
+                }
+                b'\r' => {
+                    out.push(b'\r');
+                    col = 0;
+                    idx += 1;
+                }
+                0x1B => {
+                    let consumed = copy_escape_sequence(&chunk[idx..], &mut out);
+                    if consumed == 0 {
+                        break;
+                    }
+                    idx += consumed;
+                }
+                0x08 => {
+                    out.push(0x08);
+                    if col > 0 {
+                        col -= 1;
+                    }
+                    idx += 1;
+                }
+                byte => {
+                    out.push(byte);
+                    if byte & 0xC0 == 0x80 {
+                        // continuation byte, column already accounted for
+                    } else if byte < 0x20 || (0x80..=0x9F).contains(&byte) {
+                        // control byte, ignore for column advance
+                    } else {
+                        col = col.saturating_add(1);
+                    }
+                    idx += 1;
+                }
+            }
+        }
+        self.tab_column = col;
+        Cow::Owned(out)
     }
 
     pub(crate) fn refresh_terminal_lines(
@@ -617,10 +721,71 @@ fn strip_non_sgr_csi(input: &str) -> String {
                 }
                 continue;
             }
+            continue;
+        }
+        if ch == '\t' {
+            out.push('\t');
+            continue;
         }
         out.push(ch);
     }
     out
+}
+
+fn consume_escape_sequence(bytes: &[u8]) -> usize {
+    if bytes.is_empty() {
+        return 0;
+    }
+    let mut idx = 1usize; // always consume ESC
+    if idx >= bytes.len() {
+        return idx;
+    }
+    let leader = bytes[idx];
+    idx += 1;
+    match leader {
+        b'[' => {
+            while idx < bytes.len() {
+                let c = bytes[idx];
+                idx += 1;
+                if (0x40..=0x7E).contains(&c) {
+                    break;
+                }
+            }
+        }
+        b']' | b'P' | b'X' | b'^' | b'_' => {
+            while idx < bytes.len() {
+                let c = bytes[idx];
+                idx += 1;
+                if c == 0x07 {
+                    break;
+                }
+                if c == b'\\' {
+                    if idx < bytes.len() {
+                        idx += 1;
+                    }
+                    break;
+                }
+            }
+        }
+        _ => {
+            while idx < bytes.len() && (0x20..=0x2F).contains(&bytes[idx]) {
+                idx += 1;
+            }
+            if idx < bytes.len() {
+                idx += 1;
+            }
+        }
+    }
+    idx
+}
+
+fn copy_escape_sequence(bytes: &[u8], out: &mut Vec<u8>) -> usize {
+    let consumed = consume_escape_sequence(bytes);
+    if consumed == 0 {
+        return 0;
+    }
+    out.extend_from_slice(&bytes[..consumed]);
+    consumed
 }
 
 fn diff_changed_indices(prev: &[String], next: &[String]) -> Vec<usize> {
@@ -698,5 +863,26 @@ cliff.toml          flake.lock          NOTICE              \x1b[34mrelease-note
             between_tail.chars().all(|ch| ch == ' '),
             "expected padding between package.json and scripts, got {between_tail:?}"
         );
+    }
+
+    #[test]
+    fn strip_non_sgr_csi_preserves_tabs() {
+        assert_eq!(strip_non_sgr_csi("col1\tcol2"), "col1\tcol2");
+    }
+
+    #[test]
+    fn sanitize_for_tui_expands_tabs() {
+        use crate::sanitize::{sanitize_for_tui, Mode as SanitizeMode, Options as SanitizeOptions};
+
+        let filtered = "col1\tcol2\tcol3";
+        let sanitized = sanitize_for_tui(
+            filtered,
+            SanitizeMode::Plain,
+            SanitizeOptions {
+                expand_tabs: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(sanitized, "col1    col2    col3");
     }
 }

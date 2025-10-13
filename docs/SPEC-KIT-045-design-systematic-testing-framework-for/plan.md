@@ -9,7 +9,7 @@
    - Capture remediation steps and log outputs so `/spec-auto` transcripts clearly show the four-model roster, and document the `--hal live` toggle for real HAL runs when needed.
 2. Minimal fixture kit
    - Maintain a synthetic SPEC bundle (`docs/SPEC-KIT-045-mini/`) plus mocked agent/telemetry snapshots under 100 KB for fast stage rehearsal.
-   - Document a lightweight copy/regeneration workflow (manual or future xtask) with checksum notes to detect drift.
+   - Document a lightweight copy/regeneration workflow (manual or future xtask) with checksum notes to detect drift. (2025-10-12 update: fixture created at 36 KB with checksums in `docs/SPEC-KIT-045-mini/checksums.sha256`.)
 3. Stage execution playbooks (plan → unlock)
    - Define repeatable TUI sequences for `/spec-ops-plan|tasks|implement|validate|audit|unlock` against the fixture SPEC, including expected prompts, evidence locations, and resume (`--from`) behaviour.
    - Ensure each playbook records agent roster confirmation and stage-specific acceptance criteria.
@@ -38,6 +38,7 @@
 - Telemetry schema drift can invalidate fixtures; tie fixtures to shared helpers and rerun checks when schema changes.
 - Evidence directories may grow past size budget; monitor with manifest script and prune fixtures aggressively.
 - Error cases might rely on HAL availability; default to mocked responses in tests and document optional live checks using HAL flags.
+- Landlock sandbox limitations can block rehearsal commands; remind operators to run the TUI with `--sandbox danger-full-access` when using the mini bundle.
 
 ## Consensus & Risks (Multi-AI)
 - Gemini 2.5 Pro and Claude 4.5 Sonnet agreed on the lean, fixture-first approach with agent spawn remediation and stage-by-stage validation; GPT Pro/GPT Codex alignment pending until access is restored and checked via task 1.

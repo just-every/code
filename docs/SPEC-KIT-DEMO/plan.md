@@ -1,33 +1,35 @@
-# Plan: SPEC-KIT-DEMO Halt Gating Validation (T26)
+# Plan: SPEC-KIT-DEMO Guardrail Baseline (T26)
 ## Inputs
-- Spec: docs/SPEC-KIT-DEMO/spec.md (commit 1a495650ef6538f71a8bdc38afd1823b2e2c21d0)
+- Spec: docs/SPEC-KIT-DEMO/spec.md (commit 804d120199f39f80a3e2f954402c91cb690d9eeb)
 - Constitution: memory/constitution.md (v1.1, amended 2025-09-28)
 
 ## Work Breakdown
-1. Reconcile docs/SPEC-KIT-DEMO/{spec.md, tasks.md} and SPEC.md row T26 so acceptance criteria, evidence filenames, and tracker notes reflect the upcoming halt run.
-2. Execute `/spec-plan --consensus-exec SPEC-KIT-DEMO --goal "halt gating validation"` (or equivalent guardrail wrapper) to capture a fresh conflict bundle with per-agent JSON, synthesis.json, and telemetry.jsonl.
-3. Run HAL HTTP MCP templates (health/list_movies/graphql) via `cargo run -p codex-mcp-client --bin call_tool -- --tool … -- npx -y hal-mcp` when credentials exist, or document the skip in plan/tasks with rationale.
-4. Update docs/SPEC-KIT-DEMO/plan.md and tasks.md with telemetry filenames, halt screenshot status, and HAL outcomes so tasks.md Step 2 can move to Done and residual actions are logged.
+1. Reconcile docs/SPEC-KIT-DEMO/{plan.md,tasks.md} and SPEC.md row T26 with the 2025-10-12 guardrail outputs (`spec-plan_2025-10-12T14:26:32Z-1976726666.json` bundle) and re-run `python3 scripts/spec-kit/lint_tasks.py` to confirm tracker integrity. *(Completed 2025-10-12 – see `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-DEMO/lint_tasks_2025-10-12T17-22-21Z.txt`.)*
+2. Execute `/spec-plan --consensus-exec SPEC-KIT-DEMO --goal "halt gating validation"` (or the guardrail wrapper) to capture fresh per-agent JSON, synthesis.json, telemetry.jsonl, and the halt screenshot under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-DEMO/`. Launch the TUI with `--sandbox danger-full-access` so Landlock does not block evidence listings.
+3. Run HAL HTTP MCP smoke checks (`health`, `list_movies`, `graphql_ping`) with `SPEC_OPS_TELEMETRY_HAL=1`; if `HAL_SECRET_KAVEDARR_API_KEY` is still unavailable, set `SPEC_OPS_HAL_SKIP=1`, log the skip rationale in docs and SPEC.md, and queue the rerun trigger.
+4. Update docs/SPEC-KIT-DEMO/{plan.md,tasks.md} with telemetry filenames, halt screenshot ownership, HAL outcome, and follow-up actions; advance tasks to Done once evidence is referenced and open items noted.
+5. Run `scripts/spec_ops_004/evidence_stats.sh docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-DEMO` and document the footprint (<25 MB) alongside any pruning steps required.
 
 ## Acceptance Mapping
 | Requirement (Spec) | Validation Step | Test/Check Artifact |
 | --- | --- | --- |
-| R1: Docs + tracker aligned | `python3 scripts/spec-kit/lint_tasks.py` and review SPEC.md T26 notes | SPEC.md diff + lint output |
-| R2: Halt gating validated | `/spec-plan --consensus-exec SPEC-KIT-DEMO --goal "halt gating validation"` | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-DEMO/spec-plan_*_telemetry.jsonl |
-| R3: HAL evidence recorded | HAL HTTP MCP templates (or documented skip) | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-DEMO/hal_* |
+| R1: Docs + tracker aligned | `python3 scripts/spec-kit/lint_tasks.py` and review SPEC.md row T26 notes | SPEC.md T26 diff + lint output |
+| R2: Halt gating telemetry captured | `/spec-plan --consensus-exec SPEC-KIT-DEMO --goal "halt gating validation"` | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-DEMO/spec-plan_*_{telemetry.jsonl,synthesis.json,per-agent.json} + halt screenshot |
+| R3: HAL evidence recorded or skip documented | `SPEC_OPS_TELEMETRY_HAL=1 bash scripts/spec_ops_004/commands/spec_ops_validate.sh SPEC-KIT-DEMO` (or skip note) | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-DEMO/hal_* artifacts or documented skip |
+| R4: Docs reference evidence + follow-ups closed | Manual review of docs/SPEC-KIT-DEMO/{plan.md,tasks.md} and SPEC.md notes | Updated docs showing filenames, timestamps, owners, and outstanding actions |
 
 ## Risks & Unknowns
-- HAL_SECRET_KAVEDARR_API_KEY might be unavailable; if so, record the skip and schedule the rerun once provided.
-- Consensus prompts may not trigger a conflict; keep adversarial prompt variants on hand and rerun until halt gating is demonstrated.
-- Telemetry filenames could drift if evidence directories differ; pre-verify paths before updating SPEC.md notes.
-- Halt screenshot ownership is still open; confirm who captures it during the evidence run.
+- `HAL_SECRET_KAVEDARR_API_KEY` may remain unavailable, delaying Step 3 until credentials arrive.
+- Consensus prompts might not trigger a conflict; adversarial prompt variants may be required to capture the halt screenshot.
+- Telemetry schema v1 validation can fail and halt the pipeline if evidence paths drift.
+- Halt screenshot ownership is still unassigned and must be confirmed before closing Step 4.
+- Evidence size could exceed the 25 MB soft limit without pruning, risking CI slowdowns.
 
 ## Consensus & Risks (Multi-AI)
-- Agreement: Gemini bc83ced5-abac-4222-a8f3-83c89158d5dd, Claude 50816001-f146-48de-a45e-bcd6f9e198bc, and GPT-5 305a6766-81ac-4609-9574-a628e04a6726 align on sequencing: docs/tracker sync → halt run → HAL validation → doc updates.
-- Disagreement & resolution: Minor uncertainty remains about HAL credential availability and halt screenshot assignment; track decisions in tasks.md until resolved.
+- Agreement: Gemini (research), Claude Sonnet (synthesis), and GPT-5 Codex (validator) aligned on refreshing telemetry with the 2025-10-12 guardrail run, documenting HAL outcomes, and recording evidence footprint data before advancing.
+- Disagreement & resolution: GPT-Pro and GPT-Codex classic endpoints were unavailable; remaining agents absorbed QA duties, noted the workspace pathing blocker as out-of-scope for this SPEC, and recorded the degraded lineup in telemetry.
 
 ## Exit Criteria (Done)
-- `python3 scripts/spec-kit/lint_tasks.py` passes and SPEC.md T26 notes cite the new telemetry bundle filename.
-- docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-DEMO/ contains a ≥2025-10-05 conflict bundle (per-agent JSON, synthesis.json, telemetry.jsonl) from the halt run.
-- HAL templates executed (or skip documented) with outputs linked from plan/tasks and SPEC.md notes.
-- docs/SPEC-KIT-DEMO/tasks.md updated with halt screenshot status and any remaining follow-up actions.
+- All acceptance checks pass (lint, consensus run, HAL execution or documented skip, evidence stats recorded).
+- Docs updated: SPEC.md T26 notes, docs/SPEC-KIT-DEMO/{plan.md,tasks.md} reference 2025-10-12 evidence and halt screenshot ownership.
+- Telemetry bundle (`spec-plan_2025-10-12T14:26:32Z-1976726666.*`) and HAL evidence (or skip rationale) linked in docs and SPEC.md notes.

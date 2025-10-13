@@ -6,13 +6,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../common.sh"
 
 if [[ $# -lt 1 ]]; then
-  echo "Usage: /spec-ops-plan <SPEC-ID> [--baseline-mode <mode>] [--allow-fail] [--manifest-path <path>]" >&2
+  echo "Usage: /spec-ops-plan <SPEC-ID> [--baseline-mode <mode>] [--allow-fail] [--allow-dirty] [--manifest-path <path>]" >&2
   exit 1
 fi
 
 SPEC_ID="$1"; shift
 BASELINE_MODE="no-run"
 ALLOW_BASELINE_FAIL=0
+ALLOW_DIRTY=0
 MANIFEST_PATH=""
 
 if [[ "${SPEC_OPS_ALLOW_DIRTY:-0}" == "1" || "${SPEC_OPS_BASELINE_ALLOW_FAIL:-0}" == "1" ]]; then
@@ -43,6 +44,8 @@ while [[ $# -gt 0 ]]; do
       BASELINE_MODE="skip"; shift ;;
     --allow-fail)
       ALLOW_BASELINE_FAIL=1; shift ;;
+    --allow-dirty)
+      ALLOW_DIRTY=1; shift ;;
     --manifest-path)
       if [[ $# -lt 2 ]]; then
         echo "--manifest-path requires a value" >&2
@@ -56,6 +59,10 @@ done
 
 if [[ -n "${MANIFEST_PATH}" ]]; then
   spec_ops_set_manifest_path "${MANIFEST_PATH}"
+fi
+
+if [[ ${ALLOW_DIRTY} -eq 1 ]]; then
+  export SPEC_OPS_ALLOW_DIRTY=1
 fi
 
 spec_ops_require_clean_tree

@@ -14,7 +14,7 @@
 - **Risks**: GPT Pro/Codex service availability; record fallback procedure if outage persists.
 
 - **Validation**:
-  1. Copy the fixture folder under `docs/SPEC-KIT-045-mini/` (or edit existing docs/spec) keeping total size <100 KB (`du -sh docs/SPEC-KIT-045-mini`).
+  1. Copy the fixture folder under `docs/SPEC-KIT-045-mini/` (or edit existing docs/spec) keeping total size <100 KB (`du -sh docs/SPEC-KIT-045-mini`). *(Seed bundle created 2025-10-12 at 36 KB with checksums in `docs/SPEC-KIT-045-mini/checksums.sha256`.)*
   2. Record checksums of key files (telemetry snapshots, mock agent outputs) in the fixture manifest.
 - **Evidence**: Fixture manifest with checksums, size report, generated sample artifacts.
 - **Docs**: Add regeneration instructions to `docs/spec-kit/systematic-testing-guide.md`.
@@ -23,7 +23,7 @@
 - **Goal**: Define playbooks for running `/spec-ops-<stage>` against fixtures from the TUI, asserting acceptance criteria and evidence writes without the full pipeline.
 - **Dependencies**: Tasks 1–2, guardrail scripts in `scripts/spec_ops_004/commands/`.
 - **Validation**:
-  1. From the TUI, run `/spec-ops-plan SPEC-KIT-045-mini` (mock HAL) and capture log + telemetry paths.
+  1. From the TUI, run `/spec-ops-plan SPEC-KIT-045-mini` (mock HAL) and capture log + telemetry paths. Launch the TUI with `--sandbox danger-full-access` to avoid Landlock panics when listing evidence.
   2. Repeat for tasks, implement, validate, audit, unlock. For resumable flows, run `/spec-auto SPEC-KIT-045-mini --from <stage>` and document behaviour.
 - **Evidence**: Stage-specific log files, acceptance checklist stored in docs, annotated transcripts.
 - **Docs**: Update `docs/spec-kit/systematic-testing-guide.md` with detailed stage instructions.

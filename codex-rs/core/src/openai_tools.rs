@@ -447,7 +447,7 @@ pub(crate) fn create_tools_json_for_chat_completions_api(
 }
 
 pub(crate) fn mcp_tool_to_openai_tool(
-    fully_qualified_name: String,
+    fully_qualified_name: &str,
     tool: mcp_types::Tool,
 ) -> Result<ResponsesApiTool, serde_json::Error> {
     let mcp_types::Tool {
@@ -470,11 +470,13 @@ pub(crate) fn mcp_tool_to_openai_tool(
     // `integer`. Our internal JsonSchema is a small subset and requires
     // `type`, so we coerce/sanitize here for compatibility.
     let mut serialized_input_schema = serde_json::to_value(input_schema)?;
+    tracing::debug!(tool = %fully_qualified_name, schema = ?serialized_input_schema, "MCP tool schema pre-sanitize");
     sanitize_json_schema(&mut serialized_input_schema);
+    tracing::debug!(tool = %fully_qualified_name, schema = ?serialized_input_schema, "MCP tool schema post-sanitize");
     let input_schema = serde_json::from_value::<JsonSchema>(serialized_input_schema)?;
 
     Ok(ResponsesApiTool {
-        name: fully_qualified_name,
+        name: fully_qualified_name.to_string(),
         description: description.unwrap_or_default(),
         strict: false,
         parameters: input_schema,
@@ -576,9 +578,18 @@ fn sanitize_json_schema(value: &mut JsonValue) {
                 // If additionalProperties is an object schema, sanitize it too.
                 // Leave booleans as-is, since JSON Schema allows boolean here.
                 if let Some(ap) = map.get_mut("additionalProperties") {
-                    let is_bool = matches!(ap, JsonValue::Bool(_));
-                    if !is_bool {
-                        sanitize_json_schema(ap);
+                    match ap {
+                        JsonValue::Bool(_) => {}
+                        JsonValue::Object(_) | JsonValue::Array(_) => {
+                            // Our limited JsonSchema only supports boolean additionalProperties.
+                            // When MCP servers supply nested schemas here, treat them as
+                            // "allow any" to stay permissive while avoiding conversion errors.
+                            *ap = JsonValue::Bool(true);
+                        }
+                        _ => {
+                            // For other scalar types (numbers/strings), default to `true`.
+                            *ap = JsonValue::Bool(true);
+                        }
                     }
                 }
             }
@@ -685,7 +696,7 @@ pub(crate) fn get_openai_tools(
         entries.sort_by(|a, b| a.0.cmp(&b.0));
 
         for (name, tool) in entries.into_iter() {
-            match mcp_tool_to_openai_tool(name.clone(), tool.clone()) {
+            match mcp_tool_to_openai_tool(&name, tool.clone()) {
                 Ok(converted_tool) => tools.push(OpenAiTool::Function(converted_tool)),
                 Err(e) => {
                     tracing::error!("Failed to convert {name:?} MCP tool to OpenAI tool: {e:?}");
@@ -755,6 +766,7 @@ mod tests {
     use crate::model_family::find_family_for_model;
     use mcp_types::ToolInputSchema;
     use pretty_assertions::assert_eq;
+    use serde_json::json;
 
     use super::*;
 
@@ -1315,6 +1327,53 @@ mod tests {
                 description: "AnyOf Value".to_string(),
                 strict: false,
             })
+        );
+    }
+
+    #[test]
+    fn test_mcp_tool_additional_properties_object_coerces_to_bool() {
+        let tool = mcp_types::Tool {
+            annotations: None,
+            description: Some("HAL HTTP GET".to_string()),
+            input_schema: ToolInputSchema {
+                properties: Some(json!({
+                    "headers": {
+                        "type": "object",
+                        "additionalProperties": { "type": "string" }
+                    },
+                    "url": {
+                        "type": "string",
+                        "format": "uri"
+                    }
+                })),
+                required: Some(vec!["url".to_string()]),
+                r#type: "object".to_string(),
+            },
+            name: "http-get".to_string(),
+            output_schema: None,
+            title: Some("HTTP GET".to_string()),
+        };
+
+        let converted = mcp_tool_to_openai_tool("hal__http-get", tool)
+            .expect("conversion should succeed with sanitized additionalProperties");
+
+        let JsonSchema::Object { properties, .. } = converted.parameters else {
+            panic!("expected root schema to be an object");
+        };
+        let headers_schema = properties
+            .get("headers")
+            .expect("headers property should exist");
+        let JsonSchema::Object {
+            additional_properties,
+            ..
+        } = headers_schema
+        else {
+            panic!("headers schema should be object");
+        };
+        assert_eq!(
+            additional_properties,
+            &Some(true),
+            "headers.additionalProperties should coerce to boolean true",
         );
     }
 
