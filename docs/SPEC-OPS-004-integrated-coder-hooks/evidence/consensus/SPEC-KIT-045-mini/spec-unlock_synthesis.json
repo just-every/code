@@ -1,0 +1,13 @@
+{
+  "status": "hold",
+  "consensus": {
+    "agreements": [
+      "Unlock remains blocked because policy overrides are still stubbed and core evidence (four-agent roster, schema validation, HAL diff) is missing.",
+      "Documentation placeholders (unlock-notes.md, mock-hal.diff, fixture-size.txt) are acceptable for rehearsal but must be replaced with real artifacts before unlock.",
+      "Next steps include rerunning guardrails without stubs, capturing schema-validated telemetry, and refreshing checksums on a clean tree."
+    ],
+    "conflicts_resolved": [
+      "Agents confirmed branch spec-auto-telemetry remains dirty due to evidence updates; decision was to keep unlock locked until follow-up runs clean the tree and capture real evidence."
+    ]
+  }
+}
