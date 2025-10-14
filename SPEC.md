@@ -33,14 +33,14 @@
 
 ## Active Tasks
 
-| Order | ID | Title | Status | Owner | Evidence | Notes |
-|-------|----|-------|--------|-------|----------|-------|
-| 1 | T60 | **Template validation** | **IN PROGRESS** | Code | docs/SPEC-KIT-060-template-validation-test/ | Test templates vs free-form. 4 SPECs (2 baseline, 2 template), measure consistency/quality. Decision gate for Phase 2. Execute: test-execution-plan.md |
-| 2 | T49 | Testing framework | **READY** | Code | docs/SPEC-KIT-045-mini/ | Full 6-stage run completed 2025-10-14. All 5 agents validated. Framework operational. Pending: Clean run without policy stubs. |
-| 3 | T48 | Config validation utility | **STALLED** | Code | docs/SPEC-KIT-040-add-simple-config-validation-utility/ | Plan/tasks created, no implementation. Low priority - not blocking core work. |
-| 4 | T47 | Spec-status dashboard | **DONE** | Code | - | Native Rust implementation. Completed 2025-10-08. |
-| 5 | T26 | SPEC-KIT-DEMO baseline | **BACKLOG** | Code | docs/SPEC-KIT-DEMO/ | Needs HAL secrets. Not blocking. |
-| 6 | T46 | Fork rebasing docs | **BACKLOG** | Code | - | Documented in FORK_DEVIATIONS.md, TUI.md. Can formalize if needed. |
+| Order | Task ID | Title | Status | Owners | PRD | Branch | PR | Last Validation | Evidence | Notes |
+|-------|---------|-------|--------|--------|-----|--------|----|-----------------|----------|-------|
+| 1 | T60 | Template validation | In Progress | Code |  |  |  |  | docs/SPEC-KIT-060-template-validation-test/ | Test templates vs free-form. 4 SPECs (2 baseline, 2 template), measure consistency/quality. Decision gate for Phase 2. Execute: test-execution-plan.md |
+| 2 | T49 | Testing framework | Backlog | Code |  |  |  |  | docs/SPEC-KIT-045-mini/ | Full 6-stage run completed 2025-10-14. All 5 agents validated. Framework operational. Pending: Clean run without policy stubs. |
+| 3 | T48 | Config validation utility | Blocked | Code |  |  |  |  | docs/SPEC-KIT-040-add-simple-config-validation-utility/ | Plan/tasks created, no implementation. Low priority - not blocking core work. |
+| 4 | T47 | Spec-status dashboard | Done | Code |  |  |  | 2025-10-08 |  | Native Rust implementation. Completed 2025-10-08. |
+| 5 | T26 | SPEC-KIT-DEMO baseline | Backlog | Code |  |  |  |  | docs/SPEC-KIT-DEMO/ | Needs HAL secrets. Not blocking. |
+| 6 | T46 | Fork rebasing docs | Backlog | Code |  |  |  |  |  | Documented in FORK_DEVIATIONS.md, TUI.md. Can formalize if needed. |
 
 ---
 
