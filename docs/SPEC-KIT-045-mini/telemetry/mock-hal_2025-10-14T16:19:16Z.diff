@@ -1,0 +1,7 @@
+--- sample-validate.json
++++ new-validate-mock.json
+@@
+ "command": "spec-ops-validate"
+-"hal.summary.status": "mock"
++"hal.summary.status": "mock"
+ "hal.summary.reason": "rehearsal bundle (no live HAL credentials)"

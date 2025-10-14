@@ -1,0 +1,6 @@
+# Placeholder diff for HAL mock rehearsal
+# Generate by running:
+# SPEC_OPS_TELEMETRY_HAL=1 /cmd spec-ops-validate SPEC-KIT-045-mini --hal mock
+# jq -S . <actual> > telemetry/mock-hal.actual.json
+# jq -S . docs/SPEC-KIT-045-mini/telemetry/sample-validate.json > telemetry/mock-hal.expected.json
+# diff -u telemetry/mock-hal.expected.json telemetry/mock-hal.actual.json

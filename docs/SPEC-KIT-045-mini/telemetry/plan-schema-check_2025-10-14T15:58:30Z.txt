@@ -1,0 +1,5 @@
+spec-ops-plan=spec-ops-plan
+SPEC-KIT-045-mini=SPEC-KIT-045-mini
+baseline.mode=no-run
+baseline.status=passed
+hooks.session.start=ok

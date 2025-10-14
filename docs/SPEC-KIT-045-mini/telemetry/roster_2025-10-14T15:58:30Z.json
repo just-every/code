@@ -1,0 +1,27 @@
+{
+  "specId": "SPEC-KIT-045-mini",
+  "timestamp": "2025-10-14T15:58:30Z",
+  "source": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-plan_2025-10-14T15:58:30Z-79323873.log",
+  "agents": [
+    {
+      "agent": "gemini",
+      "model": "gemini-1.5-pro-latest",
+      "reasoning_mode": "research"
+    },
+    {
+      "agent": "claude",
+      "model": "claude-3.7-sonnet",
+      "reasoning_mode": "synthesis"
+    },
+    {
+      "agent": "gpt_pro",
+      "model": "gpt-5-pro",
+      "reasoning_mode": "executor"
+    },
+    {
+      "agent": "gpt_codex",
+      "model": "gpt-5-codex",
+      "reasoning_mode": "impl-review"
+    }
+  ]
+}

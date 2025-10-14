@@ -1,14 +1,23 @@
 {
+  "stage": "spec-implement",
   "status": "ok",
+  "telemetry": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-implement_2025-10-14T16:39:43Z-997018070.json",
   "consensus": {
     "agreements": [
-      "Document policy override usage in unlock notes and defer real evidence capture to a follow-up run without stubs.",
-      "Regenerate checksums for updated docs and log fixture size to maintain the <100 KB rehearsal constraint.",
-      "Avoid fabricating roster or HAL telemetry; reference existing guardrail outputs and note placeholders instead."
+      "Regenerate rehearsal artefacts (roster, schema checks, mock HAL diff, policy note, size audit) using the 2025-10-14 telemetry bundle",
+      "Update docs/SPEC-KIT-045-mini/{plan.md,tasks.md,unlock-notes.md,checksums.sha256} and SPEC.md T49 to cite the refreshed evidence",
+      "Record ongoing policy overrides and schedule clean reruns before unlock",
+      "Run lint_tasks.py, cargo fmt, and cargo clippy to mirror guardrail validation coverage"
     ],
     "conflicts_resolved": [
-      "Agents initially proposed creating synthetic telemetry artifacts; resolution was to reference real guardrail paths only and label missing evidence as placeholders.",
-      "Repository scan discrepancies (missing unlock-notes/checksums) were attributed to sandbox snapshots; local tree confirmed files exist and were updated in place."
+      {
+        "issue": "Whether to fabricate synthetic telemetry versus extracting data from guardrail outputs",
+        "resolution": "Extract roster/schema data from actual 2025-10-14 JSON and document mock HAL rationale in dedicated artefacts"
+      },
+      {
+        "issue": "Handling lingering policy overrides",
+        "resolution": "Document overrides in policy-overrides_2025-10-14T16:19:16Z.txt and keep unlock blocked until clean reruns"
+      }
     ]
   }
 }

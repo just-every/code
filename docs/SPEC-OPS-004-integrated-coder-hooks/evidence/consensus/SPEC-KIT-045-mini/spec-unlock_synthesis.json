@@ -1,13 +1,13 @@
 {
+  "stage": "spec-unlock",
   "status": "hold",
+  "telemetry": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-unlock_2025-10-14T17:28:18Z-3087513806.json",
   "consensus": {
     "agreements": [
-      "Unlock remains blocked because policy overrides are still stubbed and core evidence (four-agent roster, schema validation, HAL diff) is missing.",
-      "Documentation placeholders (unlock-notes.md, mock-hal.diff, fixture-size.txt) are acceptable for rehearsal but must be replaced with real artifacts before unlock.",
-      "Next steps include rerunning guardrails without stubs, capturing schema-validated telemetry, and refreshing checksums on a clean tree."
+      "Unlock telemetry generated but policy overrides remain active",
+      "Unlock-notes.md documents hold rationale and follow-up checklist",
+      "Proceed to production unlock only after clean policy rerun (and optional live HAL)"
     ],
-    "conflicts_resolved": [
-      "Agents confirmed branch spec-auto-telemetry remains dirty due to evidence updates; decision was to keep unlock locked until follow-up runs clean the tree and capture real evidence."
-    ]
+    "conflicts_resolved": []
   }
 }

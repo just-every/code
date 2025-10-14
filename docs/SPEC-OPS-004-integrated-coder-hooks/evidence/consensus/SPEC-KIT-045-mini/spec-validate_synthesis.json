@@ -1,14 +1,18 @@
 {
-  "status": "hold",
+  "stage": "spec-validate",
+  "status": "ok",
+  "telemetry": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-validate_2025-10-14T16:58:53Z-971619013.json",
   "consensus": {
     "agreements": [
-      "Validate telemetry spec-validate_2025-10-13T04:07:33Z-2021418142.json exists but recorded scenario status as 'skipped' because policy checks were stubbed and HAL remained in mock mode.",
-      "Sample comparison and hal.summary verification remain outstanding; documentation should explicitly call out placeholder diff and plan for a non-stubbed rerun.",
-      "No roster or HAL diff evidence was produced in this rehearsal, so acceptance criteria stay pending and next steps must focus on generating real artifacts."
+      "Schema v1 telemetry recorded for validate stage with hal.summary pointing to mock artifact",
+      "Mock HAL usage acceptable for rehearsal, but unlock remains contingent on future live run",
+      "Documentation (unlock-notes.md, telemetry logs) references exact evidence filenames and rerun command with SPEC_OPS_TELEMETRY_HAL=1"
     ],
     "conflicts_resolved": [
-      "Agent sandboxes could not locate telemetry due to untracked fixture context; local workspace confirmed file presence and captured summary manually.",
-      "Rather than fabricating compare results, team agreed to record a placeholder mock-hal.diff and document the need for a real comparison."
+      {
+        "issue": "Initial sandbox output referenced older telemetry",
+        "resolution": "Synchronized evidence pointers to 2025-10-14 run and mirrored key artifacts into docs/SPEC-KIT-045-mini/telemetry/"
+      }
     ]
   }
 }

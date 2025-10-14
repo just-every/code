@@ -1,14 +1,20 @@
 {
+  "stage": "spec-plan",
   "status": "ok",
+  "telemetry": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-plan_2025-10-14T15:58:30Z-79323873.json",
   "consensus": {
     "agreements": [
-      "Anchor plan deliverable to telemetry spec-plan_2025-10-13T03:39:12Z-92930885 (baseline.mode=no-run, status=passed) and document SPEC_OPS_POLICY_* stubs used for this rehearsal run.",
-      "Ensure four agent outputs (gemini, claude, gpt_pro, gpt_codex) are captured for the plan stage and cite the evidence directory docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/.",
-      "Update docs/SPEC-KIT-045-mini/{plan.md,tasks.md,unlock-notes.md,checksums.sha256} to reference the mock HAL rehearsal steps and sample telemetry diff workflow."
+      "Anchor planning work to the 2025-10-14T15:58:30Z guardrail telemetry and retire 2025-10-13 references",
+      "Extract and persist roster_2025-10-14T15:58:30Z.json with model metadata beside the guardrail outputs",
+      "Capture jq schema assertions and HAL mock rehearsal instructions (including hal.summary rationale and sample diff)",
+      "Embed precise rerun commands and policy override posture across plan.md, tasks.md, unlock-notes.md, and SPEC.md row T49",
+      "Log consensus artefacts for this run under docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-045-mini/"
     ],
     "conflicts_resolved": [
-      "Agents running in clean sandboxes could not see untracked fixture docs; local repository verified docs/SPEC-KIT-045-mini/ exists, so note the environment degradation and stage assets before remote automation.",
-      "Policy prefilter/final commands were stubbed via SPEC_OPS_POLICY_*_CMD=true; proceed with rehearsal but require a follow-up run with real policy checks before unlock."
+      {
+        "issue": "Whether to rewrite tasks.md immediately or during /tasks",
+        "resolution": "Document the dependency in this plan and execute the concrete tasks.md refresh during the /tasks stage while ensuring evidence alignment"
+      }
     ]
   }
 }
