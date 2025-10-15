@@ -1,222 +1,544 @@
 # Fork-Specific Deviations from Upstream
 
-This document tracks intentional deviations from `anthropics/claude-code` (upstream) to enable spec-kit automation workflow.
+**Upstream:** anthropics/claude-code
+**Fork:** just-every/code
+**Last Updated:** 2025-10-15
+**Merge Base:** 2822aa525 (Sep 19, 2025)
+**Divergence:** 798 files, 78,850 insertions (16,290 in 3 critical files)
 
-## Branch Strategy
+---
 
+## Executive Summary
+
+**Fork Purpose:** Add spec-kit multi-agent automation framework to Codex CLI/TUI
+
+**Rebase Strategy:** Quarterly sync with upstream, maintain fork-specific features
+
+**Current State:** Phase 3 complete, **refactoring planned** to reduce rebase conflict surface 99%
+
+**Critical:** See `docs/spec-kit/FORK_ISOLATION_AUDIT.md` for detailed conflict analysis and `docs/spec-kit/REFACTORING_PLAN.md` for extraction strategy.
+
+---
+
+## Rebase Conflict Surface
+
+### Critical Files (High Conflict Risk)
+
+**Pre-Refactoring (Current):**
+1. **chatwidget.rs** - 14,112 insertions (inline spec-kit logic)
+2. **app.rs** - 1,546 insertions (inline routing)
+3. **slash_command.rs** - 632 insertions (30 mixed enum variants)
+
+**Post-Refactoring (Planned):**
+1. **chatwidget.rs** - ~50 insertions (delegation only)
+2. **app.rs** - ~40 insertions (delegation only)
+3. **slash_command.rs** - ~30 insertions (2 nested variants)
+
+**Refactoring effort:** 10-15 hours
+**Payoff:** 16,290 → 120 lines (99% reduction)
+
+---
+
+## Fork-Specific Additions (Zero Conflict Risk)
+
+### New Modules (529 files)
+
+**Rust code:**
+- `codex-rs/tui/src/spec_prompts.rs` - Prompt loading
+- `codex-rs/tui/src/spec_status.rs` - Native status dashboard
+- `codex-rs/tui/src/bin/spec-status-dump.rs` - CLI tool
+- `codex-rs/tui/src/spec_kit/` - **Planned module** (post-refactoring)
+- `codex-rs/tui/tests/fixtures/spec_status/` - Test fixtures
+
+**Templates:**
+- `templates/spec-template.md`
+- `templates/PRD-template.md`
+- `templates/plan-template.md`
+- `templates/tasks-template.md`
+
+**Scripts:**
+- `scripts/spec_ops_004/*.sh` - Guardrail automation
+- `scripts/spec-kit/*.py` - Utilities
+
+**Documentation:**
+- `docs/spec-kit/*.md` - 15 technical docs
+- `docs/SPEC-KIT-*/` - SPEC directories
+- Root-level strategy docs (20+ files)
+
+**Rebase Strategy:** Keep all new files, zero conflicts
+
+---
+
+## Inline Modifications (Conflict Risk)
+
+### chatwidget.rs (🔴 CRITICAL - Will Conflict)
+
+**Current modifications:**
+- Added `spec_auto_state: Option<SpecAutoState>` field
+- Inline structs: `SpecAutoState`, `SpecAutoPhase` (~100 lines)
+- Methods: `handle_spec_plan_command()` and 9 others (~2,500 lines total)
+- Telemetry tracking, consensus integration
+- **Total:** 14,112 insertions embedded in upstream file
+
+**Rebase conflict pattern:**
+- Upstream modifies message handling → conflicts
+- Upstream changes state management → conflicts
+- Upstream refactors rendering → conflicts
+- **Probability:** 100% on every rebase
+
+**Post-Refactoring:**
+- Single field: `spec_kit: SpecKitHandler`
+- Delegation methods: 10 × 5 lines = 50 lines
+- **Total:** ~50 insertions (minimal touch)
+
+---
+
+### app.rs (🟠 HIGH - Likely Conflicts)
+
+**Current modifications:**
+- 40+ routing branches for spec-kit commands
+- Mixed with upstream match statement
+- **Total:** 1,546 insertions
+
+**Rebase conflict pattern:**
+- Upstream adds SlashCommand handling → conflicts
+- Upstream refactors routing logic → conflicts
+- **Probability:** 80% on rebase
+
+**Post-Refactoring:**
+- 2 delegation branches (SpecKit, Guardrail)
+- Legacy redirects (10 variants × 3 lines)
+- **Total:** ~40 insertions
+
+---
+
+### slash_command.rs (🟠 HIGH - Likely Conflicts)
+
+**Current modifications:**
+- 30 enum variants mixed into upstream SlashCommand
+- Added methods: `is_spec_ops()`, `spec_ops()`
+- **Total:** 632 insertions
+
+**Rebase conflict pattern:**
+- Upstream adds/reorders enum variants → conflicts
+- Upstream changes derive macros → conflicts
+- **Probability:** 70% on rebase
+
+**Post-Refactoring:**
+- 2 nested variants: `SpecKit(SpecKitCommand)`, `Guardrail(GuardrailCommand)`
+- Separate enums in `spec_kit/commands.rs`
+- **Total:** ~30 insertions
+
+---
+
+## Conflict Resolution Playbook
+
+### Pattern 1: Struct Field Addition
+
+**Scenario:** Upstream adds field to ChatWidget
+
+**Upstream change:**
+```diff
+pub struct ChatWidget {
++   new_field: UpstreamType,
+    existing_field: SomeType,
+}
 ```
-upstream/main (anthropics/claude-code)
-  ↓
-upstream-merge (staging branch for upstream syncs)
-  ↓
-main (your stable fork)
-  ↓
-spec-kit-base (stable spec-kit features)
-  ↓
-feat/spec-auto-telemetry (active development)
+
+**Our change:**
+```diff
+pub struct ChatWidget {
+    existing_field: SomeType,
++   spec_kit: SpecKitHandler,  // Post-refactoring
+}
 ```
 
-**Rebase workflow:**
-1. Merge upstream → upstream-merge
-2. Selectively merge upstream-merge → main ("by-bucket" strategy)
-3. Rebase feat/* branches, preserve FORK-SPECIFIC sections
-4. Keep spec-kit-base synchronized with stable spec-kit features
+**Resolution:**
+1. Accept both additions
+2. Place our field last (convention: fork additions at end)
+3. Run `cargo build` to verify
+4. **Time:** 2 minutes
 
 ---
 
-## Code Deviations
+### Pattern 2: Match Branch Addition
 
-### File: `codex-rs/tui/src/chatwidget.rs`
+**Scenario:** Upstream adds new SlashCommand handling
 
-**Lines ~17063-17500:** Spec-kit automation state machine
-
-**Sections marked with:**
-```rust
-// === FORK-SPECIFIC: spec-kit automation ===
-// Upstream: Does not have /spec-auto pipeline
-// Preserve: During rebases, keep all code in this section
+**Upstream change:**
+```diff
+match command {
+    SlashCommand::Browser => { /* ... */ }
++   SlashCommand::NewUpstreamCommand => { /* ... */ }
+    SlashCommand::Chrome => { /* ... */ }
+}
 ```
 
-**Changes:**
-- SpecAutoPhase enum (ExecutingAgents, CheckingConsensus states)
-- SpecAutoState struct (pipeline state tracking)
-- handle_spec_auto_command() (pipeline orchestration)
-- Auto-submit mechanism (bypass manual approval)
-- Consensus checking integration
-- Agent completion hooks
-
-**Why:** Enable automated multi-stage pipeline with consensus validation
-
-**Upstream impact:** None - additive only, doesn't modify existing features
-
----
-
-### File: `codex-rs/tui/src/slash_command.rs`
-
-**Lines 122-152:** Spec-ops slash commands enum
-
-**Marked as:**
-```rust
-// === FORK-SPECIFIC: spec-ops commands ===
-// Upstream: Basic slash commands only
-// Preserve: SpecOpsPlan, SpecOpsAuto, SpecEvidenceStats, etc.
+**Our change (post-refactoring):**
+```diff
+match command {
+    // ... all upstream branches ...
++   SlashCommand::SpecKit(cmd) => { /* delegation */ }
++   SlashCommand::Guardrail(cmd) => { /* delegation */ }
+}
 ```
 
-**Why:** Integrate spec-kit guardrail scripts with TUI
-
-**Upstream impact:** None - additive enum variants
-
-**Migration plan:** Move to Project Commands (T30) to eliminate this deviation
-
----
-
-### File: `codex-rs/tui/src/spec_prompts.rs`
-
-**Entire file:** Fork-specific
-
-**Why:** Parse docs/spec-kit/prompts.json for multi-agent consensus
-
-**Upstream impact:** None - isolated module
+**Resolution:**
+1. Keep both sets of branches
+2. Our branches go last (convention)
+3. No functional conflict
+4. **Time:** 1 minute
 
 ---
 
-## Non-Code Deviations
+### Pattern 3: Enum Variant Addition
 
-### Directory: `scripts/spec_ops_004/`
+**Scenario:** Upstream adds SlashCommand variant
 
-**Status:** Fork-only, no upstream equivalent
-
-**Contents:**
-- Guardrail scripts (plan, tasks, implement, validate, audit, unlock)
-- Consensus runner
-- Telemetry utils
-- SPEC-ID generator
-- Synthesis checker
-
-**Upstream impact:** None - completely separate tooling
-
----
-
-### Directory: `docs/spec-kit/`
-
-**Status:** Fork-only documentation
-
-**Upstream impact:** None
-
----
-
-### File: `.github/codex/home/config.toml`
-
-**Additions:**
-- `/new-spec` subagent command
-- `/spec-auto` subagent command (pending TUI implementation)
-- Custom agent configurations
-
-**Marked in file:**
-```toml
-# === FORK-SPECIFIC: spec-kit subagent commands ===
-[[subagents.commands]]
-name = "new-spec"
-# ...
-# === END FORK-SPECIFIC ===
+**Upstream change:**
+```diff
+pub enum SlashCommand {
+    Browser,
++   NewVariant,
+    Chrome,
+}
 ```
 
-**Upstream impact:** None - config is user-specific
+**Our change (post-refactoring):**
+```diff
+pub enum SlashCommand {
+    // ... all upstream variants ...
++   SpecKit(SpecKitCommand),
++   Guardrail(GuardrailCommand),
+}
+```
+
+**Resolution:**
+1. Place new upstream variant in upstream section
+2. Keep our nested variants last
+3. Run `cargo fmt`
+4. **Time:** 2 minutes
 
 ---
 
-## Rebase Checklist
+### Pattern 4: Dependency Update
 
-When syncing from upstream:
+**Scenario:** Upstream updates crate version
 
-**Before rebase:**
-1. ✅ Tag current state: `git tag pre-rebase-$(date +%Y%m%d)`
-2. ✅ Update spec-kit-base: `git checkout spec-kit-base && git merge feat/spec-auto-telemetry`
-3. ✅ Review upstream changes: `git log upstream/main ^main`
+**Upstream change:**
+```diff
+[dependencies]
+-serde = "1.0"
++serde = "2.0"
+```
 
-**During rebase:**
-1. ✅ Preserve all FORK-SPECIFIC sections
-2. ✅ Accept upstream for unmarked code
-3. ✅ Test after each conflict resolution
+**Our change:** None (we don't add dependencies)
 
-**After rebase:**
-1. ✅ Verify spec-kit works: `./scripts/spec_ops_004/spec_auto.sh --help`
-2. ✅ Run tests: `cd codex-rs && cargo test spec_auto`
-3. ✅ Test TUI /spec-auto command
-
----
-
-## Migration Goals
-
-**Reduce deviations over time:**
-
-- **T30:** Migrate slash commands → Project Commands (-357 lines from slash_command.rs)
-- **Future:** Upstream /spec-auto if pattern generalizes
-- **Future:** Contribute consensus patterns upstream if useful
-
-**Keep as fork-only:**
-- spec_ops_004/ scripts (domain-specific)
-- docs/spec-kit/ (project-specific)
-- Telemetry schema (Kavedarr-specific)
+**Resolution:**
+1. Accept upstream version
+2. Run `cargo build`
+3. Fix any API breakage (rare)
+4. **Time:** 5-30 minutes depending on breakage
 
 ---
 
-## Conflict Resolution Guide
+### Pattern 5: File Rename/Move
 
-**Scenario 1: Upstream modifies chatwidget.rs**
+**Scenario:** Upstream renames/moves a file we modified
+
+**Example:**
+```
+Upstream: chatwidget.rs → chat_widget.rs
+Ours: Modified chatwidget.rs
+```
+
+**Resolution:**
+1. Git handles rename automatically
+2. Apply our changes to new filename
+3. If manual: `git checkout --ours new_filename.rs` then review
+4. **Time:** 2-5 minutes
+
+---
+
+## Rebase Protocol (Quarterly)
+
+### Pre-Rebase Checklist
 
 ```bash
-# During rebase conflict:
-git show :1:codex-rs/tui/src/chatwidget.rs > base.rs
-git show :2:codex-rs/tui/src/chatwidget.rs > ours.rs  # Fork
-git show :3:codex-rs/tui/src/chatwidget.rs > theirs.rs  # Upstream
+# 1. Ensure clean state
+git status  # Should be clean
+bash scripts/fork_maintenance/validate_rebase.sh  # Should pass
 
-# Extract FORK-SPECIFIC sections from ours.rs
-grep -A 9999 "FORK-SPECIFIC" ours.rs > fork-sections.rs
+# 2. Review upstream changes
+git fetch upstream master
+git log master..upstream/master --oneline
+git diff master..upstream/master --stat
 
-# Accept upstream base
-git checkout --theirs codex-rs/tui/src/chatwidget.rs
-
-# Re-inject fork sections at marked locations
-# (manual or via script)
-
-git add codex-rs/tui/src/chatwidget.rs
+# 3. Assess risk
+git diff master..upstream/master -- codex-rs/tui/src/chatwidget.rs | wc -l
+git diff master..upstream/master -- codex-rs/tui/src/app.rs | wc -l
+git diff master..upstream/master -- codex-rs/tui/src/slash_command.rs | wc -l
+# If any >500 lines: HIGH RISK, review changes carefully
 ```
 
-**Scenario 2: Upstream adds features that interact with spec-kit**
+---
 
-- Review upstream changes for compatibility
-- Adapt FORK-SPECIFIC sections if needed
-- Test spec-kit pipeline after rebase
-- Document adaptations in this file
+### Rebase Execution
+
+```bash
+# 4. Create rebase branch
+git checkout -b rebase-$(date +%Y%m%d)
+
+# 5. Execute rebase
+git rebase upstream/master
+
+# 6. Resolve conflicts (use playbook patterns)
+# For each conflict file:
+#   - Check pattern (field? match? enum?)
+#   - Apply resolution from playbook
+#   - Mark resolved: git add <file>
+#   - Continue: git rebase --continue
+
+# 7. Post-rebase validation
+bash scripts/fork_maintenance/validate_rebase.sh
+```
 
 ---
 
-## Version Tracking
+### Post-Rebase Testing
 
-**Current fork basis:** Commit dbbcb5d52 (feat(project-hooks): add project hooks and commands)
+```bash
+# 8. Functional testing (in TUI)
+codex-rs/target/dev-fast/code
 
-**Last upstream sync:** [Check git log for latest upstream-merge]
+# Test Tier 0
+/speckit.status SPEC-KIT-045-mini
 
-**Spec-kit version:** 1.0 (T28 + T29 complete)
+# Test Tier 2
+/speckit.clarify SPEC-KIT-065
 
-**Update this section after each upstream sync.**
+# Test Tier 3
+/speckit.implement SPEC-KIT-065  # If ready
+
+# Test guardrail
+/guardrail.plan SPEC-KIT-065 --dry-run
+
+# Test legacy
+/spec-status SPEC-KIT-045-mini
+/spec-ops-plan SPEC-KIT-065 --dry-run
+
+# 9. Full pipeline test (small SPEC)
+/speckit.auto SPEC-KIT-TEST
+
+# 10. Verify evidence
+ls docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-TEST/
+```
 
 ---
 
-## Maintenance
+### Documentation
 
-**Monthly:**
-- Sync upstream-merge from upstream/main
-- Review upstream changelog for conflicts
-- Test rebase on throwaway branch first
+```bash
+# 11. Update rebase log
+cat >> docs/spec-kit/REBASE_LOG.md <<EOF
+## Rebase $(date +%Y-%m-%d)
 
-**Before major changes:**
-- Update spec-kit-base branch
-- Tag stable states
-- Document new deviations here
+**Upstream commit:** $(git rev-parse upstream/master)
+**Merge base:** $(git merge-base HEAD upstream/master)
+**Conflicts:** X files
+**Resolution time:** Y hours
+**Issues:** [list any problems]
+**Notes:** [lessons learned]
 
-**Long-term goal:**
-- Minimize TUI deviations via Project Commands migration
-- Keep spec-kit tooling isolated in scripts/
-- Contribute generalizable patterns upstream
+EOF
+
+# 12. Commit if successful
+git checkout feat/spec-auto-telemetry
+git merge rebase-$(date +%Y%m%d)
+git branch -d rebase-$(date +%Y%m%d)
+```
+
+---
+
+## Refactoring Motivation
+
+**Current rebase estimate (pre-refactoring):**
+- Conflicts: 50-100 files
+- Conflict lines: 10,000-20,000
+- Resolution time: 8-16 hours
+- Risk: High (complex merges, easy to break functionality)
+
+**Post-refactoring estimate:**
+- Conflicts: <10 files
+- Conflict lines: <200
+- Resolution time: 30-60 minutes
+- Risk: Low (simple pattern-based resolutions)
+
+**ROI:** 10-15 hours refactoring saves 8-16 hours on EVERY future rebase
+
+---
+
+## Maintenance Artifacts
+
+**Planning (Complete):**
+- ✅ `docs/spec-kit/FORK_ISOLATION_AUDIT.md` - Detailed conflict analysis
+- ✅ `docs/spec-kit/REFACTORING_PLAN.md` - Extraction strategy
+- ✅ `scripts/fork_maintenance/validate_rebase.sh` - Automated checker
+- ✅ This document - Conflict patterns and rebase protocol
+
+**Execution (Planned):**
+- [ ] Extract handler module (Phase 1)
+- [ ] Isolate enums (Phase 2)
+- [ ] Extract routing (Phase 3)
+- [ ] Validate and commit
+
+**Ongoing:**
+- [ ] `docs/spec-kit/REBASE_LOG.md` - Historical record of rebases
+- [ ] Update conflict playbook as new patterns emerge
+
+---
+
+## Quarterly Rebase Schedule
+
+**Q1 2026 (January):**
+- First rebase after refactoring
+- Measure actual vs predicted conflict reduction
+- Update playbook with real conflicts encountered
+- **Estimated effort:** 1-2 hours (if refactoring successful)
+
+**Q2 2026 (April):**
+- Second rebase
+- Validate patterns repeatable
+- Refine automation
+- **Estimated effort:** 30-60 minutes
+
+**Ongoing:**
+- Monitor upstream releases
+- Cherry-pick security fixes as needed
+- Full rebase quarterly
+- Emergency rebase if critical bugs
+
+---
+
+## Cherry-Pick Strategy
+
+**For critical security fixes between quarterly rebases:**
+
+```bash
+# 1. Identify upstream commit
+git log upstream/master --grep="security\|CVE" --oneline
+
+# 2. Cherry-pick to separate branch
+git checkout -b security-fix-YYYYMMDD
+git cherry-pick <commit-hash>
+
+# 3. Resolve conflicts (should be minimal)
+# 4. Test
+bash scripts/fork_maintenance/validate_rebase.sh
+
+# 5. Merge if clean
+git checkout feat/spec-auto-telemetry
+git merge security-fix-YYYYMMDD
+
+# 6. Document
+echo "Cherry-picked: <commit-hash> (security fix)" >> docs/spec-kit/REBASE_LOG.md
+```
+
+---
+
+## When to Hard Fork (Abort Rebase Strategy)
+
+**Indicators that rebasing is no longer viable:**
+1. Upstream refactors core architecture (chatwidget.rs complete rewrite)
+2. Conflicts require >8 hours to resolve despite refactoring
+3. Upstream changes break our assumptions >2 rebases in a row
+4. Maintenance burden exceeds value from upstream updates
+
+**If hard fork decision made:**
+1. Stop rebasing, maintain independently
+2. Cherry-pick security fixes only
+3. Rename repo to indicate hard fork status
+4. Update documentation to reflect independent maintenance
+
+**Current status:** Not yet necessary, refactoring should make rebases viable
+
+---
+
+## Validation After Rebase
+
+**Automated:** Run `bash scripts/fork_maintenance/validate_rebase.sh`
+
+**Checks:**
+- [x] Compilation successful
+- [x] Binary built
+- [x] SpecKit enum variants present
+- [x] Guardrail enum variants present
+- [x] Routing intact
+- [x] spec_kit module exists (post-refactoring)
+- [x] Templates present
+- [x] Scripts present
+- [x] Documentation present
+- [x] Agent configuration valid
+
+**Manual Testing (in TUI):**
+- [ ] /speckit.status SPEC-KIT-045-mini (instant)
+- [ ] /speckit.clarify SPEC-KIT-065 (3 agents spawn)
+- [ ] /guardrail.plan SPEC-KIT-065 --dry-run (shell script runs)
+- [ ] /spec-status SPEC-KIT-045-mini (legacy works)
+- [ ] /speckit.auto SPEC-KIT-TEST (full pipeline)
+
+**Evidence validation:**
+- [ ] Telemetry files created
+- [ ] Consensus synthesis present
+- [ ] Local-memory updated
+
+**Performance check:**
+- [ ] Pipeline completes in 40-60 min
+- [ ] Cost approximately $11
+- [ ] No behavior changes vs pre-rebase
+
+---
+
+## Historical Context
+
+**Original fork reason (Oct 2025):**
+- Anthropics/claude-code is general-purpose TUI
+- We needed multi-agent automation workflow
+- No upstream interest in spec-kit features
+- Fork was necessary
+
+**Maintenance commitment:**
+- Quarterly rebases to stay current with upstream
+- Benefit from upstream bug fixes, features, security patches
+- Keep fork shallow (minimal divergence through refactoring)
+- Documented rebase protocol reduces maintenance burden
+
+**Strategic review:** Annually (Q4) assess if fork still needed or if upstream has adopted similar features
+
+---
+
+## Next Steps
+
+**Immediate (this session):**
+1. ✅ Document conflict surface (FORK_ISOLATION_AUDIT.md)
+2. ✅ Plan refactoring (REFACTORING_PLAN.md)
+3. ✅ Build validation script (validate_rebase.sh)
+4. ✅ Update this document (FORK_DEVIATIONS.md)
+5. [ ] Commit planning artifacts
+
+**Next session (10-15 hours):**
+6. Execute refactoring (3 phases)
+7. Validate functionality
+8. Test rebase against current upstream
+9. Document results
+
+**After refactoring:**
+10. Merge to master
+11. Schedule Q1 2026 rebase
+12. Monitor upstream for relevant changes
+
+---
+
+**Document Version:** 2.0 (Phase 3 complete, refactoring planned)
+**Owner:** @just-every/automation
+**Status:** Current and actionable
