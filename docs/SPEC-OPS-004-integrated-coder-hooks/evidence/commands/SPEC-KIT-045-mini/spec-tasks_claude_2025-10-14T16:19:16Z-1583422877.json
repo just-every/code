@@ -1,0 +1,56 @@
+{
+  "stage": "spec-tasks",
+  "prompt_version": "20251014-tasks-a",
+  "agent": "claude",
+  "model": "claude-3-opus",
+  "model_release": "2025-08",
+  "reasoning_mode": "synthesis",
+  "tasks": [
+    {
+      "id": "TASK-01",
+      "description": "Refresh `docs/SPEC-KIT-045-mini/tasks.md` to align with the 2025-10-14 plan telemetry (`spec-plan_2025-10-14T15:58:30Z-79323873`) and task telemetry (`spec-tasks_2025-10-14T16:19:16Z-1583422877`), incorporating the updated Work Breakdown and Acceptance Mappings."
+    },
+    {
+      "id": "TASK-02",
+      "description": "Update row T49 in `SPEC.md` to set status to `In Progress`, add branch `feat/spec-auto-telemetry`, and link to the new 2025-10-14 plan and task evidence files. Ensure no other task is marked `In Progress`."
+    },
+    {
+      "id": "TASK-03",
+      "description": "Execute `scripts/spec-kit/lint_tasks.py` to validate the changes made to `SPEC.md` and ensure compliance with project standards."
+    },
+    {
+      "id": "TASK-04",
+      "description": "Generate and place the roster JSON output from the plan stage into the `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/` directory."
+    },
+    {
+      "id": "TASK-05",
+      "description": "Prepare for HAL mock validation by generating the necessary diff outputs for the validate stage and placing them in the evidence directory."
+    }
+  ],
+  "acceptance_coverage": [
+    {
+      "task_id": "TASK-01",
+      "criteria": "tasks.md correctly references 2025-10-14 telemetry artifacts."
+    },
+    {
+      "task_id": "TASK-02",
+      "criteria": "SPEC.md T49 is `In Progress` and correctly updated; it is the only row with this status."
+    },
+    {
+      "task_id": "TASK-03",
+      "criteria": "The `lint_tasks.py` script runs successfully with no errors."
+    },
+    {
+      "task_id": "TASK-04",
+      "criteria": "Roster JSON evidence file is present in the correct directory."
+    },
+    {
+      "task_id": "TASK-05",
+      "criteria": "HAL mock diff evidence is generated and available for review."
+    }
+  ],
+  "followups": [
+    "Confirm the exact command or process for generating the roster JSON.",
+    "Verify the procedure for creating the HAL mock diff for the validate stage."
+  ]
+}

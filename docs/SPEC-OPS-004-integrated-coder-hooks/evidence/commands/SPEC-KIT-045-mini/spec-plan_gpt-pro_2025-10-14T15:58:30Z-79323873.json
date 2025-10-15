@@ -1,0 +1,48 @@
+{
+  "stage": "spec-plan",
+  "prompt_version": "20251002-plan-a",
+  "agent": "gpt_pro",
+  "model": "gpt-5-pro",
+  "model_release": "2025-10-01",
+  "reasoning_mode": "executor",
+  "final_plan": {
+    "work_breakdown": [
+      "Update docs/SPEC-KIT-045-mini/plan.md to reference 2025-10-14 evidence (json, log, baseline.md)",
+      "Document rerun commands for plan and validate with mock HAL",
+      "State remediation for all 2025-10-13 references (plan.md/tasks.md)",
+      "Capture four-agent roster expectations and model metadata",
+      "Write Consensus & Risks (Multi-AI) with degraded-mode note",
+      "Verify acceptance mapping aligns to schema v1 telemetry fields"
+    ],
+    "acceptance_mapping": [
+      {
+        "requirement": "R1: Four-agent roster recorded by /spec-ops-plan",
+        "validation_step": "/cmd spec-ops-plan SPEC-KIT-045-mini",
+        "artifact": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-plan_2025-10-14T15:58:30Z-79323873.{json,log}"
+      },
+      {
+        "requirement": "R2: Validate schema v1 with HAL mock and rationale present",
+        "validation_step": "/cmd spec-ops-validate SPEC-KIT-045-mini --hal mock",
+        "artifact": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-validate_<TIMESTAMP>.json (includes hal.summary rationale)"
+      },
+      {
+        "requirement": "R3: Fixture docs cite filenames and reruns",
+        "validation_step": "Inspect plan.md for exact evidence filenames and rerun blocks",
+        "artifact": "docs/SPEC-KIT-045-mini/plan.md + baseline_2025-10-14T15:58:30Z-79323873.md"
+      }
+    ],
+    "risks": [
+      "Plan/tasks lingering with 2025-10-13 paths cause acceptance drift",
+      "Mock/live HAL toggle unclear without explicit environment notes",
+      "Potential workspace manifest issues without SPEC_OPS_CARGO_MANIFEST guidance"
+    ],
+    "agreements": [
+      "Use 2025-10-14T15:58:30Z-79323873 telemetry as canonical for plan stage",
+      "Document mock HAL rationale and validate against schema v1",
+      "Include exact evidence filenames and rerun commands in docs"
+    ],
+    "conflicts": [
+      "When to refresh tasks.md: immediate vs during /tasks stage (recommend during /tasks but annotate plan now)"
+    ]
+  }
+}

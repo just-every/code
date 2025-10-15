@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "command": "spec-ops-audit",
+  "specId": "SPEC-KIT-045-mini",
+  "sessionId": "2025-10-13T04:18:50Z-300515234",
+  "timestamp": "2025-10-13T04:18:50Z",
+  "scenarios": [
+    {
+      "name": "audit guardrail bootstrap",
+      "status": "skipped"
+    }
+  ],
+  "policy": {
+  "prefilter": {
+    "model": "gpt-5-codex",
+    "status": "passed",
+    "note": "true"
+  },
+  "final": {
+    "model": "gpt-5",
+    "status": "passed",
+    "note": "true"
+  }
+},
+  "artifacts": [
+    { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-audit_2025-10-13T04:18:50Z-300515234.log" }
+  ]
+}

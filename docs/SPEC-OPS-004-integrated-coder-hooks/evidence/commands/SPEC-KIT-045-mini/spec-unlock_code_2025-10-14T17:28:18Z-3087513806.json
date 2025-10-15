@@ -1,0 +1,18 @@
+{
+  "stage": "spec-unlock",
+  "prompt_version": "20251002-unlock-a",
+  "agent": "code",
+  "model": "code-cli",
+  "model_release": "2025-10-14",
+  "reasoning_mode": "orchestration",
+  "synthesis_summary": "Unlock guardrail run produced telemetry showing unlocked status, but safeguards require clean policy rerun and potential live HAL before approving release.",
+  "action_items": [
+    "Track clean-policy rerun in SPEC.md notes",
+    "Perform live HAL validation when available",
+    "Re-run unlock to capture final evidence"
+  ],
+  "consensus": {
+    "agreements": ["Hold unlock", "Policy overrides outstanding"],
+    "conflicts": []
+  }
+}

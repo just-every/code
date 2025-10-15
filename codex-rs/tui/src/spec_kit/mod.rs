@@ -7,4 +7,8 @@ mod handler;
 mod state;
 
 pub use handler::SpecKitHandler;
-pub use state::{SpecAutoPhase, SpecAutoState};
+pub use state::{
+    GuardrailEvaluation, GuardrailOutcome, GuardrailWait, SpecAutoPhase, SpecAutoState,
+    expected_guardrail_command, get_nested, guardrail_for_stage, require_object,
+    require_string_field, spec_ops_stage_prefix, validate_guardrail_evidence,
+};

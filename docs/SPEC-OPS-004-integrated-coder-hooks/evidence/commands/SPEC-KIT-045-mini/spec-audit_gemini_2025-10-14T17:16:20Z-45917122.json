@@ -1,0 +1,23 @@
+{
+  "stage": "spec-audit",
+  "prompt_version": "20251002-audit-a",
+  "agent": "gemini",
+  "model": "gemini-1.5-pro",
+  "model_release": "2025-09",
+  "reasoning_mode": "research",
+  "diff_summary": "Plan/tasks/implement/validate artefacts refreshed on 2025-10-14 with rehearsal evidence under 100 KB; policy overrides remain noted.",
+  "telemetry": [
+    "spec-plan_2025-10-14T15:58:30Z-79323873.json",
+    "spec-tasks_2025-10-14T16:19:16Z-1583422877.json",
+    "spec-implement_2025-10-14T16:39:43Z-997018070.json",
+    "spec-validate_2025-10-14T16:58:53Z-971619013.json"
+  ],
+  "todos": [
+    "Execute clean policy-prefilter/final run (remove SPEC_OPS_POLICY_* stubs)",
+    "Schedule live HAL validation when credentials available"
+  ],
+  "compliance_flags": [
+    "Fixture size logged at docs/SPEC-KIT-045-mini/telemetry/fixture-size_2025-10-14T16:19:16Z.txt",
+    "Policy overrides tracked at docs/SPEC-KIT-045-mini/telemetry/policy-overrides_2025-10-14T16:19:16Z.txt"
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "stage": "spec-plan",
+  "prompt_version": "20251002-plan-a",
+  "agent": "gpt_codex",
+  "model": "gpt-5-codex",
+  "model_release": "2025-10-01",
+  "reasoning_mode": "impl-review",
+  "implementation_notes": [
+    "Update docs/SPEC-KIT-045-mini/plan.md using Spec Kit skeleton; include 2025-10-14 evidence filenames: spec-plan_2025-10-14T15:58:30Z-79323873.{json,log} and baseline_2025-10-14T15:58:30Z-79323873.md.",
+    "Add rerun blocks: /cmd spec-ops-plan SPEC-KIT-045-mini and /cmd spec-ops-validate SPEC-KIT-045-mini --hal mock. Mention SPEC_OPS_CARGO_MANIFEST=codex-rs/Cargo.toml and SPEC_OPS_ALLOW_DIRTY=1 as needed.",
+    "Explicitly state remediation for any 2025-10-13 references in plan.md/tasks.md; mark older roster telemetry as historical.",
+    "Consensus & Risks section must call out degraded agent availability handling and model metadata capture.",
+    "Do not include secrets; HAL mock rationale should appear in acceptance mapping and docs narrative."
+  ],
+  "diff_suggestions": [
+    {
+      "path": "docs/SPEC-KIT-045-mini/plan.md",
+      "summary": "Refresh telemetry to 2025-10-14T15:58:30Z-79323873, add rerun instructions, consensus section, and acceptance mapping aligned to schema v1."
+    },
+    {
+      "path": "docs/SPEC-KIT-045-mini/tasks.md",
+      "summary": "Replace lingering 2025-10-13 evidence references with 2025-10-14; optional now or defer to /tasks stage with a tracked note."
+    }
+  ],
+  "risks": [
+    "If plan.md keeps 2025-10-13 evidence, acceptance checks will point to stale artifacts.",
+    "Missing HAL mock rationale in validate-stage telemetry can cause schema v1 checks to fail.",
+    "Workspace splits may break cargo calls unless SPEC_OPS_CARGO_MANIFEST is set."
+  ]
+}

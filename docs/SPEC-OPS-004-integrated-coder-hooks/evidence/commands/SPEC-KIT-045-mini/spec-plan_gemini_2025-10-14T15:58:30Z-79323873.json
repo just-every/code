@@ -1,0 +1,35 @@
+{
+  "stage": "spec-plan",
+  "prompt_version": "20251002-plan-a",
+  "agent": "gemini",
+  "model": "gemini-1.5-pro-latest",
+  "model_release": "2025-10-01",
+  "reasoning_mode": "research",
+  "research_summary": [
+    {
+      "topic": "Spec objectives and acceptance criteria",
+      "details": "SPEC-KIT-045-mini confirms four-agent roster capture for /spec-ops-plan, validates telemetry schema v1 with HAL mock in /spec-ops-validate, and ensures fixture docs cite exact evidence filenames and rerun instructions. Acceptance Criteria: (1) roster recorded in TUI history, (2) validate telemetry schema with mock HAL and rationale, (3) fixture docs reference evidence and include rerun guidance. Canonical sources: docs/SPEC-KIT-045-mini/spec.md, product-requirements.md, PLANNING.md."
+    },
+    {
+      "topic": "Latest guardrail telemetry evidence (Plan stage)",
+      "details": "Use 2025-10-14T15:58:30Z run outputs: docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-plan_2025-10-14T15:58:30Z-79323873.json and .log, plus baseline_2025-10-14T15:58:30Z-79323873.md. These supersede older 2025-10-13 references that appear in current plan.md/tasks.md and must be remediated."
+    },
+    {
+      "topic": "Outdated references remediation",
+      "details": "Replace all 2025-10-13 evidence references in docs/SPEC-KIT-045-mini/plan.md and tasks.md with the 2025-10-14T15:58:30Z-79323873 files. Ensure any prior roster_2025-10-13T18:50:20Z.json references are marked historical and not used for acceptance checks. See local memory id 1e9cc38c-4825-4714-a6ee-959df277daa5."
+    },
+    {
+      "topic": "HAL mock/live switching documentation",
+      "details": "Document that /cmd spec-ops-validate SPEC-KIT-045-mini --hal mock must be used for this rehearsal (no real credentials). Include rationale for mock mode and how to enable live later (e.g., SPEC_OPS_TELEMETRY_HAL=1 with env-run.sh). No secrets are included."
+    },
+    {
+      "topic": "Rerun commands and evidence expectations",
+      "details": "Rerun: /cmd spec-ops-plan SPEC-KIT-045-mini to capture four-agent roster; /cmd spec-ops-validate SPEC-KIT-045-mini --hal mock to emit telemetry matching schema v1 with hal.summary rationale. Evidence should appear under docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/ with timestamped filenames."
+    }
+  ],
+  "questions": [
+    "Should we also refresh docs/SPEC-KIT-045-mini/tasks.md now or defer to /tasks stage?",
+    "Confirm whether to include SPEC_OPS_CARGO_MANIFEST in rerun examples (default codex-rs/Cargo.toml) for workspace splits?",
+    "Any additional evidence files beyond {json,log,baseline.md} required for plan-stage acceptance capture?"
+  ]
+}

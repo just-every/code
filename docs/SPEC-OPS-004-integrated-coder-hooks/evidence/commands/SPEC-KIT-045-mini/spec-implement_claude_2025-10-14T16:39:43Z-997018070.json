@@ -1,0 +1,25 @@
+{
+  "stage": "spec-implement",
+  "prompt_version": "20251002-implement-a",
+  "agent": "claude",
+  "model": "claude-3.5-sonnet",
+  "model_release": "2025-09-21",
+  "reasoning_mode": "synthesis",
+  "approach": [
+    "Mirror plan/tasks/unlock docs to 2025-10-14 telemetry references.",
+    "Install rehearsal artifacts (plan/tasks logs, roster, schema checks, mock HAL diff, policy note, size audit).",
+    "Refresh checksums and SPEC.md tracker to cite new evidence bundle."
+  ],
+  "operations": [
+    "Captured guardrail telemetry under docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/ for plan/tasks/implement stages.",
+    "Generated telemetry helper files under docs/SPEC-KIT-045-mini/telemetry/ with timestamped content for roster, schema checks, mock HAL diff, policy overrides, and size audit.",
+    "Updated docs (plan.md, tasks.md, unlock-notes.md), regenerated checksums, and synchronized SPEC.md row T49.",
+    "Ran python3 scripts/spec-kit/lint_tasks.py, cargo fmt, and cargo clippy --workspace --all-targets --all-features to confirm validations."
+  ],
+  "validation_plan": [
+    "python3 scripts/spec-kit/lint_tasks.py",
+    "cargo fmt",
+    "cargo clippy --workspace --all-targets --all-features",
+    "Optional jq spot-checks documented inside *_schema-check_*.txt artifacts"
+  ]
+}

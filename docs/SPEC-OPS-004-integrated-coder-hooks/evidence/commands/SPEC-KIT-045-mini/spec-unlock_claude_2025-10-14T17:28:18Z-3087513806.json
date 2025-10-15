@@ -1,0 +1,19 @@
+{
+  "stage": "spec-unlock",
+  "prompt_version": "20251002-unlock-a",
+  "agent": "claude",
+  "model": "claude-3.7-sonnet",
+  "model_release": "2025-09",
+  "reasoning_mode": "synthesis",
+  "rationale": "Keep unlock on hold; evidence bundle refreshed but policy overrides and live HAL remain outstanding for production readiness.",
+  "safeguards": [
+    "Document override posture in unlock-notes.md",
+    "Retain rehearsal artefacts under 100 KB to enable rapid reruns",
+    "Track follow-ups in SPEC.md notes"
+  ],
+  "followups": [
+    "Run guardrails without SPEC_OPS_POLICY_* stubs",
+    "Capture live HAL telemetry if required",
+    "Re-run unlock and update notes once prerequisites met"
+  ]
+}

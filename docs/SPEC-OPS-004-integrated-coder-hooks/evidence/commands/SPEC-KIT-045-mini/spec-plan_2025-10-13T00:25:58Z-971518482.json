@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "command": "spec-ops-plan",
+  "specId": "SPEC-KIT-045-mini",
+  "sessionId": "2025-10-13T00:25:58Z-971518482",
+  "timestamp": "2025-10-13T00:25:58Z",
+  "baseline": {
+    "mode": "no-run",
+    "artifact": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/baseline_2025-10-13T00:25:58Z-971518482.md",
+    "status": "passed"
+  },
+  "hooks": {
+    "session.start": "ok"
+  },
+  "policy": {
+  "prefilter": {
+    "model": "gpt-5-codex",
+    "status": "passed",
+    "note": "true"
+  },
+  "final": {
+    "model": "gpt-5",
+    "status": "passed",
+    "note": "true"
+  }
+},
+  "artifacts": [
+    { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/baseline_2025-10-13T00:25:58Z-971518482.md" },
+    { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-plan_2025-10-13T00:25:58Z-971518482.log" }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "specId": "SPEC-KIT-DEMO",
+  "stage": "spec-unlock",
+  "timestamp": "2025-10-12T16:43:43Z",
+  "status": "hold",
+  "agents": {
+    "active": [
+      {"model": "gemini-2.5-pro", "role": "branch-context"},
+      {"model": "claude-4.5-sonnet", "role": "rationale"},
+      {"model": "gpt-5-codex", "role": "compliance-check"}
+    ],
+    "degraded": ["gpt_pro", "gpt_codex"]
+  },
+  "consensus": {
+    "agreements": [
+      "Keep SPEC-KIT-DEMO locked while HAL validation, lint output, and halt screenshot remain outstanding.",
+      "Document conditional state in docs/SPEC-KIT-DEMO/unlock.md and retain SPEC.md T26 status In Progress.",
+      "Re-run unlock after capturing fresh consensus evidence and HAL telemetry with credentials available."
+    ],
+    "conflicts_resolved": [
+      "Resolved discrepancy about SPEC.md T26 presence by confirming 2025-10-12 row on repo root; earlier agent view was truncated.",
+      "Clarified unlock decision: infrastructure validated but acceptance criteria incomplete → hold."
+    ]
+  }
+}

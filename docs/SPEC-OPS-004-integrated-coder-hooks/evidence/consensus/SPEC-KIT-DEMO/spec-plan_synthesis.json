@@ -1,0 +1,25 @@
+{
+  "specId": "SPEC-KIT-DEMO",
+  "stage": "spec-plan",
+  "timestamp": "2025-10-12T14:44:00Z",
+  "status": "ok",
+  "agents": {
+    "active": [
+      {"model": "gemini-2.5-pro", "role": "research"},
+      {"model": "claude-4.5-sonnet", "role": "synthesis"},
+      {"model": "gpt-5-codex", "role": "validation"}
+    ],
+    "degraded": ["gpt_pro", "gpt_codex"]
+  },
+  "consensus": {
+    "agreements": [
+      "Refresh SPEC-KIT-DEMO telemetry using spec-plan_2025-10-12T14:26:32Z-1976726666 evidence bundle before advancing.",
+      "Document HAL HTTP MCP outcome (success or explicit skip) in docs/SPEC-KIT-DEMO/{plan.md,tasks.md} and SPEC.md row T26 notes.",
+      "Record evidence footprint and assign halt screenshot ownership as part of closing tasks."
+    ],
+    "conflicts_resolved": [
+      "Missing gpt_pro/gpt_codex endpoints reassigned QA duties to remaining agents with degraded lineup recorded in docs.",
+      "Cargo workspace pathing blocker acknowledged as out-of-scope for this SPEC and tracked separately in risk log."
+    ]
+  }
+}
