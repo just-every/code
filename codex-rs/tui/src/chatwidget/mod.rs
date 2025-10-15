@@ -30,6 +30,13 @@ use spec_kit::{
     guardrail_for_stage, spec_ops_stage_prefix, expected_guardrail_command,
     validate_guardrail_evidence, require_string_field, require_object,
 };
+use spec_kit::consensus::{
+    expected_agents_for_stage, extract_string_list, parse_consensus_stage,
+    telemetry_agent_slug, telemetry_value_truthy, validate_required_fields,
+    ConsensusArtifactData, ConsensusArtifactVerdict, ConsensusEvidenceHandle,
+    ConsensusSynthesisConsensusRaw, ConsensusSynthesisRaw, ConsensusSynthesisSummary,
+    ConsensusTelemetryPaths, ConsensusVerdict,
+};
 use crate::spec_prompts;
 use crate::spec_prompts::{SpecAgent, SpecStage};
 // spec_status functions moved to spec_kit::handler
@@ -13898,130 +13905,6 @@ impl ChatWidget<'_> {
     }
 }
 
-struct ConsensusArtifactData {
-    memory_id: Option<String>,
-    agent: String,
-    version: Option<String>,
-    content: Value,
-}
-
-#[derive(Clone)]
-struct ConsensusEvidenceHandle {
-    path: PathBuf,
-    sha256: String,
-}
-
-struct ConsensusTelemetryPaths {
-    agent_paths: Vec<PathBuf>,
-    telemetry_path: PathBuf,
-    synthesis_path: PathBuf,
-}
-
-fn telemetry_value_truthy(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
-}
-
-fn telemetry_agent_slug(agent: &str) -> String {
-    let mut slug = String::new();
-    let mut last_was_sep = false;
-    for ch in agent.chars() {
-        let lower = ch.to_ascii_lowercase();
-        let is_alnum = lower.is_ascii_alphanumeric();
-        if is_alnum {
-            slug.push(lower);
-            last_was_sep = false;
-        } else if !slug.is_empty() && !last_was_sep {
-            slug.push('_');
-            last_was_sep = true;
-        }
-    }
-    let trimmed = slug.trim_matches('_');
-    if trimmed.is_empty() {
-        "agent".to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct ConsensusArtifactVerdict {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    memory_id: Option<String>,
-    agent: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    version: Option<String>,
-    content: Value,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct ConsensusVerdict {
-    spec_id: String,
-    stage: String,
-    recorded_at: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    prompt_version: Option<String>,
-    consensus_ok: bool,
-    degraded: bool,
-    required_fields_ok: bool,
-    missing_agents: Vec<String>,
-    agreements: Vec<String>,
-    conflicts: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    aggregator_agent: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    aggregator_version: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    aggregator: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    synthesis_path: Option<String>,
-    artifacts: Vec<ConsensusArtifactVerdict>,
-}
-
-#[derive(Debug)]
-struct ConsensusSynthesisSummary {
-    status: String,
-    missing_agents: Vec<String>,
-    agreements: Vec<String>,
-    conflicts: Vec<String>,
-    prompt_version: Option<String>,
-    path: PathBuf,
-}
-
-#[derive(Debug, Deserialize)]
-struct ConsensusSynthesisRaw {
-    stage: Option<String>,
-    #[serde(rename = "specId")]
-    spec_id: Option<String>,
-    status: String,
-    #[serde(default)]
-    missing_agents: Vec<String>,
-    #[serde(default)]
-    consensus: ConsensusSynthesisConsensusRaw,
-    prompt_version: Option<String>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct ConsensusSynthesisConsensusRaw {
-    #[serde(default)]
-    agreements: Vec<String>,
-    #[serde(default)]
-    conflicts: Vec<String>,
-}
-
-fn parse_consensus_stage(stage: &str) -> Option<SpecStage> {
-    match stage.to_ascii_lowercase().as_str() {
-        "plan" | "spec-plan" => Some(SpecStage::Plan),
-        "tasks" | "spec-tasks" => Some(SpecStage::Tasks),
-        "implement" | "spec-implement" => Some(SpecStage::Implement),
-        "validate" | "spec-validate" => Some(SpecStage::Validate),
-        "audit" | "review" | "spec-audit" | "spec-review" => Some(SpecStage::Audit),
-        "unlock" | "spec-unlock" => Some(SpecStage::Unlock),
-        _ => None,
-    }
-}
 
 fn collect_consensus_artifacts(
     evidence_root: &Path,
@@ -14223,73 +14106,6 @@ fn fetch_memory_entries(
     }
 }
 
-fn expected_agents_for_stage(stage: SpecStage) -> Vec<&'static str> {
-    match stage {
-        SpecStage::Implement => vec!["gemini", "claude", "gpt_codex", "gpt_pro"],
-        SpecStage::Plan
-        | SpecStage::Tasks
-        | SpecStage::Validate
-        | SpecStage::Audit
-        | SpecStage::Unlock => {
-            vec!["gemini", "claude", "gpt_pro"]
-        }
-    }
-}
-
-fn extract_string_list(value: Option<&Value>) -> Vec<String> {
-    value
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|item| {
-                    if let Some(s) = item.as_str() {
-                        Some(s.to_string())
-                    } else if item.is_object() || item.is_array() {
-                        serde_json::to_string(item).ok()
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn validate_required_fields(stage: SpecStage, summary: &Value) -> bool {
-    match stage {
-        SpecStage::Plan => summary
-            .get("final_plan")
-            .and_then(|plan| plan.get("work_breakdown"))
-            .and_then(|wb| wb.as_array())
-            .map(|wb| !wb.is_empty())
-            .unwrap_or(false),
-        SpecStage::Tasks => summary
-            .get("validated_tasks")
-            .and_then(|tasks| tasks.as_array())
-            .map(|tasks| !tasks.is_empty())
-            .unwrap_or(false),
-        SpecStage::Implement => summary
-            .get("checklist")
-            .and_then(|list| list.as_array())
-            .map(|list| !list.is_empty())
-            .unwrap_or(false),
-        SpecStage::Validate => summary
-            .get("decision")
-            .and_then(|d| d.as_str())
-            .map(|d| !d.is_empty())
-            .unwrap_or(false),
-        SpecStage::Audit => summary
-            .get("recommendation")
-            .and_then(|d| d.as_str())
-            .map(|d| !d.is_empty())
-            .unwrap_or(false),
-        SpecStage::Unlock => summary
-            .get("decision")
-            .and_then(|d| d.as_str())
-            .map(|d| !d.is_empty())
-            .unwrap_or(false),
-    }
-}
 
 impl ChatWidget<'_> {
     pub(crate) fn open_review_dialog(&mut self) {
