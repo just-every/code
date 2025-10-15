@@ -36,9 +36,9 @@
 | Order | Task ID | Title | Status | Owners | PRD | Branch | PR | Last Validation | Evidence | Notes |
 |-------|---------|-------|--------|--------|-----|--------|----|-----------------|----------|-------|
 | 1 | T60 | Template validation | **DONE** | Code |  |  |  | 2025-10-15 | docs/SPEC-KIT-060-template-validation-test/ | PASSED: Templates 55% faster. Proceeding to Phase 2. |
-| 2 | T65 | Port /clarify command | **DONE** | Code |  |  |  | 2025-10-15 |  | PASSED: Found 5 ambiguities, user answered. |
-| 3 | T66 | Port /analyze command | **DONE** | Code |  |  |  | 2025-10-15 |  | PASSED: Found 4 real issues in SPEC-065. Actionable report. |
-| 4 | T67 | Port /checklist command | **IN PROGRESS** | Code |  |  |  |  |  | Requirement quality testing. 2 agents (claude, code). |
+| 2 | T65 | Port /clarify command | **DONE** | Code |  |  |  | 2025-10-15 |  | PASSED: Ambiguity resolution working. |
+| 3 | T66 | Port /analyze command | **DONE** | Code |  |  |  | 2025-10-15 |  | PASSED: Consistency checking + auto-fix. |
+| 4 | T67 | Port /checklist command | **DONE** | Code |  |  |  | 2025-10-15 |  | PASSED: Found 3 quality gaps in SPEC-065 requirements. |
 | 2 | T49 | Testing framework | Backlog | Code |  |  |  |  | docs/SPEC-KIT-045-mini/ | Full 6-stage run completed 2025-10-14. All 5 agents validated. Framework operational. Pending: Clean run without policy stubs. |
 | 3 | T48 | Config validation utility | Blocked | Code |  |  |  |  | docs/SPEC-KIT-040-add-simple-config-validation-utility/ | Plan/tasks created, no implementation. Low priority - not blocking core work. |
 | 4 | T47 | Spec-status dashboard | Done | Code |  |  |  | 2025-10-08 |  | Native Rust implementation. Completed 2025-10-08. |
