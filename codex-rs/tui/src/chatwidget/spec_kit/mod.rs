@@ -19,5 +19,6 @@ pub use state::{
 // Re-export handler functions
 pub use handler::{
     advance_spec_auto, halt_spec_auto_with_error, handle_guardrail, handle_spec_auto,
-    handle_spec_consensus, handle_spec_status,
+    handle_spec_consensus, handle_spec_status, on_spec_auto_agents_complete,
+    on_spec_auto_task_complete, on_spec_auto_task_started,
 };
