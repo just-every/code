@@ -423,11 +423,7 @@ fn auto_submit_spec_stage_prompt(widget: &mut ChatWidget, stage: SpecStage, spec
 
             // Create and submit user message
             let user_msg = super::super::message::UserMessage {
-                display_text: format!(
-                    "[spec-auto] {} stage for {}",
-                    stage.display_name(),
-                    spec_id
-                ),
+                display_text: format!("[spec-auto] {} stage for {}", stage.display_name(), spec_id),
                 ordered_items: vec![InputItem::Text { text: prompt }],
             };
 
@@ -459,10 +455,7 @@ pub fn on_spec_auto_agents_complete(widget: &mut ChatWidget) {
     // Collect which agents completed successfully
     let mut completed_names = std::collections::HashSet::new();
     for agent_info in &widget.active_agents {
-        if matches!(
-            agent_info.status,
-            super::super::AgentStatus::Completed
-        ) {
+        if matches!(agent_info.status, super::super::AgentStatus::Completed) {
             completed_names.insert(agent_info.name.to_lowercase());
         }
     }

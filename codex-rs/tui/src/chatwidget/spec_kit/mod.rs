@@ -12,8 +12,8 @@ pub mod state;
 // Re-export state types and helpers
 pub use state::{
     GuardrailEvaluation, GuardrailOutcome, GuardrailWait, SpecAutoPhase, SpecAutoState,
-    expected_guardrail_command, guardrail_for_stage, require_object,
-    require_string_field, spec_ops_stage_prefix, validate_guardrail_evidence,
+    expected_guardrail_command, guardrail_for_stage, require_object, require_string_field,
+    spec_ops_stage_prefix, validate_guardrail_evidence,
 };
 
 // Re-export handler functions

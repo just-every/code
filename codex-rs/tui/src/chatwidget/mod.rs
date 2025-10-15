@@ -5771,7 +5771,7 @@ impl ChatWidget<'_> {
                 self.stream.insert_reasoning_section_break(&sink);
             }
             EventMsg::TaskStarted => {
-                self.on_spec_auto_task_started(&id);
+                spec_kit::on_spec_auto_task_started(self, &id);
                 // This begins the new turn; clear the pending prompt anchor count
                 // so subsequent background events use standard placement.
                 self.pending_user_prompts_for_next_turn = 0;
@@ -5802,7 +5802,7 @@ impl ChatWidget<'_> {
             EventMsg::TaskComplete(TaskCompleteEvent {
                 last_agent_message: _,
             }) => {
-                self.on_spec_auto_task_complete(&id);
+                spec_kit::on_spec_auto_task_complete(self, &id);
                 // Finalize any active streams
                 if self.stream.is_write_cycle_active() {
                     // Finalize both streams via streaming facade
@@ -6773,7 +6773,7 @@ impl ChatWidget<'_> {
                             self.bottom_pane.update_status_text(String::new());
 
                             // NEW: Check if this is part of spec-auto pipeline
-                            self.on_spec_auto_agents_complete();
+                            spec_kit::on_spec_auto_agents_complete(self);
                         }
                     }
                 }
