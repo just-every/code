@@ -5,7 +5,11 @@
 
 use crate::spec_prompts::SpecStage;
 use serde_json::Value;
-use super::state::{GuardrailEvaluation, expected_guardrail_command, require_string_field, require_object};
+use std::fs::File;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+use super::state::{GuardrailEvaluation, GuardrailOutcome, expected_guardrail_command, require_string_field, require_object, validate_guardrail_evidence};
 
 pub fn validate_guardrail_schema(stage: SpecStage, telemetry: &Value) -> Vec<String> {
     let mut failures = Vec::new();
@@ -320,4 +324,101 @@ pub fn evaluate_guardrail_value(stage: SpecStage, value: &Value) -> GuardrailEva
             }
         }
     }
+}
+
+/// Read latest spec-ops telemetry file for spec/stage
+pub fn read_latest_spec_ops_telemetry(
+    cwd: &Path,
+    spec_id: &str,
+    stage: SpecStage,
+) -> Result<(PathBuf, Value), String> {
+    let evidence_dir = cwd
+        .join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands")
+        .join(spec_id);
+    let prefix = super::state::spec_ops_stage_prefix(stage);
+    let entries = std::fs::read_dir(&evidence_dir)
+        .map_err(|e| format!("{} ({}): {}", spec_id, stage.command_name(), e))?;
+
+    let mut latest: Option<(PathBuf, SystemTime)> = None;
+    for entry_res in entries {
+        let entry = entry_res.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.starts_with(prefix) {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        if latest
+            .as_ref()
+            .map(|(_, ts)| modified > *ts)
+            .unwrap_or(true)
+        {
+            latest = Some((path.clone(), modified));
+        }
+    }
+
+    let (path, _) = latest.ok_or_else(|| {
+        format!(
+            "No telemetry files matching {}* in {}",
+            prefix,
+            evidence_dir.display()
+        )
+    })?;
+
+    let mut file =
+        std::fs::File::open(&path).map_err(|e| format!("Failed to open {}: {e}", path.display()))?;
+    let mut buf = String::new();
+    std::io::Read::read_to_string(&mut file, &mut buf)
+        .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+    let value: Value = serde_json::from_str(&buf)
+        .map_err(|e| format!("Failed to parse telemetry JSON {}: {e}", path.display()))?;
+    Ok((path, value))
+}
+
+/// Collect guardrail outcome by reading telemetry and validating
+pub fn collect_guardrail_outcome(
+    cwd: &Path,
+    spec_id: &str,
+    stage: SpecStage,
+) -> Result<GuardrailOutcome, String> {
+    let (path, value) = read_latest_spec_ops_telemetry(cwd, spec_id, stage)?;
+    let mut evaluation = evaluate_guardrail_value(stage, &value);
+    let schema_failures = validate_guardrail_schema(stage, &value);
+    if !schema_failures.is_empty() {
+        evaluation.failures.extend(schema_failures);
+        evaluation.success = false;
+    }
+    if matches!(
+        stage,
+        SpecStage::Plan
+            | SpecStage::Tasks
+            | SpecStage::Implement
+            | SpecStage::Audit
+            | SpecStage::Unlock
+    ) {
+        let (evidence_failures, artifact_count) =
+            validate_guardrail_evidence(cwd, stage, &value);
+        if artifact_count > 0 {
+            evaluation.summary =
+                format!("{} | {} artifacts", evaluation.summary, artifact_count);
+        }
+        if !evidence_failures.is_empty() {
+            evaluation.failures.extend(evidence_failures);
+            evaluation.success = false;
+        }
+    }
+    Ok(GuardrailOutcome {
+        success: evaluation.success,
+        summary: evaluation.summary,
+        telemetry_path: Some(path),
+        failures: evaluation.failures,
+    })
 }
