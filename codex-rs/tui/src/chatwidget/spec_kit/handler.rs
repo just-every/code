@@ -74,4 +74,15 @@ pub fn handle_spec_consensus(widget: &mut ChatWidget, raw_args: String) {
     widget.handle_spec_consensus_impl(raw_args);
 }
 
+/// Handle /guardrail.* and /spec-ops-* commands (guardrail validation)
+pub fn handle_guardrail(
+    widget: &mut ChatWidget,
+    command: crate::slash_command::SlashCommand,
+    raw_args: String,
+    hal_override: Option<crate::slash_command::HalMode>,
+) {
+    // Delegate to ChatWidget method for now (complex logic with environment setup)
+    widget.handle_guardrail_impl(command, raw_args, hal_override);
+}
+
 // Additional handler functions will be added here in subsequent commits

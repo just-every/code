@@ -14864,6 +14864,16 @@ impl ChatWidget<'_> {
         raw_args: String,
         hal_override: Option<HalMode>,
     ) {
+        spec_kit::handle_guardrail(self, command, raw_args, hal_override);
+    }
+
+    // Implementation method (called by spec_kit::handle_guardrail)
+    fn handle_guardrail_impl(
+        &mut self,
+        command: SlashCommand,
+        raw_args: String,
+        hal_override: Option<HalMode>,
+    ) {
         let Some(meta) = command.spec_ops() else {
             return;
         };
