@@ -376,7 +376,7 @@ pub fn on_spec_auto_task_complete(widget: &mut ChatWidget, task_id: &str) {
 }
 
 /// Auto-submit multi-agent prompt for spec stage
-fn auto_submit_spec_stage_prompt(widget: &mut ChatWidget, stage: SpecStage, spec_id: &str) {
+pub fn auto_submit_spec_stage_prompt(widget: &mut ChatWidget, stage: SpecStage, spec_id: &str) {
     let goal = widget
         .spec_auto_state
         .as_ref()

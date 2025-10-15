@@ -1,6 +1,6 @@
 //! Exec and tool call lifecycle helpers for `ChatWidget`.
 
-use super::ChatWidget;
+use super::{ChatWidget, spec_kit};
 use crate::app_event::AppEvent;
 use crate::height_manager::HeightEvent;
 use crate::history_cell::CommandOutput;
@@ -796,10 +796,10 @@ pub(super) fn handle_exec_end_now(
                     }
 
                     // Spawn agents for this stage
-                    chat.auto_submit_spec_stage_prompt(stage, &spec_id);
+                    spec_kit::auto_submit_spec_stage_prompt(chat, stage, &spec_id);
                 } else {
                     // Guardrail failed - halt pipeline
-                    chat.halt_spec_auto_with_error(format!(
+                    spec_kit::halt_spec_auto_with_error(chat, format!(
                         "Guardrail {} failed with exit code {}",
                         wait.stage.display_name(),
                         exit_code
