@@ -1,3 +1,6 @@
+// Spec-kit submodule for friend access to ChatWidget private fields
+mod spec_kit;
+
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -22,7 +25,7 @@ use crate::local_memory_util::{self, LocalMemorySearchResult};
 use crate::slash_command::HalMode;
 use crate::slash_command::SlashCommand;
 use crate::slash_command::SpecAutoInvocation;
-use crate::spec_kit::{
+use spec_kit::{
     SpecAutoPhase, SpecAutoState, GuardrailWait, GuardrailEvaluation, GuardrailOutcome,
     guardrail_for_stage, spec_ops_stage_prefix, expected_guardrail_command,
     validate_guardrail_evidence, require_string_field, require_object,
@@ -538,9 +541,9 @@ pub(crate) struct ChatWidget<'a> {
 
     // === FORK-SPECIFIC: spec-kit automation state ===
     // Upstream: Does not have /spec-auto pipeline
-    // Preserve: This field and all SpecAutoState/SpecAutoPhase code during rebases
+    // Preserve: This field during rebases
+    // Handler methods extracted to spec_kit module (free functions)
     spec_auto_state: Option<SpecAutoState>,
-    spec_kit: crate::spec_kit::SpecKitHandler,
     // === END FORK-SPECIFIC ===
 
     // Stable synthetic request bucket for pre‑turn system notices (set on first use)
@@ -2725,7 +2728,6 @@ impl ChatWidget<'_> {
             system_cell_by_id: HashMap::new(),
             standard_terminal_mode: !config.tui.alternate_screen,
             spec_auto_state: None,
-            spec_kit: crate::spec_kit::SpecKitHandler::new(),
         };
         if let Ok(Some(active_id)) = auth_accounts::get_active_account_id(&config.codex_home) {
             if let Ok(records) = account_usage::list_rate_limit_snapshots(&config.codex_home) {
@@ -2958,7 +2960,6 @@ impl ChatWidget<'_> {
             synthetic_system_req: None,
             system_cell_by_id: HashMap::new(),
             spec_auto_state: None,
-            spec_kit: crate::spec_kit::SpecKitHandler::new(),
         };
         if let Ok(Some(active_id)) = auth_accounts::get_active_account_id(&config.codex_home) {
             if let Ok(records) = account_usage::list_rate_limit_snapshots(&config.codex_home) {
@@ -15076,33 +15077,7 @@ impl ChatWidget<'_> {
     }
 
     pub(crate) fn handle_spec_status_command(&mut self, raw_args: String) {
-        let trimmed = raw_args.trim();
-        let args = match SpecStatusArgs::from_input(trimmed) {
-            Ok(args) => args,
-            Err(err) => {
-                self.history_push(crate::history_cell::new_error_event(err.to_string()));
-                self.request_redraw();
-                return;
-            }
-        };
-
-        match collect_report(&self.config.cwd, args) {
-            Ok(report) => {
-                let mut lines = render_dashboard(&report);
-                if let Some(warning) = degraded_warning(&report) {
-                    lines.insert(1, warning);
-                }
-                let message = lines.join("\n");
-                self.insert_background_event_with_placement(message, BackgroundPlacement::Tail);
-                self.request_redraw();
-            }
-            Err(err) => {
-                self.history_push(crate::history_cell::new_error_event(format!(
-                    "spec-status failed: {err}"
-                )));
-                self.request_redraw();
-            }
-        }
+        spec_kit::handle_spec_status(self, raw_args);
     }
     // === END FORK-SPECIFIC: handle_spec_ops_command ===
 
@@ -17419,31 +17394,7 @@ impl ChatWidget<'_> {
     }
 
     fn halt_spec_auto_with_error(&mut self, reason: String) {
-        let resume_hint = self
-            .spec_auto_state
-            .as_ref()
-            .and_then(|s| s.current_stage())
-            .map(|stage| {
-                format!(
-                    "/spec-auto {} --from {}",
-                    self.spec_auto_state.as_ref().unwrap().spec_id,
-                    stage.command_name()
-                )
-            })
-            .unwrap_or_default();
-
-        self.history_push(crate::history_cell::PlainHistoryCell::new(
-            vec![
-                ratatui::text::Line::from("⚠ /spec-auto halted"),
-                ratatui::text::Line::from(reason),
-                ratatui::text::Line::from(""),
-                ratatui::text::Line::from("Resume with:"),
-                ratatui::text::Line::from(resume_hint),
-            ],
-            crate::history_cell::HistoryCellType::Error,
-        ));
-
-        self.spec_auto_state = None;
+        spec_kit::halt_spec_auto_with_error(self, reason);
     }
 
     fn on_spec_auto_agents_complete(&mut self) {
