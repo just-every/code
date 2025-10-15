@@ -48,13 +48,14 @@ pub fn halt_spec_auto_with_error(widget: &mut ChatWidget, reason: String) {
     let resume_hint = widget
         .spec_auto_state
         .as_ref()
-        .and_then(|s| s.current_stage())
-        .map(|stage| {
-            format!(
-                "/spec-auto {} --from {}",
-                widget.spec_auto_state.as_ref().unwrap().spec_id,
-                stage.command_name()
-            )
+        .and_then(|state| {
+            state.current_stage().map(|stage| {
+                format!(
+                    "/spec-auto {} --from {}",
+                    state.spec_id,
+                    stage.command_name()
+                )
+            })
         })
         .unwrap_or_default();
 
