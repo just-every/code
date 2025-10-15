@@ -387,3 +387,94 @@ fn fetch_memory_entries(
         Ok((results, Vec::new()))
     }
 }
+
+/// Load latest consensus synthesis file for spec/stage
+pub fn load_latest_consensus_synthesis(
+    cwd: &Path,
+    spec_id: &str,
+    stage: SpecStage,
+) -> Result<Option<ConsensusSynthesisSummary>, String> {
+    let base = cwd
+        .join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus")
+        .join(spec_id);
+    if !base.exists() {
+        return Ok(None);
+    }
+
+    let stage_prefix = format!("{}_", stage.command_name());
+    let suffix = "_synthesis.json";
+
+    let mut candidates: Vec<PathBuf> = fs::read_dir(&base)
+        .map_err(|e| {
+            format!(
+                "Failed to read consensus synthesis directory {}: {}",
+                base.display(),
+                e
+            )
+        })?
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_file() {
+                return None;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with(&stage_prefix) && name.ends_with(suffix) {
+                Some(path)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+
+    candidates.sort();
+    let latest_path = candidates.pop().unwrap();
+
+    let contents = fs::read_to_string(&latest_path).map_err(|e| {
+        format!(
+            "Failed to read consensus synthesis {}: {}",
+            latest_path.display(),
+            e
+        )
+    })?;
+
+    let raw: ConsensusSynthesisRaw = serde_json::from_str(&contents).map_err(|e| {
+        format!(
+            "Failed to parse consensus synthesis {}: {}",
+            latest_path.display(),
+            e
+        )
+    })?;
+
+    if let Some(raw_stage) = raw.stage.as_deref() {
+        if raw_stage != stage.command_name() {
+            return Err(format!(
+                "Consensus synthesis stage mismatch: expected {}, found {}",
+                stage.command_name(),
+                raw_stage
+            ));
+        }
+    }
+
+    if let Some(raw_spec) = raw.spec_id.as_deref() {
+        if !raw_spec.eq_ignore_ascii_case(spec_id) {
+            return Err(format!(
+                "Consensus synthesis spec mismatch: expected {}, found {}",
+                spec_id, raw_spec
+            ));
+        }
+    }
+
+    Ok(Some(ConsensusSynthesisSummary {
+        status: raw.status,
+        missing_agents: raw.missing_agents,
+        agreements: raw.consensus.agreements,
+        conflicts: raw.consensus.conflicts,
+        prompt_version: raw.prompt_version,
+        path: latest_path,
+    }))
+}
