@@ -280,10 +280,10 @@ impl ThemeSelectionView {
             {
                 Ok(rt) => rt,
                 Err(e) => {
-                    tx.send(AppEvent::InsertBackgroundEventEarly(format!(
+                    tx.send_background_event_before_next_output(format!(
                         "Failed to start runtime: {}",
                         e
-                    )));
+                    ));
                     return;
                 }
             };
@@ -291,7 +291,7 @@ impl ThemeSelectionView {
                 // Load current config (CLI-style) and construct a one-off ModelClient
                 let cfg = match codex_core::config::Config::load_with_cli_overrides(vec![], codex_core::config::ConfigOverrides::default()) {
                     Ok(c) => c,
-                    Err(e) => { tx.send(AppEvent::InsertBackgroundEventEarly(format!("Config error: {}", e))); return; }
+                    Err(e) => { tx.send_background_event_before_next_output(format!("Config error: {}", e)); return; }
                 };
                 // Use the same auth preference as the active Codex session.
                 // When logged in with ChatGPT, prefer ChatGPT auth; otherwise fall back to API key.
@@ -350,7 +350,14 @@ impl ThemeSelectionView {
                 // Stream and collect final JSON
                 use futures::StreamExt;
                 let _ = progress_tx.send(ProgressMsg::ThinkingDelta("(connecting to model)".to_string()));
-                let mut stream = match client.stream(&prompt).await { Ok(s) => s, Err(e) => { tx.send(AppEvent::InsertBackgroundEventEarly(format!("Request error: {}", e))); tracing::info!("spinner request error: {}", e); return; } };
+                let mut stream = match client.stream(&prompt).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tx.send_background_event_before_next_output(format!("Request error: {}", e));
+                        tracing::info!("spinner request error: {}", e);
+                        return;
+                    }
+                };
                 let mut out = String::new();
                 let mut think_sum = String::new();
                 // Capture the last transport/stream error so we can surface it to the UI
@@ -580,17 +587,17 @@ impl ThemeSelectionView {
             {
                 Ok(rt) => rt,
                 Err(e) => {
-                    tx.send(AppEvent::InsertBackgroundEventEarly(format!(
+                    tx.send_background_event_before_next_output(format!(
                         "Failed to start runtime: {}",
                         e
-                    )));
+                    ));
                     return;
                 }
             };
             let _ = rt.block_on(async move {
                 let cfg = match codex_core::config::Config::load_with_cli_overrides(vec![], codex_core::config::ConfigOverrides::default()) {
                     Ok(c) => c,
-                    Err(e) => { tx.send(AppEvent::InsertBackgroundEventEarly(format!("Config error: {}", e))); return; }
+                    Err(e) => { tx.send_background_event_before_next_output(format!("Config error: {}", e)); return; }
                 };
                 let auth_mgr = codex_core::AuthManager::shared(
                     cfg.codex_home.clone(),
@@ -671,7 +678,7 @@ impl ThemeSelectionView {
                 let mut stream = match client.stream(&prompt).await {
                     Ok(s) => s,
                     Err(e) => {
-                        tx.send(AppEvent::InsertBackgroundEventEarly(format!("Request error: {}", e)));
+                        tx.send_background_event_before_next_output(format!("Request error: {}", e));
                         return;
                     }
                 };
@@ -1260,10 +1267,8 @@ impl<'a> BottomPaneView<'a> for ThemeSelectionView {
                                         self.current_spinner = "custom".to_string();
                                         self.app_event_tx
                                             .send(AppEvent::UpdateSpinner("custom".to_string()));
-                                        self.app_event_tx.send(
-                                            AppEvent::InsertBackgroundEventEarly(
-                                                "Custom spinner saved".to_string(),
-                                            ),
+                                        self.app_event_tx.send_background_event(
+                                            "Custom spinner saved".to_string(),
                                         );
                                         go_overview = true;
                                     }
@@ -1393,19 +1398,17 @@ impl<'a> BottomPaneView<'a> for ThemeSelectionView {
                                         }
                                         // Informative status depending on whether we set active
                                         if s.preview_on.get() {
-                                            self.app_event_tx.send(
-                                                AppEvent::InsertBackgroundEventEarly(format!(
+                                            self.app_event_tx
+                                                .send_background_event_before_next_output(format!(
                                                     "Set theme to {}",
                                                     name
-                                                )),
-                                            );
+                                                ));
                                         } else {
-                                            self.app_event_tx.send(
-                                                AppEvent::InsertBackgroundEventEarly(format!(
+                                            self.app_event_tx
+                                                .send_background_event_before_next_output(format!(
                                                     "Saved custom theme {} (not active)",
                                                     name
-                                                )),
-                                            );
+                                                ));
                                         }
                                         go_overview = true;
                                     }

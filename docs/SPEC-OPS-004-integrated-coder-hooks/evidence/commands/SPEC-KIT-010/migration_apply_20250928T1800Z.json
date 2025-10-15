@@ -1,0 +1,37 @@
+{
+  "generated_at": "2025-09-28T01:56:48Z",
+  "mode": "apply",
+  "results": [
+    {
+      "domain": "spec-tracker",
+      "id": "mem-plan-001",
+      "slug": "spec-ops-123-plan-20250927",
+      "status": "skipped_existing_slug"
+    },
+    {
+      "domain": "spec-tracker",
+      "id": "mem-existing-002",
+      "slug": "spec-ops-123-tasks",
+      "status": "skipped_existing_id"
+    },
+    {
+      "domain": "docs-ops",
+      "id": "mem-new-003",
+      "slug": null,
+      "status": "inserted"
+    }
+  ],
+  "source_files": [
+    "scripts/spec-kit/tests/fixtures/byterover_export_sample.json"
+  ],
+  "summary": {
+    "database": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-010/sample_local_memory.db",
+    "domains": {
+      "docs-ops": 1,
+      "spec-tracker": 2
+    },
+    "inserted": 1,
+    "skipped": 2,
+    "total": 3
+  }
+}

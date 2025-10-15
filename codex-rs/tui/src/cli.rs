@@ -1,3 +1,4 @@
+use clap::ArgAction;
 use clap::Parser;
 use codex_common::ApprovalModeCliArg;
 use codex_common::CliConfigOverrides;
@@ -60,8 +61,18 @@ pub struct Cli {
     #[clap(long = "cd", short = 'C', value_name = "DIR")]
     pub cwd: Option<PathBuf>,
 
-    // Web search is now enabled by default via an internal override.
-    // Intentionally not exposed as a command-line option.
+    /// Enable web search support. Enabled by default; use --no-search to disable.
+    #[arg(long = "search", action = ArgAction::SetTrue)]
+    pub enable_web_search: bool,
+
+    /// Disable web search support explicitly.
+    #[arg(long = "no-search", action = ArgAction::SetTrue, hide = true)]
+    pub disable_web_search: bool,
+
+    /// Effective web search toggle after applying flags.
+    #[clap(skip)]
+    pub web_search: bool,
+
     /// Enable debug logging of all LLM requests and responses to files.
     #[clap(long = "debug", short = 'd', default_value_t = false)]
     pub debug: bool,
@@ -79,4 +90,28 @@ pub struct Cli {
 
     #[clap(skip)]
     pub config_overrides: CliConfigOverrides,
+
+    /// Start in resume picker mode when true (used by `code resume`).
+    #[clap(skip)]
+    pub resume_picker: bool,
+
+    /// Resume the most recent session automatically when true.
+    #[clap(skip)]
+    pub resume_last: bool,
+
+    /// Resume a specific session id when provided.
+    #[clap(skip)]
+    pub resume_session_id: Option<String>,
+}
+
+impl Cli {
+    pub fn finalize_defaults(&mut self) {
+        self.web_search = if self.disable_web_search {
+            false
+        } else if self.enable_web_search {
+            true
+        } else {
+            true
+        };
+    }
 }

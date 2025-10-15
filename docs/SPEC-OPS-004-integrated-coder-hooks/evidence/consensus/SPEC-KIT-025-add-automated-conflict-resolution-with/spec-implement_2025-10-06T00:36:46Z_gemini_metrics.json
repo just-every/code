@@ -1,0 +1,16 @@
+{
+  "agent": "gemini",
+  "model_id": "gemini-2.5-pro",
+  "model_release": "2025-08-06",
+  "reasoning_mode": "thinking",
+  "output_path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-025-add-automated-conflict-resolution-with/spec-implement_2025-10-06T00:36:46Z_gemini.json",
+  "latency_ms": 7403,
+  "prompt_tokens": null,
+  "completion_tokens": null,
+  "reasoning_tokens": null,
+  "total_tokens": null,
+  "cache_hit": null,
+  "cost_usd": null,
+  "status": "error",
+  "error": "agent execution failed"
+}

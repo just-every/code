@@ -25,7 +25,11 @@ pub fn render_intro_outline_fill(area: Rect, buf: &mut Buffer, t: f32) {
     }
     // Bail out early if the effective render rect is too small
     if r.width < 40 || r.height < 10 {
-        tracing::warn!("!!! Area too small for animation: {}x{} (need 40x10)", r.width, r.height);
+        tracing::warn!(
+            "!!! Area too small for animation: {}x{} (need 40x10)",
+            r.width,
+            r.height
+        );
         return;
     }
 
@@ -73,7 +77,7 @@ pub fn render_intro_outline_fill(area: Rect, buf: &mut Buffer, t: f32) {
     Paragraph::new(lines)
         .alignment(Alignment::Left)
         .render(r, buf);
-    
+
     // animation render complete
 }
 
@@ -135,7 +139,7 @@ pub fn render_intro_outline_fill_with_alpha(area: Rect, buf: &mut Buffer, t: f32
     Paragraph::new(lines)
         .alignment(Alignment::Left)
         .render(r, buf);
-    
+
     // animation render complete
 }
 

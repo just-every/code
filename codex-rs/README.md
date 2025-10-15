@@ -58,9 +58,9 @@ Sometimes it is not convenient to `cd` to the directory you want Codex to use as
 Generate shell completion scripts via:
 
 ```shell
-codex completion bash
-codex completion zsh
-codex completion fish
+code completion bash
+code completion zsh
+code completion fish
 ```
 
 ### Experimenting with the Codex Sandbox

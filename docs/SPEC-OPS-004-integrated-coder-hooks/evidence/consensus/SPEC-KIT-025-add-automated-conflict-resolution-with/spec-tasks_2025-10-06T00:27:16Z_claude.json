@@ -1,0 +1,12 @@
+{
+  "spec_id": "SPEC-KIT-025-add-automated-conflict-resolution-with",
+  "stage": "spec-tasks",
+  "agent": "claude",
+  "error": "agent execution failed",
+  "consensus": {
+    "agreements": [],
+    "conflicts": [
+      "claude execution failed"
+    ]
+  }
+}

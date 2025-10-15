@@ -4,7 +4,6 @@ use serde::Serialize;
 use thiserror::Error;
 use tracing::Level;
 
-
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Default)]
 pub struct TokenData {
     /// Flat info parsed from the JWT in auth.json.

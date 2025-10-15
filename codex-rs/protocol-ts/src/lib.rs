@@ -64,7 +64,9 @@ pub fn generate_ts(out_dir: &Path, prettier: Option<&Path>) -> Result<()> {
                 .arg("--write")
                 .args(ts_files.iter().map(|p| p.as_os_str()))
                 .status()
-                .with_context(|| format!("Failed to invoke Prettier at {}", prettier_bin.display()))?;
+                .with_context(|| {
+                    format!("Failed to invoke Prettier at {}", prettier_bin.display())
+                })?;
             if !status.success() {
                 return Err(anyhow!("Prettier failed with status {}", status));
             }
@@ -135,7 +137,7 @@ fn generate_index_ts(out_dir: &Path) -> Result<PathBuf> {
     }
 
     let mut content =
-        String::with_capacity(HEADER.len() + entries.iter().map(|s| s.len()).sum::<usize>());
+        String::with_capacity(HEADER.len() + entries.iter().map(String::len).sum::<usize>());
     content.push_str(HEADER);
     for line in &entries {
         content.push_str(line);

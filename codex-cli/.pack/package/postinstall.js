@@ -54,6 +54,26 @@ function getCachedBinaryPath(version, targetTriple, isWindows) {
   return join(cacheDir, `code-${targetTriple}${ext}`);
 }
 
+const CODE_SHIM_SIGNATURES = [
+  '@just-every/code',
+  'bin/coder.js',
+  '$(dirname "$0")/coder',
+  '%~dp0coder'
+];
+
+function shimContentsLookOurs(contents) {
+  return CODE_SHIM_SIGNATURES.some(sig => contents.includes(sig));
+}
+
+function looksLikeOurCodeShim(path) {
+  try {
+    const contents = readFileSync(path, 'utf8');
+    return shimContentsLookOurs(contents);
+  } catch {
+    return false;
+  }
+}
+
 function isWSL() {
   if (platform() !== 'linux') return false;
   try {
@@ -102,6 +122,51 @@ async function writeCacheAtomic(srcPath, cachePath) {
   }
   if (existsSync(cachePath)) { try { unlinkSync(cachePath); } catch {} }
   renameSync(tmp, cachePath);
+}
+
+function resolveGlobalBinDir() {
+  const plt = platform();
+  const userAgent = process.env.npm_config_user_agent || '';
+
+  const fromPrefix = (prefixPath) => {
+    if (!prefixPath) return '';
+    return plt === 'win32' ? prefixPath : join(prefixPath, 'bin');
+  };
+
+  const prefixEnv = process.env.npm_config_prefix || process.env.PREFIX || '';
+  const direct = fromPrefix(prefixEnv);
+  if (direct) return direct;
+
+  const tryExec = (command) => {
+    try {
+      return execSync(command, {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        shell: true,
+      }).toString().trim();
+    } catch {
+      return '';
+    }
+  };
+
+  const prefixFromNpm = fromPrefix(tryExec('npm prefix -g'));
+  if (prefixFromNpm) return prefixFromNpm;
+
+  const binFromNpm = tryExec('npm bin -g');
+  if (binFromNpm) return binFromNpm;
+
+  if (userAgent.includes('pnpm')) {
+    const pnpmBin = tryExec('pnpm bin --global');
+    if (pnpmBin) return pnpmBin;
+    const pnpmPrefix = fromPrefix(tryExec('pnpm env get prefix'));
+    if (pnpmPrefix) return pnpmPrefix;
+  }
+
+  if (userAgent.includes('yarn')) {
+    const yarnBin = tryExec('yarn global bin');
+    if (yarnBin) return yarnBin;
+  }
+
+  return '';
 }
 
 async function downloadBinary(url, dest, maxRedirects = 5, maxRetries = 3) {
@@ -240,7 +305,7 @@ async function main() {
         } catch {
           contents = '';
         }
-        const looksLikeOurs = contents.includes('@just-every/code') || contents.includes('bin/coder.js');
+        const looksLikeOurs = shimContentsLookOurs(contents);
         if (!looksLikeOurs) {
           console.warn('[notice] Found an existing `code` on PATH at:');
           console.warn(`         ${resolved}`);
@@ -598,15 +663,17 @@ async function main() {
       }
     } else {
       // npm/pnpm/yarn path
-      let globalBin = '';
-      try {
-        globalBin = execSync('npm bin -g', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
-      } catch {}
-
-      const ourShim = join(globalBin || '', isWindows ? 'code.cmd' : 'code');
+      const globalBin = resolveGlobalBinDir();
+      const ourShim = globalBin ? join(globalBin, isWindows ? 'code.cmd' : 'code') : '';
       const candidates = resolveAllOnPath();
       const others = candidates.filter(p => p && (!ourShim || p !== ourShim));
-      const collision = others.length > 0;
+      const ourShimExists = ourShim && existsSync(ourShim);
+      const shimLooksOurs = ourShimExists && looksLikeOurCodeShim(ourShim);
+      const conflictPaths = [
+        ...others,
+        ...(ourShimExists && !shimLooksOurs ? [ourShim] : []),
+      ];
+      const collision = conflictPaths.length > 0;
 
       const ensureWrapper = (name, args) => {
         if (!globalBin) return;
@@ -633,13 +700,23 @@ async function main() {
 
       if (collision) {
         console.error('⚠ Detected existing `code` on PATH:');
-        for (const p of others) console.error(`   - ${p}`);
+        for (const p of conflictPaths) console.error(`   - ${p}`);
         if (globalBin) {
           try {
-            if (existsSync(ourShim)) {
-              unlinkSync(ourShim);
-              console.error(`✓ Skipped global 'code' shim (removed ${ourShim})`);
-              skippedCmds.push({ name: 'code', reason: `existing: ${others[0]}` });
+            if (ourShimExists) {
+              if (shimLooksOurs && others.length > 0) {
+                unlinkSync(ourShim);
+                console.error(`✓ Removed global 'code' shim (ours) at ${ourShim}`);
+                const reason = others[0] || ourShim;
+                skippedCmds.push({ name: 'code', reason: `existing: ${reason}` });
+              } else if (!shimLooksOurs) {
+                console.error(`✓ Skipped global 'code' shim (different CLI at ${ourShim})`);
+                const reason = conflictPaths[0] || ourShim;
+                skippedCmds.push({ name: 'code', reason: `existing: ${reason}` });
+              }
+            } else {
+              const reason = conflictPaths[0] || 'another command on PATH';
+              skippedCmds.push({ name: 'code', reason: `existing: ${reason}` });
             }
           } catch (e) {
             console.error(`⚠ Could not remove npm shim '${ourShim}': ${e.message}`);

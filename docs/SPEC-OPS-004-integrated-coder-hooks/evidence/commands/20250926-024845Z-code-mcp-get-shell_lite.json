@@ -1,0 +1,10 @@
+{
+  "name": "shell_lite",
+  "command": "npx",
+  "args": [
+    "-y",
+    "super-shell-mcp"
+  ],
+  "env": null,
+  "startup_timeout_ms": null
+}

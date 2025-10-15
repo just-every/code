@@ -1,0 +1,8 @@
+npm warn Unknown project config "shamefully-hoist". This will stop working in the next major version of npm.
+npm warn Unknown project config "strict-peer-dependencies". This will stop working in the next major version of npm.
+npm warn Unknown project config "node-linker". This will stop working in the next major version of npm.
+npm warn Unknown project config "prefer-workspace-packages". This will stop working in the next major version of npm.
+Log file path: /home/thetu/.npm/_npx/83142cab6b97c8ff/node_modules/super-shell-mcp/logs/super-shell-mcp.log
+Creating log directory: /home/thetu/.npm/_npx/83142cab6b97c8ff/node_modules/super-shell-mcp/logs
+Super Shell MCP server running on stdio
+Log file: /home/thetu/.npm/_npx/83142cab6b97c8ff/node_modules/super-shell-mcp/logs/super-shell-mcp.log

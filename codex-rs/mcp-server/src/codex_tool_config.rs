@@ -1,13 +1,17 @@
 //! Configuration object accepted by the `codex` MCP tool-call.
 
+use agent_client_protocol as acp;
+use codex_core::config_types::ClientTools;
 use codex_core::protocol::AskForApproval;
 use codex_protocol::config_types::SandboxMode;
 use mcp_types::Tool;
 use mcp_types::ToolInputSchema;
+use mcp_types::ToolOutputSchema;
 use schemars::JsonSchema;
 use schemars::r#gen::SchemaSettings;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -130,6 +134,74 @@ pub(crate) fn create_tool_for_codex_tool_call_param() -> Tool {
     }
 }
 
+/// Builds a `Tool` definition for the `acp/new_session` tool-call.
+pub(crate) fn create_tool_for_acp_new_session() -> Tool {
+    let input_schema = ToolInputSchema {
+        r#type: "object".to_string(),
+        required: Some(vec!["cwd".to_string()]),
+        properties: Some(json!({
+            "cwd": {"type": "string"},
+            "mcpServers": {"type": "array"},
+            "clientTools": {"type": "object"}
+        })),
+    };
+    let output_schema = ToolOutputSchema {
+        r#type: "object".to_string(),
+        properties: None,
+        required: None,
+    };
+
+    Tool {
+        name: acp::AGENT_METHOD_NAMES.session_new.to_string(),
+        title: Some(acp::AGENT_METHOD_NAMES.session_new.to_string()),
+        input_schema,
+        output_schema: Some(output_schema),
+        description: Some("Start a Codex session over ACP.".to_string()),
+        annotations: None,
+    }
+}
+
+/// Builds a `Tool` definition for the `acp/prompt` tool-call.
+pub(crate) fn create_tool_for_acp_prompt() -> Tool {
+    let input_schema = ToolInputSchema {
+        r#type: "object".to_string(),
+        required: Some(vec!["sessionId".to_string(), "prompt".to_string()]),
+        properties: Some(json!({
+            "sessionId": {"type": "string"},
+            "prompt": {"type": "array"},
+            "meta": {"type": "object"}
+        })),
+    };
+
+    Tool {
+        name: acp::AGENT_METHOD_NAMES.session_prompt.to_string(),
+        title: Some(acp::AGENT_METHOD_NAMES.session_prompt.to_string()),
+        input_schema,
+        output_schema: None,
+        description: Some("Send a prompt to an existing ACP Codex session.".to_string()),
+        annotations: None,
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpNewSessionToolArgs {
+    #[serde(flatten)]
+    pub request: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_tools: Option<ClientTools>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpPromptToolArgs {
+    #[serde(rename = "sessionId")]
+    pub session_id: acp::SessionId,
+    pub prompt: Vec<acp::ContentBlock>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<serde_json::Value>,
+}
+
 impl CodexToolCallParam {
     /// Returns the initial user prompt to start the Codex conversation and the
     /// effective Config object generated from the supplied parameters.
@@ -167,6 +239,8 @@ impl CodexToolCallParam {
             show_raw_agent_reasoning: None,
             debug: None,
             tools_web_search_request: None,
+            mcp_servers: None,
+            experimental_client_tools: None,
         };
 
         let cli_overrides = cli_overrides
@@ -217,6 +291,59 @@ pub(crate) fn create_tool_for_codex_tool_call_reply_param() -> Tool {
         output_schema: None,
         description: Some(
             "Continue a Codex session by providing the session id and prompt.".to_string(),
+        ),
+        annotations: None,
+    }
+}
+
+pub(crate) fn create_tool_for_spec_consensus_check() -> Tool {
+    let input_schema = ToolInputSchema {
+        r#type: "object".to_string(),
+        required: Some(vec![
+            "specId".to_string(),
+            "stage".to_string(),
+            "artifacts".to_string(),
+        ]),
+        properties: Some(json!({
+            "specId": { "type": "string" },
+            "stage": { "type": "string" },
+            "artifacts": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "agent": { "type": "string" },
+                        "version": { "type": "string" },
+                        "content": { "type": "object" }
+                    },
+                    "required": ["agent", "content"],
+                }
+            }
+        })),
+    };
+
+    let output_schema = ToolOutputSchema {
+        r#type: "object".to_string(),
+        properties: Some(json!({
+            "specId": { "type": "string" },
+            "stage": { "type": "string" },
+            "consensusOk": { "type": "boolean" },
+            "degraded": { "type": "boolean" },
+            "missingAgents": { "type": "array" },
+            "agreements": { "type": "array" },
+            "conflicts": { "type": "array" }
+        })),
+        required: None,
+    };
+
+    Tool {
+        name: "spec_consensus_check".to_string(),
+        title: Some("Spec Consensus Reviewer".to_string()),
+        input_schema,
+        output_schema: Some(output_schema),
+        description: Some(
+            "Compare multi-agent outputs for a Spec Kit stage and report consensus/conflicts."
+                .to_string(),
         ),
         annotations: None,
     }

@@ -119,6 +119,8 @@ pub(crate) struct ChatComposer {
     using_chatgpt_auth: bool,
     // Ephemeral footer notice and its expiry
     footer_notice: Option<(String, std::time::Instant)>,
+    // Persistent hint for specific modes (e.g., standard terminal mode)
+    standard_terminal_hint: Option<String>,
     // Persistent/ephemeral access-mode indicator shown on the left
     access_mode_label: Option<String>,
     access_mode_label_expiry: Option<std::time::Instant>,
@@ -174,6 +176,7 @@ impl ChatComposer {
             animation_running: None,
             using_chatgpt_auth,
             footer_notice: None,
+            standard_terminal_hint: None,
             access_mode_label: None,
             access_mode_label_expiry: None,
             access_mode_hint_expiry: None,
@@ -186,17 +189,25 @@ impl ChatComposer {
         }
     }
 
+    pub fn set_using_chatgpt_auth(&mut self, using: bool) {
+        self.using_chatgpt_auth = using;
+    }
+
     /// Returns true if the input starts with a slash command and the cursor
     /// is positioned within the command head (i.e., before the first
     /// whitespace on the first line). Used to decide whether to keep the
     /// slash-command popup active and to suppress file completion.
     fn is_cursor_in_slash_command_head(&self) -> bool {
         let text = self.textarea.text();
-        if text.is_empty() { return false; }
+        if text.is_empty() {
+            return false;
+        }
         let cursor = self.textarea.cursor();
         let first_line_end = text.find('\n').unwrap_or(text.len());
         let first_line = &text[..first_line_end];
-        if !first_line.starts_with('/') { return false; }
+        if !first_line.starts_with('/') {
+            return false;
+        }
         let head_end = first_line
             .char_indices()
             .find(|(_, c)| c.is_whitespace())
@@ -242,7 +253,11 @@ impl ChatComposer {
                     let period = Duration::from_millis(period_ms); // fallback uses default below if needed
 
                     let mut next = Instant::now()
-                        .checked_add(if period_ms == 0 { Duration::from_millis(default_ms) } else { period })
+                        .checked_add(if period_ms == 0 {
+                            Duration::from_millis(default_ms)
+                        } else {
+                            period
+                        })
                         .unwrap_or_else(Instant::now);
 
                     while animation_flag_clone.load(Ordering::Relaxed) {
@@ -257,7 +272,11 @@ impl ChatComposer {
                             // bursty catch‑up redraws.
                             let mut target = next;
                             while target <= now {
-                                if let Some(t) = target.checked_add(period) { target = t; } else { break; }
+                                if let Some(t) = target.checked_add(period) {
+                                    target = t;
+                                } else {
+                                    break;
+                                }
                             }
                             next = target;
                         }
@@ -323,6 +342,10 @@ impl ChatComposer {
 
     // Map technical status messages to user-friendly ones
     fn map_status_message(technical_message: &str) -> String {
+        if technical_message.trim().is_empty() {
+            return String::new();
+        }
+
         let lower = technical_message.to_lowercase();
 
         // Thinking/reasoning patterns
@@ -415,7 +438,8 @@ impl ChatComposer {
 
         // IMPORTANT: `width` here is the full BottomPane width. Subtract the
         // configured outer padding, border, and inner padding to match wrapping.
-        let content_width = width.saturating_sub(crate::layout_consts::COMPOSER_CONTENT_WIDTH_OFFSET);
+        let content_width =
+            width.saturating_sub(crate::layout_consts::COMPOSER_CONTENT_WIDTH_OFFSET);
         let content_lines = self.textarea.desired_height(content_width).max(1); // At least 1 line
 
         // Total input height: content + border (2) only, no vertical padding
@@ -454,11 +478,14 @@ impl ChatComposer {
         let textarea_rect = input_block.inner(input_area);
 
         // Apply the same inner padding as in render (horizontal only).
-        let padded_textarea_rect = textarea_rect.inner(Margin::new(crate::layout_consts::COMPOSER_INNER_HPAD.into(), 0));
+        let padded_textarea_rect = textarea_rect.inner(Margin::new(
+            crate::layout_consts::COMPOSER_INNER_HPAD.into(),
+            0,
+        ));
 
         let state = self.textarea_state.borrow();
         self.textarea
-            .cursor_pos_with_state(padded_textarea_rect, &state)
+            .cursor_pos_with_state(padded_textarea_rect, *state)
     }
 
     /// Returns true if the composer currently contains no user input.
@@ -480,7 +507,7 @@ impl ChatComposer {
             .token_usage_info
             .as_ref()
             .map(|info| info.initial_prompt_tokens)
-            .unwrap_or_else(|| last_token_usage.cached_input_tokens.unwrap_or(0));
+            .unwrap_or_else(|| last_token_usage.cached_input_tokens);
 
         self.token_usage_info = Some(TokenUsageInfo {
             _total_token_usage: total_token_usage,
@@ -528,7 +555,10 @@ impl ChatComposer {
             self.textarea.insert_str(" ");
             self.typed_anything = true; // Mark that user has interacted via paste
             self.app_event_tx
-                .send(crate::app_event::AppEvent::RegisterPastedImage { placeholder: placeholder.clone(), path });
+                .send(crate::app_event::AppEvent::RegisterPastedImage {
+                    placeholder: placeholder.clone(),
+                    path,
+                });
             self.flash_footer_notice(format!("Added image {}x{} (PNG)", info.width, info.height));
         } else if char_count > LARGE_PASTE_CHAR_THRESHOLD {
             let placeholder = format!("[Pasted Content {char_count} chars]");
@@ -551,7 +581,10 @@ impl ChatComposer {
                     self.textarea.insert_str(" ");
                     self.typed_anything = true; // Mark that user has interacted via paste
                     self.app_event_tx
-                        .send(crate::app_event::AppEvent::RegisterPastedImage { placeholder: placeholder.clone(), path });
+                        .send(crate::app_event::AppEvent::RegisterPastedImage {
+                            placeholder: placeholder.clone(),
+                            path,
+                        });
                     // Give a small visual confirmation in the footer.
                     self.flash_footer_notice(format!(
                         "Added image {}x{} (PNG)",
@@ -599,12 +632,7 @@ impl ChatComposer {
         if cursor_pos == 0 {
             return;
         }
-        if let Some(slice) = self
-            .textarea
-            .text()
-            .as_bytes()
-            .get(cursor_pos - 1)
-        {
+        if let Some(slice) = self.textarea.text().as_bytes().get(cursor_pos - 1) {
             if *slice == b' ' {
                 self.post_paste_space_guard = Some(PostPasteSpaceGuard {
                     expires_at: Instant::now() + Duration::from_secs(2),
@@ -621,8 +649,8 @@ impl ChatComposer {
         if event.code != KeyCode::Char(' ') {
             return false;
         }
-        let unshifted_space = event.modifiers == KeyModifiers::NONE
-            || event.modifiers == KeyModifiers::SHIFT;
+        let unshifted_space =
+            event.modifiers == KeyModifiers::NONE || event.modifiers == KeyModifiers::SHIFT;
         if !unshifted_space {
             return false;
         }
@@ -650,7 +678,6 @@ impl ChatComposer {
         self.post_paste_space_guard = None;
         true
     }
-
 
     /// Clear all composer input and reset transient state like pending pastes
     /// and history navigation.
@@ -707,8 +734,12 @@ impl ChatComposer {
         // Otherwise, only apply if user is still editing a token matching the query
         // and that token qualifies for auto-trigger (i.e., @ or ./).
         let current_opt = Self::current_completion_token(&self.textarea);
-        let Some(current_token) = current_opt else { return; };
-        if !current_token.starts_with(&query) { return; }
+        let Some(current_token) = current_opt else {
+            return;
+        };
+        if !current_token.starts_with(&query) {
+            return;
+        }
 
         if let ActivePopup::File(popup) = &mut self.active_popup {
             popup.set_matches(&query, matches);
@@ -718,6 +749,10 @@ impl ChatComposer {
     pub fn set_ctrl_c_quit_hint(&mut self, show: bool, has_focus: bool) {
         self.ctrl_c_quit_hint = show;
         self.set_has_focus(has_focus);
+    }
+
+    pub fn set_standard_terminal_hint(&mut self, hint: Option<String>) {
+        self.standard_terminal_hint = hint;
     }
 
     pub(crate) fn insert_str(&mut self, text: &str) {
@@ -775,7 +810,11 @@ impl ChatComposer {
 
         match key_event {
             // Allow Shift+Up to navigate history even when slash popup is active.
-            KeyEvent { code: KeyCode::Up, modifiers, .. } => {
+            KeyEvent {
+                code: KeyCode::Up,
+                modifiers,
+                ..
+            } => {
                 if modifiers.contains(KeyModifiers::SHIFT) {
                     return self.handle_key_event_without_popup(key_event);
                 }
@@ -787,7 +826,11 @@ impl ChatComposer {
                 (InputResult::None, true)
             }
             // Allow Shift+Down to navigate history even when slash popup is active.
-            KeyEvent { code: KeyCode::Down, modifiers, .. } => {
+            KeyEvent {
+                code: KeyCode::Down,
+                modifiers,
+                ..
+            } => {
                 if modifiers.contains(KeyModifiers::SHIFT) {
                     return self.handle_key_event_without_popup(key_event);
                 }
@@ -831,9 +874,8 @@ impl ChatComposer {
                         }
                         CommandItem::Subagent(i) => {
                             if let Some(name) = popup.subagent_name(i) {
-                                let starts_with_cmd = first_line
-                                    .trim_start()
-                                    .starts_with(&format!("/{}", name));
+                                let starts_with_cmd =
+                                    first_line.trim_start().starts_with(&format!("/{}", name));
                                 if !starts_with_cmd {
                                     self.textarea.set_text(&format!("/{} ", name));
                                 }
@@ -863,20 +905,22 @@ impl ChatComposer {
                         CommandItem::Builtin(cmd) => {
                             // Check if this is a prompt-expanding command that will trigger agents
                             if cmd.is_prompt_expanding() {
-                                self.app_event_tx.send(crate::app_event::AppEvent::PrepareAgents);
+                                self.app_event_tx
+                                    .send(crate::app_event::AppEvent::PrepareAgents);
                             }
                             // Send command to the app layer with full text.
                             self.app_event_tx
-                                .send(crate::app_event::AppEvent::DispatchCommand(cmd, command_text.clone()));
+                                .send(crate::app_event::AppEvent::DispatchCommand(
+                                    cmd,
+                                    command_text.clone(),
+                                ));
                             // Clear textarea and dismiss popup
                             self.textarea.set_text("");
                             self.active_popup = ActivePopup::None;
                             return (InputResult::Command(cmd), true);
                         }
                         CommandItem::UserPrompt(idx) => {
-                            let prompt_content = popup
-                                .prompt_content(idx)
-                                .map(|s| s.to_string());
+                            let prompt_content = popup.prompt_content(idx).map(|s| s.to_string());
                             self.textarea.set_text("");
                             self.active_popup = ActivePopup::None;
                             if let Some(contents) = prompt_content {
@@ -889,11 +933,15 @@ impl ChatComposer {
                             // treat Enter as submit (close popup and forward to default handler).
                             if let Some(name) = popup.subagent_name(i) {
                                 let first_line = command_text.lines().next().unwrap_or("");
-                                let starts_with = first_line.trim_start().starts_with(&format!("/{}", name));
+                                let starts_with =
+                                    first_line.trim_start().starts_with(&format!("/{}", name));
                                 if starts_with {
                                     // Dismiss popup and submit normally (this will handle args or empty string)
                                     self.active_popup = ActivePopup::None;
-                                    return self.handle_key_event_without_popup(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                                    return self.handle_key_event_without_popup(KeyEvent::new(
+                                        KeyCode::Enter,
+                                        KeyModifiers::NONE,
+                                    ));
                                 } else {
                                     // Insert the subagent slash with a trailing space for args
                                     self.textarea.set_text(&format!("/{} ", name));
@@ -946,7 +994,11 @@ impl ChatComposer {
         };
 
         match key_event {
-            KeyEvent { code: KeyCode::Up, modifiers, .. } => {
+            KeyEvent {
+                code: KeyCode::Up,
+                modifiers,
+                ..
+            } => {
                 if modifiers.contains(KeyModifiers::SHIFT) {
                     return self.handle_key_event_without_popup(key_event);
                 }
@@ -957,7 +1009,11 @@ impl ChatComposer {
                 popup.move_up();
                 (InputResult::None, true)
             }
-            KeyEvent { code: KeyCode::Down, modifiers, .. } => {
+            KeyEvent {
+                code: KeyCode::Down,
+                modifiers,
+                ..
+            } => {
                 if modifiers.contains(KeyModifiers::SHIFT) {
                     return self.handle_key_event_without_popup(key_event);
                 }
@@ -1193,7 +1249,9 @@ impl ChatComposer {
             .unwrap_or(after_cursor.len());
         let end_idx = safe_cursor + end_rel_idx;
 
-        if start_idx >= end_idx { return None; }
+        if start_idx >= end_idx {
+            return None;
+        }
 
         Some(text[start_idx..end_idx].trim().to_string())
     }
@@ -1248,20 +1306,27 @@ impl ChatComposer {
                 kind: KeyEventKind::Press,
                 ..
             } if self.is_empty() => {
-                self.app_event_tx.send(crate::app_event::AppEvent::ExitRequest);
+                self.app_event_tx
+                    .send(crate::app_event::AppEvent::ExitRequest);
                 (InputResult::None, true)
             }
             // -------------------------------------------------------------
             // Shift+Tab — rotate access preset (Read Only → Write with Approval → Full Access)
             // -------------------------------------------------------------
-            KeyEvent { code: KeyCode::BackTab, .. } => {
-                self.app_event_tx.send(crate::app_event::AppEvent::CycleAccessMode);
+            KeyEvent {
+                code: KeyCode::BackTab,
+                ..
+            } => {
+                self.app_event_tx
+                    .send(crate::app_event::AppEvent::CycleAccessMode);
                 (InputResult::None, true)
             }
             // -------------------------------------------------------------
             // Tab-press file search when not using @ or ./ and not in slash cmd
             // -------------------------------------------------------------
-            KeyEvent { code: KeyCode::Tab, .. } => {
+            KeyEvent {
+                code: KeyCode::Tab, ..
+            } => {
                 // Suppress Tab completion only while the cursor is within the
                 // slash command head (before the first space). Allow Tab-based
                 // file search in the arguments of /plan, /solve, etc.
@@ -1283,7 +1348,8 @@ impl ChatComposer {
                 if let Some(tok) = Self::current_generic_token(&self.textarea) {
                     if !tok.is_empty() {
                         self.pending_tab_file_query = Some(tok.clone());
-                        self.app_event_tx.send(crate::app_event::AppEvent::StartFileSearch(tok));
+                        self.app_event_tx
+                            .send(crate::app_event::AppEvent::StartFileSearch(tok));
                         // Do not show a popup yet; wait for results and only
                         // show if there are matches to avoid flicker.
                         return (InputResult::None, true);
@@ -1294,7 +1360,9 @@ impl ChatComposer {
             // -------------------------------------------------------------
             // Handle Esc key — leave to App-level policy (clear/stop/backtrack)
             // -------------------------------------------------------------
-            KeyEvent { code: KeyCode::Esc, .. } => {
+            KeyEvent {
+                code: KeyCode::Esc, ..
+            } => {
                 // Do nothing here so App can implement global Esc ordering.
                 (InputResult::None, false)
             }
@@ -1347,7 +1415,8 @@ impl ChatComposer {
                                 (InputResult::ScrollUp, false)
                             } else {
                                 // Move up a visual/logical line; if already on first line, TextArea moves to start.
-                                self.textarea.input(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+                                self.textarea
+                                    .input(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
                                 (InputResult::None, true)
                             }
                         }
@@ -1361,7 +1430,8 @@ impl ChatComposer {
                                 (InputResult::ScrollDown, false)
                             } else {
                                 // Move down a visual/logical line; if already on last line, TextArea moves to end.
-                                self.textarea.input(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+                                self.textarea
+                                    .input(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
                                 (InputResult::None, true)
                             }
                         }
@@ -1397,7 +1467,8 @@ impl ChatComposer {
                         || trimmed.starts_with("/solve ")
                         || trimmed.starts_with("/code ")
                     {
-                        self.app_event_tx.send(crate::app_event::AppEvent::PrepareAgents);
+                        self.app_event_tx
+                            .send(crate::app_event::AppEvent::PrepareAgents);
                     }
 
                     self.history.record_local_submission(&original_text);
@@ -1447,7 +1518,9 @@ impl ChatComposer {
         // If text changed, reset history navigation state
         if text_before != text_after {
             self.history.reset_navigation();
-            if !text_after.is_empty() { self.typed_anything = true; }
+            if !text_after.is_empty() {
+                self.typed_anything = true;
+            }
         }
 
         // Check if any placeholders were removed and remove their corresponding pending pastes
@@ -1507,7 +1580,10 @@ impl ChatComposer {
                 if input_starts_with_slash && in_slash_head {
                     let mut command_popup = CommandPopup::new_with_filter(self.using_chatgpt_auth);
                     // Load saved subagent commands to include in autocomplete (exclude built-ins)
-                    if let Ok(cfg) = codex_core::config::Config::load_with_cli_overrides(vec![], codex_core::config::ConfigOverrides::default()) {
+                    if let Ok(cfg) = codex_core::config::Config::load_with_cli_overrides(
+                        vec![],
+                        codex_core::config::ConfigOverrides::default(),
+                    ) {
                         let mut names: Vec<String> = cfg
                             .subagent_commands
                             .iter()
@@ -1524,7 +1600,8 @@ impl ChatComposer {
                     command_popup.on_composer_text_change(first_line.to_string());
                     self.active_popup = ActivePopup::Command(command_popup);
                     // Notify app: composer expanded due to slash popup
-                    self.app_event_tx.send(crate::app_event::AppEvent::ComposerExpanded);
+                    self.app_event_tx
+                        .send(crate::app_event::AppEvent::ComposerExpanded);
                 }
             }
         }
@@ -1585,7 +1662,7 @@ impl ChatComposer {
         self.dismissed_file_popup_token = None;
     }
 
-    fn set_has_focus(&mut self, has_focus: bool) {
+    pub(crate) fn set_has_focus(&mut self, has_focus: bool) {
         self.has_focus = has_focus;
     }
 
@@ -1599,7 +1676,10 @@ impl ChatComposer {
         {
             return false;
         }
-        if let Some(text) = self.history.navigate_up(self.textarea.text(), &self.app_event_tx) {
+        if let Some(text) = self
+            .history
+            .navigate_up(self.textarea.text(), &self.app_event_tx)
+        {
             self.textarea.set_text(&text);
             self.textarea.set_cursor(0);
         }
@@ -1621,7 +1701,9 @@ impl ChatComposer {
         true
     }
 
-    pub(crate) fn history_is_browsing(&self) -> bool { self.history.is_browsing() }
+    pub(crate) fn history_is_browsing(&self) -> bool {
+        self.history.is_browsing()
+    }
 
     pub(crate) fn mark_next_down_scrolls_history(&mut self) {
         self.next_down_scrolls_history = true;
@@ -1675,7 +1757,9 @@ impl WidgetRef for ChatComposer {
                 // suffix is shown for a short time even for persistent labels.
                 let show_access_label = if let Some(until) = self.access_mode_label_expiry {
                     std::time::Instant::now() <= until
-                } else { true };
+                } else {
+                    true
+                };
                 if show_access_label {
                     if let Some(label) = &self.access_mode_label {
                         // Access label without bold per design
@@ -1698,16 +1782,36 @@ impl WidgetRef for ChatComposer {
 
                 if self.ctrl_c_quit_hint {
                     // Treat as a notice; keep on the left
-                    if !self.access_mode_label.is_none() { left_spans.push(Span::from("   ")); }
+                    if !self.access_mode_label.is_none() {
+                        left_spans.push(Span::from("   "));
+                    }
                     left_spans.push(Span::from("Ctrl+C").style(key_hint_style));
                     left_spans.push(Span::from(" again to quit").style(label_style));
+                }
+
+                if let Some(hint) = &self.standard_terminal_hint {
+                    if left_spans.len() > 1 {
+                        left_spans.push(Span::from("   "));
+                    }
+                    left_spans.push(
+                        Span::from(hint.clone()).style(
+                            Style::default()
+                                .fg(crate::colors::warning())
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    );
                 }
 
                 // Append ephemeral footer notice if present and not expired
                 if let Some((msg, until)) = &self.footer_notice {
                     if std::time::Instant::now() <= *until {
-                        if !self.ctrl_c_quit_hint { left_spans.push(Span::from("   ")); }
-                        left_spans.push(Span::from(msg.clone()).style(Style::default().add_modifier(Modifier::DIM)));
+                        if left_spans.len() > 1 {
+                            left_spans.push(Span::from("   "));
+                        }
+                        left_spans.push(
+                            Span::from(msg.clone())
+                                .style(Style::default().add_modifier(Modifier::DIM)),
+                        );
                     }
                 }
 
@@ -1721,17 +1825,21 @@ impl WidgetRef for ChatComposer {
                     let turn_usage = &token_usage_info.last_token_usage;
                     let tokens_used = turn_usage.tokens_in_context_window();
                     let used_str = format_with_thousands(tokens_used);
-                    token_spans.push(Span::from(used_str).style(label_style.add_modifier(Modifier::BOLD)));
+                    token_spans
+                        .push(Span::from(used_str).style(label_style.add_modifier(Modifier::BOLD)));
                     token_spans.push(Span::from(" tokens").style(label_style));
                     if let Some(context_window) = token_usage_info.model_context_window {
                         if context_window > 0 {
                             let percent_remaining = {
-                                let percent = 100.0
-                                    - (tokens_used as f32 / context_window as f32 * 100.0);
+                                let percent =
+                                    100.0 - (tokens_used as f32 / context_window as f32 * 100.0);
                                 percent.clamp(0.0, 100.0) as u8
                             };
                             token_spans.push(Span::from(" (").style(label_style));
-                            token_spans.push(Span::from(percent_remaining.to_string()).style(label_style.add_modifier(Modifier::BOLD)));
+                            token_spans.push(
+                                Span::from(percent_remaining.to_string())
+                                    .style(label_style.add_modifier(Modifier::BOLD)),
+                            );
                             token_spans.push(Span::from("% left)").style(label_style));
                         }
                     }
@@ -1742,18 +1850,28 @@ impl WidgetRef for ChatComposer {
                     let mut spans: Vec<Span> = Vec::new();
                     if !self.ctrl_c_quit_hint {
                         if self.show_reasoning_hint && include_reasoning {
-                            if !spans.is_empty() { spans.push(Span::from("  •  ").style(label_style)); }
+                            if !spans.is_empty() {
+                                spans.push(Span::from("  •  ").style(label_style));
+                            }
                             spans.push(Span::from("Ctrl+R").style(key_hint_style));
-                            let label = if self.reasoning_shown { " hide reasoning" } else { " show reasoning" };
+                            let label = if self.reasoning_shown {
+                                " hide reasoning"
+                            } else {
+                                " show reasoning"
+                            };
                             spans.push(Span::from(label).style(label_style));
                         }
                         if self.show_diffs_hint && include_diff {
-                            if !spans.is_empty() { spans.push(Span::from("  •  ").style(label_style)); }
+                            if !spans.is_empty() {
+                                spans.push(Span::from("  •  ").style(label_style));
+                            }
                             spans.push(Span::from("Ctrl+D").style(key_hint_style));
                             spans.push(Span::from(" diff viewer").style(label_style));
                         }
                         // Always show help at the end of the command hints
-                        if !spans.is_empty() { spans.push(Span::from("  •  ").style(label_style)); }
+                        if !spans.is_empty() {
+                            spans.push(Span::from("  •  ").style(label_style));
+                        }
                         spans.push(Span::from("Ctrl+H").style(key_hint_style));
                         spans.push(Span::from(" help").style(label_style));
                     }
@@ -1785,13 +1903,19 @@ impl WidgetRef for ChatComposer {
                 let sep_len = "  •  ".chars().count();
                 let combined_len = |h: &Vec<Span>, t: &Vec<Span>, a: &Vec<Span>| -> usize {
                     let mut len = measure(h) + measure(t) + measure(a);
-                    if !h.is_empty() && !t.is_empty() { len += sep_len; }
-                    if (!h.is_empty() || !t.is_empty()) && !a.is_empty() { len += sep_len; }
+                    if !h.is_empty() && !t.is_empty() {
+                        len += sep_len;
+                    }
+                    if (!h.is_empty() || !t.is_empty()) && !a.is_empty() {
+                        len += sep_len;
+                    }
                     len
                 };
 
                 // Elide hints in order until content fits
-                while left_len + combined_len(&hint_spans, &token_spans, &auth_spans) + trailing_pad > total_width {
+                while left_len + combined_len(&hint_spans, &token_spans, &auth_spans) + trailing_pad
+                    > total_width
+                {
                     if include_reasoning {
                         include_reasoning = false;
                     } else if include_diff {
@@ -1806,7 +1930,9 @@ impl WidgetRef for ChatComposer {
                 }
 
                 // Compose final right spans: hints, optional separator, then tokens
-                if !hint_spans.is_empty() { right_spans.extend(hint_spans); }
+                if !hint_spans.is_empty() {
+                    right_spans.extend(hint_spans);
+                }
                 if !right_spans.is_empty() && !token_spans.is_empty() {
                     right_spans.push(Span::from("  •  ").style(label_style));
                 }
@@ -1821,7 +1947,9 @@ impl WidgetRef for ChatComposer {
                 let right_len: usize = right_spans.iter().map(|s| s.content.chars().count()).sum();
                 let spacer = if total_width > left_len + right_len + trailing_pad {
                     " ".repeat(total_width - left_len - right_len - trailing_pad)
-                } else { String::from(" ") };
+                } else {
+                    String::from(" ")
+                };
 
                 let mut line_spans = left_spans;
                 line_spans.push(Span::from(spacer));
@@ -1898,7 +2026,7 @@ impl WidgetRef for ChatComposer {
         drop(state); // release the borrow before computing position again
         if let Some((cx, cy)) = self
             .textarea
-            .cursor_pos_with_state(padded_textarea_rect, &self.textarea_state.borrow())
+            .cursor_pos_with_state(padded_textarea_rect, *self.textarea_state.borrow())
         {
             let cursor_bg = crate::theme::current_theme().cursor;
             if cx < buf.area.width.saturating_add(buf.area.x)
@@ -2573,35 +2701,42 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         // Initially, placeholder should be shown (typed_anything is false, text is empty)
-        terminal.draw(|f| {
-            let area = f.area();
-            let mut buf = Buffer::empty(area);
-            composer.render_ref(area, &mut buf);
-            // Check that placeholder is rendered (it would contain greeting text)
-            let content = buf.content();
-            let has_placeholder = content.iter().any(|cell| {
-                let s = cell.symbol();
-                s.contains("today") || s.contains("tonight") || s.contains("evening")
-            });
-            assert!(has_placeholder, "Placeholder should be visible initially");
-        }).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                let mut buf = Buffer::empty(area);
+                composer.render_ref(area, &mut buf);
+                // Check that placeholder is rendered (it would contain greeting text)
+                let content = buf.content();
+                let has_placeholder = content.iter().any(|cell| {
+                    let s = cell.symbol();
+                    s.contains("today") || s.contains("tonight") || s.contains("evening")
+                });
+                assert!(has_placeholder, "Placeholder should be visible initially");
+            })
+            .unwrap();
 
         // After pasting, placeholder should not be shown even if text is cleared
         composer.handle_paste("test".to_string());
         composer.clear_text();
 
-        terminal.draw(|f| {
-            let area = f.area();
-            let mut buf = Buffer::empty(area);
-            composer.render_ref(area, &mut buf);
-            // Check that placeholder is NOT rendered
-            let content = buf.content();
-            let has_placeholder = content.iter().any(|cell| {
-                let s = cell.symbol();
-                s.contains("today") || s.contains("tonight") || s.contains("evening")
-            });
-            assert!(!has_placeholder, "Placeholder should not be visible after user interaction");
-        }).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                let mut buf = Buffer::empty(area);
+                composer.render_ref(area, &mut buf);
+                // Check that placeholder is NOT rendered
+                let content = buf.content();
+                let has_placeholder = content.iter().any(|cell| {
+                    let s = cell.symbol();
+                    s.contains("today") || s.contains("tonight") || s.contains("evening")
+                });
+                assert!(
+                    !has_placeholder,
+                    "Placeholder should not be visible after user interaction"
+                );
+            })
+            .unwrap();
     }
 
     #[test]
@@ -2616,6 +2751,9 @@ mod tests {
 
         // Simulate new session by creating a new composer (this is what happens on /new)
         let composer2 = ChatComposer::new(true, sender, false);
-        assert!(!composer2.typed_anything, "New session should reset typed_anything");
+        assert!(
+            !composer2.typed_anything,
+            "New session should reset typed_anything"
+        );
     }
 }

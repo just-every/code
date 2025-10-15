@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "command": "spec-ops-unlock",
+  "specId": "SPEC-KIT-030-add-documentation-for-rebasing-from",
+  "sessionId": "2025-10-07T01:23:02Z-170425023",
+  "timestamp": "2025-10-07T01:23:02Z",
+  "unlock_status": "unlocked",
+  "policy": {
+  "prefilter": {
+    "model": "gpt-5-codex",
+    "status": "passed",
+    "note": "true"
+  },
+  "final": {
+    "model": "gpt-5",
+    "status": "passed",
+    "note": "true"
+  }
+},
+  "artifacts": [
+    { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-030-add-documentation-for-rebasing-from/spec-unlock_2025-10-07T01:23:02Z-170425023.log" }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "agent": "gpt_pro",
+  "model_id": "gpt-5",
+  "model_release": "2025-09-29",
+  "reasoning_mode": "high",
+  "output_path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-025-add-automated-conflict-resolution-with/spec-plan_2025-10-06T00:19:45Z_gpt_pro.json",
+  "latency_ms": 210734,
+  "prompt_tokens": null,
+  "completion_tokens": null,
+  "reasoning_tokens": null,
+  "total_tokens": null,
+  "cache_hit": null,
+  "cost_usd": null,
+  "status": "ok",
+  "error": null
+}

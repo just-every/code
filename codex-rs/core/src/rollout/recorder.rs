@@ -7,8 +7,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use codex_protocol::mcp_protocol::ConversationId;
-use serde::Deserialize;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::OffsetDateTime;
 use time::format_description::FormatItem;
@@ -50,7 +49,6 @@ pub struct SavedSession {
     pub state: SessionStateSnapshot,
     pub session_id: uuid::Uuid,
 }
-
 /// Records all [`ResponseItem`]s for a session and flushes them to disk after
 /// every update.
 ///
@@ -228,7 +226,13 @@ impl RolloutRecorder {
 
     /// Compatibility wrapper for older resume API used by codex.rs
     pub async fn resume(config: &Config, path: &Path) -> std::io::Result<(Self, SavedSession)> {
-        let recorder = Self::new(config, RolloutRecorderParams::Resume { path: path.to_path_buf() }).await?;
+        let recorder = Self::new(
+            config,
+            RolloutRecorderParams::Resume {
+                path: path.to_path_buf(),
+            },
+        )
+        .await?;
         let history = Self::get_rollout_history(path).await?;
         let (session_id, items, events) = match history {
             InitialHistory::Resumed(resumed) => {
@@ -236,11 +240,17 @@ impl RolloutRecorder {
                     .history
                     .iter()
                     .filter_map(|entry| match entry {
-                        RolloutItem::Event(ev) => crate::protocol::recorded_event_from_protocol(ev.clone()),
+                        RolloutItem::Event(ev) => {
+                            crate::protocol::recorded_event_from_protocol(ev.clone())
+                        }
                         _ => None,
                     })
                     .collect();
-                (uuid::Uuid::from(resumed.conversation_id), resumed.history, events)
+                (
+                    uuid::Uuid::from(resumed.conversation_id),
+                    resumed.history,
+                    events,
+                )
             }
             _ => (uuid::Uuid::new_v4(), Vec::new(), Vec::new()),
         };
@@ -292,9 +302,11 @@ impl RolloutRecorder {
                     RolloutItem::Event(ev) => {
                         items.push(RolloutItem::Event(ev));
                     }
+                    RolloutItem::Compacted(compacted) => {
+                        items.push(RolloutItem::Compacted(compacted));
+                    }
                     // Ignore variants not used by this fork when resuming.
-                    RolloutItem::Compacted(_)
-                    | RolloutItem::TurnContext(_) => {
+                    RolloutItem::TurnContext(_) => {
                         // Skip
                     }
                 },

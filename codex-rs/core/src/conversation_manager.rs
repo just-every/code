@@ -59,14 +59,14 @@ impl ConversationManager {
         mut config: Config,
         auth_manager: Arc<AuthManager>,
     ) -> CodexResult<NewConversation> {
-        // Our core `Codex::spawn` takes `(config, auth)` and handles resume via
+        // Our core `Codex::spawn_with_auth_manager` handles resume via
         // `config.experimental_resume`. For a fresh conversation we leave it as `None`.
         config.experimental_resume = None;
         let CodexSpawnOk {
             codex,
             init_id: _,
             session_id,
-        } = Codex::spawn(config, auth_manager.auth()).await?;
+        } = Codex::spawn_with_auth_manager(config, Some(auth_manager.clone())).await?;
         let conversation_id: codex_protocol::mcp_protocol::ConversationId = session_id.into();
         self.finalize_spawn(codex, conversation_id).await
     }
@@ -127,7 +127,7 @@ impl ConversationManager {
             codex,
             init_id: _,
             session_id,
-        } = Codex::spawn(config, auth_manager.auth()).await?;
+        } = Codex::spawn_with_auth_manager(config, Some(auth_manager.clone())).await?;
         let conversation_id: codex_protocol::mcp_protocol::ConversationId = session_id.into();
         self.finalize_spawn(codex, conversation_id).await
     }
@@ -159,7 +159,9 @@ impl ConversationManager {
 
         // If there is no prior history to seed, just start a fresh conversation.
         if matches!(history, InitialHistory::New) {
-            return self.spawn_conversation(config, self.auth_manager.clone()).await;
+            return self
+                .spawn_conversation(config, self.auth_manager.clone())
+                .await;
         }
 
         // Otherwise, create a temporary rollout with the truncated items and resume from it.
@@ -189,7 +191,7 @@ impl ConversationManager {
             codex,
             init_id: _,
             session_id,
-        } = Codex::spawn(config, self.auth_manager.auth()).await?;
+        } = Codex::spawn_with_auth_manager(config, Some(self.auth_manager.clone())).await?;
         let conversation_id: codex_protocol::mcp_protocol::ConversationId = session_id.into();
         self.finalize_spawn(codex, conversation_id).await
     }

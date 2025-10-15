@@ -1,0 +1,13 @@
+{
+  "stage": "spec-unlock",
+  "status": "hold",
+  "telemetry": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-unlock_2025-10-14T17:28:18Z-3087513806.json",
+  "consensus": {
+    "agreements": [
+      "Unlock telemetry generated but policy overrides remain active",
+      "Unlock-notes.md documents hold rationale and follow-up checklist",
+      "Proceed to production unlock only after clean policy rerun (and optional live HAL)"
+    ],
+    "conflicts_resolved": []
+  }
+}

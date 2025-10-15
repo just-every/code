@@ -1,0 +1,9 @@
+---
+source: tui/src/chatwidget/tests.rs
+expression: visual
+---
+[magenta]/limits[/]
+
+[bold]Usage Limits[/]
+  Real usage data is not available yet.
+[dim]  Send a message to Codex, then run /limits again.[/]

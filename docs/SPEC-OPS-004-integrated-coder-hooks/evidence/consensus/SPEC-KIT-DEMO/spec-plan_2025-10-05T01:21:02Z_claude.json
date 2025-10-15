@@ -1,0 +1,12 @@
+{
+  "spec_id": "SPEC-KIT-DEMO",
+  "stage": "spec-plan",
+  "agent": "claude",
+  "error": "agent execution failed",
+  "consensus": {
+    "agreements": [],
+    "conflicts": [
+      "claude execution failed"
+    ]
+  }
+}

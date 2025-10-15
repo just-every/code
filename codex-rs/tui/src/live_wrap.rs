@@ -7,11 +7,12 @@ pub struct Row {
     pub text: String,
     /// True if this row ends with an explicit line break (as opposed to a hard wrap).
     pub explicit_break: bool,
+    width: usize,
 }
 
 impl Row {
     pub fn width(&self) -> usize {
-        self.text.width()
+        self.width
     }
 }
 
@@ -24,6 +25,15 @@ pub struct RowBuilder {
     current_line: String,
     /// Output rows built so far for the current logical line and previous ones.
     rows: Vec<Row>,
+}
+
+fn make_row(text: String, explicit_break: bool) -> Row {
+    let width = UnicodeWidthStr::width(text.as_str());
+    Row {
+        text,
+        explicit_break,
+        width,
+    }
 }
 
 impl RowBuilder {
@@ -95,10 +105,7 @@ impl RowBuilder {
     pub fn display_rows(&self) -> Vec<Row> {
         let mut out = self.rows.clone();
         if !self.current_line.is_empty() {
-            out.push(Row {
-                text: self.current_line.clone(),
-                explicit_break: false,
-            });
+            out.push(make_row(self.current_line.clone(), false));
         }
         out
     }
@@ -127,18 +134,12 @@ impl RowBuilder {
         if explicit_break {
             if self.current_line.is_empty() {
                 // We ended on a boundary previously; add an empty explicit row.
-                self.rows.push(Row {
-                    text: String::new(),
-                    explicit_break: true,
-                });
+                self.rows.push(make_row(String::new(), true));
             } else {
                 // There is leftover content that did not wrap yet; push it now with the explicit flag.
                 let mut s = String::new();
                 std::mem::swap(&mut s, &mut self.current_line);
-                self.rows.push(Row {
-                    text: s,
-                    explicit_break: true,
-                });
+                self.rows.push(make_row(s, true));
             }
         }
         // Reset current line buffer for next logical line.
@@ -158,10 +159,7 @@ impl RowBuilder {
                 if let Some((i, ch)) = self.current_line.char_indices().next() {
                     let len = i + ch.len_utf8();
                     let p = self.current_line[..len].to_string();
-                    self.rows.push(Row {
-                        text: p,
-                        explicit_break: false,
-                    });
+                    self.rows.push(make_row(p, false));
                     self.current_line = self.current_line[len..].to_string();
                     continue;
                 }
@@ -172,10 +170,7 @@ impl RowBuilder {
                 break;
             } else {
                 // Emit wrapped prefix as a non-explicit row and continue with the remainder.
-                self.rows.push(Row {
-                    text: prefix,
-                    explicit_break: false,
-                });
+                self.rows.push(make_row(prefix, false));
                 self.current_line = suffix.to_string();
             }
         }

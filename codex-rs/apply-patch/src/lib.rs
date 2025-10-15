@@ -1,16 +1,15 @@
 mod parser;
 mod seek_sequence;
 mod standalone_executable;
-mod tree_sitter_utils;
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::Utf8Error;
+use std::sync::LazyLock;
 
 use anyhow::Context;
 use anyhow::Result;
-use once_cell::sync::Lazy;
 pub use parser::Hunk;
 pub use parser::ParseError;
 use parser::ParseError::*;
@@ -27,43 +26,45 @@ use tree_sitter_bash::LANGUAGE as BASH;
 
 pub use standalone_executable::main;
 
+// Back-compat shim for codex-core callers
+// The core crate expects a simple async FileSystem abstraction and a default
+// StdFileSystem implementation. Upstream refactored apply-patch to operate
+// directly on std::fs; we preserve these minimal exports here so downstream
+// code (core/acp.rs, core/apply_patch.rs, core/codex.rs) continues to compile
+// without changes.
+#[allow(async_fn_in_trait)]
+pub trait FileSystem {
+    async fn read_text_file(&self, path: &Path) -> std::io::Result<String>;
+    async fn write_text_file(&self, path: &Path, contents: String) -> std::io::Result<()>;
+}
+
+pub struct StdFileSystem;
+
+impl FileSystem for StdFileSystem {
+    async fn read_text_file(&self, path: &Path) -> std::io::Result<String> {
+        std::fs::read_to_string(path)
+    }
+
+    async fn write_text_file(&self, path: &Path, contents: String) -> std::io::Result<()> {
+        std::fs::write(path, contents)
+    }
+}
+
 /// Detailed instructions for gpt-4.1 on how to use the `apply_patch` tool.
 pub const APPLY_PATCH_TOOL_INSTRUCTIONS: &str = include_str!("../apply_patch_tool_instructions.md");
 
 const APPLY_PATCH_COMMANDS: [&str; 2] = ["apply_patch", "applypatch"];
 
-fn is_bash_like(cmd: &str) -> bool {
+fn looks_like_bash(cmd: &str) -> bool {
     let trimmed = cmd.trim_matches('"').trim_matches('\'');
     if trimmed.eq_ignore_ascii_case("bash") || trimmed.eq_ignore_ascii_case("bash.exe") {
         return true;
     }
-    std::path::Path::new(trimmed)
+    Path::new(trimmed)
         .file_name()
         .and_then(|s| s.to_str())
         .map(|name| name.eq_ignore_ascii_case("bash") || name.eq_ignore_ascii_case("bash.exe"))
         .unwrap_or(false)
-}
-
-/// Details about an embedded `apply_patch` heredoc found inside a larger shell script.
-#[derive(Debug, Clone, PartialEq)]
-pub struct EmbeddedApplyPatch {
-    /// The extracted heredoc body (the actual patch text between Begin/End Patch).
-    pub patch_body: String,
-    /// Optional working directory if the script used `cd <path> && apply_patch <<EOF`.
-    pub cd_path: Option<String>,
-    /// Byte range in the original script covering the full redirected statement to remove.
-    pub stmt_byte_range: (usize, usize),
-}
-
-/// Find the first `apply_patch <<'EOF' ... EOF` redirected statement anywhere in a bash/sh/zsh script.
-/// Also supports the form `cd <path> && apply_patch <<'EOF' ...`.
-/// Returns `None` when not present.
-pub fn find_embedded_apply_patch(script: &str) -> Result<Option<EmbeddedApplyPatch>, ExtractHeredocError> {
-    // Defer to the fast textual scanner; map unit error to a benign None.
-    match tree_sitter_utils::find_embedded_apply_patch(script) {
-        Ok(v) => Ok(v),
-        Err(_) => Ok(None),
-    }
 }
 
 #[derive(Debug, Error, PartialEq)]
@@ -139,10 +140,13 @@ pub fn maybe_parse_apply_patch(argv: &[String]) -> MaybeApplyPatch {
             Err(e) => MaybeApplyPatch::PatchParseError(e),
         },
         // Bash heredoc form: (optional `cd <path> &&`) apply_patch <<'EOF' ...
-        [bash, flag, script] if is_bash_like(bash) && flag == "-lc" => {
+        [bash, flag, script] if looks_like_bash(bash) && flag == "-lc" => {
             match extract_apply_patch_from_bash(script) {
-                Ok((body, _maybe_cd)) => match parse_patch(&body) {
-                    Ok(source) => MaybeApplyPatch::Body(source),
+                Ok((body, workdir)) => match parse_patch(&body) {
+                    Ok(mut source) => {
+                        source.workdir = workdir;
+                        MaybeApplyPatch::Body(source)
+                    }
                     Err(e) => MaybeApplyPatch::PatchParseError(e),
                 },
                 Err(ExtractHeredocError::CommandDidNotStartWithApplyPatch) => {
@@ -256,7 +260,7 @@ pub fn maybe_parse_apply_patch_verified(argv: &[String], cwd: &Path) -> MaybeApp
                 );
             }
         }
-        [bash, flag, script] if is_bash_like(bash) && flag == "-lc" => {
+        [bash, flag, script] if looks_like_bash(bash) && flag == "-lc" => {
             if parse_patch(script).is_ok() {
                 return MaybeApplyPatchVerified::CorrectnessError(
                     ApplyPatchError::ImplicitInvocation,
@@ -383,7 +387,7 @@ fn extract_apply_patch_from_bash(
     // also run an arbitrary query against the AST. This is useful for understanding
     // how tree-sitter parses the script and whether the query syntax is correct. Be sure
     // to test both positive and negative cases.
-    static APPLY_PATCH_QUERY: Lazy<Query> = Lazy::new(|| {
+    static APPLY_PATCH_QUERY: LazyLock<Query> = LazyLock::new(|| {
         let language = BASH.into();
         #[expect(clippy::expect_used)]
         Query::new(
@@ -608,31 +612,21 @@ fn apply_hunks_to_files(hunks: &[Hunk]) -> anyhow::Result<AffectedPaths> {
     for hunk in hunks {
         match hunk {
             Hunk::AddFile { path, contents } => {
-                if let Some(parent) = path.parent() {
-                    if !parent.as_os_str().is_empty() {
-                        std::fs::create_dir_all(parent).with_context(|| {
-                            format!("Failed to create parent directories for {}", path.display())
-                        })?;
-                    }
+                if let Some(parent) = path.parent()
+                    && !parent.as_os_str().is_empty()
+                {
+                    std::fs::create_dir_all(parent).with_context(|| {
+                        format!("Failed to create parent directories for {}", path.display())
+                    })?;
                 }
                 std::fs::write(path, contents)
                     .with_context(|| format!("Failed to write file {}", path.display()))?;
                 added.push(path.clone());
             }
             Hunk::DeleteFile { path } => {
-                match std::fs::remove_file(path) {
-                    Ok(()) => deleted.push(path.clone()),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        // Treat deleting a non-existent file as success (idempotent delete).
-                        deleted.push(path.clone());
-                    }
-                    Err(e) => {
-                        return Err(anyhow::Error::new(e).context(format!(
-                            "Failed to delete file {}",
-                            path.display()
-                        )));
-                    }
-                }
+                std::fs::remove_file(path)
+                    .with_context(|| format!("Failed to delete file {}", path.display()))?;
+                deleted.push(path.clone());
             }
             Hunk::UpdateFile {
                 path,
@@ -642,27 +636,17 @@ fn apply_hunks_to_files(hunks: &[Hunk]) -> anyhow::Result<AffectedPaths> {
                 let AppliedPatch { new_contents, .. } =
                     derive_new_contents_from_chunks(path, chunks)?;
                 if let Some(dest) = move_path {
-                    if let Some(parent) = dest.parent() {
-                        if !parent.as_os_str().is_empty() {
-                            std::fs::create_dir_all(parent).with_context(|| {
-                                format!("Failed to create parent directories for {}", dest.display())
-                            })?;
-                        }
+                    if let Some(parent) = dest.parent()
+                        && !parent.as_os_str().is_empty()
+                    {
+                        std::fs::create_dir_all(parent).with_context(|| {
+                            format!("Failed to create parent directories for {}", dest.display())
+                        })?;
                     }
                     std::fs::write(dest, new_contents)
                         .with_context(|| format!("Failed to write file {}", dest.display()))?;
-                    match std::fs::remove_file(path) {
-                        Ok(()) => (),
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                            // Original already gone; proceed.
-                        }
-                        Err(e) => {
-                            return Err(anyhow::Error::new(e).context(format!(
-                                "Failed to remove original {}",
-                                path.display()
-                            )));
-                        }
-                    }
+                    std::fs::remove_file(path)
+                        .with_context(|| format!("Failed to remove original {}", path.display()))?;
                     modified.push(dest.clone());
                 } else {
                     std::fs::write(path, new_contents)
@@ -684,33 +668,13 @@ struct AppliedPatch {
     new_contents: String,
 }
 
-/// Best-effort read with brief retries for transient NotFound during editor-style atomic renames.
-fn read_to_string_with_retry(path: &Path) -> std::io::Result<String> {
-    use std::io::ErrorKind;
-    const MAX_ATTEMPTS: usize = 5;
-    let mut attempt = 0;
-    loop {
-        match std::fs::read_to_string(path) {
-            Ok(s) => return Ok(s),
-            Err(e) if e.kind() == ErrorKind::NotFound && attempt < MAX_ATTEMPTS => {
-                // Tiny backoff (10ms, 20ms, 40ms, 80ms, 160ms)
-                let delay_ms = 10u64 << attempt;
-                std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-                attempt += 1;
-                continue;
-            }
-            Err(e) => return Err(e),
-        }
-    }
-}
-
 /// Return *only* the new file contents (joined into a single `String`) after
 /// applying the chunks to the file at `path`.
 fn derive_new_contents_from_chunks(
     path: &Path,
     chunks: &[UpdateFileChunk],
 ) -> std::result::Result<AppliedPatch, ApplyPatchError> {
-    let original_contents = match read_to_string_with_retry(path) {
+    let original_contents = match std::fs::read_to_string(path) {
         Ok(contents) => contents,
         Err(err) => {
             return Err(ApplyPatchError::IoError(IoError {
@@ -720,21 +684,18 @@ fn derive_new_contents_from_chunks(
         }
     };
 
-    let mut original_lines: Vec<String> = original_contents
-        .split('\n')
-        .map(|s| s.to_string())
-        .collect();
+    let mut original_lines: Vec<String> = original_contents.split('\n').map(String::from).collect();
 
     // Drop the trailing empty element that results from the final newline so
     // that line counts match the behaviour of standard `diff`.
-    if original_lines.last().is_some_and(|s| s.is_empty()) {
+    if original_lines.last().is_some_and(String::is_empty) {
         original_lines.pop();
     }
 
     let replacements = compute_replacements(&original_lines, path, chunks)?;
     let new_lines = apply_replacements(original_lines, &replacements);
     let mut new_lines = new_lines;
-    if !new_lines.last().is_some_and(|s| s.is_empty()) {
+    if !new_lines.last().is_some_and(String::is_empty) {
         new_lines.push(String::new());
     }
     let new_contents = new_lines.join("\n");
@@ -778,7 +739,7 @@ fn compute_replacements(
         if chunk.old_lines.is_empty() {
             // Pure addition (no old lines). We'll add them at the end or just
             // before the final empty line if one exists.
-            let insertion_idx = if original_lines.last().is_some_and(|s| s.is_empty()) {
+            let insertion_idx = if original_lines.last().is_some_and(String::is_empty) {
                 original_lines.len() - 1
             } else {
                 original_lines.len()
@@ -804,11 +765,11 @@ fn compute_replacements(
 
         let mut new_slice: &[String] = &chunk.new_lines;
 
-        if found.is_none() && pattern.last().is_some_and(|s| s.is_empty()) {
+        if found.is_none() && pattern.last().is_some_and(String::is_empty) {
             // Retry without the trailing empty line which represents the final
             // newline in the file.
             pattern = &pattern[..pattern.len() - 1];
-            if new_slice.last().is_some_and(|s| s.is_empty()) {
+            if new_slice.last().is_some_and(String::is_empty) {
                 new_slice = &new_slice[..new_slice.len() - 1];
             }
 
@@ -920,6 +881,7 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
     use std::fs;
+    use std::string::ToString;
     use tempfile::tempdir;
 
     /// Helper to construct a patch with the given body.
@@ -928,12 +890,16 @@ mod tests {
     }
 
     fn strs_to_strings(strs: &[&str]) -> Vec<String> {
-        strs.iter().map(|s| s.to_string()).collect()
+        strs.iter().map(ToString::to_string).collect()
     }
 
     // Test helpers to reduce repetition when building bash -lc heredoc scripts
     fn args_bash(script: &str) -> Vec<String> {
         strs_to_strings(&["bash", "-lc", script])
+    }
+
+    fn args_abs_bash(script: &str) -> Vec<String> {
+        strs_to_strings(&["/bin/bash", "-lc", script])
     }
 
     fn heredoc_script(prefix: &str) -> String {
@@ -955,8 +921,7 @@ mod tests {
         }]
     }
 
-    fn assert_match(script: &str, expected_workdir: Option<&str>) {
-        let args = args_bash(script);
+    fn assert_match_args(args: Vec<String>, expected_workdir: Option<&str>) {
         match maybe_parse_apply_patch(&args) {
             MaybeApplyPatch::Body(ApplyPatchArgs { hunks, workdir, .. }) => {
                 assert_eq!(workdir.as_deref(), expected_workdir);
@@ -966,29 +931,21 @@ mod tests {
         }
     }
 
-    fn assert_not_match(script: &str) {
-        let args = args_bash(script);
+    fn assert_match(script: &str, expected_workdir: Option<&str>) {
+        assert_match_args(args_bash(script), expected_workdir);
+        assert_match_args(args_abs_bash(script), expected_workdir);
+    }
+
+    fn assert_not_match_args(args: Vec<String>) {
         assert!(matches!(
             maybe_parse_apply_patch(&args),
             MaybeApplyPatch::NotApplyPatch
         ));
     }
 
-    #[test]
-    fn test_absolute_bash_detects_apply_patch() {
-        let script = heredoc_script("");
-        let args = vec!["/bin/bash".to_string(), "-lc".to_string(), script.clone()];
-        match maybe_parse_apply_patch(&args) {
-            MaybeApplyPatch::Body(ApplyPatchArgs { hunks, .. }) => {
-                assert_eq!(hunks, expected_single_add());
-            }
-            other => panic!("expected MaybeApplyPatch::Body got {other:?}"),
-        }
-        let dir = tempdir().unwrap();
-        assert!(matches!(
-            maybe_parse_apply_patch_verified(&args, dir.path()),
-            MaybeApplyPatchVerified::Body(_)
-        ));
+    fn assert_not_match(script: &str) {
+        assert_not_match_args(args_bash(script));
+        assert_not_match_args(args_abs_bash(script));
     }
 
     #[test]
@@ -1005,12 +962,13 @@ mod tests {
     #[test]
     fn test_implicit_patch_bash_script_is_error() {
         let script = "*** Begin Patch\n*** Add File: foo\n+hi\n*** End Patch";
-        let args = args_bash(script);
         let dir = tempdir().unwrap();
-        assert!(matches!(
-            maybe_parse_apply_patch_verified(&args, dir.path()),
-            MaybeApplyPatchVerified::CorrectnessError(ApplyPatchError::ImplicitInvocation)
-        ));
+        for args in [args_bash(script), args_abs_bash(script)] {
+            assert!(matches!(
+                maybe_parse_apply_patch_verified(&args, dir.path()),
+                MaybeApplyPatchVerified::CorrectnessError(ApplyPatchError::ImplicitInvocation)
+            ));
+        }
     }
 
     #[test]
@@ -1070,29 +1028,41 @@ mod tests {
 
     #[test]
     fn test_heredoc_applypatch() {
-        let args = strs_to_strings(&[
-            "bash",
-            "-lc",
-            r#"applypatch <<'PATCH'
+        for args in [
+            strs_to_strings(&[
+                "bash",
+                "-lc",
+                r#"applypatch <<'PATCH'
 *** Begin Patch
 *** Add File: foo
 +hi
 *** End Patch
 PATCH"#,
-        ]);
-
-        match maybe_parse_apply_patch(&args) {
-            MaybeApplyPatch::Body(ApplyPatchArgs { hunks, workdir, .. }) => {
-                assert_eq!(workdir, None);
-                assert_eq!(
-                    hunks,
-                    vec![Hunk::AddFile {
-                        path: PathBuf::from("foo"),
-                        contents: "hi\n".to_string()
-                    }]
-                );
+            ]),
+            strs_to_strings(&[
+                "/bin/bash",
+                "-lc",
+                r#"applypatch <<'PATCH'
+*** Begin Patch
+*** Add File: foo
++hi
+*** End Patch
+PATCH"#,
+            ]),
+        ] {
+            match maybe_parse_apply_patch(&args) {
+                MaybeApplyPatch::Body(ApplyPatchArgs { hunks, workdir, .. }) => {
+                    assert_eq!(workdir, None);
+                    assert_eq!(
+                        hunks,
+                        vec![Hunk::AddFile {
+                            path: PathBuf::from("foo"),
+                            contents: "hi\n".to_string()
+                        }]
+                    );
+                }
+                result => panic!("expected MaybeApplyPatch::Body got {result:?}"),
             }
-            result => panic!("expected MaybeApplyPatch::Body got {result:?}"),
         }
     }
 

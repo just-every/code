@@ -3,7 +3,7 @@
 //! Example usage:
 //!
 //! ```bash
-//! cargo run -p codex-mcp-client -- `codex-mcp-server`
+//! cargo run -p codex-mcp-client -- `code-mcp-server`
 //! ```
 //!
 //! Any additional arguments after the first one are forwarded to the spawned
@@ -41,7 +41,7 @@ async fn main() -> Result<()> {
     let mut args: Vec<OsString> = std::env::args_os().skip(1).collect();
 
     if args.is_empty() || args[0] == "--help" || args[0] == "-h" {
-        eprintln!("Usage: mcp-client <program> [args..]\n\nExample: mcp-client codex-mcp-server");
+        eprintln!("Usage: mcp-client <program> [args..]\n\nExample: mcp-client code-mcp-server");
         std::process::exit(1);
     }
     let original_args = args.clone();

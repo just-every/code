@@ -1,0 +1,48 @@
+[
+  {
+    "type": "response.created"
+  },
+  {
+    "type": "response.output_text.delta",
+    "delta": "Hello",
+    "item_id": "msg_1",
+    "output_index": 0,
+    "sequence_number": 0
+  },
+  {
+    "type": "response.output_text.delta",
+    "delta": " world",
+    "item_id": "msg_1",
+    "output_index": 0,
+    "sequence_number": 1
+  },
+  {
+    "type": "response.output_item.done",
+    "item": {
+      "type": "message",
+      "id": "msg_1",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "Hello world"
+        }
+      ]
+    },
+    "output_index": 0,
+    "sequence_number": 2
+  },
+  {
+    "type": "response.completed",
+    "response": {
+      "id": "__ID__",
+      "usage": {
+        "input_tokens": 0,
+        "input_tokens_details": null,
+        "output_tokens": 0,
+        "output_tokens_details": null,
+        "total_tokens": 0
+      }
+    }
+  }
+]

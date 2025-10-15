@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "command": "spec-ops-plan",
+  "specId": "SPEC-KIT-DEMO",
+  "sessionId": "2025-10-03T17:38:33Z-449014235",
+  "timestamp": "2025-10-03T17:38:43Z",
+  "baseline": {
+    "mode": "no-run",
+    "artifact": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-DEMO/baseline_2025-10-03T17:38:33Z-449014235.md",
+    "status": "passed"
+  },
+  "hooks": {
+    "session.start": "ok"
+  },
+  "policy": {
+  "prefilter": {
+    "model": "o4-mini-high",
+    "status": "passed",
+    "note": "/home/thetu/code/codex-rs/target/dev-fast/code exec --sandbox read-only --model o4-mini-high -- "Policy prefilter for SPEC-KIT-DEMO/spec-plan""
+  },
+  "final": {
+    "model": "gpt-5",
+    "reasoning": "low",
+    "status": "failed",
+    "note": "command failed: /home/thetu/code/codex-rs/target/dev-fast/code exec --sandbox read-only --model gpt-5 --reasoning low -- "Policy final check for SPEC-KIT-DEMO/spec-plan""
+  }
+},
+  "artifacts": [
+    { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-DEMO/baseline_2025-10-03T17:38:33Z-449014235.md" },
+    { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-DEMO/spec-plan_2025-10-03T17:38:33Z-449014235.log" }
+  ]
+}

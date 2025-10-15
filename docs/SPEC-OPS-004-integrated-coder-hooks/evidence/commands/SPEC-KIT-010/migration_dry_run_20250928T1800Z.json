@@ -1,0 +1,15 @@
+{
+  "generated_at": "2025-09-28T01:56:20Z",
+  "mode": "dry-run",
+  "results": [],
+  "source_files": [
+    "scripts/spec-kit/tests/fixtures/byterover_export_sample.json"
+  ],
+  "summary": {
+    "domains": {
+      "docs-ops": 1,
+      "spec-tracker": 2
+    },
+    "total": 3
+  }
+}

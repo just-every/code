@@ -10,24 +10,68 @@ pub fn format_elapsed(start_time: Instant) -> String {
 /// Convert a [`std::time::Duration`] into a human-readable, compact string.
 ///
 /// Formatting rules:
-/// * < 1 s  ->  "{milli}ms"
-/// * < 60 s ->  "{sec:.2}s" (two decimal places)
-/// * >= 60 s ->  "{min}m {sec:02}s"
+/// * < 1 s  -> "{milli}ms"
+/// * < 60 s -> "{sec:.2}s" (two decimal places)
+/// * < 60 m -> "{min}m {sec:02}s"
+/// * < 24 h -> "{hour}h {minute:02}m" (rounded to the nearest minute)
+/// * >= 24 h -> "{day}d {hour:02}h" (rounded to the nearest hour)
 pub fn format_duration(duration: Duration) -> String {
-    let millis = duration.as_millis() as i64;
-    format_elapsed_millis(millis)
+    let millis = duration.as_millis();
+    if millis < 1_000 {
+        return format!("{millis}ms");
+    }
+
+    let secs = duration.as_secs();
+    if secs < 60 {
+        return format!("{:.2}s", duration.as_secs_f64());
+    }
+
+    if secs < 3_600 {
+        return format_minutes_seconds(duration);
+    }
+
+    if secs < 86_400 {
+        return format_hours_minutes(duration);
+    }
+
+    format_days_hours(duration)
 }
 
-fn format_elapsed_millis(millis: i64) -> String {
-    if millis < 1000 {
-        format!("{millis}ms")
-    } else if millis < 60_000 {
-        format!("{:.2}s", millis as f64 / 1000.0)
-    } else {
-        let minutes = millis / 60_000;
-        let seconds = (millis % 60_000) / 1000;
-        format!("{minutes}m {seconds:02}s")
+fn format_minutes_seconds(duration: Duration) -> String {
+    let total_seconds = duration.as_secs();
+    let minutes = total_seconds / 60;
+    let seconds = total_seconds % 60;
+    format!("{minutes}m {seconds:02}s")
+}
+
+fn format_hours_minutes(duration: Duration) -> String {
+    let total_hours_f = duration.as_secs_f64() / 3_600.0;
+    let mut hours = total_hours_f.floor() as u64;
+    let mut minutes = ((total_hours_f - hours as f64) * 60.0).round() as u64;
+
+    if minutes == 60 {
+        minutes = 0;
+        hours += 1;
     }
+
+    if hours >= 24 {
+        return format_days_hours(duration);
+    }
+
+    format!("{hours}h {minutes:02}m")
+}
+
+fn format_days_hours(duration: Duration) -> String {
+    let total_hours_f = duration.as_secs_f64() / 3_600.0;
+    let mut days = (total_hours_f / 24.0).floor() as u64;
+    let mut hours = (total_hours_f - days as f64 * 24.0).round() as u64;
+
+    if hours == 24 {
+        hours = 0;
+        days += 1;
+    }
+
+    format!("{days}d {hours:02}h")
 }
 
 #[cfg(test)]
@@ -67,12 +111,24 @@ mod tests {
         assert_eq!(format_duration(dur_exact), "1m 00s");
 
         let dur_long = Duration::from_millis(3_601_000);
-        assert_eq!(format_duration(dur_long), "60m 01s");
+        assert_eq!(format_duration(dur_long), "1h 00m");
     }
 
     #[test]
     fn test_format_duration_one_hour_has_space() {
         let dur_hour = Duration::from_millis(3_600_000);
-        assert_eq!(format_duration(dur_hour), "60m 00s");
+        assert_eq!(format_duration(dur_hour), "1h 00m");
+    }
+
+    #[test]
+    fn test_format_duration_hours_rounds_minutes() {
+        let dur = Duration::from_secs(4 * 3_600 + 58 * 60 + 40);
+        assert_eq!(format_duration(dur), "4h 59m");
+    }
+
+    #[test]
+    fn test_format_duration_days_rounds_hours() {
+        let dur = Duration::from_secs(2 * 86_400 + 11 * 3_600 + 45 * 60);
+        assert_eq!(format_duration(dur), "2d 12h");
     }
 }

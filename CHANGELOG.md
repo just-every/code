@@ -3,6 +3,73 @@
 > [!TIP]
 > We're constantly improving Code! This page documents the core changes. You can also check our [releases page](https://github.com/just-every/code/releases) for additional information.
 
+## [0.2.166] - 2025-09-25
+
+- TUI/History: refresh the popular commands lineup so quick actions match current workflows. (03af55d1)
+- TUI/Auto-upgrade: silence installer chatter and log completion once updates finish. (f23e920c)
+- Core/Client: skip the web_search tool when reasoning is minimal to reduce latency. (75314d7e)
+- TUI/Input: normalize legacy key press/release cases so hotkeys stay consistent on older terminals. (0415dd9f, 06eeac5a, 64922dfb)
+- Nix: make codex-rs the default package and drop the broken codex-cli derivation. (fa945b5f, 9ec8f3eb)
+
+## [0.2.165] - 2025-09-25
+
+- TUI/Theme: cache terminal background detection and skip OSC probe when theme is explicit. (eeefdf5, 166fa57)
+- Agents: clear idle spinner and avoid empty task preview text in chat. (499f14b)
+- Workflows: escape issue titles in PR fallback for issue-code automation. (67a9882)
+- MCP Server: use codex_mcp_server imports for bundled tooling compatibility. (f846c9d)
+
+## [0.2.164] - 2025-09-25
+
+- TUI/Limits: track API reset timers across core and TUI so rate windows stay accurate. (417c1867)
+- CLI/Postinstall: restore shim detector and avoid overwriting existing code shim so installs stay intact. (ff63c4d0, 480640fa, ce317cbf)
+- Core/Config: allow overriding OpenAI wire API and support OpenRouter routing metadata for custom deployments. (a49cd2cd, 060cd5e2)
+- Core/Agents: cap agent previews and handle updated truncation tuple to stay within API limits. (a52dd361, c47f6767)
+
+## [0.2.162] - 2025-09-22
+
+- CLI/Resume: fix --last to reliably select the most recent session under active runtimes. (1a2521ff)
+- Stability: avoid nested Tokio runtime creation during resume lookup to prevent sporadic failures. (1a2521ff)
+
+## [0.2.161] - 2025-09-22
+
+- TUI/Slash: add more /review options for richer reviews (5996ee0e)
+- TUI: fix merge fallout and remove unused const to eliminate warnings (cf031b67)
+
+## [0.2.160] - 2025-09-22
+
+- Core/Config: coerce auto-upgrade booleans for correct behavior (158cb551)
+- TUI/Slash: route exit aliases through quit for consistency (f527c1d1)
+- Core/Exec: block redundant cd and Python file writer commands (e8c78311)
+
+## [0.2.159] - 2025-09-22
+
+- Docs: streamline Zed integration guide (ceb8804c)
+- No user-facing code changes; release metadata only (2e77ed94, 323b6563)
+
+## [0.2.158] - 2025-09-22
+
+- Core/ACP: integrate ACP support and sync protocol updates (1eeae7f8, fbe8beb5)
+- CLI: expose MCP via code subcommand and add acp alias; ship code-mcp-server on install (f15d2e2f, d41e9064, 33f498e1)
+- TUI/Limits: refresh layout, show compact usage, align hourly/weekly windows (20aaecb3, 06bcddfd, fecaf661)
+- TUI/Limits: fix hourly window display and reset timing (388975ac)
+- Stability: respect web search flag; clear spinner after final answer; accept numeric MCP protocolVersion (c5dfc88d, d95c24b1, 763e08c5)
+
+## [0.2.157] - 2025-09-22
+
+- CLI: restore coder resume support. (b46786d3)
+- CLI: generate completion scripts with code command name. (b8961ec0)
+- TUI: avoid showing agents HUD on handoff. (8ab7367c)
+- TUI/Limits: refresh usage header copy; move rate‑limit polling off main thread. (ddc23f6a, 2d3a9f55)
+- TUI: show Ctrl+T exit hint in standard mode. (6243cf27)
+
+## [0.2.156] - 2025-09-22
+
+- TUI/Limits: add /limits view with live snapshots and persisted reset times. (70ee0986, a9fc289a, b2567a0e)
+- Performance: speed up exec/history rendering via layout and metadata caching. (50399898, fbf6a9d6, 9f2b39a0)
+- Approval: require confirmation for manual terminal commands; add semantic prefix matching. (d9be45a8, 57ecce7c)
+- Core: report OS and tool info for better diagnostics. (5142926c)
+- TUI/History: show run duration, collapse wait tool output, and finalize cells cleanly. (8cdba3a6, 3aa2e17a, 5378e55d)
+
 ## [0.2.155] - 2025-09-18
 
 - Auth: fix onboarding auth prompt gating. (87a76d25)

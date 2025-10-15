@@ -2,13 +2,13 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use codex_common::CliConfigOverrides;
-use codex_core::config::Config;
-use codex_core::config::ConfigOverrides;
+use codex_core::AuthManager;
 use codex_core::ModelClient;
 use codex_core::ModelProviderInfo;
-use codex_core::AuthManager;
 use codex_core::Prompt;
 use codex_core::TextFormat;
+use codex_core::config::Config;
+use codex_core::config::ConfigOverrides;
 use codex_protocol::mcp_protocol::AuthMode;
 use codex_protocol::models::{ContentItem, ResponseItem};
 use futures::StreamExt;
@@ -51,11 +51,11 @@ pub struct RequestArgs {
     pub format_strict: bool,
 
     /// Inline JSON for the schema (mutually exclusive with --schema-file)
-    #[arg(long = "schema-json")] 
+    #[arg(long = "schema-json")]
     pub schema_json: Option<String>,
 
     /// Path to a JSON schema file (mutually exclusive with --schema-json)
-    #[arg(long = "schema-file")] 
+    #[arg(long = "schema-file")]
     pub schema_file: Option<PathBuf>,
 
     /// Optional model override (e.g. gpt-4.1, gpt-5)
@@ -73,11 +73,18 @@ async fn run_llm_request(
     cli_overrides: CliConfigOverrides,
     args: RequestArgs,
 ) -> anyhow::Result<()> {
-    let overrides_vec = cli_overrides.parse_overrides().map_err(anyhow::Error::msg)?;
+    let overrides_vec = cli_overrides
+        .parse_overrides()
+        .map_err(anyhow::Error::msg)?;
 
     let overrides = if let Some(model) = &args.model {
-        ConfigOverrides { model: Some(model.clone()), ..ConfigOverrides::default() }
-    } else { ConfigOverrides::default() };
+        ConfigOverrides {
+            model: Some(model.clone()),
+            ..ConfigOverrides::default()
+        }
+    } else {
+        ConfigOverrides::default()
+    };
 
     let config = Config::load_with_cli_overrides(overrides_vec, overrides)?;
 
@@ -86,12 +93,16 @@ async fn run_llm_request(
     input.push(ResponseItem::Message {
         id: None,
         role: "developer".to_string(),
-        content: vec![ContentItem::InputText { text: args.developer.clone() }],
+        content: vec![ContentItem::InputText {
+            text: args.developer.clone(),
+        }],
     });
     input.push(ResponseItem::Message {
         id: None,
         role: "user".to_string(),
-        content: vec![ContentItem::InputText { text: args.message.clone() }],
+        content: vec![ContentItem::InputText {
+            text: args.message.clone(),
+        }],
     });
 
     // Resolve schema
@@ -134,7 +145,9 @@ async fn run_llm_request(
         config.model_reasoning_summary,
         config.model_text_verbosity,
         uuid::Uuid::new_v4(),
-        std::sync::Arc::new(std::sync::Mutex::new(codex_core::debug_logger::DebugLogger::new(false)?)),
+        std::sync::Arc::new(std::sync::Mutex::new(
+            codex_core::debug_logger::DebugLogger::new(false)?,
+        )),
     );
 
     // Collect the assistant message text from the stream (no TUI events)
@@ -144,8 +157,12 @@ async fn run_llm_request(
     while let Some(ev) = stream.next().await {
         let ev = ev?;
         match ev {
-            codex_core::ResponseEvent::ReasoningSummaryDelta { delta, .. } => { tracing::info!(target: "llm", "thinking: {}", delta); }
-            codex_core::ResponseEvent::ReasoningContentDelta { delta, .. } => { tracing::info!(target: "llm", "reasoning: {}", delta); }
+            codex_core::ResponseEvent::ReasoningSummaryDelta { delta, .. } => {
+                tracing::info!(target: "llm", "thinking: {}", delta);
+            }
+            codex_core::ResponseEvent::ReasoningContentDelta { delta, .. } => {
+                tracing::info!(target: "llm", "reasoning: {}", delta);
+            }
             codex_core::ResponseEvent::OutputItemDone { item, .. } => {
                 if let ResponseItem::Message { content, .. } = item {
                     for c in content {
@@ -160,7 +177,10 @@ async fn run_llm_request(
                 // For completeness, but we only print at the end to stay simple
                 final_text.push_str(&delta);
             }
-            codex_core::ResponseEvent::Completed { .. } => { tracing::info!("LLM: completed"); break; }
+            codex_core::ResponseEvent::Completed { .. } => {
+                tracing::info!("LLM: completed");
+                break;
+            }
             _ => {}
         }
     }

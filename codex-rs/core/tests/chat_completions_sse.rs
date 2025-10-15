@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use codex_core::ContentItem;
 use codex_core::ModelClient;
@@ -7,6 +7,7 @@ use codex_core::Prompt;
 use codex_core::ResponseEvent;
 use codex_core::ResponseItem;
 use codex_core::WireApi;
+use codex_core::debug_logger::DebugLogger;
 use codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR;
 use core_test_support::load_default_config_for_test;
 use futures::StreamExt;
@@ -49,6 +50,7 @@ async fn run_stream(sse_body: &str) -> Vec<ResponseEvent> {
         stream_max_retries: Some(0),
         stream_idle_timeout_ms: Some(5_000),
         requires_openai_auth: false,
+        openrouter: None,
     };
 
     let codex_home = match TempDir::new() {
@@ -61,7 +63,9 @@ async fn run_stream(sse_body: &str) -> Vec<ResponseEvent> {
     config.show_raw_agent_reasoning = true;
     let effort = config.model_reasoning_effort;
     let summary = config.model_reasoning_summary;
+    let verbosity = config.model_text_verbosity;
     let config = Arc::new(config);
+    let debug_logger = Arc::new(Mutex::new(DebugLogger::new(false).unwrap()));
 
     let client = ModelClient::new(
         Arc::clone(&config),
@@ -69,7 +73,9 @@ async fn run_stream(sse_body: &str) -> Vec<ResponseEvent> {
         provider,
         effort,
         summary,
+        verbosity,
         Uuid::new_v4(),
+        debug_logger,
     );
 
     let mut prompt = Prompt::default();
@@ -148,12 +154,12 @@ async fn streams_text_without_reasoning() {
     assert_eq!(events.len(), 3, "unexpected events: {events:?}");
 
     match &events[0] {
-        ResponseEvent::OutputTextDelta(text) => assert_eq!(text, "hi"),
+        ResponseEvent::OutputTextDelta { delta, .. } => assert_eq!(delta, "hi"),
         other => panic!("expected text delta, got {other:?}"),
     }
 
     match &events[1] {
-        ResponseEvent::OutputItemDone(item) => assert_message(item, "hi"),
+        ResponseEvent::OutputItemDone { item, .. } => assert_message(item, "hi"),
         other => panic!("expected terminal message, got {other:?}"),
     }
 
@@ -179,22 +185,22 @@ async fn streams_reasoning_from_string_delta() {
     assert_eq!(events.len(), 5, "unexpected events: {events:?}");
 
     match &events[0] {
-        ResponseEvent::ReasoningContentDelta(text) => assert_eq!(text, "think1"),
+        ResponseEvent::ReasoningContentDelta { delta, .. } => assert_eq!(delta, "think1"),
         other => panic!("expected reasoning delta, got {other:?}"),
     }
 
     match &events[1] {
-        ResponseEvent::OutputTextDelta(text) => assert_eq!(text, "ok"),
+        ResponseEvent::OutputTextDelta { delta, .. } => assert_eq!(delta, "ok"),
         other => panic!("expected text delta, got {other:?}"),
     }
 
     match &events[2] {
-        ResponseEvent::OutputItemDone(item) => assert_reasoning(item, "think1"),
+        ResponseEvent::OutputItemDone { item, .. } => assert_reasoning(item, "think1"),
         other => panic!("expected reasoning item, got {other:?}"),
     }
 
     match &events[3] {
-        ResponseEvent::OutputItemDone(item) => assert_message(item, "ok"),
+        ResponseEvent::OutputItemDone { item, .. } => assert_message(item, "ok"),
         other => panic!("expected message item, got {other:?}"),
     }
 
@@ -221,27 +227,27 @@ async fn streams_reasoning_from_object_delta() {
     assert_eq!(events.len(), 6, "unexpected events: {events:?}");
 
     match &events[0] {
-        ResponseEvent::ReasoningContentDelta(text) => assert_eq!(text, "partA"),
+        ResponseEvent::ReasoningContentDelta { delta, .. } => assert_eq!(delta, "partA"),
         other => panic!("expected reasoning delta, got {other:?}"),
     }
 
     match &events[1] {
-        ResponseEvent::ReasoningContentDelta(text) => assert_eq!(text, "partB"),
+        ResponseEvent::ReasoningContentDelta { delta, .. } => assert_eq!(delta, "partB"),
         other => panic!("expected reasoning delta, got {other:?}"),
     }
 
     match &events[2] {
-        ResponseEvent::OutputTextDelta(text) => assert_eq!(text, "answer"),
+        ResponseEvent::OutputTextDelta { delta, .. } => assert_eq!(delta, "answer"),
         other => panic!("expected text delta, got {other:?}"),
     }
 
     match &events[3] {
-        ResponseEvent::OutputItemDone(item) => assert_reasoning(item, "partApartB"),
+        ResponseEvent::OutputItemDone { item, .. } => assert_reasoning(item, "partApartB"),
         other => panic!("expected reasoning item, got {other:?}"),
     }
 
     match &events[4] {
-        ResponseEvent::OutputItemDone(item) => assert_message(item, "answer"),
+        ResponseEvent::OutputItemDone { item, .. } => assert_message(item, "answer"),
         other => panic!("expected message item, got {other:?}"),
     }
 
@@ -263,12 +269,12 @@ async fn streams_reasoning_from_final_message() {
     assert_eq!(events.len(), 3, "unexpected events: {events:?}");
 
     match &events[0] {
-        ResponseEvent::ReasoningContentDelta(text) => assert_eq!(text, "final-cot"),
+        ResponseEvent::ReasoningContentDelta { delta, .. } => assert_eq!(delta, "final-cot"),
         other => panic!("expected reasoning delta, got {other:?}"),
     }
 
     match &events[1] {
-        ResponseEvent::OutputItemDone(item) => assert_reasoning(item, "final-cot"),
+        ResponseEvent::OutputItemDone { item, .. } => assert_reasoning(item, "final-cot"),
         other => panic!("expected reasoning item, got {other:?}"),
     }
 
@@ -293,22 +299,26 @@ async fn streams_reasoning_before_tool_call() {
     assert_eq!(events.len(), 4, "unexpected events: {events:?}");
 
     match &events[0] {
-        ResponseEvent::ReasoningContentDelta(text) => assert_eq!(text, "pre-tool"),
+        ResponseEvent::ReasoningContentDelta { delta, .. } => assert_eq!(delta, "pre-tool"),
         other => panic!("expected reasoning delta, got {other:?}"),
     }
 
     match &events[1] {
-        ResponseEvent::OutputItemDone(item) => assert_reasoning(item, "pre-tool"),
+        ResponseEvent::OutputItemDone { item, .. } => assert_reasoning(item, "pre-tool"),
         other => panic!("expected reasoning item, got {other:?}"),
     }
 
     match &events[2] {
-        ResponseEvent::OutputItemDone(ResponseItem::FunctionCall {
-            name,
-            arguments,
-            call_id,
+        ResponseEvent::OutputItemDone {
+            item:
+                ResponseItem::FunctionCall {
+                    name,
+                    arguments,
+                    call_id,
+                    ..
+                },
             ..
-        }) => {
+        } => {
             assert_eq!(name, "run");
             assert_eq!(arguments, "{}");
             assert_eq!(call_id, "call_1");

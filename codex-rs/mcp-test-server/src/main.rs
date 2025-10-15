@@ -49,6 +49,11 @@ fn main() {
             continue;
         };
 
+        if req.jsonrpc != "2.0" {
+            // Only protocol version 2.0 is supported; ignore anything else.
+            continue;
+        }
+
         match req.method.as_str() {
             "initialize" => {
                 sleep_env_ms("SLOW_INIT_MS");

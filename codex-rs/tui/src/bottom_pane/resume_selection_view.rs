@@ -3,8 +3,8 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row, Table};
 use ratatui::widgets::Widget;
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row, Table};
 
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
@@ -33,45 +33,77 @@ pub struct ResumeSelectionView {
 }
 
 impl ResumeSelectionView {
-    pub fn new(title: String, subtitle: String, rows: Vec<ResumeRow>, app_event_tx: AppEventSender) -> Self {
-        Self { title, subtitle, rows, selected: 0, top: 0, complete: false, app_event_tx }
+    pub fn new(
+        title: String,
+        subtitle: String,
+        rows: Vec<ResumeRow>,
+        app_event_tx: AppEventSender,
+    ) -> Self {
+        Self {
+            title,
+            subtitle,
+            rows,
+            selected: 0,
+            top: 0,
+            complete: false,
+            app_event_tx,
+        }
     }
 
     fn move_up(&mut self) {
-        if self.rows.is_empty() { return; }
-        if self.selected == 0 { self.selected = self.rows.len().saturating_sub(1); }
-        else { self.selected -= 1; }
+        if self.rows.is_empty() {
+            return;
+        }
+        if self.selected == 0 {
+            self.selected = self.rows.len().saturating_sub(1);
+        } else {
+            self.selected -= 1;
+        }
         self.ensure_selected_visible();
     }
 
     fn move_down(&mut self) {
-        if self.rows.is_empty() { return; }
+        if self.rows.is_empty() {
+            return;
+        }
         self.selected = (self.selected + 1) % self.rows.len();
         self.ensure_selected_visible();
     }
 
     fn page_up(&mut self) {
-        if self.rows.is_empty() { return; }
+        if self.rows.is_empty() {
+            return;
+        }
         let page = self.visible_rows();
-        if self.selected >= page { self.selected -= page; } else { self.selected = 0; }
+        if self.selected >= page {
+            self.selected -= page;
+        } else {
+            self.selected = 0;
+        }
         self.ensure_selected_visible();
     }
 
     fn page_down(&mut self) {
-        if self.rows.is_empty() { return; }
+        if self.rows.is_empty() {
+            return;
+        }
         let page = self.visible_rows();
         self.selected = (self.selected + page).min(self.rows.len().saturating_sub(1));
         self.ensure_selected_visible();
     }
 
     fn go_home(&mut self) {
-        if self.rows.is_empty() { return; }
+        if self.rows.is_empty() {
+            return;
+        }
         self.selected = 0;
         self.ensure_selected_visible();
     }
 
     fn go_end(&mut self) {
-        if self.rows.is_empty() { return; }
+        if self.rows.is_empty() {
+            return;
+        }
         self.selected = self.rows.len().saturating_sub(1);
         self.ensure_selected_visible();
     }
@@ -101,7 +133,8 @@ impl BottomPaneView<'_> for ResumeSelectionView {
             KeyCode::End => self.go_end(),
             KeyCode::Enter => {
                 if let Some(row) = self.rows.get(self.selected) {
-                    self.app_event_tx.send(AppEvent::ResumeFrom(row.path.clone()));
+                    self.app_event_tx
+                        .send(AppEvent::ResumeFrom(row.path.clone()));
                     self.complete = true;
                 }
             }
@@ -110,13 +143,18 @@ impl BottomPaneView<'_> for ResumeSelectionView {
         }
     }
 
-    fn is_complete(&self) -> bool { self.complete }
-
-    fn on_ctrl_c(&mut self, _pane: &mut BottomPane<'_>) -> super::CancellationEvent {
-        self.complete = true; super::CancellationEvent::Handled
+    fn is_complete(&self) -> bool {
+        self.complete
     }
 
-    fn update_status_text(&mut self, _text: String) -> ConditionalUpdate { ConditionalUpdate::NeedsRedraw }
+    fn on_ctrl_c(&mut self, _pane: &mut BottomPane<'_>) -> super::CancellationEvent {
+        self.complete = true;
+        super::CancellationEvent::Handled
+    }
+
+    fn update_status_text(&mut self, _text: String) -> ConditionalUpdate {
+        ConditionalUpdate::NeedsRedraw
+    }
 
     fn desired_height(&self, _width: u16) -> u16 {
         // Include block borders (+2), optional subtitle (+1), table header (+1),
@@ -127,7 +165,9 @@ impl BottomPaneView<'_> for ResumeSelectionView {
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        if area.height == 0 || area.width == 0 { return; }
+        if area.height == 0 || area.width == 0 {
+            return;
+        }
 
         // Clear and draw a bordered block that uses the active theme colors.
         // Other popups (e.g., list_selection_view) already do this; mirroring
@@ -136,7 +176,11 @@ impl BottomPaneView<'_> for ResumeSelectionView {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(crate::colors::border()))
-            .style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()))
+            .style(
+                Style::default()
+                    .bg(crate::colors::background())
+                    .fg(crate::colors::text()),
+            )
             .title(self.title.clone())
             .title_alignment(Alignment::Center);
         let inner = block.inner(area);
@@ -149,7 +193,15 @@ impl BottomPaneView<'_> for ResumeSelectionView {
                 &self.subtitle,
                 Style::default().fg(crate::colors::text_dim()),
             )))
-            .render(Rect { x: inner.x.saturating_add(1), y: next_y, width: inner.width.saturating_sub(1), height: 1 }, buf);
+            .render(
+                Rect {
+                    x: inner.x.saturating_add(1),
+                    y: next_y,
+                    width: inner.width.saturating_sub(1),
+                    height: 1,
+                },
+                buf,
+            );
             next_y = next_y.saturating_add(1);
         }
 
@@ -171,11 +223,21 @@ impl BottomPaneView<'_> for ResumeSelectionView {
         let rows_iter = self.rows[start..end].iter().enumerate().map(|(idx, r)| {
             let i = start + idx; // absolute index
             let cells = vec![
-                r.modified.clone(), r.created.clone(), r.msgs.clone(), r.branch.clone(), r.summary.clone()
-            ].into_iter().map(|c| ratatui::widgets::Cell::from(c));
+                r.modified.clone(),
+                r.created.clone(),
+                r.msgs.clone(),
+                r.branch.clone(),
+                r.summary.clone(),
+            ]
+            .into_iter()
+            .map(|c| ratatui::widgets::Cell::from(c));
             let mut row = Row::new(cells).height(1);
             if i == self.selected {
-                row = row.style(Style::default().bg(crate::colors::selection()).add_modifier(Modifier::BOLD));
+                row = row.style(
+                    Style::default()
+                        .bg(crate::colors::selection())
+                        .add_modifier(Modifier::BOLD),
+                );
             }
             row
         });
@@ -189,7 +251,8 @@ impl BottomPaneView<'_> for ResumeSelectionView {
             Constraint::Min(10),    // Summary
         ];
 
-        let header = Row::new(vec!["Modified", "Created", "#Msgs", "Branch", "Summary"]).height(1)
+        let header = Row::new(vec!["Modified", "Created", "#Msgs", "Branch", "Summary"])
+            .height(1)
             .style(Style::default().fg(crate::colors::text_bright()));
 
         let table = Table::new(rows_iter, widths)
@@ -200,9 +263,17 @@ impl BottomPaneView<'_> for ResumeSelectionView {
 
         // Footer hints
         // Draw a spacer line above footer (implicit by not drawing into that row)
-        let footer = Rect { x: inner.x.saturating_add(1), y: inner.y + inner.height - 1, width: inner.width.saturating_sub(1), height: 1 };
+        let footer = Rect {
+            x: inner.x.saturating_add(1),
+            y: inner.y + inner.height - 1,
+            width: inner.width.saturating_sub(1),
+            height: 1,
+        };
         let footer_line = Line::from(vec![
-            Span::styled("↑↓ PgUp PgDn", Style::default().fg(crate::colors::light_blue())),
+            Span::styled(
+                "↑↓ PgUp PgDn",
+                Style::default().fg(crate::colors::light_blue()),
+            ),
             Span::raw(" Navigate  "),
             Span::styled("Enter", Style::default().fg(crate::colors::success())),
             Span::raw(" Select  "),
@@ -210,7 +281,11 @@ impl BottomPaneView<'_> for ResumeSelectionView {
             Span::raw(" Cancel"),
         ]);
         Paragraph::new(footer_line)
-            .style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()))
+            .style(
+                Style::default()
+                    .bg(crate::colors::background())
+                    .fg(crate::colors::text()),
+            )
             .render(footer, buf);
     }
 }

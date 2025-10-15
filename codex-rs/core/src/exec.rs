@@ -6,9 +6,9 @@ use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitStatus;
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
-use std::sync::Arc;
 
 use async_channel::Sender;
 use tokio::io::AsyncRead;
@@ -23,9 +23,9 @@ use crate::error::SandboxErr;
 use crate::landlock::spawn_command_under_linux_sandbox;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
-use crate::protocol::OrderMeta;
 use crate::protocol::ExecCommandOutputDeltaEvent;
 use crate::protocol::ExecOutputStream;
+use crate::protocol::OrderMeta;
 use crate::protocol::SandboxPolicy;
 use crate::seatbelt::spawn_command_under_seatbelt;
 use crate::spawn::StdioPolicy;
@@ -53,7 +53,7 @@ const AGGREGATE_BUFFER_INITIAL_CAPACITY: usize = 8 * 1024; // 8 KiB
 /// Aggregation still collects full output; only the live event stream is capped.
 pub(crate) const MAX_EXEC_OUTPUT_DELTAS_PER_CALL: usize = 10_000;
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct ExecParams {
     pub command: Vec<String>,
     pub cwd: PathBuf,
@@ -398,8 +398,14 @@ async fn consume_truncated_output(
         stdout_handle.abort();
         stderr_handle.abort();
         (
-            StreamOutput { text: Vec::new(), truncated_after_lines: None },
-            StreamOutput { text: Vec::new(), truncated_after_lines: None },
+            StreamOutput {
+                text: Vec::new(),
+                truncated_after_lines: None,
+            },
+            StreamOutput {
+                text: Vec::new(),
+                truncated_after_lines: None,
+            },
         )
     } else {
         (stdout_handle.await??, stderr_handle.await??)
@@ -458,7 +464,12 @@ async fn read_capped<R: AsyncRead + Unpin + Send + 'static>(
                 let event = if let Some(sess) = &stream.session {
                     sess.make_event(&stream.sub_id, msg)
                 } else {
-                    Event { id: stream.sub_id.clone(), event_seq: 0, msg, order: stream.order.clone() }
+                    Event {
+                        id: stream.sub_id.clone(),
+                        event_seq: 0,
+                        msg,
+                        order: stream.order.clone(),
+                    }
                 };
                 #[allow(clippy::let_unit_value)]
                 let _ = stream.tx_event.send(event).await;
@@ -506,9 +517,15 @@ struct KillOnDrop {
 }
 
 impl KillOnDrop {
-    fn new(child: Child) -> Self { Self { child: Some(child) } }
-    fn as_mut(&mut self) -> &mut Child { self.child.as_mut().expect("child present") }
-    fn disarm(&mut self) { self.child = None; }
+    fn new(child: Child) -> Self {
+        Self { child: Some(child) }
+    }
+    fn as_mut(&mut self) -> &mut Child {
+        self.child.as_mut().expect("child present")
+    }
+    fn disarm(&mut self) {
+        self.child = None;
+    }
 }
 
 impl Drop for KillOnDrop {

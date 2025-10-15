@@ -1,0 +1,26 @@
+{
+  "stage": "spec-plan",
+  "arbiter": "gpt-5-codex",
+  "resolution": {
+    "status": "resolved",
+    "decision": "Proceed with documentation work only after capturing nightly drift venue, upstream snapshot process, HAL summary template, and rebase guidance scope as explicit preparatory outcomes recorded in plan.md/spec.md.",
+    "updates": {
+      "work_breakdown": [
+        {
+          "action": "Insert a gating task ahead of documentation drafting to secure decisions on drift execution venue, snapshot refresh cadence, HAL summary template, and rebase guidance scope, recording outcomes in the SPEC packet."
+        }
+      ],
+      "risks": [
+        {
+          "note": "Track unresolved operational questions (drift venue, snapshot strategy, HAL summary format, rebase scope) as explicit risks until owners close them; block implementation sign-off if any remain open."
+        }
+      ],
+      "followups": [
+        "Document owner to schedule and log the nightly drift execution venue decision (e.g., GitHub Actions vs. internal cron) in nightly-drift-detection.md.",
+        "Define upstream snapshot creation/refresh process feeding scripts/spec-kit/nightly_sync_detect.py, including retention cadence.",
+        "Provide or reference an approved HAL telemetry summary template within the evidence expectations guide.",
+        "Clarify the intended scope and deliverables of the rebase workflow guidance (checklists vs automation) in rebase-workflow.md."
+      ]
+    }
+  }
+}

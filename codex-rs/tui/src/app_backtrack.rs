@@ -324,13 +324,17 @@ impl App {
     ) {
         let conv = new_conv.conversation;
         let session_configured = new_conv.session_configured;
+        let auth_manager = self.chat_widget.auth_manager();
         self.chat_widget = crate::chatwidget::ChatWidget::new_from_existing(
             cfg,
             conv,
             session_configured,
-            tui.frame_requester(),
             self.app_event_tx.clone(),
             self.enhanced_keys_supported,
+            self.terminal_info.clone(),
+            self.show_order_overlay,
+            self.latest_upgrade_version.clone(),
+            auth_manager,
         );
         // Trim transcript up to the selected user message and re-render it.
         self.trim_transcript_for_backtrack(drop_count);

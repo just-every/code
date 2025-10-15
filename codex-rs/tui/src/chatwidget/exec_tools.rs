@@ -109,41 +109,43 @@ pub(super) fn finalize_all_running_as_interrupted(chat: &mut ChatWidget<'_>) {
     }
 
     if !chat.tools_state.running_custom_tools.is_empty() {
-        let entries: Vec<(super::ToolCallId, usize)> = chat
+        let entries: Vec<(super::ToolCallId, super::RunningToolEntry)> = chat
             .tools_state
             .running_custom_tools
             .iter()
-            .map(|(k, i)| (k.clone(), *i))
+            .map(|(k, entry)| (k.clone(), *entry))
             .collect();
-        for (_k, idx) in entries {
-            if idx < chat.history_cells.len() {
-                let wait_cancel_cell = Box::new(history_cell::PlainHistoryCell {
-                    lines: vec![Line::styled(
-                        "Wait cancelled",
-                        Style::default()
-                            .fg(crate::colors::error())
-                            .add_modifier(Modifier::BOLD),
-                    )],
-                    kind: history_cell::HistoryCellType::Error,
-                });
+        for (_k, entry) in entries {
+            if let Some(idx) = chat.resolve_running_tool_index(&entry) {
+                if idx < chat.history_cells.len() {
+                    let wait_cancel_cell = Box::new(history_cell::PlainHistoryCell::new(
+                        vec![Line::styled(
+                            "Wait cancelled",
+                            Style::default()
+                                .fg(crate::colors::error())
+                                .add_modifier(Modifier::BOLD),
+                        )],
+                        history_cell::HistoryCellType::Error,
+                    ));
 
-                let replaced = chat.history_cells[idx]
-                    .as_any()
-                    .downcast_ref::<history_cell::RunningToolCallCell>()
-                    .map(|cell| cell.has_title("Waiting"))
-                    .unwrap_or(false);
+                    let replaced = chat.history_cells[idx]
+                        .as_any()
+                        .downcast_ref::<history_cell::RunningToolCallCell>()
+                        .map(|cell| cell.has_title("Waiting"))
+                        .unwrap_or(false);
 
-                if replaced {
-                    chat.history_replace_at(idx, wait_cancel_cell);
-                } else {
-                    let completed = history_cell::new_completed_custom_tool_call(
-                        "custom".to_string(),
-                        None,
-                        std::time::Duration::from_millis(0),
-                        false,
-                        "Cancelled by user.".to_string(),
-                    );
-                    chat.history_replace_at(idx, Box::new(completed));
+                    if replaced {
+                        chat.history_replace_at(idx, wait_cancel_cell);
+                    } else {
+                        let completed = history_cell::new_completed_custom_tool_call(
+                            "custom".to_string(),
+                            None,
+                            std::time::Duration::from_millis(0),
+                            false,
+                            "Cancelled by user.".to_string(),
+                        );
+                        chat.history_replace_at(idx, Box::new(completed));
+                    }
                 }
             }
         }
@@ -196,6 +198,14 @@ pub(super) fn finalize_all_running_as_interrupted(chat: &mut ChatWidget<'_>) {
         }
     }
 
+    if !chat.tools_state.running_wait_tools.is_empty() {
+        chat.tools_state.running_wait_tools.clear();
+    }
+
+    if !chat.tools_state.running_kill_tools.is_empty() {
+        chat.tools_state.running_kill_tools.clear();
+    }
+
     chat.bottom_pane.update_status_text("cancelled".to_string());
     let any_tasks_active = !chat.active_task_ids.is_empty();
     if !any_tasks_active {
@@ -245,22 +255,24 @@ pub(super) fn finalize_all_running_due_to_answer(chat: &mut ChatWidget<'_>) {
     }
 
     if !chat.tools_state.running_custom_tools.is_empty() {
-        let entries: Vec<(super::ToolCallId, usize)> = chat
+        let entries: Vec<(super::ToolCallId, super::RunningToolEntry)> = chat
             .tools_state
             .running_custom_tools
             .iter()
-            .map(|(k, i)| (k.clone(), *i))
+            .map(|(k, entry)| (k.clone(), *entry))
             .collect();
-        for (_k, idx) in entries {
-            if idx < chat.history_cells.len() {
-                let completed = history_cell::new_completed_custom_tool_call(
-                    "custom".to_string(),
-                    None,
-                    std::time::Duration::from_millis(0),
-                    true,
-                    "Final answer received".to_string(),
-                );
-                chat.history_replace_at(idx, Box::new(completed));
+        for (_k, entry) in entries {
+            if let Some(idx) = chat.resolve_running_tool_index(&entry) {
+                if idx < chat.history_cells.len() {
+                    let completed = history_cell::new_completed_custom_tool_call(
+                        "custom".to_string(),
+                        None,
+                        std::time::Duration::from_millis(0),
+                        true,
+                        "Final answer received".to_string(),
+                    );
+                    chat.history_replace_at(idx, Box::new(completed));
+                }
             }
         }
         chat.tools_state.running_custom_tools.clear();
@@ -390,6 +402,32 @@ pub(super) fn try_merge_completed_exec_at(chat: &mut ChatWidget<'_>, idx: usize)
     }
 }
 
+fn try_upgrade_fallback_exec_cell(chat: &mut ChatWidget<'_>, ev: &ExecCommandBeginEvent) -> bool {
+    for i in (0..chat.history_cells.len()).rev() {
+        if let Some(exec) = chat.history_cells[i]
+            .as_any_mut()
+            .downcast_mut::<history_cell::ExecCell>()
+        {
+            let looks_like_fallback = exec.output.is_some()
+                && exec.parsed.is_empty()
+                && exec.command.len() == 1
+                && exec
+                    .command
+                    .first()
+                    .map(|cmd| cmd == &ev.call_id)
+                    .unwrap_or(false);
+            if looks_like_fallback {
+                exec.replace_command_metadata(ev.command.clone(), ev.parsed_cmd.clone());
+                try_merge_completed_exec_at(chat, i);
+                chat.invalidate_height_cache();
+                chat.request_redraw();
+                return true;
+            }
+        }
+    }
+    false
+}
+
 pub(super) fn handle_exec_begin_now(
     chat: &mut ChatWidget<'_>,
     ev: ExecCommandBeginEvent,
@@ -399,6 +437,9 @@ pub(super) fn handle_exec_begin_now(
         .ended_call_ids
         .contains(&super::ExecCallId(ev.call_id.clone()))
     {
+        if try_upgrade_fallback_exec_cell(chat, &ev) {
+            return;
+        }
         return;
     }
     for cell in &chat.history_cells {
@@ -473,6 +514,9 @@ pub(super) fn handle_exec_begin_now(
                         explore_entry: Some((idx, entry_idx)),
                         stdout: String::new(),
                         stderr: String::new(),
+                        wait_total: None,
+                        wait_active: false,
+                        wait_notes: Vec::new(),
                     },
                 );
                 chat.invalidate_height_cache();
@@ -504,6 +548,9 @@ pub(super) fn handle_exec_begin_now(
             explore_entry: None,
             stdout: String::new(),
             stderr: String::new(),
+            wait_total: None,
+            wait_active: false,
+            wait_notes: Vec::new(),
         },
     );
     if !chat.tools_state.running_web_search.is_empty() {
@@ -539,7 +586,8 @@ pub(super) fn handle_exec_end_now(
         chat.maybe_hide_spinner();
         return;
     }
-    chat.ended_call_ids.insert(super::ExecCallId(ev.call_id.clone()));
+    chat.ended_call_ids
+        .insert(super::ExecCallId(ev.call_id.clone()));
     // If this call was already marked as cancelled, drop the End to avoid
     // inserting a duplicate completed cell after the user interrupt.
     if chat
@@ -552,7 +600,7 @@ pub(super) fn handle_exec_end_now(
     let ExecCommandEndEvent {
         call_id,
         exit_code,
-        duration: _,
+        duration,
         stdout,
         stderr,
     } = ev;
@@ -563,15 +611,24 @@ pub(super) fn handle_exec_end_now(
     chat.height_manager
         .borrow_mut()
         .record_event(HeightEvent::RunEnd);
-    let (command, parsed, history_index, explore_entry) = match cmd {
+    let (command, parsed, history_index, explore_entry, wait_total, wait_notes) = match cmd {
         Some(super::RunningCommand {
             command,
             parsed,
             history_index,
             explore_entry,
+            wait_total,
+            wait_notes,
             ..
-        }) => (command, parsed, history_index, explore_entry),
-        None => (vec![call_id.clone()], vec![], None, None),
+        }) => (
+            command,
+            parsed,
+            history_index,
+            explore_entry,
+            wait_total,
+            wait_notes,
+        ),
+        None => (vec![call_id.clone()], vec![], None, None, None, Vec::new()),
     };
 
     if let Some((agg_idx, entry_idx)) = explore_entry {
@@ -617,7 +674,11 @@ pub(super) fn handle_exec_end_now(
             history_cell::ExploreEntryStatus::Error { .. } => match action {
                 history_cell::ExecAction::Read => format!("read failed (exit {exit_code})"),
                 history_cell::ExecAction::Search => {
-                    if exit_code == 2 { "invalid pattern".to_string() } else { format!("search failed (exit {exit_code})") }
+                    if exit_code == 2 {
+                        "invalid pattern".to_string()
+                    } else {
+                        format!("search failed (exit {exit_code})")
+                    }
                 }
                 history_cell::ExecAction::List => format!("list failed (exit {exit_code})"),
                 _ => format!("exploration failed (exit {exit_code})"),
@@ -639,6 +700,12 @@ pub(super) fn handle_exec_end_now(
             stderr,
         },
     ));
+    if let Some(ref cell) = completed_opt {
+        cell.set_wait_total(wait_total);
+        cell.set_wait_notes(&wait_notes);
+        cell.set_waiting(false);
+        cell.set_run_duration(Some(duration));
+    }
 
     let mut replaced = false;
     if let Some(idx) = history_index {
@@ -710,6 +777,39 @@ pub(super) fn handle_exec_end_now(
         chat.bottom_pane
             .update_status_text(format!("command failed (exit {})", exit_code));
     }
+
+    // === FORK-SPECIFIC: spec-auto guardrail completion handler ===
+    // Check if this exec completion is for a spec-auto guardrail command
+    if let Some(ref state) = chat.spec_auto_state {
+        if let Some(ref wait) = state.waiting_guardrail {
+            // Check if this is the guardrail we're waiting for
+            // Project commands have call_id pattern: "project_cmd_spec_ops_*"
+            if call_id.starts_with("project_cmd_spec_ops") {
+                if exit_code == 0 {
+                    // Guardrail succeeded - transition to agent execution phase
+                    let stage = wait.stage;
+                    let spec_id = state.spec_id.clone();
+
+                    // Clear waiting state
+                    if let Some(state_mut) = chat.spec_auto_state.as_mut() {
+                        state_mut.waiting_guardrail = None;
+                    }
+
+                    // Spawn agents for this stage
+                    chat.auto_submit_spec_stage_prompt(stage, &spec_id);
+                } else {
+                    // Guardrail failed - halt pipeline
+                    chat.halt_spec_auto_with_error(format!(
+                        "Guardrail {} failed with exit code {}",
+                        wait.stage.display_name(),
+                        exit_code
+                    ));
+                }
+            }
+        }
+    }
+    // === END FORK-SPECIFIC ===
+
     chat.maybe_hide_spinner();
 }
 

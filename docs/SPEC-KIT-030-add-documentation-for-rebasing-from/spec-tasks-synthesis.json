@@ -1,0 +1,12 @@
+{
+  "stage": "spec-tasks",
+  "status": "blocked",
+  "agreements": [
+    "Agents agree all documentation tasks (T46.1–T46.8) remain blocked pending creation of SPEC-KIT-030 doc set, SPEC.md task row, and telemetry evidence.",
+    "Dependencies highlighted: Arbiter decisions, HAL secret provisioning, and feat/spec-auto-telemetry patterns."
+  ],
+  "conflicts": [
+    "Ownership for HAL secret provisioning vs. documentation backlog must be assigned before work can proceed."
+  ],
+  "notes": "Complete prerequisite decisions and scaffold docs before rerunning /spec-tasks."
+}

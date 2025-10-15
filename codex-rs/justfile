@@ -40,4 +40,4 @@ test:
 
 # Run the MCP server
 mcp-server-run *args:
-    cargo run -p codex-mcp-server -- "$@"
+    cargo run -p code-mcp-server -- "$@"

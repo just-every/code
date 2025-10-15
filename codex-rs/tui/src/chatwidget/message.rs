@@ -19,7 +19,10 @@ impl From<String> for UserMessage {
         if !text.trim().is_empty() {
             ordered.push(InputItem::Text { text: text.clone() });
         }
-        Self { display_text: text, ordered_items: ordered }
+        Self {
+            display_text: text,
+            ordered_items: ordered,
+        }
     }
 }
 
@@ -33,10 +36,14 @@ pub fn create_initial_user_message(text: String, image_paths: Vec<PathBuf>) -> O
         }
         for path in image_paths {
             let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("image");
-            ordered.push(InputItem::Text { text: format!("[image: {}]", filename) });
+            ordered.push(InputItem::Text {
+                text: format!("[image: {}]", filename),
+            });
             ordered.push(InputItem::LocalImage { path });
         }
-        Some(UserMessage { display_text: text, ordered_items: ordered })
+        Some(UserMessage {
+            display_text: text,
+            ordered_items: ordered,
+        })
     }
 }
-

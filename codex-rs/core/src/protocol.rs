@@ -11,9 +11,9 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use mcp_types::CallToolResult;
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_bytes::ByteBuf;
 use strum_macros::Display;
 use uuid::Uuid;
@@ -28,10 +28,17 @@ use crate::plan_tool::UpdatePlanArgs;
 
 // Re-export review types from the shared protocol crate so callers can use
 // `codex_core::protocol::ReviewFinding` and friends.
+pub use codex_protocol::protocol::ConversationPathResponseEvent;
+pub use codex_protocol::protocol::ENVIRONMENT_CONTEXT_OPEN_TAG;
+pub use codex_protocol::protocol::ExitedReviewModeEvent;
+pub use codex_protocol::protocol::GitInfo;
 pub use codex_protocol::protocol::ReviewCodeLocation;
 pub use codex_protocol::protocol::ReviewFinding;
 pub use codex_protocol::protocol::ReviewLineRange;
 pub use codex_protocol::protocol::ReviewOutputEvent;
+pub use codex_protocol::protocol::RolloutItem;
+pub use codex_protocol::protocol::RolloutLine;
+pub use codex_protocol::protocol::{ReviewContextMetadata, ReviewRequest};
 
 /// Submission Queue Entry - requests from user
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -40,6 +47,14 @@ pub struct Submission {
     pub id: String,
     /// Payload
     pub op: Op,
+}
+
+/// High-level toggles for validation checks.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationGroup {
+    Functional,
+    Stylistic,
 }
 
 /// Submission operation
@@ -137,6 +152,15 @@ pub enum Op {
         decision: ReviewDecision,
     },
 
+    /// Update a specific validation tool toggle for the session.
+    UpdateValidationTool { name: String, enable: bool },
+
+    /// Update a validation group toggle for the session.
+    UpdateValidationGroup {
+        group: ValidationGroup,
+        enable: bool,
+    },
+
     /// Append an entry to the persistent cross-session message history.
     ///
     /// Note the entry is not guaranteed to be logged if the user has
@@ -144,6 +168,22 @@ pub enum Op {
     AddToHistory {
         /// The message text to be stored.
         text: String,
+    },
+
+    /// Toggle or query Pro Mode state.
+    Pro { action: ProAction },
+
+    /// Execute a project-scoped custom command defined in configuration.
+    /// When `command` is provided, run that argv directly (allowing built-in
+    /// shortcuts to avoid requiring a config entry).
+    RunProjectCommand {
+        name: String,
+        #[serde(default)]
+        command: Option<Vec<String>>,
+        #[serde(default)]
+        display: Option<String>,
+        #[serde(default)]
+        env: HashMap<String, String>,
     },
 
     /// Internally queue a developer-role message to be included in the next turn.
@@ -159,8 +199,24 @@ pub enum Op {
     /// The agent will use its existing context (either conversation history or previous response id)
     /// to generate a summary which will be returned as an AgentMessage event.
     Compact,
+    /// Request the agent to perform a dedicated code review.
+    Review { review_request: ReviewRequest },
     /// Request to shut down codex instance.
     Shutdown,
+}
+
+/// Action for Pro Mode control submissions.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ProAction {
+    Toggle,
+    On,
+    Off,
+    Status,
+    AutoToggle,
+    AutoOn,
+    AutoOff,
+    AutoStatus,
 }
 
 /// Determines the conditions under which the user is consulted to approve
@@ -244,7 +300,9 @@ pub enum SandboxPolicy {
 }
 
 // Serde helper: default to true for flags where we want historical permissive behavior.
-pub(crate) const fn default_true_bool() -> bool { true }
+pub(crate) const fn default_true_bool() -> bool {
+    true
+}
 
 /// A writable root path accompanied by a list of subpaths that should remain
 /// read‑only even when the root is writable. This is primarily used to ensure
@@ -437,27 +495,43 @@ pub struct RecordedEvent {
 }
 
 pub fn event_msg_to_protocol(msg: &EventMsg) -> Option<codex_protocol::protocol::EventMsg> {
-    if matches!(msg, EventMsg::ReplayHistory(_)) {
-        return None;
+    match msg {
+        EventMsg::ReplayHistory(_) => None,
+        EventMsg::TokenCount(payload) => {
+            let info = convert_value(&payload.info)?;
+            let rate_limits = payload
+                .rate_limits
+                .as_ref()
+                .map(rate_limit_snapshot_to_protocol);
+            Some(codex_protocol::protocol::EventMsg::TokenCount(
+                codex_protocol::protocol::TokenCountEvent { info, rate_limits },
+            ))
+        }
+        _ => convert_value(msg),
     }
-    convert_value(msg)
 }
-
 
 pub fn event_msg_from_protocol(msg: &codex_protocol::protocol::EventMsg) -> Option<EventMsg> {
-    let Some(converted) = convert_value(msg) else {
-        return None;
-    };
-    if matches!(converted, EventMsg::ReplayHistory(_)) {
-        return None;
+    match msg {
+        codex_protocol::protocol::EventMsg::TokenCount(payload) => {
+            let info = convert_value(&payload.info).unwrap_or(None);
+            let rate_limits = payload
+                .rate_limits
+                .as_ref()
+                .map(rate_limit_snapshot_from_protocol);
+            Some(EventMsg::TokenCount(TokenCountEvent { info, rate_limits }))
+        }
+        _ => {
+            let converted = convert_value(msg)?;
+            if matches!(converted, EventMsg::ReplayHistory(_)) {
+                return None;
+            }
+            Some(converted)
+        }
     }
-    Some(converted)
 }
 
-
-pub fn order_meta_to_protocol(
-    order: &OrderMeta,
-) -> codex_protocol::protocol::OrderMeta {
+pub fn order_meta_to_protocol(order: &OrderMeta) -> codex_protocol::protocol::OrderMeta {
     codex_protocol::protocol::OrderMeta {
         request_ordinal: order.request_ordinal,
         output_index: order.output_index,
@@ -465,9 +539,7 @@ pub fn order_meta_to_protocol(
     }
 }
 
-pub fn order_meta_from_protocol(
-    order: &codex_protocol::protocol::OrderMeta,
-) -> OrderMeta {
+pub fn order_meta_from_protocol(order: &codex_protocol::protocol::OrderMeta) -> OrderMeta {
     OrderMeta {
         request_ordinal: order.request_ordinal,
         output_index: order.output_index,
@@ -475,15 +547,11 @@ pub fn order_meta_from_protocol(
     }
 }
 
-
 pub fn recorded_event_to_protocol(
     event: &RecordedEvent,
 ) -> Option<codex_protocol::protocol::RecordedEvent> {
     let msg = event_msg_to_protocol(&event.msg)?;
-    let order = event
-        .order
-        .as_ref()
-        .map(order_meta_to_protocol);
+    let order = event.order.as_ref().map(order_meta_to_protocol);
     Some(codex_protocol::protocol::RecordedEvent {
         id: event.id.clone(),
         event_seq: event.event_seq,
@@ -491,7 +559,6 @@ pub fn recorded_event_to_protocol(
         msg,
     })
 }
-
 
 pub fn recorded_event_from_protocol(
     src: codex_protocol::protocol::RecordedEvent,
@@ -515,6 +582,78 @@ where
         return None;
     };
     serde_json::from_value(json).ok()
+}
+
+fn rate_limit_snapshot_to_protocol(
+    snapshot: &RateLimitSnapshotEvent,
+) -> codex_protocol::protocol::RateLimitSnapshot {
+    let primary = codex_protocol::protocol::RateLimitWindow {
+        used_percent: snapshot.primary_used_percent,
+        window_minutes: Some(snapshot.primary_window_minutes),
+        resets_in_seconds: snapshot.primary_reset_after_seconds,
+    };
+    let secondary = codex_protocol::protocol::RateLimitWindow {
+        used_percent: snapshot.secondary_used_percent,
+        window_minutes: Some(snapshot.secondary_window_minutes),
+        resets_in_seconds: snapshot.secondary_reset_after_seconds,
+    };
+    codex_protocol::protocol::RateLimitSnapshot {
+        primary: Some(primary),
+        secondary: Some(secondary),
+    }
+}
+
+fn rate_limit_snapshot_from_protocol(
+    snapshot: &codex_protocol::protocol::RateLimitSnapshot,
+) -> RateLimitSnapshotEvent {
+    let primary_used = snapshot
+        .primary
+        .as_ref()
+        .map(|window| window.used_percent)
+        .unwrap_or(0.0)
+        .clamp(0.0, 100.0);
+    let secondary_used = snapshot
+        .secondary
+        .as_ref()
+        .map(|window| window.used_percent)
+        .unwrap_or(0.0)
+        .clamp(0.0, 100.0);
+    let primary_window_minutes = snapshot
+        .primary
+        .as_ref()
+        .and_then(|window| window.window_minutes)
+        .unwrap_or(0);
+    let primary_reset_after_seconds = snapshot
+        .primary
+        .as_ref()
+        .and_then(|window| window.resets_in_seconds);
+    let secondary_window_minutes = snapshot
+        .secondary
+        .as_ref()
+        .and_then(|window| window.window_minutes)
+        .unwrap_or(0);
+    let secondary_reset_after_seconds = snapshot
+        .secondary
+        .as_ref()
+        .and_then(|window| window.resets_in_seconds);
+
+    let ratio_percent = match (primary_window_minutes, secondary_window_minutes) {
+        (0, _) | (_, 0) => f64::NAN,
+        (primary, secondary) => {
+            let ratio = (primary as f64) / (secondary as f64);
+            (ratio * 100.0).clamp(0.0, 100.0)
+        }
+    };
+
+    RateLimitSnapshotEvent {
+        primary_used_percent: primary_used,
+        secondary_used_percent: secondary_used,
+        primary_to_secondary_ratio_percent: ratio_percent,
+        primary_window_minutes,
+        secondary_window_minutes,
+        primary_reset_after_seconds,
+        secondary_reset_after_seconds,
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -544,8 +683,8 @@ pub enum EventMsg {
     TaskComplete(TaskCompleteEvent),
 
     /// Token count event, sent periodically to report the number of tokens
-    /// used in the current session.
-    TokenCount(TokenUsage),
+    /// used in the current session and the latest rate limit snapshot.
+    TokenCount(TokenCountEvent),
 
     /// Agent text output message
     AgentMessage(AgentMessageEvent),
@@ -639,6 +778,9 @@ pub enum EventMsg {
     /// Used after resuming from a rollout file so the user sees the full
     /// history for that session without re-executing any actions.
     ReplayHistory(ReplayHistoryEvent),
+
+    /// Pro Mode related events (ignored by clients that do not understand them).
+    Pro(ProEvent),
 }
 
 // Individual event payload types matching each `EventMsg` variant.
@@ -653,13 +795,82 @@ pub struct TaskCompleteEvent {
     pub last_agent_message: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct TokenUsage {
     pub input_tokens: u64,
-    pub cached_input_tokens: Option<u64>,
+    pub cached_input_tokens: u64,
     pub output_tokens: u64,
-    pub reasoning_output_tokens: Option<u64>,
+    pub reasoning_output_tokens: u64,
     pub total_tokens: u64,
+}
+
+// ==================== Pro Mode (Protocol) ====================
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProEvent {
+    /// Toggled Pro Mode state
+    Toggled { enabled: bool },
+    /// Periodic status tick
+    Status { phase: ProPhase, stats: ProStats },
+    /// A helper agent was spawned
+    AgentSpawned {
+        id: String,
+        category: ProCategory,
+        budget_ms: u64,
+    },
+    /// Result from a helper agent
+    AgentResult {
+        id: String,
+        category: ProCategory,
+        ok: bool,
+        note: Option<String>,
+        #[serde(default)]
+        artifacts: Vec<ProArtifact>,
+    },
+    /// Aggregated developer note for the current checkpoint
+    DeveloperNote {
+        turn_id: String,
+        note: String,
+        #[serde(default)]
+        artifacts: Vec<ProArtifact>,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProPhase {
+    Idle,
+    Planning,
+    Research,
+    Debug,
+    Review,
+    Background,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProCategory {
+    Planning,
+    Research,
+    Debugging,
+    Review,
+    Background,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct ProStats {
+    pub active: u32,
+    pub completed: u32,
+    pub spawned: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct ProArtifact {
+    pub kind: String,
+    pub summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 impl TokenUsage {
@@ -668,7 +879,7 @@ impl TokenUsage {
     }
 
     pub fn cached_input(&self) -> u64 {
-        self.cached_input_tokens.unwrap_or(0)
+        self.cached_input_tokens
     }
 
     pub fn non_cached_input(&self) -> u64 {
@@ -686,8 +897,103 @@ impl TokenUsage {
     /// This will be off for the current turn and pending function calls.
     pub fn tokens_in_context_window(&self) -> u64 {
         self.total_tokens
-            .saturating_sub(self.reasoning_output_tokens.unwrap_or(0))
+            .saturating_sub(self.reasoning_output_tokens)
     }
+
+    /// Estimate the remaining user-controllable percentage of the model's context window.
+    pub fn percent_of_context_window_remaining(&self, context_window: u64) -> u8 {
+        if context_window <= BASELINE_TOKENS {
+            return 0;
+        }
+
+        let effective_window = context_window - BASELINE_TOKENS;
+        let used = self
+            .tokens_in_context_window()
+            .saturating_sub(BASELINE_TOKENS);
+        let remaining = effective_window.saturating_sub(used);
+        ((remaining as f32 / effective_window as f32) * 100.0).clamp(0.0, 100.0) as u8
+    }
+
+    /// In-place element-wise sum of token counts.
+    pub fn add_assign(&mut self, other: &TokenUsage) {
+        self.input_tokens += other.input_tokens;
+        self.cached_input_tokens += other.cached_input_tokens;
+        self.output_tokens += other.output_tokens;
+        self.reasoning_output_tokens += other.reasoning_output_tokens;
+        self.total_tokens += other.total_tokens;
+    }
+}
+
+/// Includes prompts, tools and space to call compact.
+const BASELINE_TOKENS: u64 = 12_000;
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub struct TokenUsageInfo {
+    pub total_token_usage: TokenUsage,
+    pub last_token_usage: TokenUsage,
+    pub model_context_window: Option<u64>,
+}
+
+impl TokenUsageInfo {
+    pub fn new_or_append(
+        info: &Option<TokenUsageInfo>,
+        last: &Option<TokenUsage>,
+        model_context_window: Option<u64>,
+    ) -> Option<Self> {
+        if info.is_none() && last.is_none() {
+            return None;
+        }
+
+        let mut info = match info {
+            Some(info) => info.clone(),
+            None => Self {
+                total_token_usage: TokenUsage::default(),
+                last_token_usage: TokenUsage::default(),
+                model_context_window,
+            },
+        };
+
+        if let Some(last) = last {
+            info.append_last_usage(last);
+        }
+
+        if info.model_context_window.is_none() {
+            info.model_context_window = model_context_window;
+        }
+
+        Some(info)
+    }
+
+    pub fn append_last_usage(&mut self, last: &TokenUsage) {
+        self.total_token_usage.add_assign(last);
+        self.last_token_usage = last.clone();
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct RateLimitSnapshotEvent {
+    /// Percentage (0-100) of the primary window that has been consumed.
+    pub primary_used_percent: f64,
+    /// Percentage (0-100) of the secondary window that has been consumed.
+    pub secondary_used_percent: f64,
+    /// Size of the primary window relative to secondary (0-100).
+    pub primary_to_secondary_ratio_percent: f64,
+    /// Rolling window duration for the primary limit, in minutes.
+    pub primary_window_minutes: u64,
+    /// Rolling window duration for the secondary limit, in minutes.
+    pub secondary_window_minutes: u64,
+    /// Seconds until the primary window resets, if reported by the API.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary_reset_after_seconds: Option<u64>,
+    /// Seconds until the secondary window resets, if reported by the API.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secondary_reset_after_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct TokenCountEvent {
+    pub info: Option<TokenUsageInfo>,
+    pub rate_limits: Option<RateLimitSnapshotEvent>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -740,10 +1046,11 @@ impl fmt::Display for FinalOutput {
                 String::new()
             },
             token_usage.output_tokens,
-            token_usage
-                .reasoning_output_tokens
-                .map(|r| format!(" (reasoning {r})"))
-                .unwrap_or_default()
+            if token_usage.reasoning_output_tokens > 0 {
+                format!(" (reasoning {})", token_usage.reasoning_output_tokens)
+            } else {
+                String::new()
+            }
         )
     }
 }
@@ -992,6 +1299,10 @@ pub struct AgentInfo {
     pub name: String,
     /// Current status of the agent
     pub status: String,
+    /// Optional batch identifier when the agent was launched via agent_run
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub batch_id: Option<String>,
     /// Optional model being used
     pub model: Option<String>,
     /// Latest progress line (if any) for UI previews
@@ -1030,7 +1341,7 @@ pub enum ReviewDecision {
     Abort,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileChange {
     Add {
@@ -1040,6 +1351,8 @@ pub enum FileChange {
     Update {
         unified_diff: String,
         move_path: Option<PathBuf>,
+        original_content: String,
+        new_content: String,
     },
 }
 

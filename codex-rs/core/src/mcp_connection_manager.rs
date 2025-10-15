@@ -105,6 +105,7 @@ impl McpConnectionManager {
     /// user should be informed about these errors.
     pub async fn new(
         mcp_servers: HashMap<String, McpServerConfig>,
+        excluded_tools: HashSet<(String, String)>,
     ) -> Result<(Self, ClientStartErrors)> {
         // Early exit if no servers are configured.
         if mcp_servers.is_empty() {
@@ -137,7 +138,9 @@ impl McpConnectionManager {
             per_server_timeout.insert(server_name.clone(), timeout);
 
             join_set.spawn(async move {
-                let McpServerConfig { command, args, env, .. } = cfg;
+                let McpServerConfig {
+                    command, args, env, ..
+                } = cfg;
                 let client_res = McpClient::new_stdio_client(
                     command.into(),
                     args.into_iter().map(OsString::from).collect(),
@@ -201,7 +204,8 @@ impl McpConnectionManager {
         // Query tools from each server. Do not fail the entire manager if a
         // server fails to list tools within its startup timeout; instead,
         // record the error and continue.
-        let (all_tools, list_errors) = list_all_tools(&clients, &per_server_timeout).await;
+        let (all_tools, list_errors) =
+            list_all_tools(&clients, &per_server_timeout, &excluded_tools).await;
 
         // Remove clients that failed to list tools so they are not used later.
         for (server_name, err) in list_errors {
@@ -255,6 +259,7 @@ impl McpConnectionManager {
 async fn list_all_tools(
     clients: &HashMap<String, std::sync::Arc<McpClient>>,
     timeouts: &HashMap<String, Duration>,
+    excluded_tools: &HashSet<(String, String)>,
 ) -> (Vec<ToolInfo>, HashMap<String, anyhow::Error>) {
     let mut join_set = JoinSet::new();
 
@@ -269,9 +274,7 @@ async fn list_all_tools(
             .copied()
             .unwrap_or(DEFAULT_STARTUP_TIMEOUT);
         join_set.spawn(async move {
-            let res = client_clone
-                .list_tools(None, Some(timeout))
-                .await;
+            let res = client_clone.list_tools(None, Some(timeout)).await;
             (server_name_cloned, res)
         });
     }
@@ -283,6 +286,10 @@ async fn list_all_tools(
         match join_res {
             Ok((server_name, Ok(list_result))) => {
                 for tool in list_result.tools {
+                    if excluded_tools.contains(&(server_name.clone(), tool.name.clone())) {
+                        continue;
+                    }
+
                     let tool_info = ToolInfo {
                         server_name: server_name.clone(),
                         tool_name: tool.name.clone(),

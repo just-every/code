@@ -1,10 +1,10 @@
 #![allow(clippy::unwrap_used)]
 
-use codex_core::environment_context::TOOL_CANDIDATES;
 use codex_core::CodexAuth;
 use codex_core::ConversationManager;
 use codex_core::ModelProviderInfo;
 use codex_core::built_in_model_providers;
+use codex_core::environment_context::TOOL_CANDIDATES;
 use codex_core::model_family::find_family_for_model;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::EventMsg;
@@ -21,12 +21,12 @@ use core_test_support::wait_for_event;
 use os_info::Type as OsType;
 use os_info::Version;
 use tempfile::TempDir;
+use which::which;
 use wiremock::Mock;
 use wiremock::MockServer;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
-use which::which;
 
 fn text_user_input(text: String) -> serde_json::Value {
     serde_json::json!({
@@ -49,13 +49,17 @@ fn render_env_context(
         lines.push(format!("  <cwd>{cwd}</cwd>"));
     }
     if let Some(approval_policy) = approval_policy {
-        lines.push(format!("  <approval_policy>{approval_policy}</approval_policy>"));
+        lines.push(format!(
+            "  <approval_policy>{approval_policy}</approval_policy>"
+        ));
     }
     if let Some(sandbox_mode) = sandbox_mode {
         lines.push(format!("  <sandbox_mode>{sandbox_mode}</sandbox_mode>"));
     }
     if let Some(network_access) = network_access {
-        lines.push(format!("  <network_access>{network_access}</network_access>"));
+        lines.push(format!(
+            "  <network_access>{network_access}</network_access>"
+        ));
     }
     if !writable_roots.is_empty() {
         lines.push("  <writable_roots>".to_string());
@@ -129,10 +133,7 @@ fn common_tools_block() -> Option<String> {
         } else {
             candidate.detection_names
         };
-        if detection_names
-            .iter()
-            .any(|name| which(name).is_ok())
-        {
+        if detection_names.iter().any(|name| which(name).is_ok()) {
             available.push(candidate.label);
         }
     }
@@ -296,6 +297,7 @@ async fn prompt_tools_are_consistent_across_requests() {
 
     let conversation_manager =
         ConversationManager::with_auth(CodexAuth::from_api_key("Test API Key"));
+    let expected_instructions = config.model_family.base_instructions.clone();
     let codex = conversation_manager
         .new_conversation(config)
         .await
@@ -325,7 +327,6 @@ async fn prompt_tools_are_consistent_across_requests() {
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 2, "expected two POST requests");
 
-    let expected_instructions: &str = include_str!("../../prompt.md");
     // our internal implementation is responsible for keeping tools in sync
     // with the OpenAI schema, so we just verify the tool presence here
     let expected_tools_names: &[&str] = &["shell", "update_plan", "apply_patch", "view_image"];
@@ -656,6 +657,7 @@ async fn per_turn_overrides_keep_cached_prefix_and_key_constant() {
             model: "o3".to_string(),
             effort: Some(ReasoningEffort::High),
             summary: ReasoningSummary::Detailed,
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -761,6 +763,7 @@ async fn send_user_turn_with_no_changes_does_not_send_environment_context() {
             model: default_model.clone(),
             effort: default_effort,
             summary: default_summary,
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -777,6 +780,7 @@ async fn send_user_turn_with_no_changes_does_not_send_environment_context() {
             model: default_model.clone(),
             effort: default_effort,
             summary: default_summary,
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -872,6 +876,7 @@ async fn send_user_turn_with_changes_sends_environment_context() {
             model: default_model,
             effort: default_effort,
             summary: default_summary,
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -888,6 +893,7 @@ async fn send_user_turn_with_changes_sends_environment_context() {
             model: "o3".to_string(),
             effort: Some(ReasoningEffort::High),
             summary: ReasoningSummary::Detailed,
+            final_output_json_schema: None,
         })
         .await
         .unwrap();

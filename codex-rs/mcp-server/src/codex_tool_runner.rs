@@ -42,6 +42,7 @@ pub async fn run_codex_tool_session(
     initial_prompt: String,
     config: CodexConfig,
     outgoing: Arc<OutgoingMessageSender>,
+    session_map: Arc<Mutex<HashMap<Uuid, Arc<CodexConversation>>>>,
     conversation_manager: Arc<ConversationManager>,
     running_requests_id_to_codex_uuid: Arc<Mutex<HashMap<RequestId, Uuid>>>,
 ) {
@@ -65,6 +66,12 @@ pub async fn run_codex_tool_session(
             return;
         }
     };
+
+    let session_uuid: Uuid = conversation_id.into();
+    session_map
+        .lock()
+        .await
+        .insert(session_uuid, conversation.clone());
 
     let session_configured_event = Event {
         // Use a fake id value for now.
@@ -90,7 +97,7 @@ pub async fn run_codex_tool_session(
     running_requests_id_to_codex_uuid
         .lock()
         .await
-        .insert(id.clone(), conversation_id.into());
+        .insert(id.clone(), session_uuid);
     let submission = Submission {
         id: sub_id.clone(),
         op: Op::UserInput {
@@ -286,6 +293,7 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::ShutdownComplete
                     | EventMsg::EnteredReviewMode(_)
                     | EventMsg::ExitedReviewMode(_)
+                    | EventMsg::Pro(_)
                     | EventMsg::CustomToolCallBegin(_)
                     | EventMsg::CustomToolCallEnd(_) => {
                         // For now, we do not do anything extra for these

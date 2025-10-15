@@ -1,0 +1,1 @@
+{"schemaVersion": "1.0", "stage": "${stage}", "specId": "${spec}", "timestamp": "${timestamp_run}", "promptVersion": "${prompt_version}", "agents": [], "synthesisPath": "${output_dir}/${stage_slug}_${timestamp_run}_synthesis.json"}

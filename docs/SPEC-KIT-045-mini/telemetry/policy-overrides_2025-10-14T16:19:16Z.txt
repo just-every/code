@@ -1,0 +1,10 @@
+2025-10-14T16:19:16Z SPEC-KIT-045-mini policy posture
+- SPEC_OPS_ALLOW_DIRTY=1 (rehearsal fixture uses tracked evidence artefacts)
+- SPEC_OPS_POLICY_PREFILTER_CMD=true (policy runner unavailable in sandbox)
+- SPEC_OPS_POLICY_FINAL_CMD=true (policy runner unavailable in sandbox)
+
+Follow-up checklist before unlock:
+1. Re-run `/cmd spec-ops-plan SPEC-KIT-045-mini` without policy stubs and capture updated telemetry.
+2. Re-run `/cmd spec-ops-tasks SPEC-KIT-045-mini` without policy stubs and archive lint output.
+3. Verify policy.prefilter.status and policy.final.status report `passed` with real commands.
+4. Document clean-run evidence in unlock-notes.md and update SPEC.md notes.

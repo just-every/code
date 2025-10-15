@@ -260,12 +260,10 @@ pub(crate) struct OutgoingError {
 mod tests {
     use codex_core::protocol::EventMsg;
     use codex_core::protocol::SessionConfiguredEvent;
-    use codex_protocol::config_types::ReasoningEffort;
     use codex_protocol::mcp_protocol::ConversationId;
     use codex_protocol::mcp_protocol::LoginChatGptCompleteNotification;
     use pretty_assertions::assert_eq;
     use serde_json::json;
-    use tempfile::NamedTempFile;
     use uuid::Uuid;
 
     use super::*;
@@ -276,17 +274,16 @@ mod tests {
         let outgoing_message_sender = OutgoingMessageSender::new(outgoing_tx);
 
         let conversation_id = ConversationId::new();
-        let rollout_file = NamedTempFile::new().unwrap();
+        let session_uuid: Uuid = conversation_id.into();
         let event = Event {
             id: "1".to_string(),
+            event_seq: 0,
+            order: None,
             msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
-                session_id: conversation_id,
+                session_id: session_uuid,
                 model: "gpt-4o".to_string(),
-                reasoning_effort: Some(ReasoningEffort::default()),
                 history_log_id: 1,
                 history_entry_count: 1000,
-                initial_messages: None,
-                rollout_path: rollout_file.path().to_path_buf(),
             }),
         };
 
@@ -312,18 +309,17 @@ mod tests {
         let outgoing_message_sender = OutgoingMessageSender::new(outgoing_tx);
 
         let conversation_id = ConversationId::new();
-        let rollout_file = NamedTempFile::new().unwrap();
+        let session_uuid: Uuid = conversation_id.into();
         let session_configured_event = SessionConfiguredEvent {
-            session_id: conversation_id,
+            session_id: session_uuid,
             model: "gpt-4o".to_string(),
-            reasoning_effort: Some(ReasoningEffort::default()),
             history_log_id: 1,
             history_entry_count: 1000,
-            initial_messages: None,
-            rollout_path: rollout_file.path().to_path_buf(),
         };
         let event = Event {
             id: "1".to_string(),
+            event_seq: 0,
+            order: None,
             msg: EventMsg::SessionConfigured(session_configured_event.clone()),
         };
         let meta = OutgoingNotificationMeta {
@@ -344,14 +340,13 @@ mod tests {
                 "requestId": "123",
             },
             "id": "1",
+            "event_seq": 0,
             "msg": {
                 "session_id": session_configured_event.session_id,
                 "model": session_configured_event.model,
-                "reasoning_effort": session_configured_event.reasoning_effort,
                 "history_log_id": session_configured_event.history_log_id,
                 "history_entry_count": session_configured_event.history_entry_count,
-                "type": "session_configured",
-                "rollout_path": rollout_file.path().to_path_buf(),
+                "type": "session_configured"
             }
         });
         assert_eq!(params.unwrap(), expected_params);

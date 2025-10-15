@@ -24,6 +24,7 @@ use mcp_types::CallToolResult;
 use mcp_types::Tool as McpTool;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Value;
 use serde_with::serde_as;
 use strum_macros::Display;
 use ts_rs::TS;
@@ -94,6 +95,8 @@ pub enum Op {
 
         /// Will only be honored if the model is configured to use reasoning.
         summary: ReasoningSummaryConfig,
+        // The JSON schema to use for the final assistant message
+        final_output_json_schema: Option<Value>,
     },
 
     /// Override parts of the persistent turn context for subsequent turns.
@@ -591,7 +594,7 @@ pub struct TaskStartedEvent {
     pub model_context_window: Option<u64>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default, TS)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, TS)]
 pub struct TokenUsage {
     pub input_tokens: u64,
     pub cached_input_tokens: u64,
@@ -600,7 +603,7 @@ pub struct TokenUsage {
     pub total_tokens: u64,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, TS)]
 pub struct TokenUsageInfo {
     pub total_token_usage: TokenUsage,
     pub last_token_usage: TokenUsage,
@@ -637,9 +640,26 @@ impl TokenUsageInfo {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, TS)]
 pub struct TokenCountEvent {
     pub info: Option<TokenUsageInfo>,
+    pub rate_limits: Option<RateLimitSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, TS)]
+pub struct RateLimitSnapshot {
+    pub primary: Option<RateLimitWindow>,
+    pub secondary: Option<RateLimitWindow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, TS)]
+pub struct RateLimitWindow {
+    /// Percentage (0-100) of the window that has been consumed.
+    pub used_percent: f64,
+    /// Rolling window duration, in minutes.
+    pub window_minutes: Option<u64>,
+    /// Seconds until the window resets.
+    pub resets_in_seconds: Option<u64>,
 }
 
 /// Payload for `ReplayHistory` containing prior `ResponseItem`s and optional events.
@@ -1036,6 +1056,25 @@ pub struct GitInfo {
 pub struct ReviewRequest {
     pub prompt: String,
     pub user_facing_hint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub metadata: Option<ReviewContextMetadata>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, TS, Default)]
+pub struct ReviewContextMetadata {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub scope: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub base_branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub current_branch: Option<String>,
 }
 
 /// Structured review result produced by a child review session.
@@ -1266,7 +1305,7 @@ pub enum ReviewDecision {
     Abort,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum FileChange {
     Add {
@@ -1278,6 +1317,8 @@ pub enum FileChange {
     Update {
         unified_diff: String,
         move_path: Option<PathBuf>,
+        original_content: String,
+        new_content: String,
     },
 }
 
@@ -1305,16 +1346,16 @@ pub enum TurnAbortReason {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Result;
     use serde_json::json;
     use tempfile::NamedTempFile;
 
     /// Serialize Event to verify that its JSON representation has the expected
     /// amount of nesting.
     #[test]
-    fn serialize_event() {
-        let conversation_id =
-            ConversationId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8").unwrap();
-        let rollout_file = NamedTempFile::new().unwrap();
+    fn serialize_event() -> Result<()> {
+        let conversation_id = ConversationId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8")?;
+        let rollout_file = NamedTempFile::new()?;
         let event = Event {
             id: "1234".to_string(),
             event_seq: 1,
@@ -1342,23 +1383,25 @@ mod tests {
                 "rollout_path": format!("{}", rollout_file.path().display()),
             }
         });
-        assert_eq!(expected, serde_json::to_value(&event).unwrap());
+        assert_eq!(expected, serde_json::to_value(&event)?);
+        Ok(())
     }
 
     #[test]
-    fn vec_u8_as_base64_serialization_and_deserialization() {
+    fn vec_u8_as_base64_serialization_and_deserialization() -> Result<()> {
         let event = ExecCommandOutputDeltaEvent {
             call_id: "call21".to_string(),
             stream: ExecOutputStream::Stdout,
             chunk: vec![1, 2, 3, 4, 5],
         };
-        let serialized = serde_json::to_string(&event).unwrap();
+        let serialized = serde_json::to_string(&event)?;
         assert_eq!(
             r#"{"call_id":"call21","stream":"stdout","chunk":"AQIDBAU="}"#,
             serialized,
         );
 
-        let deserialized: ExecCommandOutputDeltaEvent = serde_json::from_str(&serialized).unwrap();
+        let deserialized: ExecCommandOutputDeltaEvent = serde_json::from_str(&serialized)?;
         assert_eq!(deserialized, event);
+        Ok(())
     }
 }

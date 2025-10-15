@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "command": "spec-ops-tasks",
+  "specId": "SPEC-KIT-013",
+  "sessionId": "2025-09-27T18:35:25Z-279227690",
+  "timestamp": "2025-09-27T18:35:25Z",
+  "tool": {
+    "status": "ready"
+  },
+  "artifacts": [
+    { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-013/spec-tasks_2025-09-27T18:35:25Z-279227690.log" }
+  ]
+}

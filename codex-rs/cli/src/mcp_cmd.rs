@@ -333,8 +333,8 @@ fn run_get(config_overrides: &CliConfigOverrides, get_args: GetArgs) -> Result<(
         }
     };
     println!("  env: {env_display}");
-    if let Some(timeout) = server.startup_timeout_ms {
-        println!("  startup_timeout_ms: {timeout}");
+    if let Some(timeout_ms) = server.startup_timeout_ms {
+        println!("  startup_timeout_ms: {}", timeout_ms);
     }
     println!("  remove: codex mcp remove {}", get_args.name);
 

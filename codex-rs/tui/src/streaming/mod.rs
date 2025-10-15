@@ -30,7 +30,7 @@ impl StreamState {
             last_sequence_number: None,
         }
     }
-    
+
     pub(crate) fn new_for_kind(kind: StreamKind) -> Self {
         // Bold the first sentence for assistant answers; reasoning stays normal.
         let collector = match kind {
@@ -159,7 +159,7 @@ impl HeaderEmitter {
             false
         }
     }
-    
+
     pub(crate) fn consume_header_flag(&mut self) -> bool {
         let was_just_emitted = self.just_emitted_header;
         self.just_emitted_header = false;

@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "timestamp": "2025-10-07T00:00:00Z",
+  "baseline": { "status": "passed" },
+  "tool": { "status": "passed" },
+  "policy": { "final": { "status": "passed" } },
+  "hal": { "status": "skipped", "failed_checks": ["hal optional"] },
+  "scenarios": []
+}

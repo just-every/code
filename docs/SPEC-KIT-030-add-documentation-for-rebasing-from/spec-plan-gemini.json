@@ -1,0 +1,28 @@
+{
+  "stage": "spec-plan",
+  "prompt_version": "20251002-plan-a",
+  "agent": "gemini",
+  "model": "gemini",
+  "model_release": "2025-09",
+  "reasoning_mode": "thinking",
+  "research_summary": [
+    {
+      "topic": "Acceptance Criteria & Evidence",
+      "details": "R1 validated via `scripts/doc-structure-validate.sh --mode=templates`; R2 requires rebase workflow evidence; R3 uses `scripts/spec-kit/nightly_sync_detect.py` telemetry; R4 needs HAL-enabled reports and `lint_tasks.py` checks. Evidence stored under docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-030/, SPEC.md as tracker."
+    },
+    {
+      "topic": "Conflicts, Gaps, & Blockers",
+      "details": "Documentation rot and nightly drift false positives remain risks. HAL validation disabled because the secret is missing. Decisions pending on nightly job venue, snapshot cadence, and automation scope."
+    },
+    {
+      "topic": "Related Files & Modules",
+      "details": "FORK_DEVIATIONS.md, SPEC.md, scripts/doc-structure-validate.sh, scripts/spec-kit/nightly_sync_detect.py, scripts/spec-kit/lint_tasks.py, evidence directory."
+    }
+  ],
+  "questions": [
+    "Nightly drift execution venue?",
+    "Snapshot cadence?",
+    "Automation scope?",
+    "Conditions for enabling HAL validation?"
+  ]
+}

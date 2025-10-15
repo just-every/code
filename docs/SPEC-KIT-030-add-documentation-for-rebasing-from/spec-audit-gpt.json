@@ -1,0 +1,37 @@
+{
+  "stage": "spec-audit",
+  "prompt_version": "20251002-audit-a",
+  "agent": "gpt_pro",
+  "model": "gpt-5-codex",
+  "model_release": "2025-09",
+  "reasoning_mode": "high",
+  "checks": [
+    {
+      "item": "HAL secret exported",
+      "status": "failed"
+    },
+    {
+      "item": "HAL telemetry capture with SPEC_OPS_TELEMETRY_HAL=1",
+      "status": "blocked"
+    },
+    {
+      "item": "Telemetry JSON recorded (schemaVersion 1)",
+      "status": "passed"
+    },
+    {
+      "item": "Policy decision documented for SPEC_OPS_HAL_SKIP=1",
+      "status": "pending"
+    }
+  ],
+  "recommendation": "Hold spec-audit until HAL_SECRET_KAVEDARR_API_KEY is provisioned; if unavailable, obtain governance approval for SPEC_OPS_HAL_SKIP=1 and document the decision before re-running audit.",
+  "conditions": [
+    "Export HAL_SECRET_KAVEDARR_API_KEY and rerun scripts/spec_ops_004/spec_ops_audit.sh with SPEC_OPS_TELEMETRY_HAL=1 so hal.summary artifacts are captured.",
+    "If HAL credential cannot be supplied, secure policy approval for SPEC_OPS_HAL_SKIP=1, note the waiver in SPEC.md, then rerun audit."
+  ],
+  "consensus": {
+    "agreements": [
+      "Gemini and Claude agree the missing HAL secret is the blocker and both require either supplying the credential or an approved skip before reattempting spec-ops-audit."
+    ],
+    "conflicts": []
+  }
+}

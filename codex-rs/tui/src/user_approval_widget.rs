@@ -6,8 +6,6 @@
 //! UI to Rust using [`ratatui`]. The goal is feature‑parity for the keyboard
 //! driven workflow – a fully‑fledged visual match is not required.
 
-use std::path::Path;
-use std::path::PathBuf;
 use codex_core::protocol::Op;
 use codex_core::protocol::ReviewDecision;
 use crossterm::event::KeyCode;
@@ -24,6 +22,8 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::WidgetRef;
 use ratatui::widgets::Wrap;
 use shlex::split as shlex_split;
+use std::path::Path;
+use std::path::PathBuf;
 
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
@@ -41,6 +41,10 @@ pub(crate) enum ApprovalRequest {
         id: String,
         reason: Option<String>,
         grant_root: Option<PathBuf>,
+    },
+    TerminalCommand {
+        id: u64,
+        command: String,
     },
 }
 
@@ -124,11 +128,27 @@ impl UserApprovalWidget<'_> {
 
                 Paragraph::new(contents).wrap(Wrap { trim: false })
             }
+            ApprovalRequest::TerminalCommand { command, .. } => {
+                let mut cmd_span: Span = format!("$ {command}").into();
+                cmd_span.style = cmd_span.style.add_modifier(Modifier::DIM);
+                let contents = vec![
+                    Line::from(""),
+                    Line::from(vec![
+                        "? ".fg(crate::colors::info()),
+                        "Run shell command ".bold(),
+                        cmd_span,
+                        " now?".into(),
+                    ]),
+                    Line::from(""),
+                ];
+                Paragraph::new(contents).wrap(Wrap { trim: false })
+            }
         };
 
         let select_options = match &approval_request {
             ApprovalRequest::Exec { command, .. } => build_exec_select_options(command),
             ApprovalRequest::ApplyPatch { .. } => build_patch_select_options(),
+            ApprovalRequest::TerminalCommand { .. } => build_terminal_select_options(),
         };
 
         Self {
@@ -225,19 +245,35 @@ impl UserApprovalWidget<'_> {
     }
 
     fn send_decision_with_feedback(&mut self, decision: ReviewDecision, feedback: String) {
+        if let ApprovalRequest::TerminalCommand { id, .. } = &self.approval_request {
+            let approved = matches!(
+                decision,
+                ReviewDecision::Approved | ReviewDecision::ApprovedForSession
+            );
+            self.app_event_tx
+                .send(AppEvent::TerminalApprovalDecision { id: *id, approved });
+            self.done = true;
+            return;
+        }
+
         // Emit a background event instead of an assistant message.
         let message = match &self.approval_request {
             ApprovalRequest::Exec { command, .. } => {
                 let cmd = strip_bash_lc_and_escape(command);
                 match decision {
                     ReviewDecision::Approved => format!("approved: run {} (this time)", cmd),
-                    ReviewDecision::ApprovedForSession => format!("approved: run {} (every time this session)", cmd),
+                    ReviewDecision::ApprovedForSession => {
+                        format!("approved: run {} (every time this session)", cmd)
+                    }
                     ReviewDecision::Denied => format!("not approved: run {}", cmd),
                     ReviewDecision::Abort => format!("canceled: run {}", cmd),
                 }
             }
             ApprovalRequest::ApplyPatch { .. } => {
                 format!("patch approval decision: {:?}", decision)
+            }
+            ApprovalRequest::TerminalCommand { .. } => {
+                unreachable!("terminal approvals handled earlier")
             }
         };
         let message = if feedback.trim().is_empty() {
@@ -248,7 +284,7 @@ impl UserApprovalWidget<'_> {
         };
         // Insert above the upcoming command begin so the decision reads first.
         self.app_event_tx
-            .send(AppEvent::InsertBackgroundEventEarly(message));
+            .send_background_event_before_next_output(message);
 
         // If the user aborted an exec approval, immediately cancel any running task
         // so the UI reflects their intent (clear spinner/status) without waiting
@@ -278,6 +314,9 @@ impl UserApprovalWidget<'_> {
                 id: id.clone(),
                 decision,
             },
+            ApprovalRequest::TerminalCommand { .. } => {
+                unreachable!("terminal approvals handled earlier")
+            }
         };
 
         self.app_event_tx.send(AppEvent::CodexOp(op));
@@ -325,11 +364,8 @@ impl UserApprovalWidget<'_> {
 impl WidgetRef for &UserApprovalWidget<'_> {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         let prompt_height = self.get_confirmation_prompt_height(area.width);
-        let [prompt_chunk, options_chunk] = Layout::vertical([
-            Constraint::Length(prompt_height),
-            Constraint::Min(0),
-        ])
-        .areas(area);
+        let [prompt_chunk, options_chunk] =
+            Layout::vertical([Constraint::Length(prompt_height), Constraint::Min(0)]).areas(area);
 
         self.confirmation_prompt.clone().render(prompt_chunk, buf);
 
@@ -345,7 +381,12 @@ impl WidgetRef for &UserApprovalWidget<'_> {
                 Style::default()
             };
 
-            let label = format!("{}{}{}", indicator, option.label, hotkey_suffix(option.hotkey));
+            let label = format!(
+                "{}{}{}",
+                indicator,
+                option.label,
+                hotkey_suffix(option.hotkey)
+            );
             lines.push(Line::from(Span::styled(label, line_style)));
 
             let desc_style = Style::default()
@@ -401,18 +442,18 @@ fn build_exec_select_options(command: &[String]) -> Vec<SelectOption> {
         if let Some(prefix) = prefix_candidate(tokens) {
             let prefix_display = strip_bash_lc_and_escape(&prefix);
             let prefix_with_wildcard = format!("{prefix_display} *");
-        options.push(SelectOption {
-            label: format!("Always allow '{prefix_with_wildcard}' for this project"),
-            description: "Approve any command starting with this prefix".to_string(),
-            hotkey: KeyCode::Char('p'),
-            action: SelectAction::ApproveForSession {
-                command: prefix.clone(),
-                match_kind: ApprovedCommandMatchKind::Prefix,
-                persist: true,
-                semantic_prefix: Some(prefix),
-            },
-        });
-    }
+            options.push(SelectOption {
+                label: format!("Always allow '{prefix_with_wildcard}' for this project"),
+                description: "Approve any command starting with this prefix".to_string(),
+                hotkey: KeyCode::Char('p'),
+                action: SelectAction::ApproveForSession {
+                    command: prefix.clone(),
+                    match_kind: ApprovedCommandMatchKind::Prefix,
+                    persist: true,
+                    semantic_prefix: Some(prefix),
+                },
+            });
+        }
     }
 
     options.push(SelectOption {
@@ -436,6 +477,23 @@ fn build_patch_select_options() -> Vec<SelectOption> {
         SelectOption {
             label: "No, provide feedback".to_string(),
             description: "Do not apply the changes; provide feedback".to_string(),
+            hotkey: KeyCode::Char('n'),
+            action: SelectAction::Abort,
+        },
+    ]
+}
+
+fn build_terminal_select_options() -> Vec<SelectOption> {
+    vec![
+        SelectOption {
+            label: "Yes".to_string(),
+            description: "Approve and run the command".to_string(),
+            hotkey: KeyCode::Char('y'),
+            action: SelectAction::ApproveOnce,
+        },
+        SelectOption {
+            label: "No".to_string(),
+            description: "Dismiss without running the command".to_string(),
             hotkey: KeyCode::Char('n'),
             action: SelectAction::Abort,
         },
@@ -509,11 +567,11 @@ fn hotkey_suffix(key: KeyCode) -> String {
 #[cfg(all(test, feature = "legacy_tests"))]
 mod tests {
     use super::*;
+    use codex_core::protocol::ApprovedCommandMatchKind;
     use crossterm::event::KeyCode;
     use crossterm::event::KeyEvent;
     use crossterm::event::KeyModifiers;
     use std::sync::mpsc::channel;
-    use codex_core::protocol::ApprovedCommandMatchKind;
 
     #[test]
     fn lowercase_shortcut_is_accepted() {
@@ -599,11 +657,23 @@ mod tests {
             Some(vec!["git".into(), "checkout".into()])
         );
         assert_eq!(
-            prefix_candidate(&["aws".into(), "s3".into(), "cp".into(), "foo".into(), "bar".into()]),
+            prefix_candidate(&[
+                "aws".into(),
+                "s3".into(),
+                "cp".into(),
+                "foo".into(),
+                "bar".into()
+            ]),
             Some(vec!["aws".into(), "s3".into(), "cp".into()])
         );
         assert_eq!(
-            prefix_candidate(&["docker".into(), "build".into(), "-t".into(), "image".into(), ".".into()]),
+            prefix_candidate(&[
+                "docker".into(),
+                "build".into(),
+                "-t".into(),
+                "image".into(),
+                ".".into()
+            ]),
             Some(vec!["docker".into(), "build".into()])
         );
         assert_eq!(
@@ -618,7 +688,9 @@ mod tests {
             "git checkout -- README.md".into(),
         ]);
         assert_eq!(
-            normalized.as_ref().and_then(|tokens| prefix_candidate(tokens)),
+            normalized
+                .as_ref()
+                .and_then(|tokens| prefix_candidate(tokens)),
             Some(vec!["git".into(), "checkout".into()])
         );
     }

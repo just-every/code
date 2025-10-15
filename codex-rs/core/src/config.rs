@@ -1,23 +1,29 @@
 use crate::codex::ApprovedCommandPattern;
-use crate::protocol::ApprovedCommandMatchKind;
 use crate::config_profile::ConfigProfile;
 use crate::config_types::AgentConfig;
 use crate::config_types::AllowedCommand;
 use crate::config_types::AllowedCommandMatchKind;
 use crate::config_types::BrowserConfig;
-use crate::config_types::History;
+use crate::config_types::CachedTerminalBackground;
+use crate::config_types::ClientTools;
+use crate::config_types::ConfirmGuardConfig;
 use crate::config_types::GithubConfig;
-use crate::config_types::ThemeName;
-use crate::config_types::ThemeColors;
+use crate::config_types::History;
 use crate::config_types::McpServerConfig;
 use crate::config_types::Notifications;
+use crate::config_types::ProjectCommandConfig;
+use crate::config_types::ProjectHookConfig;
+use crate::config_types::ReasoningEffort;
+use crate::config_types::ReasoningSummary;
 use crate::config_types::SandboxWorkspaceWrite;
 use crate::config_types::ShellEnvironmentPolicy;
 use crate::config_types::ShellEnvironmentPolicyToml;
 use crate::config_types::TextVerbosity;
+use crate::config_types::ThemeColors;
+use crate::config_types::ThemeName;
 use crate::config_types::Tui;
 use crate::config_types::UriBasedFileOpener;
-use crate::config_types::ConfirmGuardConfig;
+use crate::config_types::ValidationConfig;
 use crate::git_info::resolve_root_git_project_for_trust;
 use crate::model_family::ModelFamily;
 use crate::model_family::derive_default_model_family;
@@ -25,14 +31,15 @@ use crate::model_family::find_family_for_model;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::built_in_model_providers;
 use crate::openai_model_info::get_model_info;
+use crate::project_features::{ProjectCommand, ProjectHooks, load_project_commands};
+use crate::protocol::ApprovedCommandMatchKind;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
-use crate::config_types::ReasoningEffort;
-use crate::config_types::ReasoningSummary;
-use codex_protocol::mcp_protocol::AuthMode;
 use codex_protocol::config_types::SandboxMode;
+use codex_protocol::mcp_protocol::AuthMode;
 use dirs::home_dir;
 use serde::Deserialize;
+use serde::de::{self, Unexpected};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -47,7 +54,7 @@ use toml_edit::DocumentMut;
 use toml_edit::Item as TomlItem;
 use toml_edit::Table as TomlTable;
 
-const OPENAI_DEFAULT_MODEL: &str = "gpt-5";
+const OPENAI_DEFAULT_MODEL: &str = "gpt-5-codex";
 const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5-codex";
 pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5-codex";
 
@@ -66,7 +73,7 @@ pub struct Config {
     /// Optional override of model selection.
     pub model: String,
 
-    /// Model used specifically for review sessions. Defaults to "gpt-5".
+    /// Model used specifically for review sessions. Defaults to "gpt-5-codex".
     pub review_model: String,
 
     pub model_family: ModelFamily,
@@ -96,6 +103,12 @@ pub struct Config {
 
     /// Commands the user has permanently approved for this project/session.
     pub always_allow_commands: Vec<ApprovedCommandPattern>,
+
+    /// Project-level lifecycle hooks configured for the active workspace.
+    pub project_hooks: ProjectHooks,
+
+    /// Project-specific commands available in the active workspace.
+    pub project_commands: Vec<ProjectCommand>,
 
     pub shell_environment_policy: ShellEnvironmentPolicy,
     /// Patterns requiring an explicit confirm prefix before running.
@@ -162,6 +175,9 @@ pub struct Config {
     /// Definition for MCP servers that Codex can reach out to for tool calls.
     pub mcp_servers: HashMap<String, McpServerConfig>,
 
+    /// Optional ACP client tool identifiers supplied by the host IDE.
+    pub experimental_client_tools: Option<ClientTools>,
+
     /// Configuration for available agent models
     pub agents: Vec<AgentConfig>,
 
@@ -227,12 +243,15 @@ pub struct Config {
 
     /// Enable debug logging of LLM requests and responses
     pub debug: bool,
-    
+
     /// Whether we're using ChatGPT authentication (affects feature availability)
     pub using_chatgpt_auth: bool,
 
     /// GitHub integration configuration.
     pub github: GithubConfig,
+
+    /// Validation harness configuration.
+    pub validation: ValidationConfig,
 
     /// Resolved subagent command configurations (including custom ones).
     /// If a command with name `plan|solve|code` exists here, it overrides
@@ -433,25 +452,21 @@ pub async fn persist_model_selection(
     {
         let root = doc.as_table_mut();
         if let Some(profile_name) = profile {
-            let profiles_item = root
-                .entry("profiles")
-                .or_insert_with(|| {
-                    let mut table = TomlTable::new();
-                    table.set_implicit(true);
-                    TomlItem::Table(table)
-                });
+            let profiles_item = root.entry("profiles").or_insert_with(|| {
+                let mut table = TomlTable::new();
+                table.set_implicit(true);
+                TomlItem::Table(table)
+            });
 
             let profiles_table = profiles_item
                 .as_table_mut()
                 .expect("profiles table should be a table");
 
-            let profile_item = profiles_table
-                .entry(profile_name)
-                .or_insert_with(|| {
-                    let mut table = TomlTable::new();
-                    table.set_implicit(false);
-                    TomlItem::Table(table)
-                });
+            let profile_item = profiles_table.entry(profile_name).or_insert_with(|| {
+                let mut table = TomlTable::new();
+                table.set_implicit(false);
+                TomlItem::Table(table)
+            });
 
             let profile_table = profile_item
                 .as_table_mut()
@@ -460,8 +475,7 @@ pub async fn persist_model_selection(
             profile_table["model"] = toml_edit::value(model.to_string());
 
             if let Some(effort) = effort {
-                profile_table["model_reasoning_effort"] =
-                    toml_edit::value(effort.to_string());
+                profile_table["model_reasoning_effort"] = toml_edit::value(effort.to_string());
             } else {
                 profile_table.remove("model_reasoning_effort");
             }
@@ -469,8 +483,7 @@ pub async fn persist_model_selection(
             root["model"] = toml_edit::value(model.to_string());
             match effort {
                 Some(effort) => {
-                    root["model_reasoning_effort"] =
-                        toml_edit::value(effort.to_string());
+                    root["model_reasoning_effort"] = toml_edit::value(effort.to_string());
                 }
                 None => {
                     root.remove("model_reasoning_effort");
@@ -629,6 +642,53 @@ pub fn set_tui_theme_name(codex_home: &Path, theme: ThemeName) -> anyhow::Result
     Ok(())
 }
 
+/// Record the most recent terminal background autodetect result under `[tui.cached_terminal_background]`.
+pub fn set_cached_terminal_background(
+    codex_home: &Path,
+    cache: &CachedTerminalBackground,
+) -> anyhow::Result<()> {
+    let config_path = codex_home.join(CONFIG_TOML_FILE);
+    let read_path = resolve_codex_path_for_read(codex_home, Path::new(CONFIG_TOML_FILE));
+    let mut doc = match std::fs::read_to_string(&read_path) {
+        Ok(s) => s.parse::<DocumentMut>()?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentMut::new(),
+        Err(e) => return Err(e.into()),
+    };
+
+    let mut tbl = toml_edit::Table::new();
+    tbl.set_implicit(false);
+    tbl.insert("is_dark", toml_edit::value(cache.is_dark));
+    if let Some(term) = &cache.term {
+        tbl.insert("term", toml_edit::value(term.as_str()));
+    }
+    if let Some(term_program) = &cache.term_program {
+        tbl.insert("term_program", toml_edit::value(term_program.as_str()));
+    }
+    if let Some(term_program_version) = &cache.term_program_version {
+        tbl.insert(
+            "term_program_version",
+            toml_edit::value(term_program_version.as_str()),
+        );
+    }
+    if let Some(colorfgbg) = &cache.colorfgbg {
+        tbl.insert("colorfgbg", toml_edit::value(colorfgbg.as_str()));
+    }
+    if let Some(source) = &cache.source {
+        tbl.insert("source", toml_edit::value(source.as_str()));
+    }
+    if let Some(rgb) = &cache.rgb {
+        tbl.insert("rgb", toml_edit::value(rgb.as_str()));
+    }
+
+    doc["tui"]["cached_terminal_background"] = toml_edit::Item::Table(tbl);
+
+    std::fs::create_dir_all(codex_home)?;
+    let tmp_file = NamedTempFile::new_in(codex_home)?;
+    std::fs::write(tmp_file.path(), doc.to_string())?;
+    tmp_file.persist(config_path)?;
+    Ok(())
+}
+
 /// Persist the selected spinner into `CODEX_HOME/config.toml` at `[tui.spinner].name`.
 pub fn set_tui_spinner_name(codex_home: &Path, spinner_name: &str) -> anyhow::Result<()> {
     let config_path = codex_home.join(CONFIG_TOML_FILE);
@@ -677,7 +737,9 @@ pub fn set_custom_spinner(
     let node = &mut doc["tui"]["spinner"]["custom"][id];
     node["interval"] = toml_edit::value(interval as i64);
     let mut arr = toml_edit::Array::default();
-    for s in frames { arr.push(s.as_str()); }
+    for s in frames {
+        arr.push(s.as_str());
+    }
     node["frames"] = toml_edit::value(arr);
     node["label"] = toml_edit::value(label);
 
@@ -713,7 +775,9 @@ pub fn set_custom_theme(
         doc["tui"]["theme"]["name"] = toml_edit::value("custom");
     }
     doc["tui"]["theme"]["label"] = toml_edit::value(label);
-    if let Some(d) = is_dark { doc["tui"]["theme"]["is_dark"] = toml_edit::value(d); }
+    if let Some(d) = is_dark {
+        doc["tui"]["theme"]["is_dark"] = toml_edit::value(d);
+    }
 
     // Ensure colors table exists and write provided keys
     {
@@ -725,10 +789,12 @@ pub fn set_custom_theme(
         if !theme_tbl.contains_key("colors") {
             theme_tbl.insert("colors", It::Table(toml_edit::Table::new()));
         }
-    let colors_tbl = theme_tbl["colors"].as_table_mut().unwrap();
+        let colors_tbl = theme_tbl["colors"].as_table_mut().unwrap();
         macro_rules! set_opt {
             ($key:ident) => {
-                if let Some(ref v) = colors.$key { colors_tbl.insert(stringify!($key), toml_edit::value(v.clone())); }
+                if let Some(ref v) = colors.$key {
+                    colors_tbl.insert(stringify!($key), toml_edit::value(v.clone()));
+                }
             };
         }
         set_opt!(primary);
@@ -817,6 +883,71 @@ pub fn set_github_check_on_push(codex_home: &Path, enabled: bool) -> anyhow::Res
     Ok(())
 }
 
+/// Persist `github.actionlint_on_patch = <enabled>`.
+pub fn set_github_actionlint_on_patch(codex_home: &Path, enabled: bool) -> anyhow::Result<()> {
+    let config_path = codex_home.join(CONFIG_TOML_FILE);
+    let read_path = resolve_codex_path_for_read(codex_home, Path::new(CONFIG_TOML_FILE));
+    let mut doc = match std::fs::read_to_string(&read_path) {
+        Ok(s) => s.parse::<DocumentMut>()?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentMut::new(),
+        Err(e) => return Err(e.into()),
+    };
+
+    doc["github"]["actionlint_on_patch"] = toml_edit::value(enabled);
+
+    std::fs::create_dir_all(codex_home)?;
+    let tmp = NamedTempFile::new_in(codex_home)?;
+    std::fs::write(tmp.path(), doc.to_string())?;
+    tmp.persist(config_path)?;
+    Ok(())
+}
+
+/// Persist `[validation.groups.<group>] = <enabled>`.
+pub fn set_validation_group_enabled(
+    codex_home: &Path,
+    group: &str,
+    enabled: bool,
+) -> anyhow::Result<()> {
+    let config_path = codex_home.join(CONFIG_TOML_FILE);
+    let read_path = resolve_codex_path_for_read(codex_home, Path::new(CONFIG_TOML_FILE));
+    let mut doc = match std::fs::read_to_string(&read_path) {
+        Ok(s) => s.parse::<DocumentMut>()?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentMut::new(),
+        Err(e) => return Err(e.into()),
+    };
+
+    doc["validation"]["groups"][group] = toml_edit::value(enabled);
+
+    std::fs::create_dir_all(codex_home)?;
+    let tmp = NamedTempFile::new_in(codex_home)?;
+    std::fs::write(tmp.path(), doc.to_string())?;
+    tmp.persist(config_path)?;
+    Ok(())
+}
+
+/// Persist `[validation.tools.<tool>] = <enabled>`.
+pub fn set_validation_tool_enabled(
+    codex_home: &Path,
+    tool: &str,
+    enabled: bool,
+) -> anyhow::Result<()> {
+    let config_path = codex_home.join(CONFIG_TOML_FILE);
+    let read_path = resolve_codex_path_for_read(codex_home, Path::new(CONFIG_TOML_FILE));
+    let mut doc = match std::fs::read_to_string(&read_path) {
+        Ok(s) => s.parse::<DocumentMut>()?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentMut::new(),
+        Err(e) => return Err(e.into()),
+    };
+
+    doc["validation"]["tools"][tool] = toml_edit::value(enabled);
+
+    std::fs::create_dir_all(codex_home)?;
+    let tmp = NamedTempFile::new_in(codex_home)?;
+    std::fs::write(tmp.path(), doc.to_string())?;
+    tmp.persist(config_path)?;
+    Ok(())
+}
+
 /// Persist per-project access mode under `[projects."<path>"]` with
 /// `approval_policy` and `sandbox_mode`.
 pub fn set_project_access_mode(
@@ -855,12 +986,17 @@ pub fn set_project_access_mode(
         .and_then(|i| i.as_table())
         .is_none();
     if needs_proj_table {
-        projects_tbl.insert(project_key.as_str(), TomlItem::Table(toml_edit::Table::new()));
+        projects_tbl.insert(
+            project_key.as_str(),
+            TomlItem::Table(toml_edit::Table::new()),
+        );
     }
     let proj_tbl = projects_tbl
         .get_mut(project_key.as_str())
         .and_then(|i| i.as_table_mut())
-        .ok_or_else(|| anyhow::anyhow!(format!("failed to create projects.{} table", project_key)))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!(format!("failed to create projects.{} table", project_key))
+        })?;
 
     // Write fields
     proj_tbl.insert(
@@ -938,7 +1074,9 @@ pub fn add_project_allowed_command(
     let project_tbl = projects_tbl
         .get_mut(project_key.as_str())
         .and_then(|i| i.as_table_mut())
-        .ok_or_else(|| anyhow::anyhow!(format!("failed to create projects.{} table", project_key)))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!(format!("failed to create projects.{} table", project_key))
+        })?;
 
     let mut argv_array = TomlArray::new();
     for arg in command {
@@ -995,13 +1133,17 @@ pub fn add_project_allowed_command(
 
 /// List MCP servers from `CODEX_HOME/config.toml`.
 /// Returns `(enabled, disabled)` lists of `(name, McpServerConfig)`.
-pub fn list_mcp_servers(codex_home: &Path) -> anyhow::Result<(
+pub fn list_mcp_servers(
+    codex_home: &Path,
+) -> anyhow::Result<(
     Vec<(String, McpServerConfig)>,
     Vec<(String, McpServerConfig)>,
 )> {
     let read_path = resolve_codex_path_for_read(codex_home, Path::new(CONFIG_TOML_FILE));
     let doc_str = std::fs::read_to_string(&read_path).unwrap_or_default();
-    let doc = doc_str.parse::<DocumentMut>().unwrap_or_else(|_| DocumentMut::new());
+    let doc = doc_str
+        .parse::<DocumentMut>()
+        .unwrap_or_else(|_| DocumentMut::new());
 
     fn table_to_list(tbl: &toml_edit::Table) -> Vec<(String, McpServerConfig)> {
         let mut out = Vec::new();
@@ -1015,12 +1157,14 @@ pub fn list_mcp_servers(codex_home: &Path) -> anyhow::Result<(
                 let args: Vec<String> = t
                     .get("args")
                     .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|i| i.as_str().map(|s| s.to_string())).collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|i| i.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
                     .unwrap_or_default();
-                let env: Option<std::collections::HashMap<String, String>> = t
-                    .get("env")
-                    .and_then(|v| v.as_inline_table())
-                    .map(|tbl| {
+                let env: Option<std::collections::HashMap<String, String>> =
+                    t.get("env").and_then(|v| v.as_inline_table()).map(|tbl| {
                         tbl.iter()
                             .filter_map(|(k, v)| v.as_str().map(|s| (k.to_string(), s.to_string())))
                             .collect()
@@ -1032,7 +1176,12 @@ pub fn list_mcp_servers(codex_home: &Path) -> anyhow::Result<(
 
                 out.push((
                     name.to_string(),
-                    McpServerConfig { command, args, env, startup_timeout_ms },
+                    McpServerConfig {
+                        command,
+                        args,
+                        env,
+                        startup_timeout_ms,
+                    },
                 ));
             }
         }
@@ -1058,13 +1207,12 @@ pub fn list_mcp_servers(codex_home: &Path) -> anyhow::Result<(
 
 /// Add or update an MCP server under `[mcp_servers.<name>]`. If the same
 /// server exists under `mcp_servers_disabled`, it will be removed from there.
-pub fn add_mcp_server(
-    codex_home: &Path,
-    name: &str,
-    cfg: McpServerConfig,
-) -> anyhow::Result<()> {
+pub fn add_mcp_server(codex_home: &Path, name: &str, cfg: McpServerConfig) -> anyhow::Result<()> {
     // Validate server name for safety and compatibility with MCP tool naming.
-    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
         return Err(anyhow::anyhow!(
             "invalid server name '{}': must match ^[a-zA-Z0-9_-]+$",
             name
@@ -1103,7 +1251,10 @@ pub fn add_mcp_server(
         server_tbl.insert("env", TomlItem::Value(toml_edit::Value::InlineTable(it)));
     }
     if let Some(ms) = cfg.startup_timeout_ms {
-        server_tbl.insert("startup_timeout_ms", TomlItem::Value(toml_edit::Value::from(ms as i64)));
+        server_tbl.insert(
+            "startup_timeout_ms",
+            TomlItem::Value(toml_edit::Value::from(ms as i64)),
+        );
     }
 
     // Write into enabled table
@@ -1264,6 +1415,10 @@ pub struct ConfigToml {
     pub disable_response_storage: Option<bool>,
 
     /// Enable silent upgrades during startup when a newer release is available.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_option_bool_from_maybe_string"
+    )]
     pub auto_upgrade_enabled: Option<bool>,
 
     /// Optional external command to spawn for end-user notifications.
@@ -1276,6 +1431,10 @@ pub struct ConfigToml {
     /// Definition for MCP servers that Codex can reach out to for tool calls.
     #[serde(default)]
     pub mcp_servers: HashMap<String, McpServerConfig>,
+
+    /// Optional ACP client tool identifiers supplied by the host IDE.
+    #[serde(default)]
+    pub experimental_client_tools: Option<ClientTools>,
 
     /// Configuration for available agent models
     #[serde(default)]
@@ -1354,11 +1513,45 @@ pub struct ConfigToml {
     /// GitHub integration configuration.
     pub github: Option<GithubConfig>,
 
+    /// Validation harness configuration.
+    pub validation: Option<ValidationConfig>,
+
     /// Configuration for subagent commands (built-ins and custom).
     #[serde(default)]
     pub subagents: Option<crate::config_types::SubagentsToml>,
     /// Experimental path to a rollout file to resume from.
     pub experimental_resume: Option<PathBuf>,
+}
+
+fn deserialize_option_bool_from_maybe_string<'de, D>(
+    deserializer: D,
+) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum BoolOrString {
+        Bool(bool),
+        String(String),
+    }
+
+    let value = Option::<BoolOrString>::deserialize(deserializer)?;
+    match value {
+        Some(BoolOrString::Bool(b)) => Ok(Some(b)),
+        Some(BoolOrString::String(s)) => {
+            let normalized = s.trim().to_ascii_lowercase();
+            match normalized.as_str() {
+                "true" => Ok(Some(true)),
+                "false" => Ok(Some(false)),
+                _ => Err(de::Error::invalid_value(
+                    Unexpected::Str(&s),
+                    &"a boolean or string 'true'/'false'",
+                )),
+            }
+        }
+        None => Ok(None),
+    }
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -1368,6 +1561,10 @@ pub struct ProjectConfig {
     pub sandbox_mode: Option<SandboxMode>,
     #[serde(default)]
     pub always_allow_commands: Option<Vec<AllowedCommand>>,
+    #[serde(default)]
+    pub hooks: Vec<ProjectHookConfig>,
+    #[serde(default)]
+    pub commands: Vec<ProjectCommandConfig>,
 }
 
 #[derive(Deserialize, Debug, Clone, Default)]
@@ -1485,6 +1682,8 @@ pub struct ConfigOverrides {
     pub show_raw_agent_reasoning: Option<bool>,
     pub debug: Option<bool>,
     pub tools_web_search_request: Option<bool>,
+    pub mcp_servers: Option<HashMap<String, McpServerConfig>>,
+    pub experimental_client_tools: Option<ClientTools>,
 }
 
 impl Config {
@@ -1496,6 +1695,8 @@ impl Config {
         codex_home: PathBuf,
     ) -> std::io::Result<Self> {
         let user_instructions = Self::load_instructions(Some(&codex_home));
+
+        let mut cfg = cfg;
 
         // Destructure ConfigOverrides fully to ensure all overrides are applied.
         let ConfigOverrides {
@@ -1515,7 +1716,17 @@ impl Config {
             show_raw_agent_reasoning,
             debug,
             tools_web_search_request: override_tools_web_search_request,
+            mcp_servers,
+            experimental_client_tools,
         } = overrides;
+
+        if let Some(mcp_servers) = mcp_servers {
+            cfg.mcp_servers = mcp_servers;
+        }
+
+        if let Some(client_tools) = experimental_client_tools {
+            cfg.experimental_client_tools = Some(client_tools);
+        }
 
         let (active_profile_name, config_profile) =
             match config_profile_key.as_ref().or(cfg.profile.as_ref()) {
@@ -1587,10 +1798,7 @@ impl Config {
 
         // Project-specific overrides based on final resolved cwd (exact match)
         let project_key = resolved_cwd.to_string_lossy().to_string();
-        let project_override = cfg
-            .projects
-            .as_ref()
-            .and_then(|m| m.get(&project_key));
+        let project_override = cfg.projects.as_ref().and_then(|m| m.get(&project_key));
         // Resolve sandbox mode with correct precedence:
         // CLI override > per-project override > global config.toml > default
         let effective_sandbox_mode = sandbox_mode
@@ -1651,6 +1859,13 @@ impl Config {
                 }
             }
         }
+
+        let project_hooks = project_override
+            .map(|cfg| ProjectHooks::from_configs(&cfg.hooks, &resolved_cwd))
+            .unwrap_or_default();
+        let project_commands = project_override
+            .map(|cfg| load_project_commands(&cfg.commands, &resolved_cwd))
+            .unwrap_or_default();
 
         let tools_web_search_request = override_tools_web_search_request
             .or(cfg.tools.as_ref().and_then(|t| t.web_search))
@@ -1716,7 +1931,9 @@ impl Config {
             .agents
             .into_iter()
             .map(|mut a| {
-                if a.command.trim().is_empty() { a.command = a.name.clone(); }
+                if a.command.trim().is_empty() {
+                    a.command = a.name.clone();
+                }
                 a
             })
             .collect();
@@ -1752,6 +1969,8 @@ impl Config {
             approval_policy: effective_approval,
             sandbox_policy,
             always_allow_commands,
+            project_hooks,
+            project_commands,
             shell_environment_policy,
             confirm_guard,
             disable_response_storage: config_profile
@@ -1764,6 +1983,7 @@ impl Config {
             user_instructions,
             base_instructions,
             mcp_servers: cfg.mcp_servers,
+            experimental_client_tools: cfg.experimental_client_tools.clone(),
             agents,
             model_providers,
             project_doc_max_bytes: cfg.project_doc_max_bytes.unwrap_or(PROJECT_DOC_MAX_BYTES),
@@ -1810,10 +2030,8 @@ impl Config {
             // Already computed before moving codex_home
             using_chatgpt_auth,
             github: cfg.github.unwrap_or_default(),
-            subagent_commands: cfg
-                .subagents
-                .map(|s| s.commands)
-                .unwrap_or_default(),
+            validation: cfg.validation.unwrap_or_default(),
+            subagent_commands: cfg.subagents.map(|s| s.commands).unwrap_or_default(),
             experimental_resume: cfg.experimental_resume,
             // Surface TUI notifications preference from config when present.
             tui_notifications: cfg
@@ -1827,16 +2045,16 @@ impl Config {
 
     /// Check if we're using ChatGPT authentication
     fn is_using_chatgpt_auth(codex_home: &Path) -> bool {
-        use codex_protocol::mcp_protocol::AuthMode;
         use crate::CodexAuth;
-        
+        use codex_protocol::mcp_protocol::AuthMode;
+
         // Prefer ChatGPT when both ChatGPT tokens and an API key are present.
         match CodexAuth::from_codex_home(codex_home, AuthMode::ChatGPT, "codex_cli_rs") {
             Ok(Some(auth)) => auth.mode == AuthMode::ChatGPT,
             _ => false,
         }
     }
-    
+
     fn load_instructions(codex_dir: Option<&Path>) -> Option<String> {
         let mut p = match codex_dir {
             Some(p) => p.to_path_buf(),
@@ -2042,6 +2260,24 @@ persistence = "none"
     }
 
     #[test]
+    fn auto_upgrade_enabled_accepts_string_boolean() {
+        let cfg_true = r#"auto_upgrade_enabled = "true""#;
+        let parsed_true =
+            toml::from_str::<ConfigToml>(cfg_true).expect("string boolean should deserialize");
+        assert_eq!(parsed_true.auto_upgrade_enabled, Some(true));
+
+        let cfg_false = r#"auto_upgrade_enabled = "false""#;
+        let parsed_false =
+            toml::from_str::<ConfigToml>(cfg_false).expect("string boolean should deserialize");
+        assert_eq!(parsed_false.auto_upgrade_enabled, Some(false));
+
+        let cfg_bool = r#"auto_upgrade_enabled = true"#;
+        let parsed_bool =
+            toml::from_str::<ConfigToml>(cfg_bool).expect("boolean should deserialize");
+        assert_eq!(parsed_bool.auto_upgrade_enabled, Some(true));
+    }
+
+    #[test]
     fn tui_config_missing_notifications_field_defaults_to_disabled() {
         let cfg = r#"
 [tui]
@@ -2180,7 +2416,7 @@ exclude_slash_tmp = true
         tokio::fs::write(
             &config_path,
             r#"
-model = "gpt-5"
+model = "gpt-5-codex"
 model_reasoning_effort = "medium"
 
 [profiles.dev]
@@ -2255,7 +2491,7 @@ model = "gpt-4"
 model_reasoning_effort = "medium"
 
 [profiles.prod]
-model = "gpt-5"
+model = "gpt-5-codex"
 "#,
         )
         .await?;
@@ -2286,7 +2522,7 @@ model = "gpt-5"
                 .profiles
                 .get("prod")
                 .and_then(|profile| profile.model.as_deref()),
-            Some("gpt-5"),
+            Some("gpt-5-codex"),
         );
 
         Ok(())
@@ -2380,6 +2616,7 @@ model_verbosity = "high"
             stream_max_retries: Some(10),
             stream_idle_timeout_ms: Some(300_000),
             requires_openai_auth: false,
+            openrouter: None,
         };
         let model_provider_map = {
             let mut model_provider_map = built_in_model_providers();
@@ -2444,6 +2681,8 @@ model_verbosity = "high"
                 approval_policy: AskForApproval::Never,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 always_allow_commands: Vec::new(),
+                project_hooks: ProjectHooks::default(),
+                project_commands: Vec::new(),
                 shell_environment_policy: ShellEnvironmentPolicy::default(),
                 disable_response_storage: false,
                 auto_upgrade_enabled: false,
@@ -2451,6 +2690,7 @@ model_verbosity = "high"
                 notify: None,
                 cwd: fixture.cwd(),
                 mcp_servers: HashMap::new(),
+                experimental_client_tools: None,
                 model_providers: fixture.model_provider_map.clone(),
                 project_doc_max_bytes: PROJECT_DOC_MAX_BYTES,
                 codex_home: fixture.codex_home(),
@@ -2475,6 +2715,7 @@ model_verbosity = "high"
                 debug: false,
                 using_chatgpt_auth: false,
                 github: GithubConfig::default(),
+                validation: ValidationConfig::default(),
                 experimental_resume: None,
                 tui_notifications: Default::default(),
             },
@@ -2510,6 +2751,8 @@ model_verbosity = "high"
             approval_policy: AskForApproval::UnlessTrusted,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             always_allow_commands: Vec::new(),
+            project_hooks: ProjectHooks::default(),
+            project_commands: Vec::new(),
             shell_environment_policy: ShellEnvironmentPolicy::default(),
             disable_response_storage: false,
             auto_upgrade_enabled: false,
@@ -2517,6 +2760,7 @@ model_verbosity = "high"
             notify: None,
             cwd: fixture.cwd(),
             mcp_servers: HashMap::new(),
+            experimental_client_tools: None,
             model_providers: fixture.model_provider_map.clone(),
             project_doc_max_bytes: PROJECT_DOC_MAX_BYTES,
             codex_home: fixture.codex_home(),
@@ -2541,6 +2785,7 @@ model_verbosity = "high"
             debug: false,
             using_chatgpt_auth: false,
             github: GithubConfig::default(),
+            validation: ValidationConfig::default(),
             experimental_resume: None,
             tui_notifications: Default::default(),
         };
@@ -2591,6 +2836,8 @@ model_verbosity = "high"
             approval_policy: AskForApproval::OnFailure,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             always_allow_commands: Vec::new(),
+            project_hooks: ProjectHooks::default(),
+            project_commands: Vec::new(),
             shell_environment_policy: ShellEnvironmentPolicy::default(),
             disable_response_storage: true,
             auto_upgrade_enabled: false,
@@ -2598,6 +2845,7 @@ model_verbosity = "high"
             notify: None,
             cwd: fixture.cwd(),
             mcp_servers: HashMap::new(),
+            experimental_client_tools: None,
             model_providers: fixture.model_provider_map.clone(),
             project_doc_max_bytes: PROJECT_DOC_MAX_BYTES,
             codex_home: fixture.codex_home(),
@@ -2657,6 +2905,9 @@ model_verbosity = "high"
             active_profile: Some("gpt5".to_string()),
             approval_policy: AskForApproval::OnFailure,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            always_allow_commands: Vec::new(),
+            project_hooks: ProjectHooks::default(),
+            project_commands: Vec::new(),
             shell_environment_policy: ShellEnvironmentPolicy::default(),
             disable_response_storage: false,
             auto_upgrade_enabled: false,
@@ -2664,6 +2915,7 @@ model_verbosity = "high"
             notify: None,
             cwd: fixture.cwd(),
             mcp_servers: HashMap::new(),
+            experimental_client_tools: None,
             model_providers: fixture.model_provider_map.clone(),
             project_doc_max_bytes: PROJECT_DOC_MAX_BYTES,
             codex_home: fixture.codex_home(),

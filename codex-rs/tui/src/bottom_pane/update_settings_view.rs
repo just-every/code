@@ -1,17 +1,18 @@
 use std::sync::{Arc, Mutex};
 
+use super::BottomPane;
+use super::bottom_pane_view::BottomPaneView;
+use super::bottom_pane_view::ConditionalUpdate;
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::colors;
-use super::bottom_pane_view::BottomPaneView;
-use super::bottom_pane_view::ConditionalUpdate;
-use super::BottomPane;
+use crate::util::buffer::fill_rect;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap, Widget};
+use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Widget, Wrap};
 
 #[derive(Debug, Clone, Default)]
 pub struct UpdateSharedState {
@@ -107,7 +108,7 @@ impl UpdateSettingsView {
             display: display.clone(),
             latest_version: Some(latest.clone()),
         });
-        self.app_event_tx.send_background_event_late(format!(
+        self.app_event_tx.send_background_event(format!(
             "↻ Restart Code after `{}` completes to finish upgrading to {}.",
             display, latest
         ));
@@ -122,163 +123,119 @@ impl UpdateSettingsView {
             .clone();
 
         let mut lines: Vec<Line<'static>> = Vec::new();
-
-        // Header
-        lines.push(Line::from(Span::styled(
-            "Update",
+        lines.push(Line::from(vec![Span::styled(
+            "Upgrade",
             Style::default().add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::from(""));
+        )]));
 
-        // Run Upgrade row
         let run_selected = self.field == 0;
-        let indicator_style = if run_selected {
+        let run_style = if run_selected {
             Style::default().fg(colors::primary())
         } else {
             Style::default()
         };
-        let mut run_spans = vec![
-            Span::styled(if run_selected { "› " } else { "  " }, indicator_style),
-        ];
-        let run_enabled = self.command.is_some()
-            && state.error.is_none()
-            && !state.checking
-            && state.latest_version.is_some();
-        let base_style = if run_selected {
-            Style::default()
-                .fg(colors::primary())
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-        };
-        let disabled_style = Style::default().fg(colors::text_dim());
-        run_spans.push(Span::styled(
-            "Run Upgrade",
-            if run_enabled { base_style } else { disabled_style },
-        ));
-
-        if state.checking {
-            run_spans.push(Span::raw("  "));
-            run_spans.push(Span::styled(
-                "checking…",
-                Style::default().fg(colors::text_dim()),
-            ));
+        let version_summary = if state.checking {
+            "checking…".to_string()
         } else if let Some(err) = &state.error {
-            run_spans.push(Span::raw("  "));
-            run_spans.push(Span::styled(
-                err.clone(),
-                Style::default().fg(colors::error()),
-            ));
+            err.clone()
         } else if let Some(latest) = &state.latest_version {
-            run_spans.push(Span::raw("  "));
-            run_spans.push(Span::raw(format!(
-                "{} → {}",
-                self.current_version, latest
-            )));
+            format!("{} → {}", self.current_version, latest)
         } else {
-            run_spans.push(Span::raw("  "));
-            run_spans.push(Span::styled(
-                format!("Current version: {}", self.current_version),
-                Style::default().fg(colors::text_dim()),
-            ));
-        }
-        lines.push(Line::from(run_spans));
+            format!("{}", self.current_version)
+        };
 
-        if let Some(instructions) = &self.manual_instructions {
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![Span::styled(
-                instructions.clone(),
-                Style::default().fg(colors::text_dim()),
-            )]));
-        }
-
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "Automatic Upgrades",
-            Style::default().add_modifier(Modifier::BOLD),
-        )));
+        let run_prefix = if run_selected { "› " } else { "  " };
+        lines.push(Line::from(vec![
+            Span::styled(run_prefix, run_style),
+            Span::styled("Run Upgrade", run_style),
+            Span::raw("  "),
+            Span::styled(version_summary, Style::default().fg(colors::text_dim())),
+        ]));
 
         let toggle_selected = self.field == 1;
-        let toggle_indicator_style = if toggle_selected {
+        let toggle_prefix = if toggle_selected { "› " } else { "  " };
+        let toggle_label_style = if toggle_selected {
             Style::default().fg(colors::primary())
         } else {
             Style::default()
         };
-        let enabled_style = if self.auto_enabled {
-            Style::default().fg(colors::success()).add_modifier(Modifier::BOLD)
+        let enabled_box_style = if self.auto_enabled {
+            Style::default().fg(colors::success())
         } else {
             Style::default().fg(colors::text_dim())
         };
-        let disabled_style = if self.auto_enabled {
+        let disabled_box_style = if self.auto_enabled {
             Style::default().fg(colors::text_dim())
         } else {
-            Style::default().fg(colors::success()).add_modifier(Modifier::BOLD)
+            Style::default().fg(colors::error())
         };
         lines.push(Line::from(vec![
-            Span::styled(
-                if toggle_selected { "› " } else { "  " },
-                toggle_indicator_style,
-            ),
+            Span::styled(toggle_prefix, toggle_label_style),
+            Span::styled("Automatic Upgrades", toggle_label_style),
+            Span::raw("  "),
             Span::styled(
                 format!("[{}] Enabled", if self.auto_enabled { "x" } else { " " }),
-                enabled_style,
+                enabled_box_style,
             ),
-            Span::raw("   "),
+            Span::raw("  "),
             Span::styled(
                 format!("[{}] Disabled", if self.auto_enabled { " " } else { "x" }),
-                disabled_style,
+                disabled_box_style,
             ),
         ]));
+
+        let close_selected = self.field == 2;
+        let close_prefix = if close_selected { "› " } else { "  " };
+        let close_style = if close_selected {
+            Style::default().fg(colors::primary())
+        } else {
+            Style::default()
+        };
         lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled("Toggle with Enter/Space", Style::default().fg(colors::text_dim())),
+            Span::styled(close_prefix, close_style),
+            Span::styled("Close", close_style),
         ]));
 
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
+            Span::styled(" ↑↓", Style::default().fg(colors::function())),
+            Span::styled(" Navigate  ", Style::default().fg(colors::text_dim())),
             Span::styled("Enter", Style::default().fg(colors::success())),
-            Span::styled(" Run  ", Style::default().fg(colors::text_dim())),
-            Span::styled("Space", Style::default().fg(colors::success())),
-            Span::styled(" Toggle  ", Style::default().fg(colors::text_dim())),
+            Span::styled(" Configure  ", Style::default().fg(colors::text_dim())),
             Span::styled("Esc", Style::default().fg(colors::error())),
             Span::styled(" Close", Style::default().fg(colors::text_dim())),
         ]));
 
-        lines
-    }
+        // Colors for the enabled/disabled boxes already set; no extra lines needed.
 
-    fn can_run_upgrade(&self, state: &UpdateSharedState) -> bool {
-        self.command.is_some()
-            && state.error.is_none()
-            && !state.checking
-            && state.latest_version.is_some()
+        lines
     }
 }
 
 impl<'a> BottomPaneView<'a> for UpdateSettingsView {
     fn handle_key_event(&mut self, _pane: &mut BottomPane<'a>, key_event: KeyEvent) {
+        const FIELD_COUNT: usize = 3;
+
         match key_event.code {
             KeyCode::Esc => self.is_complete = true,
             KeyCode::Tab | KeyCode::Down => {
-                self.field = (self.field + 1) % 2;
+                self.field = (self.field + 1) % FIELD_COUNT;
             }
             KeyCode::BackTab | KeyCode::Up => {
                 if self.field == 0 {
-                    self.field = 1;
+                    self.field = FIELD_COUNT - 1;
                 } else {
-                    self.field = 0;
+                    self.field -= 1;
                 }
             }
             KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if self.field == 1 => {
                 self.toggle_auto();
             }
-            KeyCode::Enter => {
-                if self.field == 0 {
-                    self.invoke_run_upgrade();
-                } else {
-                    self.toggle_auto();
-                }
-            }
+            KeyCode::Enter => match self.field {
+                0 => self.invoke_run_upgrade(),
+                1 => self.toggle_auto(),
+                _ => self.is_complete = true,
+            },
             _ => {}
         }
         self.app_event_tx.send(AppEvent::RequestRedraw);
@@ -297,16 +254,21 @@ impl<'a> BottomPaneView<'a> for UpdateSettingsView {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(colors::border()))
-            .title(" Update ")
-            .title_alignment(Alignment::Center);
+            .padding(Padding::horizontal(1))
+            .title(" Upgrade ")
+            .title_alignment(Alignment::Center)
+            .style(Style::default().bg(colors::background()).fg(colors::text()));
         let inner = block.inner(area);
         block.render(area, buf);
 
         let lines = self.build_lines();
+        let bg_style = Style::default().bg(colors::background()).fg(colors::text());
+        fill_rect(buf, inner, Some(' '), bg_style);
+
         Paragraph::new(lines)
             .alignment(Alignment::Left)
-            .style(Style::default().bg(colors::background()).fg(colors::text()))
-            .wrap(Wrap { trim: true })
+            .style(bg_style)
+            .wrap(Wrap { trim: false })
             .render(inner, buf);
     }
 

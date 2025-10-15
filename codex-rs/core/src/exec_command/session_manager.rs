@@ -37,7 +37,7 @@ pub struct ExecCommandOutput {
 }
 
 impl ExecCommandOutput {
-    fn to_text_output(&self) -> String {
+    pub(crate) fn to_text_output(&self) -> String {
         let wall_time_secs = self.wall_time.as_secs_f32();
         let termination_status = match self.exit_status {
             ExitStatus::Exited(code) => format!("Process exited with code {code}"),

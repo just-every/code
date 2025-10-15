@@ -1,18 +1,20 @@
-## @just-every/code v0.2.155
+## @just-every/code v0.2.166
 
-This release includes small fixes and improvements across auth, TUI, and docs.
+This release tightens TUI ergonomics, trims command latency, and refreshes packaging defaults.
 
 ### Changes
-- Auth: fix onboarding auth prompt gating.
-- CLI: add long-run calculator script.
-- TUI: add pulldown-cmark dependency to fix build.
-- Docs: clarify config directories.
+
+- TUI/History: refresh the popular commands lineup so quick actions match current workflows.
+- TUI/Auto-upgrade: silence installer chatter and log completion once updates finish.
+- Core/Client: skip the web_search tool when reasoning is minimal to reduce latency.
+- TUI/Input: normalize legacy key press/release cases so hotkeys stay consistent on older terminals.
+- Nix: make codex-rs the default package and drop the broken codex-cli derivation.
 
 ### Install
+
 ```
 npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.2.154...v0.2.155
-
+Compare: https://github.com/just-every/code/compare/v0.2.165...v0.2.166

@@ -1,5 +1,6 @@
 # Config
 
+<!-- markdownlint-disable MD012 MD013 MD028 MD033 -->
 
 Codex supports several mechanisms for setting config values:
 
@@ -21,7 +22,7 @@ Both the `--config` flag and the `config.toml` file support the following option
 The model that Codex should use.
 
 ```toml
-model = "o3"  # overrides the default of "gpt-5"
+model = "o3"  # overrides the default of "gpt-5-codex"
 ```
 
 ## model_providers
@@ -132,7 +133,7 @@ How long Codex will wait for activity on a streaming response before treating th
 
 ## model_provider
 
-Identifies which provider to use from the `model_providers` map. Defaults to `"openai"`. You can override the `base_url` for the built-in `openai` provider via the `OPENAI_BASE_URL` environment variable.
+Identifies which provider to use from the `model_providers` map. Defaults to `"openai"`. You can override the `base_url` for the built-in `openai` provider via the `OPENAI_BASE_URL` environment variable and force the wire protocol (`"responses"` or `"chat"`) with `OPENAI_WIRE_API`.
 
 Note that if you override `model_provider`, then you likely want to override
 `model`, as well. For example, if you are running ollama with Mistral locally,
@@ -225,11 +226,11 @@ Users can specify config values at multiple levels. Order of precedence is as fo
 1. custom command-line argument, e.g., `--model o3`
 2. as part of a profile, where the `--profile` is specified via a CLI (or in the config file itself)
 3. as an entry in `config.toml`, e.g., `model = "o3"`
-4. the default value that comes with Codex CLI (i.e., Codex CLI defaults to `gpt-5`)
+4. the default value that comes with Codex CLI (i.e., Codex CLI defaults to `gpt-5-codex`)
 
 ## model_reasoning_effort
 
-If the selected model is known to support reasoning (for example: `o3`, `o4-mini`, `codex-*`, `gpt-5`), reasoning is enabled by default when using the Responses API. As explained in the [OpenAI Platform documentation](https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning), this can be set to:
+If the selected model is known to support reasoning (for example: `o3`, `o4-mini`, `codex-*`, `gpt-5`, `gpt-5-codex`), reasoning is enabled by default when using the Responses API. As explained in the [OpenAI Platform documentation](https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning), this can be set to:
 
 - `"minimal"`
 - `"low"`
@@ -347,7 +348,8 @@ Defines the list of MCP servers that Codex can consult for tool use. Currently, 
 
 **Note:** Codex may cache the list of tools and resources from an MCP server so that Codex can include this information in context at startup without spawning all the servers. This is designed to save resources by loading MCP servers lazily.
 
-Each server may set `startup_timeout_ms` to adjust how long Codex waits for it to start and respond to a tools listing. The default is `10_000` (10 seconds).
+Each server may set `startup_timeout_sec` to adjust how long Codex waits for it to start and respond to a tools listing. The default is `10` seconds.
+Similarly, `tool_timeout_sec` limits how long individual tool calls may run (default: `60` seconds), and Codex will fall back to the default when this value is omitted.
 
 This config option is comparable to how Claude and Cursor define `mcpServers` in their respective JSON config files, though because Codex uses TOML for its config language, the format is slightly different. For example, the following config in JSON:
 
@@ -374,7 +376,65 @@ command = "npx"
 args = ["-y", "mcp-server"]
 env = { "API_KEY" = "value" }
 # Optional: override the default 10s startup timeout
-startup_timeout_ms = 20_000
+startup_timeout_sec = 20
+# Optional: override the default 60s per-tool timeout
+tool_timeout_sec = 30
+```
+
+## validation
+
+Controls the quick validation harness that runs before applying patches. The
+harness now activates automatically whenever at least one validation group is
+enabled. Use `[validation.groups]` for high-level toggles and the nested
+`[validation.tools]` table for per-tool overrides:
+
+```toml
+[validation.groups]
+functional = true
+stylistic = false
+
+[validation.tools]
+shellcheck = true
+markdownlint = true
+hadolint = true
+yamllint = true
+cargo-check = true
+tsc = true
+eslint = true
+mypy = true
+pyright = true
+phpstan = true
+psalm = true
+golangci-lint = true
+shfmt = true
+prettier = true
+```
+
+Functional checks stay enabled by default to catch regressions in the touched
+code, while stylistic linters default to off so teams can opt in when they want
+formatting feedback.
+
+With functional checks enabled, Codex automatically detects the languages
+affected by a patch and schedules the appropriate tools:
+
+- `cargo-check` for Rust workspaces (scoped to touched manifests)
+- `tsc --noEmit` and `eslint --max-warnings=0` for TypeScript/JavaScript files
+- `mypy` and `pyright` for Python modules
+- `phpstan`/`psalm` for PHP projects with matching config or Composer entries
+- `golangci-lint run ./...` for Go modules alongside the existing JSON/TOML/YAML
+  syntax checks
+
+Each entry under `[validation.tools]` can be toggled to disable a specific tool
+or to opt particular checks back in after disabling the entire group.
+
+When enabled, Codex can also run `actionlint` against modified workflows. This
+is configured under `[github]`:
+
+```toml
+[github]
+actionlint_on_patch = true
+# Optional: provide an explicit binary path
+actionlint_path = "/usr/local/bin/actionlint"
 ```
 
 ## disable_response_storage
@@ -614,11 +674,74 @@ notifications = [ "agent-turn-complete", "approval-requested" ]
 > [!NOTE]
 > `tui.notifications` is built‑in and limited to the TUI session. For programmatic or cross‑environment notifications—or to integrate with OS‑specific notifiers—use the top‑level `notify` option to run an external program that receives event JSON. The two settings are independent and can be used together.
 
+## Project Hooks
+
+Use the `[projects]` table to scope settings to a specific workspace path. In addition to `trust_level`, `approval_policy`, and `always_allow_commands`, you can attach lifecycle hooks that run commands automatically when notable events occur.
+
+```toml
+[projects."/Users/me/src/my-app"]
+trust_level = "trusted"
+
+[[projects."/Users/me/src/my-app".hooks]]
+name = "bootstrap"
+event = "session.start"
+run = ["./scripts/bootstrap.sh"]
+timeout_ms = 60000
+
+[[projects."/Users/me/src/my-app".hooks]]
+event = "tool.after"
+run = "npm run lint -- --changed"
+```
+
+Supported hook events:
+
+- `session.start`: after the session is configured (once per launch)
+- `session.end`: before shutdown completes
+- `tool.before`: immediately before each exec/tool command runs
+- `tool.after`: once an exec/tool command finishes (regardless of exit code)
+- `file.before_write`: right before an `apply_patch` is applied
+- `file.after_write`: after an `apply_patch` completes and diffs are emitted
+
+Hook commands run inside the same sandbox mode as the session and appear in the TUI as their own exec cells. Failures are surfaced as background events but do not block the main task. Each invocation receives environment variables such as `CODE_HOOK_EVENT`, `CODE_HOOK_NAME`, `CODE_HOOK_INDEX`, `CODE_HOOK_CALL_ID`, `CODE_HOOK_PAYLOAD` (JSON describing the context), `CODE_SESSION_CWD`, and—when applicable—`CODE_HOOK_SOURCE_CALL_ID`. Hooks may also set `cwd`, provide additional `env` entries, and specify `timeout_ms`.
+
+Example `tool.after` payload:
+
+```json
+{
+  "event": "tool.after",
+  "call_id": "tool_12",
+  "cwd": "/Users/me/src/my-app",
+  "command": ["npm", "test"],
+  "exit_code": 1,
+  "duration_ms": 1832,
+  "stdout": "…output truncated…",
+  "stderr": "…",
+  "timed_out": false
+}
+```
+
+## Project Commands
+
+Define project-scoped commands under `[[projects."<path>".commands]]`. Each command needs a unique `name` and either an array (`command`) or string (`run`) describing how to invoke it. Optional fields include `description`, `cwd`, `env`, and `timeout_ms`.
+
+```toml
+[[projects."/Users/me/src/my-app".commands]]
+name = "setup"
+description = "Install dependencies"
+run = ["pnpm", "install"]
+
+[[projects."/Users/me/src/my-app".commands]]
+name = "unit"
+run = "cargo test --lib"
+```
+
+Project commands appear in the TUI via `/cmd <name>` and run through the standard execution pipeline. During execution Codex sets `CODE_PROJECT_COMMAND_NAME`, `CODE_PROJECT_COMMAND_DESCRIPTION` (when provided), and `CODE_SESSION_CWD` so scripts can tailor their behaviour.
+
 ## Config reference
 
 | Key | Type / Values | Notes |
 | --- | --- | --- |
-| `model` | string | Model to use (e.g., `gpt-5`). |
+| `model` | string | Model to use (e.g., `gpt-5-codex`). |
 | `model_provider` | string | Provider id from `model_providers` (default: `openai`). |
 | `model_context_window` | number | Context window tokens. |
 | `model_max_output_tokens` | number | Max output tokens. |
@@ -634,7 +757,8 @@ notifications = [ "agent-turn-complete", "approval-requested" ]
 | `mcp_servers.<id>.command` | string | MCP server launcher command. |
 | `mcp_servers.<id>.args` | array<string> | MCP server args. |
 | `mcp_servers.<id>.env` | map<string,string> | MCP server env vars. |
-| `mcp_servers.<id>.startup_timeout_ms` | number | Startup timeout in milliseconds (default: 10_000). Timeout is applied both for initializing MCP server and initially listing tools. |
+| `mcp_servers.<id>.startup_timeout_sec` | number | Startup timeout in seconds (default: 10). Timeout is applied both for initializing MCP server and initially listing tools. |
+| `mcp_servers.<id>.tool_timeout_sec` | number | Per-tool timeout in seconds (default: 60). Accepts fractional values; omit to use the default. |
 | `model_providers.<id>.name` | string | Display name. |
 | `model_providers.<id>.base_url` | string | API base URL. |
 | `model_providers.<id>.env_key` | string | Env var for API key. |
@@ -646,6 +770,9 @@ notifications = [ "agent-turn-complete", "approval-requested" ]
 | `model_providers.<id>.stream_max_retries` | number | SSE stream retry count (default: 5). |
 | `model_providers.<id>.stream_idle_timeout_ms` | number | SSE idle timeout (ms) (default: 300000). |
 | `project_doc_max_bytes` | number | Max bytes to read from `AGENTS.md`. |
+| `projects.<path>.trust_level` | string | Mark project/worktree as trusted (only `"trusted"` is recognized). |
+| `projects.<path>.hooks` | array<table> | Lifecycle hooks for that workspace (see "Project Hooks"). |
+| `projects.<path>.commands` | array<table> | Project commands exposed via `/cmd`. |
 | `profile` | string | Active profile name. |
 | `profiles.<name>.*` | various | Profile‑scoped overrides of the same keys. |
 | `history.persistence` | `save-all` \| `none` | History file persistence (default: `save-all`). |
@@ -665,6 +792,7 @@ notifications = [ "agent-turn-complete", "approval-requested" ]
 | `experimental_use_exec_command_tool` | boolean | Use experimental exec command tool. |
 | `use_experimental_reasoning_summary` | boolean | Use experimental summary for reasoning chain. |
 | `responses_originator_header_internal_override` | string | Override `originator` header value. |
-| `projects.<path>.trust_level` | string | Mark project/worktree as trusted (only `"trusted"` is recognized). |
 | `tools.web_search` | boolean | Enable web search tool (alias: `web_search_request`) (default: false). |
 | `tools.web_search_allowed_domains` | array<string> | Optional allow-list for web search (filters.allowed_domains). |
+
+<!-- markdownlint-enable MD012 MD013 MD028 MD033 -->

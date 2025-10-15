@@ -8,8 +8,8 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 
-use super::bottom_pane_view::BottomPaneView;
 use super::BottomPane;
+use super::bottom_pane_view::BottomPaneView;
 
 #[derive(Clone, Debug)]
 pub(crate) struct McpServerRow {
@@ -29,17 +29,27 @@ pub(crate) struct McpSettingsView {
 
 impl McpSettingsView {
     pub fn new(rows: McpServerRows, app_event_tx: AppEventSender) -> Self {
-        Self { rows, selected: 0, is_complete: false, app_event_tx }
+        Self {
+            rows,
+            selected: 0,
+            is_complete: false,
+            app_event_tx,
+        }
     }
 
-    fn len(&self) -> usize { self.rows.len().saturating_add(2) /* + Add, + Close */ }
+    fn len(&self) -> usize {
+        self.rows.len().saturating_add(2) /* + Add, + Close */
+    }
 
     fn on_toggle(&mut self) {
         if self.selected < self.rows.len() {
             let row = &mut self.rows[self.selected];
             let new_enabled = !row.enabled;
             row.enabled = new_enabled;
-            self.app_event_tx.send(AppEvent::UpdateMcpServer { name: row.name.clone(), enable: new_enabled });
+            self.app_event_tx.send(AppEvent::UpdateMcpServer {
+                name: row.name.clone(),
+                enable: new_enabled,
+            });
         }
     }
 
@@ -48,10 +58,13 @@ impl McpSettingsView {
             idx if idx < self.rows.len() => self.on_toggle(),
             idx if idx == self.rows.len() => {
                 // Add New… row
-                self.app_event_tx.send(AppEvent::PrefillComposer("/mcp add ".to_string()));
+                self.app_event_tx
+                    .send(AppEvent::PrefillComposer("/mcp add ".to_string()));
                 self.is_complete = true;
             }
-            _ => { self.is_complete = true; }
+            _ => {
+                self.is_complete = true;
+            }
         }
     }
 }
@@ -59,31 +72,63 @@ impl McpSettingsView {
 impl<'a> BottomPaneView<'a> for McpSettingsView {
     fn handle_key_event(&mut self, _pane: &mut BottomPane<'a>, key_event: KeyEvent) {
         match key_event {
-            KeyEvent { code: KeyCode::Up, .. } => {
-                if self.selected == 0 { self.selected = self.len().saturating_sub(1); } else { self.selected -= 1; }
+            KeyEvent {
+                code: KeyCode::Up, ..
+            } => {
+                if self.selected == 0 {
+                    self.selected = self.len().saturating_sub(1);
+                } else {
+                    self.selected -= 1;
+                }
             }
-            KeyEvent { code: KeyCode::Down, .. } => {
+            KeyEvent {
+                code: KeyCode::Down,
+                ..
+            } => {
                 self.selected = (self.selected + 1) % self.len().max(1);
             }
-            KeyEvent { code: KeyCode::Left | KeyCode::Right, .. } | KeyEvent { code: KeyCode::Char(' '), modifiers: KeyModifiers::NONE, .. } => {
+            KeyEvent {
+                code: KeyCode::Left | KeyCode::Right,
+                ..
+            }
+            | KeyEvent {
+                code: KeyCode::Char(' '),
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => {
                 self.on_toggle();
             }
-            KeyEvent { code: KeyCode::Enter, .. } => self.on_enter(),
-            KeyEvent { code: KeyCode::Esc, .. } => { self.is_complete = true; }
+            KeyEvent {
+                code: KeyCode::Enter,
+                ..
+            } => self.on_enter(),
+            KeyEvent {
+                code: KeyCode::Esc, ..
+            } => {
+                self.is_complete = true;
+            }
             _ => {}
         }
     }
 
-    fn is_complete(&self) -> bool { self.is_complete }
+    fn is_complete(&self) -> bool {
+        self.is_complete
+    }
 
-    fn desired_height(&self, _width: u16) -> u16 { 16 }
+    fn desired_height(&self, _width: u16) -> u16 {
+        16
+    }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
         Clear.render(area, buf);
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(crate::colors::border()))
-            .style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()))
+            .style(
+                Style::default()
+                    .bg(crate::colors::background())
+                    .fg(crate::colors::text()),
+            )
             .title(" MCP Servers ")
             .title_alignment(Alignment::Center);
         let inner = block.inner(area);
@@ -91,7 +136,10 @@ impl<'a> BottomPaneView<'a> for McpSettingsView {
 
         let mut lines: Vec<Line<'static>> = Vec::new();
         if self.rows.is_empty() {
-            lines.push(Line::from(vec![Span::styled("No MCP servers configured.", Style::default().fg(crate::colors::text_dim()))]));
+            lines.push(Line::from(vec![Span::styled(
+                "No MCP servers configured.",
+                Style::default().fg(crate::colors::text_dim()),
+            )]));
             lines.push(Line::from(""));
         }
 
@@ -99,13 +147,25 @@ impl<'a> BottomPaneView<'a> for McpSettingsView {
             let sel = i == self.selected;
             let check = if row.enabled { "[on ]" } else { "[off]" };
             let name = format!("{} {}", check, row.name);
-            let name_style = if sel { Style::default().bg(crate::colors::selection()).add_modifier(Modifier::BOLD) } else { Style::default() };
+            let name_style = if sel {
+                Style::default()
+                    .bg(crate::colors::selection())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
             lines.push(Line::from(vec![
                 Span::styled(if sel { "› " } else { "  " }, Style::default()),
                 Span::styled(name, name_style),
             ]));
             // Summary line
-            let sum_style = if sel { Style::default().bg(crate::colors::selection()).fg(crate::colors::secondary()) } else { Style::default().fg(crate::colors::text_dim()) };
+            let sum_style = if sel {
+                Style::default()
+                    .bg(crate::colors::selection())
+                    .fg(crate::colors::secondary())
+            } else {
+                Style::default().fg(crate::colors::text_dim())
+            };
             lines.push(Line::from(vec![
                 Span::styled("   ", Style::default()),
                 Span::styled(row.summary.clone(), sum_style),
@@ -114,28 +174,62 @@ impl<'a> BottomPaneView<'a> for McpSettingsView {
 
         // Add New…
         let add_sel = self.selected == self.rows.len();
-        let add_style = if add_sel { Style::default().bg(crate::colors::selection()).add_modifier(Modifier::BOLD) } else { Style::default() };
+        let add_style = if add_sel {
+            Style::default()
+                .bg(crate::colors::selection())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
         lines.push(Line::from(""));
-        lines.push(Line::from(vec![Span::styled(if add_sel { "› " } else { "  " }, Style::default()), Span::styled("Add new server…", add_style)]));
+        lines.push(Line::from(vec![
+            Span::styled(if add_sel { "› " } else { "  " }, Style::default()),
+            Span::styled("Add new server…", add_style),
+        ]));
 
         // Close
         let close_sel = self.selected == self.rows.len().saturating_add(1);
-        let close_style = if close_sel { Style::default().bg(crate::colors::selection()).add_modifier(Modifier::BOLD) } else { Style::default() };
-        lines.push(Line::from(vec![Span::styled(if close_sel { "› " } else { "  " }, Style::default()), Span::styled("Close", close_style)]));
+        let close_style = if close_sel {
+            Style::default()
+                .bg(crate::colors::selection())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(if close_sel { "› " } else { "  " }, Style::default()),
+            Span::styled("Close", close_style),
+        ]));
 
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::styled("↑↓/←→", Style::default().fg(crate::colors::function())),
-            Span::styled(" Navigate/Toggle  ", Style::default().fg(crate::colors::text_dim())),
+            Span::styled(
+                " Navigate/Toggle  ",
+                Style::default().fg(crate::colors::text_dim()),
+            ),
             Span::styled("Enter", Style::default().fg(crate::colors::success())),
-            Span::styled(" Toggle/Open  ", Style::default().fg(crate::colors::text_dim())),
+            Span::styled(
+                " Toggle/Open  ",
+                Style::default().fg(crate::colors::text_dim()),
+            ),
             Span::styled("Esc", Style::default().fg(crate::colors::error())),
             Span::styled(" Close", Style::default().fg(crate::colors::text_dim())),
         ]));
 
-        let paragraph = Paragraph::new(lines)
-            .alignment(Alignment::Left)
-            .style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()));
-        paragraph.render(Rect { x: inner.x.saturating_add(1), y: inner.y, width: inner.width.saturating_sub(2), height: inner.height }, buf);
+        let paragraph = Paragraph::new(lines).alignment(Alignment::Left).style(
+            Style::default()
+                .bg(crate::colors::background())
+                .fg(crate::colors::text()),
+        );
+        paragraph.render(
+            Rect {
+                x: inner.x.saturating_add(1),
+                y: inner.y,
+                width: inner.width.saturating_sub(2),
+                height: inner.height,
+            },
+            buf,
+        );
     }
 }

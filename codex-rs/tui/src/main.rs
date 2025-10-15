@@ -17,6 +17,7 @@ fn main() -> anyhow::Result<()> {
     arg0_dispatch_or_else(|codex_linux_sandbox_exe| async move {
         let top_cli = TopCli::parse();
         let mut inner = top_cli.inner;
+        inner.finalize_defaults();
         inner
             .config_overrides
             .raw_overrides

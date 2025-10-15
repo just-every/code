@@ -1,0 +1,13 @@
+{
+  "name": "git_status",
+  "command": "uvx",
+  "args": [
+    "mcp-server-git",
+    "--repository",
+    "/home/thetu/code"
+  ],
+  "env": {
+    "GIT_PAGER": "cat"
+  },
+  "startup_timeout_ms": null
+}

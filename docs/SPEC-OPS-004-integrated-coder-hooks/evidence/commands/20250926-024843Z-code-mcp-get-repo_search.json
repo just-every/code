@@ -1,0 +1,9 @@
+{
+  "name": "repo_search",
+  "command": "uvx",
+  "args": [
+    "awslabs.git-repo-research-mcp-server@latest"
+  ],
+  "env": null,
+  "startup_timeout_ms": null
+}

@@ -1,6 +1,6 @@
 use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
 use ratatui::layout::Margin;
+use ratatui::layout::Rect;
 use ratatui::widgets::WidgetRef;
 
 use super::popup_consts::MAX_POPUP_ROWS;
@@ -36,7 +36,7 @@ impl CommandPopup {
     pub(crate) fn new() -> Self {
         Self::new_with_filter(false)
     }
-    
+
     pub(crate) fn new_with_filter(hide_verbosity: bool) -> Self {
         let mut commands = built_in_slash_commands();
         if hide_verbosity {
@@ -232,10 +232,7 @@ impl WidgetRef for CommandPopup {
                             format!("/{}", cmd.command()),
                             Some(cmd.description().to_string()),
                         ),
-                        CommandItem::UserPrompt(i) => (
-                            format!("/{}", self.prompts[i].name),
-                            None,
-                        ),
+                        CommandItem::UserPrompt(i) => (format!("/{}", self.prompts[i].name), None),
                         CommandItem::Subagent(i) => (
                             format!("/{}", self.subagents[i]),
                             Some("custom subagent".to_string()),
@@ -243,8 +240,7 @@ impl WidgetRef for CommandPopup {
                     };
                     GenericDisplayRow {
                         name,
-                        match_indices: indices
-                            .map(|v| v.into_iter().map(|i| i + 1).collect()),
+                        match_indices: indices.map(|v| v.into_iter().map(|i| i + 1).collect()),
                         is_current: false,
                         description: desc,
                         // Slash command names should use theme primary color
@@ -267,6 +263,7 @@ impl WidgetRef for CommandPopup {
 #[cfg(all(test, feature = "legacy_tests"))]
 mod tests {
     use super::*;
+    use std::string::ToString;
 
     #[test]
     fn filter_includes_init_when_typing_prefix() {
@@ -322,7 +319,7 @@ mod tests {
         let mut prompt_names: Vec<String> = items
             .into_iter()
             .filter_map(|it| match it {
-                CommandItem::UserPrompt(i) => popup.prompt_name(i).map(|s| s.to_string()),
+                CommandItem::UserPrompt(i) => popup.prompt_name(i).map(ToString::to_string),
                 _ => None,
             })
             .collect();

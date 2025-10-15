@@ -1,0 +1,43 @@
+{
+  "capabilities": {
+    "core": {
+      "enabled": true,
+      "reason": "All core services operational"
+    },
+    "discovery": {
+      "enabled": true,
+      "reason": "Indexers (HDBits+BTN) connected"
+    },
+    "download": {
+      "enabled": true,
+      "reason": "qBittorrent connected"
+    },
+    "learning": {
+      "enabled": true,
+      "reason": "Reputation service enabled"
+    }
+  },
+  "configuration": {
+    "cors": {
+      "ready": true,
+      "reason": "CORS configured for known origins"
+    },
+    "introspection": {
+      "ready": true,
+      "reason": "Available in development"
+    },
+    "rate_limits": {
+      "ready": true,
+      "reason": "GraphQL rate limiting active"
+    },
+    "request_size": {
+      "ready": true,
+      "reason": "Size limits configured (16777216 bytes)"
+    }
+  },
+  "service": "radarr-mvp",
+  "status": "healthy",
+  "timestamp": "2025-09-29T14:54:36.987478425+00:00",
+  "uptime": 1759157676,
+  "version": "1.0.0"
+}

@@ -134,7 +134,8 @@ impl HeightManager {
         let status_h = if status_enabled { 3u16 } else { 0u16 };
 
         // Cap the bottom pane to a percentage of screen height, with a minimum of 5 rows.
-        let percent_cap: u16 = ((area.height as u32).saturating_mul(self.cfg.bottom_percent_cap as u32) / 100) as u16;
+        let percent_cap: u16 =
+            ((area.height as u32).saturating_mul(self.cfg.bottom_percent_cap as u32) / 100) as u16;
         let bottom_cap = percent_cap.max(5);
         let desired = bottom_desired_height.max(5).min(bottom_cap);
 
@@ -154,7 +155,8 @@ impl HeightManager {
                             self.bottom_small_change_count = 0;
                             desired
                         } else {
-                            self.bottom_small_change_count = self.bottom_small_change_count.saturating_add(1);
+                            self.bottom_small_change_count =
+                                self.bottom_small_change_count.saturating_add(1);
                             prev
                         }
                     } else {
@@ -172,16 +174,26 @@ impl HeightManager {
         };
         self.last_bottom = Some(bottom_h);
         // Clear bypass after use
-        if self.bypass_once { self.bypass_once = false; }
+        if self.bypass_once {
+            self.bypass_once = false;
+        }
 
         // Determine HUD height if present.
         let mut hud_h: u16;
         if hud_present {
+            let override_target = hud_target_override.is_some();
             // Use caller-provided target when available; otherwise fall back to
             // an aspect-based estimate similar to the older preview logic.
-            let mut target = if let Some(t) = hud_target_override { t } else {
+            let mut target = if let Some(t) = hud_target_override {
+                t
+            } else {
                 // Compute HUD target height using 16:9 aspect on full inner width.
-                let padded_area = Rect { x: area.x + 1, y: area.y, width: area.width.saturating_sub(2), height: area.height };
+                let padded_area = Rect {
+                    x: area.x + 1,
+                    y: area.y,
+                    width: area.width.saturating_sub(2),
+                    height: area.height,
+                };
                 let inner_cols = padded_area.width.saturating_sub(2);
                 let (cw, ch) = font_cell;
                 let number = (inner_cols as u32) * 3 * (cw as u32);
@@ -195,12 +207,21 @@ impl HeightManager {
                 .saturating_sub(status_h)
                 .saturating_sub(bottom_h)
                 .saturating_sub(1);
-            target = target.min(vertical_budget);
-            target = target.clamp(4, vertical_budget.max(4));
+            let min_height = if override_target { 3 } else { 4 };
+            if vertical_budget < min_height {
+                target = vertical_budget;
+            } else {
+                target = target.clamp(min_height, vertical_budget);
+            }
 
-            // Quantize to configured row quantum.
-            let q = self.cfg.hud_quantum.max(1);
-            let quantized = (target / q) * q; // floor to bucket
+            let quantized = if override_target {
+                target
+            } else {
+                // Quantize to configured row quantum.
+                let q = self.cfg.hud_quantum.max(1);
+                let floored = (target / q) * q;
+                if floored == 0 { q } else { floored }
+            };
 
             // Require consecutive-frame confirmation for HUD changes unless bypassed.
             hud_h = self.apply_hud_confirmation(quantized);

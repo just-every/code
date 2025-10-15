@@ -2,8 +2,8 @@ use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
 
-use codex_core::config::resolve_codex_path_for_read;
 use codex_core::CODEX_APPLY_PATCH_ARG1;
+use codex_core::config::resolve_codex_path_for_read;
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 use tempfile::TempDir;
@@ -56,7 +56,7 @@ where
 
     let argv1 = args.next().unwrap_or_default();
     if argv1 == CODEX_APPLY_PATCH_ARG1 {
-        let patch_arg = args.next().and_then(|s| s.to_str().map(|s| s.to_owned()));
+        let patch_arg = args.next().and_then(|s| s.to_str().map(str::to_owned));
         let exit_code = match patch_arg {
             Some(patch_arg) => {
                 let mut stdout = std::io::stdout();
@@ -130,9 +130,13 @@ fn load_dotenv() {
         for (key, value) in iter.into_iter().flatten() {
             let upper = key.to_ascii_uppercase();
             // Never allow CODEX_* to be set from .env files for safety.
-            if upper.starts_with(ILLEGAL_ENV_VAR_PREFIX) { continue; }
+            if upper.starts_with(ILLEGAL_ENV_VAR_PREFIX) {
+                continue;
+            }
             // Always ignore provider keys from project .env (must be set globally or in shell).
-            if upper == "OPENAI_API_KEY" || upper == "AZURE_OPENAI_API_KEY" { continue; }
+            if upper == "OPENAI_API_KEY" || upper == "AZURE_OPENAI_API_KEY" {
+                continue;
+            }
             // Safe: still single-threaded during startup.
             unsafe { std::env::set_var(&key, &value) };
         }

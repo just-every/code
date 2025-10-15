@@ -3,12 +3,16 @@
 // Note this file should generally be restricted to simple struct/enum
 // definitions that do not contain business logic.
 
+use schemars::JsonSchema;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use wildmatch::WildMatchPattern;
 
+use shlex::split as shlex_split;
+
 use serde::Deserialize;
 use serde::Serialize;
+use serde::de::{self, Deserializer};
 use strum_macros::Display;
 
 /// Configuration for commands that require an explicit `confirm:` prefix.
@@ -22,7 +26,9 @@ pub struct ConfirmGuardConfig {
 
 impl Default for ConfirmGuardConfig {
     fn default() -> Self {
-        Self { patterns: default_confirm_guard_patterns() }
+        Self {
+            patterns: default_confirm_guard_patterns(),
+        }
     }
 }
 
@@ -82,6 +88,14 @@ fn default_confirm_guard_patterns() -> Vec<ConfirmGuardPattern> {
             message: Some("Blocked rm -f/-r combination targeting broad paths. Confirm before running.".to_string()),
         },
         ConfirmGuardPattern {
+            regex: r"(?i)^\s*(?:sudo\s+)?rm\b[^\n]*\s+-[a-z-]*rf[a-z-]*\b".to_string(),
+            message: Some("Blocked rm -rf. Force-recursive delete requires explicit confirmation.".to_string()),
+        },
+        ConfirmGuardPattern {
+            regex: r"(?i)^\s*(?:sudo\s+)?rm\b[^\n]*\s+-[-0-9a-qs-z]*f[-0-9a-qs-z]*\b".to_string(),
+            message: Some("Blocked rm -f. Force delete requires explicit confirmation.".to_string()),
+        },
+        ConfirmGuardPattern {
             regex: r"(?i)^\s*(?:sudo\s+)?find\s+\.(?:\s|$).*\s-delete\b".to_string(),
             message: Some("Blocked find . ... -delete. Recursive deletes require confirmation.".to_string()),
         },
@@ -108,7 +122,9 @@ pub enum AllowedCommandMatchKind {
 }
 
 impl Default for AllowedCommandMatchKind {
-    fn default() -> Self { Self::Exact }
+    fn default() -> Self {
+        Self::Exact
+    }
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -152,6 +168,26 @@ pub struct SubagentCommandConfig {
 pub struct SubagentsToml {
     #[serde(default)]
     pub commands: Vec<SubagentCommandConfig>,
+}
+
+/// MCP tool identifiers that the client exposes to the agent.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientTools {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_permission: Option<McpToolId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write_text_file: Option<McpToolId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_text_file: Option<McpToolId>,
+}
+
+/// Identifier for a client-hosted MCP tool.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolId {
+    pub mcp_server: String,
+    pub tool_name: String,
 }
 
 /// Configuration for external agent models
@@ -217,6 +253,123 @@ pub struct GithubConfig {
     /// `[github]` with `check_workflows_on_push = false`.
     #[serde(default = "default_true")]
     pub check_workflows_on_push: bool,
+
+    /// When true, run `actionlint` on modified workflows during apply_patch.
+    #[serde(default)]
+    pub actionlint_on_patch: bool,
+
+    /// Optional explicit executable path for actionlint.
+    #[serde(default)]
+    pub actionlint_path: Option<PathBuf>,
+
+    /// Treat actionlint findings as blocking when composing approval text.
+    #[serde(default)]
+    pub actionlint_strict: bool,
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq)]
+pub struct ValidationConfig {
+    /// Legacy master toggle for the validation harness (kept for config compatibility).
+    /// `run_patch_harness` now relies solely on the functional/stylistic group toggles.
+    #[serde(default)]
+    pub patch_harness: bool,
+
+    /// Optional allowlist restricting which external tools may run.
+    #[serde(default)]
+    pub tools_allowlist: Option<Vec<String>>,
+
+    /// Timeout (seconds) for each external tool invocation.
+    #[serde(default)]
+    pub timeout_seconds: Option<u64>,
+
+    /// Group toggles that control which classes of validation run.
+    #[serde(default)]
+    pub groups: ValidationGroups,
+
+    /// Per-tool enable flags (unset implies enabled).
+    #[serde(default)]
+    pub tools: ValidationTools,
+}
+
+impl Default for ValidationConfig {
+    fn default() -> Self {
+        Self {
+            patch_harness: false,
+            tools_allowlist: None,
+            timeout_seconds: None,
+            groups: ValidationGroups::default(),
+            tools: ValidationTools::default(),
+        }
+    }
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq)]
+pub struct ValidationGroups {
+    /// Functional checks catch correctness regressions.
+    #[serde(default = "default_true")]
+    pub functional: bool,
+
+    /// Stylistic checks enforce formatting and best practices.
+    #[serde(default)]
+    pub stylistic: bool,
+}
+
+impl Default for ValidationGroups {
+    fn default() -> Self {
+        Self {
+            functional: false,
+            stylistic: false,
+        }
+    }
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct ValidationTools {
+    pub shellcheck: Option<bool>,
+    pub markdownlint: Option<bool>,
+    pub hadolint: Option<bool>,
+    pub yamllint: Option<bool>,
+    #[serde(rename = "cargo-check")]
+    pub cargo_check: Option<bool>,
+    pub shfmt: Option<bool>,
+    pub prettier: Option<bool>,
+    #[serde(rename = "tsc")]
+    pub tsc: Option<bool>,
+    pub eslint: Option<bool>,
+    pub phpstan: Option<bool>,
+    pub psalm: Option<bool>,
+    pub mypy: Option<bool>,
+    pub pyright: Option<bool>,
+    #[serde(rename = "golangci-lint")]
+    pub golangci_lint: Option<bool>,
+}
+
+/// Category groupings for validation checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationCategory {
+    Functional,
+    Stylistic,
+}
+
+impl ValidationCategory {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ValidationCategory::Functional => "functional",
+            ValidationCategory::Stylistic => "stylistic",
+        }
+    }
+}
+
+/// Map a validation tool name to its category grouping.
+pub fn validation_tool_category(name: &str) -> ValidationCategory {
+    match name {
+        "actionlint" | "shellcheck" | "cargo-check" | "tsc" | "eslint" | "phpstan" | "psalm"
+        | "mypy" | "pyright" | "golangci-lint" => ValidationCategory::Functional,
+        "markdownlint" | "hadolint" | "yamllint" | "shfmt" | "prettier" => {
+            ValidationCategory::Stylistic
+        }
+        _ => ValidationCategory::Stylistic,
+    }
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq)]
@@ -303,11 +456,32 @@ impl Default for Notifications {
 }
 
 /// Collection of settings that are specific to the TUI.
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+pub struct CachedTerminalBackground {
+    pub is_dark: bool,
+    #[serde(default)]
+    pub term: Option<String>,
+    #[serde(default)]
+    pub term_program: Option<String>,
+    #[serde(default)]
+    pub term_program_version: Option<String>,
+    #[serde(default)]
+    pub colorfgbg: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub rgb: Option<String>,
+}
+
 #[derive(Deserialize, Debug, Clone, PartialEq)]
 pub struct Tui {
     /// Theme configuration for the TUI
     #[serde(default)]
     pub theme: ThemeConfig,
+
+    /// Cached autodetect result so we can skip probing the terminal repeatedly.
+    #[serde(default)]
+    pub cached_terminal_background: Option<CachedTerminalBackground>,
 
     /// Syntax highlighting configuration (Markdown fenced code blocks)
     #[serde(default)]
@@ -347,6 +521,7 @@ impl Default for Tui {
     fn default() -> Self {
         Self {
             theme: ThemeConfig::default(),
+            cached_terminal_background: None,
             highlight: HighlightConfig::default(),
             show_reasoning: false,
             stream: StreamConfig::default(),
@@ -462,18 +637,23 @@ pub struct SpinnerSelection {
     /// Name of the spinner to use. Accepts one of the names from
     /// sindresorhus/cli-spinners (kebab-case), or custom names supported
     /// by Codex. Defaults to "diamond".
-    #[serde(default = "default_spinner_name")] 
+    #[serde(default = "default_spinner_name")]
     pub name: String,
     /// Custom spinner definitions saved by the user
     #[serde(default)]
     pub custom: std::collections::HashMap<String, CustomSpinner>,
 }
 
-fn default_spinner_name() -> String { "diamond".to_string() }
+fn default_spinner_name() -> String {
+    "diamond".to_string()
+}
 
 impl Default for SpinnerSelection {
     fn default() -> Self {
-        Self { name: default_spinner_name(), custom: Default::default() }
+        Self {
+            name: default_spinner_name(),
+            custom: Default::default(),
+        }
     }
 }
 
@@ -629,7 +809,9 @@ pub struct SandboxWorkspaceWrite {
 }
 
 // Serde helper: default to true for `allow_git_writes` when omitted.
-pub(crate) const fn default_true_bool() -> bool { true }
+pub(crate) const fn default_true_bool() -> bool {
+    true
+}
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "kebab-case")]
@@ -769,6 +951,104 @@ pub enum TextVerbosity {
     #[default]
     Medium,
     High,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum CommandField {
+    List(Vec<String>),
+    String(String),
+}
+
+fn deserialize_command_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = CommandField::deserialize(deserializer)?;
+    match value {
+        CommandField::List(items) => Ok(items),
+        CommandField::String(text) => {
+            if text.trim().is_empty() {
+                Ok(Vec::new())
+            } else {
+                shlex_split(&text)
+                    .ok_or_else(|| de::Error::custom("failed to parse command string"))
+            }
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProjectHookEvent {
+    #[serde(rename = "session.start")]
+    SessionStart,
+    #[serde(rename = "session.end")]
+    SessionEnd,
+    #[serde(rename = "tool.before")]
+    ToolBefore,
+    #[serde(rename = "tool.after")]
+    ToolAfter,
+    #[serde(rename = "file.before_write")]
+    FileBeforeWrite,
+    #[serde(rename = "file.after_write")]
+    FileAfterWrite,
+}
+
+impl ProjectHookEvent {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ProjectHookEvent::SessionStart => "session.start",
+            ProjectHookEvent::SessionEnd => "session.end",
+            ProjectHookEvent::ToolBefore => "tool.before",
+            ProjectHookEvent::ToolAfter => "tool.after",
+            ProjectHookEvent::FileBeforeWrite => "file.before_write",
+            ProjectHookEvent::FileAfterWrite => "file.after_write",
+        }
+    }
+
+    pub fn slug(&self) -> &'static str {
+        match self {
+            ProjectHookEvent::SessionStart => "session_start",
+            ProjectHookEvent::SessionEnd => "session_end",
+            ProjectHookEvent::ToolBefore => "tool_before",
+            ProjectHookEvent::ToolAfter => "tool_after",
+            ProjectHookEvent::FileBeforeWrite => "file_before_write",
+            ProjectHookEvent::FileAfterWrite => "file_after_write",
+        }
+    }
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq)]
+pub struct ProjectHookConfig {
+    pub event: ProjectHookEvent,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(alias = "run", deserialize_with = "deserialize_command_vec")]
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub env: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub run_in_background: Option<bool>,
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq)]
+pub struct ProjectCommandConfig {
+    pub name: String,
+    #[serde(alias = "run", deserialize_with = "deserialize_command_vec")]
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub env: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
 }
 
 impl From<codex_protocol::config_types::ReasoningEffort> for ReasoningEffort {

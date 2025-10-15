@@ -15,7 +15,6 @@ use ratatui::widgets::WidgetRef;
 
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
-use crate::shimmer::shimmer_spans;
 use textwrap::Options as TwOptions;
 use textwrap::WordSplitter;
 
@@ -29,6 +28,7 @@ pub(crate) struct StatusIndicatorWidget {
     start_time: Instant,
     /// Last time we scheduled a follow-up frame; used to throttle redraws.
     last_schedule: Cell<Instant>,
+    last_rendered_second: Cell<u64>,
     app_event_tx: AppEventSender,
     // We schedule frames via AppEventSender; no direct frame requester.
 }
@@ -41,6 +41,7 @@ impl StatusIndicatorWidget {
             queued_messages: Vec::new(),
             start_time: Instant::now(),
             last_schedule: Cell::new(Instant::now()),
+            last_rendered_second: Cell::new(u64::MAX),
 
             app_event_tx,
         }
@@ -103,16 +104,19 @@ impl WidgetRef for StatusIndicatorWidget {
             return;
         }
 
-        // Schedule next animation frame at a throttled cadence to reduce CPU.
-        // 100ms (~10 FPS) is sufficient for shimmer/time updates in terminals.
+        // Schedule periodic refreshes so the elapsed timer stays up to date without
+        // forcing a high-FPS redraw of the entire UI.
         let now = Instant::now();
-        let last = self.last_schedule.get();
-        if now.duration_since(last) >= Duration::from_millis(100) {
+        let elapsed_since_start = self.start_time.elapsed();
+        let elapsed = elapsed_since_start.as_secs();
+        if elapsed != self.last_rendered_second.get()
+            || now.duration_since(self.last_schedule.get()) >= Duration::from_secs(1)
+        {
             self.last_schedule.set(now);
+            self.last_rendered_second.set(elapsed);
             self.app_event_tx
-                .send(AppEvent::ScheduleFrameIn(Duration::from_millis(100)));
+                .send(AppEvent::ScheduleFrameIn(Duration::from_secs(1)));
         }
-        let elapsed = self.start_time.elapsed().as_secs();
 
         // Plain rendering: no borders or padding so the live cell is visually indistinguishable from terminal scrollback.
         // Theme-aware base styles
@@ -122,18 +126,26 @@ impl WidgetRef for StatusIndicatorWidget {
         let accent = crate::colors::info();
 
         // Build header spans using theme colors (no terminal-default cyan/dim)
-        let mut spans = vec![ratatui::text::Span::raw(" ")];
-        // Shimmer uses spans; recolor them with the accent so it tracks theme
-        let mut shimmer = shimmer_spans(&self.header)
-            .into_iter()
-            .map(|s| s.style(Style::default().fg(accent)))
-            .collect::<Vec<_>>();
-        spans.append(&mut shimmer);
+        let mut spans = vec![
+            ratatui::text::Span::raw(" "),
+            ratatui::text::Span::styled(
+                self.header.clone(),
+                Style::default()
+                    .fg(accent)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ),
+            ratatui::text::Span::raw(" "),
+        ];
         spans.extend(vec![
             ratatui::text::Span::raw(" "),
             // (12s • Esc to interrupt)
-            ratatui::text::Span::raw(format!("({elapsed}s • ")).style(Style::default().fg(text_dim)),
-            ratatui::text::Span::raw("Esc").style(Style::default().fg(accent).add_modifier(ratatui::style::Modifier::BOLD)),
+            ratatui::text::Span::raw(format!("({elapsed}s • "))
+                .style(Style::default().fg(text_dim)),
+            ratatui::text::Span::raw("Esc").style(
+                Style::default()
+                    .fg(accent)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ),
             ratatui::text::Span::raw(")").style(Style::default().fg(text_dim)),
         ]);
 

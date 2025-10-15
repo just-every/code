@@ -121,7 +121,6 @@ async fn get_auth_status_with_api_key() {
     let status: GetAuthStatusResponse = to_response(resp).expect("deserialize status");
     assert_eq!(status.auth_method, Some(AuthMode::ApiKey));
     assert_eq!(status.auth_token, Some("sk-test-key".to_string()));
-    assert_eq!(status.preferred_auth_method, AuthMode::ChatGPT);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -130,6 +129,8 @@ async fn get_auth_status_with_api_key_when_auth_not_required() {
     create_config_toml_custom_provider(codex_home.path(), false)
         .unwrap_or_else(|err| panic!("write config.toml: {err}"));
 
+    login_with_api_key(codex_home.path(), "sk-test-key").expect("seed api key");
+
     let mut mcp = McpProcess::new(codex_home.path())
         .await
         .expect("spawn mcp process");
@@ -137,8 +138,6 @@ async fn get_auth_status_with_api_key_when_auth_not_required() {
         .await
         .expect("init timeout")
         .expect("init failed");
-
-    login_with_api_key_via_request(&mut mcp, "sk-test-key").await;
 
     let request_id = mcp
         .send_get_auth_status_request(GetAuthStatusParams {
@@ -199,5 +198,4 @@ async fn get_auth_status_with_api_key_no_include_token() {
     let status: GetAuthStatusResponse = to_response(resp).expect("deserialize status");
     assert_eq!(status.auth_method, Some(AuthMode::ApiKey));
     assert!(status.auth_token.is_none(), "token must be omitted");
-    assert_eq!(status.preferred_auth_method, AuthMode::ChatGPT);
 }

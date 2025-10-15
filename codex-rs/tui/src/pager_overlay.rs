@@ -2,8 +2,8 @@
 use std::io::Result;
 
 use crate::insert_history;
-use crate::tui;
 use crate::transcript_app::TuiEvent;
+use crate::tui;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
@@ -15,7 +15,10 @@ use ratatui::style::Styled;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use ratatui::text::Text;
+use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
+use ratatui::widgets::Widget;
 use ratatui::widgets::WidgetRef;
 
 pub(crate) enum Overlay {
@@ -90,6 +93,7 @@ impl PagerView {
     }
 
     fn render(&mut self, area: Rect, buf: &mut Buffer) {
+        Clear.render(area, buf);
         self.render_header(area, buf);
         let content_area = self.scroll_area(area);
         self.ensure_wrapped(content_area.width);
@@ -149,6 +153,7 @@ impl PagerView {
     // Removed unused render_content_page (replaced by render_content_page_prepared)
 
     fn render_content_page_prepared(&self, area: Rect, buf: &mut Buffer, page: &[Line<'static>]) {
+        Clear.render(area, buf);
         Paragraph::new(page.to_vec()).render_ref(area, buf);
 
         let visible = page.len();
@@ -170,12 +175,33 @@ impl PagerView {
         buf: &mut Buffer,
         wrapped: &[Line<'static>],
     ) {
-        let sep_y = content_area.bottom();
-        let sep_rect = Rect::new(full_area.x, sep_y, full_area.width, 1);
+        let area_bottom = full_area.y.saturating_add(full_area.height);
+        if full_area.width == 0 || full_area.height == 0 || area_bottom <= full_area.y {
+            return;
+        }
+
+        let mut sep_y = content_area.bottom();
+        let max_sep_y = area_bottom.saturating_sub(1);
+        if sep_y > max_sep_y {
+            sep_y = max_sep_y;
+        }
+        if sep_y < full_area.y {
+            sep_y = full_area.y;
+        }
+
+        let sep_height = area_bottom.saturating_sub(sep_y).min(1);
+        if sep_height == 0 {
+            return;
+        }
+        let sep_rect = Rect::new(full_area.x, sep_y, full_area.width, sep_height);
+        if sep_rect.width == 0 {
+            return;
+        }
 
         Span::from("─".repeat(sep_rect.width as usize))
             .dim()
             .render_ref(sep_rect, buf);
+
         let percent = if wrapped.is_empty() {
             100
         } else {
@@ -189,10 +215,13 @@ impl PagerView {
         };
         let pct_text = format!(" {percent}% ");
         let pct_w = pct_text.chars().count() as u16;
-        let pct_x = sep_rect.x + sep_rect.width - pct_w - 1;
-        Span::from(pct_text)
-            .dim()
-            .render_ref(Rect::new(pct_x, sep_rect.y, pct_w, 1), buf);
+        if pct_w < sep_rect.width {
+            let padding = sep_rect.width.saturating_sub(pct_w.saturating_add(1));
+            let pct_x = sep_rect.x.saturating_add(padding);
+            Span::from(pct_text)
+                .dim()
+                .render_ref(Rect::new(pct_x, sep_rect.y, pct_w, 1), buf);
+        }
     }
 
     fn handle_key_event(&mut self, _tui: &mut tui::Tui, key_event: KeyEvent) -> Result<()> {
@@ -314,17 +343,22 @@ impl PagerView {
         };
         let mut out: Vec<Line<'static>> = Vec::with_capacity(end - start);
         let mut bold_done = false;
-        for (row, src_line) in wrapped.iter().enumerate().skip(start).take(end.saturating_sub(start)) {
+        for (row, src_line) in wrapped
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(end.saturating_sub(start))
+        {
             let mut line = src_line.clone();
             if let Some(src) = src_idx.get(row).copied() {
                 if src >= hi_start && src < hi_end {
-                for (i, s) in line.spans.iter_mut().enumerate() {
-                    s.style.add_modifier |= Modifier::REVERSED;
-                    if !bold_done && i == 0 {
-                        s.style.add_modifier |= Modifier::BOLD;
-                        bold_done = true;
+                    for (i, s) in line.spans.iter_mut().enumerate() {
+                        s.style.add_modifier |= Modifier::REVERSED;
+                        if !bold_done && i == 0 {
+                            s.style.add_modifier |= Modifier::BOLD;
+                            bold_done = true;
+                        }
                     }
-                }
                 }
             }
             out.push(line);
@@ -368,7 +402,7 @@ impl TranscriptOverlay {
         let mut pairs: Vec<(&str, &str)> = vec![("q", "quit"), ("Esc", "edit prev")];
         if let Some((start, end)) = self.highlight_range {
             if end > start {
-            pairs.push(("⏎", "edit message"));
+                pairs.push(("⏎", "edit message"));
             }
         }
         render_key_hints(line2, buf, &pairs);
@@ -499,6 +533,17 @@ impl StaticOverlay {
 mod tests {
     use super::*;
     use insta::assert_snapshot;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use crate::history_cell::CommandOutput;
+    use crate::history_cell::HistoryCell;
+    use crate::history_cell::PatchEventType;
+    use crate::history_cell::new_patch_event;
+    use codex_core::protocol::FileChange;
+    use codex_protocol::parse_command::ParsedCommand;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -537,6 +582,99 @@ mod tests {
         term.draw(|f| overlay.render(f.area(), f.buffer_mut()))
             .expect("draw");
         assert_snapshot!(term.backend());
+    }
+
+    fn buffer_to_text(buf: &Buffer, area: Rect) -> String {
+        let mut out = String::new();
+        for y in area.y..area.bottom() {
+            for x in area.x..area.right() {
+                let symbol = buf[(x, y)].symbol();
+                if symbol.is_empty() {
+                    out.push(' ');
+                } else {
+                    out.push(symbol.chars().next().unwrap_or(' '));
+                }
+            }
+            // Trim trailing spaces for stability.
+            while out.ends_with(' ') {
+                out.pop();
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn transcript_overlay_apply_patch_scroll_vt100_clears_previous_page() {
+        let cwd = PathBuf::from("/repo");
+        let mut cells: Vec<Arc<dyn HistoryCell>> = Vec::new();
+
+        let mut approval_changes = HashMap::new();
+        approval_changes.insert(
+            PathBuf::from("foo.txt"),
+            FileChange::Add {
+                content: "hello\nworld\n".to_string(),
+            },
+        );
+        let approval_cell: Arc<dyn HistoryCell> = Arc::new(new_patch_event(
+            PatchEventType::ApprovalRequest,
+            approval_changes,
+            &cwd,
+        ));
+        cells.push(approval_cell);
+
+        let mut apply_changes = HashMap::new();
+        apply_changes.insert(
+            PathBuf::from("foo.txt"),
+            FileChange::Add {
+                content: "hello\nworld\n".to_string(),
+            },
+        );
+        let apply_begin_cell: Arc<dyn HistoryCell> = Arc::new(new_patch_event(
+            PatchEventType::ApplyBegin {
+                auto_approved: false,
+            },
+            apply_changes,
+            &cwd,
+        ));
+        cells.push(apply_begin_cell);
+
+        let apply_end_cell: Arc<dyn HistoryCell> =
+            Arc::new(crate::history_cell::new_user_approval_decision(vec![
+                "✓ Patch applied".green().bold().into(),
+                "src/foo.txt".dim().into(),
+            ]));
+        cells.push(apply_end_cell);
+
+        let mut exec_cell = crate::history_cell::new_active_exec_command(
+            "exec-1".into(),
+            vec!["bash".into(), "-lc".into(), "ls".into()],
+            vec![ParsedCommand::Unknown { cmd: "ls".into() }],
+        );
+        exec_cell.complete_call(
+            "exec-1",
+            CommandOutput {
+                exit_code: 0,
+                stdout: "src\nREADME.md\n".into(),
+                stderr: String::new(),
+                formatted_output: "src\nREADME.md\n".into(),
+            },
+            Duration::from_millis(420),
+        );
+        let exec_cell: Arc<dyn HistoryCell> = Arc::new(exec_cell);
+        cells.push(exec_cell);
+
+        let mut overlay = TranscriptOverlay::new(cells);
+        let area = Rect::new(0, 0, 80, 12);
+        let mut buf = Buffer::empty(area);
+
+        overlay.render(area, &mut buf);
+        overlay.view.scroll_offset = 0;
+        overlay.view.wrap_cache = None;
+        overlay.render(area, &mut buf);
+
+        let snapshot = buffer_to_text(&buf, area);
+        assert_snapshot!("transcript_overlay_apply_patch_scroll_vt100", snapshot);
     }
 
     #[test]

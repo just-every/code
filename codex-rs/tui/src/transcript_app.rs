@@ -3,6 +3,7 @@ use std::io::Result;
 
 use crate::insert_history;
 use crate::tui;
+use crate::util::buffer::fill_rect;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
@@ -154,11 +155,7 @@ impl TranscriptApp {
         let clear_style = Style::default()
             .bg(crate::colors::background())
             .fg(crate::colors::text());
-        for y in content_area.y..content_area.y.saturating_add(content_area.height) {
-            for x in content_area.x..content_area.x.saturating_add(content_area.width) {
-                buf[(x, y)].set_char(' ').set_style(clear_style);
-            }
-        }
+        fill_rect(buf, content_area, Some(' '), clear_style);
 
         // Clamp scroll offset to valid range
         self.scroll_offset = self
@@ -184,31 +181,64 @@ impl TranscriptApp {
         }
 
         // Bottom status section (4 lines): separator with % scrolled, then key hints (styled like chat composer)
-        let sep_y = content_area.bottom();
-        let sep_rect = Rect::new(area.x, sep_y, area.width, 1);
-        let hints_rect = Rect::new(area.x, sep_y + 1, area.width, 2);
+        const RESERVED_BOTTOM_ROWS: u16 = 4;
+        let area_bottom = area.y.saturating_add(area.height);
+        if area.width == 0 || area.height == 0 || area_bottom <= area.y {
+            return;
+        }
 
-        // Separator line (dim)
-        Span::from("─".repeat(sep_rect.width as usize))
-            .dim()
-            .render_ref(sep_rect, buf);
+        let desired_sep_y = content_area.bottom();
+        let min_sep_y = area.y.max(area_bottom.saturating_sub(RESERVED_BOTTOM_ROWS));
+        let max_sep_y = area_bottom.saturating_sub(1);
+        if max_sep_y < area.y {
+            return;
+        }
+        let mut sep_y = desired_sep_y;
+        if sep_y < min_sep_y {
+            sep_y = min_sep_y;
+        }
+        if sep_y > max_sep_y {
+            sep_y = max_sep_y;
+        }
 
-        // Scroll percentage (0-100%) aligned near the right edge
-        let max_scroll = wrapped.len().saturating_sub(content_area.height as usize);
-        let percent: u8 = if max_scroll == 0 {
-            100
-        } else {
-            (((self.scroll_offset.min(max_scroll)) as f32 / max_scroll as f32) * 100.0).round()
-                as u8
-        };
-        let pct_text = format!(" {percent}% ");
-        let pct_w = pct_text.chars().count() as u16;
-        let pct_x = sep_rect.x + sep_rect.width - pct_w - 1;
-        Span::from(pct_text)
-            .dim()
-            .render_ref(Rect::new(pct_x, sep_rect.y, pct_w, 1), buf);
+        let sep_height = area_bottom.saturating_sub(sep_y).min(1);
+        if sep_height == 0 {
+            return;
+        }
+        let sep_rect = Rect::new(area.x, sep_y, area.width, sep_height);
+        if sep_rect.width > 0 {
+            // Separator line (dim)
+            Span::from("─".repeat(sep_rect.width as usize))
+                .dim()
+                .render_ref(sep_rect, buf);
+
+            // Scroll percentage (0-100%) aligned near the right edge
+            let max_scroll = wrapped.len().saturating_sub(content_area.height as usize);
+            let percent: u8 = if max_scroll == 0 {
+                100
+            } else {
+                (((self.scroll_offset.min(max_scroll)) as f32 / max_scroll as f32) * 100.0).round()
+                    as u8
+            };
+            let pct_text = format!(" {percent}% ");
+            let pct_w = pct_text.chars().count() as u16;
+            if pct_w < sep_rect.width {
+                let padding = sep_rect.width.saturating_sub(pct_w.saturating_add(1));
+                let pct_x = sep_rect.x.saturating_add(padding);
+                Span::from(pct_text)
+                    .dim()
+                    .render_ref(Rect::new(pct_x, sep_rect.y, pct_w, 1), buf);
+            }
+        }
 
         let key_hint_style = Style::default().fg(Color::Cyan);
+        let hints_start_y = sep_rect.y.saturating_add(sep_rect.height);
+        let hints_avail = area_bottom.saturating_sub(hints_start_y);
+        if hints_avail == 0 || area.width == 0 {
+            return;
+        }
+        let hints_height = hints_avail.min(2);
+        let hints_rect = Rect::new(area.x, hints_start_y, area.width, hints_height);
 
         let hints1 = vec![
             " ".into(),
@@ -233,8 +263,12 @@ impl TranscriptApp {
             "q".set_style(key_hint_style),
             " cancel".into(),
         ];
-        Paragraph::new(vec![Line::from(hints1).dim(), Line::from(hints2).dim()])
-            .render_ref(hints_rect, buf);
+
+        let mut hint_lines = vec![Line::from(hints1).dim()];
+        if hints_height >= 2 {
+            hint_lines.push(Line::from(hints2).dim());
+        }
+        Paragraph::new(hint_lines).render_ref(hints_rect, buf);
     }
 }
 

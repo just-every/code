@@ -1,0 +1,16 @@
+{
+  "agent": "gpt_pro",
+  "model_id": "gpt-5",
+  "model_release": "2025-09-29",
+  "reasoning_mode": "high",
+  "output_path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-DEMO/spec-plan_2025-10-05T04:31:14Z_gpt_pro.json",
+  "latency_ms": 41,
+  "prompt_tokens": 120,
+  "completion_tokens": 60,
+  "reasoning_tokens": null,
+  "total_tokens": 180,
+  "cache_hit": false,
+  "cost_usd": 0.003,
+  "status": "ok",
+  "error": null
+}

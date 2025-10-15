@@ -11,6 +11,7 @@ use eventsource_stream::Eventsource;
 use futures::prelude::*;
 // use regex_lite::Regex;
 use reqwest::StatusCode;
+use reqwest::header::HeaderMap;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -30,7 +31,6 @@ use crate::client_common::ResponseStream;
 use crate::client_common::ResponsesApiRequest;
 use crate::client_common::create_reasoning_param_for_request;
 use crate::config::Config;
-use crate::openai_model_info::get_model_info;
 use crate::config_types::ReasoningEffort as ReasoningEffortConfig;
 use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use crate::config_types::TextVerbosity as TextVerbosityConfig;
@@ -43,7 +43,9 @@ use crate::flags::CODEX_RS_SSE_FIXTURE;
 use crate::model_family::ModelFamily;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
+use crate::openai_model_info::get_model_info;
 use crate::openai_tools::create_tools_json_for_responses_api;
+use crate::protocol::RateLimitSnapshotEvent;
 use crate::protocol::TokenUsage;
 use crate::util::backoff;
 use std::sync::Arc;
@@ -125,6 +127,10 @@ impl ModelClient {
         self.verbosity
     }
 
+    pub fn codex_home(&self) -> &Path {
+        &self.config.codex_home
+    }
+
     pub fn get_auto_compact_token_limit(&self) -> Option<i64> {
         self.config.model_auto_compact_token_limit.or_else(|| {
             get_model_info(&self.config.model_family).and_then(|info| info.auto_compact_token_limit)
@@ -154,6 +160,7 @@ impl ModelClient {
                     &self.client,
                     &self.provider,
                     &self.debug_logger,
+                    self.auth_manager.clone(),
                 )
                 .await?;
 
@@ -205,7 +212,15 @@ impl ModelClient {
         let store = false;
 
         let full_instructions = prompt.get_full_instructions(&self.config.model_family);
-        let tools_json = create_tools_json_for_responses_api(&prompt.tools)?;
+        let mut tools_json = create_tools_json_for_responses_api(&prompt.tools)?;
+        if matches!(self.effort, ReasoningEffortConfig::Minimal) {
+            tools_json.retain(|tool| {
+                tool.get("type")
+                    .and_then(|value| value.as_str())
+                    .map(|tool_type| tool_type != "web_search")
+                    .unwrap_or(true)
+            });
+        }
 
         let reasoning = create_reasoning_param_for_request(
             &self.config.model_family,
@@ -223,17 +238,38 @@ impl ModelClient {
 
         let input_with_instructions = prompt.get_formatted_input();
 
-        // Create text parameter with verbosity and optional format.
-        // Historically not supported with ChatGPT auth, but allow it when a
-        // caller explicitly requests a `text.format` (side‑channel usage).
-        let want_format = prompt.text_format.as_ref();
-        let text = if auth_mode == Some(AuthMode::ChatGPT) && want_format.is_none() {
-            None
-        } else {
-            Some(crate::client_common::Text {
+        // Build `text` parameter with conditional verbosity and optional format.
+        // - Omit entirely for ChatGPT auth unless a `text.format` or output schema is present.
+        // - Only include `text.verbosity` for GPT-5 family models; warn and ignore otherwise.
+        // - When a structured `format` is present, omit `verbosity` in serialization.
+        let want_format = prompt.text_format.clone().or_else(|| {
+            prompt
+                .output_schema
+                .as_ref()
+                .map(|schema| crate::client_common::TextFormat {
+                    r#type: "json_schema".to_string(),
+                    name: Some("codex_output_schema".to_string()),
+                    strict: Some(true),
+                    schema: Some(schema.clone()),
+                })
+        });
+
+        let verbosity = match &self.config.model_family.family {
+            family if family == "gpt-5" => Some(self.config.model_text_verbosity),
+            _ => None,
+        };
+
+        let text = match (auth_mode, want_format, verbosity) {
+            (Some(AuthMode::ChatGPT), None, _) => None,
+            (_, Some(fmt), _) => Some(crate::client_common::Text {
                 verbosity: self.verbosity.into(),
-                format: prompt.text_format.clone(),
-            })
+                format: Some(fmt),
+            }),
+            (_, None, Some(_)) => Some(crate::client_common::Text {
+                verbosity: self.verbosity.into(),
+                format: None,
+            }),
+            (_, None, None) => None,
         };
 
         // In general, we want to explicitly send `store: false` when using the Responses API,
@@ -272,6 +308,19 @@ impl ModelClient {
         }
         if azure_workaround {
             attach_item_ids(&mut payload_json, &input_with_instructions);
+        }
+        if let Some(openrouter_cfg) = self.provider.openrouter_config() {
+            if let Some(obj) = payload_json.as_object_mut() {
+                if let Some(provider) = &openrouter_cfg.provider {
+                    obj.insert("provider".to_string(), serde_json::to_value(provider)?);
+                }
+                if let Some(route) = &openrouter_cfg.route {
+                    obj.insert("route".to_string(), route.clone());
+                }
+                for (key, value) in &openrouter_cfg.extra {
+                    obj.entry(key.clone()).or_insert(value.clone());
+                }
+            }
         }
         let payload_body = serde_json::to_string(&payload_json)?;
 
@@ -358,6 +407,21 @@ impl ModelClient {
                         );
                     }
                     let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent>>(1600);
+
+                    if let Some(snapshot) = parse_rate_limit_snapshot(resp.headers()) {
+                        debug!(
+                            "rate limit headers:\n{}",
+                            format_rate_limit_headers(resp.headers())
+                        );
+
+                        if tx_event
+                            .send(Ok(ResponseEvent::RateLimits(snapshot)))
+                            .await
+                            .is_err()
+                        {
+                            debug!("receiver dropped rate limit snapshot event");
+                        }
+                    }
 
                     // spawn task to process SSE
                     let stream = resp.bytes_stream().map_err(CodexErr::Reqwest);
@@ -540,6 +604,11 @@ impl ModelClient {
         self.config.model_family.clone()
     }
 
+    #[allow(dead_code)]
+    pub fn get_model_context_window(&self) -> Option<u64> {
+        self.config.model_context_window
+    }
+
     // duplicate of earlier helpers removed during merge cleanup
 
     #[allow(dead_code)]
@@ -567,9 +636,6 @@ struct SseEvent {
 }
 
 #[derive(Debug, Deserialize)]
-struct ResponseCreated {}
-
-#[derive(Debug, Deserialize)]
 struct ResponseCompleted {
     id: String,
     usage: Option<ResponseCompletedUsage>,
@@ -588,9 +654,15 @@ impl From<ResponseCompletedUsage> for TokenUsage {
     fn from(val: ResponseCompletedUsage) -> Self {
         TokenUsage {
             input_tokens: val.input_tokens,
-            cached_input_tokens: val.input_tokens_details.map(|d| d.cached_tokens),
+            cached_input_tokens: val
+                .input_tokens_details
+                .map(|d| d.cached_tokens)
+                .unwrap_or(0),
             output_tokens: val.output_tokens,
-            reasoning_output_tokens: val.output_tokens_details.map(|d| d.reasoning_tokens),
+            reasoning_output_tokens: val
+                .output_tokens_details
+                .map(|d| d.reasoning_tokens)
+                .unwrap_or(0),
             total_tokens: val.total_tokens,
         }
     }
@@ -631,6 +703,56 @@ fn attach_item_ids(payload_json: &mut Value, original_items: &[ResponseItem]) {
             }
         }
     }
+}
+
+fn parse_rate_limit_snapshot(headers: &HeaderMap) -> Option<RateLimitSnapshotEvent> {
+    let primary_used_percent = parse_header_f64(headers, "x-codex-primary-used-percent")?;
+    let secondary_used_percent = parse_header_f64(headers, "x-codex-secondary-used-percent")?;
+    let primary_to_secondary_ratio_percent =
+        parse_header_f64(headers, "x-codex-primary-over-secondary-limit-percent")?;
+    let primary_window_minutes = parse_header_u64(headers, "x-codex-primary-window-minutes")?;
+    let secondary_window_minutes = parse_header_u64(headers, "x-codex-secondary-window-minutes")?;
+    let primary_reset_after_seconds =
+        parse_header_u64(headers, "x-codex-primary-reset-after-seconds");
+    let secondary_reset_after_seconds =
+        parse_header_u64(headers, "x-codex-secondary-reset-after-seconds");
+
+    Some(RateLimitSnapshotEvent {
+        primary_used_percent,
+        secondary_used_percent,
+        primary_to_secondary_ratio_percent,
+        primary_window_minutes,
+        secondary_window_minutes,
+        primary_reset_after_seconds,
+        secondary_reset_after_seconds,
+    })
+}
+
+fn format_rate_limit_headers(headers: &HeaderMap) -> String {
+    let mut pairs: Vec<String> = headers
+        .iter()
+        .map(|(name, value)| {
+            let value_str = value.to_str().unwrap_or("<invalid>");
+            format!("{}: {}", name, value_str)
+        })
+        .collect();
+    pairs.sort();
+    pairs.join("\n")
+}
+
+fn parse_header_f64(headers: &HeaderMap, name: &str) -> Option<f64> {
+    parse_header_str(headers, name)?
+        .parse::<f64>()
+        .ok()
+        .filter(|v| v.is_finite())
+}
+
+fn parse_header_u64(headers: &HeaderMap, name: &str) -> Option<u64> {
+    parse_header_str(headers, name)?.parse::<u64>().ok()
+}
+
+fn parse_header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers.get(name)?.to_str().ok()
 }
 
 async fn process_sse<S>(
@@ -1158,6 +1280,7 @@ mod tests {
             stream_max_retries: Some(0),
             stream_idle_timeout_ms: Some(1000),
             requires_openai_auth: false,
+            openrouter: None,
         };
 
         let events = collect_events(
@@ -1218,6 +1341,7 @@ mod tests {
             stream_max_retries: Some(0),
             stream_idle_timeout_ms: Some(1000),
             requires_openai_auth: false,
+            openrouter: None,
         };
 
         let events = collect_events(&[sse1.as_bytes()], provider).await;
@@ -1252,6 +1376,7 @@ mod tests {
             stream_max_retries: Some(0),
             stream_idle_timeout_ms: Some(1000),
             requires_openai_auth: false,
+            openrouter: None,
         };
 
         let events = collect_events(&[sse1.as_bytes()], provider).await;
@@ -1357,6 +1482,7 @@ mod tests {
                 stream_max_retries: Some(0),
                 stream_idle_timeout_ms: Some(1000),
                 requires_openai_auth: false,
+                openrouter: None,
             };
 
             let out = run_sse(evs, provider).await;

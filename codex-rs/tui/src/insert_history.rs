@@ -127,7 +127,11 @@ pub fn insert_history_lines_to_writer<B, W>(
 /// bottom of the screen for a live UI (e.g., the input composer) and inserts
 /// history lines into the scrollback above that region.
 #[allow(dead_code)]
-pub(crate) fn insert_history_lines_above(terminal: &mut tui::Tui, reserved_bottom_rows: u16, lines: Vec<Line>) {
+pub(crate) fn insert_history_lines_above(
+    terminal: &mut tui::Tui,
+    reserved_bottom_rows: u16,
+    lines: Vec<Line>,
+) {
     let mut out = std::io::stdout();
     insert_history_lines_to_writer_above(terminal, &mut out, reserved_bottom_rows, lines);
 }
@@ -142,7 +146,9 @@ pub fn insert_history_lines_to_writer_above<B, W>(
     B: ratatui::backend::Backend,
     W: Write,
 {
-    if lines.is_empty() { return; }
+    if lines.is_empty() {
+        return;
+    }
     let screen_size = terminal.backend().size().unwrap_or(Size::new(0, 0));
     let cursor_pos = terminal.get_cursor_position().ok();
 

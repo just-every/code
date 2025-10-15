@@ -31,11 +31,14 @@ pub fn assess_patch_safety(
         };
     }
 
-    // In Read Only mode, write operations are not permitted. Reject immediately
-    // so the agent receives a clear failure without prompting for approval.
+    // In Read Only mode, we need explicit user approval before writing.
     if matches!(sandbox_policy, SandboxPolicy::ReadOnly) {
-        return SafetyCheck::Reject {
-            reason: "write operations are disabled in read-only mode".to_string(),
+        return match policy {
+            AskForApproval::Never => SafetyCheck::Reject {
+                reason: "write operations require approval but approval policy is set to never"
+                    .to_string(),
+            },
+            _ => SafetyCheck::AskUser,
         };
     }
 
@@ -107,9 +110,7 @@ pub fn assess_command_safety(
     // would probably be fine to run the command in a sandbox, but when
     // `approved.contains(command)` is `true`, the user may have approved it for
     // the session _because_ they know it needs to run outside a sandbox.
-    if is_known_safe_command(command)
-        || approved.iter().any(|pattern| pattern.matches(command))
-    {
+    if is_known_safe_command(command) || approved.iter().any(|pattern| pattern.matches(command)) {
         return SafetyCheck::AutoApprove {
             sandbox_type: SandboxType::None,
         };
@@ -314,6 +315,48 @@ mod tests {
             &policy_with_parent,
             &cwd,
         ));
+    }
+
+    #[test]
+    fn test_read_only_patch_requests_approval() {
+        let tmp = TempDir::new().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let action = ApplyPatchAction::new_add_for_test(&cwd.join("file.txt"), "".to_string());
+
+        let result = assess_patch_safety(
+            &action,
+            AskForApproval::OnRequest,
+            &SandboxPolicy::ReadOnly,
+            &cwd,
+        );
+
+        assert_eq!(result, SafetyCheck::AskUser);
+    }
+
+    #[test]
+    fn test_read_only_patch_rejects_when_policy_never() {
+        let tmp = TempDir::new().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let action = ApplyPatchAction::new_add_for_test(&cwd.join("file.txt"), "".to_string());
+
+        let result = assess_patch_safety(
+            &action,
+            AskForApproval::Never,
+            &SandboxPolicy::ReadOnly,
+            &cwd,
+        );
+
+        match result {
+            SafetyCheck::Reject { reason } => {
+                assert_eq!(
+                    reason,
+                    "write operations require approval but approval policy is set to never"
+                );
+            }
+            other => {
+                panic!("expected rejection, got {:?}", other);
+            }
+        }
     }
 
     #[test]

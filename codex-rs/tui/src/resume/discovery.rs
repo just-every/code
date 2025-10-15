@@ -1,8 +1,8 @@
+use codex_core::Cursor;
+use codex_core::RolloutRecorder;
 use codex_core::protocol::EventMsg;
 use codex_protocol::models::{ContentItem, ResponseItem};
 use codex_protocol::protocol::{RolloutItem, RolloutLine};
-use codex_core::Cursor;
-use codex_core::RolloutRecorder;
 use serde::Deserialize;
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -81,10 +81,18 @@ fn read_dir_index(codex_home: &Path, cwd: &Path) -> Option<Vec<ResumeCandidate>>
     let mut map: HashMap<String, Accum> = HashMap::new();
     for line in reader.lines() {
         let Ok(l) = line else { continue };
-        if l.trim().is_empty() { continue; }
-        let Ok(v) = serde_json::from_str::<DirIndexLine>(&l) else { continue };
-        if v.record_type != "dir_index" { continue; }
-        if v.cwd.is_empty() { continue; }
+        if l.trim().is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<DirIndexLine>(&l) else {
+            continue;
+        };
+        if v.record_type != "dir_index" {
+            continue;
+        }
+        if v.cwd.is_empty() {
+            continue;
+        }
         let e = map.entry(v.session_file.clone()).or_insert(Accum {
             created: v.created_ts.clone(),
             modified: v.modified_ts.clone(),
@@ -93,16 +101,28 @@ fn read_dir_index(codex_home: &Path, cwd: &Path) -> Option<Vec<ResumeCandidate>>
             branch: v.branch.clone(),
             snippet: None,
         });
-        if e.created.is_none() { e.created = v.created_ts.clone(); }
+        if e.created.is_none() {
+            e.created = v.created_ts.clone();
+        }
         e.modified = v.modified_ts.clone().or(e.modified.take());
         e.count = e.count.saturating_add(v.message_count_delta.unwrap_or(0));
-        if let Some(s) = v.last_user_snippet { if !s.is_empty() { e.snippet = Some(s); } }
-        if e.model.is_none() { e.model = v.model.clone(); }
-        if e.branch.is_none() { e.branch = v.branch.clone(); }
+        if let Some(s) = v.last_user_snippet {
+            if !s.is_empty() {
+                e.snippet = Some(s);
+            }
+        }
+        if e.model.is_none() {
+            e.model = v.model.clone();
+        }
+        if e.branch.is_none() {
+            e.branch = v.branch.clone();
+        }
     }
     let mut out = Vec::new();
     for (path, a) in map.into_iter() {
-        if a.count == 0 { continue; }
+        if a.count == 0 {
+            continue;
+        }
         let subtitle = a.snippet.clone();
         out.push(ResumeCandidate {
             path: PathBuf::from(path),
@@ -120,8 +140,13 @@ fn read_dir_index(codex_home: &Path, cwd: &Path) -> Option<Vec<ResumeCandidate>>
 
 fn super_sanitize_dir_index_path(codex_home: &Path, cwd: &Path) -> PathBuf {
     let mut name = cwd.to_string_lossy().to_string();
-    name = name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
-    if name.len() > 160 { name.truncate(160); }
+    name = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    if name.len() > 160 {
+        name.truncate(160);
+    }
     let mut p = codex_home.to_path_buf();
     p.push("sessions");
     p.push("index");
@@ -142,7 +167,13 @@ fn fallback_scan_sessions_for_cwd(cwd: &Path, codex_home: &Path) -> Vec<ResumeCa
         let mut collected: Vec<ResumeCandidate> = Vec::new();
         let mut cursor: Option<Cursor> = None;
         while collected.len() < MAX_RESULTS {
-            let page = match RolloutRecorder::list_conversations(codex_home.as_path(), 256, cursor.as_ref()).await {
+            let page = match RolloutRecorder::list_conversations(
+                codex_home.as_path(),
+                256,
+                cursor.as_ref(),
+            )
+            .await
+            {
                 Ok(page) => page,
                 Err(err) => {
                     tracing::warn!("failed to list conversations for resume fallback: {err}");
@@ -287,9 +318,8 @@ fn parse_rollout_candidate(path: &Path, target_cwd: &Path) -> Option<ResumeCandi
 
 fn extract_user_snippet_from_response(item: &ResponseItem) -> Option<String> {
     match item {
-        ResponseItem::Message { role, content, .. } if role == "user" => content
-            .iter()
-            .find_map(|c| match c {
+        ResponseItem::Message { role, content, .. } if role == "user" => {
+            content.iter().find_map(|c| match c {
                 ContentItem::InputText { text } | ContentItem::OutputText { text } => {
                     let trimmed = text.trim();
                     if trimmed.is_empty() || trimmed.contains("== System Status ==") {
@@ -299,7 +329,8 @@ fn extract_user_snippet_from_response(item: &ResponseItem) -> Option<String> {
                     }
                 }
                 _ => None,
-            }),
+            })
+        }
         _ => None,
     }
 }

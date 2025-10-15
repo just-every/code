@@ -1,8 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, unnameable_test_items)]
 
 use super::*;
-use crate::app_event::AppEvent;
+use crate::app_event::{AppEvent, BackgroundPlacement};
 use crate::app_event_sender::AppEventSender;
+use crate::chatwidget::agent_install::wrap_command;
+use crate::slash_command::SlashCommand;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::ConfigToml;
@@ -11,6 +13,8 @@ use codex_core::plan_tool::StepStatus;
 use codex_core::plan_tool::UpdatePlanArgs;
 use codex_core::protocol::AgentMessageDeltaEvent;
 use codex_core::protocol::AgentMessageEvent;
+use codex_core::protocol::AgentStatusUpdateEvent;
+use codex_core::protocol::AgentInfo as ProtocolAgentInfo;
 use codex_core::protocol::AgentReasoningDeltaEvent;
 use codex_core::protocol::AgentReasoningEvent;
 use codex_core::protocol::ApplyPatchApprovalRequestEvent;
@@ -20,13 +24,16 @@ use codex_core::protocol::ExecApprovalRequestEvent;
 use codex_core::protocol::ExecCommandBeginEvent;
 use codex_core::protocol::ExecCommandEndEvent;
 use codex_core::protocol::FileChange;
+use codex_core::protocol::RateLimitSnapshotEvent;
 use codex_core::protocol::PatchApplyBeginEvent;
 use codex_core::protocol::PatchApplyEndEvent;
+use codex_core::protocol::ProAction;
 use codex_core::protocol::StreamErrorEvent;
 use codex_core::protocol::TaskCompleteEvent;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
+use chrono::{Duration as ChronoDuration, Local, Utc};
 use insta::assert_snapshot;
 use pretty_assertions::assert_eq;
 use std::fs::File;
@@ -36,6 +43,7 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
 use tokio::sync::mpsc::unbounded_channel;
+use strip_ansi_escapes::strip as strip_ansi_bytes;
 
 fn test_config() -> Config {
     // Use base defaults to avoid depending on host state.
@@ -93,13 +101,175 @@ fn final_answer_without_newline_is_flushed_immediately() {
     );
 }
 
+fn cell_texts(chat: &ChatWidget<'_>) -> Vec<String> {
+    chat
+        .history_cells
+        .iter()
+        .map(|cell| {
+            let mut out = Vec::new();
+            for line in cell.display_lines() {
+                let mut buf = String::new();
+                for span in line.spans {
+                    buf.push_str(span.content.as_ref());
+                }
+                out.push(buf);
+            }
+            out.join("\n")
+        })
+        .collect()
+}
+
+#[test]
+fn background_events_append_in_arrival_order() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+
+    chat.insert_background_event_with_placement(
+        "first background".to_string(),
+        BackgroundPlacement::Tail,
+    );
+    chat.insert_background_event_with_placement(
+        "second background".to_string(),
+        BackgroundPlacement::Tail,
+    );
+
+    let texts = cell_texts(&chat);
+    assert_eq!(texts, vec!["first background".to_string(), "second background".to_string()]);
+}
+
+#[test]
+fn background_event_before_next_output_precedes_later_cells() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+
+    chat.insert_background_event_with_placement(
+        "initial".to_string(),
+        BackgroundPlacement::Tail,
+    );
+    chat.insert_background_event_with_placement(
+        "guard".to_string(),
+        BackgroundPlacement::BeforeNextOutput,
+    );
+    chat.push_background_tail("tail".to_string());
+
+    let texts = cell_texts(&chat);
+    assert_eq!(texts, vec![
+        "initial".to_string(),
+        "guard".to_string(),
+        "tail".to_string(),
+    ]);
+}
+
+#[test]
+fn limits_overlay_loading_when_snapshot_missing() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    chat.rate_limit_snapshot = None;
+    chat.rate_limit_fetch_inflight = true;
+    chat.rate_limit_last_fetch_at = Some(Utc::now());
+
+    chat.add_limits_output();
+
+    let overlay = chat.limits.overlay.as_ref().expect("overlay present");
+    let lines = overlay.lines_for_width(60);
+    let text: Vec<String> = lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect();
+
+    assert!(
+        text.iter()
+            .any(|line| line.contains("Loading...")),
+        "expected loading message in overlay: {text:?}"
+    );
+    assert!(text.iter().all(|line| !line.contains("/limits")));
+    assert!(chat.rate_limit_fetch_inflight);
+}
+
+#[test]
+fn limits_overlay_renders_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    chat.rate_limit_snapshot = Some(RateLimitSnapshotEvent {
+        primary_used_percent: 30.0,
+        secondary_used_percent: 60.0,
+        primary_to_secondary_ratio_percent: 0.0,
+        primary_window_minutes: 300,
+        secondary_window_minutes: 10_080,
+        primary_reset_after_seconds: Some(600),
+        secondary_reset_after_seconds: Some(3_600),
+    });
+    chat.update_rate_limit_resets(chat.rate_limit_snapshot.as_ref().unwrap());
+    chat.rate_limit_last_fetch_at = Some(Utc::now());
+
+    chat.add_limits_output();
+
+    let overlay = chat.limits.overlay.as_ref().expect("overlay present");
+    let lines = overlay.lines_for_width(80);
+    let strings: Vec<String> = lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect();
+
+    let joined = strings.join("\n");
+    assert!(joined.contains("Hourly Limit"), "overlay text: {joined}");
+    assert!(joined.contains("Weekly Limit"), "overlay text: {joined}");
+    assert!(joined.contains(" Type: "));
+    assert!(joined.contains(" Plan: "));
+    assert!(joined.contains("Resets"), "overlay text: {joined}");
+    assert!(
+        !joined.contains("awaiting reset timing"),
+        "expected reset timings to render: {joined}"
+    );
+    assert!(joined.contains(" Total: "));
+    assert!(joined.contains("Chart"));
+    assert!(joined.contains("7 Day History"));
+    assert!(!joined.contains("/limits"));
+    assert!(!joined.contains("Within current limits"));
+
+    let header_idx = strings
+        .iter()
+        .position(|line| line.contains("7 Day History"))
+        .expect("expected usage header");
+    let latest_label = Local::now().format("%b %d").to_string();
+    let yesterday_label = (Local::now().date_naive() - ChronoDuration::days(1))
+        .format("%b %d")
+        .to_string();
+    let latest_line = strings
+        .get(header_idx + 1)
+        .expect("expected latest usage line");
+    let second_line = strings
+        .get(header_idx + 2)
+        .expect("expected second usage line");
+    assert!(latest_line.contains(&latest_label));
+    assert!(second_line.contains(&yesterday_label));
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn helpers_are_available_and_do_not_panic() {
     let (tx_raw, _rx) = channel::<AppEvent>();
     let tx = AppEventSender::new(tx_raw);
     let cfg = test_config();
-    let conversation_manager = Arc::new(ConversationManager::default());
-    let mut w = ChatWidget::new(cfg, conversation_manager, tx, None, Vec::new(), false);
+    let term = crate::tui::TerminalInfo {
+        picker: None,
+        font_size: (8, 16),
+    };
+    let mut w = ChatWidget::new(
+        cfg,
+        tx,
+        None,
+        Vec::new(),
+        false,
+        term,
+        false,
+        None,
+    );
     // Basic construction sanity.
     let _ = &mut w;
 }
@@ -126,9 +296,21 @@ fn make_chatwidget_manual() -> (
         bottom_pane: bottom,
         active_exec_cell: None,
         config: cfg.clone(),
+        latest_upgrade_version: None,
         initial_user_message: None,
         total_token_usage: TokenUsage::default(),
         last_token_usage: TokenUsage::default(),
+        rate_limit_snapshot: None,
+        rate_limit_warnings: Default::default(),
+        rate_limit_fetch_inflight: false,
+        rate_limit_fetch_placeholder: None,
+        rate_limit_fetch_ack_pending: false,
+        #[cfg(not(feature = "legacy_tests"))]
+        ghost_snapshots: Vec::new(),
+        #[cfg(not(feature = "legacy_tests"))]
+        ghost_snapshots_disabled: false,
+        #[cfg(not(feature = "legacy_tests"))]
+        ghost_snapshots_disabled_reason: None,
         stream: StreamController::new(cfg),
         last_stream_kind: None,
         running_commands: HashMap::new(),
@@ -136,6 +318,7 @@ fn make_chatwidget_manual() -> (
         task_complete_pending: false,
         interrupts: InterruptManager::new(),
         needs_redraw: false,
+        agents_terminal: AgentsTerminalState::new(),
     };
     (widget, rx, op_rx)
 }
@@ -149,6 +332,97 @@ pub(crate) fn make_chatwidget_manual_with_sender() -> (
     let (widget, rx, op_rx) = make_chatwidget_manual();
     let app_event_tx = widget.app_event_tx.clone();
     (widget, app_event_tx, rx, op_rx)
+}
+
+#[test]
+fn spec_plan_requires_task_id() {
+    let (mut chat, rx, _op_rx) = make_chatwidget_manual();
+
+    chat.handle_spec_ops_command(SlashCommand::SpecOpsPlan, "   ".to_string(), None);
+
+    let mut found_error = false;
+    while let Ok(ev) = rx.try_recv() {
+        if let AppEvent::InsertHistory(lines) = ev {
+            let text = lines_to_single_string(&lines);
+            if text.contains("requires a SPEC task ID") {
+                found_error = true;
+                break;
+            }
+        }
+    }
+    assert!(found_error, "missing SPEC ID should surface an error event");
+}
+
+#[test]
+fn spec_plan_runs_project_command() {
+    let (mut chat, rx, mut op_rx) = make_chatwidget_manual();
+
+    chat.handle_spec_ops_command(
+        SlashCommand::SpecOpsPlan,
+        "SPEC-OPS-005 --baseline-mode skip".to_string(),
+        None,
+    );
+
+    // Ack banner should be recorded in history
+    let mut ack_present = false;
+    while let Ok(ev) = rx.try_recv() {
+        if let AppEvent::InsertHistory(lines) = ev {
+            let text = lines_to_single_string(&lines);
+            if text.contains("Spec Ops /plan") {
+                ack_present = true;
+                break;
+            }
+        }
+    }
+    assert!(ack_present, "expected Spec Ops acknowledgement banner");
+
+    // Command should be forwarded to codex core
+    let op = op_rx.try_recv().expect("expected RunProjectCommand");
+    match op {
+        Op::RunProjectCommand {
+            name,
+            command: Some(argv),
+            display: Some(display),
+            env,
+        } => {
+            assert_eq!(name, "spec_ops_plan");
+            assert_eq!(display, "scripts/env_run.sh scripts/spec_ops_004/commands/spec_ops_plan.sh SPEC-OPS-005 --baseline-mode skip");
+            assert_eq!(
+                argv,
+                wrap_command(
+                    "scripts/env_run.sh scripts/spec_ops_004/commands/spec_ops_plan.sh SPEC-OPS-005 --baseline-mode skip"
+                )
+            );
+            assert_eq!(
+                env.get("SPEC_OPS_004_AGENTS_AVAILABLE"),
+                Some(&"claude,gemini,code".to_string())
+            );
+        }
+        other => panic!("unexpected op forwarded: {other:?}"),
+    }
+}
+
+#[test]
+fn spec_plan_honours_hal_flag() {
+    let (mut chat, rx, mut op_rx) = make_chatwidget_manual();
+
+    chat.handle_spec_ops_command(
+        SlashCommand::SpecOpsPlan,
+        "SPEC-OPS-010 --hal live".to_string(),
+        None,
+    );
+
+    // drain ack banner to avoid leak
+    let _ = drain_insert_history(&rx);
+
+    let op = op_rx.try_recv().expect("expected RunProjectCommand");
+    match op {
+        Op::RunProjectCommand { env, .. } => {
+            assert_eq!(env.get("SPEC_OPS_HAL_MODE"), Some(&"live".to_string()));
+            assert_eq!(env.get("SPEC_OPS_TELEMETRY_HAL"), Some(&"1".to_string()));
+        }
+        other => panic!("unexpected op forwarded: {other:?}"),
+    }
 }
 
 fn drain_insert_history(
@@ -174,6 +448,269 @@ fn lines_to_single_string(lines: &[ratatui::text::Line<'static>]) -> String {
     s
 }
 
+#[derive(Clone, Copy)]
+enum ScriptStep {
+    Key(KeyCode, KeyModifiers),
+}
+
+impl ScriptStep {
+    fn key_char(c: char) -> Self {
+        ScriptStep::Key(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    fn enter() -> Self {
+        ScriptStep::Key(KeyCode::Enter, KeyModifiers::NONE)
+    }
+}
+
+fn run_script(chat: &mut ChatWidget<'_>, steps: &[ScriptStep], rx: &std::sync::mpsc::Receiver<AppEvent>) {
+    for step in steps {
+        if let ScriptStep::Key(code, modifiers) = step {
+            chat.handle_key_event(KeyEvent::new(*code, *modifiers));
+            pump_app_events(chat, rx);
+        }
+    }
+    pump_app_events(chat, rx);
+}
+
+#[test]
+fn agents_terminal_tracks_logs() {
+    let (mut chat, rx, _op_rx) = make_chatwidget_manual();
+    chat.prepare_agents();
+
+    let mut event = AgentStatusUpdateEvent {
+        agents: vec![ProtocolAgentInfo {
+            id: "agent-1".into(),
+            name: "Gemini".into(),
+            status: "running".into(),
+            batch_id: None,
+            model: Some("gemini-pro".into()),
+            last_progress: Some("12:00:01: creating worktree".into()),
+            result: None,
+            error: None,
+        }],
+        context: Some("monorepo".into()),
+        task: Some("upgrade agents UI".into()),
+    };
+
+    chat.handle_codex_event(Event {
+        id: "agents".into(),
+        msg: EventMsg::AgentStatusUpdate(event.clone()),
+    });
+
+    let entry = chat
+        .agents_terminal
+        .entries
+        .get("agent-1")
+        .expect("expected agent entry");
+    assert_eq!(entry.logs.len(), 2, "expect status + initial progress logged");
+
+    // Duplicate update should not add new logs
+    chat.handle_codex_event(Event {
+        id: "agents".into(),
+        msg: EventMsg::AgentStatusUpdate(event.clone()),
+    });
+    let entry = chat
+        .agents_terminal
+        .entries
+        .get("agent-1")
+        .unwrap();
+    assert_eq!(entry.logs.len(), 2, "duplicate progress should be deduped");
+
+    // Completed update should append status + result
+    event.agents[0].status = "completed".into();
+    event.agents[0].last_progress = Some("12:04:12: finalizing".into());
+    event.agents[0].result = Some("Plan delivered".into());
+
+    chat.handle_codex_event(Event {
+        id: "agents".into(),
+        msg: EventMsg::AgentStatusUpdate(event),
+    });
+
+    let entry = chat
+        .agents_terminal
+        .entries
+        .get("agent-1")
+        .unwrap();
+    assert!(
+        entry
+            .logs
+            .iter()
+            .any(|log| matches!(log.kind, AgentLogKind::Result) && log.message.contains("Plan delivered")),
+        "result log expected"
+    );
+    assert!(
+        entry
+            .logs
+            .iter()
+            .any(|log| matches!(log.kind, AgentLogKind::Status) && log.message.contains("Completed")),
+        "status transition expected"
+    );
+
+    drop(rx);
+}
+
+#[test]
+fn agents_terminal_toggle_via_shortcuts() {
+    let (mut chat, rx, _op_rx) = make_chatwidget_manual();
+    chat.prepare_agents();
+
+    let event = AgentStatusUpdateEvent {
+        agents: vec![ProtocolAgentInfo {
+            id: "agent-1".into(),
+            name: "Gemini".into(),
+            status: "running".into(),
+            batch_id: None,
+            model: Some("gemini-pro".into()),
+            last_progress: Some("progress".into()),
+            result: None,
+            error: None,
+        }],
+        context: None,
+        task: None,
+    };
+
+    chat.handle_codex_event(Event {
+        id: "agents".into(),
+        msg: EventMsg::AgentStatusUpdate(event),
+    });
+
+    assert!(chat.agents_terminal.order.contains(&"agent-1".to_string()));
+    assert!(!chat.agents_terminal.active);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    pump_app_events(&mut chat, &rx);
+    assert!(chat.agents_terminal.active, "Ctrl+A should open terminal");
+
+    // Esc should exit the terminal view
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    pump_app_events(&mut chat, &rx);
+    assert!(!chat.agents_terminal.active, "Esc should exit terminal");
+}
+
+#[test]
+fn agents_terminal_focus_and_scroll_controls() {
+    let (mut chat, rx, _op_rx) = make_chatwidget_manual();
+    chat.prepare_agents();
+
+    let event = AgentStatusUpdateEvent {
+        agents: vec![ProtocolAgentInfo {
+            id: "agent-1".into(),
+            name: "Gemini".into(),
+            status: "running".into(),
+            batch_id: None,
+            model: Some("gemini-pro".into()),
+            last_progress: Some("progress".into()),
+            result: None,
+            error: None,
+        }],
+        context: None,
+        task: None,
+    };
+
+    chat.handle_codex_event(Event {
+        id: "agents".into(),
+        msg: EventMsg::AgentStatusUpdate(event),
+    });
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    pump_app_events(&mut chat, &rx);
+    assert_eq!(chat.agents_terminal.focus(), AgentsTerminalFocus::Sidebar);
+
+    chat.layout.last_history_viewport_height.set(5);
+    chat.layout.last_max_scroll.set(5);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    pump_app_events(&mut chat, &rx);
+    assert_eq!(chat.agents_terminal.focus(), AgentsTerminalFocus::Detail);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    pump_app_events(&mut chat, &rx);
+    assert_eq!(chat.layout.scroll_offset, 1, "Up should scroll output when focused");
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    pump_app_events(&mut chat, &rx);
+    assert!(chat.agents_terminal.active, "Overlay should remain open after first Esc");
+    assert_eq!(chat.agents_terminal.focus(), AgentsTerminalFocus::Sidebar);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    pump_app_events(&mut chat, &rx);
+    assert!(!chat.agents_terminal.active, "Second Esc should close overlay");
+}
+
+#[test]
+fn agents_terminal_esc_closes_from_sidebar() {
+    let (mut chat, rx, _op_rx) = make_chatwidget_manual();
+    chat.prepare_agents();
+
+    let event = AgentStatusUpdateEvent {
+        agents: vec![ProtocolAgentInfo {
+            id: "agent-1".into(),
+            name: "Gemini".into(),
+            status: "running".into(),
+            batch_id: None,
+            model: Some("gemini-pro".into()),
+            last_progress: None,
+            result: None,
+            error: None,
+        }],
+        context: None,
+        task: None,
+    };
+
+    chat.handle_codex_event(Event {
+        id: "agents".into(),
+        msg: EventMsg::AgentStatusUpdate(event),
+    });
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    pump_app_events(&mut chat, &rx);
+    assert!(chat.agents_terminal.active, "overlay should open");
+    assert_eq!(chat.agents_terminal.focus(), AgentsTerminalFocus::Sidebar);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    pump_app_events(&mut chat, &rx);
+    assert!(!chat.agents_terminal.active, "Esc should close from sidebar focus");
+}
+
+fn pump_app_events(chat: &mut ChatWidget<'_>, rx: &std::sync::mpsc::Receiver<AppEvent>) {
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            AppEvent::PrepareAgents => chat.prepare_agents(),
+            AppEvent::DispatchCommand(SlashCommand::Agents, args) => {
+                chat.handle_agents_command(args);
+            }
+            AppEvent::DispatchCommand(SlashCommand::Undo, _command_text) => {
+                chat.handle_undo_command();
+            }
+            AppEvent::ShowUndoOptions { index } => {
+                chat.show_undo_restore_options(index);
+            }
+            AppEvent::PerformUndoRestore { index, restore_files, restore_conversation } => {
+                chat.perform_undo_restore(index, restore_files, restore_conversation);
+            }
+            AppEvent::ShowAgentsOverview => chat.show_agents_overview_ui(),
+            AppEvent::RequestRedraw | AppEvent::Redraw | AppEvent::ScheduleFrameIn(_) => {}
+            _ => {}
+        }
+    }
+}
+
+fn buffer_to_string(buffer: &ratatui::buffer::Buffer) -> String {
+    let area = buffer.area();
+    let mut out = String::with_capacity((area.width as usize + 1) * area.height as usize);
+    for y in 0..area.height {
+        for x in 0..area.width {
+            out.push_str(buffer.get(x, y).symbol());
+        }
+        out.push('\n');
+    }
+    match strip_ansi_bytes(out.as_bytes()) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(_) => out,
+    }
+}
+
 fn open_fixture(name: &str) -> std::fs::File {
     // 1) Prefer fixtures within this crate
     {
@@ -196,6 +733,139 @@ fn open_fixture(name: &str) -> std::fs::File {
     }
     // 3) Last resort: CWD
     File::open(name).expect("open fixture file")
+}
+
+#[test]
+fn slash_agents_opens_overview() {
+    let (mut chat, rx, _op_rx) = make_chatwidget_manual();
+
+    let script = [
+        ScriptStep::key_char('/'),
+        ScriptStep::key_char('a'),
+        ScriptStep::key_char('g'),
+        ScriptStep::key_char('e'),
+        ScriptStep::key_char('n'),
+        ScriptStep::key_char('t'),
+        ScriptStep::key_char('s'),
+        ScriptStep::enter(),
+    ];
+    run_script(&mut chat, &script, &rx);
+
+    let width: u16 = 120;
+    let height = chat.desired_height(width).max(40);
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+        .expect("create terminal");
+    terminal
+        .draw(|f| f.render_widget_ref(&chat, f.area()))
+        .expect("draw agents overview");
+
+    let plain = buffer_to_string(terminal.backend().buffer());
+    let lower = plain.to_ascii_lowercase();
+    assert!(lower.contains("agents"), "expected Agents heading\n{plain}");
+    assert!(lower.contains("commands"), "expected Commands section\n{plain}");
+    assert!(
+        lower.contains("add new"),
+        "expected Add new row in overview\n{plain}"
+    );
+}
+
+#[test]
+fn slash_undo_shows_no_snapshot_state() {
+    let (mut chat, rx, _op_rx) = make_chatwidget_manual();
+
+    let script = [
+        ScriptStep::key_char('/'),
+        ScriptStep::key_char('u'),
+        ScriptStep::key_char('n'),
+        ScriptStep::key_char('d'),
+        ScriptStep::key_char('o'),
+        ScriptStep::enter(),
+    ];
+    run_script(&mut chat, &script, &rx);
+
+    assert!(
+        chat.bottom_pane.has_active_modal_view(),
+        "expected undo modal to be active"
+    );
+
+    let width: u16 = 120;
+    let height = chat.desired_height(width).max(40);
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+        .expect("create terminal");
+    terminal
+        .draw(|f| f.render_widget_ref(&chat, f.area()))
+        .expect("draw undo status");
+
+    let plain = buffer_to_string(terminal.backend().buffer());
+    let lower = plain.to_ascii_lowercase();
+    assert!(
+        lower.contains("no snapshots yet"),
+        "expected undo status title\n{plain}"
+    );
+    assert!(
+        lower.contains("no snapshot is available to restore"),
+        "expected undo status detail\n{plain}"
+    );
+    assert!(
+        lower.contains("chat history stays unchanged"),
+        "expected scope hint to mention chat history\n{plain}"
+    );
+}
+
+#[test]
+fn undo_options_view_shows_toggles() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+
+    chat.history_push(history_cell::new_user_prompt("latest change".to_string()));
+
+    let commit = codex_git_tooling::GhostCommit::new("abcdef1234567890".to_string(), None);
+    chat.ghost_snapshots.push(GhostSnapshot::new(
+        commit,
+        Some("Initial checkpoint".to_string()),
+        ConversationSnapshot::new(0, 0),
+    ));
+
+    chat.show_undo_restore_options(0);
+
+    let width: u16 = 100;
+    let height = chat.desired_height(width).max(24);
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+        .expect("create terminal");
+    terminal
+        .draw(|f| f.render_widget_ref(&chat, f.area()))
+        .expect("draw undo options");
+
+    let plain = buffer_to_string(terminal.backend().buffer());
+    let lower = plain.to_ascii_lowercase();
+    assert!(
+        lower.contains("restore workspace files"),
+        "expected workspace toggle\n{plain}"
+    );
+    assert!(
+        lower.contains("restore conversation"),
+        "expected conversation toggle\n{plain}"
+    );
+}
+
+#[test]
+fn parse_pro_action_supports_core_variants() {
+    let (chat, _rx, _op_rx) = make_chatwidget_manual();
+
+    assert_eq!(chat.parse_pro_action(""), Ok(ProAction::Status));
+    assert_eq!(chat.parse_pro_action("toggle"), Ok(ProAction::Toggle));
+    assert_eq!(chat.parse_pro_action("on"), Ok(ProAction::On));
+    assert_eq!(chat.parse_pro_action("off"), Ok(ProAction::Off));
+    assert_eq!(chat.parse_pro_action("status"), Ok(ProAction::Status));
+    assert_eq!(chat.parse_pro_action("auto"), Ok(ProAction::AutoToggle));
+    assert_eq!(chat.parse_pro_action("auto on"), Ok(ProAction::AutoOn));
+    assert_eq!(chat.parse_pro_action("auto off"), Ok(ProAction::AutoOff));
+    assert_eq!(
+        chat.parse_pro_action("auto status"),
+        Ok(ProAction::AutoStatus)
+    );
+
+    let err = chat.parse_pro_action("auto maybe").unwrap_err();
+    assert!(err.contains("Unknown /pro auto option"));
 }
 
 #[test]

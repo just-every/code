@@ -1,0 +1,391 @@
+{
+  "tools": [
+    {
+      "description": "Build a FAISS index for a Git repository.\n\n    This tool indexes a Git repository (local or remote) using FAISS and Amazon Bedrock embeddings.\n    The index can then be used for semantic search within the repository.\n\n    Args:\n        ctx: MCP context object used for progress tracking and error reporting\n        repository_path: Path to local repository or URL to remote repository\n        output_path: Where to store the index (optional, uses default if not provided)\n        embedding_model: Which AWS embedding model to use\n        include_patterns: Glob patterns for files to include (optional)\n        exclude_patterns: Glob patterns for files to exclude (optional)\n        chunk_size: Maximum size of each chunk in characters\n        chunk_overlap: Overlap between chunks in characters\n\n    Returns:\n        Information about the created index\n    ",
+      "inputSchema": {
+        "properties": {
+          "chunk_overlap": {
+            "default": 200,
+            "description": "Overlap between chunks in characters",
+            "title": "Chunk Overlap",
+            "type": "integer"
+          },
+          "chunk_size": {
+            "default": 1000,
+            "description": "Maximum size of each chunk in characters",
+            "title": "Chunk Size",
+            "type": "integer"
+          },
+          "embedding_model": {
+            "default": "amazon.titan-embed-text-v2:0",
+            "description": "Which AWS embedding model to use",
+            "title": "Embedding Model",
+            "type": "string"
+          },
+          "exclude_patterns": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": [
+              "**/.git/**",
+              "**/.github/**",
+              "**/.svn/**",
+              "**/.hg/**",
+              "**/.bzr/**",
+              "**/node_modules/**",
+              "**/venv/**",
+              "**/.venv/**",
+              "**/env/**",
+              "**/.env/**",
+              "**/__pycache__/**",
+              "**/.pytest_cache/**",
+              "**/.coverage/**",
+              "**/coverage/**",
+              "**/dist/**",
+              "**/build/**",
+              "**/.DS_Store",
+              "**/*.pyc",
+              "**/*.pyo",
+              "**/*.pyd",
+              "**/*.so",
+              "**/*.dll",
+              "**/*.exe",
+              "**/*.bin",
+              "**/*.obj",
+              "**/*.o",
+              "**/*.a",
+              "**/*.lib",
+              "**/*.dylib",
+              "**/*.ncb",
+              "**/*.sdf",
+              "**/*.suo",
+              "**/*.pdb",
+              "**/*.idb",
+              "**/*.jpg",
+              "**/*.jpeg",
+              "**/*.png",
+              "**/*.gif",
+              "**/*.svg",
+              "**/*.ico",
+              "**/*.mp4",
+              "**/*.mov",
+              "**/*.wmv",
+              "**/*.flv",
+              "**/*.avi",
+              "**/*.mkv",
+              "**/*.mp3",
+              "**/*.wav",
+              "**/*.flac",
+              "**/*.zip",
+              "**/*.tar.gz",
+              "**/*.tar",
+              "**/*.rar",
+              "**/*.7z",
+              "**/*.pdf",
+              "**/*.docx",
+              "**/*.xlsx",
+              "**/*.pptx",
+              "**/logs/**",
+              "**/log/**",
+              "**/.idea/**",
+              "**/.vscode/**",
+              "**/.classpath",
+              "**/.project",
+              "**/.settings/**",
+              "**/.gradle/**",
+              "**/target/**"
+            ],
+            "description": "Glob patterns for files to exclude (optional). Defaults to common binary files, build artifacts, and VCS directories.",
+            "title": "Exclude Patterns"
+          },
+          "include_patterns": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": [
+              "**/*.md",
+              "**/*.py",
+              "**/*.js",
+              "**/*.ts",
+              "**/*.java",
+              "**/*.go",
+              "**/*.rs",
+              "**/*.c",
+              "**/*.cpp",
+              "**/*.h",
+              "**/*.hpp",
+              "**/*.cs",
+              "**/*.rb",
+              "**/*.php",
+              "**/*.scala",
+              "**/*.swift",
+              "**/*.kt",
+              "**/*.groovy",
+              "**/*.sh",
+              "**/*.bash",
+              "**/*.ps1",
+              "**/*.md",
+              "**/*.rst",
+              "**/*.txt",
+              "**/*.html",
+              "**/*.css",
+              "**/*.scss",
+              "**/*.sass",
+              "**/*.less",
+              "**/*.json",
+              "**/*.yml",
+              "**/*.yaml",
+              "**/*.xml",
+              "**/*.toml",
+              "**/*.ini",
+              "**/*.cfg",
+              "**/*.conf",
+              "**/*.properties",
+              "**/*.tf",
+              "**/*.tfvars",
+              "**/*.cdk.ts",
+              "**/*.jsx",
+              "**/*.tsx",
+              "**/*.vue",
+              "**/*.sql",
+              "**/*.graphql",
+              "**/*.proto",
+              "**/*.dockerfile",
+              "Dockerfile",
+              "docker-compose.yml",
+              "Makefile",
+              "CMakeLists.txt",
+              "**/*.gradle",
+              "LICENSE",
+              "README*",
+              "CHANGELOG*",
+              "CONTRIBUTING*",
+              "CODE_OF_CONDUCT*"
+            ],
+            "description": "Glob patterns for files to include (optional). Defaults to common source code and documentation files.",
+            "title": "Include Patterns"
+          },
+          "output_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Where to store the index (optional, uses default if not provided)",
+            "title": "Output Path"
+          },
+          "repository_path": {
+            "description": "Path to local repository or URL to remote repository",
+            "title": "Repository Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_path"
+        ],
+        "type": "object"
+      },
+      "name": "create_research_repository",
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "additionalProperties": true,
+            "title": "Result",
+            "type": "object"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "description": "Perform semantic search within an indexed repository.\n\n    This tool searches an indexed repository using semantic search with Amazon Bedrock embeddings.\n    It returns results ranked by relevance to the query.\n\n    Args:\n        ctx: MCP context object used for error reporting\n        index_path: Name of the repository or path to the index to search\n        query: The search query to use for semantic search\n        limit: Maximum number of results to return\n        threshold: Minimum similarity score threshold (0.0 to 1.0)\n\n    Returns:\n        Search results ranked by relevance to the query\n    ",
+      "inputSchema": {
+        "properties": {
+          "index_path": {
+            "description": "Name of the repository or path to the index to search",
+            "title": "Index Path",
+            "type": "string"
+          },
+          "limit": {
+            "default": 10,
+            "description": "Maximum number of results to return",
+            "title": "Limit",
+            "type": "integer"
+          },
+          "query": {
+            "description": "The search query to use for semantic search",
+            "title": "Query",
+            "type": "string"
+          },
+          "threshold": {
+            "default": 0.0,
+            "description": "Minimum similarity score threshold (0.0 to 1.0)",
+            "title": "Threshold",
+            "type": "number"
+          }
+        },
+        "required": [
+          "index_path",
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "search_research_repository",
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "additionalProperties": true,
+            "title": "Result",
+            "type": "object"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "description": "Search for GitHub repositories based on keywords, scoped to specific organizations.\n\n    This tool searches for GitHub repositories using the GitHub REST/GraphQL APIs, scoped to specific GitHub\n    organizations (aws-samples, aws-solutions-library-samples, and awslabs).\n\n    Results are filtered to only include repositories with specific licenses (Apache License 2.0,\n    MIT, and MIT No Attribution) and are sorted by stars (descending) and then by updated date.\n\n    For higher rate limits, you can set the GITHUB_TOKEN environment variable with a GitHub\n    personal access token. Without a token, the API is limited to 60 requests per hour, and requests are\n    made with the REST API. With a token, this increases to 5,000 requests per hour, and requests are made\n    with the GraphQL API.\n\n    Args:\n        ctx: MCP context object used for error reporting\n        keywords: List of keywords to search for\n        num_results: Number of results to return\n\n    Returns:\n        List of GitHub repositories matching the search criteria\n    ",
+      "inputSchema": {
+        "properties": {
+          "keywords": {
+            "description": "List of keywords to search for GitHub repositories",
+            "items": {
+              "type": "string"
+            },
+            "title": "Keywords",
+            "type": "array"
+          },
+          "num_results": {
+            "default": 5,
+            "description": "Number of results to return",
+            "title": "Num Results",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "keywords"
+        ],
+        "type": "object"
+      },
+      "name": "search_repos_on_github",
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "additionalProperties": true,
+            "title": "Result",
+            "type": "object"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "description": "Access file or directory contents.\n\n    This tool provides access to file or directory contents:\n    - If the filepath references a text file, returns the content as a string\n    - If the filepath references a directory, returns an array of files in the directory\n    - If the filepath references a binary image (jpg, png), returns the image data\n\n    For repository files, use the format: repository_name/repository/path/to/file\n    Example: awslabs_mcp/repository/README.md\n\n    For repositories with organization names, both formats are supported:\n    - awslabs_mcp/repository/README.md (with underscore)\n    - awslabs/mcp/repository/README.md (with slash)\n\n    Args:\n        ctx: MCP context object used for error reporting\n        filepath: Path to the file or directory to access\n\n    Returns:\n        File content, directory listing, or image data\n    ",
+      "inputSchema": {
+        "properties": {
+          "filepath": {
+            "description": "Path to the file or directory to access",
+            "title": "Filepath",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filepath"
+        ],
+        "type": "object"
+      },
+      "name": "access_file",
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/ImageContent"
+              }
+            ],
+            "title": "Result"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "description": "Delete an indexed repository.\n\n    This tool deletes an indexed repository and its associated files.\n    It can be identified by repository name or the full path to the index.\n\n    Args:\n        ctx: MCP context object used for error reporting\n        repository_name_or_path: Name of the repository or path to the index to delete\n        index_directory: Directory to look for indices (optional, uses default if not provided)\n\n    Returns:\n        Status of the delete operation\n    ",
+      "inputSchema": {
+        "properties": {
+          "index_directory": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Directory to look for indices (optional, uses default if not provided)",
+            "title": "Index Directory"
+          },
+          "repository_name_or_path": {
+            "description": "Name of the repository or path to the index to delete",
+            "title": "Repository Name Or Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_name_or_path"
+        ],
+        "type": "object"
+      },
+      "name": "delete_research_repository",
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "additionalProperties": true,
+            "title": "Result",
+            "type": "object"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      }
+    }
+  ]
+}

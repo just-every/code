@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "command": "spec-ops-unlock",
+  "specId": "SPEC-KIT-013",
+  "sessionId": "2025-09-27T18:35:52Z-898914632",
+  "timestamp": "2025-09-27T18:35:52Z",
+  "unlock_status": "unlocked",
+  "artifacts": [
+    { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-013/spec-unlock_2025-09-27T18:35:52Z-898914632.log" }
+  ]
+}

@@ -1,40 +1,38 @@
 use std::sync::Arc;
 
-use super::debug_history;
-use super::get_last_assistant_message_from_turn;
-use super::response_input_from_core_items;
 use super::AgentTask;
-use super::MutexExt;
 use super::Session;
 use super::TurnContext;
+use super::get_last_assistant_message_from_turn;
+use crate::Prompt;
 use crate::client_common::ResponseEvent;
-use crate::config_types::ReasoningEffort as ReasoningEffortConfig;
-use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
+use crate::environment_context::EnvironmentContext;
 use crate::error::CodexErr;
 use crate::error::Result as CodexResult;
-use crate::model_family::find_family_for_model;
 use crate::protocol::AgentMessageEvent;
-use crate::protocol::AskForApproval as AskForApprovalCore;
 use crate::protocol::ErrorEvent;
 use crate::protocol::EventMsg;
 use crate::protocol::InputItem;
-use crate::protocol::SandboxPolicy as SandboxPolicyCore;
 use crate::protocol::TaskCompleteEvent;
+use crate::truncate::truncate_middle;
 use crate::util::backoff;
-use crate::Prompt;
 use askama::Template;
-use codex_protocol::config_types::ReasoningEffort as ReasoningEffortProtocol;
-use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryProtocol;
+use base64::Engine;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputPayload;
+use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::InputMessageKind;
 use codex_protocol::protocol::RolloutItem;
-use codex_protocol::protocol::TurnContextItem;
 use futures::prelude::*;
 
-pub(super) const COMPACT_TRIGGER_TEXT: &str = "Start Summarization";
-const SUMMARIZATION_PROMPT: &str = include_str!("../../templates/compact/prompt.md");
+pub const SUMMARIZATION_PROMPT: &str = include_str!("../../templates/compact/prompt.md");
+const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
+const COMPACT_TEXT_CONTENT_MAX_BYTES: usize = 8 * 1024;
+const COMPACT_TOOL_ARGS_MAX_BYTES: usize = 4 * 1024;
+const COMPACT_TOOL_OUTPUT_MAX_BYTES: usize = 4 * 1024;
+const COMPACT_IMAGE_URL_MAX_BYTES: usize = 512;
 
 #[derive(Template)]
 #[template(path = "compact/history_bridge.md", escape = "none")]
@@ -56,6 +54,7 @@ pub(super) fn spawn_compact_task(
         input,
         SUMMARIZATION_PROMPT.to_string(),
     );
+    // set_task is synchronous in our fork
     sess.set_task(task);
 }
 
@@ -65,20 +64,18 @@ pub(super) async fn run_inline_auto_compact_task(
 ) -> Vec<ResponseItem> {
     let sub_id = sess.next_internal_sub_id();
     let input = vec![InputItem::Text {
-        text: COMPACT_TRIGGER_TEXT.to_string(),
+        text: SUMMARIZATION_PROMPT.to_string(),
     }];
-    perform_compaction(
-        Arc::clone(&sess),
-        Arc::clone(&turn_context),
+    run_compact_task_inner_inline(
+        sess,
+        turn_context,
         sub_id,
         input,
         SUMMARIZATION_PROMPT.to_string(),
-        false,
     )
     .await
 }
 
-#[allow(dead_code)]
 pub(super) async fn run_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
@@ -86,18 +83,27 @@ pub(super) async fn run_compact_task(
     input: Vec<InputItem>,
     compact_instructions: String,
 ) {
+    let start_event = sess.make_event(&sub_id, EventMsg::TaskStarted);
+    sess.send_event(start_event).await;
     let _ = perform_compaction(
-        sess,
+        sess.clone(),
         turn_context,
-        sub_id,
+        sub_id.clone(),
         input,
         compact_instructions,
         true,
     )
     .await;
+    let event = sess.make_event(
+        &sub_id,
+        EventMsg::TaskComplete(TaskCompleteEvent {
+            last_agent_message: None,
+        }),
+    );
+    sess.send_event(event).await;
 }
 
-/// Perform a compact operation and return the rebuilt conversation history.
+/// Perform compaction as a background task that updates session history in-place.
 pub(super) async fn perform_compaction(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
@@ -105,65 +111,163 @@ pub(super) async fn perform_compaction(
     input: Vec<InputItem>,
     compact_instructions: String,
     remove_task_on_completion: bool,
-) -> Vec<ResponseItem> {
-    sess
-        .notify_background_event(&sub_id, "Compacting conversation...")
-        .await;
-    let start_event = sess.make_event(&sub_id, EventMsg::TaskStarted);
-    sess.send_event(start_event).await;
+) -> CodexResult<()> {
+    // Convert core InputItem -> ResponseInputItem using the same logic as the main turn flow
+    let initial_input_for_turn: ResponseInputItem = response_input_from_core_items(input);
+    let turn_input = sess.turn_input_with_history(vec![initial_input_for_turn.clone().into()]);
 
-    let initial_input_for_turn = response_input_from_core_items(input);
-    let instructions_override = compact_instructions;
-    let turn_input =
-        sess.turn_input_with_history(vec![initial_input_for_turn.clone().into()]);
+    let turn_input = sanitize_items_for_compact(turn_input);
 
-    let mut prompt = Prompt {
+    let prompt = Prompt {
         input: turn_input,
         store: !sess.disable_response_storage,
-        user_instructions: None,
-        environment_context: None,
+        user_instructions: turn_context.user_instructions.clone(),
+        environment_context: Some(EnvironmentContext::new(
+            Some(turn_context.cwd.clone()),
+            Some(turn_context.approval_policy),
+            Some(turn_context.sandbox_policy.clone()),
+            Some(sess.user_shell.clone()),
+        )),
         tools: Vec::new(),
         status_items: Vec::new(),
-        base_instructions_override: Some(instructions_override),
-        include_additional_instructions: false,
+        base_instructions_override: Some(compact_instructions),
+        include_additional_instructions: true,
         text_format: None,
         model_override: None,
         model_family_override: None,
+        output_schema: None,
     };
-
-    if turn_context.client.get_model() == "gpt-5-codex" {
-        prompt.model_override = Some("gpt-5".to_string());
-        if let Some(family) = find_family_for_model("gpt-5") {
-            prompt.model_family_override = Some(family);
-        }
-    }
 
     let max_retries = turn_context.client.get_provider().stream_max_retries();
     let mut retries = 0;
 
-    loop {
-        let attempt_result =
-            drain_to_completed(&sess, turn_context.as_ref(), &prompt).await;
+    // Do not persist a TurnContext rollout item here; inline compaction is a
+    // background maintenance task and should not affect rollout reconstruction.
 
-        match attempt_result {
-            Ok(()) => {
-                break;
-            }
-            Err(CodexErr::Interrupted) => {
-                return Vec::new();
-            }
+    loop {
+        match drain_to_completed(&sess, turn_context.as_ref(), &prompt).await {
+            Ok(()) => break,
+            Err(CodexErr::Interrupted) => return Err(CodexErr::Interrupted),
             Err(e) => {
                 if retries < max_retries {
                     retries += 1;
                     let delay = backoff(retries);
-                    sess
-                        .notify_stream_error(
-                            &sub_id,
-                            format!(
-                                "stream error: {e}; retrying {retries}/{max_retries} in {delay:?}…"
-                            ),
-                        )
-                        .await;
+                    sess.notify_stream_error(
+                        &sub_id,
+                        format!(
+                            "stream error: {e}; retrying {retries}/{max_retries} in {delay:?}…"
+                        ),
+                    )
+                    .await;
+                    tokio::time::sleep(delay).await;
+                    continue;
+                } else {
+                    let event = sess.make_event(
+                        &sub_id,
+                        EventMsg::Error(ErrorEvent {
+                            message: e.to_string(),
+                        }),
+                    );
+                    sess.send_event(event).await;
+                    return Err(e);
+                }
+            }
+        }
+    }
+
+    if remove_task_on_completion {
+        sess.remove_task(&sub_id);
+    }
+
+    // Snapshot history and compute a compacted version
+    let history_snapshot = {
+        let state = sess.state.lock().unwrap();
+        state.history.contents()
+    };
+    let summary_text = get_last_assistant_message_from_turn(&history_snapshot).unwrap_or_default();
+    let user_messages = collect_user_messages(&history_snapshot);
+    let initial_context = sess.build_initial_context(turn_context.as_ref());
+    let new_history = build_compacted_history(initial_context, &user_messages, &summary_text);
+
+    // Replace session history in-place
+    {
+        let mut state = sess.state.lock().unwrap();
+        // Replace entire history with the compacted one
+        state.history = crate::conversation_history::ConversationHistory::new();
+        state.history.record_items(new_history.iter());
+    }
+
+    let rollout_item = RolloutItem::Compacted(CompactedItem {
+        message: summary_text.clone(),
+    });
+    sess.persist_rollout_items(&[rollout_item]).await;
+
+    let display_message = if summary_text.trim().is_empty() {
+        "Compact task completed.".to_string()
+    } else {
+        summary_text.clone()
+    };
+    let event = sess.make_event(
+        &sub_id,
+        EventMsg::AgentMessage(AgentMessageEvent {
+            message: display_message,
+        }),
+    );
+    sess.send_event(event).await;
+    Ok(())
+}
+
+/// Run compaction and return the rebuilt compact history without mutating session history.
+async fn run_compact_task_inner_inline(
+    sess: Arc<Session>,
+    turn_context: Arc<TurnContext>,
+    sub_id: String,
+    input: Vec<InputItem>,
+    compact_instructions: String,
+) -> Vec<ResponseItem> {
+    // Convert core InputItem -> ResponseInputItem and build prompt
+    let initial_input_for_turn: ResponseInputItem = response_input_from_core_items(input);
+    let turn_input = sess.turn_input_with_history(vec![initial_input_for_turn.clone().into()]);
+
+    let turn_input = sanitize_items_for_compact(turn_input);
+
+    let prompt = Prompt {
+        input: turn_input,
+        store: !sess.disable_response_storage,
+        user_instructions: turn_context.user_instructions.clone(),
+        environment_context: Some(EnvironmentContext::new(
+            Some(turn_context.cwd.clone()),
+            Some(turn_context.approval_policy),
+            Some(turn_context.sandbox_policy.clone()),
+            Some(sess.user_shell.clone()),
+        )),
+        tools: Vec::new(),
+        status_items: Vec::new(),
+        base_instructions_override: Some(compact_instructions),
+        include_additional_instructions: true,
+        text_format: None,
+        model_override: None,
+        model_family_override: None,
+        output_schema: None,
+    };
+
+    let max_retries = turn_context.client.get_provider().stream_max_retries();
+    let mut retries = 0;
+    loop {
+        match drain_to_completed(&sess, turn_context.as_ref(), &prompt).await {
+            Ok(()) => break,
+            Err(CodexErr::Interrupted) => return Vec::new(),
+            Err(e) => {
+                if retries < max_retries {
+                    retries += 1;
+                    let delay = backoff(retries);
+                    sess.notify_stream_error(
+                        &sub_id,
+                        format!(
+                            "stream error: {e}; retrying {retries}/{max_retries} in {delay:?}…"
+                        ),
+                    )
+                    .await;
                     tokio::time::sleep(delay).await;
                     continue;
                 } else {
@@ -180,43 +284,16 @@ pub(super) async fn perform_compaction(
         }
     }
 
-    if remove_task_on_completion {
-        sess.remove_task(&sub_id);
-    }
     let history_snapshot = {
-        let state = sess.state.lock_unchecked();
+        let state = sess.state.lock().unwrap();
         state.history.contents()
     };
     let summary_text = get_last_assistant_message_from_turn(&history_snapshot).unwrap_or_default();
     let user_messages = collect_user_messages(&history_snapshot);
     let initial_context = sess.build_initial_context(turn_context.as_ref());
     let new_history = build_compacted_history(initial_context, &user_messages, &summary_text);
-    {
-        let mut state = sess.state.lock_unchecked();
-        state.history = super::ConversationHistory::new();
-    }
-    sess.record_conversation_items(&new_history).await;
-    {
-        let state = sess.state.lock_unchecked();
-        let snapshot = state.history.contents();
-        debug_history("after_compact_record", &snapshot);
-    }
 
-    // Persist rollout items for traceability and UI reconstruction.
-    let ctx_item = RolloutItem::TurnContext(TurnContextItem {
-        cwd: turn_context.cwd.clone(),
-        approval_policy: map_approval(turn_context.approval_policy),
-        sandbox_policy: map_sandbox(&turn_context.sandbox_policy),
-        model: turn_context.client.get_model(),
-        effort: map_effort(turn_context.client.get_reasoning_effort()),
-        summary: map_summary(turn_context.client.get_reasoning_summary()),
-    });
-    let compact_item = RolloutItem::Compacted(CompactedItem {
-        message: summary_text.clone(),
-    });
-    sess.persist_rollout_items(&[ctx_item, compact_item]).await;
-
-    let message = if summary_text.trim().is_empty() {
+    let display_message = if summary_text.trim().is_empty() {
         "Compact task completed.".to_string()
     } else {
         summary_text.clone()
@@ -224,113 +301,12 @@ pub(super) async fn perform_compaction(
     let event = sess.make_event(
         &sub_id,
         EventMsg::AgentMessage(AgentMessageEvent {
-            message: message.clone(),
-        }),
-    );
-    sess.send_event(event).await;
-    let assistant_summary = ResponseItem::Message {
-        id: None,
-        role: "assistant".to_string(),
-        content: vec![ContentItem::OutputText { text: message }],
-    };
-    {
-        let mut state = sess.state.lock_unchecked();
-        state
-            .history
-            .record_items(std::slice::from_ref(&assistant_summary));
-        let snapshot = state.history.contents();
-        debug_history("after_compact_summary", &snapshot);
-    }
-    sess
-        .persist_rollout_items(&[RolloutItem::ResponseItem(assistant_summary.clone())])
-        .await;
-    let event = sess.make_event(
-        &sub_id,
-        EventMsg::TaskComplete(TaskCompleteEvent {
-            last_agent_message: None,
+            message: display_message,
         }),
     );
     sess.send_event(event).await;
 
-    {
-        let state = sess.state.lock_unchecked();
-        state.history.contents()
-    }
-}
-
-fn map_approval(a: AskForApprovalCore) -> codex_protocol::protocol::AskForApproval {
-    match a {
-        AskForApprovalCore::UnlessTrusted => codex_protocol::protocol::AskForApproval::UnlessTrusted,
-        AskForApprovalCore::OnFailure => codex_protocol::protocol::AskForApproval::OnFailure,
-        AskForApprovalCore::OnRequest => codex_protocol::protocol::AskForApproval::OnRequest,
-        AskForApprovalCore::Never => codex_protocol::protocol::AskForApproval::Never,
-    }
-}
-
-fn map_sandbox(s: &SandboxPolicyCore) -> codex_protocol::protocol::SandboxPolicy {
-    match s {
-        SandboxPolicyCore::DangerFullAccess => codex_protocol::protocol::SandboxPolicy::DangerFullAccess,
-        SandboxPolicyCore::ReadOnly => codex_protocol::protocol::SandboxPolicy::ReadOnly,
-        SandboxPolicyCore::WorkspaceWrite {
-            writable_roots,
-            network_access,
-            exclude_tmpdir_env_var,
-            exclude_slash_tmp,
-            ..
-        } => codex_protocol::protocol::SandboxPolicy::WorkspaceWrite {
-            writable_roots: writable_roots.clone(),
-            network_access: *network_access,
-            exclude_tmpdir_env_var: *exclude_tmpdir_env_var,
-            exclude_slash_tmp: *exclude_slash_tmp,
-        },
-    }
-}
-
-fn map_effort(effort: ReasoningEffortConfig) -> Option<ReasoningEffortProtocol> {
-    match effort {
-        ReasoningEffortConfig::Minimal => Some(ReasoningEffortProtocol::Minimal),
-        ReasoningEffortConfig::Low => Some(ReasoningEffortProtocol::Low),
-        ReasoningEffortConfig::Medium => Some(ReasoningEffortProtocol::Medium),
-        ReasoningEffortConfig::High => Some(ReasoningEffortProtocol::High),
-        ReasoningEffortConfig::None => None,
-    }
-}
-
-fn map_summary(summary: ReasoningSummaryConfig) -> ReasoningSummaryProtocol {
-    match summary {
-        ReasoningSummaryConfig::Auto => ReasoningSummaryProtocol::Auto,
-        ReasoningSummaryConfig::Concise => ReasoningSummaryProtocol::Concise,
-        ReasoningSummaryConfig::Detailed => ReasoningSummaryProtocol::Detailed,
-        ReasoningSummaryConfig::None => ReasoningSummaryProtocol::None,
-    }
-}
-
-async fn drain_to_completed(
-    sess: &Session,
-    turn_context: &TurnContext,
-    prompt: &Prompt,
-) -> CodexResult<()> {
-    let mut stream = turn_context.client.clone().stream(prompt).await?;
-    loop {
-        let maybe_event = stream.next().await;
-        let Some(event) = maybe_event else {
-            return Err(CodexErr::Stream(
-                "stream closed before response.completed".into(),
-                None,
-            ));
-        };
-        match event {
-            Ok(ResponseEvent::OutputItemDone { item, .. }) => {
-                let mut state = sess.state.lock_unchecked();
-                state.history.record_items(std::slice::from_ref(&item));
-            }
-            Ok(ResponseEvent::Completed { .. }) => {
-                return Ok(());
-            }
-            Ok(_) => continue,
-            Err(e) => return Err(e),
-        }
-    }
+    new_history
 }
 
 pub fn content_items_to_text(content: &[ContentItem]) -> Option<String> {
@@ -350,6 +326,108 @@ pub fn content_items_to_text(content: &[ContentItem]) -> Option<String> {
     } else {
         Some(pieces.join("\n"))
     }
+}
+
+fn truncate_for_compact(text: String, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    truncate_middle(&text, max_bytes).0
+}
+
+fn sanitize_items_for_compact(items: Vec<ResponseItem>) -> Vec<ResponseItem> {
+    items
+        .into_iter()
+        .filter_map(|item| match item {
+            ResponseItem::Message { id, role, content } => {
+                let mut filtered_content = Vec::with_capacity(content.len());
+                for content_item in content {
+                    match content_item {
+                        ContentItem::InputText { text } => {
+                            filtered_content.push(ContentItem::InputText {
+                                text: truncate_for_compact(text, COMPACT_TEXT_CONTENT_MAX_BYTES),
+                            });
+                        }
+                        ContentItem::OutputText { text } => {
+                            filtered_content.push(ContentItem::OutputText {
+                                text: truncate_for_compact(text, COMPACT_TEXT_CONTENT_MAX_BYTES),
+                            });
+                        }
+                        ContentItem::InputImage { image_url } => {
+                            if image_url.starts_with("data:")
+                                || image_url.len() > COMPACT_IMAGE_URL_MAX_BYTES
+                            {
+                                let bytes = image_url.len();
+                                filtered_content.push(ContentItem::InputText {
+                                    text: format!("(image omitted for compaction; {bytes} bytes)",),
+                                });
+                            } else {
+                                filtered_content.push(ContentItem::InputImage { image_url });
+                            }
+                        }
+                    }
+                }
+                if filtered_content.is_empty() {
+                    None
+                } else {
+                    Some(ResponseItem::Message {
+                        id,
+                        role,
+                        content: filtered_content,
+                    })
+                }
+            }
+            ResponseItem::FunctionCall {
+                id,
+                name,
+                arguments,
+                call_id,
+            } => {
+                let arguments = truncate_for_compact(arguments, COMPACT_TOOL_ARGS_MAX_BYTES);
+                Some(ResponseItem::FunctionCall {
+                    id,
+                    name,
+                    arguments,
+                    call_id,
+                })
+            }
+            ResponseItem::FunctionCallOutput { call_id, output } => {
+                let FunctionCallOutputPayload { content, success } = output;
+                let content = truncate_for_compact(content, COMPACT_TOOL_OUTPUT_MAX_BYTES);
+                Some(ResponseItem::FunctionCallOutput {
+                    call_id,
+                    output: FunctionCallOutputPayload { content, success },
+                })
+            }
+            ResponseItem::CustomToolCall {
+                id,
+                status,
+                call_id,
+                name,
+                input,
+            } => {
+                let input = truncate_for_compact(input, COMPACT_TOOL_ARGS_MAX_BYTES);
+                Some(ResponseItem::CustomToolCall {
+                    id,
+                    status,
+                    call_id,
+                    name,
+                    input,
+                })
+            }
+            ResponseItem::CustomToolCallOutput { call_id, output } => {
+                let output = truncate_for_compact(output, COMPACT_TOOL_OUTPUT_MAX_BYTES);
+                Some(ResponseItem::CustomToolCallOutput { call_id, output })
+            }
+            ResponseItem::Reasoning { id, summary, .. } => Some(ResponseItem::Reasoning {
+                id,
+                summary,
+                content: None,
+                encrypted_content: None,
+            }),
+            other => Some(other),
+        })
+        .collect()
 }
 
 pub(crate) fn collect_user_messages(items: &[ResponseItem]) -> Vec<String> {
@@ -378,11 +456,17 @@ pub(crate) fn build_compacted_history(
     summary_text: &str,
 ) -> Vec<ResponseItem> {
     let mut history = initial_context;
-    let user_messages_text = if user_messages.is_empty() {
+    let mut user_messages_text = if user_messages.is_empty() {
         "(none)".to_string()
     } else {
         user_messages.join("\n\n")
     };
+    // Truncate the concatenated prior user messages so the bridge message
+    // stays well under the context window (approx. 4 bytes/token).
+    let max_bytes = COMPACT_USER_MESSAGE_MAX_TOKENS * 4;
+    if user_messages_text.len() > max_bytes {
+        user_messages_text = truncate_middle(&user_messages_text, max_bytes).0;
+    }
     let summary_text = if summary_text.is_empty() {
         "(no summary available)".to_string()
     } else {
@@ -401,6 +485,100 @@ pub(crate) fn build_compacted_history(
         content: vec![ContentItem::InputText { text: bridge }],
     });
     history
+}
+
+async fn drain_to_completed(
+    sess: &Session,
+    turn_context: &TurnContext,
+    prompt: &Prompt,
+) -> CodexResult<()> {
+    let mut stream = turn_context.client.clone().stream(prompt).await?;
+    loop {
+        let maybe_event = stream.next().await;
+        let Some(event) = maybe_event else {
+            return Err(CodexErr::Stream(
+                "stream closed before response.completed".into(),
+                None,
+            ));
+        };
+        match event {
+            Ok(ResponseEvent::OutputItemDone { item, .. }) => {
+                let mut state = sess.state.lock().unwrap();
+                state.history.record_items(std::slice::from_ref(&item));
+            }
+            Ok(ResponseEvent::Completed { .. }) => {
+                return Ok(());
+            }
+            Ok(_) => continue,
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+// Helper copied from codex.rs (private there): convert core InputItem -> ResponseInputItem
+fn response_input_from_core_items(items: Vec<InputItem>) -> ResponseInputItem {
+    let mut content_items = Vec::new();
+
+    for item in items {
+        match item {
+            InputItem::Text { text } => {
+                content_items.push(ContentItem::InputText { text });
+            }
+            InputItem::Image { image_url } => {
+                content_items.push(ContentItem::InputImage { image_url });
+            }
+            InputItem::LocalImage { path } => match std::fs::read(&path) {
+                Ok(bytes) => {
+                    let mime = mime_guess::from_path(&path)
+                        .first()
+                        .map(|m| m.essence_str().to_owned())
+                        .unwrap_or_else(|| "application/octet-stream".to_string());
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+                    content_items.push(ContentItem::InputImage {
+                        image_url: format!("data:{mime};base64,{encoded}"),
+                    });
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "Skipping image {} – could not read file: {}",
+                        path.display(),
+                        err
+                    );
+                }
+            },
+            InputItem::EphemeralImage { path, metadata } => {
+                if let Some(meta) = metadata {
+                    content_items.push(ContentItem::InputText {
+                        text: format!("[EPHEMERAL:{}]", meta),
+                    });
+                }
+                match std::fs::read(&path) {
+                    Ok(bytes) => {
+                        let mime = mime_guess::from_path(&path)
+                            .first()
+                            .map(|m| m.essence_str().to_owned())
+                            .unwrap_or_else(|| "application/octet-stream".to_string());
+                        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+                        content_items.push(ContentItem::InputImage {
+                            image_url: format!("data:{mime};base64,{encoded}"),
+                        });
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            "Failed to read ephemeral image {} – {}",
+                            path.display(),
+                            err
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    ResponseInputItem::Message {
+        role: "user".to_string(),
+        content: content_items,
+    }
 }
 
 #[cfg(test)]
@@ -497,5 +675,39 @@ mod tests {
         let collected = collect_user_messages(&items);
 
         assert_eq!(vec!["real user message".to_string()], collected);
+    }
+
+    #[test]
+    fn build_compacted_history_truncates_overlong_user_messages() {
+        // Prepare a very large prior user message so the aggregated
+        // `user_messages_text` exceeds the truncation threshold used by
+        // `build_compacted_history` (80k bytes).
+        let big = "X".repeat(200_000);
+        let history = build_compacted_history(Vec::new(), std::slice::from_ref(&big), "SUMMARY");
+
+        // Expect exactly one bridge message added to history (plus any initial context we provided, which is none).
+        assert_eq!(history.len(), 1);
+
+        // Extract the text content of the bridge message.
+        let bridge_text = match &history[0] {
+            ResponseItem::Message { role, content, .. } if role == "user" => {
+                content_items_to_text(content).unwrap_or_default()
+            }
+            other => panic!("unexpected item in history: {other:?}"),
+        };
+
+        // The bridge should contain the truncation marker and not the full original payload.
+        assert!(
+            bridge_text.contains("tokens truncated"),
+            "expected truncation marker in bridge message"
+        );
+        assert!(
+            !bridge_text.contains(&big),
+            "bridge should not include the full oversized user text"
+        );
+        assert!(
+            bridge_text.contains("SUMMARY"),
+            "bridge should include the provided summary text"
+        );
     }
 }
