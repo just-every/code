@@ -2,8 +2,8 @@ use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Duration, Utc};
 use crate::protocol::RateLimitSnapshotEvent;
+use chrono::{DateTime, Duration, Utc};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json;
@@ -301,12 +301,11 @@ pub fn list_rate_limit_snapshots(
             let data: AccountUsageData = match serde_json::from_str(&contents) {
                 Ok(data) => data,
                 Err(_) => continue,
-                };
+            };
             let rate = data.rate_limit.unwrap_or_default();
             let primary_next_reset_at = rate.primary_next_reset_at;
-            let secondary_next_reset_at = rate
-                .secondary_next_reset_at
-                .or(rate.primary_next_reset_at);
+            let secondary_next_reset_at =
+                rate.secondary_next_reset_at.or(rate.primary_next_reset_at);
             results.push(StoredRateLimitSnapshot {
                 account_id: data.account_id,
                 plan: data.plan,
@@ -384,8 +383,8 @@ pub fn load_account_usage(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs::File;
     use crate::protocol::TokenUsage;
+    use std::fs::File;
     use tempfile::TempDir;
 
     fn sample_usage() -> TokenUsage {
@@ -403,14 +402,8 @@ mod tests {
         let home = TempDir::new().expect("tempdir");
         let now = Utc::now();
 
-        record_token_usage(
-            home.path(),
-            "acct-1",
-            Some("Team"),
-            &sample_usage(),
-            now,
-        )
-        .expect("record usage");
+        record_token_usage(home.path(), "acct-1", Some("Team"), &sample_usage(), now)
+            .expect("record usage");
 
         let path = usage_file_path(home.path(), "acct-1");
         let mut contents = String::new();

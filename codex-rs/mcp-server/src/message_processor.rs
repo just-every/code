@@ -1,34 +1,35 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::codex_message_processor::CodexMessageProcessor;
-use crate::codex_tool_config::create_tool_for_acp_new_session;
-use crate::codex_tool_config::create_tool_for_acp_prompt;
-use crate::codex_tool_config::create_tool_for_codex_tool_call_param;
-use crate::codex_tool_config::create_tool_for_codex_tool_call_reply_param;
 use crate::codex_tool_config::AcpNewSessionToolArgs;
 use crate::codex_tool_config::AcpPromptToolArgs;
 use crate::codex_tool_config::CodexToolCallParam;
 use crate::codex_tool_config::CodexToolCallReplyParam;
-use crate::error_code::INVALID_REQUEST_ERROR_CODE;
+use crate::codex_tool_config::create_tool_for_acp_new_session;
+use crate::codex_tool_config::create_tool_for_acp_prompt;
+use crate::codex_tool_config::create_tool_for_codex_tool_call_param;
+use crate::codex_tool_config::create_tool_for_codex_tool_call_reply_param;
+use crate::codex_tool_config::create_tool_for_spec_consensus_check;
 use crate::error_code::INTERNAL_ERROR_CODE;
+use crate::error_code::INVALID_REQUEST_ERROR_CODE;
 use crate::outgoing_message::OutgoingMessageSender;
 use agent_client_protocol as acp;
-use anyhow::anyhow;
 use anyhow::Context as _;
+use anyhow::anyhow;
 use codex_protocol::mcp_protocol::ClientRequest;
 use codex_protocol::mcp_protocol::ConversationId;
 
 use codex_core::AuthManager;
+use codex_core::CodexConversation;
 use codex_core::ConversationManager;
-use codex_core::config_types::McpServerConfig;
-use codex_core::config_types::ClientTools;
 use codex_core::config::Config;
+use codex_core::config_types::ClientTools;
+use codex_core::config_types::McpServerConfig;
 use codex_core::default_client::USER_AGENT_SUFFIX;
 use codex_core::default_client::get_codex_user_agent_default;
-use codex_core::CodexConversation;
-use codex_core::protocol::Submission;
 use codex_core::protocol::Op;
+use codex_core::protocol::Submission;
 use codex_protocol::mcp_protocol::AuthMode;
 use mcp_types::CallToolRequestParams;
 use mcp_types::CallToolResult;
@@ -44,7 +45,8 @@ use mcp_types::ModelContextProtocolRequest;
 use mcp_types::RequestId;
 use mcp_types::ServerNotification;
 use mcp_types::TextContent;
-use serde_json::json;
+use serde::Deserialize;
+use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::task;
@@ -117,8 +119,7 @@ impl MessageProcessor {
             if let Some(params) = request.params.clone() {
                 match serde_json::from_value::<AcpNewSessionToolArgs>(params) {
                     Ok(session_params) => {
-                        self.handle_session_new(request_id, session_params)
-                            .await;
+                        self.handle_session_new(request_id, session_params).await;
                     }
                     Err(err) => {
                         tracing::warn!("Failed to parse session/new params: {err}");
@@ -146,8 +147,7 @@ impl MessageProcessor {
             if let Some(params) = request.params.clone() {
                 match serde_json::from_value::<AcpPromptToolArgs>(params) {
                     Ok(prompt_params) => {
-                        self.handle_session_prompt(request_id, prompt_params)
-                            .await;
+                        self.handle_session_prompt(request_id, prompt_params).await;
                     }
                     Err(err) => {
                         tracing::warn!("Failed to parse session/prompt params: {err}");
@@ -481,6 +481,7 @@ impl MessageProcessor {
                 create_tool_for_codex_tool_call_reply_param(),
                 create_tool_for_acp_new_session(),
                 create_tool_for_acp_prompt(),
+                create_tool_for_spec_consensus_check(),
             ],
             next_cursor: None,
         };
@@ -509,6 +510,7 @@ impl MessageProcessor {
             _ if name == acp::AGENT_METHOD_NAMES.session_prompt => {
                 self.handle_tool_call_acp_prompt(id, arguments).await
             }
+            "spec_consensus_check" => self.handle_tool_call_spec_consensus(id, arguments).await,
             _ => {
                 let result = CallToolResult {
                     content: vec![ContentBlock::TextContent(TextContent {
@@ -746,7 +748,8 @@ impl MessageProcessor {
         tracing::info!("session_id: {session_id}");
 
         // Obtain the Codex conversation from the session map, falling back to the conversation manager.
-        let codex_arc = if let Some(conv) = self.session_map.lock().await.get(&session_id).cloned() {
+        let codex_arc = if let Some(conv) = self.session_map.lock().await.get(&session_id).cloned()
+        {
             conv
         } else {
             match self
@@ -857,21 +860,14 @@ impl MessageProcessor {
         });
     }
 
-    fn acp_new_session_cfg(
-        &self,
-        arguments: Option<serde_json::Value>,
-    ) -> anyhow::Result<Config> {
+    fn acp_new_session_cfg(&self, arguments: Option<serde_json::Value>) -> anyhow::Result<Config> {
         let arguments = arguments.context("Arguments required")?;
         let arguments = serde_json::from_value::<AcpNewSessionToolArgs>(arguments)?;
         let request = serde_json::from_value::<acp::NewSessionRequest>(arguments.request)?;
         self.build_new_session_config(request, arguments.client_tools)
     }
 
-    async fn handle_session_new(
-        &self,
-        request_id: RequestId,
-        params: AcpNewSessionToolArgs,
-    ) {
+    async fn handle_session_new(&self, request_id: RequestId, params: AcpNewSessionToolArgs) {
         let config = match self.session_new_config(params) {
             Ok(cfg) => cfg,
             Err(err) => {
@@ -927,8 +923,8 @@ impl MessageProcessor {
         override_tools: Option<ClientTools>,
     ) -> anyhow::Result<Config> {
         let mcp_servers = convert_mcp_servers(request.mcp_servers)?;
-        let client_tools = override_tools
-            .or_else(|| self.base_config.experimental_client_tools.clone());
+        let client_tools =
+            override_tools.or_else(|| self.base_config.experimental_client_tools.clone());
 
         let overrides = codex_core::config::ConfigOverrides {
             cwd: Some(request.cwd),
@@ -937,14 +933,13 @@ impl MessageProcessor {
             ..Default::default()
         };
 
-        Ok(Config::load_with_cli_overrides(Default::default(), overrides)?)
+        Ok(Config::load_with_cli_overrides(
+            Default::default(),
+            overrides,
+        )?)
     }
 
-    async fn handle_session_prompt(
-        &self,
-        request_id: RequestId,
-        params: AcpPromptToolArgs,
-    ) {
+    async fn handle_session_prompt(&self, request_id: RequestId, params: AcpPromptToolArgs) {
         let acp_session_id = params.session_id;
         let session_uuid = match Uuid::parse_str(&acp_session_id.to_string()) {
             Ok(id) => id,
@@ -1068,7 +1063,9 @@ impl MessageProcessor {
                 .await
                 .insert(request_id.clone(), session_id);
 
-            let result = crate::acp_tool_runner::prompt(acp_session_id, session, prompt, outgoing.clone()).await;
+            let result =
+                crate::acp_tool_runner::prompt(acp_session_id, session, prompt, outgoing.clone())
+                    .await;
 
             let result = match result {
                 Ok(stop_reason) => {
@@ -1147,10 +1144,12 @@ impl MessageProcessor {
         let request_ids: Vec<RequestId> = {
             let map = self.running_requests_id_to_codex_uuid.lock().await;
             map.iter()
-                .filter_map(|(request_id, uuid)| if *uuid == session_uuid {
-                    Some(request_id.clone())
-                } else {
-                    None
+                .filter_map(|(request_id, uuid)| {
+                    if *uuid == session_uuid {
+                        Some(request_id.clone())
+                    } else {
+                        None
+                    }
                 })
                 .collect()
         };
@@ -1182,6 +1181,130 @@ impl MessageProcessor {
         }
     }
 
+    async fn handle_tool_call_spec_consensus(
+        &self,
+        request_id: RequestId,
+        arguments: Option<Value>,
+    ) {
+        #[derive(Debug, Deserialize)]
+        struct ConsensusArtifact {
+            agent: String,
+            #[serde(default)]
+            version: Option<String>,
+            #[serde(default)]
+            content: Value,
+        }
+
+        #[derive(Debug, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct ConsensusRequest {
+            #[serde(rename = "specId")]
+            spec_id: String,
+            stage: String,
+            artifacts: Vec<ConsensusArtifact>,
+        }
+
+        let Some(args_value) = arguments else {
+            let result = CallToolResult {
+                content: vec![ContentBlock::TextContent(TextContent {
+                    r#type: "text".to_string(),
+                    text: "Missing arguments for spec_consensus_check".to_string(),
+                    annotations: None,
+                })],
+                is_error: Some(true),
+                structured_content: None,
+            };
+            self.send_response::<mcp_types::CallToolRequest>(request_id, result)
+                .await;
+            return;
+        };
+
+        let request: ConsensusRequest = match serde_json::from_value(args_value) {
+            Ok(req) => req,
+            Err(err) => {
+                let result = CallToolResult {
+                    content: vec![ContentBlock::TextContent(TextContent {
+                        r#type: "text".to_string(),
+                        text: format!("Failed to parse spec_consensus_check arguments: {err}"),
+                        annotations: None,
+                    })],
+                    is_error: Some(true),
+                    structured_content: None,
+                };
+                self.send_response::<mcp_types::CallToolRequest>(request_id, result)
+                    .await;
+                return;
+            }
+        };
+
+        let stage_normalized = request.stage.to_ascii_lowercase();
+        let expected_agents = expected_agents_for_stage(&stage_normalized);
+
+        let mut present_agents: HashSet<String> = HashSet::new();
+        let mut aggregator_summary: Option<Value> = None;
+        let mut agreements: Vec<String> = Vec::new();
+        let mut conflicts: Vec<String> = Vec::new();
+
+        for artifact in &request.artifacts {
+            present_agents.insert(artifact.agent.to_ascii_lowercase());
+            if artifact.agent.eq_ignore_ascii_case("gpt_pro") {
+                let consensus_node = artifact
+                    .content
+                    .get("consensus")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                agreements = extract_string_list(consensus_node.get("agreements"));
+                conflicts = extract_string_list(consensus_node.get("conflicts"));
+                aggregator_summary = Some(artifact.content.clone());
+            }
+        }
+
+        let missing_agents: Vec<String> = expected_agents
+            .iter()
+            .map(|agent| agent.to_string())
+            .filter(|agent| !present_agents.contains(agent))
+            .collect();
+
+        let aggregator_missing = aggregator_summary.is_none();
+        let required_fields_ok = aggregator_summary
+            .as_ref()
+            .map(|summary| validate_required_fields(&stage_normalized, summary))
+            .unwrap_or(false);
+
+        let degraded = aggregator_missing || !missing_agents.is_empty();
+        let consensus_ok = !aggregator_missing && conflicts.is_empty() && required_fields_ok;
+
+        let summary_value = aggregator_summary.clone().unwrap_or(Value::Null);
+
+        let result_payload = json!({
+            "specId": request.spec_id,
+            "stage": stage_normalized,
+            "consensusOk": consensus_ok,
+            "degraded": degraded,
+            "missingAgents": missing_agents,
+            "agreements": agreements,
+            "conflicts": conflicts,
+            "requiredFieldsOk": required_fields_ok,
+            "aggregator": summary_value,
+        });
+
+        let summary_text =
+            serde_json::to_string_pretty(&result_payload).unwrap_or_else(|_| "{}".to_string());
+
+        let result = CallToolResult {
+            content: vec![ContentBlock::TextContent(TextContent {
+                r#type: "text".to_string(),
+                text: summary_text,
+                annotations: None,
+            })],
+            is_error: Some(!consensus_ok),
+            structured_content: Some(result_payload),
+        };
+
+        self.send_response::<mcp_types::CallToolRequest>(request_id, result)
+            .await;
+    }
+
     fn handle_tool_list_changed(
         &self,
         params: <mcp_types::ToolListChangedNotification as mcp_types::ModelContextProtocolNotification>::Params,
@@ -1189,11 +1312,79 @@ impl MessageProcessor {
         tracing::info!("notifications/tools/list_changed -> params: {:?}", params);
     }
 
-fn handle_logging_message(
+    fn handle_logging_message(
         &self,
         params: <mcp_types::LoggingMessageNotification as mcp_types::ModelContextProtocolNotification>::Params,
     ) {
         tracing::info!("notifications/message -> params: {:?}", params);
+    }
+}
+
+fn expected_agents_for_stage(stage: &str) -> Vec<&'static str> {
+    match stage {
+        "spec-plan" => vec!["gemini", "claude", "gpt_pro"],
+        "spec-tasks" => vec!["gemini", "claude", "gpt_pro"],
+        "spec-implement" => vec!["gemini", "claude", "gpt_pro"],
+        "spec-validate" => vec!["gemini", "claude", "gpt_pro"],
+        "spec-audit" => vec!["gemini", "claude", "gpt_pro"],
+        "spec-unlock" => vec!["gemini", "claude", "gpt_pro"],
+        _ => vec!["gpt_pro"],
+    }
+}
+
+fn extract_string_list(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    if let Some(s) = item.as_str() {
+                        Some(s.to_string())
+                    } else if item.is_object() || item.is_array() {
+                        serde_json::to_string(item).ok()
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn validate_required_fields(stage: &str, summary: &Value) -> bool {
+    match stage {
+        "spec-plan" => summary
+            .get("final_plan")
+            .and_then(|plan| plan.get("work_breakdown"))
+            .and_then(|wb| wb.as_array())
+            .map(|wb| !wb.is_empty())
+            .unwrap_or(false),
+        "spec-tasks" => summary
+            .get("validated_tasks")
+            .and_then(|tasks| tasks.as_array())
+            .map(|tasks| !tasks.is_empty())
+            .unwrap_or(false),
+        "spec-implement" => summary
+            .get("checklist")
+            .and_then(|list| list.as_array())
+            .map(|list| !list.is_empty())
+            .unwrap_or(false),
+        "spec-validate" => summary
+            .get("decision")
+            .and_then(|d| d.as_str())
+            .map(|d| !d.is_empty())
+            .unwrap_or(false),
+        "spec-audit" => summary
+            .get("recommendation")
+            .and_then(|d| d.as_str())
+            .map(|d| !d.is_empty())
+            .unwrap_or(false),
+        "spec-unlock" => summary
+            .get("decision")
+            .and_then(|d| d.as_str())
+            .map(|d| !d.is_empty())
+            .unwrap_or(false),
+        _ => true,
     }
 }
 
@@ -1203,12 +1394,19 @@ fn convert_mcp_servers(
     let mut map = HashMap::with_capacity(servers.len());
     for server in servers {
         match server {
-            acp::McpServer::Stdio { name, command, args, env } => {
-                let env_map: HashMap<String, String> = env
-                    .into_iter()
-                    .map(|var| (var.name, var.value))
-                    .collect();
-                let env_map = if env_map.is_empty() { None } else { Some(env_map) };
+            acp::McpServer::Stdio {
+                name,
+                command,
+                args,
+                env,
+            } => {
+                let env_map: HashMap<String, String> =
+                    env.into_iter().map(|var| (var.name, var.value)).collect();
+                let env_map = if env_map.is_empty() {
+                    None
+                } else {
+                    Some(env_map)
+                };
 
                 map.insert(
                     name,

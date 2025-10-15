@@ -1,9 +1,9 @@
 #![allow(clippy::unwrap_used)]
+use std::io;
 use std::net::SocketAddr;
 use std::net::TcpListener;
-use std::io;
-use std::time::Duration;
 use std::thread;
+use std::time::Duration;
 
 use anyhow::Result;
 use base64::Engine;

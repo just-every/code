@@ -40,7 +40,9 @@ pub(crate) static PLAN_TOOL: LazyLock<OpenAiTool> = LazyLock::new(|| {
     properties.insert(
         "name".to_string(),
         JsonSchema::String {
-            description: Some("2-5 word title describing the plan e.g. 'Fix Box Rendering'".to_string()),
+            description: Some(
+                "2-5 word title describing the plan e.g. 'Fix Box Rendering'".to_string(),
+            ),
         },
     );
     properties.insert("plan".to_string(), plan_items_schema);
@@ -189,7 +191,8 @@ fn canonicalize_word_boundaries(input: &str) -> String {
 }
 
 const KNOWN_ACRONYMS: &[&str] = &[
-    "AI", "API", "CLI", "CPU", "DB", "GPU", "HTTP", "HTTPS", "ID", "LLM", "SDK", "SQL", "TUI", "UI", "UX",
+    "AI", "API", "CLI", "CPU", "DB", "GPU", "HTTP", "HTTPS", "ID", "LLM", "SDK", "SQL", "TUI",
+    "UI", "UX",
 ];
 
 fn format_plan_word(word: &str) -> String {

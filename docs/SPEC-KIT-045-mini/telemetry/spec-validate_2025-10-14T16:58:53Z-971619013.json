@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "command": "spec-ops-validate",
+  "specId": "SPEC-KIT-045-mini",
+  "sessionId": "2025-10-14T16:58:53Z-971619013",
+  "timestamp": "2025-10-14T16:58:53Z",
+  "scenarios": [
+    {
+      "name": "validate guardrail bootstrap",
+      "status": "skipped"
+    }
+  ],
+  "policy": {
+  "prefilter": {
+    "model": "gpt-5-codex",
+    "status": "passed",
+    "note": "true"
+  },
+  "final": {
+    "model": "gpt-5",
+    "status": "passed",
+    "note": "true"
+  }
+},
+  "artifacts": [
+    { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-validate_2025-10-14T16:58:53Z-971619013.log" }, { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/20251014-165853Z-hal-mock.json" }
+  ],
+  "hal": {
+    "summary": {
+      "status": "skipped",
+      "artifacts": ["/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/20251014-165853Z-hal-mock.json"]
+    }
+  }
+}

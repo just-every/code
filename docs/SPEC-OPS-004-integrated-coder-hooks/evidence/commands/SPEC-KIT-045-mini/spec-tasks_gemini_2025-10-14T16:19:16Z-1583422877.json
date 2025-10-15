@@ -1,0 +1,22 @@
+{
+  "stage": "spec-tasks",
+  "prompt_version": "20251014-tasks-a",
+  "agent": "gemini",
+  "model": "gemini-pro",
+  "model_release": "2025-09",
+  "reasoning_mode": "thinking",
+  "research_summary": [
+    {
+      "topic": "Surfaces",
+      "details": "Key files for this task are `docs/SPEC-KIT-045-mini/tasks.md` and `SPEC.md`. The script `scripts/spec-kit/lint_tasks.py` is a required validation tool. Evidence directories under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/` will be populated."
+    },
+    {
+      "topic": "Dependencies",
+      "details": "This stage depends on the successful completion and telemetry output of the plan stage, specifically `spec-plan_2025-10-14T15:58:30Z-79323873.{json,log}`. It also relies on the task guardrail telemetry: `spec-tasks_2025-10-14T16:19:16Z-1583422877.{json,log}`."
+    },
+    {
+      "topic": "SPEC.md Status",
+      "details": "Task T49 in `SPEC.md` must be updated. The current status needs to be changed to `In Progress`, and all other tasks should not have this status. The branch and evidence columns must be updated to reflect the new `feat/spec-auto-telemetry` branch and the `2025-10-14` evidence sets."
+    }
+  ]
+}

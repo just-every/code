@@ -1,0 +1,64 @@
+{
+  "stage": "spec-implement",
+  "prompt_version": "20251002-implement-a",
+  "agent": "gpt_pro",
+  "model": "gpt-5",
+  "model_release": "2025-09-29",
+  "reasoning_mode": "high",
+  "checklist": [
+    {
+      "step": "Verify SPEC directory exists",
+      "command": "test -d docs/SPEC-KIT-025-add-automated-conflict-resolution-with"
+    },
+    {
+      "step": "Confirm feature branch",
+      "command": "git rev-parse --abbrev-ref HEAD"
+    },
+    {
+      "step": "Allow dirty tree or commit",
+      "command": "export SPEC_OPS_ALLOW_DIRTY=1"
+    },
+    {
+      "step": "Run implement guardrail",
+      "command": "scripts/env_run.sh scripts/spec_ops_004/commands/spec_ops_implement.sh SPEC-KIT-025-add-automated-conflict-resolution-with --manifest-path codex-rs/Cargo.toml"
+    },
+    {
+      "step": "Locate telemetry file",
+      "command": "ls -1 docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-025-add-automated-conflict-resolution-with/spec-implement_*.json | tail -n 1"
+    },
+    {
+      "step": "Validate telemetry payload",
+      "command": "jq -re '.command==\"spec-ops-implement\" and .schemaVersion==1 and (.lock_status|length>0) and (.hook_status|length>0)' $(ls -1 docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-025-add-automated-conflict-resolution-with/spec-implement_*.json | tail -n 1)"
+    }
+  ],
+  "risks": [
+    {
+      "risk": "Dirty working tree blocks guardrails",
+      "mitigation": "Set SPEC_OPS_ALLOW_DIRTY=1 or commit/stash before running"
+    },
+    {
+      "risk": "Missing Code CLI prevents policy layers",
+      "mitigation": "Policy checks degrade to 'skipped'; set SPEC_OPS_CODE_CLI to built binary if needed"
+    },
+    {
+      "risk": "SPEC ID naming mismatch (short vs long)",
+      "mitigation": "Use SPEC-KIT-025-add-automated-conflict-resolution-with consistently across commands and paths"
+    },
+    {
+      "risk": "Telemetry schema drift",
+      "mitigation": "Verify required keys in telemetry JSON; keep scripts/spec_ops_004/check_synthesis.py aligned with schema v1"
+    }
+  ],
+  "consensus": {
+    "agreements": [
+      "Guardrail script spec_ops_implement.sh exists and is executable",
+      "TUI maps /spec-ops-implement to scripts/spec_ops_004/commands/spec_ops_implement.sh",
+      "Implement telemetry (schema v1) includes lock_status and hook_status",
+      "Feature branch active; diffs apply only when orchestrator runs"
+    ],
+    "conflicts": [
+      "SPEC ID short vs long naming; evidence uses long slug",
+      "Working tree currently dirty; guardrails typically expect clean state"
+    ]
+  }
+}

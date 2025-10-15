@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "command": "spec-ops-implement",
+  "specId": "SPEC-KIT-DEMO",
+  "sessionId": "2025-10-03T19:51:30Z-18443457",
+  "timestamp": "2025-10-03T19:51:50Z",
+  "lock_status": "locked",
+  "hook_status": "ok",
+  "policy": {
+  "prefilter": {
+    "model": "o4-mini-high",
+    "status": "passed",
+    "note": "/home/thetu/code/codex-rs/target/dev-fast/code exec --sandbox read-only --model o4-mini-high -- \"Policy prefilter for SPEC-KIT-DEMO/spec-implement\""
+  },
+  "final": {
+    "model": "o4-mini-high",
+    "status": "passed",
+    "note": "/home/thetu/code/codex-rs/target/dev-fast/code exec --sandbox read-only --model o4-mini-high -- \"Policy final check for SPEC-KIT-DEMO/spec-implement\""
+  }
+},
+  "artifacts": [
+    { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-DEMO/spec-implement_2025-10-03T19:51:30Z-18443457.log" }
+  ]
+}

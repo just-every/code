@@ -25,7 +25,7 @@ impl WidgetRef for &WelcomeWidget {
             ),
         ]);
         line1.render(area, buf);
-        
+
         // Render second line below the first
         if area.height > 1 {
             let line2 = Line::from(vec![

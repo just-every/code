@@ -1,0 +1,21 @@
+# Copy this file into your product repository (e.g., ~/kavedarr/docs/hal/hal_config.toml)
+# and replace the placeholder paths with project-specific values.
+
+[mcp_servers.hal]
+command = "npx"
+args = ["-y", "hal-mcp"]
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+
+env = {
+    # Local Kavedarr API base URL. Update if your stack binds a different host/port.
+    HAL_API_BASE_URL = "http://127.0.0.1:7878",
+
+    # Path to the request profile shipped alongside this template.
+    # Replace <project-root> with the absolute path to the product repository.
+    HAL_PROFILE = "/<project-root>/docs/hal/hal_profile.json",
+
+    # Secret is resolved through the Codex secret store. Run `code secrets set` to
+    # provision HAL_SECRET_KAVEDARR_API_KEY before starting the MCP server.
+    HAL_SECRET_KAVEDARR_API_KEY = "{secrets.HAL_SECRET_KAVEDARR_API_KEY}"
+}

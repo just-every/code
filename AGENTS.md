@@ -11,24 +11,94 @@
 - Treat `SPEC.md` as the single source of truth for tracker status. Use `docs/SPEC-<AREA>-<slug>/spec.md` for per‑feature design detail and `docs/SPEC-<AREA>-<slug>/tasks.md` as the per‑feature working task list produced by `/tasks`. Do not use a global TASKS.md.
 - Reuse `templates/plan-template.md` when producing plans and `templates/tasks-template.md` for `/tasks` outputs.
 - Run `scripts/spec_ops_004/baseline_audit.sh --out docs/SPEC-OPS-004-integrated-coder-hooks/baseline.md` before installing hooks or commands; rerun after Code CLI upgrades.
+- Local Memory guardrail: always search local-memory for relevant context before answering, then store new decisions/solutions/insights with consistent tags (importance ≥7) and link related memories; update or retire stale entries as work evolves. Any insight retrieved from Byterover **must** be mirrored into local-memory immediately so local-memory remains the authoritative source, with Byterover used only as a fallback when a local entry is missing.
 
 ## 1) Command mapping (Spec Kit ↔ just-every/code)
-- `/constitution` → Parallel claude/gemini/code run editing `memory/constitution.md` and `product-requirements.md`; capture evidence, surface disagreements, and require manual confirmation for guardrail changes.
-- `/specify` → Single high-reasoning GPT-5 Codex session that drafts/updates `docs/SPEC-<AREA>-<slug>/PRD.md` and synchronizes the SPEC.md Tasks table entry (PRD path, summary, status).
-- `/plan` → Multi-agent consensus (claude/gemini/qwen/code) consuming the PRD (and existing spec.md if present) to emit `docs/SPEC-<AREA>-<slug>/plan.md` via the Spec Kit skeleton, explicitly logging agreement vs. dissent.
-- `/tasks` → Multi-agent synthesis that ingests the plan, updates the SPEC.md Tasks table, and writes a per‑feature working file `docs/SPEC-<AREA>-<slug>/tasks.md` (agent‑approved steps with validation hooks/evidence).
-- `/implement` → Multi-agent execution guided by the spec; synthesize the strongest diff, apply locally, then run required env_run.sh validation commands and attach results.
-- `/cmd spec-ops-plan|tasks|implement|validate|review|unlock` → SPEC-OPS-004 project commands; they run clean-tree and branch guardrails, trigger project hooks, and log evidence under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/`.
 
-## 2) Multi-AI behavior (required)
-- `/constitution`: run the listed agents in parallel, surface disagreements before writing.
-- `/plan`: run **consensus** across GPT-5 Codex, Claude Code, Gemini, and Qwen (document degradations if any agent is unavailable); resolve disagreements explicitly under **“Consensus & Risks.”**
-- `/tasks`: race agents for candidate task breakdowns, synthesize a combined spec, and document compare/contrast notes.
-- `/implement`: allow agents to explore implementations independently, then synthesize the strongest proposal; run validation commands afterward.
+### Core /speckit.* Commands (Phase 3 standardized namespace)
 
+**Intake & Creation:**
+- `/speckit.new <description>` → Create new SPEC with multi-agent PRD consensus (Tier 2: gemini, claude, code). Uses templates for consistent structure. ~13 min, ~$0.60.
+- `/speckit.specify SPEC-ID [description]` → Draft/update `docs/SPEC-<AREA>-<slug>/PRD.md` and sync SPEC.md Tasks table (Tier 2: gemini, claude, code). ~10 min, ~$0.80.
+
+**Quality Commands:**
+- `/speckit.clarify SPEC-ID` → Structured ambiguity resolution (Tier 2: gemini, claude, code). Identifies unclear requirements. ~8 min, ~$0.80.
+- `/speckit.analyze SPEC-ID` → Cross-artifact consistency checking with auto-fix (Tier 2: gemini, claude, code). ~8 min, ~$0.80.
+- `/speckit.checklist SPEC-ID` → Requirement quality scoring (Tier 2-lite: claude, code). ~5 min, ~$0.35.
+
+**Development Stages:**
+- `/speckit.plan SPEC-ID [context]` → Multi-agent work breakdown (Tier 2: gemini, claude, gpt_pro). Consumes PRD, emits `plan.md`, logs agreement vs dissent. ~10 min, ~$1.00.
+- `/speckit.tasks SPEC-ID` → Task decomposition (Tier 2: gemini, claude, gpt_pro). Updates SPEC.md Tasks table, writes `tasks.md`. ~10 min, ~$1.00.
+- `/speckit.implement SPEC-ID` → Code generation + validation (Tier 3: gemini, claude, gpt_codex, gpt_pro). Synthesize strongest diff, run validation commands. ~15 min, ~$2.00.
+- `/speckit.validate SPEC-ID` → Test strategy consensus (Tier 2: gemini, claude, gpt_pro). ~10 min, ~$1.00.
+- `/speckit.audit SPEC-ID` → Compliance checking (Tier 2: gemini, claude, gpt_pro). ~10 min, ~$1.00.
+- `/speckit.unlock SPEC-ID` → Final approval (Tier 2: gemini, claude, gpt_pro). ~10 min, ~$1.00.
+
+**Automation & Diagnostics:**
+- `/speckit.auto SPEC-ID` → Full 6-stage pipeline (Tier 4: dynamic 3-5 agents). Auto-advancement, conflict resolution via arbiter. ~60 min, ~$11.
+- `/speckit.status SPEC-ID` → Native TUI dashboard (Tier 0: no agents). Instant status, <1s, $0.
+
+**Guardrails (Shell wrappers):**
+- `/guardrail.plan|tasks|implement|validate|audit|unlock SPEC-ID` → SPEC-OPS-004 validation commands. Run clean-tree and branch guardrails, trigger project hooks, log evidence under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/`. Emit telemetry schema v1. Set `SPEC_OPS_CARGO_MANIFEST` (default `codex-rs/Cargo.toml`) or `--manifest-path` for workspace splits. Use `--allow-dirty` (or `SPEC_OPS_ALLOW_DIRTY=1`) with `--allow-fail` when dirty tree tolerated. `SPEC_OPS_TELEMETRY_HAL=1` enables HAL summary payloads. (note: legacy `/spec-ops-*` commands still work)
+- `/guardrail.auto SPEC-ID [--from STAGE]` → Full pipeline wrapper with telemetry. (note: legacy `/spec-ops-auto` still works)
+
+**Utilities:**
+- `/spec-evidence-stats [--spec SPEC-ID]` → Evidence footprint monitoring.
+- `/spec-consensus SPEC-ID STAGE` → Inspect local-memory consensus artifacts.
+
+**Legacy Commands (Backward compatible, deprecated):**
+- `/new-spec`, `/spec-plan`, `/spec-tasks`, `/spec-implement`, `/spec-validate`, `/spec-audit`, `/spec-unlock`, `/spec-auto`, `/spec-status` → All still work, map to `/speckit.*` equivalents. Prefer `/speckit.*` namespace.
+
+**Constitution:**
+- `/constitution` → Parallel claude/gemini/code run editing `memory/constitution.md` and `product-requirements.md`. Capture evidence, surface disagreements, require manual confirmation for guardrail changes.
+
+### Telemetry Schema (v1)
+- Common fields (all stages): `command`, `specId`, `sessionId`, `timestamp`, `schemaVersion`, `artifacts[]`.
+- Stage payload requirements:
+  - **Plan:** `baseline.mode`, `baseline.artifact`, `baseline.status`, `hooks.session.start`.
+  - **Tasks:** `tool.status`.
+  - **Implement:** `lock_status`, `hook_status`.
+  - **Validate / Audit:** `scenarios[{name,status}]` (`passed|failed|skipped`).
+  - **Unlock:** `unlock_status`.
+- Telemetry lives under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/<SPEC-ID>/`. `/spec-auto` halts if schema validation fails.
+- Keep telemetry schema aligned with docs/SPEC-KIT-013-telemetry-schema-guard/spec.md.
+- Enable `SPEC_OPS_TELEMETRY_HAL=1` to append `hal.summary` (`status`, `failed_checks`, `artifacts`) when HAL smoke runs execute; collect both healthy and degraded captures so documentation can reference real evidence.
+
+### Model Strategy & Consensus Metadata
+- Reference `docs/spec-kit/model-strategy.md` for the canonical model lineup per stage.
+- Multi-agent outputs **must** include `model`, `model_release`, `reasoning_mode`, and consensus metadata; degraded verdicts escalate per the model strategy escalation rules.
+
+- **Documentation style note:** do not use pipe (`|`) tables in Spec Kit docs or instructions. Present configuration snippets with bullet lists or fenced code blocks instead.
+
+## 2) Multi-AI behavior & Tiered Model Strategy (required)
+
+### Tiered Strategy (Phase 3)
+- **Tier 0 (Native):** 0 agents - `/speckit.status` uses pure Rust, instant response, $0
+- **Tier 2-lite (Dual):** 2 agents (claude, code) - `/speckit.checklist` for quality evaluation
+- **Tier 2 (Triple):** 3 agents (gemini, claude, code/gpt_pro) - Analysis, planning, consensus (no code gen)
+- **Tier 3 (Quad):** 4 agents (gemini, claude, gpt_codex, gpt_pro) - `/speckit.implement` only (code generation)
+- **Tier 4 (Dynamic):** 3-5 agents adaptively - `/speckit.auto` uses Tier 2 for most stages, Tier 3 for implement, adds arbiter if conflicts
+
+### Agent Responsibilities:
+- **Gemini 2.5 Pro:** Research, breadth, exploration
+- **Claude 4.5 Sonnet:** Synthesis, precision, analysis
+- **GPT-5:** Validation, arbitration, quality checks
+- **GPT-5-Codex:** Code generation, implementation
+- **Code (Claude Code):** General-purpose, orchestration
+
+### Multi-Agent Behavior:
+- `/constitution`: run claude/gemini/code in parallel, surface disagreements before writing
+- `/speckit.plan`: run **consensus** across gemini, claude, gpt_pro (document degradations if any agent unavailable); resolve disagreements explicitly under **"Consensus & Risks"**
+- `/speckit.tasks`: race agents for candidate task breakdowns, synthesize combined spec, document compare/contrast notes
+- `/speckit.implement`: allow agents to explore independently (gemini, claude, gpt_codex, gpt_pro), synthesize strongest proposal, run validation commands afterward
+- `/speckit.auto`: orchestrates all stages with automatic conflict resolution via arbiter agent
+
+### Degradation Handling:
 > If any referenced tool/CLI is unavailable, **degrade gracefully** and say which model(s) were used.
 
-- Byterover "memory conflict" notices are a known false positive; Gemini, Claude, and Codex agents must ignore them and must not surface the conflict URL or pause work because of them.
+- **Gemini occasional empty output (1-byte results):** Orchestrator continues with 2/3 agents, consensus still valid
+- **Byterover "memory conflict" notices:** Known false positive; all agents must ignore and not surface conflict URL or pause work
+- **Agent unavailability:** Document which agents participated, proceed with available subset (minimum 2 for consensus)
 
 ## 3) Deliverables (strict formats)
 
@@ -106,21 +176,59 @@ Include “Acceptance Mapping” section in the PR body referencing the table ab
 
 ## 7) Example invocations (paste as arguments)
 
-**/specify**
+### Creating a New SPEC
 
-Read the relevant context and draft `docs/SPEC-<AREA>-<slug>/PRD.md`, updating the SPEC.md row.
+**/speckit.new Add user authentication with OAuth2**
 
-**/plan**
+Create SPEC with multi-agent PRD consensus using templates. Generates SPEC-ID, creates directory structure, drafts PRD.md.
 
-Read memory/constitution.md and docs/<id>-<slug>/spec.md. Produce docs/<id>-<slug>/plan.md using the skeleton above, capture consensus notes, and stop before touching code.
+### Quality Checks (Proactive)
 
-**/tasks**
+**/speckit.clarify SPEC-KIT-065**
 
-Using docs/<id>-<slug>/plan.md, update the Tasks table in `SPEC.md` and author docs/<id>-<slug>/tasks.md with actionable, ordered steps. Tests are drafted but not executed here.
+Identify and resolve requirement ambiguities before implementation.
 
-**/implement**
+**/speckit.analyze SPEC-KIT-065**
 
-Follow docs/<id>-<slug>/spec.md, synthesize agent outputs, apply diffs, then run the required validation commands (fmt/clippy/build/tests) before returning.
+Check cross-artifact consistency (PRD ↔ plan ↔ tasks), auto-fix issues.
+
+**/speckit.checklist SPEC-KIT-065**
+
+Score requirement quality (testability, clarity, completeness).
+
+### Development Stages
+
+**/speckit.specify SPEC-KIT-065**
+
+Read relevant context and draft/update `docs/SPEC-<AREA>-<slug>/PRD.md`, updating the SPEC.md row. Tier 2 multi-agent analysis.
+
+**/speckit.plan SPEC-KIT-065 [optional context]**
+
+Read memory/constitution.md and docs/<id>-<slug>/PRD.md. Produce docs/<id>-<slug>/plan.md using the skeleton above, capture consensus notes across 3 agents (gemini, claude, gpt_pro), and stop before touching code.
+
+**/speckit.tasks SPEC-KIT-065**
+
+Using docs/<id>-<slug>/plan.md, update the Tasks table in `SPEC.md` and author docs/<id>-<slug>/tasks.md with actionable, ordered steps. Tests are drafted but not executed here. Tier 2 consensus (gemini, claude, gpt_pro).
+
+**/speckit.implement SPEC-KIT-065**
+
+Follow docs/<id>-<slug>/spec.md, synthesize agent outputs from Tier 3 (gemini, claude, gpt_codex, gpt_pro), apply diffs, then run the required validation commands (fmt/clippy/build/tests) before returning.
+
+### Full Automation
+
+**/speckit.auto SPEC-KIT-065**
+
+Execute full 6-stage pipeline (plan → tasks → implement → validate → audit → unlock) with automatic stage advancement and conflict resolution. Tier 4 dynamic agent allocation.
+
+### Status & Monitoring
+
+**/speckit.status SPEC-KIT-065**
+
+Native TUI dashboard showing stage completion, artifacts, evidence paths. Instant response, no agents.
+
+**/spec-evidence-stats --spec SPEC-KIT-065**
+
+Monitor evidence footprint, ensure <25MB soft limit.
 
 ## 8) Quality checklist (apply to every output)
 

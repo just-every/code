@@ -7,7 +7,12 @@ use crossterm::event::{KeyCode, KeyEvent};
 pub(super) fn handle_help_key(chat: &mut ChatWidget<'_>, key_event: KeyEvent) -> bool {
     // If no help overlay, only intercept Ctrl+H to open it.
     if chat.help.overlay.is_none() {
-        if let KeyEvent { code: KeyCode::Char('h'), modifiers: crossterm::event::KeyModifiers::CONTROL, .. } = key_event {
+        if let KeyEvent {
+            code: KeyCode::Char('h'),
+            modifiers: crossterm::event::KeyModifiers::CONTROL,
+            ..
+        } = key_event
+        {
             chat.toggle_help_popup();
             return true;
         }
@@ -15,7 +20,9 @@ pub(super) fn handle_help_key(chat: &mut ChatWidget<'_>, key_event: KeyEvent) ->
     }
 
     // Overlay active: process navigation + close
-    let Some(ref mut overlay) = chat.help.overlay else { return false };
+    let Some(ref mut overlay) = chat.help.overlay else {
+        return false;
+    };
     match key_event.code {
         KeyCode::Up => {
             overlay.scroll = overlay.scroll.saturating_sub(1);

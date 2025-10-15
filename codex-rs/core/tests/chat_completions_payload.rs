@@ -16,7 +16,7 @@ use codex_core::debug_logger::DebugLogger;
 use codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR;
 use core_test_support::load_default_config_for_test;
 use futures::StreamExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -34,10 +34,7 @@ async fn run_request(input: Vec<ResponseItem>) -> Value {
     run_request_with_provider(input, |_| {}).await
 }
 
-async fn run_request_with_provider<F>(
-    input: Vec<ResponseItem>,
-    mutator: F,
-) -> Value
+async fn run_request_with_provider<F>(input: Vec<ResponseItem>, mutator: F) -> Value
 where
     F: FnOnce(&mut ModelProviderInfo),
 {
@@ -234,10 +231,7 @@ async fn openrouter_provider_metadata_is_forwarded() {
 
     assert_eq!(body["provider"]["order"], json!(["openai/gpt-4o-mini"]));
     assert_eq!(body["provider"]["allow_fallbacks"], Value::Bool(false));
-    assert_eq!(
-        body["route"],
-        json!({ "path": ["primary", "secondary"] })
-    );
+    assert_eq!(body["route"], json!({ "path": ["primary", "secondary"] }));
     assert_eq!(body["dry_run"], Value::Bool(true));
 }
 

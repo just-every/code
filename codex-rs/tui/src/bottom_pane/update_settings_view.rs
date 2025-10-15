@@ -1,18 +1,18 @@
 use std::sync::{Arc, Mutex};
 
+use super::BottomPane;
+use super::bottom_pane_view::BottomPaneView;
+use super::bottom_pane_view::ConditionalUpdate;
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::colors;
 use crate::util::buffer::fill_rect;
-use super::bottom_pane_view::BottomPaneView;
-use super::bottom_pane_view::ConditionalUpdate;
-use super::BottomPane;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap, Widget};
+use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Widget, Wrap};
 
 #[derive(Debug, Clone, Default)]
 pub struct UpdateSharedState {
@@ -210,7 +210,6 @@ impl UpdateSettingsView {
 
         lines
     }
-
 }
 
 impl<'a> BottomPaneView<'a> for UpdateSettingsView {
@@ -232,13 +231,11 @@ impl<'a> BottomPaneView<'a> for UpdateSettingsView {
             KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if self.field == 1 => {
                 self.toggle_auto();
             }
-            KeyCode::Enter => {
-                match self.field {
-                    0 => self.invoke_run_upgrade(),
-                    1 => self.toggle_auto(),
-                    _ => self.is_complete = true,
-                }
-            }
+            KeyCode::Enter => match self.field {
+                0 => self.invoke_run_upgrade(),
+                1 => self.toggle_auto(),
+                _ => self.is_complete = true,
+            },
             _ => {}
         }
         self.app_event_tx.send(AppEvent::RequestRedraw);

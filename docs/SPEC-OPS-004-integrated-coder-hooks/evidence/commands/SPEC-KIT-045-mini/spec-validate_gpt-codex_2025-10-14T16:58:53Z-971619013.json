@@ -1,0 +1,27 @@
+{
+  "stage": "spec-validate",
+  "prompt_version": "20251002-validate-a",
+  "agent": "gpt_codex",
+  "model": "gpt-5-codex",
+  "model_release": "2025-10-01",
+  "reasoning_mode": "impl-review",
+  "validation_notes": [
+    "Guardrail script completed with exit_code=0 (log inspected)",
+    "Telemetry JSON parses cleanly via jq; schemaVersion==1",
+    "HAL mock artifact emitted to 20251014-165853Z-hal-mock.json with mock status",
+    "Policy layers recorded as passed via stub command (note=\"true\")",
+    "Unlock-notes.md enumerates outstanding actions before live unlock"
+  ],
+  "risks": [
+    {
+      "risk": "Policy command stubs still in place",
+      "severity": "low",
+      "mitigation": "Schedule clean rerun with real policy CLI before unlock"
+    },
+    {
+      "risk": "Mock HAL may diverge from live behavior",
+      "severity": "medium",
+      "mitigation": "Plan live HAL validation once credentials are available"
+    }
+  ]
+}

@@ -1267,9 +1267,9 @@ impl<'a> BottomPaneView<'a> for ThemeSelectionView {
                                         self.current_spinner = "custom".to_string();
                                         self.app_event_tx
                                             .send(AppEvent::UpdateSpinner("custom".to_string()));
-                                        self
-                                            .app_event_tx
-                                            .send_background_event("Custom spinner saved".to_string());
+                                        self.app_event_tx.send_background_event(
+                                            "Custom spinner saved".to_string(),
+                                        );
                                         go_overview = true;
                                     }
                                 } else {
@@ -1398,20 +1398,17 @@ impl<'a> BottomPaneView<'a> for ThemeSelectionView {
                                         }
                                         // Informative status depending on whether we set active
                                         if s.preview_on.get() {
-                                            self
-                                                .app_event_tx
-                                                .send_background_event_before_next_output(
-                                                    format!("Set theme to {}", name),
-                                                );
+                                            self.app_event_tx
+                                                .send_background_event_before_next_output(format!(
+                                                    "Set theme to {}",
+                                                    name
+                                                ));
                                         } else {
-                                            self
-                                                .app_event_tx
-                                                .send_background_event_before_next_output(
-                                                    format!(
-                                                        "Saved custom theme {} (not active)",
-                                                        name
-                                                    ),
-                                                );
+                                            self.app_event_tx
+                                                .send_background_event_before_next_output(format!(
+                                                    "Saved custom theme {} (not active)",
+                                                    name
+                                                ));
                                         }
                                         go_overview = true;
                                     }

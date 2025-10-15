@@ -1,33 +1,33 @@
 use std::env;
+use std::io::BufWriter;
 use std::io::Result;
 use std::io::Stdout;
-use std::io::stdout;
-use std::io::BufWriter;
 use std::io::Write;
+use std::io::stdout;
 
 use codex_core::config::Config;
 use crossterm::cursor::MoveTo;
+use crossterm::cursor::MoveToNextLine;
 use crossterm::event::DisableBracketedPaste;
-use crossterm::event::DisableMouseCapture;
 use crossterm::event::DisableFocusChange;
+use crossterm::event::DisableMouseCapture;
 use crossterm::event::EnableBracketedPaste;
 use crossterm::event::EnableFocusChange;
 use crossterm::event::KeyboardEnhancementFlags;
 use crossterm::event::PopKeyboardEnhancementFlags;
 use crossterm::event::PushKeyboardEnhancementFlags;
-use crossterm::style::SetColors;
-use crossterm::style::{Color as CtColor, SetBackgroundColor, SetForegroundColor};
 use crossterm::style::Print;
 use crossterm::style::ResetColor;
-use crossterm::cursor::MoveToNextLine;
+use crossterm::style::SetColors;
+use crossterm::style::{Color as CtColor, SetBackgroundColor, SetForegroundColor};
 use crossterm::terminal::Clear;
 use crossterm::terminal::ClearType;
+use crossterm::terminal::supports_keyboard_enhancement;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::disable_raw_mode;
 use ratatui::crossterm::terminal::enable_raw_mode;
-use crossterm::terminal::supports_keyboard_enhancement;
 use ratatui_image::picker::Picker;
 
 /// A type alias for the terminal type used in this application
@@ -91,9 +91,7 @@ pub fn init(config: &Config) -> Result<(Tui, TerminalInfo)> {
     if should_enable_focus_change() {
         let _ = execute!(stdout(), EnableFocusChange);
     } else {
-        tracing::info!(
-            "Focus tracking disabled (heuristic). Set CODE_ENABLE_FOCUS=1 to force on."
-        );
+        tracing::info!("Focus tracking disabled (heuristic). Set CODE_ENABLE_FOCUS=1 to force on.");
     }
 
     // Enter alternate screen mode for full screen TUI
@@ -147,7 +145,8 @@ pub fn init(config: &Config) -> Result<(Tui, TerminalInfo)> {
     // Restrict the explicit paint to terminals that benefit from it and skip
     // it on Windows Terminal (TERM_PROGRAM=Windows_Terminal or WT_SESSION set).
     let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default();
-    let is_windows_terminal = term_program == "Windows_Terminal" || std::env::var("WT_SESSION").is_ok();
+    let is_windows_terminal =
+        term_program == "Windows_Terminal" || std::env::var("WT_SESSION").is_ok();
     let should_paint_bg = if term_program == "Apple_Terminal" {
         true
     } else if is_windows_terminal {
@@ -155,7 +154,9 @@ pub fn init(config: &Config) -> Result<(Tui, TerminalInfo)> {
     } else {
         // For other terminals, be conservative and skip unless a user opts in
         // via CODE_FORCE_FULL_BG_PAINT=1.
-        std::env::var("CODE_FORCE_FULL_BG_PAINT").map(|v| v == "1").unwrap_or(false)
+        std::env::var("CODE_FORCE_FULL_BG_PAINT")
+            .map(|v| v == "1")
+            .unwrap_or(false)
     };
 
     if should_paint_bg {
@@ -163,14 +164,25 @@ pub fn init(config: &Config) -> Result<(Tui, TerminalInfo)> {
             // Build a single line of spaces once to reduce allocations.
             let blank = " ".repeat(cols as usize);
             // Set explicit fg/bg to the theme's colors while painting.
-            execute!(stdout(), SetForegroundColor(CtColor::from(theme_fg)), SetBackgroundColor(CtColor::from(theme_bg)))?;
+            execute!(
+                stdout(),
+                SetForegroundColor(CtColor::from(theme_fg)),
+                SetBackgroundColor(CtColor::from(theme_bg))
+            )?;
             for y in 0..rows {
                 execute!(stdout(), MoveTo(0, y), Print(&blank))?;
             }
             // Restore cursor to home and keep our colors configured for subsequent drawing.
             // Avoid ResetColor here to prevent some terminals from flashing to their
             // profile default background (e.g., white) between frames.
-            execute!(stdout(), MoveTo(0, 0), SetColors(crossterm::style::Colors::new(theme_fg.into(), theme_bg.into())))?;
+            execute!(
+                stdout(),
+                MoveTo(0, 0),
+                SetColors(crossterm::style::Colors::new(
+                    theme_fg.into(),
+                    theme_bg.into()
+                ))
+            )?;
         }
     }
 
@@ -247,7 +259,10 @@ pub fn restore() -> Result<()> {
     // explicitly set enhancement flags to empty, then pop again. This avoids
     // leaving kitty/xterm enhanced keyboard protocols active after exit.
     if supports_keyboard_enhancement().unwrap_or(false) {
-        let _ = execute!(stdout(), PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::empty()));
+        let _ = execute!(
+            stdout(),
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::empty())
+        );
         let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
     }
     disable_alternate_scroll_mode()?;
@@ -279,7 +294,10 @@ pub fn leave_alt_screen_only() -> Result<()> {
     // enhanced escape sequences (e.g., kitty/xterm modifyOtherKeys) into the buffer.
     let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
     if supports_keyboard_enhancement().unwrap_or(false) {
-        let _ = execute!(stdout(), PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::empty()));
+        let _ = execute!(
+            stdout(),
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::empty())
+        );
         let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
     }
     execute!(stdout(), crossterm::terminal::LeaveAlternateScreen)?;
@@ -288,7 +306,10 @@ pub fn leave_alt_screen_only() -> Result<()> {
 
 /// Re-enter the alternate screen without reinitializing global state.
 /// Restores title and colors and performs a full clear to ensure a clean frame.
-pub fn enter_alt_screen_only(theme_fg: ratatui::style::Color, theme_bg: ratatui::style::Color) -> Result<()> {
+pub fn enter_alt_screen_only(
+    theme_fg: ratatui::style::Color,
+    theme_bg: ratatui::style::Color,
+) -> Result<()> {
     // Re-enable enhanced keyboard and focus/paste signaling for full TUI fidelity.
     if supports_keyboard_enhancement().unwrap_or(false) {
         let _ = execute!(
@@ -308,7 +329,10 @@ pub fn enter_alt_screen_only(theme_fg: ratatui::style::Color, theme_bg: ratatui:
     execute!(
         stdout(),
         crossterm::terminal::EnterAlternateScreen,
-        SetColors(crossterm::style::Colors::new(theme_fg.into(), theme_bg.into())),
+        SetColors(crossterm::style::Colors::new(
+            theme_fg.into(),
+            theme_bg.into()
+        )),
         Clear(ClearType::All),
         MoveTo(0, 0),
         crossterm::terminal::SetTitle("Code"),
@@ -355,10 +379,16 @@ fn should_enable_focus_change() -> bool {
     use std::env;
 
     // Hard overrides first
-    if env::var("CODE_DISABLE_FOCUS").map(|v| v == "1").unwrap_or(false) {
+    if env::var("CODE_DISABLE_FOCUS")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
         return false;
     }
-    if env::var("CODE_ENABLE_FOCUS").map(|v| v == "1").unwrap_or(false) {
+    if env::var("CODE_ENABLE_FOCUS")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
         return true;
     }
 
@@ -373,7 +403,9 @@ fn should_enable_focus_change() -> bool {
             || term_program.contains("windows_terminal");
         let is_msys = env::var("MSYSTEM").is_ok(); // Git Bash / MSYS2
         let looks_like_mintty = term_program.contains("mintty")
-            || env::var("TERM_PROGRAM").unwrap_or_default().contains("mintty");
+            || env::var("TERM_PROGRAM")
+                .unwrap_or_default()
+                .contains("mintty");
         let looks_like_conemu = term_program.contains("conemu") || term_program.contains("cmder");
 
         if is_msys || looks_like_mintty || looks_like_conemu || (is_windows_terminal && is_msys) {

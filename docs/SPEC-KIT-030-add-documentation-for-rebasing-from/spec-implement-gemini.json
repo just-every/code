@@ -1,0 +1,63 @@
+{
+  "stage": "spec-implement",
+  "prompt_version": "20251002-implement-a",
+  "agent": "gemini",
+  "model": "gemini-2.5-pro",
+  "model_release": "2025-09",
+  "reasoning_mode": "thinking",
+  "code_paths": [
+    {
+      "area": "Documentation (New)",
+      "files": [
+        "docs/SPEC-KIT-030-add-documentation-for-rebasing-from/arbiter-decisions.md",
+        "docs/spec-kit/fork-assessment.md",
+        "docs/spec-kit/rebase-workflow.md",
+        "docs/spec-kit/nightly-drift-detection.md",
+        "docs/spec-kit/evidence-expectations.md"
+      ],
+      "notes": "Primary artifacts are new markdown documents defining fork/rebase processes. Creation is blocked by T46.1."
+    },
+    {
+      "area": "Documentation (Existing)",
+      "files": [
+        "FORK_DEVIATIONS.md",
+        "SPEC.md",
+        "docs/SPEC-KIT-030-add-documentation-for-rebasing-from/tasks.md"
+      ],
+      "notes": "Existing documents that need to be validated against or updated as part of the spec."
+    },
+    {
+      "area": "Validation & Automation Scripts",
+      "files": [
+        "scripts/doc-structure-validate.sh",
+        "scripts/spec-kit/lint_tasks.py",
+        "scripts/spec-kit/nightly_sync_detect.py"
+      ],
+      "notes": "Core scripts for validating the new documentation structure, task definitions, and automation logic."
+    },
+    {
+      "area": "Evidence & Telemetry",
+      "files": [
+        "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-030-add-documentation-for-rebasing-from/"
+      ],
+      "notes": "Directory for storing evidence artifacts from validation steps. HAL telemetry capture (SPEC_OPS_TELEMETRY_HAL=1) is a key mechanism."
+    }
+  ],
+  "recent_changes": [
+    "The 'feat/spec-auto-telemetry' branch is a critical dependency. Its completion and patterns will directly inform documentation for nightly drift detection (T46.5) and HAL telemetry expectations (T46.6)."
+  ],
+  "edge_cases": [
+    "The entire documentation effort is blocked by the 'Arbiter gating step' (T46.1). Engineering/product leadership decisions on nightly job venues, snapshot strategies, and rebase scope are required before any drafting can begin.",
+    "Integration with HAL telemetry requires secrets (SPEC_OPS_TELEMETRY_HAL=1). The documentation and validation process must account for a degraded path when secrets are unavailable.",
+    "The fork assessment process relies on searching for '// === FORK-SPECIFIC' markers; malformed markers could make the inventory inaccurate.",
+    "The rebase workflow documentation must accurately map to /spec-ops-* command behavior, creating tight coupling between docs and tooling."
+  ],
+  "tests": [
+    "scripts/doc-structure-validate.sh --mode=templates",
+    "python3 scripts/spec-kit/lint_tasks.py",
+    "python3 scripts/spec-kit/lint_tasks.py --spec SPEC-KIT-030-add-documentation-for-rebasing-from",
+    "Manual validation: search for '// === FORK-SPECIFIC' and reconcile with FORK_DEVIATIONS.md",
+    "python3 scripts/spec-kit/nightly_sync_detect.py --dry-run",
+    "SPEC_OPS_TELEMETRY_HAL=1 /spec-ops-implement SPEC-KIT-030-add-documentation-for-rebasing-from"
+  ]
+}

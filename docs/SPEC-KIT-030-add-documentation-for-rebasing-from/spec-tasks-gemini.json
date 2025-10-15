@@ -1,0 +1,35 @@
+{
+  "stage": "spec-tasks",
+  "prompt_version": "20251002-tasks-a",
+  "agent": "gemini",
+  "model": "gemini",
+  "model_release": "2025-09",
+  "reasoning_mode": "thinking",
+  "surfaces": [
+    {
+      "area": "SPEC-KIT-030",
+      "files": [
+        "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-030-add-documentation-for-rebasing-from/",
+        "SPEC.md"
+      ],
+      "tests": [
+        "scripts/doc-structure-validate.sh --mode=templates",
+        "scripts/spec-kit/nightly_sync_detect.py --dry-run",
+        "python3 scripts/spec-kit/lint_tasks.py"
+      ],
+      "notes": "Documentation tracked in SPEC.md with evidence stored under the SPEC-KIT-030 evidence directory; validation relies on doc lint, nightly drift dry-run, and lint_tasks."
+    }
+  ],
+  "dependencies": [
+    "Arbiter decisions (T46.1) to finalize scope and nightly drift venue.",
+    "Defined rebase workflow (T46.4) before documentation can be drafted.",
+    "HAL secret provisioning to enable full telemetry (currently skipped).",
+    "Patterns from feat/spec-auto-telemetry branch for nightly drift documentation."
+  ],
+  "spec_status": [
+    {
+      "task_id": "SPEC-KIT-030",
+      "status": "Blocked"
+    }
+  ]
+}

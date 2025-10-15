@@ -1,0 +1,58 @@
+{
+  "stage": "spec-implement",
+  "prompt_version": "20251002-implement-a",
+  "agent": "gpt_pro",
+  "model": "gpt-5-codex",
+  "model_release": "2025-09",
+  "reasoning_mode": "high",
+  "checklist": [
+    {
+      "step": "Verify working tree is clean prior to guardrail execution.",
+      "command": "git status --short"
+    },
+    {
+      "step": "Inspect latest spec-implement command JSON for policy outcome.",
+      "command": "cat docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-DEMO/spec-implement_2025-10-04T14:02:09Z-284428793.json"
+    },
+    {
+      "step": "Confirm fmt, clippy, and compile checks ran for this branch.",
+      "command": "cd codex-rs && cargo fmt --all && cargo clippy --workspace --all-targets --all-features && cargo test --workspace --no-run"
+    },
+    {
+      "step": "Validate telemetry and evidence artifacts exist for spec-implement runs.",
+      "command": "ls docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-030-add-documentation-for-rebasing-from | grep 'spec-implement'"
+    },
+    {
+      "step": "Ensure HAL secret is provisioned before invoking HAL smoke checks.",
+      "command": "test -n \"$HAL_SECRET_KAVEDARR_API_KEY\""
+    },
+    {
+      "step": "Confirm implement-stage .log artifacts are archived inside evidence tree.",
+      "command": "find docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-030-add-documentation-for-rebasing-from -maxdepth 1 -name 'spec-implement*.log'"
+    }
+  ],
+  "risks": [
+    {
+      "risk": "Gemini and Claude implement outputs plus diff proposals are absent, so cross-model consensus cannot be verified.",
+      "mitigation": "Re-run consensus runner for spec-implement and store gemini/claude/gpt_codex artifacts before progressing."
+    },
+    {
+      "risk": "Policy final check failed for session 2025-10-03T17:38:54Z, indicating arbiter gating remains unresolved.",
+      "mitigation": "Review failing policy run, resolve violations, and rerun `spec-ops-implement` until both prefilter and final checks succeed."
+    },
+    {
+      "risk": "Implement command artifacts reference absolute log paths that are missing from the repo, leaving evidence incomplete.",
+      "mitigation": "Update guardrail logging to emit `.log` files inside the tracked evidence directory and capture them for every run."
+    }
+  ],
+  "consensus": {
+    "agreements": [
+      "Recorded spec-implement telemetry shows lock_status=\"locked\" and hook_status=\"ok\" for existing sessions, so hooks executed without error.",
+      "Prefilter policy checks succeeded across captured implement runs, demonstrating baseline policy coverage."
+    ],
+    "conflicts": [
+      "No gemini, claude, or gpt_codex implement outputs were archived, preventing confirmation of multi-agent alignment.",
+      "Policy final check failure for session 2025-10-03T17:38:54Z leaves arbiter gating unresolved."
+    ]
+  }
+}

@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use codex_core::protocol::FileChange;
 
 use crate::history_cell::PatchEventType;
-use crate::sanitize::{sanitize_for_tui, Mode as SanitizeMode, Options as SanitizeOptions};
+use crate::sanitize::{Mode as SanitizeMode, Options as SanitizeOptions, sanitize_for_tui};
 
 // Sanitize diff content so tabs and control characters don’t break terminal layout.
 // Mirrors the behavior we use for user input and command output:
@@ -169,7 +169,11 @@ fn sanitize_diff_text(s: &str) -> String {
     sanitize_for_tui(
         s,
         SanitizeMode::Plain,
-        SanitizeOptions { expand_tabs: true, tabstop: 4, debug_markers: false },
+        SanitizeOptions {
+            expand_tabs: true,
+            tabstop: 4,
+            debug_markers: false,
+        },
     )
 }
 
@@ -328,7 +332,10 @@ pub(super) fn create_diff_summary_with_width(
             Style::default().fg(crate::colors::text_dim()),
         ));
         // Per-file counts shown inline in chat summary
-        spans.push(RtSpan::styled(" (".to_string(), Style::default().fg(crate::colors::text_dim())));
+        spans.push(RtSpan::styled(
+            " (".to_string(),
+            Style::default().fg(crate::colors::text_dim()),
+        ));
         spans.push(RtSpan::styled(
             format!("+{}", f.added),
             Style::default().fg(crate::colors::success()),
@@ -338,7 +345,10 @@ pub(super) fn create_diff_summary_with_width(
             format!("-{}", f.removed),
             Style::default().fg(crate::colors::error()),
         ));
-        spans.push(RtSpan::styled(")".to_string(), Style::default().fg(crate::colors::text_dim())));
+        spans.push(RtSpan::styled(
+            ")".to_string(),
+            Style::default().fg(crate::colors::text_dim()),
+        ));
         out.push(RtLine::from(spans));
     }
 
@@ -437,32 +447,32 @@ fn render_patch_details_with_width(
                             match l {
                                 diffy::Line::Insert(text) => {
                                     let s = sanitize_diff_text(text.trim_end_matches('\n'));
-                    out.extend(push_wrapped_diff_line_with_width(
-                        new_ln,
-                        DiffLineType::Insert,
-                        &s,
-                        term_cols,
-                    ));
+                                    out.extend(push_wrapped_diff_line_with_width(
+                                        new_ln,
+                                        DiffLineType::Insert,
+                                        &s,
+                                        term_cols,
+                                    ));
                                     new_ln += 1;
                                 }
                                 diffy::Line::Delete(text) => {
                                     let s = sanitize_diff_text(text.trim_end_matches('\n'));
-                    out.extend(push_wrapped_diff_line_with_width(
-                        old_ln,
-                        DiffLineType::Delete,
-                        &s,
-                        term_cols,
-                    ));
+                                    out.extend(push_wrapped_diff_line_with_width(
+                                        old_ln,
+                                        DiffLineType::Delete,
+                                        &s,
+                                        term_cols,
+                                    ));
                                     old_ln += 1;
                                 }
                                 diffy::Line::Context(text) => {
                                     let s = sanitize_diff_text(text.trim_end_matches('\n'));
-                    out.extend(push_wrapped_diff_line_with_width(
-                        new_ln,
-                        DiffLineType::Context,
-                        &s,
-                        term_cols,
-                    ));
+                                    out.extend(push_wrapped_diff_line_with_width(
+                                        new_ln,
+                                        DiffLineType::Context,
+                                        &s,
+                                        term_cols,
+                                    ));
                                     old_ln += 1;
                                     new_ln += 1;
                                 }
@@ -531,10 +541,12 @@ fn push_wrapped_diff_line_with_width(
         // First line reserves 1 col for the sign ('+'/'-') and 1 space after it.
         // Continuation lines must reserve BOTH columns as well (sign column + its trailing space)
         // before applying the hanging indent equal to the content's leading spaces.
-        let base_prefix = if first { prefix_cols + 2 } else { prefix_cols + 2 + continuation_indent };
-        let available_content_cols = term_cols
-            .saturating_sub(base_prefix)
-            .max(1);
+        let base_prefix = if first {
+            prefix_cols + 2
+        } else {
+            prefix_cols + 2 + continuation_indent
+        };
+        let available_content_cols = term_cols.saturating_sub(base_prefix).max(1);
         let split_at_byte_index = remaining_text
             .char_indices()
             .nth(available_content_cols)
@@ -674,8 +686,12 @@ fn tinted_bg_toward(accent: Color) -> Color {
     Color::Rgb(r, g, b)
 }
 
-fn success_tint() -> Color { tinted_bg_toward(crate::colors::success()) }
-fn error_tint() -> Color { tinted_bg_toward(crate::colors::error()) }
+fn success_tint() -> Color {
+    tinted_bg_toward(crate::colors::success())
+}
+fn error_tint() -> Color {
+    tinted_bg_toward(crate::colors::error())
+}
 
 // Removed per-line tinted backgrounds per design feedback
 
@@ -751,7 +767,8 @@ mod tests {
         // Call the wrapping function directly so we can precisely control the width
         // Use a fixed width for testing wrapping behavior
         const TEST_WRAP_WIDTH: usize = 80;
-        let lines = push_wrapped_diff_line_with_width(1, DiffLineType::Insert, long_line, TEST_WRAP_WIDTH);
+        let lines =
+            push_wrapped_diff_line_with_width(1, DiffLineType::Insert, long_line, TEST_WRAP_WIDTH);
 
         // Render into a small terminal to capture the visual layout
         snapshot_lines(

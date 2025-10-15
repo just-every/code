@@ -13,8 +13,8 @@ use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
-use codex_core::config::resolve_codex_path_for_read;
 use codex_core::config::Config;
+use codex_core::config::resolve_codex_path_for_read;
 use codex_core::default_client::create_client;
 use tokio::process::Command;
 use tracing::{info, warn};
@@ -77,9 +77,7 @@ pub async fn check_for_updates_now(config: &Config) -> anyhow::Result<UpdateChec
         None
     };
 
-    Ok(UpdateCheckInfo {
-        latest_version,
-    })
+    Ok(UpdateCheckInfo { latest_version })
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -103,8 +101,13 @@ const AUTO_UPGRADE_LOCK_TTL: Duration = Duration::from_secs(900); // 15 minutes
 
 #[derive(Debug, Clone)]
 pub enum UpgradeResolution {
-    Command { command: Vec<String>, display: String },
-    Manual { instructions: String },
+    Command {
+        command: Vec<String>,
+        display: String,
+    },
+    Manual {
+        instructions: String,
+    },
 }
 
 fn version_filepath(config: &Config) -> PathBuf {
@@ -282,7 +285,10 @@ impl Drop for AutoUpgradeLock {
     fn drop(&mut self) {
         if let Err(err) = fs::remove_file(&self.path) {
             if err.kind() != ErrorKind::NotFound {
-                warn!("auto-upgrade: failed to remove lock file {}: {err}", self.path.display());
+                warn!(
+                    "auto-upgrade: failed to remove lock file {}: {err}",
+                    self.path.display()
+                );
             }
         }
     }
@@ -305,7 +311,9 @@ async fn run_upgrade_command(command: Vec<String>) -> anyhow::Result<()> {
     if !status.success() {
         anyhow::bail!(
             "upgrade command exited with status {}",
-            status.code().map_or_else(|| "signal".to_string(), |c| c.to_string())
+            status
+                .code()
+                .map_or_else(|| "signal".to_string(), |c| c.to_string())
         );
     }
     Ok(())

@@ -1,0 +1,33 @@
+{
+  "stage": "spec-audit",
+  "prompt_version": "20251002-audit-a",
+  "agent": "claude",
+  "model": "claude-4.5-sonnet",
+  "model_release": "2025-09",
+  "reasoning_mode": "auto",
+  "decision": "Block spec-audit until HAL_SECRET_KAVEDARR_API_KEY is provided or a documented skip is approved.",
+  "evidence": [
+    {
+      "name": "Telemetry snapshot – audit bootstrap skipped",
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-030-add-documentation-for-rebasing-from/spec-audit_2025-10-07T01:13:25Z-1589326123.json"
+    },
+    {
+      "name": "Guardrail helper logs HAL secret absence",
+      "path": "scripts/spec_ops_004/common.sh:274"
+    }
+  ],
+  "risks": [
+    {
+      "risk": "Audit guardrail offers no HAL coverage while the secret is absent, weakening compliance evidence.",
+      "mitigation": "Provision HAL_SECRET_KAVEDARR_API_KEY via Codex secret store or file a governed SPEC_OPS_HAL_SKIP=1 waiver before rerunning audit."
+    },
+    {
+      "risk": "Pending policy decision leaves telemetry schema ambiguous and delays automation milestones.",
+      "mitigation": "Document the final HAL policy decision in SPEC.md and evidence directories before marking audit complete."
+    }
+  ],
+  "open_items": [
+    "Policy team to decide whether HAL smoke remains mandatory or optional when secrets are unavailable.",
+    "Ops to provision HAL_SECRET_KAVEDARR_API_KEY and rerun spec-ops-audit after confirmation."
+  ]
+}

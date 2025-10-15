@@ -1,0 +1,33 @@
+{
+  "entries": [
+    {
+      "id": "mem-plan-001",
+      "content": "Plan consensus for SPEC-OPS-123 covering rollout phases.",
+      "domain": "spec-tracker",
+      "tags": ["spec:SPEC-OPS-123", "stage:spec-plan"],
+      "extra_tags": ["agent:gemini"],
+      "importance": 8,
+      "slug": "spec-ops-123-plan-20250927",
+      "created_at": "2025-09-27T09:30:00Z",
+      "updated_at": "2025-09-27T10:00:00Z"
+    },
+    {
+      "id": "mem-existing-002",
+      "summary": "Tasks consensus recorded in Byterover prior to migration.",
+      "target_domain": "spec-tracker",
+      "tags": ["spec:SPEC-OPS-123", "stage:spec-tasks"],
+      "importance": 7,
+      "slug": "spec-ops-123-tasks",
+      "created_at": "2025-09-27T11:00:00Z"
+    },
+    {
+      "memory_id": "mem-new-003",
+      "content": "Docs ops update for SPEC-OPS-123 migration evidence.",
+      "domain": "docs-ops",
+      "tags": ["spec:SPEC-OPS-123", "stage:spec-plan"],
+      "importance": 6,
+      "extra_tags": ["agent:codex"],
+      "created_at": "2025-09-27T12:00:00Z"
+    }
+  ]
+}

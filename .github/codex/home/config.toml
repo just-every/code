@@ -1,3 +1,117 @@
 model = "gpt-5"
 
-# Consider setting [mcp_servers] here!
+[[agents]]
+name = "gemini"
+enabled = true
+command-read-only = "gemini"
+command-write = "gemini"
+args-read-only = ["-y"]
+args-write = ["-y"]
+
+[[agents]]
+name = "claude"
+enabled = true
+command-read-only = "claude"
+command-write = "claude"
+args-read-only = ["--model", "sonnet"]
+args-write = ["--model", "sonnet"]
+
+[[agents]]
+name = "gpt_pro"
+enabled = true
+command-read-only = "codex"
+command-write = "codex"
+args-read-only = ["-s", "read-only", "-a", "never", "exec", "--skip-git-repo-check", "-m", "gpt-5", "-c", "model_reasoning_effort=\"high\""]
+args-write = ["-s", "workspace-write", "-a", "never", "exec", "--skip-git-repo-check", "-m", "gpt-5", "-c", "model_reasoning_effort=\"high\""]
+
+[[agents]]
+name = "gpt_codex"
+enabled = true
+command-read-only = "codex"
+command-write = "codex"
+args-read-only = ["-s", "read-only", "-a", "never", "exec", "--skip-git-repo-check", "-m", "gpt-5-codex", "-c", "model_reasoning_effort=\"high\""]
+args-write = ["-s", "workspace-write", "-a", "never", "exec", "--skip-git-repo-check", "-m", "gpt-5-codex", "-c", "model_reasoning_effort=\"high\""]
+
+[[agents]]
+name = "code"
+enabled = true
+command-read-only = "codex"
+command-write = "codex"
+args-read-only = ["-s", "read-only", "-a", "never", "exec", "--skip-git-repo-check", "-m", "gpt-5-codex"]
+args-write = ["-s", "workspace-write", "-a", "never", "exec", "--skip-git-repo-check", "-m", "gpt-5-codex"]
+
+[subagents]
+
+[[subagents.commands]]
+name = "spec-auto"
+read-only = false
+agents = ["code", "gemini", "claude"]
+orchestrator-instructions = """
+Execute full spec-kit pipeline with visible agent execution.
+Loop through stages (plan, tasks, implement, validate, audit, unlock):
+1. Run guardrail bash script (visible)
+2. Load prompts from prompts.json
+3. Spawn agents visibly (agent_run)
+4. Synthesize consensus
+5. Validate (halt on conflict)
+6. Advance to next stage
+Show all work. User must see bash output, agent execution, synthesis.
+"""
+
+[[subagents.commands]]
+name = "new-spec"
+read-only = false
+agents = ["code", "gemini", "claude"]
+orchestrator-instructions = """
+Unified SPEC creation from feature description. Entry point for new features.
+
+Phase 1: Generate SPEC-ID and scaffold
+1. Run: python3 scripts/spec_ops_004/generate_spec_id.py "<feature-description>"
+2. Store result as SPEC_ID
+3. Create directory: docs/${SPEC_ID}/
+4. Add SPEC.md table row
+
+Phase 2: Generate PRD (via /specify)
+5. Invoke /specify ${SPEC_ID} <feature-description>
+
+Phase 3: Multi-agent planning (via /plan)
+6. Invoke /plan ${SPEC_ID}
+
+Phase 4: Task breakdown (via /tasks)
+7. Invoke /tasks ${SPEC_ID}
+
+Phase 5: Present package
+8. Show summary and ask: "Ready to implement? Run: /spec-auto ${SPEC_ID}"
+
+Never auto-run /spec-auto - always require explicit approval."""
+
+[mcp_servers.repo_search]
+command = "uvx"
+args = ["awslabs.git-repo-research-mcp-server@latest"]
+startup_timeout_sec = 30
+tool_timeout_sec = 120
+
+[mcp_servers.doc_index]
+command = "npx"
+args = ["-y", "open-docs-mcp", "--docsDir", "/home/thetu/code/docs"]
+startup_timeout_sec = 20
+tool_timeout_sec = 60
+
+[mcp_servers.git_status]
+command = "uvx"
+args = ["mcp-server-git", "--repository", "/home/thetu/code"]
+env = { "GIT_PAGER" = "cat" }
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+
+[mcp_servers.uniprof]
+command = "npx"
+args = ["-y", "uniprof", "mcp", "run"]
+startup_timeout_sec = 30
+tool_timeout_sec = 300
+
+[mcp_servers.hal]
+command = "npx"
+args = ["-y", "hal-mcp"]
+startup_timeout_sec = 20
+tool_timeout_sec = 120

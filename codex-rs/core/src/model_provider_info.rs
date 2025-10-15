@@ -7,6 +7,7 @@
 //!      key. These override or extend the defaults at runtime.
 
 use crate::CodexAuth;
+use crate::error::EnvVarError;
 use codex_protocol::mcp_protocol::AuthMode;
 use serde::Deserialize;
 use serde::Serialize;
@@ -14,7 +15,6 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::env::VarError;
 use std::time::Duration;
-use crate::error::EnvVarError;
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_STREAM_MAX_RETRIES: u64 = 5;
 const DEFAULT_REQUEST_MAX_RETRIES: u64 = 4;
@@ -391,14 +391,9 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 wire_api: WireApi::Responses,
                 query_params: None,
                 http_headers: Some(
-                    [
-                        (
-                            "version".to_string(),
-                            codex_version::version().to_string(),
-                        ),
-                    ]
-                    .into_iter()
-                    .collect(),
+                    [("version".to_string(), codex_version::version().to_string())]
+                        .into_iter()
+                        .collect(),
                 ),
                 env_http_headers: Some(
                     [

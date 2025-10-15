@@ -1,5 +1,4 @@
 use crate::codex::ApprovedCommandPattern;
-use crate::protocol::ApprovedCommandMatchKind;
 use crate::config_profile::ConfigProfile;
 use crate::config_types::AgentConfig;
 use crate::config_types::AllowedCommand;
@@ -7,22 +6,24 @@ use crate::config_types::AllowedCommandMatchKind;
 use crate::config_types::BrowserConfig;
 use crate::config_types::CachedTerminalBackground;
 use crate::config_types::ClientTools;
-use crate::config_types::History;
+use crate::config_types::ConfirmGuardConfig;
 use crate::config_types::GithubConfig;
-use crate::config_types::ValidationConfig;
-use crate::config_types::ThemeName;
-use crate::config_types::ThemeColors;
+use crate::config_types::History;
 use crate::config_types::McpServerConfig;
 use crate::config_types::Notifications;
 use crate::config_types::ProjectCommandConfig;
 use crate::config_types::ProjectHookConfig;
+use crate::config_types::ReasoningEffort;
+use crate::config_types::ReasoningSummary;
 use crate::config_types::SandboxWorkspaceWrite;
 use crate::config_types::ShellEnvironmentPolicy;
 use crate::config_types::ShellEnvironmentPolicyToml;
 use crate::config_types::TextVerbosity;
+use crate::config_types::ThemeColors;
+use crate::config_types::ThemeName;
 use crate::config_types::Tui;
 use crate::config_types::UriBasedFileOpener;
-use crate::config_types::ConfirmGuardConfig;
+use crate::config_types::ValidationConfig;
 use crate::git_info::resolve_root_git_project_for_trust;
 use crate::model_family::ModelFamily;
 use crate::model_family::derive_default_model_family;
@@ -30,13 +31,12 @@ use crate::model_family::find_family_for_model;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::built_in_model_providers;
 use crate::openai_model_info::get_model_info;
+use crate::project_features::{ProjectCommand, ProjectHooks, load_project_commands};
+use crate::protocol::ApprovedCommandMatchKind;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
-use crate::config_types::ReasoningEffort;
-use crate::config_types::ReasoningSummary;
-use crate::project_features::{load_project_commands, ProjectCommand, ProjectHooks};
-use codex_protocol::mcp_protocol::AuthMode;
 use codex_protocol::config_types::SandboxMode;
+use codex_protocol::mcp_protocol::AuthMode;
 use dirs::home_dir;
 use serde::Deserialize;
 use serde::de::{self, Unexpected};
@@ -243,7 +243,7 @@ pub struct Config {
 
     /// Enable debug logging of LLM requests and responses
     pub debug: bool,
-    
+
     /// Whether we're using ChatGPT authentication (affects feature availability)
     pub using_chatgpt_auth: bool,
 
@@ -452,25 +452,21 @@ pub async fn persist_model_selection(
     {
         let root = doc.as_table_mut();
         if let Some(profile_name) = profile {
-            let profiles_item = root
-                .entry("profiles")
-                .or_insert_with(|| {
-                    let mut table = TomlTable::new();
-                    table.set_implicit(true);
-                    TomlItem::Table(table)
-                });
+            let profiles_item = root.entry("profiles").or_insert_with(|| {
+                let mut table = TomlTable::new();
+                table.set_implicit(true);
+                TomlItem::Table(table)
+            });
 
             let profiles_table = profiles_item
                 .as_table_mut()
                 .expect("profiles table should be a table");
 
-            let profile_item = profiles_table
-                .entry(profile_name)
-                .or_insert_with(|| {
-                    let mut table = TomlTable::new();
-                    table.set_implicit(false);
-                    TomlItem::Table(table)
-                });
+            let profile_item = profiles_table.entry(profile_name).or_insert_with(|| {
+                let mut table = TomlTable::new();
+                table.set_implicit(false);
+                TomlItem::Table(table)
+            });
 
             let profile_table = profile_item
                 .as_table_mut()
@@ -479,8 +475,7 @@ pub async fn persist_model_selection(
             profile_table["model"] = toml_edit::value(model.to_string());
 
             if let Some(effort) = effort {
-                profile_table["model_reasoning_effort"] =
-                    toml_edit::value(effort.to_string());
+                profile_table["model_reasoning_effort"] = toml_edit::value(effort.to_string());
             } else {
                 profile_table.remove("model_reasoning_effort");
             }
@@ -488,8 +483,7 @@ pub async fn persist_model_selection(
             root["model"] = toml_edit::value(model.to_string());
             match effort {
                 Some(effort) => {
-                    root["model_reasoning_effort"] =
-                        toml_edit::value(effort.to_string());
+                    root["model_reasoning_effort"] = toml_edit::value(effort.to_string());
                 }
                 None => {
                     root.remove("model_reasoning_effort");
@@ -743,7 +737,9 @@ pub fn set_custom_spinner(
     let node = &mut doc["tui"]["spinner"]["custom"][id];
     node["interval"] = toml_edit::value(interval as i64);
     let mut arr = toml_edit::Array::default();
-    for s in frames { arr.push(s.as_str()); }
+    for s in frames {
+        arr.push(s.as_str());
+    }
     node["frames"] = toml_edit::value(arr);
     node["label"] = toml_edit::value(label);
 
@@ -779,7 +775,9 @@ pub fn set_custom_theme(
         doc["tui"]["theme"]["name"] = toml_edit::value("custom");
     }
     doc["tui"]["theme"]["label"] = toml_edit::value(label);
-    if let Some(d) = is_dark { doc["tui"]["theme"]["is_dark"] = toml_edit::value(d); }
+    if let Some(d) = is_dark {
+        doc["tui"]["theme"]["is_dark"] = toml_edit::value(d);
+    }
 
     // Ensure colors table exists and write provided keys
     {
@@ -791,10 +789,12 @@ pub fn set_custom_theme(
         if !theme_tbl.contains_key("colors") {
             theme_tbl.insert("colors", It::Table(toml_edit::Table::new()));
         }
-    let colors_tbl = theme_tbl["colors"].as_table_mut().unwrap();
+        let colors_tbl = theme_tbl["colors"].as_table_mut().unwrap();
         macro_rules! set_opt {
             ($key:ident) => {
-                if let Some(ref v) = colors.$key { colors_tbl.insert(stringify!($key), toml_edit::value(v.clone())); }
+                if let Some(ref v) = colors.$key {
+                    colors_tbl.insert(stringify!($key), toml_edit::value(v.clone()));
+                }
             };
         }
         set_opt!(primary);
@@ -884,10 +884,7 @@ pub fn set_github_check_on_push(codex_home: &Path, enabled: bool) -> anyhow::Res
 }
 
 /// Persist `github.actionlint_on_patch = <enabled>`.
-pub fn set_github_actionlint_on_patch(
-    codex_home: &Path,
-    enabled: bool,
-) -> anyhow::Result<()> {
+pub fn set_github_actionlint_on_patch(codex_home: &Path, enabled: bool) -> anyhow::Result<()> {
     let config_path = codex_home.join(CONFIG_TOML_FILE);
     let read_path = resolve_codex_path_for_read(codex_home, Path::new(CONFIG_TOML_FILE));
     let mut doc = match std::fs::read_to_string(&read_path) {
@@ -989,12 +986,17 @@ pub fn set_project_access_mode(
         .and_then(|i| i.as_table())
         .is_none();
     if needs_proj_table {
-        projects_tbl.insert(project_key.as_str(), TomlItem::Table(toml_edit::Table::new()));
+        projects_tbl.insert(
+            project_key.as_str(),
+            TomlItem::Table(toml_edit::Table::new()),
+        );
     }
     let proj_tbl = projects_tbl
         .get_mut(project_key.as_str())
         .and_then(|i| i.as_table_mut())
-        .ok_or_else(|| anyhow::anyhow!(format!("failed to create projects.{} table", project_key)))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!(format!("failed to create projects.{} table", project_key))
+        })?;
 
     // Write fields
     proj_tbl.insert(
@@ -1072,7 +1074,9 @@ pub fn add_project_allowed_command(
     let project_tbl = projects_tbl
         .get_mut(project_key.as_str())
         .and_then(|i| i.as_table_mut())
-        .ok_or_else(|| anyhow::anyhow!(format!("failed to create projects.{} table", project_key)))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!(format!("failed to create projects.{} table", project_key))
+        })?;
 
     let mut argv_array = TomlArray::new();
     for arg in command {
@@ -1129,13 +1133,17 @@ pub fn add_project_allowed_command(
 
 /// List MCP servers from `CODEX_HOME/config.toml`.
 /// Returns `(enabled, disabled)` lists of `(name, McpServerConfig)`.
-pub fn list_mcp_servers(codex_home: &Path) -> anyhow::Result<(
+pub fn list_mcp_servers(
+    codex_home: &Path,
+) -> anyhow::Result<(
     Vec<(String, McpServerConfig)>,
     Vec<(String, McpServerConfig)>,
 )> {
     let read_path = resolve_codex_path_for_read(codex_home, Path::new(CONFIG_TOML_FILE));
     let doc_str = std::fs::read_to_string(&read_path).unwrap_or_default();
-    let doc = doc_str.parse::<DocumentMut>().unwrap_or_else(|_| DocumentMut::new());
+    let doc = doc_str
+        .parse::<DocumentMut>()
+        .unwrap_or_else(|_| DocumentMut::new());
 
     fn table_to_list(tbl: &toml_edit::Table) -> Vec<(String, McpServerConfig)> {
         let mut out = Vec::new();
@@ -1149,12 +1157,14 @@ pub fn list_mcp_servers(codex_home: &Path) -> anyhow::Result<(
                 let args: Vec<String> = t
                     .get("args")
                     .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|i| i.as_str().map(|s| s.to_string())).collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|i| i.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
                     .unwrap_or_default();
-                let env: Option<std::collections::HashMap<String, String>> = t
-                    .get("env")
-                    .and_then(|v| v.as_inline_table())
-                    .map(|tbl| {
+                let env: Option<std::collections::HashMap<String, String>> =
+                    t.get("env").and_then(|v| v.as_inline_table()).map(|tbl| {
                         tbl.iter()
                             .filter_map(|(k, v)| v.as_str().map(|s| (k.to_string(), s.to_string())))
                             .collect()
@@ -1166,7 +1176,12 @@ pub fn list_mcp_servers(codex_home: &Path) -> anyhow::Result<(
 
                 out.push((
                     name.to_string(),
-                    McpServerConfig { command, args, env, startup_timeout_ms },
+                    McpServerConfig {
+                        command,
+                        args,
+                        env,
+                        startup_timeout_ms,
+                    },
                 ));
             }
         }
@@ -1192,13 +1207,12 @@ pub fn list_mcp_servers(codex_home: &Path) -> anyhow::Result<(
 
 /// Add or update an MCP server under `[mcp_servers.<name>]`. If the same
 /// server exists under `mcp_servers_disabled`, it will be removed from there.
-pub fn add_mcp_server(
-    codex_home: &Path,
-    name: &str,
-    cfg: McpServerConfig,
-) -> anyhow::Result<()> {
+pub fn add_mcp_server(codex_home: &Path, name: &str, cfg: McpServerConfig) -> anyhow::Result<()> {
     // Validate server name for safety and compatibility with MCP tool naming.
-    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
         return Err(anyhow::anyhow!(
             "invalid server name '{}': must match ^[a-zA-Z0-9_-]+$",
             name
@@ -1237,7 +1251,10 @@ pub fn add_mcp_server(
         server_tbl.insert("env", TomlItem::Value(toml_edit::Value::InlineTable(it)));
     }
     if let Some(ms) = cfg.startup_timeout_ms {
-        server_tbl.insert("startup_timeout_ms", TomlItem::Value(toml_edit::Value::from(ms as i64)));
+        server_tbl.insert(
+            "startup_timeout_ms",
+            TomlItem::Value(toml_edit::Value::from(ms as i64)),
+        );
     }
 
     // Write into enabled table
@@ -1398,7 +1415,10 @@ pub struct ConfigToml {
     pub disable_response_storage: Option<bool>,
 
     /// Enable silent upgrades during startup when a newer release is available.
-    #[serde(default, deserialize_with = "deserialize_option_bool_from_maybe_string")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_option_bool_from_maybe_string"
+    )]
     pub auto_upgrade_enabled: Option<bool>,
 
     /// Optional external command to spawn for end-user notifications.
@@ -1778,10 +1798,7 @@ impl Config {
 
         // Project-specific overrides based on final resolved cwd (exact match)
         let project_key = resolved_cwd.to_string_lossy().to_string();
-        let project_override = cfg
-            .projects
-            .as_ref()
-            .and_then(|m| m.get(&project_key));
+        let project_override = cfg.projects.as_ref().and_then(|m| m.get(&project_key));
         // Resolve sandbox mode with correct precedence:
         // CLI override > per-project override > global config.toml > default
         let effective_sandbox_mode = sandbox_mode
@@ -1914,7 +1931,9 @@ impl Config {
             .agents
             .into_iter()
             .map(|mut a| {
-                if a.command.trim().is_empty() { a.command = a.name.clone(); }
+                if a.command.trim().is_empty() {
+                    a.command = a.name.clone();
+                }
                 a
             })
             .collect();
@@ -2012,10 +2031,7 @@ impl Config {
             using_chatgpt_auth,
             github: cfg.github.unwrap_or_default(),
             validation: cfg.validation.unwrap_or_default(),
-            subagent_commands: cfg
-                .subagents
-                .map(|s| s.commands)
-                .unwrap_or_default(),
+            subagent_commands: cfg.subagents.map(|s| s.commands).unwrap_or_default(),
             experimental_resume: cfg.experimental_resume,
             // Surface TUI notifications preference from config when present.
             tui_notifications: cfg
@@ -2029,16 +2045,16 @@ impl Config {
 
     /// Check if we're using ChatGPT authentication
     fn is_using_chatgpt_auth(codex_home: &Path) -> bool {
-        use codex_protocol::mcp_protocol::AuthMode;
         use crate::CodexAuth;
-        
+        use codex_protocol::mcp_protocol::AuthMode;
+
         // Prefer ChatGPT when both ChatGPT tokens and an API key are present.
         match CodexAuth::from_codex_home(codex_home, AuthMode::ChatGPT, "codex_cli_rs") {
             Ok(Some(auth)) => auth.mode == AuthMode::ChatGPT,
             _ => false,
         }
     }
-    
+
     fn load_instructions(codex_dir: Option<&Path>) -> Option<String> {
         let mut p = match codex_dir {
             Some(p) => p.to_path_buf(),
@@ -2246,18 +2262,18 @@ persistence = "none"
     #[test]
     fn auto_upgrade_enabled_accepts_string_boolean() {
         let cfg_true = r#"auto_upgrade_enabled = "true""#;
-        let parsed_true = toml::from_str::<ConfigToml>(cfg_true)
-            .expect("string boolean should deserialize");
+        let parsed_true =
+            toml::from_str::<ConfigToml>(cfg_true).expect("string boolean should deserialize");
         assert_eq!(parsed_true.auto_upgrade_enabled, Some(true));
 
         let cfg_false = r#"auto_upgrade_enabled = "false""#;
-        let parsed_false = toml::from_str::<ConfigToml>(cfg_false)
-            .expect("string boolean should deserialize");
+        let parsed_false =
+            toml::from_str::<ConfigToml>(cfg_false).expect("string boolean should deserialize");
         assert_eq!(parsed_false.auto_upgrade_enabled, Some(false));
 
         let cfg_bool = r#"auto_upgrade_enabled = true"#;
-        let parsed_bool = toml::from_str::<ConfigToml>(cfg_bool)
-            .expect("boolean should deserialize");
+        let parsed_bool =
+            toml::from_str::<ConfigToml>(cfg_bool).expect("boolean should deserialize");
         assert_eq!(parsed_bool.auto_upgrade_enabled, Some(true));
     }
 

@@ -64,7 +64,9 @@ pub fn generate_ts(out_dir: &Path, prettier: Option<&Path>) -> Result<()> {
                 .arg("--write")
                 .args(ts_files.iter().map(|p| p.as_os_str()))
                 .status()
-                .with_context(|| format!("Failed to invoke Prettier at {}", prettier_bin.display()))?;
+                .with_context(|| {
+                    format!("Failed to invoke Prettier at {}", prettier_bin.display())
+                })?;
             if !status.success() {
                 return Err(anyhow!("Prettier failed with status {}", status));
             }

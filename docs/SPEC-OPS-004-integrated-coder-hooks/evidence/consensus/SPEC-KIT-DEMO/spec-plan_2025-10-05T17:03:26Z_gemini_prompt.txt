@@ -1,0 +1,281 @@
+Context:
+
+
+===== spec.md =====\n# Spec: SPEC-KIT-DEMO Guardrail Baseline (T26)
+
+## Context
+- According to Byterover memory layer, SPEC-KIT-DEMO currently has guardrail telemetry but lacks foundational artefacts (`docs/SPEC-KIT-DEMO/{spec.md, plan.md, tasks.md}`) and a tracker row in `SPEC.md`, causing policy prefilters to keep `/spec-plan`, `/spec-validate`, and `/spec-unlock` in a blocked state.
+- Product requirements and RESTART.md position SPEC-KIT-DEMO as the reference flow for demonstrating consensus halt gating, telemetry capture, and `/spec-auto` orchestration; without canonical docs the branch `feat/spec-auto-telemetry` cannot reach completion.
+- Multi-agent plan and tasks prompts rely on spec docs to seed consensus prompts; missing files produce degraded consensus verdicts and leave ChatWidget without acceptance criteria to enforce.
+
+## Objectives
+1. Establish a canonical SPEC-KIT-DEMO document set (spec/plan/tasks) that captures scope, work breakdown, and validation expectations for consensus + telemetry gating.
+2. Register SPEC-KIT-DEMO in `SPEC.md` with an active task row so guardrail policy layers can resolve ownership, status, and evidence locations.
+3. Provide actionable acceptance criteria that map guardrail telemetry, consensus artefacts, and policy hooks to concrete validation steps.
+
+## Scope
+- Author `docs/SPEC-KIT-DEMO/spec.md`, `plan.md`, and `tasks.md`, ensuring they reference current branch work (`feat/spec-auto-telemetry`) and relevant evidence paths under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-DEMO/`.
+- Update `SPEC.md` with a new task entry (T26) covering SPEC-KIT-DEMO guardrail baseline, including PRD path, status, branch, and notes for evidence collections.
+- Capture dependencies on ChatWidget consensus telemetry (per-agent JSON, synthesis.json, telemetry.jsonl) and guardrail scripts so `/spec-auto` can halt on conflict or degraded verdicts.
+- Document risks, acceptance mapping, and next steps to re-run guardrail stages once docs and tracker updates land.
+
+## Non-Goals
+- Shipping additional consensus automation beyond documenting expectations (e.g., no new CLI features in this spec).
+- Replacing HAL integration or extending telemetry schema v1; those remain in existing SPEC-KIT initiatives.
+- Automating policy resolution inside this spec; enforcement continues to live in `scripts/spec_ops_004` and ChatWidget logic.
+
+## Acceptance Criteria
+- Spec, plan, and tasks docs exist under `docs/SPEC-KIT-DEMO/` and describe scope, work breakdown, acceptance mapping, and risks consistent with RESTART.md guidance.
+- `SPEC.md` includes task T26 (SPEC-KIT-DEMO Guardrail Baseline) with Status `In Progress`, PRD column pointing to `docs/SPEC-KIT-DEMO/spec.md`, and notes citing the latest consensus evidence timestamp.
+- ChatWidget consensus evidence directory `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-DEMO/` contains at least one complete bundle (per-agent JSON, synthesis.json, telemetry.jsonl) dated 2025-10-04 or later and referenced in plan/tasks docs.
+- Plan and tasks deliverables reuse the required Spec Kit templates, map requirements to telemetry/guardrail validations, and enumerate next steps for rerunning `/spec-plan`, `/spec-auto --from plan`, and related stages once conflicts are resolved.
+
+===== plan.md =====\n# Plan: SPEC-KIT-DEMO Guardrail Baseline (T26)
+## Inputs
+- Spec: docs/SPEC-KIT-DEMO/spec.md (retrieved 2025-10-05, commit HEAD)
+- Constitution: memory/constitution.md (v1.1, amended 2025-09-28)
+
+## Work Breakdown
+1. Align docs/SPEC-KIT-DEMO/{spec.md,plan.md,tasks.md} and SPEC.md row T26 before reruns; capture lint output for evidence.
+2. Execute `/spec-plan --consensus-exec SPEC-KIT-DEMO --goal "validating command exec"` with conflict prompts and SPEC_KIT_TELEMETRY_ENABLED=1 to produce halt telemetry.
+3. Run HAL HTTP MCP templates (health/list/graphql) if credentials are available; record SPEC_OPS_TELEMETRY_HAL decision and archive outputs.
+4. Refresh docs/SPEC-KIT-DEMO/tasks.md with the new evidence status, rerun checklist, and documented adversarial prompt pair for follow-up stages.
+
+## Acceptance Mapping
+| Requirement (Spec) | Validation Step | Test/Check Artifact |
+| --- | --- | --- |
+| R1: Docs + tracker ready | `python3 scripts/spec-kit/lint_tasks.py`; verify SPEC.md row T26 timestamp and notes | SPEC.md diff + lint output |
+| R2: Conflict halt validated | `/spec-plan --consensus-exec SPEC-KIT-DEMO --goal "validating command exec"` (expect non-zero exit) | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-DEMO/spec-plan_*_telemetry.jsonl |
+| R3: Evidence archived & documented | Archive HAL runs (if available) and update spec/plan/tasks with evidence + prompt pair | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-DEMO/hal_* + docs diffs |
+
+## Risks & Unknowns
+- Consensus prompts may converge; prepare adversarial variants from local-memory and rerun if halt fails.
+- HAL credentials might be absent; document the skip and plan follow-up if `HAL_SECRET_KAVEDARR_API_KEY` is missing.
+- Evidence path mismatches can drop telemetry; pre-create the consensus directory and record CLI logs.
+
+## Consensus & Risks (Multi-AI)
+- Agreement: Gemini e5a0fbe5-0780-4ec6-8569-169effd001d8, Claude 5345211d-5a22-4277-9945-32e64c6cd638, and GPT-5 fa36d440-ac6f-459b-8638-6f9120462384 align on sequencing: doc alignment → conflict run → HAL evidence → task refresh.
+- Disagreement & resolution: Gemini flagged HAL configuration uncertainty; GPT-5 lists it under missing items. Treat as an open action to confirm credentials before execution.
+
+## Exit Criteria (Done)
+- `python3 scripts/spec-kit/lint_tasks.py` passes with SPEC.md row T26 referencing the new evidence timestamp and adversarial prompt note.
+- docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-DEMO/ holds ≥2025-10-05 bundle (per-agent JSON, synthesis.json, telemetry.jsonl) from a conflicting run.
+- HAL telemetry decision captured (run or documented skip) with evidence links mirrored across spec/plan/tasks.
+- docs/SPEC-KIT-DEMO/tasks.md updated with the consensus prompt reference, HAL follow-up, and rerun checklist statuses.
+
+===== tasks.md =====\n# Tasks: T26 SPEC-KIT-DEMO Guardrail Baseline
+
+| Order | Task | Owner | Status | Validation |
+| --- | --- | --- | --- | --- |
+| 1 | Author spec/plan/tasks docs and register T26 in SPEC.md | Code | Done | 2025-10-05: docs committed; `python3 scripts/spec-kit/lint_tasks.py` (pass) |
+| 2 | Regenerate consensus evidence bundle (per-agent JSON + synthesis + telemetry.jsonl) and capture conflict halt screenshot | Code | In Progress | `/spec-plan SPEC-KIT-DEMO --consensus` run 2025-10-05T04:31:14Z (bundle in evidence); screenshot still pending |
+| 3 | Document MCP provider fallback strategy and guardrail rerun checklist in tasks.md/spec.md notes | Code | Backlog | Updated docs referencing owner + policy notes, guardrail re-run logs |
+
+===== product-requirements.md =====\n# Kavedarr Product Requirements
+
+> Status: draft v0.1 (2025-10-02) — fills the missing foundation referenced by the constitution and guardrail docs.
+
+## 1. Product Summary
+- **Product name:** Kavedarr
+- **Domain:** Media automation and asset management
+- **Mission:** Provide a reliable pipeline for ingesting, enriching, organising, and distributing media assets while enforcing evidence-driven engineering through the Spec Kit workflow.
+
+## 2. Primary Users & Goals
+- **Content Operations Engineers** – automate ingest, tagging, and distribution of large media batches; require deterministic workflows and audit trails.
+- **Media Librarians** – browse, search, and update rich metadata; need confidence that automated transformations are reversible.
+- **Quality & Compliance Teams** – verify HAL HTTP endpoints and guardrail telemetry before promoting changes; need transparent evidence packs.
+
+## 3. Current Capabilities (October 2025)
+- Media asset ingest using existing Rust services (kavedarr-core, kavedarr-downloaders, kavedarr-infrastructure, kavedarr-api). Services live in the sibling Kavedarr repository and are consumed through the Codex CLI tooling in this repo.
+- HAL HTTP MCP integration (SPEC-KIT-018) covering health, list_movies, indexer_test, and graphql_ping endpoints for validation.
+- Spec Kit guardrail stages (`/spec-ops-plan|tasks|implement|validate|audit|unlock`) producing schema v1 telemetry in `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/`.
+- Local-memory knowledge base for Spec Kit artefacts, backed by optional Byterover MCP for legacy notes.
+
+## 4. Planned / Incomplete Capabilities
+- Automated multi-agent consensus for `/spec-plan`, `/spec-tasks`, `/spec-implement`, `/spec-validate`, `/spec-audit` (currently manual via TUI prompts; automation tracked in future tasks).
+- End-to-end `/spec-auto` orchestration that invokes consensus flows, records run summaries, and retries failures automatically.
+- Evidence archival strategy once per-SPEC telemetry exceeds 25 MB.
+- HAL offline mocks for CI and local smoke tests.
+
+## 5. Functional Requirements
+1. **Spec Kit Guardrail Stages**
+   - Each stage must emit telemetry conforming to schema v1 with stage-specific fields (baseline status, tool.status, lock_status, scenarios, unlock_status).
+   - Failures in guardrail scripts must propagate non-zero exit codes and halt `/spec-auto`.
+2. **Consensus Artefacts (planned)**
+   - Every multi-agent stage records three agent outputs plus synthesis JSON with agreements/conflicts.
+   - Missing agents or unresolved conflicts block progression.
+3. **HAL Validation**
+   - Default behaviour: run HAL smoke checks unless explicitly skipped (decision pending).
+   - HAL telemetry must include `hal.summary` with status, failed_checks, and evidence artifacts.
+4. **Task Tracking**
+   - SPEC.md keeps exactly one `In Progress` entry per active thread and records evidence notes for each status change.
+5. **Documentation**
+   - CLAUDE.md, AGENTS.md, and SPEC-KIT docs stay synchronized with actual capabilities; aspirational features must be clearly marked.
+
+## 6. Non-Functional Requirements
+- **Reliability:** Guardrail scripts and `/spec-auto` must fail fast on dirty git trees unless explicitly overridden.
+- **Auditability:** Evidence directories must contain timestamped telemetry, logs, and consensus artefacts for each SPEC ID.
+- **Observability:** Run `scripts/spec_ops_004/evidence_stats.sh` after major changes to monitor repository footprint.
+- **Operator Experience:** Slash commands provide terse confirmations and point to telemetry/evidence locations.
+- **Security:** No secrets committed to git. HAL secrets provided via environment (`HAL_SECRET_KAVEDARR_API_KEY`).
+
+## 7. Guardrail & Telemetry Dependencies
+- `docs/spec-kit/prompts.json` defines prompt versions consumed by consensus runners (pending automation).
+- `docs/spec-kit/model-strategy.md` maps each stage to Gemini, Claude, and GPT-5 variants.
+- `scripts/spec_ops_004/common.sh` supplies shared logic for telemetry, HAL, and policy gating.
+- MCP servers (repo-search, doc-index, shell-lite, git-status, hal) must be configured before invoking slash workflows.
+
+## 8. Current Gap Log (from 2025-10-02 assessment)
+- product-requirements.md and PLANNING.md were missing; this document and the companion planning file address the blocker.
+- Multi-agent consensus is only described in docs; implementation pending.
+- Cargo workspace pathing issues prevent `cargo test -p codex-tui spec_auto` from running at repo root.
+- SPEC.md lacks in-progress entries and consistent evidence references.
+- CLAUDE.md overstated automation; requires update after this baseline is in place.
+
+## 9. Acceptance & Measurement
+- Guardrail stages considered functional when `/spec-ops-plan|...|unlock SPEC-KIT-DEMO` succeed on a clean tree and produce valid telemetry.
+- `/spec-auto SPEC-KIT-DEMO` must complete all six stages (with retries logged) before feature work resumes.
+- Consensus automation milestone when `/spec-plan SPEC-KIT-DEMO --consensus` writes 3 agent artefacts and synthesis, halting on conflict.
+
+## 10. Open Questions
+- Should HAL telemetry default to enabled, or remain opt-in via `SPEC_OPS_TELEMETRY_HAL=1`?
+- Do we extract spec-kit tooling into a dedicated repository, or keep it embedded alongside Codex CLI?
+- What is the archival policy for evidence once repo size exceeds agreed thresholds?
+- How do we measure cost impact of high-reasoning runs (`gpt-5 --reasoning high`, `gemini-2.5-pro thinking`)?
+
+## 11. Review Notes
+
+**Reviewed by:** Project maintainer + Claude Code analysis (Sonnet 4.5)
+**Review date:** 2025-10-05
+**Review verdict:** Draft v0.1 approved for consensus prompt usage
+**Changes from review:**
+- Added section 11 (this review section) to document validation
+- Confirmed alignment with PLANNING.md and constitution.md
+- Validated that prompt linkage now loads this doc into agent context
+
+**Next review trigger:** After first 5 SPECs use these foundation docs in consensus runs, or when product scope significantly changes
+
+**Prompt linkage status:** ✅ Linked via `scripts/spec_ops_004/consensus_runner.sh` `collect_context()` function as of 2025-10-05
+
+Document owner: @just-every/automation
+
+===== PLANNING.md =====\n# Kavedarr Architecture & Planning
+
+> Status: draft v0.1 (2025-10-02). Complements `product-requirements.md` and fulfils the constitution’s mandatory context references.
+
+## 1. Monorepo Overview
+- **Repository:** just-every/code (feature branch: feat/spec-auto-telemetry)
+- **Primary language:** Rust (Codex CLI + guardrail extensions)
+- **Secondary tooling:** Bash guardrail scripts, MCP (Model Context Protocol) servers, Node-based helpers (package.json for aux scripts).
+- **Key directories:**
+  - `codex-rs/` – Rust workspace containing Codex CLI/TUI, guardrail integrations, MCP clients.
+  - `scripts/spec_ops_004/` – Shell automation for Spec Kit guardrail stages and support utilities.
+  - `docs/spec-kit/` – Prompt versions, model strategy, automation runbooks, evidence policies.
+  - `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/` – Telemetry and evidence artefacts organised by SPEC ID.
+  - `memory/` – Constitution and stored guidance for operating Spec Kit flows.
+
+## 2. Component Architecture
+### 2.1 Spec Kit Guardrail Layer
+- **Purpose:** Enforce evidence-driven workflow across plan → tasks → implement → validate → audit → unlock stages.
+- **Implementation:**
+  - Stage-specific scripts (`spec_ops_004/commands/spec_ops_{stage}.sh`) share helpers via `common.sh`.
+  - Telemetry emitted as JSON (schema v1) per stage with optional HAL payloads.
+  - `/spec-ops-auto` orchestrates sequential execution; multi-agent consensus automation remains a roadmap item.
+
+### 2.2 Multi-Agent Prompt Layer (planned automation)
+- Prompt templates in `docs/spec-kit/prompts.json` for Gemini (research), Claude Sonnet 4.5 (synthesis), GPT-5 / GPT-5-Codex (arbiter/executor).
+- Model allocation recorded in `docs/spec-kit/model-strategy.md` with escalation rules.
+- Current state: prompts manually invoked from the Codex TUI; consensus runner and synthesis scripts not yet implemented (tracked in roadmap tasks).
+
+### 2.3 Codex CLI / TUI Integration
+- `/spec-*` slash commands defined in `codex-rs/tui/src/slash_command.rs` route to guardrail scripts or prompt flows.
+- `/spec-ops-*` commands run shell automation via `scripts/env_run.sh` to preserve environment parity.
+- Local-memory interactions and MCP connections mediated through `codex-rs/core` and `codex-rs/mcp-client` crates.
+
+### 2.4 External Services
+- **HAL HTTP MCP** (`docs/hal/hal_config.toml`): validates Kavedarr API endpoints; requires `HAL_SECRET_KAVEDARR_API_KEY`.
+- **Local-memory store:** canonical knowledge base for Spec Kit; Byterover MCP used as fallback until migration completes.
+
+## 3. Technology Stack & Dependencies
+- **Rust Toolchain:** Stable 1.80+ (configured via `rust-toolchain.toml`).
+- **Package Management:** Cargo workspaces (`codex-rs/Cargo.toml`), npm/pnpm for auxiliary scripts.
+- **Shell Environment:** Bash 5+, `env_run.sh` ensures `.env` secrets respected.
+- **MCP Servers:** repo-search, doc-index, shell-lite, git-status, hal (documented in AGENTS.md / CLAUDE.md).
+- **Optional:** Node-based utilities (e.g., `scripts/spec_ops_004/evidence_stats.sh` uses standard Unix tooling).
+
+## 4. Constraints & Assumptions
+- Guardrail scripts expect to run from repository root with clean git status unless `SPEC_OPS_ALLOW_DIRTY=1`.
+- `/spec-auto` currently only sequences shell stages; agent automation will introduce additional dependencies (Gemini, Claude, GPT-5 APIs via Codex CLI).
+- Evidence is stored within git; growth is monitored via `evidence_stats.sh` with a soft threshold of 25 MB per SPEC.
+- HAL service must be reachable for full validation runs; if unavailable, operators set `SPEC_OPS_HAL_SKIP=1` (decision pending).
+- Cargo workspace root is `codex-rs/`. Commands like `cargo test -p codex-tui spec_auto` must run within that directory; plan includes documenting this in CLAUDE.md and adjusting `SPEC_OPS_CARGO_MANIFEST` defaults if necessary.
+
+## 5. Build & Test Plan
+- **Rust:** `cd codex-rs && cargo fmt && cargo clippy && cargo test` (ensure `spec_auto` target passes once workspace path fix is complete).
+- **Guardrail validation:**
+  1. `SPEC_OPS_ALLOW_DIRTY=0 ./scripts/spec_ops_004/spec_auto.sh SPEC-KIT-DEMO` (expect clean run).
+  2. Simulate HAL failure (`SPEC_OPS_HAL_SKIP=0` with service offline) to confirm non-zero exit and telemetry logging.
+  3. Manually trigger `/spec-plan`, `/spec-tasks`, etc. to capture consensus artefacts once automation is delivered.
+- **Docs & Task linting:** `scripts/doc-structure-validate.sh --mode=templates`, `python3 scripts/spec-kit/lint_tasks.py`.
+
+## 6. Roadmap Alignment (excerpt)
+- **Foundation (Critical):** product-requirements.md, PLANNING.md (this document), workspace path correction, guardrail validation run.
+- **Consensus Automation (High):** consensus runner script, prompt substitution, synthesis validator.
+- **Testing (Medium):** add spec-auto integration tests in `codex-rs/tui` crate, confirm HAL failure propagation.
+- **Documentation Sync (High):** update CLAUDE.md to reflect real capabilities and prerequisites; reconcile SPEC.md tasks with evidence.
+- **Strategic:** Decide on cross-repo separation vs embedded spec-kit tooling; evaluate agent delegation wiring.
+
+## 7. Risks & Mitigations
+- **Doc Drift:** Mitigate by adding CLAUDE.md troubleshooting section and linking to this plan.
+- **HAL Availability:** Provide skip flag and plan for mock service; document fallback procedures.
+- **Evidence Sprawl:** Track via evidence-baseline.md updates; design archival strategy before exceeding threshold.
+- **Automation Gap:** Until consensus runner exists, clearly label manual steps in docs to avoid false expectations.
+
+## 8. Milestones & Owners
+- **Gate 1 (Foundation)** – Owners: Spec Kit maintainers; due ASAP.
+- **Gate 2 (Consensus Operational)** – Requires implementation of tasks 4–5 in the audit checklist.
+- **Gate 3 (Production Ready)** – After HAL decision, doc sync, and integration tests pass.
+- **Gate 4 (Architectural Clarity)** – Based on cross-repo decision and agent wiring outcome.
+
+## 9. Open Questions
+- Should `/spec-auto` automatically call consensus runner when it becomes available, or remain opt-in via flag?
+- How do we capture cost telemetry for high-reasoning runs to feed into governance? (Mentioned in model strategy but not implemented.)
+- Do we separate guardrail tooling into a dedicated repo to avoid coupling with Codex CLI updates?
+
+## 10. Review Notes
+
+**Reviewed by:** Project maintainer + Claude Code analysis (Sonnet 4.5)
+**Review date:** 2025-10-05
+**Review verdict:** Draft v0.1 approved for consensus prompt usage
+**Changes from review:**
+- Added section 10 (this review section) to document validation
+- Confirmed architectural decisions align with actual implementation
+- Validated Cargo workspace location guidance matches current setup
+- Verified constraints and risks are accurately documented
+
+**Next review trigger:** After architectural changes (repo separation decision, Cargo workspace restructure) or after 5+ SPECs validate the planning assumptions
+
+**Prompt linkage status:** ✅ Linked via `scripts/spec_ops_004/consensus_runner.sh` `collect_context()` function as of 2025-10-05
+
+Document owner: @just-every/automation
+
+Task:
+Survey SPEC SPEC-KIT-DEMO. Summarize:
+1. Acceptance criteria and evidence requirements.
+2. Conflicts, gaps, stale telemetry, blocked tasks.
+3. Related files/modules/tests worth touching.
+4. Questions to clarify before planning.
+Keep under 400 words. Cite file paths or memory IDs.
+
+Output JSON:
+{
+  "stage": "spec-plan",
+  "prompt_version": "20251002-plan-a",
+  "agent": "gemini",
+  "model": "gemini-2.5-pro",
+  "model_release": "2025-08-06",
+  "reasoning_mode": "thinking",
+  "research_summary": [ { "topic": string, "details": string } ],
+  "questions": [ string ]
+}
+Persist to local-memory (spec-tracker).

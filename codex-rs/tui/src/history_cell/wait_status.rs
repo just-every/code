@@ -1,6 +1,8 @@
 use super::*;
-use crate::history::state::{HistoryId, TextTone, WaitStatusDetail, WaitStatusHeader, WaitStatusState};
-use crate::theme::{current_theme, Theme};
+use crate::history::state::{
+    HistoryId, TextTone, WaitStatusDetail, WaitStatusHeader, WaitStatusState,
+};
+use crate::theme::{Theme, current_theme};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 

@@ -1,0 +1,30 @@
+{
+  "stage": "spec-validate",
+  "prompt_version": "20251002-validate-a",
+  "agent": "gemini",
+  "model": "gemini-1.5-pro",
+  "model_release": "2025-09",
+  "reasoning_mode": "research",
+  "scenarios": [
+    {
+      "name": "Telemetry schema v1 compliance",
+      "status": "passed",
+      "details": "spec-validate_2025-10-14T16:58:53Z-971619013.json exposes schemaVersion=1, command, specId, sessionId, timestamp, scenarios[], policy, artifacts[], and hal.summary fields."
+    },
+    {
+      "name": "Mock HAL rationale present",
+      "status": "passed",
+      "details": "HAL summary in telemetry points to 20251014-165853Z-hal-mock.json; file copied into docs/SPEC-KIT-045-mini/telemetry/ for rehearsal reference."
+    },
+    {
+      "name": "Policy overrides documented",
+      "status": "passed",
+      "details": "Telemetry policy.prefilter/final marked passed via stub command (note=\"true\"); unlock-notes.md append documents outstanding clean-run follow-up."
+    }
+  ],
+  "evidence": [
+    "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-validate_2025-10-14T16:58:53Z-971619013.json",
+    "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-validate_2025-10-14T16:58:53Z-971619013.log",
+    "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/20251014-165853Z-hal-mock.json"
+  ]
+}

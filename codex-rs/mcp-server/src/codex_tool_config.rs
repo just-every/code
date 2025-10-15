@@ -11,9 +11,9 @@ use schemars::JsonSchema;
 use schemars::r#gen::SchemaSettings;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use serde_json::json;
 
 use crate::json_to_toml::json_to_toml;
 
@@ -291,6 +291,59 @@ pub(crate) fn create_tool_for_codex_tool_call_reply_param() -> Tool {
         output_schema: None,
         description: Some(
             "Continue a Codex session by providing the session id and prompt.".to_string(),
+        ),
+        annotations: None,
+    }
+}
+
+pub(crate) fn create_tool_for_spec_consensus_check() -> Tool {
+    let input_schema = ToolInputSchema {
+        r#type: "object".to_string(),
+        required: Some(vec![
+            "specId".to_string(),
+            "stage".to_string(),
+            "artifacts".to_string(),
+        ]),
+        properties: Some(json!({
+            "specId": { "type": "string" },
+            "stage": { "type": "string" },
+            "artifacts": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "agent": { "type": "string" },
+                        "version": { "type": "string" },
+                        "content": { "type": "object" }
+                    },
+                    "required": ["agent", "content"],
+                }
+            }
+        })),
+    };
+
+    let output_schema = ToolOutputSchema {
+        r#type: "object".to_string(),
+        properties: Some(json!({
+            "specId": { "type": "string" },
+            "stage": { "type": "string" },
+            "consensusOk": { "type": "boolean" },
+            "degraded": { "type": "boolean" },
+            "missingAgents": { "type": "array" },
+            "agreements": { "type": "array" },
+            "conflicts": { "type": "array" }
+        })),
+        required: None,
+    };
+
+    Tool {
+        name: "spec_consensus_check".to_string(),
+        title: Some("Spec Consensus Reviewer".to_string()),
+        input_schema,
+        output_schema: Some(output_schema),
+        description: Some(
+            "Compare multi-agent outputs for a Spec Kit stage and report consensus/conflicts."
+                .to_string(),
         ),
         annotations: None,
     }

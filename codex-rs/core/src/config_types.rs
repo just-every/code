@@ -3,16 +3,16 @@
 // Note this file should generally be restricted to simple struct/enum
 // definitions that do not contain business logic.
 
+use schemars::JsonSchema;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use schemars::JsonSchema;
 use wildmatch::WildMatchPattern;
 
 use shlex::split as shlex_split;
 
-use serde::de::{self, Deserializer};
 use serde::Deserialize;
 use serde::Serialize;
+use serde::de::{self, Deserializer};
 use strum_macros::Display;
 
 /// Configuration for commands that require an explicit `confirm:` prefix.
@@ -26,7 +26,9 @@ pub struct ConfirmGuardConfig {
 
 impl Default for ConfirmGuardConfig {
     fn default() -> Self {
-        Self { patterns: default_confirm_guard_patterns() }
+        Self {
+            patterns: default_confirm_guard_patterns(),
+        }
     }
 }
 
@@ -120,7 +122,9 @@ pub enum AllowedCommandMatchKind {
 }
 
 impl Default for AllowedCommandMatchKind {
-    fn default() -> Self { Self::Exact }
+    fn default() -> Self {
+        Self::Exact
+    }
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -312,7 +316,10 @@ pub struct ValidationGroups {
 
 impl Default for ValidationGroups {
     fn default() -> Self {
-        Self { functional: false, stylistic: false }
+        Self {
+            functional: false,
+            stylistic: false,
+        }
     }
 }
 
@@ -356,16 +363,8 @@ impl ValidationCategory {
 /// Map a validation tool name to its category grouping.
 pub fn validation_tool_category(name: &str) -> ValidationCategory {
     match name {
-        "actionlint"
-        | "shellcheck"
-        | "cargo-check"
-        | "tsc"
-        | "eslint"
-        | "phpstan"
-        | "psalm"
-        | "mypy"
-        | "pyright"
-        | "golangci-lint" => ValidationCategory::Functional,
+        "actionlint" | "shellcheck" | "cargo-check" | "tsc" | "eslint" | "phpstan" | "psalm"
+        | "mypy" | "pyright" | "golangci-lint" => ValidationCategory::Functional,
         "markdownlint" | "hadolint" | "yamllint" | "shfmt" | "prettier" => {
             ValidationCategory::Stylistic
         }
@@ -638,18 +637,23 @@ pub struct SpinnerSelection {
     /// Name of the spinner to use. Accepts one of the names from
     /// sindresorhus/cli-spinners (kebab-case), or custom names supported
     /// by Codex. Defaults to "diamond".
-    #[serde(default = "default_spinner_name")] 
+    #[serde(default = "default_spinner_name")]
     pub name: String,
     /// Custom spinner definitions saved by the user
     #[serde(default)]
     pub custom: std::collections::HashMap<String, CustomSpinner>,
 }
 
-fn default_spinner_name() -> String { "diamond".to_string() }
+fn default_spinner_name() -> String {
+    "diamond".to_string()
+}
 
 impl Default for SpinnerSelection {
     fn default() -> Self {
-        Self { name: default_spinner_name(), custom: Default::default() }
+        Self {
+            name: default_spinner_name(),
+            custom: Default::default(),
+        }
     }
 }
 
@@ -805,7 +809,9 @@ pub struct SandboxWorkspaceWrite {
 }
 
 // Serde helper: default to true for `allow_git_writes` when omitted.
-pub(crate) const fn default_true_bool() -> bool { true }
+pub(crate) const fn default_true_bool() -> bool {
+    true
+}
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "kebab-case")]
@@ -965,7 +971,8 @@ where
             if text.trim().is_empty() {
                 Ok(Vec::new())
             } else {
-                shlex_split(&text).ok_or_else(|| de::Error::custom("failed to parse command string"))
+                shlex_split(&text)
+                    .ok_or_else(|| de::Error::custom("failed to parse command string"))
             }
         }
     }

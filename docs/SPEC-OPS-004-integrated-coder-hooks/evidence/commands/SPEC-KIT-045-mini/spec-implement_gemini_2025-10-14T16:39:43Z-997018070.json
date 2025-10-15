@@ -1,0 +1,48 @@
+{
+  "stage": "spec-implement",
+  "prompt_version": "20251002-implement-a",
+  "agent": "gemini",
+  "model": "gemini-2.5-pro",
+  "model_release": "2025-09-12",
+  "reasoning_mode": "research",
+  "code_paths": [
+    "docs/SPEC-KIT-045-mini/plan.md",
+    "docs/SPEC-KIT-045-mini/tasks.md",
+    "docs/SPEC-KIT-045-mini/unlock-notes.md",
+    "docs/SPEC-KIT-045-mini/checksums.sha256",
+    "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-plan_2025-10-14T15:58:30Z-79323873.json",
+    "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-tasks_2025-10-14T16:19:16Z-1583422877.json",
+    "docs/SPEC-KIT-045-mini/telemetry/roster_2025-10-14T15:58:30Z.json",
+    "docs/SPEC-KIT-045-mini/telemetry/plan-schema-check_2025-10-14T15:58:30Z.txt",
+    "docs/SPEC-KIT-045-mini/telemetry/tasks-schema-check_2025-10-14T16:19:16Z.txt",
+    "docs/SPEC-KIT-045-mini/telemetry/mock-hal_2025-10-14T16:19:16Z.diff",
+    "docs/SPEC-KIT-045-mini/telemetry/policy-overrides_2025-10-14T16:19:16Z.txt",
+    "docs/SPEC-KIT-045-mini/telemetry/fixture-size_2025-10-14T16:19:16Z.txt",
+    "SPEC.md"
+  ],
+  "recent_changes": [
+    {"path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-plan_2025-10-14T15:58:30Z-79323873.json", "summary": "Added new plan telemetry snapshot capturing baseline artifact, stubbed policy notes, and agent roster metadata for the 2025-10-14 rehearsal."},
+    {"path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-tasks_2025-10-14T16:19:16Z-1583422877.json", "summary": "Recorded tasks stage telemetry with stubbed policy indicators and tool.status ready for the latest rehearsal run."},
+    {"path": "docs/SPEC-KIT-045-mini/telemetry/roster_2025-10-14T15:58:30Z.json", "summary": "Published normalized four-agent roster extracted from the new plan telemetry bundle."},
+    {"path": "docs/SPEC-KIT-045-mini/telemetry/plan-schema-check_2025-10-14T15:58:30Z.txt", "summary": "Stored jq validation output proving schema v1 coverage for plan telemetry 2025-10-14."},
+    {"path": "docs/SPEC-KIT-045-mini/telemetry/tasks-schema-check_2025-10-14T16:19:16Z.txt", "summary": "Captured jq checks for tasks telemetry, confirming command/specId/timestamp/tool.status fields are present."},
+    {"path": "docs/SPEC-KIT-045-mini/telemetry/mock-hal_2025-10-14T16:19:16Z.diff", "summary": "Logged diff between rehearsal mock HAL payload and baseline sample, documenting no functional drift."},
+    {"path": "docs/SPEC-KIT-045-mini/telemetry/policy-overrides_2025-10-14T16:19:16Z.txt", "summary": "Explained continued SPEC_OPS_POLICY_* stubs and mapped follow-up actions for clean policy runs."},
+    {"path": "docs/SPEC-KIT-045-mini/telemetry/fixture-size_2025-10-14T16:19:16Z.txt", "summary": "Updated size audit with new timestamp and total footprint for the mini bundle."},
+    {"path": "docs/SPEC-KIT-045-mini/tasks.md", "summary": "Expanded table to eight rehearsal tasks tied to 2025-10-14 evidence artifacts."},
+    {"path": "docs/SPEC-KIT-045-mini/unlock-notes.md", "summary": "Appended unlock posture entry for 2025-10-14, citing mock HAL mode and outstanding policy follow-up."},
+    {"path": "docs/SPEC-KIT-045-mini/checksums.sha256", "summary": "Regenerated checksums covering refreshed telemetry outputs and retired obsolete diff/size files."},
+    {"path": "docs/SPEC-KIT-045-mini/plan.md", "summary": "Rebased plan deliverable on 2025-10-14 telemetry bundle and acceptance mapping."},
+    {"path": "SPEC.md", "summary": "Updated T49 tracker row with 2025-10-14 validation note pointing to refreshed rehearsal artifacts."}
+  ],
+  "edge_cases": [
+    "Telemetry JSON uses stubbed policy fields; downstream tools must tolerate status=\"skipped\" while overrides remain active.",
+    "Mini bundle stays under 100 KB; scripts consuming fixture-size logs should handle timestamped filenames.",
+    "Roster JSON intentionally stores agent metadata without tokens/cost; consumers must not assume those keys exist."
+  ],
+  "tests": [
+    "python3 scripts/spec-kit/lint_tasks.py",
+    "cargo fmt",
+    "cargo clippy --workspace --all-targets --all-features"
+  ]
+}

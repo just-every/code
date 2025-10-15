@@ -1,73 +1,85 @@
+// Spec-kit submodule for friend access to ChatWidget private fields
+mod spec_kit;
+
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::fs;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
-use std::sync::mpsc::Sender;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::sync::OnceLock;
+use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant, SystemTime};
 
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 
+use crate::local_memory_util::{self, LocalMemorySearchResult};
+use crate::slash_command::HalMode;
+use crate::slash_command::SlashCommand;
+use crate::slash_command::SpecAutoInvocation;
+use spec_kit::{
+    SpecAutoPhase, SpecAutoState, GuardrailWait, GuardrailEvaluation, GuardrailOutcome,
+    guardrail_for_stage, spec_ops_stage_prefix, expected_guardrail_command,
+    validate_guardrail_evidence, require_string_field, require_object,
+};
+use crate::spec_prompts;
+use crate::spec_prompts::{SpecAgent, SpecStage};
+// spec_status functions moved to spec_kit::handler
 use codex_common::elapsed::format_duration;
 use codex_common::model_presets::ModelPreset;
 use codex_common::model_presets::builtin_model_presets;
 use codex_core::ConversationManager;
+use codex_core::account_usage::{self, StoredRateLimitSnapshot, StoredUsageSummary};
+use codex_core::auth_accounts::{self, StoredAccount};
 use codex_core::config::Config;
-use codex_core::git_info::CommitLogEntry;
 use codex_core::config_types::AgentConfig;
 use codex_core::config_types::ReasoningEffort;
 use codex_core::config_types::TextVerbosity;
-use codex_core::plan_tool::{PlanItemArg, StepStatus, UpdatePlanArgs};
+use codex_core::git_info::CommitLogEntry;
 use codex_core::model_family::derive_default_model_family;
 use codex_core::model_family::find_family_for_model;
-use codex_core::account_usage::{self, StoredRateLimitSnapshot, StoredUsageSummary};
-use codex_core::auth_accounts::{self, StoredAccount};
+use codex_core::plan_tool::{PlanItemArg, StepStatus, UpdatePlanArgs};
 use codex_login::AuthManager;
 use codex_login::AuthMode;
 use codex_protocol::mcp_protocol::AuthMode as McpAuthMode;
 use codex_protocol::num_format::format_with_separators;
-use crate::slash_command::SlashCommand;
+use serde_json::Value;
 
-
-mod diff_handlers;
 mod agent_install;
+mod diff_handlers;
 mod diff_ui;
 mod exec_tools;
 mod gh_actions;
-mod history_render;
 mod help_handlers;
-mod limits_handlers;
-mod limits_overlay;
+mod history_render;
 mod interrupts;
 mod layout_scroll;
+mod limits_handlers;
+mod limits_overlay;
 mod message;
 mod perf;
 mod rate_limit_refresh;
 mod streaming;
-mod terminal_handlers;
 mod terminal;
+mod terminal_handlers;
 mod tools;
 use self::agent_install::{
-    start_agent_install_session,
-    start_direct_terminal_session,
-    start_prompt_terminal_session,
+    start_agent_install_session, start_direct_terminal_session, start_prompt_terminal_session,
     wrap_command,
 };
+use self::history_render::{CachedLayout, HistoryRenderState, LayoutRef};
 use self::limits_overlay::{LimitsOverlay, LimitsOverlayContent, LimitsTab};
 use self::rate_limit_refresh::start_rate_limit_refresh;
-use self::history_render::{CachedLayout, HistoryRenderState, LayoutRef};
 use codex_core::parse_command::ParsedCommand;
 use codex_core::protocol::AgentMessageDeltaEvent;
-use codex_core::protocol::ApprovedCommandMatchKind;
-use codex_core::protocol::SandboxPolicy;
 use codex_core::protocol::AgentMessageEvent;
 use codex_core::protocol::AgentReasoningDeltaEvent;
 use codex_core::protocol::AgentReasoningEvent;
@@ -76,6 +88,7 @@ use codex_core::protocol::AgentReasoningRawContentEvent;
 use codex_core::protocol::AgentReasoningSectionBreakEvent;
 use codex_core::protocol::AgentStatusUpdateEvent;
 use codex_core::protocol::ApplyPatchApprovalRequestEvent;
+use codex_core::protocol::ApprovedCommandMatchKind;
 use codex_core::protocol::BackgroundEventEvent;
 use codex_core::protocol::BrowserScreenshotUpdateEvent;
 use codex_core::protocol::CustomToolCallBeginEvent;
@@ -88,27 +101,25 @@ use codex_core::protocol::ExecCommandBeginEvent;
 use codex_core::protocol::ExecCommandEndEvent;
 use codex_core::protocol::ExecOutputStream;
 use codex_core::protocol::InputItem;
+use codex_core::protocol::SandboxPolicy;
 use codex_core::protocol::SessionConfiguredEvent;
 // MCP tool call handlers moved into chatwidget::tools
 use codex_core::protocol::Op;
-use codex_core::protocol::ReviewOutputEvent;
-use codex_core::protocol::{ReviewContextMetadata, ReviewRequest};
 use codex_core::protocol::PatchApplyBeginEvent;
 use codex_core::protocol::PatchApplyEndEvent;
-use codex_core::protocol::TaskCompleteEvent;
-use codex_core::protocol::TokenUsage;
-use codex_core::protocol::TurnDiffEvent;
 use codex_core::protocol::ProAction;
+use codex_core::protocol::ProCategory;
 use codex_core::protocol::ProEvent;
 use codex_core::protocol::ProPhase;
 use codex_core::protocol::ProStats;
-use codex_core::protocol::ProCategory;
+use codex_core::protocol::ReviewOutputEvent;
+use codex_core::protocol::TaskCompleteEvent;
+use codex_core::protocol::TokenUsage;
+use codex_core::protocol::TurnDiffEvent;
+use codex_core::protocol::{ReviewContextMetadata, ReviewRequest};
 use codex_git_tooling::{
-    create_ghost_commit,
+    CreateGhostCommitOptions, GhostCommit, GitToolingError, create_ghost_commit,
     restore_ghost_commit,
-    CreateGhostCommitOptions,
-    GhostCommit,
-    GitToolingError,
 };
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
@@ -123,6 +134,7 @@ use ratatui::widgets::WidgetRef;
 use ratatui_image::picker::Picker;
 use std::cell::Cell;
 use std::cell::RefCell;
+use std::process::Command;
 use std::sync::mpsc;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -143,52 +155,46 @@ use tokio::sync::mpsc::unbounded_channel;
 use tracing::info;
 // use image::GenericImageView;
 
+pub(crate) use self::terminal::{
+    PendingCommand, PendingCommandAction, PendingManualTerminal, TerminalOverlay, TerminalState,
+};
+#[cfg(target_os = "macos")]
+use crate::agent_install_helpers::macos_brew_formula_for_command;
 use crate::app_event::{
-    AppEvent,
-    BackgroundPlacement,
-    TerminalAfter,
-    TerminalCommandGate,
-    TerminalLaunch,
+    AppEvent, BackgroundPlacement, TerminalAfter, TerminalCommandGate, TerminalLaunch,
     TerminalRunController,
 };
 use crate::app_event_sender::AppEventSender;
-use crate::bottom_pane::CustomPromptView;
-use crate::bottom_pane::list_selection_view::{ListSelectionView, SelectionAction, SelectionItem};
-use crate::bottom_pane::validation_settings_view;
-use crate::bottom_pane::validation_settings_view::{GroupStatus, ToolRow};
 use crate::bottom_pane::BottomPane;
 use crate::bottom_pane::BottomPaneParams;
-use crate::bottom_pane::UndoRestoreView;
 use crate::bottom_pane::CancellationEvent;
+use crate::bottom_pane::CustomPromptView;
 use crate::bottom_pane::InputResult;
 use crate::bottom_pane::LoginAccountsState;
 use crate::bottom_pane::LoginAccountsView;
 use crate::bottom_pane::LoginAddAccountState;
 use crate::bottom_pane::LoginAddAccountView;
+use crate::bottom_pane::UndoRestoreView;
 use crate::bottom_pane::UpdateSharedState;
+use crate::bottom_pane::list_selection_view::{ListSelectionView, SelectionAction, SelectionItem};
+use crate::bottom_pane::validation_settings_view;
+use crate::bottom_pane::validation_settings_view::{GroupStatus, ToolRow};
 use crate::height_manager::HeightEvent;
 use crate::height_manager::HeightManager;
 use crate::history_cell;
-use crate::history_cell::clean_wait_command;
-#[cfg(target_os = "macos")]
-use crate::agent_install_helpers::macos_brew_formula_for_command;
 use crate::history_cell::ExecCell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::HistoryCellType;
 use crate::history_cell::PatchEventType;
 use crate::history_cell::PlainHistoryCell;
+use crate::history_cell::clean_wait_command;
 use crate::live_wrap::RowBuilder;
+use crate::rate_limits_view::{DEFAULT_GRID_CONFIG, RateLimitResetInfo, build_limits_view};
 use crate::streaming::StreamKind;
 use crate::streaming::controller::AppEventHistorySink;
-use crate::util::buffer::fill_rect;
 use crate::user_approval_widget::ApprovalRequest;
-pub(crate) use self::terminal::{
-    PendingCommand,
-    PendingCommandAction,
-    PendingManualTerminal,
-    TerminalOverlay,
-    TerminalState,
-};
+use crate::util::buffer::fill_rect;
+use chrono::{DateTime, Duration as ChronoDuration, Local, SecondsFormat, Utc};
 use codex_browser::BrowserManager;
 use codex_core::config::find_codex_home;
 use codex_core::config::resolve_codex_path_for_read;
@@ -196,23 +202,18 @@ use codex_core::config::set_github_actionlint_on_patch;
 use codex_core::config::set_github_check_on_push;
 use codex_core::config::set_validation_group_enabled;
 use codex_core::config::set_validation_tool_enabled;
+use codex_core::config_types::{ValidationCategory, validation_tool_category};
+use codex_core::protocol::RateLimitSnapshotEvent;
+use codex_core::protocol::ValidationGroup;
+use codex_core::review_format::format_review_findings_block;
 use codex_file_search::FileMatch;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
-use codex_core::config_types::{validation_tool_category, ValidationCategory};
-use codex_core::protocol::RateLimitSnapshotEvent;
-use codex_core::protocol::ValidationGroup;
-use crate::rate_limits_view::{build_limits_view, RateLimitResetInfo, DEFAULT_GRID_CONFIG};
-use codex_core::review_format::format_review_findings_block;
-use chrono::{DateTime, Duration as ChronoDuration, Local, Utc};
 use crossterm::event::KeyCode;
 use crossterm::event::KeyModifiers;
 use ratatui::style::Stylize;
 use ratatui::symbols::scrollbar as scrollbar_symbols;
 use ratatui::text::Text as RtText;
-use textwrap::wrap;
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use ratatui::widgets::Clear;
@@ -223,6 +224,10 @@ use ratatui::widgets::ScrollbarState;
 use ratatui::widgets::StatefulWidget;
 use serde::Deserialize;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
+use textwrap::wrap;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct CachedConnection {
@@ -534,6 +539,13 @@ pub(crate) struct ChatWidget<'a> {
     // user's visible prompt.
     pending_agent_notes: Vec<String>,
 
+    // === FORK-SPECIFIC: spec-kit automation state ===
+    // Upstream: Does not have /spec-auto pipeline
+    // Preserve: This field during rebases
+    // Handler methods extracted to spec_kit module (free functions)
+    spec_auto_state: Option<SpecAutoState>,
+    // === END FORK-SPECIFIC ===
+
     // Stable synthetic request bucket for pre‑turn system notices (set on first use)
     synthetic_system_req: Option<u64>,
     // Map of system notice ids to their history index for in-place replacement
@@ -553,7 +565,11 @@ struct GhostSnapshot {
 }
 
 impl GhostSnapshot {
-    fn new(commit: GhostCommit, summary: Option<String>, conversation: ConversationSnapshot) -> Self {
+    fn new(
+        commit: GhostCommit,
+        summary: Option<String>,
+        conversation: ConversationSnapshot,
+    ) -> Self {
         let summary = summary.and_then(|text| {
             let trimmed = text.trim();
             if trimmed.is_empty() {
@@ -734,9 +750,7 @@ impl AgentsTerminalState {
     }
 
     fn current_agent_id(&self) -> Option<&str> {
-        self.order
-            .get(self.selected_index)
-            .map(String::as_str)
+        self.order.get(self.selected_index).map(String::as_str)
     }
 
     fn focus_sidebar(&mut self) {
@@ -915,7 +929,11 @@ fn wait_target_from_params(params: Option<&String>, call_id: &str) -> String {
 fn wait_exec_call_id_from_params(params: Option<&String>) -> Option<ExecCallId> {
     params
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
-        .and_then(|json| json.get("call_id").and_then(|v| v.as_str()).map(|s| ExecCallId(s.to_string())))
+        .and_then(|json| {
+            json.get("call_id")
+                .and_then(|v| v.as_str())
+                .map(|s| ExecCallId(s.to_string()))
+        })
 }
 
 impl std::fmt::Display for ExecCallId {
@@ -984,6 +1002,27 @@ enum SystemPlacement {
 }
 
 impl ChatWidget<'_> {
+    fn spec_kit_telemetry_enabled(&self) -> bool {
+        if let Ok(value) = std::env::var("SPEC_KIT_TELEMETRY_ENABLED") {
+            if telemetry_value_truthy(&value) {
+                return true;
+            }
+        }
+
+        if let Some(value) = self
+            .config
+            .shell_environment_policy
+            .r#set
+            .get("SPEC_KIT_TELEMETRY_ENABLED")
+        {
+            if telemetry_value_truthy(value) {
+                return true;
+            }
+        }
+
+        false
+    }
+
     fn fmt_short_duration(&self, d: Duration) -> String {
         let s = d.as_secs();
         let h = s / 3600;
@@ -1333,8 +1372,7 @@ impl ChatWidget<'_> {
             return;
         }
         self.active_plan_title = title.clone();
-        self.app_event_tx
-            .send(AppEvent::SetTerminalTitle { title });
+        self.app_event_tx.send(AppEvent::SetTerminalTitle { title });
     }
     // Allocate a new synthetic key for internal (non-LLM) messages at the bottom of the
     // current (active) request: (req = last_seen, out = +∞, seq = monotonic).
@@ -1442,26 +1480,24 @@ impl ChatWidget<'_> {
         }
     }
 
-
     fn remove_background_completion_message(&mut self, call_id: &str) {
-        if let Some(idx) = self.history_cells.iter().rposition(|cell| {
-            matches!(cell.kind(), HistoryCellType::BackgroundEvent)
-                && cell
-                    .as_any()
-                    .downcast_ref::<PlainHistoryCell>()
-                    .map(|plain| {
-                        plain.state().lines.iter().any(|line| {
-                            line.spans
-                                .iter()
-                                .any(|span| span.text.contains(call_id))
+        if let Some(idx) =
+            self.history_cells.iter().rposition(|cell| {
+                matches!(cell.kind(), HistoryCellType::BackgroundEvent)
+                    && cell
+                        .as_any()
+                        .downcast_ref::<PlainHistoryCell>()
+                        .map(|plain| {
+                            plain.state().lines.iter().any(|line| {
+                                line.spans.iter().any(|span| span.text.contains(call_id))
+                            })
                         })
-                    })
-                    .unwrap_or(false)
-        }) {
+                        .unwrap_or(false)
+            })
+        {
             self.history_remove_at(idx);
         }
     }
-
 
     /// Flush any ExecEnd events that arrived before their matching ExecBegin.
     /// We briefly stash such ends to allow natural pairing when the Begin shows up
@@ -1679,7 +1715,12 @@ impl ChatWidget<'_> {
                     );
                 }
             }
-            ResponseItem::FunctionCall { name, arguments, call_id, .. } => {
+            ResponseItem::FunctionCall {
+                name,
+                arguments,
+                call_id,
+                ..
+            } => {
                 let pretty_args = serde_json::from_str::<JsonValue>(&arguments)
                     .and_then(|v| serde_json::to_string_pretty(&v))
                     .unwrap_or_else(|_| arguments.clone());
@@ -1713,7 +1754,9 @@ impl ChatWidget<'_> {
                         .finalize(crate::streaming::StreamKind::Reasoning, true, &sink);
                 }
             }
-            ResponseItem::FunctionCallOutput { output, call_id, .. } => {
+            ResponseItem::FunctionCallOutput {
+                output, call_id, ..
+            } => {
                 let mut content = output.content.clone();
                 let mut metadata_summary = String::new();
                 if let Ok(v) = serde_json::from_str::<JsonValue>(&content) {
@@ -1792,9 +1835,7 @@ impl ChatWidget<'_> {
         };
 
         if matches!(item.kind(), crate::history_cell::HistoryCellType::Assistant) {
-            let bg_style = Style::default()
-                .bg(cell_bg)
-                .fg(crate::colors::text());
+            let bg_style = Style::default().bg(cell_bg).fg(crate::colors::text());
             fill_rect(buf, area, Some(' '), bg_style);
         }
 
@@ -1804,8 +1845,8 @@ impl ChatWidget<'_> {
         let offset_y = area.y.saturating_sub(buf.area.y) as usize;
         let row_width = area.width as usize;
 
-        for (visible_offset, src_index) in (skip_rows as usize..skip_rows as usize + max_rows as usize)
-            .enumerate()
+        for (visible_offset, src_index) in
+            (skip_rows as usize..skip_rows as usize + max_rows as usize).enumerate()
         {
             let src_row = layout
                 .rows
@@ -2323,10 +2364,7 @@ impl ChatWidget<'_> {
             self.bottom_pane.update_status_text(message.clone());
             // Add a dim background event instead of a hard error cell to avoid
             // alarming users during auto-retries.
-            self.insert_background_event_with_placement(
-                message,
-                BackgroundPlacement::Tail,
-            );
+            self.insert_background_event_with_placement(message, BackgroundPlacement::Tail);
             // Do NOT clear running state or streams; the retry will resume them.
             self.request_redraw();
             return;
@@ -2361,10 +2399,10 @@ impl ChatWidget<'_> {
         let mut has_wait_running = false;
         for entry in self.tools_state.running_custom_tools.values() {
             if let Some(idx) = self.resolve_running_tool_index(entry) {
-                if let Some(cell) = self.history_cells.get(idx).and_then(|c| c
-                    .as_any()
-                    .downcast_ref::<history_cell::RunningToolCallCell>())
-                {
+                if let Some(cell) = self.history_cells.get(idx).and_then(|c| {
+                    c.as_any()
+                        .downcast_ref::<history_cell::RunningToolCallCell>()
+                }) {
                     if cell.has_title("Waiting") {
                         has_wait_running = true;
                         break;
@@ -2472,14 +2510,20 @@ impl ChatWidget<'_> {
             let conversation_manager = ConversationManager::new(auth_manager_for_spawn.clone());
             let resume_path = config_for_agent_loop.experimental_resume.clone();
             let new_conversation = match resume_path {
-                Some(path) => conversation_manager
-                    .resume_conversation_from_rollout(
-                        config_for_agent_loop,
-                        path,
-                        auth_manager_for_spawn,
-                    )
-                    .await,
-                None => conversation_manager.new_conversation(config_for_agent_loop).await,
+                Some(path) => {
+                    conversation_manager
+                        .resume_conversation_from_rollout(
+                            config_for_agent_loop,
+                            path,
+                            auth_manager_for_spawn,
+                        )
+                        .await
+                }
+                None => {
+                    conversation_manager
+                        .new_conversation(config_for_agent_loop)
+                        .await
+                }
             };
 
             let new_conversation = match new_conversation {
@@ -2683,6 +2727,7 @@ impl ChatWidget<'_> {
             synthetic_system_req: None,
             system_cell_by_id: HashMap::new(),
             standard_terminal_mode: !config.tui.alternate_screen,
+            spec_auto_state: None,
         };
         if let Ok(Some(active_id)) = auth_accounts::get_active_account_id(&config.codex_home) {
             if let Ok(records) = account_usage::list_rate_limit_snapshots(&config.codex_home) {
@@ -2914,6 +2959,7 @@ impl ChatWidget<'_> {
             pending_agent_notes: Vec::new(),
             synthetic_system_req: None,
             system_cell_by_id: HashMap::new(),
+            spec_auto_state: None,
         };
         if let Ok(Some(active_id)) = auth_accounts::get_active_account_id(&config.codex_home) {
             if let Ok(records) = account_usage::list_rate_limit_snapshots(&config.codex_home) {
@@ -3183,7 +3229,8 @@ impl ChatWidget<'_> {
         } = key_event
         {
             use crossterm::event::KeyModifiers;
-            if modifiers.contains(KeyModifiers::CONTROL) && modifiers.contains(KeyModifiers::SHIFT) {
+            if modifiers.contains(KeyModifiers::CONTROL) && modifiers.contains(KeyModifiers::SHIFT)
+            {
                 self.toggle_pro_hud();
                 return;
             }
@@ -3406,7 +3453,8 @@ impl ChatWidget<'_> {
             .ok()
             .flatten();
 
-        let usage_records = account_usage::list_rate_limit_snapshots(&codex_home).unwrap_or_default();
+        let usage_records =
+            account_usage::list_rate_limit_snapshots(&codex_home).unwrap_or_default();
         let mut snapshot_map: HashMap<String, StoredRateLimitSnapshot> = usage_records
             .into_iter()
             .map(|record| (record.account_id.clone(), record))
@@ -3429,15 +3477,9 @@ impl ChatWidget<'_> {
         let mut seen_ids: HashSet<String> = HashSet::new();
 
         if let Some(snapshot) = current_snapshot {
-            let account_ref = active_id
-                .as_ref()
-                .and_then(|id| account_map.get(id));
-            let snapshot_ref = active_id
-                .as_ref()
-                .and_then(|id| snapshot_map.get(id));
-            let summary_ref = active_id
-                .as_ref()
-                .and_then(|id| usage_summary_map.get(id));
+            let account_ref = active_id.as_ref().and_then(|id| account_map.get(id));
+            let snapshot_ref = active_id.as_ref().and_then(|id| snapshot_map.get(id));
+            let summary_ref = active_id.as_ref().and_then(|id| usage_summary_map.get(id));
 
             let title = account_ref
                 .map(Self::account_label)
@@ -3496,11 +3538,8 @@ impl ChatWidget<'_> {
                             secondary_next_reset: record.secondary_next_reset_at,
                             ..RateLimitResetInfo::default()
                         };
-                        let view = build_limits_view(
-                            &view_snapshot,
-                            view_reset,
-                            DEFAULT_GRID_CONFIG,
-                        );
+                        let view =
+                            build_limits_view(&view_snapshot, view_reset, DEFAULT_GRID_CONFIG);
                         let header = Self::account_header_lines(
                             account,
                             Some(&record),
@@ -3510,9 +3549,7 @@ impl ChatWidget<'_> {
                         tabs.push(LimitsTab::view(title, header, view, extra));
                     } else {
                         let mut lines = Self::daily_usage_lines(usage_summary.as_ref());
-                        lines.push(Self::dim_line(
-                            " Rate limit snapshot not yet available.",
-                        ));
+                        lines.push(Self::dim_line(" Rate limit snapshot not yet available."));
                         let header = Self::account_header_lines(
                             account,
                             Some(&record),
@@ -3523,14 +3560,8 @@ impl ChatWidget<'_> {
                 }
                 None => {
                     let mut lines = Self::daily_usage_lines(usage_summary.as_ref());
-                    lines.push(Self::dim_line(
-                        " Rate limit snapshot not yet available.",
-                    ));
-                    let header = Self::account_header_lines(
-                        account,
-                        None,
-                        usage_summary.as_ref(),
-                    );
+                    lines.push(Self::dim_line(" Rate limit snapshot not yet available."));
+                    let header = Self::account_header_lines(account, None, usage_summary.as_ref());
                     tabs.push(LimitsTab::message(title, header, lines));
                 }
             }
@@ -3538,9 +3569,7 @@ impl ChatWidget<'_> {
 
         if tabs.is_empty() {
             let mut lines = Self::daily_usage_lines(None);
-            lines.push(Self::dim_line(
-                " Rate limit snapshot not yet available.",
-            ));
+            lines.push(Self::dim_line(" Rate limit snapshot not yet available."));
             tabs.push(LimitsTab::message("Usage", Vec::new(), lines));
         }
 
@@ -3574,9 +3603,7 @@ impl ChatWidget<'_> {
             .or_else(|| usage.and_then(|u| u.plan.as_deref()))
             .unwrap_or("Unknown");
 
-        let total_tokens = usage
-            .map(|u| u.totals.total_tokens)
-            .unwrap_or(0);
+        let total_tokens = usage.map(|u| u.totals.total_tokens).unwrap_or(0);
 
         let value_style = Style::default().fg(crate::colors::text_dim());
 
@@ -4038,10 +4065,7 @@ impl ChatWidget<'_> {
     /// Insert a background event near the top of the current request so it appears
     /// before imminent provider output (e.g. Exec begin).
     pub(crate) fn insert_background_event_early(&mut self, message: String) {
-        self.insert_background_event_with_placement(
-            message,
-            BackgroundPlacement::BeforeNextOutput,
-        );
+        self.insert_background_event_with_placement(message, BackgroundPlacement::BeforeNextOutput);
     }
     /// Insert a background event using the specified placement semantics.
     pub(crate) fn insert_background_event_with_placement(
@@ -4330,6 +4354,12 @@ impl ChatWidget<'_> {
         if original_trimmed.starts_with("/plan ")
             || original_trimmed.starts_with("/solve ")
             || original_trimmed.starts_with("/code ")
+            || original_trimmed.starts_with("/spec-plan ")
+            || original_trimmed.starts_with("/spec-tasks ")
+            || original_trimmed.starts_with("/spec-implement ")
+            || original_trimmed.starts_with("/spec-validate ")
+            || original_trimmed.starts_with("/spec-review ")
+            || original_trimmed.starts_with("/spec-unlock ")
         {
             self.last_agent_prompt = Some(original_text.clone());
         }
@@ -4386,9 +4416,7 @@ impl ChatWidget<'_> {
                         crate::history_cell::HistoryCellType::Notice,
                     ));
 
-                    message
-                        .ordered_items
-                        .clear();
+                    message.ordered_items.clear();
                     message
                         .ordered_items
                         .push(InputItem::Text { text: res.prompt });
@@ -4397,69 +4425,121 @@ impl ChatWidget<'_> {
             }
         }
 
+        let stage_invocation = parse_spec_stage_invocation(original_trimmed);
+        if let Some(inv) = &stage_invocation {
+            if inv.consensus {
+                let mut sanitized = format!("/{} {}", inv.stage.command_name(), inv.spec_id);
+                if !inv.remainder.trim().is_empty() {
+                    sanitized.push(' ');
+                    sanitized.push_str(inv.remainder.trim());
+                }
+                text_only = sanitized;
+            }
+        }
+
         let processed = crate::slash_command::process_slash_command_message(&text_only);
         match processed {
-            crate::slash_command::ProcessedCommand::ExpandedPrompt(_expanded) => {
-                // If a built-in multi-agent slash command was used, resolve
-                // configured subagent settings and show an acknowledgement in history.
-                let trimmed = original_trimmed;
-                let (cmd_name, args_opt) = if let Some(rest) = trimmed.strip_prefix("/plan ") {
-                    ("plan", Some(rest.trim().to_string()))
-                } else if let Some(rest) = trimmed.strip_prefix("/solve ") {
-                    ("solve", Some(rest.trim().to_string()))
-                } else if let Some(rest) = trimmed.strip_prefix("/code ") {
-                    ("code", Some(rest.trim().to_string()))
-                } else {
-                    ("", None)
-                };
-
-                if let Some(task) = args_opt {
-                    let res = codex_core::slash_commands::format_subagent_command(
-                        cmd_name,
-                        &task,
-                        Some(&self.config.agents),
-                        Some(&self.config.subagent_commands),
-                    );
-
-                    // Acknowledge the command and show which agents will run.
+            crate::slash_command::ProcessedCommand::ExpandedPrompt(expanded) => {
+                if let Some(inv) = &stage_invocation {
+                    let stage = inv.stage;
+                    let spec_id = &inv.spec_id;
                     use ratatui::text::Line;
-                    let mode = if res.read_only { "read-only" } else { "write" };
                     let mut lines: Vec<Line<'static>> = Vec::new();
-                    lines.push(Line::from(format!("/{} configured", cmd_name)));
-                    lines.push(Line::from(format!("mode: {}", mode)));
-                    lines.push(Line::from(format!(
-                        "agents: {}",
-                        if res.models.is_empty() {
-                            "<none>".to_string()
+                    lines.push(Line::from(format!("/{} prepared", stage.command_name())));
+                    lines.push(Line::from(format!("SPEC: {}", spec_id)));
+                    lines.push(Line::from(
+                        "Prompts for Gemini, Claude, and GPT Pro inserted into the composer.",
+                    ));
+                    if inv.consensus {
+                        let exec_note = if inv.consensus_execute {
+                            "execute"
                         } else {
-                            res.models.join(", ")
-                        }
-                    )));
-                    lines.push(Line::from(format!("command: {}", original_text.trim())));
+                            "dry-run"
+                        };
+                        lines.push(Line::from(format!(
+                            "Consensus runner queued for this stage ({exec_note})."
+                        )));
+                        self.queue_consensus_runner(
+                            stage,
+                            spec_id,
+                            inv.consensus_execute,
+                            inv.allow_conflict,
+                        );
+                    }
                     self.history_push(crate::history_cell::PlainHistoryCell::new(
                         lines,
                         crate::history_cell::HistoryCellType::Notice,
                     ));
 
-                    // Replace the message with the resolved prompt
-                    message
-                        .ordered_items
-                        .clear();
-                    message
-                        .ordered_items
-                        .push(InputItem::Text { text: res.prompt });
-                } else {
-                    // Fallback to default expansion behavior
-                    let expanded = _expanded;
-                    message
-                        .ordered_items
-                        .clear();
+                    message.ordered_items.clear();
                     message
                         .ordered_items
                         .push(InputItem::Text { text: expanded });
+                } else {
+                    // If a built-in multi-agent slash command was used, resolve
+                    // configured subagent settings and show an acknowledgement in history.
+                    let trimmed = original_trimmed;
+                    let (cmd_name, args_opt) = if let Some(rest) = trimmed.strip_prefix("/plan ") {
+                        ("plan", Some(rest.trim().to_string()))
+                    } else if let Some(rest) = trimmed.strip_prefix("/solve ") {
+                        ("solve", Some(rest.trim().to_string()))
+                    } else if let Some(rest) = trimmed.strip_prefix("/code ") {
+                        ("code", Some(rest.trim().to_string()))
+                    } else {
+                        ("", None)
+                    };
+
+                    if let Some(task) = args_opt {
+                        let res = codex_core::slash_commands::format_subagent_command(
+                            cmd_name,
+                            &task,
+                            Some(&self.config.agents),
+                            Some(&self.config.subagent_commands),
+                        );
+
+                        // Acknowledge the command and show which agents will run.
+                        use ratatui::text::Line;
+                        let mode = if res.read_only { "read-only" } else { "write" };
+                        let mut lines: Vec<Line<'static>> = Vec::new();
+                        lines.push(Line::from(format!("/{} configured", cmd_name)));
+                        lines.push(Line::from(format!("mode: {}", mode)));
+                        lines.push(Line::from(format!(
+                            "agents: {}",
+                            if res.models.is_empty() {
+                                "<none>".to_string()
+                            } else {
+                                res.models.join(", ")
+                            }
+                        )));
+                        lines.push(Line::from(format!("command: {}", original_text.trim())));
+                        self.history_push(crate::history_cell::PlainHistoryCell::new(
+                            lines,
+                            crate::history_cell::HistoryCellType::Notice,
+                        ));
+
+                        // Replace the message with the resolved prompt
+                        message.ordered_items.clear();
+                        message
+                            .ordered_items
+                            .push(InputItem::Text { text: res.prompt });
+                    } else {
+                        // Fallback to default expansion behavior
+                        message.ordered_items.clear();
+                        message
+                            .ordered_items
+                            .push(InputItem::Text { text: expanded });
+                    }
                 }
             }
-            crate::slash_command::ProcessedCommand::RegularCommand(cmd, command_text) => {
+            crate::slash_command::ProcessedCommand::RegularCommand {
+                command: cmd,
+                command_text,
+                notice,
+            } => {
+                if let Some(message) = notice {
+                    self.history_push(history_cell::new_warning_event(message));
+                }
+
                 if cmd == SlashCommand::Undo {
                     self.handle_undo_command();
                     return;
@@ -4467,6 +4547,25 @@ impl ChatWidget<'_> {
                 // This is a regular slash command, dispatch it normally
                 self.app_event_tx
                     .send(AppEvent::DispatchCommand(cmd, command_text));
+                return;
+            }
+            crate::slash_command::ProcessedCommand::SpecAuto(invocation) => {
+                // Delegate to spec-auto orchestrator (runs in visible conversation)
+                let prompt = format!("{}", invocation.spec_id);
+                let expanded = codex_core::slash_commands::format_subagent_command(
+                    "spec-auto",
+                    &prompt,
+                    Some(&self.config.agents),
+                    Some(&self.config.subagent_commands),
+                );
+
+                // Submit as expanded prompt - orchestrator executes visibly
+                self.submit_user_message(UserMessage {
+                    display_text: format!("/spec-auto {}", invocation.spec_id),
+                    ordered_items: vec![InputItem::Text {
+                        text: expanded.prompt,
+                    }],
+                });
                 return;
             }
             crate::slash_command::ProcessedCommand::Error(error_msg) => {
@@ -4655,7 +4754,10 @@ impl ChatWidget<'_> {
                 .map(|msg| msg.ordered_items.clone())
                 .unwrap_or_default();
 
-            match self.codex_op_tx.send(Op::QueueUserInput { items: queue_items }) {
+            match self
+                .codex_op_tx
+                .send(Op::QueueUserInput { items: queue_items })
+            {
                 Ok(()) => {
                     if let Some(sent_message) = self.queued_user_messages.pop_back() {
                         self.refresh_queued_user_messages();
@@ -4699,13 +4801,15 @@ impl ChatWidget<'_> {
                 self.ghost_snapshots_disabled = true;
                 let (message, hint) = match &err {
                     GitToolingError::NotAGitRepository { .. } => (
-                        "Snapshots disabled: this workspace is not inside a Git repository.".to_string(),
+                        "Snapshots disabled: this workspace is not inside a Git repository."
+                            .to_string(),
                         None,
                     ),
                     _ => (
                         format!("Snapshots disabled after Git error: {err}"),
                         Some(
-                            "Restart Code after resolving the issue to re-enable snapshots.".to_string(),
+                            "Restart Code after resolving the issue to re-enable snapshots."
+                                .to_string(),
                         ),
                     ),
                 };
@@ -4729,9 +4833,7 @@ impl ChatWidget<'_> {
         for cell in &self.history_cells {
             match cell.kind() {
                 HistoryCellType::User => user_turns = user_turns.saturating_add(1),
-                HistoryCellType::Assistant => {
-                    assistant_turns = assistant_turns.saturating_add(1)
-                }
+                HistoryCellType::Assistant => assistant_turns = assistant_turns.saturating_add(1),
                 _ => {}
             }
         }
@@ -4742,14 +4844,9 @@ impl ChatWidget<'_> {
         snapshot
     }
 
-    fn conversation_delta_since(
-        &self,
-        snapshot: &ConversationSnapshot,
-    ) -> (usize, usize) {
+    fn conversation_delta_since(&self, snapshot: &ConversationSnapshot) -> (usize, usize) {
         let current = self.current_conversation_snapshot();
-        let user_delta = current
-            .user_turns
-            .saturating_sub(snapshot.user_turns);
+        let user_delta = current.user_turns.saturating_sub(snapshot.user_turns);
         let assistant_delta = current
             .assistant_turns
             .saturating_sub(snapshot.assistant_turns);
@@ -4767,8 +4864,7 @@ impl ChatWidget<'_> {
     pub(crate) fn adopt_ghost_state(&mut self, state: GhostState) {
         self.ghost_snapshots = state.snapshots;
         if self.ghost_snapshots.len() > MAX_TRACKED_GHOST_COMMITS {
-            self.ghost_snapshots
-                .truncate(MAX_TRACKED_GHOST_COMMITS);
+            self.ghost_snapshots.truncate(MAX_TRACKED_GHOST_COMMITS);
         }
         self.ghost_snapshots_disabled = state.disabled;
         self.ghost_snapshots_disabled_reason = state.disabled_reason;
@@ -4776,7 +4872,8 @@ impl ChatWidget<'_> {
 
     fn snapshot_preview(&self, index: usize) -> Option<UndoSnapshotPreview> {
         self.ghost_snapshots.get(index).map(|snapshot| {
-            let (user_delta, assistant_delta) = self.conversation_delta_since(&snapshot.conversation);
+            let (user_delta, assistant_delta) =
+                self.conversation_delta_since(&snapshot.conversation);
             UndoSnapshotPreview {
                 index,
                 short_id: snapshot.short_id(),
@@ -4828,9 +4925,12 @@ impl ChatWidget<'_> {
         self.show_undo_status_popup(
             "Snapshots unavailable",
             Some(
-                "Restores workspace files only. Conversation history remains unchanged.".to_string(),
+                "Restores workspace files only. Conversation history remains unchanged."
+                    .to_string(),
             ),
-            Some("Automatic snapshotting failed, so /undo cannot restore the workspace.".to_string()),
+            Some(
+                "Automatic snapshotting failed, so /undo cannot restore the workspace.".to_string(),
+            ),
             lines,
         );
     }
@@ -4839,7 +4939,8 @@ impl ChatWidget<'_> {
         self.show_undo_status_popup(
             "No snapshots yet",
             Some(
-                "Restores workspace files only. Conversation history remains unchanged.".to_string(),
+                "Restores workspace files only. Conversation history remains unchanged."
+                    .to_string(),
             ),
             Some("Snapshots appear once Code captures a Git checkpoint.".to_string()),
             vec![
@@ -4906,11 +5007,8 @@ impl ChatWidget<'_> {
 
     fn show_undo_snapshot_picker(&mut self) {
         let now = Local::now();
-        let mut entries: Vec<(usize, &GhostSnapshot)> = self
-            .ghost_snapshots
-            .iter()
-            .enumerate()
-            .collect();
+        let mut entries: Vec<(usize, &GhostSnapshot)> =
+            self.ghost_snapshots.iter().enumerate().collect();
         entries.reverse();
 
         let mut items: Vec<SelectionItem> = Vec::new();
@@ -4952,7 +5050,8 @@ impl ChatWidget<'_> {
         }
 
         let mut subtitle_lines: Vec<String> = Vec::new();
-        subtitle_lines.push("Restores workspace files only; chat history stays unchanged.".to_string());
+        subtitle_lines
+            .push("Restores workspace files only; chat history stays unchanged.".to_string());
         subtitle_lines.push("Select a snapshot to jump back in time.".to_string());
         let view = ListSelectionView::new(
             " Restore a workspace snapshot ".to_string(),
@@ -4965,9 +5064,7 @@ impl ChatWidget<'_> {
 
         self.bottom_pane.show_list_selection(
             "Restore snapshot".to_string(),
-            Some(
-                "Restores workspace files only; chat history stays unchanged.".to_string(),
-            ),
+            Some("Restores workspace files only; chat history stays unchanged.".to_string()),
             Some("Enter restore • Esc cancel".to_string()),
             view,
         );
@@ -5057,7 +5154,8 @@ impl ChatWidget<'_> {
                 self.conversation_delta_since(&snapshot.conversation);
             if user_delta == 0 {
                 self.push_background_tail(
-                    "Conversation already matches selected snapshot; nothing to rewind.".to_string(),
+                    "Conversation already matches selected snapshot; nothing to rewind."
+                        .to_string(),
                 );
             } else {
                 self.app_event_tx.send(AppEvent::JumpBack {
@@ -5088,7 +5186,10 @@ impl ChatWidget<'_> {
         }
 
         if files_restored {
-            let mut message = format!("Restored workspace files to snapshot {}", snapshot.short_id());
+            let mut message = format!(
+                "Restored workspace files to snapshot {}",
+                snapshot.short_id()
+            );
             if let Some(snippet) = snapshot.summary_snippet(60) {
                 message.push_str(&format!(" • {}", snippet));
             }
@@ -5134,10 +5235,7 @@ impl ChatWidget<'_> {
     }
 
     fn finalize_sent_user_message(&mut self, message: UserMessage) {
-        let UserMessage {
-            display_text,
-            ..
-        } = message;
+        let UserMessage { display_text, .. } = message;
 
         if !display_text.is_empty() {
             self.history_push_prompt_next_req(history_cell::new_user_prompt(display_text.clone()));
@@ -5169,10 +5267,13 @@ impl ChatWidget<'_> {
         let mut combined_items: Vec<InputItem> = Vec::new();
         let mut history_texts: Vec<String> = Vec::new();
 
-        for (idx, UserMessage {
-            display_text,
-            ordered_items,
-        }) in messages.into_iter().enumerate()
+        for (
+            idx,
+            UserMessage {
+                display_text,
+                ordered_items,
+            },
+        ) in messages.into_iter().enumerate()
         {
             if !display_text.is_empty() {
                 self.history_push_prompt_next_req(history_cell::new_user_prompt(
@@ -5211,12 +5312,9 @@ impl ChatWidget<'_> {
 
         self.flush_pending_agent_notes();
 
-        if let Err(e) = self
-            .codex_op_tx
-            .send(Op::UserInput {
-                items: combined_items,
-            })
-        {
+        if let Err(e) = self.codex_op_tx.send(Op::UserInput {
+            items: combined_items,
+        }) {
             tracing::error!("failed to send Op::UserInput: {e}");
         }
 
@@ -5277,7 +5375,11 @@ impl ChatWidget<'_> {
             ProEvent::Status { phase, stats } => {
                 self.pro.update_status(phase.clone(), stats.clone());
             }
-            ProEvent::DeveloperNote { turn_id, note, artifacts } => {
+            ProEvent::DeveloperNote {
+                turn_id,
+                note,
+                artifacts,
+            } => {
                 let lower = note.to_ascii_lowercase();
                 if lower.contains("autonomous") && lower.contains("enabled") {
                     self.pro.set_auto_enabled(true);
@@ -5303,11 +5405,12 @@ impl ChatWidget<'_> {
                 self.pro
                     .push_log(ProLogEntry::new("Developer note", body, category));
             }
-            ProEvent::AgentSpawned { category, budget_ms, .. } => {
-                let title = format!(
-                    "{} helper spawned",
-                    self.describe_pro_category(&category)
-                );
+            ProEvent::AgentSpawned {
+                category,
+                budget_ms,
+                ..
+            } => {
+                let title = format!("{} helper spawned", self.describe_pro_category(&category));
                 let body = if budget_ms > 0 {
                     Some(format!("Budget: {} ms", budget_ms))
                 } else {
@@ -5511,7 +5614,8 @@ impl ChatWidget<'_> {
                 if !items.is_empty() {
                     // History items were inserted using synthetic keys; promote current request
                     // index so subsequent messages append to the end instead of the top.
-                    self.last_seen_request_index = self.last_seen_request_index.max(self.current_request_index);
+                    self.last_seen_request_index =
+                        self.last_seen_request_index.max(self.current_request_index);
                 }
                 if max_req > 0 {
                     self.last_seen_request_index = self.last_seen_request_index.max(max_req);
@@ -5667,6 +5771,7 @@ impl ChatWidget<'_> {
                 self.stream.insert_reasoning_section_break(&sink);
             }
             EventMsg::TaskStarted => {
+                spec_kit::on_spec_auto_task_started(self, &id);
                 // This begins the new turn; clear the pending prompt anchor count
                 // so subsequent background events use standard placement.
                 self.pending_user_prompts_for_next_turn = 0;
@@ -5697,6 +5802,7 @@ impl ChatWidget<'_> {
             EventMsg::TaskComplete(TaskCompleteEvent {
                 last_agent_message: _,
             }) => {
+                spec_kit::on_spec_auto_task_complete(self, &id);
                 // Finalize any active streams
                 if self.stream.is_write_cycle_active() {
                     // Finalize both streams via streaming facade
@@ -5875,9 +5981,10 @@ impl ChatWidget<'_> {
                 }
                 if let Some(snapshot) = event.rate_limits {
                     self.update_rate_limit_resets(&snapshot);
-                    let warnings = self
-                        .rate_limit_warnings
-                        .take_warnings(snapshot.secondary_used_percent, snapshot.primary_used_percent);
+                    let warnings = self.rate_limit_warnings.take_warnings(
+                        snapshot.secondary_used_percent,
+                        snapshot.primary_used_percent,
+                    );
                     if !warnings.is_empty() {
                         for warning in warnings {
                             self.history_push(history_cell::new_warning_event(warning));
@@ -6213,8 +6320,8 @@ impl ChatWidget<'_> {
                                 if idx < self.history_cells.len() {
                                     if let Some(exec_cell) = self.history_cells[idx]
                                         .as_any_mut()
-                                        .downcast_mut::<history_cell::ExecCell>()
-                                    {
+                                        .downcast_mut::<history_cell::ExecCell>(
+                                    ) {
                                         exec_cell.set_waiting(true);
                                         exec_cell.clear_wait_notes();
                                     }
@@ -6322,16 +6429,15 @@ impl ChatWidget<'_> {
                         let trimmed = content.trim();
                         let wait_still_pending = !success && trimmed != "Cancelled by user.";
                         let mut note_lines: Vec<(String, bool)> = Vec::new();
-                        let suppress_json_notes = serde_json::from_str::<serde_json::Value>(
-                            trimmed,
-                        )
-                        .ok()
-                        .and_then(|value| {
-                            value.as_object().map(|obj| {
-                                obj.contains_key("output") || obj.contains_key("metadata")
-                            })
-                        })
-                        .unwrap_or(false);
+                        let suppress_json_notes =
+                            serde_json::from_str::<serde_json::Value>(trimmed)
+                                .ok()
+                                .and_then(|value| {
+                                    value.as_object().map(|obj| {
+                                        obj.contains_key("output") || obj.contains_key("metadata")
+                                    })
+                                })
+                                .unwrap_or(false);
                         if !suppress_json_notes {
                             for line in content.lines() {
                                 let note_text = line.trim();
@@ -6353,7 +6459,9 @@ impl ChatWidget<'_> {
                                 if running
                                     .wait_notes
                                     .last()
-                                    .map(|(existing, existing_err)| existing == text && existing_err == is_error_note)
+                                    .map(|(existing, existing_err)| {
+                                        existing == text && existing_err == is_error_note
+                                    })
                                     .unwrap_or(false)
                                 {
                                     continue;
@@ -6387,13 +6495,9 @@ impl ChatWidget<'_> {
                             }
                         }
                         if !updated {
-                            if let Some(exec_cell) = self
-                                .history_cells
-                                .iter_mut()
-                                .rev()
-                                .find_map(|cell| {
-                                    cell.as_any_mut()
-                                        .downcast_mut::<history_cell::ExecCell>()
+                            if let Some(exec_cell) =
+                                self.history_cells.iter_mut().rev().find_map(|cell| {
+                                    cell.as_any_mut().downcast_mut::<history_cell::ExecCell>()
                                 })
                             {
                                 let total = exec_cell
@@ -6461,10 +6565,7 @@ impl ChatWidget<'_> {
                     if let Some(idx) = resolved_idx {
                         self.history_replace_at(idx, Box::new(wait_cell));
                     } else {
-                        let _ = self.history_insert_with_key_global(
-                            Box::new(wait_cell),
-                            ok,
-                        );
+                        let _ = self.history_insert_with_key_global(Box::new(wait_cell), ok);
                     }
                     self.remove_background_completion_message(&call_id);
                     self.bottom_pane
@@ -6486,10 +6587,8 @@ impl ChatWidget<'_> {
                     if let Some(idx) = resolved_idx {
                         self.history_replace_at(idx, Box::new(wait_cancelled_cell));
                     } else {
-                        let _ = self.history_insert_with_key_global(
-                            Box::new(wait_cancelled_cell),
-                            ok,
-                        );
+                        let _ =
+                            self.history_insert_with_key_global(Box::new(wait_cancelled_cell), ok);
                     }
 
                     self.bottom_pane
@@ -6604,7 +6703,11 @@ impl ChatWidget<'_> {
                         .update_status_text("using browser (CDP)".to_string());
                 }
             }
-            EventMsg::AgentStatusUpdate(AgentStatusUpdateEvent { agents, context, task }) => {
+            EventMsg::AgentStatusUpdate(AgentStatusUpdateEvent {
+                agents,
+                context,
+                task,
+            }) => {
                 // Update the active agents list from the event and track timing
                 self.active_agents.clear();
                 let now = Instant::now();
@@ -6668,6 +6771,9 @@ impl ChatWidget<'_> {
                         if !(any_tools_running || any_streaming) {
                             self.bottom_pane.set_task_running(false);
                             self.bottom_pane.update_status_text(String::new());
+
+                            // NEW: Check if this is part of spec-auto pipeline
+                            spec_kit::on_spec_auto_agents_complete(self);
                         }
                     }
                 }
@@ -6887,7 +6993,10 @@ impl ChatWidget<'_> {
                 ],
                 "**Here's a demo walkthrough:**\n\n1. Run `./build-fast.sh perf` to compile quickly.\n2. Cache artifacts in `codex-rs/target/perf`.\n3. Finish by sharing `./build-fast.sh run` output.\n\n```bash\n./build-fast.sh perf run\n```",
                 vec![
-                    (vec!["git", "status"], "On branch main\nnothing to commit, working tree clean\n"),
+                    (
+                        vec!["git", "status"],
+                        "On branch main\nnothing to commit, working tree clean\n",
+                    ),
                     (vec!["rg", "--files"], ""),
                 ],
                 Some(DemoPatch::Add {
@@ -6911,11 +7020,17 @@ impl ChatWidget<'_> {
                         },
                     ],
                 },
-                ("browser_open", "https://example.com", "navigated to example.com"),
+                (
+                    "browser_open",
+                    "https://example.com",
+                    "navigated to example.com",
+                ),
                 ReasoningEffort::High,
                 "demo: lint warnings will appear here",
                 "demo: this slot shows error output",
-                Some("diff --git a/src/lib.rs b/src/lib.rs\n@@ -1,3 +1,5 @@\n-pub fn hello() {}\n+pub fn hello() {\n+    println!(\"hello, demo!\");\n+}\n"),
+                Some(
+                    "diff --git a/src/lib.rs b/src/lib.rs\n@@ -1,3 +1,5 @@\n-pub fn hello() {}\n+pub fn hello() {\n+    println!(\"hello, demo!\");\n+}\n",
+                ),
             ),
             (
                 "release rehearsal",
@@ -6932,7 +7047,10 @@ impl ChatWidget<'_> {
                 ],
                 "**Release rehearsal:**\n\n1. Run `./scripts/create_github_release.sh --dry-run`.\n2. Capture artifact hashes in the notes.\n3. Schedule follow-up validation in automation.\n\n```bash\n./scripts/create_github_release.sh 1.2.3 --dry-run\n```",
                 vec![
-                    (vec!["git", "--no-pager", "diff", "--stat"], " src/lib.rs | 10 ++++++----\n 1 file changed, 6 insertions(+), 4 deletions(-)\n"),
+                    (
+                        vec!["git", "--no-pager", "diff", "--stat"],
+                        " src/lib.rs | 10 ++++++----\n 1 file changed, 6 insertions(+), 4 deletions(-)\n",
+                    ),
                     (vec!["ls", "-1"], "Cargo.lock\nREADME.md\nsrc\ntarget\n"),
                 ],
                 Some(DemoPatch::Update {
@@ -6962,11 +7080,17 @@ impl ChatWidget<'_> {
                         },
                     ],
                 },
-                ("browser_open", "https://example.com/releases", "reviewed release dashboard"),
+                (
+                    "browser_open",
+                    "https://example.com/releases",
+                    "reviewed release dashboard",
+                ),
                 ReasoningEffort::Medium,
                 "demo: release checklist warning",
                 "demo: release checklist error",
-                Some("diff --git a/CHANGELOG.md b/CHANGELOG.md\n@@ -1,3 +1,6 @@\n+## 1.2.3\n+- polish release flow\n+- document automation hooks\n"),
+                Some(
+                    "diff --git a/CHANGELOG.md b/CHANGELOG.md\n@@ -1,3 +1,6 @@\n+## 1.2.3\n+- polish release flow\n+- document automation hooks\n",
+                ),
             ),
         ];
 
@@ -6987,11 +7111,7 @@ impl ChatWidget<'_> {
                 diff_snippet,
             ) = scenario;
 
-            self.push_background_tail(format!(
-                "demo: scenario {} — {}",
-                idx + 1,
-                label
-            ));
+            self.push_background_tail(format!("demo: scenario {} — {}", idx + 1, label));
 
             self.history_push(history_cell::new_user_prompt((*prompt).to_string()));
 
@@ -7027,8 +7147,10 @@ impl ChatWidget<'_> {
             );
             self.history_push(streaming_preview);
 
-            let assistant_cell =
-                history_cell::AssistantMarkdownCell::new((*assistant_body).to_string(), &self.config);
+            let assistant_cell = history_cell::AssistantMarkdownCell::new(
+                (*assistant_body).to_string(),
+                &self.config,
+            );
             self.history_push(assistant_cell);
 
             for (command_tokens, stdout) in execs {
@@ -7045,9 +7167,7 @@ impl ChatWidget<'_> {
                         stderr: String::new(),
                     };
                     self.history_push(history_cell::new_completed_exec_command(
-                        cmd_vec,
-                        parsed,
-                        output,
+                        cmd_vec, parsed, output,
                     ));
                 }
             }
@@ -7238,7 +7358,8 @@ impl ChatWidget<'_> {
             None
         };
         let context_window = self.config.model_context_window;
-        let context_tokens_used = context_window.map(|_| self.last_token_usage.tokens_in_context_window());
+        let context_tokens_used =
+            context_window.map(|_| self.last_token_usage.tokens_in_context_window());
 
         RateLimitResetInfo {
             primary_next_reset: self.rate_limit_primary_next_reset_at,
@@ -7268,8 +7389,8 @@ impl ChatWidget<'_> {
         }
 
         self.app_event_tx.send_background_event(
-            "`/update` — updates are disabled in debug builds. Set SHOW_UPGRADE=1 to preview.".
-                to_string(),
+            "`/update` — updates are disabled in debug builds. Set SHOW_UPGRADE=1 to preview."
+                .to_string(),
         );
     }
 
@@ -7466,10 +7587,8 @@ impl ChatWidget<'_> {
     }
 
     pub(crate) fn show_login_accounts_view(&mut self) {
-        let (view, state_rc) = LoginAccountsView::new(
-            self.config.codex_home.clone(),
-            self.app_event_tx.clone(),
-        );
+        let (view, state_rc) =
+            LoginAccountsView::new(self.config.codex_home.clone(), self.app_event_tx.clone());
         self.login_view_state = Some(LoginAccountsState::weak_handle(&state_rc));
         self.login_add_view_state = None;
         self.bottom_pane.show_login_accounts(view);
@@ -7477,10 +7596,8 @@ impl ChatWidget<'_> {
     }
 
     pub(crate) fn show_login_add_account_view(&mut self) {
-        let (view, state_rc) = LoginAddAccountView::new(
-            self.config.codex_home.clone(),
-            self.app_event_tx.clone(),
-        );
+        let (view, state_rc) =
+            LoginAddAccountView::new(self.config.codex_home.clone(), self.app_event_tx.clone());
         self.login_add_view_state = Some(LoginAddAccountState::weak_handle(&state_rc));
         self.login_view_state = None;
         self.bottom_pane.show_login_add_account(view);
@@ -7542,8 +7659,8 @@ impl ChatWidget<'_> {
 
         if !crate::updates::upgrade_ui_enabled() {
             self.app_event_tx.send_background_event(
-                "`/update` — updates are disabled in debug builds. Set SHOW_UPGRADE=1 to preview.".
-                    to_string(),
+                "`/update` — updates are disabled in debug builds. Set SHOW_UPGRADE=1 to preview."
+                    .to_string(),
             );
             return;
         }
@@ -7556,11 +7673,9 @@ impl ChatWidget<'_> {
 
         let resolution = crate::updates::resolve_upgrade_resolution();
         let (command, display, instructions) = match &resolution {
-            crate::updates::UpgradeResolution::Command { command, display } => (
-                Some(command.clone()),
-                Some(display.clone()),
-                None,
-            ),
+            crate::updates::UpgradeResolution::Command { command, display } => {
+                (Some(command.clone()), Some(display.clone()), None)
+            }
             crate::updates::UpgradeResolution::Manual { instructions } => {
                 (None, None, Some(instructions.clone()))
             }
@@ -7724,13 +7839,7 @@ impl ChatWidget<'_> {
         for info in agents {
             let status = agent_status_from_str(info.status.as_str());
             let is_new = !self.agents_terminal.entries.contains_key(&info.id);
-            if is_new
-                && !self
-                    .agents_terminal
-                    .order
-                    .iter()
-                    .any(|id| id == &info.id)
-            {
+            if is_new && !self.agents_terminal.order.iter().any(|id| id == &info.id) {
                 self.agents_terminal.order.push(info.id.clone());
                 saw_new_agent = true;
             }
@@ -7807,11 +7916,7 @@ impl ChatWidget<'_> {
         self.layout.agents_hud_expanded = false;
         if self.agents_terminal.order.is_empty() {
             for agent in &self.active_agents {
-                if !self
-                    .agents_terminal
-                    .entries
-                    .contains_key(&agent.id)
-                {
+                if !self.agents_terminal.entries.contains_key(&agent.id) {
                     self.agents_terminal.order.push(agent.id.clone());
                     let mut entry = AgentTerminalEntry::new(
                         agent.name.clone(),
@@ -7831,9 +7936,7 @@ impl ChatWidget<'_> {
                         entry.error = Some(error.clone());
                         entry.push_log(AgentLogKind::Error, error.clone());
                     }
-                    self.agents_terminal
-                        .entries
-                        .insert(agent.id.clone(), entry);
+                    self.agents_terminal.entries.insert(agent.id.clone(), entry);
                 }
             }
         }
@@ -7892,7 +7995,6 @@ impl ChatWidget<'_> {
         self.restore_selected_agent_scroll();
         self.request_redraw();
     }
-
 
     fn resolve_agent_install_command(&self, agent_name: &str) -> Option<(Vec<String>, String)> {
         let cmd = self
@@ -8081,9 +8183,7 @@ impl ChatWidget<'_> {
             controller: Some(controller.clone()),
             auto_close_on_success: false,
         };
-        self.push_background_before_next_output(format!(
-            "Terminal command: {command}"
-        ));
+        self.push_background_before_next_output(format!("Terminal command: {command}"));
         self.app_event_tx.send(AppEvent::OpenTerminal(launch));
         let cwd = self.config.cwd.to_string_lossy().to_string();
         start_direct_terminal_session(
@@ -8114,9 +8214,7 @@ impl ChatWidget<'_> {
             auto_close_on_success: false,
         };
 
-        self.push_background_before_next_output(format!(
-            "Guided terminal request: {prompt}"
-        ));
+        self.push_background_before_next_output(format!("Guided terminal request: {prompt}"));
         self.app_event_tx.send(AppEvent::OpenTerminal(launch));
         start_prompt_terminal_session(
             self.app_event_tx.clone(),
@@ -8157,8 +8255,8 @@ impl ChatWidget<'_> {
     ) -> Option<TerminalLaunch> {
         if !crate::updates::upgrade_ui_enabled() {
             self.history_push(history_cell::new_error_event(
-                "`/update` — updates are disabled in debug builds. Set SHOW_UPGRADE=1 to preview.".
-                    to_string(),
+                "`/update` — updates are disabled in debug builds. Set SHOW_UPGRADE=1 to preview."
+                    .to_string(),
             ));
             self.request_redraw();
             return None;
@@ -8369,9 +8467,7 @@ impl ChatWidget<'_> {
                 self.config.debug,
             );
 
-            self.push_background_before_next_output(format!(
-                "Terminal prompt: {prompt_text}"
-            ));
+            self.push_background_before_next_output(format!("Terminal prompt: {prompt_text}"));
             return;
         }
 
@@ -8394,10 +8490,11 @@ impl ChatWidget<'_> {
         let command_string = command_body.to_string();
         let wrapped_command = wrap_command(&command_string);
         if wrapped_command.is_empty() {
-            self.app_event_tx.send(AppEvent::TerminalSetAssistantMessage {
-                id,
-                message: "Command could not be constructed.".to_string(),
-            });
+            self.app_event_tx
+                .send(AppEvent::TerminalSetAssistantMessage {
+                    id,
+                    message: "Command could not be constructed.".to_string(),
+                });
             if let Some(overlay) = self.terminal.overlay_mut() {
                 overlay.ensure_pending_command();
             }
@@ -8420,10 +8517,11 @@ impl ChatWidget<'_> {
                 overlay.push_assistant_message("Awaiting approval to run this command…");
                 overlay.running = false;
             }
-            self.bottom_pane.push_approval_request(ApprovalRequest::TerminalCommand {
-                id,
-                command: command_string,
-            });
+            self.bottom_pane
+                .push_approval_request(ApprovalRequest::TerminalCommand {
+                    id,
+                    command: command_string,
+                });
             self.request_redraw();
             return;
         }
@@ -8459,12 +8557,7 @@ impl ChatWidget<'_> {
         );
     }
 
-    fn start_direct_terminal_command(
-        &mut self,
-        id: u64,
-        display: String,
-        command: Vec<String>,
-    ) {
+    fn start_direct_terminal_command(&mut self, id: u64, display: String, command: Vec<String>) {
         if let Some(overlay) = self.terminal.overlay_mut() {
             overlay.cancel_pending_command();
         }
@@ -8600,7 +8693,8 @@ impl ChatWidget<'_> {
 
         if let Some(entry) = pending {
             if let Some(overlay) = self.terminal.overlay_mut() {
-                overlay.push_info_message("Command was not approved. You can edit it and try again.");
+                overlay
+                    .push_info_message("Command was not approved. You can edit it and try again.");
                 overlay.running = false;
                 overlay.exit_code = None;
                 overlay.duration = None;
@@ -8676,10 +8770,9 @@ impl ChatWidget<'_> {
             if let Some(pending) = overlay.pending_command.as_mut() {
                 match key_event.code {
                     KeyCode::Char(ch) => {
-                        if key_event
-                            .modifiers
-                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
-                        {
+                        if key_event.modifiers.intersects(
+                            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                        ) {
                             handled = true;
                         } else if pending.insert_char(ch) {
                             needs_redraw = true;
@@ -9681,8 +9774,8 @@ impl ChatWidget<'_> {
     pub(crate) fn set_auto_upgrade_enabled(&mut self, enabled: bool) {
         if !crate::updates::upgrade_ui_enabled() {
             self.bottom_pane.flash_footer_notice(
-                "Automatic upgrades are disabled in debug builds. Set SHOW_UPGRADE=1 to preview.".
-                    to_string(),
+                "Automatic upgrades are disabled in debug builds. Set SHOW_UPGRADE=1 to preview."
+                    .to_string(),
             );
             self.request_redraw();
             return;
@@ -9699,7 +9792,10 @@ impl ChatWidget<'_> {
             if let Err(err) = codex_core::config_edit::persist_overrides(
                 &codex_home,
                 profile.as_deref(),
-                &[(&["auto_upgrade_enabled"], if enabled { "true" } else { "false" })],
+                &[(
+                    &["auto_upgrade_enabled"],
+                    if enabled { "true" } else { "false" },
+                )],
             )
             .await
             {
@@ -12309,10 +12405,7 @@ impl ChatWidget<'_> {
         ));
     }
 
-    fn validation_tool_flag_mut(
-        &mut self,
-        name: &str,
-    ) -> Option<&mut Option<bool>> {
+    fn validation_tool_flag_mut(&mut self, name: &str) -> Option<&mut Option<bool>> {
         let tools = &mut self.config.validation.tools;
         match name {
             "shellcheck" => Some(&mut tools.shellcheck),
@@ -12423,15 +12516,16 @@ impl ChatWidget<'_> {
                 return;
             }
             self.config.github.actionlint_on_patch = enable;
-            if let Err(err) = self
-                .codex_op_tx
-                .send(Op::UpdateValidationTool { name: name.to_string(), enable })
-            {
+            if let Err(err) = self.codex_op_tx.send(Op::UpdateValidationTool {
+                name: name.to_string(),
+                enable,
+            }) {
                 tracing::warn!("failed to send validation tool update: {err}");
             }
             let persist_result = match find_codex_home() {
-                Ok(home) => set_github_actionlint_on_patch(&home, enable)
-                    .map_err(|e| e.to_string()),
+                Ok(home) => {
+                    set_github_actionlint_on_patch(&home, enable).map_err(|e| e.to_string())
+                }
                 Err(err) => Err(err.to_string()),
             };
             if let Err(err) = persist_result {
@@ -12445,9 +12539,7 @@ impl ChatWidget<'_> {
         }
 
         let Some(flag) = self.validation_tool_flag_mut(name) else {
-            self.push_background_tail(format!(
-                "⚠️ Unknown validation tool '{name}'"
-            ));
+            self.push_background_tail(format!("⚠️ Unknown validation tool '{name}'"));
             return;
         };
 
@@ -12456,15 +12548,14 @@ impl ChatWidget<'_> {
         }
 
         *flag = Some(enable);
-        if let Err(err) = self
-            .codex_op_tx
-            .send(Op::UpdateValidationTool { name: name.to_string(), enable })
-        {
+        if let Err(err) = self.codex_op_tx.send(Op::UpdateValidationTool {
+            name: name.to_string(),
+            enable,
+        }) {
             tracing::warn!("failed to send validation tool update: {err}");
         }
         let persist_result = match find_codex_home() {
-            Ok(home) => set_validation_tool_enabled(&home, name, enable)
-                .map_err(|e| e.to_string()),
+            Ok(home) => set_validation_tool_enabled(&home, name, enable).map_err(|e| e.to_string()),
             Err(err) => Err(err.to_string()),
         };
         if let Err(err) = persist_result {
@@ -12493,7 +12584,11 @@ impl ChatWidget<'_> {
             let requested = self.validation_tool_requested(status.name);
             let effective = self.validation_tool_enabled(status.name);
             let mut state = if requested {
-                if effective { "enabled".to_string() } else { "disabled (group off)".to_string() }
+                if effective {
+                    "enabled".to_string()
+                } else {
+                    "disabled (group off)".to_string()
+                }
             } else {
                 "disabled".to_string()
             };
@@ -12542,7 +12637,11 @@ impl ChatWidget<'_> {
                     };
                     let requested = self.validation_tool_requested(status.name);
                     let group_enabled = self.validation_group_enabled(group);
-                    ToolRow { status, enabled: requested, group_enabled }
+                    ToolRow {
+                        status,
+                        enabled: requested,
+                        group_enabled,
+                    }
                 })
                 .collect();
 
@@ -13410,7 +13509,8 @@ impl ChatWidget<'_> {
                 .and_then(|meta| meta.modified())
                 .ok();
 
-            let metadata_changed = cache.last_head_mtime != modified || cache.last_refresh.is_none();
+            let metadata_changed =
+                cache.last_head_mtime != modified || cache.last_refresh.is_none();
 
             if metadata_changed {
                 cache.value = fs::read_to_string(&head_path)
@@ -13798,11 +13898,405 @@ impl ChatWidget<'_> {
     }
 }
 
+struct ConsensusArtifactData {
+    memory_id: Option<String>,
+    agent: String,
+    version: Option<String>,
+    content: Value,
+}
+
+#[derive(Clone)]
+struct ConsensusEvidenceHandle {
+    path: PathBuf,
+    sha256: String,
+}
+
+struct ConsensusTelemetryPaths {
+    agent_paths: Vec<PathBuf>,
+    telemetry_path: PathBuf,
+    synthesis_path: PathBuf,
+}
+
+fn telemetry_value_truthy(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn telemetry_agent_slug(agent: &str) -> String {
+    let mut slug = String::new();
+    let mut last_was_sep = false;
+    for ch in agent.chars() {
+        let lower = ch.to_ascii_lowercase();
+        let is_alnum = lower.is_ascii_alphanumeric();
+        if is_alnum {
+            slug.push(lower);
+            last_was_sep = false;
+        } else if !slug.is_empty() && !last_was_sep {
+            slug.push('_');
+            last_was_sep = true;
+        }
+    }
+    let trimmed = slug.trim_matches('_');
+    if trimmed.is_empty() {
+        "agent".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct ConsensusArtifactVerdict {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    memory_id: Option<String>,
+    agent: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    content: Value,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct ConsensusVerdict {
+    spec_id: String,
+    stage: String,
+    recorded_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_version: Option<String>,
+    consensus_ok: bool,
+    degraded: bool,
+    required_fields_ok: bool,
+    missing_agents: Vec<String>,
+    agreements: Vec<String>,
+    conflicts: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    aggregator_agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    aggregator_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    aggregator: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    synthesis_path: Option<String>,
+    artifacts: Vec<ConsensusArtifactVerdict>,
+}
+
+#[derive(Debug)]
+struct ConsensusSynthesisSummary {
+    status: String,
+    missing_agents: Vec<String>,
+    agreements: Vec<String>,
+    conflicts: Vec<String>,
+    prompt_version: Option<String>,
+    path: PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConsensusSynthesisRaw {
+    stage: Option<String>,
+    #[serde(rename = "specId")]
+    spec_id: Option<String>,
+    status: String,
+    #[serde(default)]
+    missing_agents: Vec<String>,
+    #[serde(default)]
+    consensus: ConsensusSynthesisConsensusRaw,
+    prompt_version: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ConsensusSynthesisConsensusRaw {
+    #[serde(default)]
+    agreements: Vec<String>,
+    #[serde(default)]
+    conflicts: Vec<String>,
+}
+
+fn parse_consensus_stage(stage: &str) -> Option<SpecStage> {
+    match stage.to_ascii_lowercase().as_str() {
+        "plan" | "spec-plan" => Some(SpecStage::Plan),
+        "tasks" | "spec-tasks" => Some(SpecStage::Tasks),
+        "implement" | "spec-implement" => Some(SpecStage::Implement),
+        "validate" | "spec-validate" => Some(SpecStage::Validate),
+        "audit" | "review" | "spec-audit" | "spec-review" => Some(SpecStage::Audit),
+        "unlock" | "spec-unlock" => Some(SpecStage::Unlock),
+        _ => None,
+    }
+}
+
+fn collect_consensus_artifacts(
+    evidence_root: &Path,
+    spec_id: &str,
+    stage: SpecStage,
+) -> Result<(Vec<ConsensusArtifactData>, Vec<String>), String> {
+    let mut warnings: Vec<String> = Vec::new();
+
+    match load_artifacts_from_evidence(evidence_root, spec_id, stage) {
+        Ok(Some((artifacts, mut evidence_warnings))) => {
+            warnings.append(&mut evidence_warnings);
+            return Ok((artifacts, warnings));
+        }
+        Ok(None) => {}
+        Err(err) => warnings.push(err),
+    }
+
+    let (entries, mut memory_warnings) = fetch_memory_entries(spec_id, stage)?;
+    warnings.append(&mut memory_warnings);
+
+    let mut artifacts: Vec<ConsensusArtifactData> = Vec::new();
+
+    for result in entries {
+        let memory_id = result.memory.id.clone();
+        let content_str = result.memory.content.trim();
+        if content_str.is_empty() {
+            warnings.push("local-memory entry had empty content".to_string());
+            continue;
+        }
+
+        let value = match serde_json::from_str::<Value>(content_str) {
+            Ok(v) => v,
+            Err(err) => {
+                warnings.push(format!("unable to parse consensus artifact JSON: {err}"));
+                continue;
+            }
+        };
+
+        let agent = match value
+            .get("agent")
+            .or_else(|| value.get("model"))
+            .and_then(|v| v.as_str())
+        {
+            Some(agent) if !agent.trim().is_empty() => agent.trim().to_string(),
+            _ => {
+                warnings.push("consensus artifact missing agent field".to_string());
+                continue;
+            }
+        };
+
+        let stage_matches = value
+            .get("stage")
+            .or_else(|| value.get("stage_name"))
+            .and_then(|v| v.as_str())
+            .and_then(parse_consensus_stage)
+            .map(|parsed| parsed == stage)
+            .unwrap_or(false);
+
+        if !stage_matches {
+            warnings.push(format!(
+                "skipping local-memory entry for agent {} because stage did not match {}",
+                agent,
+                stage.command_name()
+            ));
+            continue;
+        }
+
+        let spec_matches = value
+            .get("spec_id")
+            .or_else(|| value.get("specId"))
+            .and_then(|v| v.as_str())
+            .map(|reported| reported.eq_ignore_ascii_case(spec_id))
+            .unwrap_or(true);
+
+        if !spec_matches {
+            warnings.push(format!(
+                "skipping local-memory entry for agent {} because spec id did not match {}",
+                agent, spec_id
+            ));
+            continue;
+        }
+
+        let version = value
+            .get("version")
+            .or_else(|| value.get("prompt_version"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        artifacts.push(ConsensusArtifactData {
+            memory_id,
+            agent,
+            version,
+            content: value,
+        });
+    }
+
+    Ok((artifacts, warnings))
+}
+
+fn load_artifacts_from_evidence(
+    evidence_root: &Path,
+    spec_id: &str,
+    stage: SpecStage,
+) -> Result<Option<(Vec<ConsensusArtifactData>, Vec<String>)>, String> {
+    let spec_dir = evidence_root.join(spec_id);
+    if !spec_dir.exists() {
+        return Ok(None);
+    }
+
+    let stage_suffix = format!("-{}.json", stage.command_name());
+    let mut candidates: Vec<PathBuf> = fs::read_dir(&spec_dir)
+        .map_err(|e| {
+            format!(
+                "failed to read consensus evidence directory {}: {}",
+                spec_dir.display(),
+                e
+            )
+        })?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            if !path.is_file() {
+                return None;
+            }
+            let name = path.file_name()?.to_str()?;
+            if name.ends_with(&stage_suffix) {
+                Some(path)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+
+    candidates.sort();
+    let latest_path = candidates.pop().unwrap();
+
+    let mut file = fs::File::open(&latest_path).map_err(|e| {
+        format!(
+            "failed to open consensus evidence {}: {}",
+            latest_path.display(),
+            e
+        )
+    })?;
+
+    let mut buffer = String::new();
+    file.read_to_string(&mut buffer).map_err(|e| {
+        format!(
+            "failed to read consensus evidence {}: {}",
+            latest_path.display(),
+            e
+        )
+    })?;
+
+    let verdict: ConsensusVerdict = serde_json::from_str(&buffer).map_err(|e| {
+        format!(
+            "failed to parse consensus evidence {}: {}",
+            latest_path.display(),
+            e
+        )
+    })?;
+
+    let artifacts: Vec<ConsensusArtifactData> = verdict
+        .artifacts
+        .iter()
+        .map(|artifact| ConsensusArtifactData {
+            memory_id: artifact.memory_id.clone(),
+            agent: artifact.agent.clone(),
+            version: artifact.version.clone(),
+            content: artifact.content.clone(),
+        })
+        .collect();
+
+    let warnings = vec![format!(
+        "Loaded consensus evidence from {}",
+        latest_path.display()
+    )];
+
+    Ok(Some((artifacts, warnings)))
+}
+
+fn fetch_memory_entries(
+    spec_id: &str,
+    stage: SpecStage,
+) -> Result<(Vec<LocalMemorySearchResult>, Vec<String>), String> {
+    let results = local_memory_util::search_by_stage(spec_id, stage.command_name(), 20)?;
+    if results.is_empty() {
+        // TODO: After Oct 2 migration, implement Byterover fallback fetching here and persist results into local-memory.
+        Err(format!(
+            "No local-memory entries found for {} stage '{}'",
+            spec_id,
+            stage.command_name()
+        ))
+    } else {
+        Ok((results, Vec::new()))
+    }
+}
+
+fn expected_agents_for_stage(stage: SpecStage) -> Vec<&'static str> {
+    match stage {
+        SpecStage::Implement => vec!["gemini", "claude", "gpt_codex", "gpt_pro"],
+        SpecStage::Plan
+        | SpecStage::Tasks
+        | SpecStage::Validate
+        | SpecStage::Audit
+        | SpecStage::Unlock => {
+            vec!["gemini", "claude", "gpt_pro"]
+        }
+    }
+}
+
+fn extract_string_list(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    if let Some(s) = item.as_str() {
+                        Some(s.to_string())
+                    } else if item.is_object() || item.is_array() {
+                        serde_json::to_string(item).ok()
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn validate_required_fields(stage: SpecStage, summary: &Value) -> bool {
+    match stage {
+        SpecStage::Plan => summary
+            .get("final_plan")
+            .and_then(|plan| plan.get("work_breakdown"))
+            .and_then(|wb| wb.as_array())
+            .map(|wb| !wb.is_empty())
+            .unwrap_or(false),
+        SpecStage::Tasks => summary
+            .get("validated_tasks")
+            .and_then(|tasks| tasks.as_array())
+            .map(|tasks| !tasks.is_empty())
+            .unwrap_or(false),
+        SpecStage::Implement => summary
+            .get("checklist")
+            .and_then(|list| list.as_array())
+            .map(|list| !list.is_empty())
+            .unwrap_or(false),
+        SpecStage::Validate => summary
+            .get("decision")
+            .and_then(|d| d.as_str())
+            .map(|d| !d.is_empty())
+            .unwrap_or(false),
+        SpecStage::Audit => summary
+            .get("recommendation")
+            .and_then(|d| d.as_str())
+            .map(|d| !d.is_empty())
+            .unwrap_or(false),
+        SpecStage::Unlock => summary
+            .get("decision")
+            .and_then(|d| d.as_str())
+            .map(|d| !d.is_empty())
+            .unwrap_or(false),
+    }
+}
+
 impl ChatWidget<'_> {
     pub(crate) fn open_review_dialog(&mut self) {
         if self.is_task_running() {
             self.history_push(crate::history_cell::new_error_event(
-                "`/review` — complete or cancel the current task before starting a new review.".to_string(),
+                "`/review` — complete or cancel the current task before starting a new review."
+                    .to_string(),
             ));
             self.request_redraw();
             return;
@@ -13855,12 +14349,8 @@ impl ChatWidget<'_> {
             6,
         );
 
-        self.bottom_pane.show_list_selection(
-            "Review options".to_string(),
-            None,
-            None,
-            view,
-        );
+        self.bottom_pane
+            .show_list_selection("Review options".to_string(), None, None, view);
     }
 
     pub(crate) fn show_review_custom_prompt(&mut self) {
@@ -13894,12 +14384,8 @@ impl ChatWidget<'_> {
             self.app_event_tx.clone(),
             6,
         );
-        self.bottom_pane.show_list_selection(
-            "Select a commit".to_string(),
-            None,
-            None,
-            view,
-        );
+        self.bottom_pane
+            .show_list_selection("Select a commit".to_string(), None, None, view);
     }
 
     pub(crate) fn present_review_commit_picker(&mut self, commits: Vec<CommitLogEntry>) {
@@ -13946,14 +14432,16 @@ impl ChatWidget<'_> {
                 name: title,
                 description: None,
                 is_current: false,
-                actions: vec![Box::new(move |tx: &crate::app_event_sender::AppEventSender| {
-                    tx.send(crate::app_event::AppEvent::RunReviewWithScope {
-                        prompt: prompt_closure.clone(),
-                        hint: hint_closure.clone(),
-                        preparation_label: Some(prep_closure.clone()),
-                        metadata: metadata_option.clone(),
-                    });
-                })],
+                actions: vec![Box::new(
+                    move |tx: &crate::app_event_sender::AppEventSender| {
+                        tx.send(crate::app_event::AppEvent::RunReviewWithScope {
+                            prompt: prompt_closure.clone(),
+                            hint: hint_closure.clone(),
+                            preparation_label: Some(prep_closure.clone()),
+                            metadata: metadata_option.clone(),
+                        });
+                    },
+                )],
             });
         }
 
@@ -13996,12 +14484,8 @@ impl ChatWidget<'_> {
             self.app_event_tx.clone(),
             6,
         );
-        self.bottom_pane.show_list_selection(
-            "Select a base branch".to_string(),
-            None,
-            None,
-            view,
-        );
+        self.bottom_pane
+            .show_list_selection("Select a base branch".to_string(), None, None, view);
     }
 
     pub(crate) fn present_review_branch_picker(
@@ -14053,14 +14537,16 @@ impl ChatWidget<'_> {
                 name: title,
                 description: None,
                 is_current: false,
-                actions: vec![Box::new(move |tx: &crate::app_event_sender::AppEventSender| {
-                    tx.send(crate::app_event::AppEvent::RunReviewWithScope {
-                        prompt: prompt_closure.clone(),
-                        hint: hint_closure.clone(),
-                        preparation_label: Some(prep_closure.clone()),
-                        metadata: metadata_option.clone(),
-                    });
-                })],
+                actions: vec![Box::new(
+                    move |tx: &crate::app_event_sender::AppEventSender| {
+                        tx.send(crate::app_event::AppEvent::RunReviewWithScope {
+                            prompt: prompt_closure.clone(),
+                            hint: hint_closure.clone(),
+                            preparation_label: Some(prep_closure.clone()),
+                            metadata: metadata_option.clone(),
+                        });
+                    },
+                )],
             });
         }
 
@@ -14096,7 +14582,8 @@ impl ChatWidget<'_> {
     pub(crate) fn handle_review_command(&mut self, args: String) {
         if self.is_task_running() {
             self.history_push(crate::history_cell::new_error_event(
-                "`/review` — complete or cancel the current task before starting a new review.".to_string(),
+                "`/review` — complete or cancel the current task before starting a new review."
+                    .to_string(),
             ));
             self.request_redraw();
             return;
@@ -14188,7 +14675,11 @@ impl ChatWidget<'_> {
             sections.push(explanation.to_string());
         }
         if !output.findings.is_empty() {
-            sections.push(format_review_findings_block(&output.findings, None).trim().to_string());
+            sections.push(
+                format_review_findings_block(&output.findings, None)
+                    .trim()
+                    .to_string(),
+            );
         }
         let correctness = output.overall_correctness.trim();
         if !correctness.is_empty() {
@@ -14364,63 +14855,189 @@ impl ChatWidget<'_> {
         });
     }
 
-    pub(crate) fn handle_spec_ops_command(&mut self, command: SlashCommand, raw_args: String) {
-        let Some(meta) = command.spec_ops() else { return; };
+    // === FORK-SPECIFIC: spec-kit guardrail command handler ===
+    // Upstream: Does not have spec-ops commands
+    // Preserve: This entire function during rebases
+    pub(crate) fn handle_spec_ops_command(
+        &mut self,
+        command: SlashCommand,
+        raw_args: String,
+        hal_override: Option<HalMode>,
+    ) {
+        spec_kit::handle_guardrail(self, command, raw_args, hal_override);
+    }
+
+    // Implementation method (called by spec_kit::handle_guardrail)
+    fn handle_guardrail_impl(
+        &mut self,
+        command: SlashCommand,
+        raw_args: String,
+        hal_override: Option<HalMode>,
+    ) {
+        let Some(meta) = command.spec_ops() else {
+            return;
+        };
         let trimmed = raw_args.trim();
-        if trimmed.is_empty() {
-            self.history_push(crate::history_cell::new_error_event(format!(
-                "`/{}` requires a SPEC task ID (e.g. `/{} SPEC-OPS-005`).",
+        let is_stats = meta.script == "evidence_stats.sh";
+
+        let mut spec_id = String::new();
+        let mut remainder = String::new();
+        let mut spec_task = String::new();
+        let mut hal_from_args: Option<HalMode> = None;
+
+        if !is_stats {
+            if trimmed.is_empty() {
+                self.history_push(crate::history_cell::new_error_event(format!(
+                    "`/{}` requires a SPEC ID (e.g. `/{} SPEC-OPS-005`).",
+                    command.command(),
+                    command.command()
+                )));
+                self.request_redraw();
+                return;
+            }
+
+            let mut tokens = trimmed.split_whitespace().peekable();
+            spec_id = tokens.next().unwrap().to_string();
+
+            let mut remainder_tokens: Vec<String> = Vec::new();
+            while let Some(token) = tokens.next() {
+                if token == "--hal" || token == "--hal-mode" {
+                    let Some(value) = tokens.next() else {
+                        self.history_push(crate::history_cell::new_error_event(
+                            "`--hal` flag requires a value (mock|live).".to_string(),
+                        ));
+                        self.request_redraw();
+                        return;
+                    };
+                    hal_from_args = match HalMode::from_str(value) {
+                        Some(mode) => Some(mode),
+                        None => {
+                            self.history_push(crate::history_cell::new_error_event(format!(
+                                "Unknown HAL mode '{value}'. Expected 'mock' or 'live'."
+                            )));
+                            self.request_redraw();
+                            return;
+                        }
+                    };
+                    continue;
+                }
+
+                if let Some((flag, value)) = token.split_once('=') {
+                    if flag == "--hal" || flag == "--hal-mode" {
+                        hal_from_args = match HalMode::from_str(value) {
+                            Some(mode) => Some(mode),
+                            None => {
+                                self.history_push(crate::history_cell::new_error_event(format!(
+                                    "Unknown HAL mode '{value}'. Expected 'mock' or 'live'."
+                                )));
+                                self.request_redraw();
+                                return;
+                            }
+                        };
+                        continue;
+                    }
+                }
+
+                remainder_tokens.push(token.to_string());
+            }
+
+            remainder = remainder_tokens.join(" ");
+            spec_task = if remainder_tokens.is_empty() {
+                spec_id.clone()
+            } else {
+                format!("{spec_id} {remainder}")
+            };
+        }
+
+        let script_path = if meta.script == "spec_auto.sh" || meta.script == "evidence_stats.sh" {
+            format!("scripts/spec_ops_004/{}", meta.script)
+        } else {
+            format!("scripts/spec_ops_004/commands/{}", meta.script)
+        };
+
+        let mut banner = String::new();
+        if is_stats {
+            banner.push_str(&format!("Spec Ops /{}\n", meta.display));
+        } else {
+            banner.push_str(&format!("Spec Ops /{} → {}\n", meta.display, spec_id));
+        }
+        banner.push_str(&format!("  Script: {}\n", script_path));
+
+        let mut stage_prompt_version: Option<String> = None;
+        if script_path.contains("/commands/") {
+            let resolution = codex_core::slash_commands::format_subagent_command(
                 command.command(),
-                command.command()
-            )));
-            self.request_redraw();
+                &spec_task,
+                Some(&self.config.agents),
+                Some(&self.config.subagent_commands),
+            );
+
+            let agent_roster = if resolution.models.is_empty() {
+                "claude,gemini,code".to_string()
+            } else {
+                resolution.models.join(",")
+            };
+
+            let prompt_hint = if resolution.orchestrator_instructions.is_some()
+                || resolution.agent_instructions.is_some()
+            {
+                "custom prompt overrides"
+            } else {
+                "default prompt profile"
+            };
+
+            banner.push_str(&format!("  Agents: {}\n", agent_roster));
+            banner.push_str(&format!("  Prompt: {}\n", prompt_hint));
+        }
+
+        let hal_mode = if hal_override.is_some() {
+            hal_override
+        } else {
+            hal_from_args
+        };
+
+        if let Some(stage) = spec_stage_for_multi_agent_followup(command) {
+            let stage_version = spec_prompts::stage_version_enum(stage);
+            if let Some(version) = stage_version.clone() {
+                stage_prompt_version = Some(version.clone());
+                banner.push_str(&format!("  Prompt version: {}\n", version));
+            }
+            if spec_prompts::agent_prompt(stage.key(), SpecAgent::Gemini).is_some() {
+                banner.push_str(&format!(
+                    "  Multi-agent stage available: /{}\n",
+                    stage.command_name()
+                ));
+            }
+            if let Some(notes) = spec_prompts::orchestrator_notes(stage.key()) {
+                if !notes.is_empty() {
+                    banner.push_str("  Notes:\n");
+                    for note in notes {
+                        banner.push_str("    - ");
+                        banner.push_str(&note);
+                        banner.push('\n');
+                    }
+                }
+            }
+        }
+
+        if !is_stats {
+            match hal_mode {
+                Some(mode) => banner.push_str(&format!("  HAL mode: {}\n", mode.as_env_value())),
+                None => banner.push_str("  HAL mode: mock (default)\n"),
+            }
+        }
+
+        self.insert_background_event_with_placement(banner, BackgroundPlacement::Tail);
+
+        // Commands with scripts (guardrails, automation) execute via shell; otherwise, comments/notes only.
+        if meta.script == "COMMENT_ONLY" {
             return;
         }
 
-        let mut tokens = trimmed.split_whitespace();
-        let spec_id = tokens.next().unwrap().to_string();
-        let remainder = tokens.collect::<Vec<_>>().join(" ");
-        let spec_task = if remainder.is_empty() {
-            spec_id.clone()
-        } else {
-            format!("{spec_id} {remainder}")
-        };
-
-        let resolution = codex_core::slash_commands::format_subagent_command(
-            command.command(),
-            &spec_task,
-            Some(&self.config.agents),
-            Some(&self.config.subagent_commands),
-        );
-
-        let agent_roster = if resolution.models.is_empty() {
-            "claude,gemini,code".to_string()
-        } else {
-            resolution.models.join(",")
-        };
-
-        let prompt_hint = if resolution.orchestrator_instructions.is_some()
-            || resolution.agent_instructions.is_some()
-        {
-            "custom prompt overrides"
-        } else {
-            "default prompt profile"
-        };
-
-        let script_path = format!("scripts/spec_ops_004/commands/{}", meta.script);
-        let mut banner = String::new();
-        banner.push_str(&format!("Spec Ops /{} → {}\n", meta.display, spec_id));
-        banner.push_str(&format!("  Script: {}\n", script_path));
-        banner.push_str(&format!("  Agents: {}\n", agent_roster));
-        banner.push_str(&format!("  Prompt: {}\n", prompt_hint));
-        self.insert_background_event_with_placement(banner, BackgroundPlacement::Tail);
-
         let mut env = HashMap::new();
-        env.insert(
-            "SPEC_OPS_004_AGENTS_AVAILABLE".to_string(),
-            agent_roster.clone(),
-        );
-
+        if let Some(version) = stage_prompt_version {
+            env.insert("SPEC_OPS_004_PROMPT_VERSION".to_string(), version);
+        }
         if let Ok(prompt_version) = std::env::var("SPEC_OPS_004_PROMPT_VERSION") {
             env.insert("SPEC_OPS_004_PROMPT_VERSION".to_string(), prompt_version);
         }
@@ -14428,7 +15045,24 @@ impl ChatWidget<'_> {
             env.insert("SPEC_OPS_004_CODE_VERSION".to_string(), code_version);
         }
 
-        let command_line = if remainder.is_empty() {
+        if let Some(mode) = hal_mode {
+            env.insert(
+                "SPEC_OPS_HAL_MODE".to_string(),
+                mode.as_env_value().to_string(),
+            );
+            if matches!(mode, HalMode::Live) {
+                env.entry("SPEC_OPS_TELEMETRY_HAL".to_string())
+                    .or_insert_with(|| "1".to_string());
+            }
+        }
+
+        let command_line = if is_stats {
+            if trimmed.is_empty() {
+                format!("scripts/env_run.sh {script_path}")
+            } else {
+                format!("scripts/env_run.sh {script_path} {trimmed}")
+            }
+        } else if remainder.is_empty() {
             format!("scripts/env_run.sh {script_path} {spec_id}")
         } else {
             format!("scripts/env_run.sh {script_path} {spec_id} {remainder}")
@@ -14450,6 +15084,759 @@ impl ChatWidget<'_> {
             env,
         });
         self.request_redraw();
+    }
+
+    pub(crate) fn handle_spec_status_command(&mut self, raw_args: String) {
+        spec_kit::handle_spec_status(self, raw_args);
+    }
+    // === END FORK-SPECIFIC: handle_spec_ops_command ===
+
+    // === FORK-SPECIFIC: spec-kit consensus lookup ===
+    // Upstream: Does not have /spec-consensus command
+    // Preserve: This entire function during rebases
+    pub(crate) fn handle_spec_consensus_command(&mut self, raw_args: String) {
+        spec_kit::handle_spec_consensus(self, raw_args);
+    }
+
+    // Implementation method (called by spec_kit::handle_spec_consensus)
+    fn handle_spec_consensus_impl(&mut self, raw_args: String) {
+        let trimmed = raw_args.trim();
+        if trimmed.is_empty() {
+            self.history_push(crate::history_cell::new_error_event(
+                "Usage: /spec-consensus <SPEC-ID> <stage>".to_string(),
+            ));
+            return;
+        }
+
+        let mut parts = trimmed.split_whitespace();
+        let Some(spec_id) = parts.next() else {
+            self.history_push(crate::history_cell::new_error_event(
+                "Usage: /spec-consensus <SPEC-ID> <stage>".to_string(),
+            ));
+            return;
+        };
+
+        let Some(stage_str) = parts.next() else {
+            self.history_push(crate::history_cell::new_error_event(
+                "Usage: /spec-consensus <SPEC-ID> <stage>".to_string(),
+            ));
+            return;
+        };
+
+        let Some(stage) = parse_consensus_stage(stage_str) else {
+            self.history_push(crate::history_cell::new_error_event(format!(
+                "Unknown stage '{stage_str}'. Expected plan, tasks, implement, validate, audit, or unlock.",
+            )));
+            return;
+        };
+
+        match self.run_spec_consensus(spec_id, stage) {
+            Ok((lines, ok)) => {
+                let cell = crate::history_cell::PlainHistoryCell::new(
+                    lines,
+                    if ok {
+                        crate::history_cell::HistoryCellType::Notice
+                    } else {
+                        crate::history_cell::HistoryCellType::Error
+                    },
+                );
+                self.history_push(cell);
+            }
+            Err(err) => {
+                self.history_push(crate::history_cell::new_error_event(err));
+            }
+        }
+    }
+
+    fn load_latest_consensus_synthesis(
+        &self,
+        spec_id: &str,
+        stage: SpecStage,
+    ) -> Result<Option<ConsensusSynthesisSummary>, String> {
+        let base = self
+            .config
+            .cwd
+            .join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus")
+            .join(spec_id);
+        if !base.exists() {
+            return Ok(None);
+        }
+
+        let stage_prefix = format!("{}_", stage.command_name());
+        let suffix = "_synthesis.json";
+
+        let mut candidates: Vec<PathBuf> = fs::read_dir(&base)
+            .map_err(|e| {
+                format!(
+                    "Failed to read consensus synthesis directory {}: {}",
+                    base.display(),
+                    e
+                )
+            })?
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| {
+                let path = entry.path();
+                if !path.is_file() {
+                    return None;
+                }
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with(&stage_prefix) && name.ends_with(suffix) {
+                    Some(path)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+
+        candidates.sort();
+        let latest_path = candidates.pop().unwrap();
+
+        let contents = fs::read_to_string(&latest_path).map_err(|e| {
+            format!(
+                "Failed to read consensus synthesis {}: {}",
+                latest_path.display(),
+                e
+            )
+        })?;
+
+        let raw: ConsensusSynthesisRaw = serde_json::from_str(&contents).map_err(|e| {
+            format!(
+                "Failed to parse consensus synthesis {}: {}",
+                latest_path.display(),
+                e
+            )
+        })?;
+
+        if let Some(raw_stage) = raw.stage.as_deref() {
+            if raw_stage != stage.command_name() {
+                return Err(format!(
+                    "Consensus synthesis stage mismatch: expected {}, found {}",
+                    stage.command_name(),
+                    raw_stage
+                ));
+            }
+        }
+
+        if let Some(raw_spec) = raw.spec_id.as_deref() {
+            if !raw_spec.eq_ignore_ascii_case(spec_id) {
+                return Err(format!(
+                    "Consensus synthesis spec mismatch: expected {}, found {}",
+                    spec_id, raw_spec
+                ));
+            }
+        }
+
+        Ok(Some(ConsensusSynthesisSummary {
+            status: raw.status,
+            missing_agents: raw.missing_agents,
+            agreements: raw.consensus.agreements,
+            conflicts: raw.consensus.conflicts,
+            prompt_version: raw.prompt_version,
+            path: latest_path,
+        }))
+    }
+
+    fn run_spec_consensus(
+        &mut self,
+        spec_id: &str,
+        stage: SpecStage,
+    ) -> Result<(Vec<ratatui::text::Line<'static>>, bool), String> {
+        let evidence_root = self
+            .config
+            .cwd
+            .join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus");
+
+        let telemetry_enabled = self.spec_kit_telemetry_enabled();
+
+        let (artifacts, mut warnings) =
+            collect_consensus_artifacts(&evidence_root, spec_id, stage)?;
+        if artifacts.is_empty() {
+            return Err(format!(
+                "No structured local-memory entries found for {} stage '{}'. Ensure agents stored their JSON via local-memory remember.",
+                spec_id,
+                stage.command_name()
+            ));
+        }
+
+        let synthesis_summary = match self.load_latest_consensus_synthesis(spec_id, stage) {
+            Ok(summary) => summary,
+            Err(err) => {
+                warnings.push(format!("Failed to load consensus synthesis: {}", err));
+                None
+            }
+        };
+
+        let mut present_agents: HashSet<String> = HashSet::new();
+        let mut aggregator_summary: Option<Value> = None;
+        let mut aggregator_version: Option<String> = None;
+        let mut aggregator_agent: Option<String> = None;
+        let mut agreements: Vec<String> = Vec::new();
+        let mut conflicts: Vec<String> = Vec::new();
+        let mut required_fields_ok = false;
+
+        for artifact in &artifacts {
+            let agent_lower = artifact.agent.to_ascii_lowercase();
+            present_agents.insert(agent_lower.clone());
+            if artifact.agent.eq_ignore_ascii_case("gpt_pro") {
+                let consensus_node = artifact
+                    .content
+                    .get("consensus")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                agreements = extract_string_list(consensus_node.get("agreements"));
+                conflicts = extract_string_list(consensus_node.get("conflicts"));
+                required_fields_ok = validate_required_fields(stage, &artifact.content);
+                aggregator_summary = Some(artifact.content.clone());
+                aggregator_version = artifact.version.clone();
+                aggregator_agent = Some(artifact.agent.clone());
+            }
+        }
+
+        let expected_agents = expected_agents_for_stage(stage)
+            .into_iter()
+            .map(|agent| agent.to_ascii_lowercase())
+            .collect::<Vec<_>>();
+
+        let mut missing_agents: Vec<String> = expected_agents
+            .into_iter()
+            .filter(|agent| !present_agents.contains(agent))
+            .collect();
+
+        if aggregator_summary.is_none() {
+            required_fields_ok = false;
+        }
+
+        let mut synthesis_evidence_path: Option<PathBuf> = None;
+        let mut prompt_version =
+            spec_prompts::stage_version_enum(stage).unwrap_or_else(|| "unversioned".to_string());
+        let mut has_conflict;
+        let mut degraded;
+        let consensus_ok;
+
+        if let Some(summary) = &synthesis_summary {
+            synthesis_evidence_path = Some(summary.path.clone());
+            if let Some(version) = &summary.prompt_version {
+                if !version.trim().is_empty() {
+                    prompt_version = version.clone();
+                }
+            }
+            agreements = summary.agreements.clone();
+            conflicts = summary.conflicts.clone();
+            missing_agents = summary.missing_agents.clone();
+            has_conflict = summary.status.eq_ignore_ascii_case("conflict") || !conflicts.is_empty();
+            degraded = summary.status.eq_ignore_ascii_case("degraded")
+                || (!missing_agents.is_empty() && !has_conflict);
+            consensus_ok = summary.status.eq_ignore_ascii_case("ok");
+        } else {
+            has_conflict = !conflicts.is_empty();
+            degraded = aggregator_summary.is_none() || !missing_agents.is_empty();
+            consensus_ok = !aggregator_summary.is_none()
+                && conflicts.is_empty()
+                && missing_agents.is_empty()
+                && required_fields_ok;
+        }
+
+        if consensus_ok {
+            has_conflict = false;
+            degraded = false;
+        }
+
+        missing_agents.sort_unstable();
+        missing_agents.dedup();
+        conflicts.sort_unstable();
+        conflicts.dedup();
+
+        let consensus_status = if consensus_ok {
+            "ok"
+        } else if has_conflict {
+            "conflict"
+        } else if degraded {
+            "degraded"
+        } else {
+            "unknown"
+        };
+        let consensus_status = consensus_status.to_string();
+
+        let mut lines: Vec<ratatui::text::Line<'static>> = Vec::new();
+        let status_label = if consensus_ok {
+            "CONSENSUS OK"
+        } else if has_conflict {
+            "CONSENSUS CONFLICT"
+        } else if degraded {
+            "CONSENSUS DEGRADED"
+        } else {
+            "CONSENSUS UNKNOWN"
+        };
+        lines.push(ratatui::text::Line::from(format!(
+            "[Spec Consensus] {} {} — {}",
+            stage.display_name(),
+            spec_id,
+            status_label
+        )));
+        lines.push(ratatui::text::Line::from(format!(
+            "  Prompt version: {}",
+            prompt_version
+        )));
+
+        for warning in warnings.drain(..) {
+            lines.push(ratatui::text::Line::from(format!("  Warning: {warning}")));
+        }
+
+        if let Some(path) = synthesis_evidence_path.as_ref() {
+            lines.push(ratatui::text::Line::from(format!(
+                "  Synthesis: {}",
+                path.display()
+            )));
+        }
+
+        if !missing_agents.is_empty() {
+            lines.push(ratatui::text::Line::from(format!(
+                "  Missing agents: {}",
+                missing_agents.join(", ")
+            )));
+        }
+
+        if aggregator_summary.is_none() {
+            lines.push(ratatui::text::Line::from(
+                "  Aggregator (gpt_pro) summary not found in local-memory.",
+            ));
+        }
+
+        if !agreements.is_empty() {
+            lines.push(ratatui::text::Line::from(format!(
+                "  Agreements: {}",
+                agreements.join("; ")
+            )));
+        }
+
+        if !conflicts.is_empty() {
+            lines.push(ratatui::text::Line::from(format!(
+                "  Conflicts: {}",
+                conflicts.join("; ")
+            )));
+        }
+
+        if !required_fields_ok && synthesis_summary.is_none() {
+            lines.push(ratatui::text::Line::from(
+                "  Warning: required summary fields missing from aggregator output.",
+            ));
+        }
+
+        let timestamp = Utc::now();
+        let recorded_at = timestamp.to_rfc3339_opts(SecondsFormat::Secs, true);
+        let evidence_slug = timestamp.format("%Y%m%dT%H%M%SZ").to_string();
+
+        let verdict = ConsensusVerdict {
+            spec_id: spec_id.to_string(),
+            stage: stage.command_name().to_string(),
+            recorded_at,
+            prompt_version: Some(prompt_version.clone()),
+            consensus_ok,
+            degraded,
+            required_fields_ok,
+            missing_agents: missing_agents.clone(),
+            agreements: agreements.clone(),
+            conflicts: conflicts.clone(),
+            aggregator_agent,
+            aggregator_version,
+            aggregator: aggregator_summary.clone(),
+            synthesis_path: synthesis_evidence_path
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
+            artifacts: artifacts
+                .iter()
+                .map(|artifact| ConsensusArtifactVerdict {
+                    memory_id: artifact.memory_id.clone(),
+                    agent: artifact.agent.clone(),
+                    version: artifact.version.clone(),
+                    content: artifact.content.clone(),
+                })
+                .collect(),
+        };
+
+        match self.persist_consensus_verdict(spec_id, stage, &verdict, &evidence_slug) {
+            Ok(handle) => {
+                lines.push(ratatui::text::Line::from(format!(
+                    "  Evidence: {}",
+                    handle.path.display()
+                )));
+                let mut bundle_paths: Option<ConsensusTelemetryPaths> = None;
+                if telemetry_enabled {
+                    match self.persist_consensus_telemetry_bundle(
+                        spec_id,
+                        stage,
+                        &verdict,
+                        &handle,
+                        &evidence_slug,
+                        &consensus_status,
+                    ) {
+                        Ok(paths) => {
+                            bundle_paths = Some(paths);
+                        }
+                        Err(err) => {
+                            lines.push(ratatui::text::Line::from(format!(
+                                "  Warning: failed to persist consensus telemetry bundle: {}",
+                                err
+                            )));
+                        }
+                    }
+                }
+                if let Err(err) = self.remember_consensus_verdict(spec_id, stage, &handle, &verdict)
+                {
+                    lines.push(ratatui::text::Line::from(format!(
+                        "  Warning: failed to store consensus verdict in local-memory: {}",
+                        err
+                    )));
+                }
+                if let Some(paths) = bundle_paths {
+                    if !paths.agent_paths.is_empty() {
+                        if paths.agent_paths.len() == 1 {
+                            lines.push(ratatui::text::Line::from(format!(
+                                "  Agent artifact: {}",
+                                paths.agent_paths[0].display()
+                            )));
+                        } else if let Some(dir) = paths.agent_paths[0].parent() {
+                            lines.push(ratatui::text::Line::from(format!(
+                                "  Agent artifacts: {} files under {}",
+                                paths.agent_paths.len(),
+                                dir.display()
+                            )));
+                        } else {
+                            lines.push(ratatui::text::Line::from(format!(
+                                "  Agent artifacts: {} files",
+                                paths.agent_paths.len()
+                            )));
+                        }
+                    }
+                    lines.push(ratatui::text::Line::from(format!(
+                        "  Telemetry log: {}",
+                        paths.telemetry_path.display()
+                    )));
+                    lines.push(ratatui::text::Line::from(format!(
+                        "  Synthesis bundle: {}",
+                        paths.synthesis_path.display()
+                    )));
+                }
+            }
+            Err(err) => {
+                lines.push(ratatui::text::Line::from(format!(
+                    "  Warning: failed to persist consensus evidence: {}",
+                    err
+                )));
+            }
+        }
+
+        Ok((lines, consensus_ok))
+    }
+
+    fn persist_consensus_verdict(
+        &self,
+        spec_id: &str,
+        stage: SpecStage,
+        verdict: &ConsensusVerdict,
+        slug: &str,
+    ) -> Result<ConsensusEvidenceHandle, String> {
+        let base = self
+            .config
+            .cwd
+            .join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus")
+            .join(spec_id);
+        fs::create_dir_all(&base).map_err(|e| {
+            format!(
+                "failed to create consensus evidence directory {}: {}",
+                base.display(),
+                e
+            )
+        })?;
+
+        let filename = format!("{}-{}.json", slug, stage.command_name());
+        let path = base.join(filename);
+
+        let payload = serde_json::to_vec_pretty(verdict)
+            .map_err(|e| format!("failed to serialize consensus verdict: {e}"))?;
+
+        let mut hasher = Sha256::new();
+        hasher.update(&payload);
+        let sha256 = format!("{:x}", hasher.finalize());
+
+        let mut file = fs::File::create(&path)
+            .map_err(|e| format!("failed to create {}: {e}", path.display()))?;
+        file.write_all(&payload)
+            .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+        file.write_all(b"\n").ok();
+
+        Ok(ConsensusEvidenceHandle { path, sha256 })
+    }
+
+    fn persist_consensus_telemetry_bundle(
+        &self,
+        spec_id: &str,
+        stage: SpecStage,
+        verdict: &ConsensusVerdict,
+        verdict_handle: &ConsensusEvidenceHandle,
+        slug: &str,
+        consensus_status: &str,
+    ) -> Result<ConsensusTelemetryPaths, String> {
+        let base = self
+            .config
+            .cwd
+            .join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus")
+            .join(spec_id);
+        fs::create_dir_all(&base).map_err(|e| {
+            format!(
+                "failed to create consensus evidence directory {}: {}",
+                base.display(),
+                e
+            )
+        })?;
+
+        let stage_name = stage.command_name();
+
+        let to_relative = |path: &Path| -> String {
+            path.strip_prefix(&self.config.cwd)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .into_owned()
+        };
+
+        let mut agent_paths: Vec<PathBuf> = Vec::new();
+        for artifact in &verdict.artifacts {
+            let filename = format!(
+                "{}_{}_{}.json",
+                stage_name,
+                slug,
+                telemetry_agent_slug(&artifact.agent)
+            );
+            let path = base.join(filename);
+            let payload = serde_json::to_vec_pretty(&artifact.content).map_err(|e| {
+                format!(
+                    "failed to serialize consensus artifact for {}: {}",
+                    artifact.agent, e
+                )
+            })?;
+            let mut file = fs::File::create(&path)
+                .map_err(|e| format!("failed to create {}: {e}", path.display()))?;
+            file.write_all(&payload)
+                .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+            file.write_all(b"\n").ok();
+            agent_paths.push(path);
+        }
+
+        let synthesis_filename = format!("{}_{}_synthesis.json", stage_name, slug);
+        let synthesis_path = base.join(&synthesis_filename);
+        let mut synthesis_written = false;
+        if let Some(existing) = verdict.synthesis_path.as_ref().map(|p| PathBuf::from(p)) {
+            if existing.exists() {
+                match fs::copy(&existing, &synthesis_path) {
+                    Ok(_) => synthesis_written = true,
+                    Err(err) => {
+                        return Err(format!(
+                            "failed to copy consensus synthesis from {} to {}: {}",
+                            existing.display(),
+                            synthesis_path.display(),
+                            err
+                        ));
+                    }
+                }
+            }
+        }
+
+        if !synthesis_written {
+            let synthesis_payload = serde_json::json!({
+                "specId": verdict.spec_id,
+                "stage": stage_name,
+                "status": consensus_status,
+                "recordedAt": verdict.recorded_at,
+                "promptVersion": verdict.prompt_version,
+                "missingAgents": verdict.missing_agents,
+                "agreements": verdict.agreements,
+                "conflicts": verdict.conflicts,
+                "aggregatorAgent": verdict.aggregator_agent,
+                "aggregatorVersion": verdict.aggregator_version,
+                "aggregator": verdict.aggregator,
+            });
+            let payload = serde_json::to_vec_pretty(&synthesis_payload)
+                .map_err(|e| format!("failed to serialize consensus synthesis: {e}"))?;
+            let mut file = fs::File::create(&synthesis_path)
+                .map_err(|e| format!("failed to create {}: {}", synthesis_path.display(), e))?;
+            file.write_all(&payload)
+                .map_err(|e| format!("failed to write {}: {}", synthesis_path.display(), e))?;
+            file.write_all(b"\n").ok();
+        }
+
+        let telemetry_filename = format!("{}_{}_telemetry.jsonl", stage_name, slug);
+        let telemetry_path = base.join(&telemetry_filename);
+
+        let agent_entries: Vec<serde_json::Value> = verdict
+            .artifacts
+            .iter()
+            .zip(agent_paths.iter())
+            .map(|(artifact, path)| {
+                let mut entry = serde_json::Map::new();
+                entry.insert(
+                    "agent".to_string(),
+                    serde_json::Value::String(artifact.agent.clone()),
+                );
+                if let Some(version) = &artifact.version {
+                    entry.insert(
+                        "promptVersion".to_string(),
+                        serde_json::Value::String(version.clone()),
+                    );
+                }
+                entry.insert(
+                    "artifactPath".to_string(),
+                    serde_json::Value::String(to_relative(path)),
+                );
+                if let Some(model) = artifact
+                    .content
+                    .get("model")
+                    .and_then(|value| value.as_str())
+                {
+                    entry.insert(
+                        "modelId".to_string(),
+                        serde_json::Value::String(model.to_string()),
+                    );
+                }
+                if let Some(mode) = artifact
+                    .content
+                    .get("reasoning_mode")
+                    .and_then(|value| value.as_str())
+                {
+                    entry.insert(
+                        "reasoningMode".to_string(),
+                        serde_json::Value::String(mode.to_string()),
+                    );
+                }
+                entry.insert("payload".to_string(), artifact.content.clone());
+                serde_json::Value::Object(entry)
+            })
+            .collect();
+
+        let telemetry_record = serde_json::json!({
+            "schemaVersion": "2.0",
+            "command": stage_name,
+            "specId": verdict.spec_id,
+            "stage": stage_name,
+            "timestamp": verdict.recorded_at,
+            "promptVersion": verdict.prompt_version,
+            "consensus": {
+                "status": consensus_status,
+                "ok": verdict.consensus_ok,
+                "degraded": verdict.degraded,
+                "missingAgents": verdict.missing_agents,
+                "agreements": verdict.agreements,
+                "conflicts": verdict.conflicts,
+            },
+            "aggregator": {
+                "agent": verdict.aggregator_agent,
+                "version": verdict.aggregator_version,
+                "payload": verdict.aggregator,
+            },
+            "verdictPath": to_relative(&verdict_handle.path),
+            "synthesisPath": to_relative(&synthesis_path),
+            "artifacts": agent_entries,
+        });
+
+        let telemetry_line = serde_json::to_string(&telemetry_record)
+            .map_err(|e| format!("failed to serialize consensus telemetry: {e}"))?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&telemetry_path)
+            .map_err(|e| {
+                format!(
+                    "failed to open {} for append: {}",
+                    telemetry_path.display(),
+                    e
+                )
+            })?;
+        file.write_all(telemetry_line.as_bytes())
+            .map_err(|e| format!("failed to write {}: {}", telemetry_path.display(), e))?;
+        file.write_all(b"\n").ok();
+
+        Ok(ConsensusTelemetryPaths {
+            agent_paths,
+            telemetry_path,
+            synthesis_path,
+        })
+    }
+
+    fn remember_consensus_verdict(
+        &self,
+        spec_id: &str,
+        stage: SpecStage,
+        evidence: &ConsensusEvidenceHandle,
+        verdict: &ConsensusVerdict,
+    ) -> Result<(), String> {
+        let mut summary_value = serde_json::json!({
+            "kind": "spec-consensus-verdict",
+            "specId": spec_id,
+            "stage": stage.command_name(),
+            "consensusOk": verdict.consensus_ok,
+            "degraded": verdict.degraded,
+            "requiredFieldsOk": verdict.required_fields_ok,
+            "missingAgents": verdict.missing_agents,
+            "agreements": verdict.agreements,
+            "conflicts": verdict.conflicts,
+            "artifactsCount": verdict.artifacts.len(),
+            "evidencePath": evidence.path.to_string_lossy(),
+            "payloadSha256": evidence.sha256,
+            "recordedAt": verdict.recorded_at,
+        });
+
+        if let Some(version) = verdict.prompt_version.as_ref() {
+            if let serde_json::Value::Object(obj) = &mut summary_value {
+                obj.insert(
+                    "promptVersion".to_string(),
+                    serde_json::Value::String(version.clone()),
+                );
+            }
+        }
+
+        if let Some(path) = verdict.synthesis_path.as_ref() {
+            if let serde_json::Value::Object(obj) = &mut summary_value {
+                obj.insert(
+                    "synthesisPath".to_string(),
+                    serde_json::Value::String(path.clone()),
+                );
+            }
+        }
+
+        let summary = serde_json::to_string(&summary_value)
+            .map_err(|e| format!("failed to serialize consensus summary: {e}"))?;
+
+        let mut cmd = Command::new("local-memory");
+        cmd.arg("remember")
+            .arg(summary)
+            .arg("--importance")
+            .arg("8")
+            .arg("--domain")
+            .arg("spec-tracker")
+            .arg("--tags")
+            .arg(format!("spec:{}", spec_id))
+            .arg("--tags")
+            .arg(format!("stage:{}", stage.command_name()))
+            .arg("--tags")
+            .arg("consensus")
+            .arg("--tags")
+            .arg("verdict");
+
+        let output = cmd
+            .output()
+            .map_err(|e| format!("failed to run local-memory remember: {e}"))?;
+
+        if !output.status.success() {
+            return Err(format!(
+                "local-memory remember failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+
+        Ok(())
     }
 
     pub(crate) fn handle_project_command(&mut self, args: String) {
@@ -14507,8 +15894,7 @@ impl ChatWidget<'_> {
             };
             self.history_push(crate::history_cell::new_error_event(format!(
                 "Unknown project command `{}`.{}",
-                name,
-                suggestion
+                name, suggestion
             )));
             self.request_redraw();
         }
@@ -15151,6 +16537,580 @@ impl ChatWidget<'_> {
     }
 }
 
+fn spec_stage_for_multi_agent_followup(command: SlashCommand) -> Option<SpecStage> {
+    match command {
+        SlashCommand::SpecOpsPlan => Some(SpecStage::Plan),
+        SlashCommand::SpecOpsTasks => Some(SpecStage::Tasks),
+        SlashCommand::SpecOpsImplement => Some(SpecStage::Implement),
+        SlashCommand::SpecOpsValidate => Some(SpecStage::Validate),
+        SlashCommand::SpecOpsAudit => Some(SpecStage::Audit),
+        SlashCommand::SpecOpsUnlock => Some(SpecStage::Unlock),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SpecStageInvocation {
+    stage: SpecStage,
+    spec_id: String,
+    remainder: String,
+    consensus: bool,
+    consensus_execute: bool,
+    allow_conflict: bool,
+}
+
+fn parse_spec_stage_invocation(input: &str) -> Option<SpecStageInvocation> {
+    let trimmed = input.trim();
+    let parse_for_stage = |prefix: &str, stage: SpecStage| -> Option<SpecStageInvocation> {
+        let rest = trimmed.strip_prefix(prefix)?.trim();
+        if rest.is_empty() {
+            return None;
+        }
+
+        let mut tokens = rest.split_whitespace();
+        let mut consensus = false;
+        let mut execute_consensus = false;
+        let mut allow_conflict = false;
+        let mut spec_id: Option<String> = None;
+        let mut remainder_tokens: Vec<String> = Vec::new();
+
+        while let Some(token) = tokens.next() {
+            if spec_id.is_none() && token.starts_with("--") {
+                match token {
+                    "--consensus" => consensus = true,
+                    "--consensus-exec" => {
+                        consensus = true;
+                        execute_consensus = true;
+                    }
+                    "--consensus-dry-run" => {
+                        consensus = true;
+                        execute_consensus = false;
+                    }
+                    "--allow-conflict" => allow_conflict = true,
+                    _ => {}
+                }
+                continue;
+            }
+
+            if spec_id.is_none() {
+                spec_id = Some(token.to_string());
+            } else {
+                remainder_tokens.push(token.to_string());
+            }
+        }
+
+        let spec_id = spec_id?;
+        Some(SpecStageInvocation {
+            stage,
+            spec_id,
+            remainder: remainder_tokens.join(" "),
+            consensus,
+            consensus_execute: execute_consensus,
+            allow_conflict,
+        })
+    };
+
+    parse_for_stage("/spec-plan ", SpecStage::Plan)
+        .or_else(|| parse_for_stage("/spec-tasks ", SpecStage::Tasks))
+        .or_else(|| parse_for_stage("/spec-implement ", SpecStage::Implement))
+        .or_else(|| parse_for_stage("/spec-validate ", SpecStage::Validate))
+        .or_else(|| parse_for_stage("/spec-review ", SpecStage::Audit))
+        .or_else(|| parse_for_stage("/spec-audit ", SpecStage::Audit))
+        .or_else(|| parse_for_stage("/spec-unlock ", SpecStage::Unlock))
+}
+
+const SPEC_AUTO_MAX_VALIDATE_RETRIES: u32 = 2;
+
+impl ChatWidget<'_> {
+    fn queue_consensus_runner(
+        &mut self,
+        stage: SpecStage,
+        spec_id: &str,
+        execute: bool,
+        allow_conflict: bool,
+    ) {
+        let script = "scripts/spec_ops_004/consensus_runner.sh";
+        let mut command_line = format!(
+            "scripts/env_run.sh {} --stage {} --spec {}",
+            script,
+            stage.command_name(),
+            spec_id
+        );
+        if execute {
+            command_line.push_str(" --execute");
+        } else {
+            command_line.push_str(" --dry-run");
+        }
+        if allow_conflict {
+            command_line.push_str(" --allow-conflict");
+        }
+
+        let argv = wrap_command(&command_line);
+        if argv.is_empty() {
+            self.history_push(crate::history_cell::new_error_event(
+                "Unable to build consensus runner invocation.".to_string(),
+            ));
+            return;
+        }
+
+        let name = format!("spec_consensus_{}", stage.command_name().replace('-', "_"));
+        self.submit_op(Op::RunProjectCommand {
+            name,
+            command: Some(argv),
+            display: Some(command_line.clone()),
+            env: HashMap::new(),
+        });
+
+        self.insert_background_event_with_placement(
+            format!(
+                "Consensus runner queued for {} ({}).",
+                spec_id,
+                stage.display_name()
+            ),
+            BackgroundPlacement::Tail,
+        );
+    }
+}
+
+// === FORK-SPECIFIC: Spec-kit state moved to spec_kit module ===
+// Extracted to spec_kit/state.rs to isolate from upstream code
+
+fn validate_guardrail_schema(stage: SpecStage, telemetry: &Value) -> Vec<String> {
+    let mut failures = Vec::new();
+
+    match telemetry.get("command").and_then(|value| value.as_str()) {
+        Some(command) if command == expected_guardrail_command(stage) => {}
+        Some(command) => failures.push(format!(
+            "Unexpected command '{}' (expected {})",
+            command,
+            expected_guardrail_command(stage)
+        )),
+        None => failures.push("Missing required string field command".to_string()),
+    }
+
+    require_string_field(telemetry, &["specId"], &mut failures);
+    require_string_field(telemetry, &["sessionId"], &mut failures);
+    require_string_field(telemetry, &["timestamp"], &mut failures);
+
+    match stage {
+        SpecStage::Validate | SpecStage::Audit => {
+            if let Some(value) = telemetry.get("artifacts") {
+                if !value.is_array() {
+                    failures.push("Field artifacts must be an array when present".to_string());
+                }
+            }
+        }
+        _ => match telemetry.get("artifacts") {
+            Some(Value::Array(arr)) => {
+                if arr.is_empty() {
+                    failures.push("Telemetry artifacts array is empty".to_string());
+                }
+            }
+            Some(_) => failures.push("Field artifacts must be an array".to_string()),
+            None => failures.push("Missing required array field artifacts".to_string()),
+        },
+    }
+
+    match stage {
+        SpecStage::Plan => {
+            if require_object(telemetry, &["baseline"], &mut failures).is_some() {
+                require_string_field(telemetry, &["baseline", "mode"], &mut failures);
+                require_string_field(telemetry, &["baseline", "artifact"], &mut failures);
+                require_string_field(telemetry, &["baseline", "status"], &mut failures);
+            }
+            if require_object(telemetry, &["hooks"], &mut failures).is_some() {
+                require_string_field(telemetry, &["hooks", "session.start"], &mut failures);
+            }
+        }
+        SpecStage::Tasks => {
+            if require_object(telemetry, &["tool"], &mut failures).is_some() {
+                require_string_field(telemetry, &["tool", "status"], &mut failures);
+            }
+        }
+        SpecStage::Implement => {
+            require_string_field(telemetry, &["lock_status"], &mut failures);
+            require_string_field(telemetry, &["hook_status"], &mut failures);
+        }
+        SpecStage::Validate | SpecStage::Audit => {
+            match telemetry.get("scenarios") {
+                Some(Value::Array(scenarios)) if !scenarios.is_empty() => {
+                    for (idx, scenario) in scenarios.iter().enumerate() {
+                        if !scenario.is_object() {
+                            failures.push(format!("Scenario #{} must be an object", idx + 1));
+                            continue;
+                        }
+                        require_string_field(scenario, &["name"], &mut failures);
+                        if let Some(status) =
+                            require_string_field(scenario, &["status"], &mut failures)
+                        {
+                            const ALLOWED: &[&str] = &["passed", "failed", "skipped"];
+                            if !ALLOWED.contains(&status) {
+                                failures.push(format!(
+                                    "Scenario status must be one of {:?} (got '{}')",
+                                    ALLOWED, status
+                                ));
+                            }
+                        }
+                    }
+                }
+                Some(Value::Array(_)) => {
+                    failures.push("Scenarios array must not be empty".to_string())
+                }
+                Some(_) => failures.push("Field scenarios must be an array of objects".to_string()),
+                None => failures.push("Missing required array field scenarios".to_string()),
+            }
+
+            if let Some(hal_value) = telemetry.get("hal") {
+                if let Some(summary_value) = hal_value.get("summary") {
+                    if let Some(summary) = summary_value.as_object() {
+                        if let Some(status) = summary.get("status").and_then(|s| s.as_str()) {
+                            const ALLOWED: &[&str] = &["passed", "failed", "skipped"];
+                            if !ALLOWED.contains(&status) {
+                                failures.push(format!(
+                                    "Field hal.summary.status must be one of {:?} (got '{}')",
+                                    ALLOWED, status
+                                ));
+                            }
+                        } else {
+                            failures.push(
+                                "Missing required string field hal.summary.status".to_string(),
+                            );
+                        }
+
+                        if let Some(failed_checks) = summary.get("failed_checks") {
+                            match failed_checks.as_array() {
+                                Some(entries) => {
+                                    for (idx, entry) in entries.iter().enumerate() {
+                                        match entry.as_str() {
+                                            Some(text) if !text.trim().is_empty() => {}
+                                            _ => failures.push(format!(
+                                                "hal.summary.failed_checks[{}] must be a non-empty string",
+                                                idx
+                                            )),
+                                        }
+                                    }
+                                }
+                                None => failures.push(
+                                    "Field hal.summary.failed_checks must be an array of strings"
+                                        .to_string(),
+                                ),
+                            }
+                        }
+
+                        if let Some(artifacts) = summary.get("artifacts") {
+                            match artifacts.as_array() {
+                                Some(entries) => {
+                                    for (idx, entry) in entries.iter().enumerate() {
+                                        match entry.as_str() {
+                                            Some(text) if !text.trim().is_empty() => {}
+                                            _ => failures.push(format!(
+                                                "hal.summary.artifacts[{}] must be a non-empty string",
+                                                idx
+                                            )),
+                                        }
+                                    }
+                                }
+                                None => failures.push(
+                                    "Field hal.summary.artifacts must be an array of strings"
+                                        .to_string(),
+                                ),
+                            }
+                        }
+                    } else {
+                        failures.push("Field hal.summary must be an object".to_string());
+                    }
+                } else {
+                    failures.push("Missing required object field hal.summary".to_string());
+                }
+            }
+        }
+        SpecStage::Unlock => {
+            require_string_field(telemetry, &["unlock_status"], &mut failures);
+        }
+    }
+
+    failures
+}
+
+fn evaluate_guardrail_value(stage: SpecStage, value: &Value) -> GuardrailEvaluation {
+    match stage {
+        SpecStage::Plan => {
+            let baseline = value
+                .get("baseline")
+                .and_then(|b| b.get("status"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("unknown");
+            let hook = value
+                .get("hooks")
+                .and_then(|h| h.get("session.start"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("unknown");
+            let baseline_ok = matches!(baseline, "passed" | "skipped");
+            let hook_ok = hook == "ok";
+            let success = baseline_ok && hook_ok;
+            let mut failures = Vec::new();
+            if !baseline_ok {
+                failures.push(format!("Baseline audit status: {baseline}"));
+            }
+            if !hook_ok {
+                failures.push(format!("session.start hook: {hook}"));
+            }
+            let summary = format!("Baseline {baseline}, session.start {hook}");
+            GuardrailEvaluation {
+                success,
+                summary,
+                failures,
+            }
+        }
+        SpecStage::Tasks => {
+            let status = value
+                .get("tool")
+                .and_then(|t| t.get("status"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("unknown");
+            let success = status == "ok";
+            let failures = if success {
+                Vec::new()
+            } else {
+                vec![format!("tasks hook status: {status}")]
+            };
+            GuardrailEvaluation {
+                success,
+                summary: format!("Tasks automation status: {status}"),
+                failures,
+            }
+        }
+        SpecStage::Implement => {
+            let lock_status = value
+                .get("lock_status")
+                .and_then(|s| s.as_str())
+                .unwrap_or("unknown");
+            let hook_status = value
+                .get("hook_status")
+                .and_then(|s| s.as_str())
+                .unwrap_or("unknown");
+            let success = lock_status == "locked" && hook_status == "ok";
+            let mut failures = Vec::new();
+            if lock_status != "locked" {
+                failures.push(format!("SPEC lock status: {lock_status}"));
+            }
+            if hook_status != "ok" {
+                failures.push(format!("file_after_write hook: {hook_status}"));
+            }
+            GuardrailEvaluation {
+                success,
+                summary: format!("Lock status {lock_status}, file hook {hook_status}"),
+                failures,
+            }
+        }
+        SpecStage::Validate | SpecStage::Audit => {
+            let mut failures = Vec::new();
+            let scenarios = value
+                .get("scenarios")
+                .and_then(|s| s.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let mut total = 0usize;
+            let mut passed = 0usize;
+            for scenario in scenarios {
+                let name = scenario
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("unknown");
+                let status = scenario
+                    .get("status")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("unknown");
+                total += 1;
+                if status == "passed" || status == "skipped" {
+                    if status == "passed" {
+                        passed += 1;
+                    }
+                    continue;
+                }
+                failures.push(format!("{name}: {status}"));
+            }
+            let success = failures.is_empty();
+            let mut summary = if total == 0 {
+                "No validation scenarios reported".to_string()
+            } else {
+                format!("{} of {} scenarios passed", passed, total)
+            };
+
+            if let Some(hal_summary) = value
+                .get("hal")
+                .and_then(|hal| hal.get("summary"))
+                .and_then(|summary| summary.as_object())
+            {
+                if let Some(status) = hal_summary.get("status").and_then(|s| s.as_str()) {
+                    summary = format!("{summary}; HAL {status}");
+                    if status == "failed" {
+                        if let Some(checks) = hal_summary
+                            .get("failed_checks")
+                            .and_then(|list| list.as_array())
+                        {
+                            let joined = checks
+                                .iter()
+                                .filter_map(|v| v.as_str())
+                                .filter(|text| !text.trim().is_empty())
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            if !joined.is_empty() {
+                                failures.push(format!("HAL failed checks: {joined}"));
+                            }
+                        }
+                    }
+                }
+            }
+
+            GuardrailEvaluation {
+                success,
+                summary,
+                failures,
+            }
+        }
+        SpecStage::Unlock => {
+            let status = value
+                .get("unlock_status")
+                .and_then(|s| s.as_str())
+                .unwrap_or("unknown");
+            let success = status == "unlocked";
+            let failures = if success {
+                Vec::new()
+            } else {
+                vec![format!("Unlock status: {status}")]
+            };
+            GuardrailEvaluation {
+                success,
+                summary: format!("Unlock status: {status}"),
+                failures,
+            }
+        }
+    }
+}
+
+// ChatWidget methods for spec-kit automation
+impl ChatWidget<'_> {
+    // === FORK-SPECIFIC: spec-kit /spec-auto pipeline methods ===
+    // Upstream: Does not have these methods
+    // Preserve: handle_spec_auto_command, advance_spec_auto, and related during rebases
+    #[allow(dead_code)]
+    fn handle_spec_auto_command(&mut self, invocation: SpecAutoInvocation) {
+        let SpecAutoInvocation {
+            spec_id,
+            goal,
+            resume_from,
+            hal_mode,
+        } = invocation;
+        spec_kit::handle_spec_auto(self, spec_id, goal, resume_from, hal_mode);
+    }
+
+    fn advance_spec_auto(&mut self) {
+        spec_kit::advance_spec_auto(self);
+    }
+
+    fn halt_spec_auto_with_error(&mut self, reason: String) {
+        spec_kit::halt_spec_auto_with_error(self, reason);
+    }
+
+    fn collect_guardrail_outcome(
+        &self,
+        spec_id: &str,
+        stage: SpecStage,
+    ) -> Result<GuardrailOutcome, String> {
+        let (path, value) = self.read_latest_spec_ops_telemetry(spec_id, stage)?;
+        let mut evaluation = evaluate_guardrail_value(stage, &value);
+        let schema_failures = validate_guardrail_schema(stage, &value);
+        if !schema_failures.is_empty() {
+            evaluation.failures.extend(schema_failures);
+            evaluation.success = false;
+        }
+        if matches!(
+            stage,
+            SpecStage::Plan
+                | SpecStage::Tasks
+                | SpecStage::Implement
+                | SpecStage::Audit
+                | SpecStage::Unlock
+        ) {
+            let (evidence_failures, artifact_count) =
+                validate_guardrail_evidence(self.config.cwd.as_path(), stage, &value);
+            if artifact_count > 0 {
+                evaluation.summary =
+                    format!("{} | {} artifacts", evaluation.summary, artifact_count);
+            }
+            if !evidence_failures.is_empty() {
+                evaluation.failures.extend(evidence_failures);
+                evaluation.success = false;
+            }
+        }
+        Ok(GuardrailOutcome {
+            success: evaluation.success,
+            summary: evaluation.summary,
+            telemetry_path: Some(path),
+            failures: evaluation.failures,
+        })
+    }
+
+    fn read_latest_spec_ops_telemetry(
+        &self,
+        spec_id: &str,
+        stage: SpecStage,
+    ) -> Result<(PathBuf, Value), String> {
+        let evidence_dir = self
+            .config
+            .cwd
+            .join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands")
+            .join(spec_id);
+        let prefix = spec_ops_stage_prefix(stage);
+        let entries = fs::read_dir(&evidence_dir)
+            .map_err(|e| format!("{} ({}): {}", spec_id, stage.command_name(), e))?;
+
+        let mut latest: Option<(PathBuf, SystemTime)> = None;
+        for entry_res in entries {
+            let entry = entry_res.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if !name.starts_with(prefix) {
+                continue;
+            }
+            let modified = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            if latest
+                .as_ref()
+                .map(|(_, ts)| modified > *ts)
+                .unwrap_or(true)
+            {
+                latest = Some((path.clone(), modified));
+            }
+        }
+
+        let (path, _) = latest.ok_or_else(|| {
+            format!(
+                "No telemetry files matching {}* in {}",
+                prefix,
+                evidence_dir.display()
+            )
+        })?;
+
+        let mut file =
+            fs::File::open(&path).map_err(|e| format!("Failed to open {}: {e}", path.display()))?;
+        let mut buf = String::new();
+        file.read_to_string(&mut buf)
+            .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+        let value: Value = serde_json::from_str(&buf)
+            .map_err(|e| format!("Failed to parse telemetry JSON {}: {e}", path.display()))?;
+        Ok((path, value))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -15161,20 +17121,253 @@ mod tests {
     use codex_core::protocol::Event;
     use codex_core::protocol::EventMsg;
     use codex_core::protocol::TaskCompleteEvent;
+    use once_cell::sync::Lazy;
+    use serde_json::json;
+    use std::fs;
+    use std::fs::File;
+    use std::io::Write as IoWrite;
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+    use tempfile::tempdir;
+
+    #[test]
+    fn spec_auto_common_metadata_required() {
+        let value = json!({
+            "command": "spec-ops-plan",
+            "timestamp": "2025-09-27T00:00:00Z",
+            "artifacts": [{ "path": "logs.txt" }],
+            "baseline": { "mode": "no-run", "artifact": "docs/baseline.md", "status": "passed" },
+            "hooks": { "session.start": "ok" }
+        });
+        let failures = super::validate_guardrail_schema(SpecStage::Plan, &value);
+        assert!(failures.iter().any(|msg| msg.contains("specId")));
+        assert!(failures.iter().any(|msg| msg.contains("sessionId")));
+    }
+
+    #[test]
+    fn spec_auto_plan_schema_validation_fails_without_baseline() {
+        let value = json!({
+            "command": "spec-ops-plan",
+            "specId": "SPEC-OPS-004",
+            "sessionId": "2025-09-27T00:00:00Z-1234",
+            "timestamp": "2025-09-27T00:00:00Z",
+            "artifacts": [{ "path": "plan.log" }],
+            "baseline": { "mode": "no-run", "artifact": "docs/baseline.md" },
+            "hooks": { "session.start": "ok" }
+        });
+        let failures = super::validate_guardrail_schema(SpecStage::Plan, &value);
+        assert!(failures.iter().any(|msg| msg.contains("baseline.status")));
+    }
+
+    #[test]
+    fn spec_auto_tasks_schema_requires_status() {
+        let value = json!({
+            "command": "spec-ops-tasks",
+            "specId": "SPEC-OPS-004",
+            "sessionId": "sess",
+            "timestamp": "2025-09-27T00:00:00Z",
+            "artifacts": [{ "path": "tasks.log" }],
+            "tool": {}
+        });
+        let failures = super::validate_guardrail_schema(SpecStage::Tasks, &value);
+        assert!(failures.iter().any(|msg| msg.contains("tool.status")));
+    }
+
+    #[test]
+    fn spec_auto_implement_schema_requires_lock_and_hook() {
+        let value = json!({
+            "command": "spec-ops-implement",
+            "specId": "SPEC-OPS-004",
+            "sessionId": "sess",
+            "timestamp": "2025-09-27T00:00:00Z",
+            "artifacts": [{ "path": "implement.log" }]
+        });
+        let failures = super::validate_guardrail_schema(SpecStage::Implement, &value);
+        assert!(failures.iter().any(|msg| msg.contains("lock_status")));
+        assert!(failures.iter().any(|msg| msg.contains("hook_status")));
+    }
+
+    #[test]
+    fn spec_auto_validate_schema_detects_bad_scenarios() {
+        let value = json!({
+            "command": "spec-ops-validate",
+            "specId": "SPEC-OPS-004",
+            "sessionId": "sess",
+            "timestamp": "2025-09-27T00:00:00Z",
+            "scenarios": []
+        });
+        let failures = super::validate_guardrail_schema(SpecStage::Validate, &value);
+        assert!(failures.iter().any(|msg| msg.contains("Scenarios")));
+    }
+
+    #[test]
+    fn spec_auto_validate_schema_allows_hal_summary() {
+        let value = json!({
+            "command": "spec-ops-validate",
+            "specId": "SPEC-OPS-018",
+            "sessionId": "sess",
+            "timestamp": "2025-09-29T12:33:03Z",
+            "scenarios": [
+                { "name": "validate guardrail bootstrap", "status": "failed" }
+            ],
+            "hal": {
+                "summary": {
+                    "status": "failed",
+                    "failed_checks": ["graphql_ping"],
+                    "artifacts": ["docs/evidence/hal-graphql_ping.json"]
+                }
+            }
+        });
+        let failures = super::validate_guardrail_schema(SpecStage::Validate, &value);
+        assert!(failures.is_empty(), "unexpected failures: {failures:?}");
+    }
+
+    #[test]
+    fn spec_auto_validate_schema_rejects_invalid_hal_status() {
+        let value = json!({
+            "command": "spec-ops-validate",
+            "specId": "SPEC-OPS-018",
+            "sessionId": "sess",
+            "timestamp": "2025-09-29T12:33:03Z",
+            "scenarios": [
+                { "name": "validate guardrail bootstrap", "status": "passed" }
+            ],
+            "hal": {
+                "summary": {
+                    "status": "unknown"
+                }
+            }
+        });
+        let failures = super::validate_guardrail_schema(SpecStage::Validate, &value);
+        assert!(
+            failures
+                .iter()
+                .any(|msg| msg.contains("hal.summary.status")),
+            "expected hal summary status failure, got {failures:?}"
+        );
+    }
+
+    #[test]
+    fn spec_auto_unlock_schema_requires_status() {
+        let value = json!({
+            "command": "spec-ops-unlock",
+            "specId": "SPEC-OPS-004",
+            "sessionId": "sess",
+            "timestamp": "2025-09-27T00:00:00Z",
+            "artifacts": [{ "path": "unlock.log" }]
+        });
+        let failures = super::validate_guardrail_schema(SpecStage::Unlock, &value);
+        assert!(failures.iter().any(|msg| msg.contains("unlock_status")));
+    }
+
+    #[test]
+    fn spec_auto_audit_schema_rejects_invalid_status_values() {
+        let value = json!({
+            "command": "spec-ops-audit",
+            "specId": "SPEC-OPS-004",
+            "sessionId": "sess",
+            "timestamp": "2025-09-27T00:00:00Z",
+            "scenarios": [
+                { "name": "audit", "status": "unknown" }
+            ]
+        });
+        let failures = super::validate_guardrail_schema(SpecStage::Audit, &value);
+        assert!(failures.iter().any(|msg| msg.contains("Scenario status")));
+    }
+
+    #[test]
+    fn spec_auto_plan_schema_validation_accepts_valid_payload() {
+        let value = json!({
+            "command": "spec-ops-plan",
+            "specId": "SPEC-OPS-004",
+            "sessionId": "sess",
+            "timestamp": "2025-09-27T00:00:00Z",
+            "artifacts": [{ "path": "plan.log" }],
+            "baseline": { "mode": "no-run", "artifact": "docs/baseline.md", "status": "passed" },
+            "hooks": { "session.start": "ok" }
+        });
+        let failures = super::validate_guardrail_schema(SpecStage::Plan, &value);
+        assert!(failures.is_empty(), "unexpected failures: {failures:?}");
+    }
+
+    #[test]
+    fn spec_auto_implement_schema_accepts_valid_payload() {
+        let value = json!({
+            "command": "spec-ops-implement",
+            "specId": "SPEC-OPS-004",
+            "sessionId": "sess",
+            "timestamp": "2025-09-27T00:00:00Z",
+            "artifacts": [{ "path": "implement.log" }],
+            "lock_status": "locked",
+            "hook_status": "ok"
+        });
+        let failures = super::validate_guardrail_schema(SpecStage::Implement, &value);
+        assert!(failures.is_empty(), "unexpected failures: {failures:?}");
+    }
+
+    #[test]
+    fn spec_auto_unlock_schema_accepts_valid_payload() {
+        let value = json!({
+            "command": "spec-ops-unlock",
+            "specId": "SPEC-OPS-004",
+            "sessionId": "sess",
+            "timestamp": "2025-09-27T00:00:00Z",
+            "artifacts": [{ "path": "unlock.log" }],
+            "unlock_status": "unlocked"
+        });
+        let failures = super::validate_guardrail_schema(SpecStage::Unlock, &value);
+        assert!(failures.is_empty(), "unexpected failures: {failures:?}");
+    }
+
+    #[test]
+    fn evaluate_guardrail_highlights_hal_failures() {
+        let value = json!({
+            "scenarios": [
+                { "name": "validate guardrail bootstrap", "status": "failed" }
+            ],
+            "hal": {
+                "summary": {
+                    "status": "failed",
+                    "failed_checks": ["graphql_ping", "list_movies"],
+                    "artifacts": ["docs/logs/hal-graphql.json"]
+                }
+            }
+        });
+
+        let evaluation = super::evaluate_guardrail_value(SpecStage::Validate, &value);
+        assert!(!evaluation.success);
+        assert!(evaluation.summary.contains("HAL failed"));
+        assert!(
+            evaluation
+                .failures
+                .iter()
+                .any(|msg| msg.contains("HAL failed checks"))
+        );
+    }
 
     fn test_config() -> Config {
+        test_config_with_cwd(std::env::temp_dir().as_path())
+    }
+
+    fn test_config_with_cwd(cwd: &std::path::Path) -> Config {
+        let mut overrides = ConfigOverrides::default();
+        overrides.cwd = Some(cwd.to_path_buf());
         codex_core::config::Config::load_from_base_config_with_overrides(
             ConfigToml::default(),
-            ConfigOverrides::default(),
-            std::env::temp_dir(),
+            overrides,
+            cwd.to_path_buf(),
         )
         .expect("cfg")
     }
 
     fn make_widget() -> ChatWidget<'static> {
+        make_widget_with_dir(std::env::temp_dir().as_path())
+    }
+
+    fn make_widget_with_dir(cwd: &Path) -> ChatWidget<'static> {
         let (tx_raw, _rx) = std::sync::mpsc::channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
-        let cfg = test_config();
+        let cfg = test_config_with_cwd(cwd);
         let term = crate::tui::TerminalInfo {
             picker: None,
             font_size: (8, 16),
@@ -15195,12 +17388,8 @@ mod tests {
     fn terminal_overlay_sanitizes_terminal_output() {
         use std::time::Duration;
 
-        let mut overlay = TerminalOverlay::new(
-            42,
-            "Test".to_string(),
-            "$ example".to_string(),
-            false,
-        );
+        let mut overlay =
+            TerminalOverlay::new(42, "Test".to_string(), "$ example".to_string(), false);
 
         overlay.append_chunk(b"col1\tcol2\tcol3\n", false);
         overlay.append_chunk(b"\x1b]0;ignored title\x07\n", false);
@@ -15219,11 +17408,15 @@ mod tests {
                 .collect();
 
             assert!(
-                !text.chars().any(|ch| (ch < ' ' && ch != ' ')),
+                !text.chars().any(|ch| ch < ' ' && ch != ' '),
                 "line still has control characters: {:?}",
                 text
             );
-            assert!(!text.contains('\t'), "line still contains a tab: {:?}", text);
+            assert!(
+                !text.contains('\t'),
+                "line still contains a tab: {:?}",
+                text
+            );
             assert!(
                 !text.contains('\u{001B}'),
                 "line still includes a raw escape sequence: {:?}",
@@ -15264,8 +17457,469 @@ mod tests {
             }
         }
 
-        assert!(saw_colored_stdout, "expected ANSI-colored stdout to be preserved");
-        assert!(saw_tinted_stderr, "expected stderr output to retain warning tint");
+        assert!(
+            saw_colored_stdout,
+            "expected ANSI-colored stdout to be preserved"
+        );
+        assert!(
+            saw_tinted_stderr,
+            "expected stderr output to retain warning tint"
+        );
+    }
+
+    #[test]
+    fn spec_auto_evidence_requires_artifact_entries() {
+        let temp = tempdir().expect("tempdir");
+        let telemetry = json!({ "artifacts": [] });
+        let (failures, count) =
+            validate_guardrail_evidence(temp.path(), SpecStage::Plan, &telemetry);
+        assert_eq!(count, 0);
+        assert!(
+            failures
+                .iter()
+                .any(|msg| msg.contains("artifacts array is empty"))
+        );
+    }
+
+    #[test]
+    fn spec_auto_evidence_validates_missing_files() {
+        let temp = tempdir().expect("tempdir");
+        let telemetry = json!({ "artifacts": [ { "path": "evidence/missing.log" } ] });
+        let (failures, count) =
+            validate_guardrail_evidence(temp.path(), SpecStage::Implement, &telemetry);
+        assert_eq!(count, 0);
+        assert!(
+            failures
+                .iter()
+                .any(|msg| msg.contains("evidence/missing.log"))
+        );
+    }
+
+    #[test]
+    fn spec_auto_evidence_accepts_present_files() {
+        let temp = tempdir().expect("tempdir");
+        let evidence_rel = std::path::Path::new("evidence/good.json");
+        let evidence_abs = temp.path().join(evidence_rel);
+        std::fs::create_dir_all(evidence_abs.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&evidence_abs, "{} ").expect("write");
+
+        let telemetry = json!({
+            "artifacts": [ { "path": evidence_rel.to_string_lossy() } ]
+        });
+        let (failures, count) =
+            validate_guardrail_evidence(temp.path(), SpecStage::Tasks, &telemetry);
+        assert!(failures.is_empty());
+        assert_eq!(count, 1);
+    }
+
+    static LM_MOCK_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+    static TELEMETRY_ENV_GUARD: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+    struct LocalMemoryMock {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        dir: tempfile::TempDir,
+        prev_path: Option<String>,
+        prev_search: Option<String>,
+        prev_remember: Option<String>,
+        remember_log: PathBuf,
+    }
+
+    impl LocalMemoryMock {
+        fn new(response: serde_json::Value) -> Self {
+            let guard = LM_MOCK_LOCK.lock().unwrap();
+            let dir = tempdir().expect("mock dir");
+            let script_path = dir.path().join("local-memory");
+            let mut script = File::create(&script_path).expect("mock script");
+            script
+                .write_all(
+                    b"#!/usr/bin/env bash\nset -euo pipefail\ncmd=\"$1\"\nshift || true\ncase \"$cmd\" in\n  search)\n    cat \"$LM_MOCK_SEARCH\"\n    ;;\n  remember)\n    printf '%s\\n' \"$*\" >> \"$LM_MOCK_REMEMBER_LOG\"\n    ;;\n  *)\n    echo 'unsupported local-memory mock command' >&2\n    exit 1\n    ;;\nesac\n",
+                )
+                .expect("write mock");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755))
+                    .expect("chmod mock");
+            }
+
+            let search_path = dir.path().join("search.json");
+            fs::write(
+                &search_path,
+                serde_json::to_vec(&response).expect("serialize response"),
+            )
+            .expect("write response");
+
+            let remember_log = dir.path().join("remember.log");
+
+            let prev_path = std::env::var("PATH").ok();
+            let new_path = match &prev_path {
+                Some(old) => format!("{}:{}", dir.path().display(), old),
+                None => dir.path().display().to_string(),
+            };
+            unsafe {
+                std::env::set_var("PATH", new_path);
+            }
+
+            let prev_search = std::env::var("LM_MOCK_SEARCH").ok();
+            unsafe {
+                std::env::set_var("LM_MOCK_SEARCH", search_path.to_string_lossy().as_ref());
+            }
+
+            let prev_remember = std::env::var("LM_MOCK_REMEMBER_LOG").ok();
+            unsafe {
+                std::env::set_var(
+                    "LM_MOCK_REMEMBER_LOG",
+                    remember_log.to_string_lossy().as_ref(),
+                );
+            }
+
+            Self {
+                _guard: guard,
+                dir,
+                prev_path,
+                prev_search,
+                prev_remember,
+                remember_log,
+            }
+        }
+
+        fn remember_log(&self) -> &Path {
+            &self.remember_log
+        }
+    }
+
+    impl Drop for LocalMemoryMock {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some(prev) = &self.prev_path {
+                    std::env::set_var("PATH", prev);
+                } else {
+                    std::env::remove_var("PATH");
+                }
+                if let Some(prev) = &self.prev_search {
+                    std::env::set_var("LM_MOCK_SEARCH", prev);
+                } else {
+                    std::env::remove_var("LM_MOCK_SEARCH");
+                }
+                if let Some(prev) = &self.prev_remember {
+                    std::env::set_var("LM_MOCK_REMEMBER_LOG", prev);
+                } else {
+                    std::env::remove_var("LM_MOCK_REMEMBER_LOG");
+                }
+            }
+        }
+    }
+
+    fn consensus_fixture(agent: &str, spec_id: &str) -> serde_json::Value {
+        json!({
+            "spec_id": spec_id,
+            "stage": "spec-plan",
+            "agent": agent,
+            "prompt_version": "20251002-plan-a",
+            "model": match agent {
+                "gemini" => "gemini-2.5-pro",
+                "claude" => "claude-4.5-sonnet",
+                "gpt_codex" => "gpt-5-codex",
+                _ => "gpt-5",
+            },
+            "model_release": match agent {
+                "claude" => "2025-09-29",
+                "gpt_codex" => "2025-09-29",
+                _ => "2025-08-06",
+            },
+            "reasoning_mode": match agent {
+                "gemini" => "thinking",
+                "gpt_pro" => "high",
+                _ => "auto",
+            },
+            "final_plan": {
+                "work_breakdown": [ { "step": "Do the thing" } ]
+            },
+            "consensus": {
+                "agreements": ["Aligned"],
+                "conflicts": []
+            }
+        })
+    }
+
+    fn flatten_lines(lines: &[ratatui::text::Line<'static>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_spec_consensus_writes_verdict_and_local_memory() {
+        let spec_id = "SPEC-321";
+        let response = json!({
+            "success": true,
+            "data": {
+                "results": [
+                    { "memory": { "id": "agg-1", "content": serde_json::to_string(&consensus_fixture("gpt_pro", spec_id)).unwrap() } },
+                    { "memory": { "id": "gem-1", "content": serde_json::to_string(&consensus_fixture("gemini", spec_id)).unwrap() } },
+                    { "memory": { "id": "cl-1", "content": serde_json::to_string(&consensus_fixture("claude", spec_id)).unwrap() } }
+                ]
+            }
+        });
+        let mock = LocalMemoryMock::new(response);
+        let workspace = tempdir().expect("workspace");
+        let mut chat = make_widget_with_dir(workspace.path());
+
+        let (lines, ok) = chat
+            .run_spec_consensus(spec_id, SpecStage::Plan)
+            .expect("consensus success");
+        assert!(ok);
+
+        let text_lines = flatten_lines(&lines);
+        assert!(text_lines.iter().any(|l| l.contains("CONSENSUS OK")));
+        assert!(
+            text_lines
+                .iter()
+                .any(|l| l.contains("Prompt version: 20251002-plan-a"))
+        );
+        assert!(text_lines.iter().any(|l| l.contains("Evidence:")));
+
+        let verdict_dir = workspace
+            .path()
+            .join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus")
+            .join(spec_id);
+        let entries = fs::read_dir(&verdict_dir)
+            .expect("verdict dir")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("entries");
+        let verdict_path = entries
+            .iter()
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .map(|name| name.ends_with("-spec-plan.json"))
+                    .unwrap_or(false)
+            })
+            .expect("consensus verdict file");
+        let verdict_json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&verdict_path).expect("read verdict"))
+                .expect("verdict json");
+        assert_eq!(verdict_json["consensus_ok"], json!(true));
+        assert_eq!(verdict_json["prompt_version"], json!("20251002-plan-a"));
+        assert_eq!(verdict_json["aggregator_agent"], json!("gpt_pro"));
+        assert_eq!(verdict_json["aggregator_version"], json!("20251002-plan-a"));
+        assert!(verdict_json["aggregator"].is_object());
+
+        let artifacts = verdict_json["artifacts"]
+            .as_array()
+            .expect("artifacts array");
+        let aggregator = artifacts
+            .iter()
+            .find(|item| item["agent"] == json!("gpt_pro"))
+            .expect("aggregator artifact");
+        assert_eq!(aggregator["content"]["model"], json!("gpt-5"));
+        assert_eq!(aggregator["content"]["reasoning_mode"], json!("high"));
+
+        let remember_log = fs::read_to_string(mock.remember_log()).expect("remember log");
+        assert!(
+            remember_log
+                .lines()
+                .any(|line| line.contains("\"promptVersion\":\"20251002-plan-a\"")),
+            "expected local-memory remember to record promptVersion"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_spec_consensus_reports_missing_agents() {
+        let spec_id = "SPEC-654";
+        let response = json!({
+            "success": true,
+            "data": {
+                "results": [
+                    { "memory": { "id": "agg-2", "content": serde_json::to_string(&consensus_fixture("gpt_pro", spec_id)).unwrap() } },
+                    { "memory": { "id": "gem-2", "content": serde_json::to_string(&consensus_fixture("gemini", spec_id)).unwrap() } }
+                ]
+            }
+        });
+        let _mock = LocalMemoryMock::new(response);
+        let workspace = tempdir().expect("workspace");
+        let mut chat = make_widget_with_dir(workspace.path());
+
+        let (lines, ok) = chat
+            .run_spec_consensus(spec_id, SpecStage::Plan)
+            .expect("consensus run");
+        assert!(!ok);
+
+        let text_lines = flatten_lines(&lines);
+        assert!(text_lines.iter().any(|l| l.contains("CONSENSUS DEGRADED")));
+        assert!(
+            text_lines
+                .iter()
+                .any(|l| l.contains("Missing agents: claude"))
+        );
+
+        let verdict_dir = workspace
+            .path()
+            .join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus")
+            .join(spec_id);
+        let entries = fs::read_dir(&verdict_dir)
+            .expect("verdict dir")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("entries");
+        let verdict_path = entries
+            .iter()
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .map(|name| name.ends_with("-spec-plan.json"))
+                    .unwrap_or(false)
+            })
+            .expect("consensus verdict file");
+        let verdict_json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&verdict_path).expect("read verdict"))
+                .expect("verdict json");
+        assert_eq!(verdict_json["consensus_ok"], json!(false));
+        assert_eq!(verdict_json["prompt_version"], json!("20251002-plan-a"));
+        assert_eq!(verdict_json["missing_agents"], json!(["claude"]));
+        assert_eq!(verdict_json["aggregator_agent"], json!("gpt_pro"));
+        let artifacts = verdict_json["artifacts"].as_array().expect("artifacts");
+        assert_eq!(artifacts.len(), 2);
+        let agent_set: std::collections::HashSet<String> = artifacts
+            .iter()
+            .map(|item| item["agent"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            agent_set,
+            std::collections::HashSet::from(["gpt_pro".to_string(), "gemini".to_string()])
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_spec_consensus_persists_telemetry_bundle_when_enabled() {
+        let _env_guard = TELEMETRY_ENV_GUARD.lock().unwrap();
+        let previous = std::env::var("SPEC_KIT_TELEMETRY_ENABLED").ok();
+        unsafe {
+            std::env::set_var("SPEC_KIT_TELEMETRY_ENABLED", "1");
+        }
+
+        let spec_id = "SPEC-777";
+        let response = json!({
+            "success": true,
+            "data": {
+                "results": [
+                    { "memory": { "id": "agg-3", "content": serde_json::to_string(&consensus_fixture("gpt_pro", spec_id)).unwrap() } },
+                    { "memory": { "id": "gem-3", "content": serde_json::to_string(&consensus_fixture("gemini", spec_id)).unwrap() } },
+                    { "memory": { "id": "cl-3", "content": serde_json::to_string(&consensus_fixture("claude", spec_id)).unwrap() } }
+                ]
+            }
+        });
+        let mock = LocalMemoryMock::new(response);
+        let workspace = tempdir().expect("workspace");
+        let mut chat = make_widget_with_dir(workspace.path());
+
+        let (lines, ok) = chat
+            .run_spec_consensus(spec_id, SpecStage::Plan)
+            .expect("consensus run");
+        assert!(ok);
+
+        let evidence_dir = workspace
+            .path()
+            .join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus")
+            .join(spec_id);
+        let mut agent_paths: Vec<PathBuf> = Vec::new();
+        let mut telemetry_path: Option<PathBuf> = None;
+        let mut synthesis_path: Option<PathBuf> = None;
+
+        for entry in fs::read_dir(&evidence_dir).expect("evidence dir") {
+            let path = entry.expect("entry").path();
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if name.starts_with("spec-plan_")
+                && name.ends_with(".json")
+                && !name.ends_with("_synthesis.json")
+            {
+                agent_paths.push(path.clone());
+            } else if name.ends_with("_telemetry.jsonl") {
+                telemetry_path = Some(path.clone());
+            } else if name.ends_with("_synthesis.json") {
+                synthesis_path = Some(path.clone());
+            }
+        }
+
+        assert!(
+            !agent_paths.is_empty(),
+            "expected per-agent consensus artifacts to be persisted"
+        );
+
+        let telemetry_path = telemetry_path.expect("telemetry jsonl present");
+        let telemetry_line = fs::read_to_string(&telemetry_path).expect("read telemetry");
+        let first_line = telemetry_line.lines().next().expect("telemetry line");
+        let telemetry_json: serde_json::Value =
+            serde_json::from_str(first_line).expect("telemetry json");
+        assert_eq!(telemetry_json["schemaVersion"].as_str(), Some("2.0"));
+        assert_eq!(telemetry_json["command"].as_str(), Some("spec-plan"));
+        assert_eq!(telemetry_json["consensus"]["status"].as_str(), Some("ok"));
+
+        let synthesis_path = synthesis_path.expect("synthesis json present");
+        assert!(synthesis_path.is_file());
+
+        let flattened = flatten_lines(&lines);
+        assert!(
+            flattened.iter().any(|l| l.contains("Telemetry log")),
+            "expected telemetry log message in history"
+        );
+        assert!(
+            flattened.iter().any(|l| l.contains("Synthesis bundle")),
+            "expected synthesis bundle message in history"
+        );
+
+        drop(mock);
+        if let Some(value) = previous {
+            unsafe {
+                std::env::set_var("SPEC_KIT_TELEMETRY_ENABLED", value);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("SPEC_KIT_TELEMETRY_ENABLED");
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn spec_kit_telemetry_enabled_uses_shell_policy_override() {
+        let _env_guard = TELEMETRY_ENV_GUARD.lock().unwrap();
+        let previous = std::env::var("SPEC_KIT_TELEMETRY_ENABLED").ok();
+        unsafe {
+            std::env::remove_var("SPEC_KIT_TELEMETRY_ENABLED");
+        }
+
+        let workspace = tempdir().expect("workspace");
+        let mut chat = make_widget_with_dir(workspace.path());
+        assert!(
+            !chat.spec_kit_telemetry_enabled(),
+            "telemetry should be disabled without env or policy override"
+        );
+
+        chat.config
+            .shell_environment_policy
+            .r#set
+            .insert("SPEC_KIT_TELEMETRY_ENABLED".to_string(), "1".to_string());
+        assert!(
+            chat.spec_kit_telemetry_enabled(),
+            "shell policy override should enable telemetry"
+        );
+
+        if let Some(value) = previous {
+            unsafe {
+                std::env::set_var("SPEC_KIT_TELEMETRY_ENABLED", value);
+            }
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -15919,8 +18573,14 @@ impl ChatWidget<'_> {
             .borders(Borders::ALL)
             .title(RLine::from(vec![
                 Span::styled(" Pro activity ", Style::default().fg(crate::colors::text())),
-                Span::styled("— Esc close  ", Style::default().fg(crate::colors::text_dim())),
-                Span::styled("Ctrl+P overlay  ", Style::default().fg(crate::colors::text_dim())),
+                Span::styled(
+                    "— Esc close  ",
+                    Style::default().fg(crate::colors::text_dim()),
+                ),
+                Span::styled(
+                    "Ctrl+P overlay  ",
+                    Style::default().fg(crate::colors::text_dim()),
+                ),
                 Span::styled("↑↓ scroll", Style::default().fg(crate::colors::text_dim())),
             ]))
             .style(Style::default().bg(crate::colors::background()))
@@ -16018,9 +18678,10 @@ impl ChatWidget<'_> {
         Clear.render(overlay_area, buf);
 
         let dim_style = Style::default().fg(crate::colors::text_dim());
-        let mut title_spans: Vec<Span<'static>> = vec![
-            Span::styled(" Rate limits ", Style::default().fg(crate::colors::text())),
-        ];
+        let mut title_spans: Vec<Span<'static>> = vec![Span::styled(
+            " Rate limits ",
+            Style::default().fg(crate::colors::text()),
+        )];
         if tab_count > 1 {
             title_spans.extend_from_slice(&[
                 Span::styled("——— ", dim_style),
@@ -16244,10 +18905,7 @@ impl ChatWidget<'_> {
             return Ok(ProAction::Status);
         }
         let mut parts = trimmed.split_whitespace();
-        let first = parts
-            .next()
-            .unwrap_or("")
-            .to_ascii_lowercase();
+        let first = parts.next().unwrap_or("").to_ascii_lowercase();
         let ensure_no_extra = |iter: &mut dyn Iterator<Item = &str>| {
             if iter.next().is_some() {
                 Err("Too many arguments for /pro [auto] command".to_string())
@@ -16461,7 +19119,8 @@ impl ChatWidget<'_> {
 
         let padding = 1u16;
         let footer_reserved = bottom_pane_area.height.min(1);
-        let overlay_bottom = (bottom_pane_area.y + bottom_pane_area.height).saturating_sub(footer_reserved);
+        let overlay_bottom =
+            (bottom_pane_area.y + bottom_pane_area.height).saturating_sub(footer_reserved);
         let overlay_height = overlay_bottom
             .saturating_sub(history_area.y)
             .max(1)
@@ -16477,7 +19136,10 @@ impl ChatWidget<'_> {
 
         let title_spans = vec![
             Span::styled(" Agents ", Style::default().fg(crate::colors::text())),
-            Span::styled("— Ctrl+A to close", Style::default().fg(crate::colors::text_dim())),
+            Span::styled(
+                "— Ctrl+A to close",
+                Style::default().fg(crate::colors::text_dim()),
+            ),
         ];
 
         let block = Block::default()
@@ -16523,7 +19185,9 @@ impl ChatWidget<'_> {
         let sidebar_width = if body_area.width <= sidebar_target + 12 {
             (body_area.width.saturating_mul(35) / 100).clamp(16, body_area.width)
         } else {
-            sidebar_target.min(body_area.width.saturating_sub(12)).max(16)
+            sidebar_target
+                .min(body_area.width.saturating_sub(12))
+                .max(16)
         };
 
         let constraints = if body_area.width <= sidebar_width {
@@ -16593,7 +19257,10 @@ impl ChatWidget<'_> {
                         let spans = vec![
                             Span::raw(" "),
                             Span::styled("• ", Style::default().fg(status_color)),
-                            Span::styled(entry.name.clone(), Style::default().fg(crate::colors::text())),
+                            Span::styled(
+                                entry.name.clone(),
+                                Style::default().fg(crate::colors::text()),
+                            ),
                         ];
                         items.push(ListItem::new(Line::from(spans)));
                         display_ids.push(Some(id));
@@ -16648,7 +19315,11 @@ impl ChatWidget<'_> {
             .highlight_symbol("➤ ");
         ratatui::widgets::StatefulWidget::render(sidebar, chunks[0], buf, &mut list_state);
 
-        let right_area = if chunks.len() > 1 { chunks[1] } else { chunks[0] };
+        let right_area = if chunks.len() > 1 {
+            chunks[1]
+        } else {
+            chunks[0]
+        };
         let mut lines: Vec<Line> = Vec::new();
 
         if let Some(agent_id) = self.agents_terminal.current_agent_id() {
@@ -16716,9 +19387,7 @@ impl ChatWidget<'_> {
                         let timestamp = log.timestamp.format("%H:%M:%S");
                         let label = agent_log_label(log.kind);
                         let color = agent_log_color(log.kind);
-                        let label_style = Style::default()
-                            .fg(color)
-                            .add_modifier(Modifier::BOLD);
+                        let label_style = Style::default().fg(color).add_modifier(Modifier::BOLD);
 
                         match log.kind {
                             AgentLogKind::Result => {
@@ -16799,7 +19468,9 @@ impl ChatWidget<'_> {
         let viewport_height = right_area.height.max(1);
         let total_lines = lines.len() as u16;
         let max_scroll = total_lines.saturating_sub(viewport_height);
-        self.layout.last_history_viewport_height.set(viewport_height);
+        self.layout
+            .last_history_viewport_height
+            .set(viewport_height);
         self.layout.last_max_scroll.set(max_scroll);
 
         let detail_has_focus = self.agents_terminal.focus() == AgentsTerminalFocus::Detail;
@@ -16822,15 +19493,30 @@ impl ChatWidget<'_> {
         if hint_height == 1 {
             let hint_line = Line::from(vec![
                 Span::styled("↑/↓", Style::default().fg(crate::colors::function())),
-                Span::styled(" Navigate/Scroll  ", Style::default().fg(crate::colors::text_dim())),
+                Span::styled(
+                    " Navigate/Scroll  ",
+                    Style::default().fg(crate::colors::text_dim()),
+                ),
                 Span::styled("→/Enter", Style::default().fg(crate::colors::function())),
-                Span::styled(" Focus output  ", Style::default().fg(crate::colors::text_dim())),
+                Span::styled(
+                    " Focus output  ",
+                    Style::default().fg(crate::colors::text_dim()),
+                ),
                 Span::styled("←", Style::default().fg(crate::colors::function())),
-                Span::styled(" Back to list  ", Style::default().fg(crate::colors::text_dim())),
+                Span::styled(
+                    " Back to list  ",
+                    Style::default().fg(crate::colors::text_dim()),
+                ),
                 Span::styled("Tab", Style::default().fg(crate::colors::function())),
-                Span::styled(" Next agent  ", Style::default().fg(crate::colors::text_dim())),
+                Span::styled(
+                    " Next agent  ",
+                    Style::default().fg(crate::colors::text_dim()),
+                ),
                 Span::styled("PgUp/PgDn", Style::default().fg(crate::colors::function())),
-                Span::styled(" Page scroll  ", Style::default().fg(crate::colors::text_dim())),
+                Span::styled(
+                    " Page scroll  ",
+                    Style::default().fg(crate::colors::text_dim()),
+                ),
                 Span::styled("Esc", Style::default().fg(crate::colors::error())),
                 Span::styled(" Exit", Style::default().fg(crate::colors::text_dim())),
             ]);
@@ -17096,14 +19782,12 @@ impl ChatWidget<'_> {
 
                 let mut line_spans: Vec<Span> = Vec::new();
                 line_spans.push(Span::from(" "));
-                line_spans.push(
-                    Span::styled(
-                        format!("{}", agent.name),
-                        Style::default()
-                            .fg(crate::colors::text())
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                );
+                line_spans.push(Span::styled(
+                    format!("{}", agent.name),
+                    Style::default()
+                        .fg(crate::colors::text())
+                        .add_modifier(Modifier::BOLD),
+                ));
                 if let Some(ref model) = agent.model {
                     if !model.is_empty() {
                         line_spans.push(Span::styled(
@@ -17126,10 +19810,7 @@ impl ChatWidget<'_> {
                         }
                         text_content.push(RLine::from(vec![
                             Span::from("   "),
-                            Span::styled(
-                                lp_trim,
-                                Style::default().fg(crate::colors::text_dim()),
-                            ),
+                            Span::styled(lp_trim, Style::default().fg(crate::colors::text_dim())),
                         ]));
                     }
                 }
@@ -17385,8 +20066,7 @@ impl WidgetRef for &ChatWidget<'_> {
 
         let mut assistant_layouts: Vec<Option<crate::history_cell::AssistantLayoutCache>> =
             vec![None; all_content.len()];
-        let mut default_layouts: Vec<Option<Rc<CachedLayout>>> =
-            vec![None; all_content.len()];
+        let mut default_layouts: Vec<Option<Rc<CachedLayout>>> = vec![None; all_content.len()];
 
         // Append any queued user messages as sticky preview cells at the very
         // end so they always render at the bottom until they are dispatched.
@@ -17455,9 +20135,8 @@ impl WidgetRef for &ChatWidget<'_> {
                     .as_any()
                     .downcast_ref::<crate::history_cell::StreamingContentCell>()
                     .is_some();
-                let can_use_layout_cache = !item.has_custom_render()
-                    && !item.is_animating()
-                    && !is_streaming;
+                let can_use_layout_cache =
+                    !item.has_custom_render() && !item.is_animating() && !is_streaming;
 
                 let h = if let Some(assistant) = maybe_assistant {
                     if perf_enabled {
@@ -17500,9 +20179,7 @@ impl WidgetRef for &ChatWidget<'_> {
                             );
                         }
                     }
-                    let height = layout_ref
-                        .line_count()
-                        .min(u16::MAX as usize) as u16;
+                    let height = layout_ref.line_count().min(u16::MAX as usize) as u16;
                     default_layouts[idx] = Some(layout_ref.layout());
                     height
                 } else {
@@ -17564,9 +20241,7 @@ impl WidgetRef for &ChatWidget<'_> {
             self.history_render
                 .last_prefix_width
                 .set(content_area.width);
-            self.history_render
-                .last_prefix_count
-                .set(all_content.len());
+            self.history_render.last_prefix_count.set(all_content.len());
             self.history_render.prefix_valid.set(true);
             total
         } else {
@@ -17749,9 +20424,7 @@ impl WidgetRef for &ChatWidget<'_> {
                     }
                 }
                 layout_for_render = Some(layout_ref.layout());
-                layout_ref
-                    .line_count()
-                    .min(u16::MAX as usize) as u16
+                layout_ref.line_count().min(u16::MAX as usize) as u16
             } else {
                 if self.perf_state.enabled {
                     let mut p = self.perf_state.stats.borrow_mut();
@@ -17830,10 +20503,7 @@ impl WidgetRef for &ChatWidget<'_> {
 
                 if history_cell_logging_enabled() {
                     let row_start = item_area.y;
-                    let row_end = item_area
-                        .y
-                        .saturating_add(visible_height)
-                        .saturating_sub(1);
+                    let row_end = item_area.y.saturating_add(visible_height).saturating_sub(1);
                     let cache_hit = layout_for_render.is_some();
                     tracing::info!(
                         target: "codex_tui::history_cells",
@@ -17884,7 +20554,8 @@ impl WidgetRef for &ChatWidget<'_> {
                         tint_x = content_area.x.saturating_sub(1);
                         tint_width = tint_width.saturating_add(1);
                     }
-                    let tint_rect = Rect::new(tint_x, gutter_area.y, tint_width, gutter_area.height);
+                    let tint_rect =
+                        Rect::new(tint_x, gutter_area.y, tint_width, gutter_area.height);
                     fill_rect(buf, tint_rect, Some(' '), style);
                     // Also tint one column immediately to the right of the content area
                     // so the assistant block is visually bookended. This column lives in the
@@ -18237,8 +20908,8 @@ impl WidgetRef for &ChatWidget<'_> {
 
             let padding = 1u16;
             let footer_reserved = 1.min(bottom_pane_area.height);
-            let overlay_bottom = (bottom_pane_area.y + bottom_pane_area.height)
-                .saturating_sub(footer_reserved);
+            let overlay_bottom =
+                (bottom_pane_area.y + bottom_pane_area.height).saturating_sub(footer_reserved);
             let overlay_height = overlay_bottom
                 .saturating_sub(history_area.y)
                 .max(1)
@@ -18500,12 +21171,13 @@ impl WidgetRef for &ChatWidget<'_> {
                         " Scroll  ",
                         Style::default().fg(crate::colors::text_dim()),
                     ),
+                    ratatui::text::Span::styled("Esc", Style::default().fg(crate::colors::error())),
                     ratatui::text::Span::styled(
-                        "Esc",
-                        Style::default().fg(crate::colors::error()),
-                    ),
-                    ratatui::text::Span::styled(
-                        if overlay.running { " Cancel  " } else { " Close  " },
+                        if overlay.running {
+                            " Cancel  "
+                        } else {
+                            " Close  "
+                        },
                         Style::default().fg(crate::colors::text_dim()),
                     ),
                 ];
@@ -18540,7 +21212,9 @@ impl WidgetRef for &ChatWidget<'_> {
 
                 let instructions_area = Rect {
                     x: footer_area.x,
-                    y: footer_area.y.saturating_add(footer_area.height.saturating_sub(1)),
+                    y: footer_area
+                        .y
+                        .saturating_add(footer_area.height.saturating_sub(1)),
                     width: footer_area.width,
                     height: 1,
                 };
@@ -19387,8 +22061,7 @@ fn pending_command_box_lines(
     let padded_width = inner_width.saturating_sub(2).max(1) as usize;
     let command_width = inner_width.saturating_sub(4).max(1) as usize;
 
-    const INSTRUCTION_TEXT: &str =
-        "Press Enter to run this command. Press Esc to cancel.";
+    const INSTRUCTION_TEXT: &str = "Press Enter to run this command. Press Esc to cancel.";
     let instruction_segments = wrap(INSTRUCTION_TEXT, padded_width);
     let instruction_style = Style::default().fg(crate::colors::text_dim());
     let mut lines: Vec<RtLine<'static>> = instruction_segments
@@ -19411,7 +22084,9 @@ fn pending_command_box_lines(
         .fg(crate::colors::background());
 
     if !lines.is_empty() {
-        lines.push(ratatui::text::Line::from(vec![ratatui::text::Span::raw(String::new())]));
+        lines.push(ratatui::text::Line::from(vec![ratatui::text::Span::raw(
+            String::new(),
+        )]));
     }
 
     for (idx, line) in command_lines.iter().enumerate() {
@@ -19466,7 +22141,10 @@ fn command_line_index_for_cursor(lines: &[CommandDisplayLine], cursor: usize) ->
     lines.len().saturating_sub(1)
 }
 
-fn split_line_for_cursor(text: &str, cursor_offset: usize) -> (String, Option<String>, Option<String>) {
+fn split_line_for_cursor(
+    text: &str,
+    cursor_offset: usize,
+) -> (String, Option<String>, Option<String>) {
     if cursor_offset >= text.len() {
         return (text.to_string(), None, None);
     }

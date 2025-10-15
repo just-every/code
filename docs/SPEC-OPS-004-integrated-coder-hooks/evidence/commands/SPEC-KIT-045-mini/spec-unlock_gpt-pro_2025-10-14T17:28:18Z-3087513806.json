@@ -1,0 +1,18 @@
+{
+  "stage": "spec-unlock",
+  "prompt_version": "20251002-unlock-a",
+  "agent": "gpt_pro",
+  "model": "gpt-5",
+  "model_release": "2025-09",
+  "reasoning_mode": "executor",
+  "decision": "hold",
+  "steps": [
+    "Schedule clean policy-prefilter/final run",
+    "Optional live HAL validation",
+    "Re-run unlock after evidence captured"
+  ],
+  "consensus": {
+    "agreements": ["Hold unlock", "Policy overrides outstanding"],
+    "conflicts": []
+  }
+}

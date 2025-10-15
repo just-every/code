@@ -9,8 +9,8 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
-use ratatui::widgets::Paragraph;
 use ratatui::widgets::Clear;
+use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 
 use crate::app_event::AppEvent;
@@ -140,7 +140,11 @@ impl<'a> BottomPaneView<'a> for ChromeSelectionView {
             .borders(Borders::ALL)
             .title(" Chrome Launch Options ")
             .title_alignment(Alignment::Center)
-            .style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()))
+            .style(
+                Style::default()
+                    .bg(crate::colors::background())
+                    .fg(crate::colors::text()),
+            )
             .border_style(Style::default().fg(crate::colors::border()));
 
         let inner = block.inner(area);
@@ -211,9 +215,11 @@ impl<'a> BottomPaneView<'a> for ChromeSelectionView {
             width: inner.width.saturating_sub(1),
             height: inner.height,
         };
-        let paragraph = Paragraph::new(lines)
-            .alignment(Alignment::Left)
-            .style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()));
+        let paragraph = Paragraph::new(lines).alignment(Alignment::Left).style(
+            Style::default()
+                .bg(crate::colors::background())
+                .fg(crate::colors::text()),
+        );
         paragraph.render(padded, buf);
     }
 

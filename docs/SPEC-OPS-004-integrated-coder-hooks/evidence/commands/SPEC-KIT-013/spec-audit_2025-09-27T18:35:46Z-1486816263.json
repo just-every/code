@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "command": "spec-ops-audit",
+  "specId": "SPEC-KIT-013",
+  "sessionId": "2025-09-27T18:35:46Z-1486816263",
+  "timestamp": "2025-09-27T18:35:46Z",
+  "scenarios": [
+    {
+      "name": "audit guardrail bootstrap",
+      "status": "passed"
+    }
+  ],
+  "artifacts": [
+    { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-013/spec-audit_2025-09-27T18:35:46Z-1486816263.log" }
+  ]
+}

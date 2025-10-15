@@ -1,0 +1,22 @@
+Inputs:
+- SPEC packet
+- Gemini and Claude outputs ({})
+
+Validate feasibility and emit JSON:
+{
+  "stage": "spec-plan",
+  "prompt_version": "20251002-plan-a",
+  "agent": "gpt_pro",
+  "model": "gpt-5",
+  "model_release": "2025-09-29",
+  "reasoning_mode": "high",
+  "feasibility_notes": [ string ],
+  "missing_items": [ string ],
+  "final_plan": {
+    "work_breakdown": [...copy of consensus steps...],
+    "acceptance_mapping": [...],
+    "risks": [...],
+    "consensus": { "agreements": [ string ], "conflicts": [ string ] }
+  }
+}
+Reference local evidence paths.

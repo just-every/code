@@ -1,0 +1,157 @@
+{
+  "tools": [
+    {
+      "description": "Profiles a command/application to identify performance bottlenecks and CPU usage patterns.\n\nWHAT THIS DOES:\n1. Runs your command with CPU profiling enabled (999Hz sampling by default)\n2. Captures which functions consume CPU time during execution\n3. Analyzes the profile and returns a breakdown of CPU usage\n4. Shows top functions by CPU percentage with call counts\n\nWHEN TO USE:\n- Application is running slowly and you need to find bottlenecks\n- Need to optimize code by finding expensive functions\n- Want to understand CPU usage patterns\n\nEXAMPLE PARAMETERS:\n{\n  \"command\": \"python main.py --port 8080\",\n  \"cwd\": \"/home/user/myproject\"\n}\n\nThe tool will automatically detect the language/platform and use the appropriate profiler.",
+      "inputSchema": {
+        "properties": {
+          "command": {
+            "description": "REQUIRED: The exact command line to profile. Examples: \"python app.py\", \"node server.js\", \"java -jar app.jar\", \"./my-binary\". This must be the complete command as you would type it in a terminal. Do NOT include shell operators like &&, ||, or |. For commands with arguments, include them all in this single string (e.g., \"python main.py --port 8080\").",
+            "type": "string"
+          },
+          "cwd": {
+            "description": "REQUIRED: Absolute path to the working directory where the command should run (e.g., \"/home/user/myproject\"). This is typically your project root directory. The command will be executed with this as the current directory. Must be an absolute path starting with / (Linux/Mac) or a drive letter (Windows).",
+            "type": "string"
+          },
+          "enable_host_networking": {
+            "default": false,
+            "description": "OPTIONAL: Set to true if your application needs to connect to services on the host machine (default: false). Examples of when to enable: connecting to localhost database, accessing host APIs, inter-process communication. Only affects container mode. Requires Docker Desktop with host networking support.",
+            "type": "boolean"
+          },
+          "extra_profiler_args": {
+            "description": "OPTIONAL: Additional platform-specific profiler arguments as a single string (e.g., \"-F 999\"). Common examples: \"--rate 500\" (Python/Ruby), \"-F 500\" (native/perf), \"--interval 1000000\" (JVM). Multiple args: \"--rate 500 --native\" (Python with native extension profiling). See documentation for platform-specific options.",
+            "type": "string"
+          },
+          "mode": {
+            "default": "auto",
+            "description": "OPTIONAL: Profiling execution mode. \"auto\" (recommended) automatically chooses the best option. \"container\" runs profiling in Docker for consistency across environments. \"host\" uses locally installed profilers (requires manual setup). Use \"auto\" unless you have specific requirements.",
+            "enum": [
+              "auto",
+              "container",
+              "host"
+            ],
+            "type": "string"
+          },
+          "output_path": {
+            "description": "OPTIONAL: File path where the profile JSON will be saved (e.g., \"/tmp/profile.json\" or \"./my-profile.json\"). If not specified, a unique temporary file will be created automatically. The profile is always analyzed after recording.",
+            "type": "string"
+          },
+          "platform": {
+            "description": "OPTIONAL: Force a specific profiler platform. Valid values: python, nodejs, ruby, php, jvm, dotnet, beam, native. Leave empty to auto-detect based on the command. Only specify if auto-detection fails or you need a specific profiler.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command",
+          "cwd"
+        ],
+        "type": "object"
+      },
+      "name": "run_profiler",
+      "outputSchema": {
+        "properties": {
+          "hotspots": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "file": {
+                  "type": "string"
+                },
+                "line": {
+                  "type": "number"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "percentage": {
+                  "type": "number"
+                },
+                "percentiles": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "p50": {
+                      "type": "number"
+                    },
+                    "p90": {
+                      "type": "number"
+                    },
+                    "p99": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "p50",
+                    "p90",
+                    "p99"
+                  ],
+                  "type": "object"
+                },
+                "samples": {
+                  "type": "number"
+                },
+                "self": {
+                  "type": "number"
+                },
+                "total": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "name",
+                "percentage",
+                "self",
+                "total",
+                "samples"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "summary": {
+            "additionalProperties": false,
+            "properties": {
+              "profileName": {
+                "type": "string"
+              },
+              "profileType": {
+                "enum": [
+                  "sampled",
+                  "evented"
+                ],
+                "type": "string"
+              },
+              "profiler": {
+                "type": "string"
+              },
+              "threadCount": {
+                "type": "number"
+              },
+              "totalEvents": {
+                "type": "number"
+              },
+              "totalSamples": {
+                "type": "number"
+              },
+              "totalTime": {
+                "type": "number"
+              },
+              "unit": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "totalSamples",
+              "totalTime"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "summary",
+          "hotspots"
+        ],
+        "type": "object"
+      },
+      "title": "Profile Application Performance"
+    }
+  ]
+}

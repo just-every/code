@@ -1,0 +1,11 @@
+{
+  "specId": "SPEC-KIT-045-mini",
+  "telemetryRun": "2025-10-13T18:50:20Z-1721217636",
+  "agents": [
+    "gemini",
+    "claude",
+    "gpt_pro",
+    "gpt_codex"
+  ],
+  "evidence": "../SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/roster_2025-10-13T18:50:20Z.json"
+}

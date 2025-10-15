@@ -1,0 +1,21 @@
+{
+  "stage": "spec-validate",
+  "prompt_version": "20251002-validate-a",
+  "agent": "gemini",
+  "model": "gemini-2.5-pro",
+  "model_release": "2025-09",
+  "reasoning_mode": "thinking",
+  "scenarios": [
+    {
+      "name": "validate guardrail bootstrap",
+      "status": "failed",
+      "failures": [
+        "HAL_SECRET_KAVEDARR_API_KEY not set"
+      ],
+      "log": "HAL_SECRET_KAVEDARR_API_KEY not set; HAL smoke skipped/failed."
+    }
+  ],
+  "evidence": [
+    "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-030-add-documentation-for-rebasing-from/spec-validate_2025-10-07T01:09:42Z-2339128117.log"
+  ]
+}

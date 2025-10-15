@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "command": "spec-ops-plan",
+  "specId": "SPEC-KIT-045-mini",
+  "sessionId": "2025-10-12T20:37:00Z-286336050",
+  "timestamp": "2025-10-12T20:45:18Z",
+  "baseline": {
+    "mode": "skip",
+    "artifact": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/baseline_2025-10-12T20:37:00Z-286336050.md",
+    "status": "skipped"
+  },
+  "hooks": {
+    "session.start": "ok"
+  },
+  "policy": {
+  "prefilter": {
+    "model": "gpt-5-codex",
+    "status": "passed",
+    "note": "/home/thetu/code/codex-rs/target/dev-fast/code exec --sandbox workspace-write --model gpt-5-codex -- \"Policy prefilter for SPEC-KIT-045-mini/spec-plan\""
+  },
+  "final": {
+    "model": "gpt-5",
+    "status": "passed",
+    "note": "/home/thetu/code/codex-rs/target/dev-fast/code exec --sandbox workspace-write --model gpt-5 -- \"Policy final check for SPEC-KIT-045-mini/spec-plan\""
+  }
+},
+  "artifacts": [
+    { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/baseline_2025-10-12T20:37:00Z-286336050.md" },
+    { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-plan_2025-10-12T20:37:00Z-286336050.log" }
+  ]
+}

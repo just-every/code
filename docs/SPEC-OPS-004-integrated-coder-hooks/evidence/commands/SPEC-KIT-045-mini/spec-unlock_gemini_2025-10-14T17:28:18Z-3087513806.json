@@ -1,0 +1,16 @@
+{
+  "stage": "spec-unlock",
+  "prompt_version": "20251002-unlock-a",
+  "agent": "gemini",
+  "model": "gemini-1.5-pro",
+  "model_release": "2025-09",
+  "reasoning_mode": "research",
+  "branch_state": "feat/spec-auto-telemetry (dirty due to evidence artefacts)",
+  "pending_work": [
+    "Run plan/tasks/validate without SPEC_OPS_POLICY_* stubs",
+    "Optional live HAL validation once credentials available"
+  ],
+  "risks": [
+    "Unlock telemetry reports unlocked but policy overrides still active",
+    "Mock HAL artefact may diverge from live behaviour"]
+}

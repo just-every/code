@@ -46,12 +46,7 @@ impl HistoryRenderState {
         }
     }
 
-    pub(crate) fn ensure_layout<F>(
-        &self,
-        idx: usize,
-        width: u16,
-        build_lines: F,
-    ) -> LayoutRef
+    pub(crate) fn ensure_layout<F>(&self, idx: usize, width: u16, build_lines: F) -> LayoutRef
     where
         F: FnOnce() -> Vec<Line<'static>>,
     {
@@ -80,7 +75,10 @@ impl HistoryRenderState {
             word_wrap_lines(&lines, width)
         };
         let rows = build_cached_rows(&wrapped, width);
-        let layout = Rc::new(CachedLayout { lines: wrapped, rows });
+        let layout = Rc::new(CachedLayout {
+            lines: wrapped,
+            rows,
+        });
         self.layout_cache
             .borrow_mut()
             .insert(key, Rc::clone(&layout));

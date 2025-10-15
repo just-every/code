@@ -1,0 +1,8 @@
+Usage: mcp-server-git [OPTIONS]
+
+  MCP Git Server - Git functionality for MCP
+
+Options:
+  -r, --repository PATH  Git repository path
+  -v, --verbose
+  --help                 Show this message and exit.

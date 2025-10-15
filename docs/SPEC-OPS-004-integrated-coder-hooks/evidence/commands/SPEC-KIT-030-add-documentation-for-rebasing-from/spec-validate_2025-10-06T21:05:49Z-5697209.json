@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "command": "spec-ops-validate",
+  "specId": "SPEC-KIT-030-add-documentation-for-rebasing-from",
+  "sessionId": "2025-10-06T21:05:49Z-5697209",
+  "timestamp": "2025-10-06T21:13:14Z",
+  "scenarios": [
+    {
+      "name": "validate guardrail bootstrap",
+      "status": "failed"
+    }
+  ],
+  "policy": {
+  "prefilter": {
+    "model": "gpt-5-codex",
+    "status": "passed",
+    "note": "/home/thetu/code/codex-rs/target/dev-fast/code exec --sandbox workspace-write --model gpt-5-codex -- \"Policy prefilter for SPEC-KIT-030-add-documentation-for-rebasing-from/spec-validate\""
+  },
+  "final": {
+    "model": "gpt-5",
+    "status": "passed",
+    "note": "/home/thetu/code/codex-rs/target/dev-fast/code exec --sandbox workspace-write --model gpt-5 -- \"Policy final check for SPEC-KIT-030-add-documentation-for-rebasing-from/spec-validate\""
+  }
+},
+  "artifacts": [
+    { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-030-add-documentation-for-rebasing-from/spec-validate_2025-10-06T21:05:49Z-5697209.log" }
+  ]
+}

@@ -50,58 +50,214 @@ pub struct ToolCandidate {
 }
 
 pub const TOOL_CANDIDATES: &[ToolCandidate] = &[
-    ToolCandidate { label: "git", detection_names: &["git"] },
-    ToolCandidate { label: "gh", detection_names: &["gh"] },
-    ToolCandidate { label: "rg", detection_names: &["rg"] },
-    ToolCandidate { label: "fd", detection_names: &["fd", "fdfind"] },
-    ToolCandidate { label: "fzf", detection_names: &["fzf"] },
-    ToolCandidate { label: "jq", detection_names: &["jq"] },
-    ToolCandidate { label: "yq", detection_names: &["yq"] },
-    ToolCandidate { label: "sed", detection_names: &["sed"] },
-    ToolCandidate { label: "awk", detection_names: &["awk"] },
-    ToolCandidate { label: "xargs", detection_names: &["xargs"] },
-    ToolCandidate { label: "parallel", detection_names: &["parallel"] },
-    ToolCandidate { label: "curl", detection_names: &["curl"] },
-    ToolCandidate { label: "wget", detection_names: &["wget"] },
-    ToolCandidate { label: "tar", detection_names: &["tar"] },
-    ToolCandidate { label: "unzip", detection_names: &["unzip"] },
-    ToolCandidate { label: "gzip", detection_names: &["gzip"] },
-    ToolCandidate { label: "zstd", detection_names: &["zstd"] },
-    ToolCandidate { label: "make", detection_names: &["make"] },
-    ToolCandidate { label: "just", detection_names: &["just"] },
-    ToolCandidate { label: "node", detection_names: &["node"] },
-    ToolCandidate { label: "npm", detection_names: &["npm"] },
-    ToolCandidate { label: "pnpm", detection_names: &["pnpm"] },
-    ToolCandidate { label: "python3", detection_names: &["python3"] },
-    ToolCandidate { label: "pipx", detection_names: &["pipx"] },
-    ToolCandidate { label: "go", detection_names: &["go"] },
-    ToolCandidate { label: "rustup", detection_names: &["rustup"] },
-    ToolCandidate { label: "cargo", detection_names: &["cargo"] },
-    ToolCandidate { label: "rustc", detection_names: &["rustc"] },
-    ToolCandidate { label: "shellcheck", detection_names: &["shellcheck"] },
-    ToolCandidate { label: "shfmt", detection_names: &["shfmt"] },
-    ToolCandidate { label: "docker", detection_names: &["docker"] },
-    ToolCandidate { label: "docker compose", detection_names: &["docker", "docker-compose"] },
-    ToolCandidate { label: "sqlite3", detection_names: &["sqlite3"] },
-    ToolCandidate { label: "duckdb", detection_names: &["duckdb"] },
-    ToolCandidate { label: "rsync", detection_names: &["rsync"] },
-    ToolCandidate { label: "openssl", detection_names: &["openssl"] },
-    ToolCandidate { label: "ssh", detection_names: &["ssh"] },
-    ToolCandidate { label: "dig", detection_names: &["dig"] },
-    ToolCandidate { label: "nc", detection_names: &["nc", "netcat"] },
-    ToolCandidate { label: "lsof", detection_names: &["lsof"] },
-    ToolCandidate { label: "ripgrep-all", detection_names: &["ripgrep-all", "rga"] },
-    ToolCandidate { label: "entr", detection_names: &["entr"] },
-    ToolCandidate { label: "watchexec", detection_names: &["watchexec"] },
-    ToolCandidate { label: "hyperfine", detection_names: &["hyperfine"] },
-    ToolCandidate { label: "pv", detection_names: &["pv"] },
-    ToolCandidate { label: "bat", detection_names: &["bat"] },
-    ToolCandidate { label: "delta", detection_names: &["delta"] },
-    ToolCandidate { label: "tree", detection_names: &["tree"] },
-    ToolCandidate { label: "python", detection_names: &["python"] },
-    ToolCandidate { label: "deno", detection_names: &["deno"] },
-    ToolCandidate { label: "bun", detection_names: &["bun"] },
-    ToolCandidate { label: "js", detection_names: &["js"] },
+    ToolCandidate {
+        label: "git",
+        detection_names: &["git"],
+    },
+    ToolCandidate {
+        label: "gh",
+        detection_names: &["gh"],
+    },
+    ToolCandidate {
+        label: "rg",
+        detection_names: &["rg"],
+    },
+    ToolCandidate {
+        label: "fd",
+        detection_names: &["fd", "fdfind"],
+    },
+    ToolCandidate {
+        label: "fzf",
+        detection_names: &["fzf"],
+    },
+    ToolCandidate {
+        label: "jq",
+        detection_names: &["jq"],
+    },
+    ToolCandidate {
+        label: "yq",
+        detection_names: &["yq"],
+    },
+    ToolCandidate {
+        label: "sed",
+        detection_names: &["sed"],
+    },
+    ToolCandidate {
+        label: "awk",
+        detection_names: &["awk"],
+    },
+    ToolCandidate {
+        label: "xargs",
+        detection_names: &["xargs"],
+    },
+    ToolCandidate {
+        label: "parallel",
+        detection_names: &["parallel"],
+    },
+    ToolCandidate {
+        label: "curl",
+        detection_names: &["curl"],
+    },
+    ToolCandidate {
+        label: "wget",
+        detection_names: &["wget"],
+    },
+    ToolCandidate {
+        label: "tar",
+        detection_names: &["tar"],
+    },
+    ToolCandidate {
+        label: "unzip",
+        detection_names: &["unzip"],
+    },
+    ToolCandidate {
+        label: "gzip",
+        detection_names: &["gzip"],
+    },
+    ToolCandidate {
+        label: "zstd",
+        detection_names: &["zstd"],
+    },
+    ToolCandidate {
+        label: "make",
+        detection_names: &["make"],
+    },
+    ToolCandidate {
+        label: "just",
+        detection_names: &["just"],
+    },
+    ToolCandidate {
+        label: "node",
+        detection_names: &["node"],
+    },
+    ToolCandidate {
+        label: "npm",
+        detection_names: &["npm"],
+    },
+    ToolCandidate {
+        label: "pnpm",
+        detection_names: &["pnpm"],
+    },
+    ToolCandidate {
+        label: "python3",
+        detection_names: &["python3"],
+    },
+    ToolCandidate {
+        label: "pipx",
+        detection_names: &["pipx"],
+    },
+    ToolCandidate {
+        label: "go",
+        detection_names: &["go"],
+    },
+    ToolCandidate {
+        label: "rustup",
+        detection_names: &["rustup"],
+    },
+    ToolCandidate {
+        label: "cargo",
+        detection_names: &["cargo"],
+    },
+    ToolCandidate {
+        label: "rustc",
+        detection_names: &["rustc"],
+    },
+    ToolCandidate {
+        label: "shellcheck",
+        detection_names: &["shellcheck"],
+    },
+    ToolCandidate {
+        label: "shfmt",
+        detection_names: &["shfmt"],
+    },
+    ToolCandidate {
+        label: "docker",
+        detection_names: &["docker"],
+    },
+    ToolCandidate {
+        label: "docker compose",
+        detection_names: &["docker", "docker-compose"],
+    },
+    ToolCandidate {
+        label: "sqlite3",
+        detection_names: &["sqlite3"],
+    },
+    ToolCandidate {
+        label: "duckdb",
+        detection_names: &["duckdb"],
+    },
+    ToolCandidate {
+        label: "rsync",
+        detection_names: &["rsync"],
+    },
+    ToolCandidate {
+        label: "openssl",
+        detection_names: &["openssl"],
+    },
+    ToolCandidate {
+        label: "ssh",
+        detection_names: &["ssh"],
+    },
+    ToolCandidate {
+        label: "dig",
+        detection_names: &["dig"],
+    },
+    ToolCandidate {
+        label: "nc",
+        detection_names: &["nc", "netcat"],
+    },
+    ToolCandidate {
+        label: "lsof",
+        detection_names: &["lsof"],
+    },
+    ToolCandidate {
+        label: "ripgrep-all",
+        detection_names: &["ripgrep-all", "rga"],
+    },
+    ToolCandidate {
+        label: "entr",
+        detection_names: &["entr"],
+    },
+    ToolCandidate {
+        label: "watchexec",
+        detection_names: &["watchexec"],
+    },
+    ToolCandidate {
+        label: "hyperfine",
+        detection_names: &["hyperfine"],
+    },
+    ToolCandidate {
+        label: "pv",
+        detection_names: &["pv"],
+    },
+    ToolCandidate {
+        label: "bat",
+        detection_names: &["bat"],
+    },
+    ToolCandidate {
+        label: "delta",
+        detection_names: &["delta"],
+    },
+    ToolCandidate {
+        label: "tree",
+        detection_names: &["tree"],
+    },
+    ToolCandidate {
+        label: "python",
+        detection_names: &["python"],
+    },
+    ToolCandidate {
+        label: "deno",
+        detection_names: &["deno"],
+    },
+    ToolCandidate {
+        label: "bun",
+        detection_names: &["bun"],
+    },
+    ToolCandidate {
+        label: "js",
+        detection_names: &["js"],
+    },
 ];
 
 impl EnvironmentContext {
@@ -317,10 +473,7 @@ fn detect_common_tools() -> Option<Vec<String>> {
             candidate.detection_names
         };
 
-        if detection_names
-            .iter()
-            .any(|name| which(name).is_ok())
-        {
+        if detection_names.iter().any(|name| which(name).is_ok()) {
             available.push(candidate.label.to_string());
         }
     }

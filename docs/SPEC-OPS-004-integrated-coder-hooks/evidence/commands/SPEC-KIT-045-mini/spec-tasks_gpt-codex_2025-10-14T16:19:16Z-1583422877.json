@@ -1,0 +1,37 @@
+{
+  "stage": "spec-tasks",
+  "prompt_version": "20251014-tasks-a",
+  "agent": "gpt_codex",
+  "model": "gpt-4-codex",
+  "model_release": "2025-06",
+  "reasoning_mode": "review",
+  "implementation_notes": [
+    "The plan to update `tasks.md` and `SPEC.md` is sound but requires careful execution. Using `replace` tool calls will be necessary, and the `old_string` must contain sufficient context to avoid ambiguity, especially in the markdown table structure of `SPEC.md`.",
+    "The `jq` command to extract the roster is a good assumption. The schema check command is abstract and needs to be defined.",
+    "HAL mock preparation is correctly identified as a pending item requiring a separate process."
+  ],
+  "diff_suggestions": [
+    {
+      "file": "SPEC.md",
+      "action": "Update T49 row",
+      "suggestion": "When updating T49, ensure the `replace` call includes the entire row as the `old_string` to guarantee precision. Also, perform a search for `In Progress` to find the row that needs to be changed to a different status before updating T49."
+    },
+    {
+      "file": "docs/SPEC-KIT-045-mini/tasks.md",
+      "action": "Update telemetry links",
+      "suggestion": "Replace the old 2025-10-13 artifact names with the new 2025-10-14 names for both plan and tasks telemetry."
+    }
+  ],
+  "risks": [
+    {
+      "id": "RISK-01",
+      "description": "The `replace` operation on `SPEC.md` could fail if the table formatting is inconsistent or if the `old_string` is not unique. A pre-check read of the file is critical.",
+      "mitigation": "Use `read_file` to get the exact current content of the row T49 before attempting a `replace`."
+    },
+    {
+      "id": "RISK-02",
+      "description": "The exact commands for schema validation via `jq` and the process for HAL mock diff generation are not fully specified, potentially blocking evidence creation.",
+      "mitigation": "Consult `prompts.json` or related documentation to find the precise commands or processes."
+    }
+  ]
+}

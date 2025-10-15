@@ -1,0 +1,11 @@
+{
+  "name": "spec_registry",
+  "command": "npx",
+  "args": [
+    "-y",
+    "mcp-proxy",
+    "https://registry.modelcontextprotocol.io/api/sse"
+  ],
+  "env": null,
+  "startup_timeout_ms": null
+}

@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "command": "spec-ops-plan",
+  "specId": "SPEC-KIT-025-add-automated-conflict-resolution-with",
+  "sessionId": "2025-10-06T00:13:38Z-208265660",
+  "timestamp": "2025-10-06T00:19:45Z",
+  "baseline": {
+    "mode": "no-run",
+    "artifact": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-025-add-automated-conflict-resolution-with/baseline_2025-10-06T00:13:38Z-208265660.md",
+    "status": "passed"
+  },
+  "hooks": {
+    "session.start": "ok"
+  },
+  "policy": {
+  "prefilter": {
+    "model": "gpt-5-codex",
+    "status": "passed",
+    "note": "/home/thetu/code/codex-rs/target/dev-fast/code exec --sandbox read-only --model gpt-5-codex -- \"Policy prefilter for SPEC-KIT-025-add-automated-conflict-resolution-with/spec-plan\""
+  },
+  "final": {
+    "model": "gpt-5",
+    "status": "passed",
+    "note": "/home/thetu/code/codex-rs/target/dev-fast/code exec --sandbox read-only --model gpt-5 -- \"Policy final check for SPEC-KIT-025-add-automated-conflict-resolution-with/spec-plan\""
+  }
+},
+  "artifacts": [
+    { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-025-add-automated-conflict-resolution-with/baseline_2025-10-06T00:13:38Z-208265660.md" },
+    { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-025-add-automated-conflict-resolution-with/spec-plan_2025-10-06T00:13:38Z-208265660.log" }
+  ]
+}

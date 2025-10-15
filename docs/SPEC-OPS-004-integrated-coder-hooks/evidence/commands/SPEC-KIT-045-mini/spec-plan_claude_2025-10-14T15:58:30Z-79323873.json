@@ -1,0 +1,38 @@
+{
+  "stage": "spec-plan",
+  "prompt_version": "20251002-plan-a",
+  "agent": "claude",
+  "model": "claude-3.7-sonnet",
+  "model_release": "2025-10-01",
+  "reasoning_mode": "synthesis",
+  "work_breakdown": [
+    "Refresh plan.md to 2025-10-14 evidence",
+    "Capture four-agent roster metadata",
+    "Document HAL mock schema v1 validation",
+    "Embed evidence filenames and rerun cmds",
+    "Note remediation of 2025-10-13 refs",
+    "Record consensus & risks section"
+  ],
+  "acceptance_mapping": [
+    {
+      "requirement": "R1: /spec-ops-plan records four-agent roster in TUI history",
+      "validation_step": "/cmd spec-ops-plan SPEC-KIT-045-mini",
+      "artifact": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-plan_2025-10-14T15:58:30Z-79323873.{json,log}"
+    },
+    {
+      "requirement": "R2: /spec-ops-validate --hal mock emits schema v1 telemetry with mock HAL rationale",
+      "validation_step": "/cmd spec-ops-validate SPEC-KIT-045-mini --hal mock",
+      "artifact": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-validate_<TIMESTAMP>.json (schema v1, includes hal.summary rationale)"
+    },
+    {
+      "requirement": "R3: Fixture docs cite exact evidence filenames and rerun instructions",
+      "validation_step": "Check docs/SPEC-KIT-045-mini/plan.md references + rerun blocks",
+      "artifact": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/baseline_2025-10-14T15:58:30Z-79323873.md"
+    }
+  ],
+  "risks": [
+    "Residual references to 2025-10-13 evidence could cause drift in acceptance checks",
+    "Live HAL misconfiguration if mock/live toggle not clearly documented",
+    "Workspace splits may require SPEC_OPS_CARGO_MANIFEST to avoid CI divergence"
+  ]
+}

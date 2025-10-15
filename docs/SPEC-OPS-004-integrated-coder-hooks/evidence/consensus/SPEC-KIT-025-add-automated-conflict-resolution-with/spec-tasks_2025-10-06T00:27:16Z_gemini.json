@@ -1,0 +1,12 @@
+{
+  "spec_id": "SPEC-KIT-025-add-automated-conflict-resolution-with",
+  "stage": "spec-tasks",
+  "agent": "gemini",
+  "error": "agent execution failed",
+  "consensus": {
+    "agreements": [],
+    "conflicts": [
+      "gemini execution failed"
+    ]
+  }
+}

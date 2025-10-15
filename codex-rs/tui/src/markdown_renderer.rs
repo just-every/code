@@ -405,7 +405,10 @@ impl MarkdownRenderer {
                     spans.push(Span::styled(lbl, st));
                     // Append visible URL in parens (dimmed)
                     spans.push(Span::raw(" ("));
-                    spans.push(Span::styled(target.clone(), Style::default().fg(crate::colors::text_dim())));
+                    spans.push(Span::styled(
+                        target.clone(),
+                        Style::default().fg(crate::colors::text_dim()),
+                    ));
                     spans.push(Span::raw(")"));
                     i += consumed;
                     continue;
@@ -1272,11 +1275,7 @@ fn autolink_spans(spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
 
     let mut out: Vec<Span<'static>> = Vec::with_capacity(spans.len());
     // Slight blue-tinted color for visible URLs/domains. Blend theme text toward primary (blue-ish).
-    let link_fg = crate::colors::mix_toward(
-        crate::colors::text(),
-        crate::colors::primary(),
-        0.35,
-    );
+    let link_fg = crate::colors::mix_toward(crate::colors::text(), crate::colors::primary(), 0.35);
     for s in spans {
         // Skip autolinking inside inline code spans (we style code with the
         // theme's function color). This avoids linking snippets like
@@ -1581,10 +1580,17 @@ fn is_short_preview_of_url(label: &str, target: &str) -> bool {
     // Lightweight TLD guard for labels that aren't URLs
     fn looks_like_domain(s: &str) -> bool {
         let s = s.trim().trim_end_matches('/');
-        if !s.contains('.') || s.contains(' ') { return false; }
-        let tld = s.rsplit_once('.').map(|(_, t)| t).unwrap_or("").to_ascii_lowercase();
+        if !s.contains('.') || s.contains(' ') {
+            return false;
+        }
+        let tld = s
+            .rsplit_once('.')
+            .map(|(_, t)| t)
+            .unwrap_or("")
+            .to_ascii_lowercase();
         const ALLOWED_TLDS: &[&str] = &[
-            "com","org","net","edu","gov","io","ai","app","dev","co","us","uk","ca","de","fr","jp","cn","in","au"
+            "com", "org", "net", "edu", "gov", "io", "ai", "app", "dev", "co", "us", "uk", "ca",
+            "de", "fr", "jp", "cn", "in", "au",
         ];
         ALLOWED_TLDS.contains(&tld.as_str())
     }
@@ -1600,14 +1606,24 @@ fn is_short_preview_of_url(label: &str, target: &str) -> bool {
     match (label_host, target_host) {
         (Some(lh_raw), Some(mut th)) => {
             let mut lh = lh_raw.trim().trim_end_matches('/').to_ascii_lowercase();
-            if lh.starts_with("www.") { lh = lh.trim_start_matches("www.").to_string(); }
-            if th.starts_with("www.") { th = th.trim_start_matches("www.").to_string(); }
+            if lh.starts_with("www.") {
+                lh = lh.trim_start_matches("www.").to_string();
+            }
+            if th.starts_with("www.") {
+                th = th.trim_start_matches("www.").to_string();
+            }
             // Require label to look like a domain to avoid stripping arbitrary text
-            if !looks_like_domain(&lh) { return false; }
+            if !looks_like_domain(&lh) {
+                return false;
+            }
             // Exact match or label equals the registrable/root portion of the host
-            if lh == th { return true; }
+            if lh == th {
+                return true;
+            }
             // Host may include subdomains; if it ends with .<label>, treat as preview
-            if th.ends_with(&format!(".{lh}")) { return true; }
+            if th.ends_with(&format!(".{lh}")) {
+                return true;
+            }
             false
         }
         _ => false,
@@ -1773,9 +1789,18 @@ mod fenced_padding_tests {
         assert!(lines.len() >= 3);
         let widths: Vec<usize> = lines
             .iter()
-            .map(|l| l.spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum())
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+                    .sum()
+            })
             .collect();
         let maxw = *widths.iter().max().unwrap_or(&0);
-        assert!(widths.iter().all(|w| *w == maxw), "all lines must match target width: {:?}", widths);
+        assert!(
+            widths.iter().all(|w| *w == maxw),
+            "all lines must match target width: {:?}",
+            widths
+        );
     }
 }

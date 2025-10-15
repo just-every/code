@@ -1,0 +1,16 @@
+{
+  "stage": "spec-unlock",
+  "prompt_version": "20251002-unlock-a",
+  "agent": "gpt_codex",
+  "model": "gpt-5-codex",
+  "model_release": "2025-10-01",
+  "reasoning_mode": "impl-review",
+  "unlock_notes": [
+    "SPEC.md row T49 still In Progress; evidence references updated",
+    "Unlock telemetry reports unlocked but policy overrides logged"
+  ],
+  "todo": [
+    "Run guardrails without SPEC_OPS_POLICY_*",
+    "Update unlock-notes.md once clean run completes"
+  ]
+}

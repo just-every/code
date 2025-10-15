@@ -22,4 +22,3 @@ fn codex_core_protocol_models_are_exposed() {
     // to keep imports stable in TUI/tests.
     assert_type::<codex_core::models::ResponseItem>();
 }
-

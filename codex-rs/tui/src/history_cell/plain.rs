@@ -1,13 +1,9 @@
-use super::*;
 use super::text::{message_lines_from_ratatui, message_lines_to_ratatui};
+use super::*;
 use crate::history::state::{
-    HistoryId,
-    MessageHeader,
-    MessageLine,
-    PlainMessageRole,
-    PlainMessageState,
+    HistoryId, MessageHeader, MessageLine, PlainMessageRole, PlainMessageState,
 };
-use crate::theme::{current_theme, Theme};
+use crate::theme::{Theme, current_theme};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -81,12 +77,9 @@ impl PlainHistoryCell {
 
     fn ensure_layout(&self, requested_width: u16, effective_width: u16) {
         let mut cache = self.cached_layout.borrow_mut();
-        let needs_rebuild = cache
-            .as_ref()
-            .map_or(true, |cached| {
-                cached.requested_width != requested_width
-                    || cached.effective_width != effective_width
-            });
+        let needs_rebuild = cache.as_ref().map_or(true, |cached| {
+            cached.requested_width != requested_width || cached.effective_width != effective_width
+        });
         if needs_rebuild {
             *cache = Some(self.build_layout(requested_width, effective_width));
         }
@@ -132,14 +125,12 @@ impl PlainHistoryCell {
 
         let paragraph_lines = Text::from(trimmed_lines);
         if matches!(self.state.kind, HistoryCellType::User) {
-            let block = Block::default()
-                .style(bg_style)
-                .padding(Padding {
-                    left: 0,
-                    right: crate::layout_consts::USER_HISTORY_RIGHT_PAD.into(),
-                    top: 0,
-                    bottom: 0,
-                });
+            let block = Block::default().style(bg_style).padding(Padding {
+                left: 0,
+                right: crate::layout_consts::USER_HISTORY_RIGHT_PAD.into(),
+                top: 0,
+                bottom: 0,
+            });
             Paragraph::new(paragraph_lines)
                 .block(block)
                 .wrap(Wrap { trim: false })
@@ -228,8 +219,7 @@ impl HistoryCell for PlainHistoryCell {
     fn render_with_skip(&self, area: Rect, buf: &mut Buffer, skip_rows: u16) {
         let requested_width = area.width;
         let effective_width = if matches!(self.state.kind, HistoryCellType::User) {
-            requested_width
-                .saturating_sub(crate::layout_consts::USER_HISTORY_RIGHT_PAD.into())
+            requested_width.saturating_sub(crate::layout_consts::USER_HISTORY_RIGHT_PAD.into())
         } else {
             requested_width
         };
@@ -344,9 +334,7 @@ fn header_style(role: PlainMessageRole, theme: &Theme) -> Style {
         PlainMessageRole::Assistant => Style::default()
             .fg(theme.primary)
             .add_modifier(Modifier::BOLD),
-        PlainMessageRole::Tool => Style::default()
-            .fg(theme.info)
-            .add_modifier(Modifier::BOLD),
+        PlainMessageRole::Tool => Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
         PlainMessageRole::Error => Style::default()
             .fg(theme.error)
             .add_modifier(Modifier::BOLD),
@@ -356,7 +344,9 @@ fn header_style(role: PlainMessageRole, theme: &Theme) -> Style {
 }
 
 fn header_badge_style(theme: &Theme) -> Style {
-    Style::default().fg(theme.text_dim).add_modifier(Modifier::ITALIC)
+    Style::default()
+        .fg(theme.text_dim)
+        .add_modifier(Modifier::ITALIC)
 }
 
 fn line_plain_text(line: &Line<'_>) -> String {

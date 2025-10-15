@@ -1,0 +1,20 @@
+{
+  "stage": "spec-audit",
+  "prompt_version": "20251002-audit-a",
+  "agent": "gpt_pro",
+  "model": "gpt-5",
+  "model_release": "2025-09",
+  "reasoning_mode": "executor",
+  "checks": [
+    {"item": "Plan/tasks/implement/validate telemetry present", "status": "passed"},
+    {"item": "Doc set references evidence filenames", "status": "passed"},
+    {"item": "Policy override mitigation recorded", "status": "passed"},
+    {"item": "Fixture size budget respected", "status": "passed"}
+  ],
+  "recommendation": "Proceed to unlock only after clean policy-enabled rerun; otherwise rehearsal bundle is complete.",
+  "conditions": ["SPEC_OPS_POLICY_* stubs removed", "Optional live HAL check executed"],
+  "consensus": {
+    "agreements": ["Evidence bundle complete", "Unlock contingent on follow-up"],
+    "conflicts": []
+  }
+}

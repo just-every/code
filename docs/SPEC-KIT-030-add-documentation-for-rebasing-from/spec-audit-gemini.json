@@ -1,0 +1,20 @@
+{
+  "stage": "spec-audit",
+  "prompt_version": "20251002-audit-a",
+  "agent": "gemini",
+  "model": "gemini-2.5-pro",
+  "model_release": "2025-09",
+  "reasoning_mode": "thinking",
+  "diff_summary": "Audit guardrail bootstrap failed because HAL telemetry could not start without HAL_SECRET_KAVEDARR_API_KEY; no code changes executed.",
+  "telemetry": [
+    "command spec-ops-audit for SPEC-KIT-030-add-documentation-for-rebasing-from completed with schemaVersion 1",
+    "scenario audit guardrail bootstrap → failed (log cites missing HAL secret)",
+    "artifact captured at docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-030-add-documentation-for-rebasing-from/spec-audit_2025-10-07T01:13:25Z-1589326123.log"
+  ],
+  "todos": [
+    "Export HAL_SECRET_KAVEDARR_API_KEY (or set SPEC_OPS_HAL_SKIP=1 with justification) and rerun spec-ops-audit with SPEC_OPS_TELEMETRY_HAL=1 to capture HAL summary."
+  ],
+  "compliance_flags": [
+    "missing_hal_secret"
+  ]
+}

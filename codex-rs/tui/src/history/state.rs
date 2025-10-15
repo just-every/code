@@ -1,5 +1,5 @@
-use codex_core::plan_tool::StepStatus;
 use codex_core::parse_command::ParsedCommand;
+use codex_core::plan_tool::StepStatus;
 use codex_core::protocol::{FileChange, RateLimitSnapshotEvent, TokenUsage};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -267,8 +267,14 @@ pub struct ReasoningSection {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReasoningBlock {
     Paragraph(Vec<InlineSpan>),
-    Bullet { indent: u8, spans: Vec<InlineSpan> },
-    Code { language: Option<String>, content: String },
+    Bullet {
+        indent: u8,
+        spans: Vec<InlineSpan>,
+    },
+    Code {
+        language: Option<String>,
+        content: String,
+    },
     Quote(Vec<InlineSpan>),
     Separator,
 }

@@ -66,7 +66,11 @@ pub fn paste_image_as_png() -> Result<(Vec<u8>, PastedImageInfo), PasteImageErro
     );
     Ok((
         png,
-        PastedImageInfo { width: w, height: h, encoded_format: EncodedImageFormat::Png },
+        PastedImageInfo {
+            width: w,
+            height: h,
+            encoded_format: EncodedImageFormat::Png,
+        },
     ))
 }
 
@@ -97,9 +101,13 @@ pub fn paste_image_to_temp_png() -> Result<(PathBuf, PastedImageInfo), PasteImag
 /// - data:image/png;base64,AAAA...
 /// - data:image/jpeg;base64,/9j/...
 /// - Raw base64 for PNG (starts with iVBORw0K...) or JPEG (/9j/), GIF (R0lGODlh / R0lGODdh)
-pub fn try_decode_base64_image_to_temp_png(pasted: &str) -> Result<(PathBuf, PastedImageInfo), PasteImageError> {
+pub fn try_decode_base64_image_to_temp_png(
+    pasted: &str,
+) -> Result<(PathBuf, PastedImageInfo), PasteImageError> {
     let s = pasted.trim();
-    if s.is_empty() { return Err(PasteImageError::DecodeFailed("empty".into())); }
+    if s.is_empty() {
+        return Err(PasteImageError::DecodeFailed("empty".into()));
+    }
 
     // Extract base64 payload and remember mime if present
     let (maybe_mime, b64) = if let Some(rest) = s.strip_prefix("data:") {
@@ -108,7 +116,9 @@ pub fn try_decode_base64_image_to_temp_png(pasted: &str) -> Result<(PathBuf, Pas
             let (head, tail) = rest.split_at(idx);
             let b64 = &tail[1..];
             if !head.contains(";base64") {
-                return Err(PasteImageError::DecodeFailed("data URL without base64".into()));
+                return Err(PasteImageError::DecodeFailed(
+                    "data URL without base64".into(),
+                ));
             }
             let mime = head.split(';').next().unwrap_or("").to_string();
             (Some(mime), b64)
@@ -120,8 +130,12 @@ pub fn try_decode_base64_image_to_temp_png(pasted: &str) -> Result<(PathBuf, Pas
         let looks_imagey = s.starts_with("iVBORw0K") // PNG
             || s.starts_with("/9j/")               // JPEG
             || s.starts_with("R0lGODlh")           // GIF87a
-            || s.starts_with("R0lGODdh");          // GIF89a
-        if !looks_imagey { return Err(PasteImageError::DecodeFailed("not image-like base64".into())); }
+            || s.starts_with("R0lGODdh"); // GIF89a
+        if !looks_imagey {
+            return Err(PasteImageError::DecodeFailed(
+                "not image-like base64".into(),
+            ));
+        }
         (None, s)
     };
 
@@ -152,11 +166,23 @@ pub fn try_decode_base64_image_to_temp_png(pasted: &str) -> Result<(PathBuf, Pas
         .tempfile()
         .map_err(|e| PasteImageError::IoError(e.to_string()))?;
     std::fs::write(tmp.path(), &png).map_err(|e| PasteImageError::IoError(e.to_string()))?;
-    let (_file, path) = tmp.keep().map_err(|e| PasteImageError::IoError(e.error.to_string()))?;
+    let (_file, path) = tmp
+        .keep()
+        .map_err(|e| PasteImageError::IoError(e.error.to_string()))?;
 
     let _mime_dbg = maybe_mime.unwrap_or_else(|| "image/*".to_string());
-    tracing::debug!("decoded pasted base64 image to {w}x{h} PNG at {}", path.to_string_lossy());
-    Ok((path, PastedImageInfo { width: w, height: h, encoded_format: EncodedImageFormat::Png }))
+    tracing::debug!(
+        "decoded pasted base64 image to {w}x{h} PNG at {}",
+        path.to_string_lossy()
+    );
+    Ok((
+        path,
+        PastedImageInfo {
+            width: w,
+            height: h,
+            encoded_format: EncodedImageFormat::Png,
+        },
+    ))
 }
 
 /// Normalize pasted text that may represent a filesystem path.

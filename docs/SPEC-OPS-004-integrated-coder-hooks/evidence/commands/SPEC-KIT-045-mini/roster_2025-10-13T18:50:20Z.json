@@ -1,0 +1,38 @@
+{
+  "specId": "SPEC-KIT-045-mini",
+  "sessionId": "2025-10-13T18:50:20Z-1721217636",
+  "generatedAt": "2025-10-13T19:01:26Z",
+  "sourceTelemetry": "spec-plan_2025-10-13T18:50:20Z-1721217636.json",
+  "agents": [
+    {
+      "agent": "gemini",
+      "model": "gemini-2.5-pro",
+      "model_release": "unknown",
+      "reasoning_mode": "thinking"
+    },
+    {
+      "agent": "claude",
+      "model": "claude-4.5-sonnet",
+      "model_release": "unknown",
+      "reasoning_mode": "thinking"
+    },
+    {
+      "agent": "gpt_pro",
+      "model": "gpt-5",
+      "model_release": "unknown",
+      "reasoning_mode": "high"
+    },
+    {
+      "agent": "gpt_codex",
+      "model": "gpt-5-codex",
+      "model_release": "unknown",
+      "reasoning_mode": "medium"
+    }
+  ],
+  "orchestrator": {
+    "agent": "code",
+    "model": "gpt-5-codex",
+    "model_release": "unknown",
+    "role": "orchestrator"
+  }
+}

@@ -8,8 +8,8 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 
-use super::bottom_pane_view::BottomPaneView;
 use super::BottomPane;
+use super::bottom_pane_view::BottomPaneView;
 
 pub(crate) struct UndoRestoreView {
     snapshot_index: usize,
@@ -147,32 +147,49 @@ impl UndoRestoreView {
 impl<'a> BottomPaneView<'a> for UndoRestoreView {
     fn handle_key_event(&mut self, _pane: &mut BottomPane<'a>, key_event: KeyEvent) {
         match key_event {
-            KeyEvent { code: KeyCode::Up, .. } => {
+            KeyEvent {
+                code: KeyCode::Up, ..
+            } => {
                 if self.selection > 0 {
                     self.selection -= 1;
                 }
             }
-            KeyEvent { code: KeyCode::Down, .. } => {
+            KeyEvent {
+                code: KeyCode::Down,
+                ..
+            } => {
                 if self.selection < 3 {
                     self.selection += 1;
                 }
             }
-            KeyEvent { code: KeyCode::Esc, .. } => {
+            KeyEvent {
+                code: KeyCode::Esc, ..
+            } => {
                 self.is_complete = true;
             }
-            KeyEvent { code: KeyCode::Char(' '), .. } => match self.selection {
+            KeyEvent {
+                code: KeyCode::Char(' '),
+                ..
+            } => match self.selection {
                 0 => self.toggle_files(),
                 1 => self.toggle_conversation(),
                 _ => {}
             },
-            KeyEvent { code: KeyCode::Enter, modifiers: KeyModifiers::NONE, .. } => match self.selection {
+            KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => match self.selection {
                 0 => self.toggle_files(),
                 1 => self.toggle_conversation(),
                 2 => self.send_restore_request(),
                 3 => self.is_complete = true,
                 _ => {}
             },
-            KeyEvent { code: KeyCode::Left | KeyCode::Right, .. } => match self.selection {
+            KeyEvent {
+                code: KeyCode::Left | KeyCode::Right,
+                ..
+            } => match self.selection {
                 0 => self.toggle_files(),
                 1 => self.toggle_conversation(),
                 _ => {}
@@ -194,31 +211,31 @@ impl<'a> BottomPaneView<'a> for UndoRestoreView {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(crate::colors::border()))
-            .style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()))
+            .style(
+                Style::default()
+                    .bg(crate::colors::background())
+                    .fg(crate::colors::text()),
+            )
             .title(" Restore snapshot ")
             .title_alignment(Alignment::Center);
         let inner = block.inner(area);
         block.render(area, buf);
 
         let mut lines: Vec<Line<'static>> = Vec::new();
-        lines.push(Line::from(vec![
-            Span::styled(
-                self.title_line.clone(),
-                Style::default().fg(crate::colors::text_dim()),
-            ),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("Commit {}", self.short_id),
-                Style::default().fg(crate::colors::text()).add_modifier(Modifier::BOLD),
-            ),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled(
-                self.timestamp_line.clone(),
-                Style::default().fg(crate::colors::text_dim()),
-            ),
-        ]));
+        lines.push(Line::from(vec![Span::styled(
+            self.title_line.clone(),
+            Style::default().fg(crate::colors::text_dim()),
+        )]));
+        lines.push(Line::from(vec![Span::styled(
+            format!("Commit {}", self.short_id),
+            Style::default()
+                .fg(crate::colors::text())
+                .add_modifier(Modifier::BOLD),
+        )]));
+        lines.push(Line::from(vec![Span::styled(
+            self.timestamp_line.clone(),
+            Style::default().fg(crate::colors::text_dim()),
+        )]));
         if let Some(summary) = &self.summary {
             lines.push(Line::from(""));
             lines.push(Line::from(vec![Span::styled(
@@ -272,17 +289,16 @@ impl<'a> BottomPaneView<'a> for UndoRestoreView {
         } else {
             Style::default()
         };
-        lines.push(Line::from(vec![Span::styled(
-            "Cancel",
-            cancel_style,
-        )]));
+        lines.push(Line::from(vec![Span::styled("Cancel", cancel_style)]));
 
         lines.push(Line::from(""));
         lines.push(self.footer_line());
 
-        let paragraph = Paragraph::new(lines)
-            .alignment(Alignment::Left)
-            .style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()));
+        let paragraph = Paragraph::new(lines).alignment(Alignment::Left).style(
+            Style::default()
+                .bg(crate::colors::background())
+                .fg(crate::colors::text()),
+        );
         paragraph.render(
             Rect {
                 x: inner.x.saturating_add(1),

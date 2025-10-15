@@ -1,0 +1,17 @@
+{
+  "stage": "spec-audit",
+  "prompt_version": "20251002-audit-a",
+  "agent": "gpt_codex",
+  "model": "gpt-5-codex",
+  "model_release": "2025-10-01",
+  "reasoning_mode": "impl-review",
+  "audit_notes": [
+    "Telemetry artifacts for all stages stored under evidence/commands with 2025-10-14 timestamps.",
+    "Rehearsal copies (roster, schema checks, HAL mock, policy notes, fixture size) mirrored under docs/SPEC-KIT-045-mini/telemetry/.",
+    "Unlock notes enumerate outstanding follow-up before production unlock."
+  ],
+  "followups": [
+    "Run guardrails without SPEC_OPS_POLICY_* stubs.",
+    "Capture live HAL summary once credentials are available."
+  ]
+}

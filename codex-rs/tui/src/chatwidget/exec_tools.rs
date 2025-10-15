@@ -1,6 +1,6 @@
 //! Exec and tool call lifecycle helpers for `ChatWidget`.
 
-use super::ChatWidget;
+use super::{ChatWidget, spec_kit};
 use crate::app_event::AppEvent;
 use crate::height_manager::HeightEvent;
 use crate::history_cell::CommandOutput;
@@ -402,10 +402,7 @@ pub(super) fn try_merge_completed_exec_at(chat: &mut ChatWidget<'_>, idx: usize)
     }
 }
 
-fn try_upgrade_fallback_exec_cell(
-    chat: &mut ChatWidget<'_>,
-    ev: &ExecCommandBeginEvent,
-) -> bool {
+fn try_upgrade_fallback_exec_cell(chat: &mut ChatWidget<'_>, ev: &ExecCommandBeginEvent) -> bool {
     for i in (0..chat.history_cells.len()).rev() {
         if let Some(exec) = chat.history_cells[i]
             .as_any_mut()
@@ -414,7 +411,8 @@ fn try_upgrade_fallback_exec_cell(
             let looks_like_fallback = exec.output.is_some()
                 && exec.parsed.is_empty()
                 && exec.command.len() == 1
-                && exec.command
+                && exec
+                    .command
                     .first()
                     .map(|cmd| cmd == &ev.call_id)
                     .unwrap_or(false);
@@ -588,7 +586,8 @@ pub(super) fn handle_exec_end_now(
         chat.maybe_hide_spinner();
         return;
     }
-    chat.ended_call_ids.insert(super::ExecCallId(ev.call_id.clone()));
+    chat.ended_call_ids
+        .insert(super::ExecCallId(ev.call_id.clone()));
     // If this call was already marked as cancelled, drop the End to avoid
     // inserting a duplicate completed cell after the user interrupt.
     if chat
@@ -621,7 +620,14 @@ pub(super) fn handle_exec_end_now(
             wait_total,
             wait_notes,
             ..
-        }) => (command, parsed, history_index, explore_entry, wait_total, wait_notes),
+        }) => (
+            command,
+            parsed,
+            history_index,
+            explore_entry,
+            wait_total,
+            wait_notes,
+        ),
         None => (vec![call_id.clone()], vec![], None, None, None, Vec::new()),
     };
 
@@ -668,7 +674,11 @@ pub(super) fn handle_exec_end_now(
             history_cell::ExploreEntryStatus::Error { .. } => match action {
                 history_cell::ExecAction::Read => format!("read failed (exit {exit_code})"),
                 history_cell::ExecAction::Search => {
-                    if exit_code == 2 { "invalid pattern".to_string() } else { format!("search failed (exit {exit_code})") }
+                    if exit_code == 2 {
+                        "invalid pattern".to_string()
+                    } else {
+                        format!("search failed (exit {exit_code})")
+                    }
                 }
                 history_cell::ExecAction::List => format!("list failed (exit {exit_code})"),
                 _ => format!("exploration failed (exit {exit_code})"),
@@ -767,6 +777,39 @@ pub(super) fn handle_exec_end_now(
         chat.bottom_pane
             .update_status_text(format!("command failed (exit {})", exit_code));
     }
+
+    // === FORK-SPECIFIC: spec-auto guardrail completion handler ===
+    // Check if this exec completion is for a spec-auto guardrail command
+    if let Some(ref state) = chat.spec_auto_state {
+        if let Some(ref wait) = state.waiting_guardrail {
+            // Check if this is the guardrail we're waiting for
+            // Project commands have call_id pattern: "project_cmd_spec_ops_*"
+            if call_id.starts_with("project_cmd_spec_ops") {
+                if exit_code == 0 {
+                    // Guardrail succeeded - transition to agent execution phase
+                    let stage = wait.stage;
+                    let spec_id = state.spec_id.clone();
+
+                    // Clear waiting state
+                    if let Some(state_mut) = chat.spec_auto_state.as_mut() {
+                        state_mut.waiting_guardrail = None;
+                    }
+
+                    // Spawn agents for this stage
+                    spec_kit::auto_submit_spec_stage_prompt(chat, stage, &spec_id);
+                } else {
+                    // Guardrail failed - halt pipeline
+                    spec_kit::halt_spec_auto_with_error(chat, format!(
+                        "Guardrail {} failed with exit code {}",
+                        wait.stage.display_name(),
+                        exit_code
+                    ));
+                }
+            }
+        }
+    }
+    // === END FORK-SPECIFIC ===
+
     chat.maybe_hide_spinner();
 }
 

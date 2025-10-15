@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "command": "spec-ops-audit",
+  "specId": "SPEC-KIT-018",
+  "sessionId": "2025-09-29T12:33:29Z-218285443",
+  "timestamp": "2025-09-29T12:33:33Z",
+  "scenarios": [
+    {
+      "name": "audit guardrail bootstrap",
+      "status": "failed"
+    }
+  ],
+  "artifacts": [
+    { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/spec-audit_2025-09-29T12:33:29Z-218285443.log" }, { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/20250929-123329Z-hal-health.json" }, { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/20250929-123329Z-hal-list_movies.json" }, { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/20250929-123329Z-hal-indexer_test.json" }, { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/20250929-123329Z-hal-graphql_ping.json" }
+  ],
+  "hal": {
+    "summary": {
+      "status": "failed",
+      "failed_checks": ["graphql_ping"],
+      "artifacts": ["/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/20250929-123329Z-hal-health.json", "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/20250929-123329Z-hal-list_movies.json", "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/20250929-123329Z-hal-indexer_test.json", "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/20250929-123329Z-hal-graphql_ping.json"]
+    }
+  }
+}

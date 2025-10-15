@@ -1,5 +1,5 @@
-use std::collections::{HashMap, HashSet};
 use agent_client_protocol as acp;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::Path;
 use std::path::PathBuf;
@@ -16,8 +16,8 @@ use codex_mcp_server::PatchApprovalResponse;
 use mcp_types::CallToolResult;
 use mcp_types::ElicitRequest;
 use mcp_types::ElicitRequestParamsRequestedSchema;
-use mcp_types::JSONRPCMessage;
 use mcp_types::JSONRPC_VERSION;
+use mcp_types::JSONRPCMessage;
 use mcp_types::JSONRPCRequest;
 use mcp_types::JSONRPCResponse;
 use mcp_types::ListToolsResult;
@@ -61,13 +61,18 @@ async fn tools_list_exposes_acp_entries() -> anyhow::Result<()> {
     .await??;
 
     let list_result: ListToolsResult = serde_json::from_value(response.result)?;
-    let tool_names: HashSet<&str> = list_result.tools.iter().map(|tool| tool.name.as_str()).collect();
+    let tool_names: HashSet<&str> = list_result
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect();
 
     for required in [
         "codex",
         "codex-reply",
         acp::AGENT_METHOD_NAMES.session_new,
         acp::AGENT_METHOD_NAMES.session_prompt,
+        "spec_consensus_check",
     ] {
         assert!(
             tool_names.contains(required),
@@ -239,10 +244,7 @@ async fn acp_prompt_round_trip() -> anyhow::Result<()> {
     });
 
     let new_session_request_id = process
-        .send_tool_call(
-            acp::AGENT_METHOD_NAMES.session_new,
-            Some(new_session_args),
-        )
+        .send_tool_call(acp::AGENT_METHOD_NAMES.session_new, Some(new_session_args))
         .await?;
 
     let new_session_response = timeout(
@@ -305,7 +307,10 @@ async fn acp_prompt_round_trip() -> anyhow::Result<()> {
         }
     }
 
-    assert!(saw_session_update, "acp/prompt should emit at least one session update notification");
+    assert!(
+        saw_session_update,
+        "acp/prompt should emit at least one session update notification"
+    );
 
     Ok(())
 }

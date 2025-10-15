@@ -1,0 +1,68 @@
+[
+  {
+    "name": "doc_index",
+    "command": "npx",
+    "args": [
+      "-y",
+      "open-docs-mcp",
+      "--docsDir",
+      "/home/thetu/code/docs"
+    ],
+    "env": null,
+    "startup_timeout_ms": null
+  },
+  {
+    "name": "git_status",
+    "command": "uvx",
+    "args": [
+      "mcp-server-git",
+      "--repository",
+      "/home/thetu/code"
+    ],
+    "env": {
+      "GIT_PAGER": "cat"
+    },
+    "startup_timeout_ms": null
+  },
+  {
+    "name": "hal",
+    "command": "npx",
+    "args": [
+      "-y",
+      "hal-mcp"
+    ],
+    "env": null,
+    "startup_timeout_ms": null
+  },
+  {
+    "name": "repo_search",
+    "command": "uvx",
+    "args": [
+      "awslabs.git-repo-research-mcp-server@latest"
+    ],
+    "env": null,
+    "startup_timeout_ms": null
+  },
+  {
+    "name": "shell_lite",
+    "command": "npx",
+    "args": [
+      "-y",
+      "super-shell-mcp"
+    ],
+    "env": null,
+    "startup_timeout_ms": null
+  },
+  {
+    "name": "uniprof",
+    "command": "npx",
+    "args": [
+      "-y",
+      "uniprof",
+      "mcp",
+      "run"
+    ],
+    "env": null,
+    "startup_timeout_ms": null
+  }
+]

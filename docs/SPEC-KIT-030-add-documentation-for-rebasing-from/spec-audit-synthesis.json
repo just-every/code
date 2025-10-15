@@ -1,0 +1,16 @@
+{
+  "stage": "spec-audit",
+  "status": "blocked",
+  "summary": "Audit guardrail bootstrap failed because HAL_SECRET_KAVEDARR_API_KEY is not configured; HAL telemetry skipped.",
+  "telemetry": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-030-add-documentation-for-rebasing-from/spec-audit_2025-10-07T01:13:25Z-1589326123.json",
+  "required_actions": [
+    "Provision HAL_SECRET_KAVEDARR_API_KEY and rerun spec-ops-audit with SPEC_OPS_TELEMETRY_HAL=1.",
+    "If HAL credentials remain unavailable, obtain governance approval for SPEC_OPS_HAL_SKIP=1 and record the justification before reattempting audit."
+  ],
+  "consensus": {
+    "agreements": [
+      "All agents identify missing HAL secret as the reason spec-audit cannot proceed."
+    ],
+    "conflicts": []
+  }
+}

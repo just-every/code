@@ -1,0 +1,18 @@
+{
+  "stage": "spec-audit",
+  "prompt_version": "20251002-audit-a",
+  "agent": "code",
+  "model": "code-cli",
+  "model_release": "2025-10-14",
+  "reasoning_mode": "orchestration",
+  "synthesis_summary": "Audit confirms 2025-10-14 rehearsal bundle includes telemetry for all stages plus supporting artefacts (policy log, HAL mock, size report). Unlock remains blocked pending clean policy reruns and optional live HAL check.",
+  "action_items": [
+    "Log audit outcome in docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-045-mini/spec-audit_synthesis.json",
+    "Coordinate clean policy rerun before unlock",
+    "Capture unlock telemetry after prerequisites satisfied"
+  ],
+  "consensus": {
+    "agreements": ["Evidence bundle complete", "Unlock contingent on follow-up"],
+    "conflicts": []
+  }
+}

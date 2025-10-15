@@ -1,0 +1,133 @@
+{
+  "tools": [
+    {
+      "description": "Enable crawling for a specific doc",
+      "inputSchema": {
+        "properties": {
+          "name": {
+            "description": "Name of the doc to enable",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "enable_doc"
+    },
+    {
+      "description": "Disable crawling for a specific doc",
+      "inputSchema": {
+        "properties": {
+          "name": {
+            "description": "Name of the doc to disable",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "disable_doc"
+    },
+    {
+      "description": "Start crawling enabled docs",
+      "inputSchema": {
+        "properties": {
+          "force": {
+            "description": "Whether to force re-crawl all docs, ignoring previous crawl records",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "crawl_docs"
+    },
+    {
+      "description": "Build search index for docs",
+      "inputSchema": {
+        "properties": {
+          "force": {
+            "description": "Whether to force rebuild index",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "build_index"
+    },
+    {
+      "description": "Search documentation",
+      "inputSchema": {
+        "properties": {
+          "doc_name": {
+            "description": "Filter by document category",
+            "type": "string"
+          },
+          "max_results": {
+            "default": 3,
+            "description": "Maximum number of results",
+            "type": "number"
+          },
+          "offset": {
+            "default": 0,
+            "description": "Number of results to skip",
+            "type": "number"
+          },
+          "query": {
+            "description": "Search query",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "search_docs"
+    },
+    {
+      "description": "Build search index for docs",
+      "inputSchema": {
+        "properties": {
+          "force": {
+            "description": "Whether to force rebuild index",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "build_index"
+    },
+    {
+      "description": "List all enabled docs with their cache status",
+      "inputSchema": {
+        "properties": {
+          "verbose": {
+            "default": false,
+            "description": "Whether to show detailed information",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_enabled_docs"
+    },
+    {
+      "description": "List all available docs including disabled ones",
+      "inputSchema": {
+        "properties": {
+          "verbose": {
+            "default": false,
+            "description": "Whether to show detailed information",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_all_docs"
+    }
+  ]
+}

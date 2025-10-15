@@ -3,8 +3,8 @@
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::user_approval_widget::ApprovalRequest;
-use bottom_pane_view::BottomPaneView;
 use crate::util::buffer::fill_rect;
+use bottom_pane_view::BottomPaneView;
 use codex_core::protocol::TokenUsage;
 use codex_file_search::FileMatch;
 use crossterm::event::KeyEvent;
@@ -13,39 +13,39 @@ use ratatui::layout::Rect;
 use ratatui::widgets::WidgetRef;
 use std::time::Duration;
 
+mod agent_editor_view;
+mod agents_overview_view;
 mod approval_modal_view;
 mod bottom_pane_view;
 mod chat_composer;
 mod chat_composer_history;
 pub mod chrome_selection_view;
-mod diff_popup;
-mod custom_prompt_view;
 mod command_popup;
+mod custom_prompt_view;
+mod diff_popup;
 mod file_search_popup;
-mod paste_burst;
+pub mod list_selection_view;
 mod live_ring_widget;
-mod popup_consts;
-mod agent_editor_view;
-mod agents_overview_view;
 mod model_selection_view;
+mod paste_burst;
+mod popup_consts;
 mod scroll_state;
 mod selection_popup_common;
-pub mod list_selection_view;
-pub(crate) use list_selection_view::SelectionAction;
 pub(crate) use custom_prompt_view::CustomPromptView;
-pub mod resume_selection_view;
+pub(crate) use list_selection_view::SelectionAction;
 pub mod agents_settings_view;
 mod github_settings_view;
-pub mod mcp_settings_view;
 mod login_accounts_view;
+pub mod mcp_settings_view;
+pub mod resume_selection_view;
 // no direct use of list_selection_view or its items here
-mod textarea;
 pub mod form_text_field;
+mod textarea;
 mod theme_selection_view;
-mod verbosity_selection_view;
-pub(crate) mod validation_settings_view;
-mod update_settings_view;
 mod undo_restore_view;
+mod update_settings_view;
+pub(crate) mod validation_settings_view;
+mod verbosity_selection_view;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CancellationEvent {
@@ -56,24 +56,21 @@ pub(crate) enum CancellationEvent {
 pub(crate) use chat_composer::ChatComposer;
 pub(crate) use chat_composer::InputResult;
 pub(crate) use login_accounts_view::{
-    LoginAccountsState,
-    LoginAccountsView,
-    LoginAddAccountState,
-    LoginAddAccountView,
+    LoginAccountsState, LoginAccountsView, LoginAddAccountState, LoginAddAccountView,
 };
 
 pub(crate) use update_settings_view::{UpdateSettingsView, UpdateSharedState};
 
-use codex_core::protocol::Op;
 use approval_modal_view::ApprovalModalView;
 use codex_common::model_presets::ModelPreset;
 use codex_core::config_types::ReasoningEffort;
 use codex_core::config_types::TextVerbosity;
 use codex_core::config_types::ThemeName;
+use codex_core::protocol::Op;
 use model_selection_view::ModelSelectionView;
 use theme_selection_view::ThemeSelectionView;
-use verbosity_selection_view::VerbositySelectionView;
 pub(crate) use undo_restore_view::UndoRestoreView;
+use verbosity_selection_view::VerbositySelectionView;
 
 /// Pane displayed in the lower half of the chat UI.
 pub(crate) struct BottomPane<'a> {
@@ -144,7 +141,8 @@ impl BottomPane<'_> {
         selected_index: usize,
     ) {
         use agents_overview_view::AgentsOverviewView;
-        let view = AgentsOverviewView::new(agents, commands, selected_index, self.app_event_tx.clone());
+        let view =
+            AgentsOverviewView::new(agents, commands, selected_index, self.app_event_tx.clone());
         self.active_view = Some(Box::new(view));
         self.status_view_active = false;
         self.request_redraw();
@@ -222,12 +220,13 @@ impl BottomPane<'_> {
         } else {
             // Optionally add 1 for the empty line above the composer
             let spacer = if self.top_spacer_enabled { 1 } else { 0 };
-            (spacer + self.composer.desired_height(width), Self::BOTTOM_PAD_LINES)
+            (
+                spacer + self.composer.desired_height(width),
+                Self::BOTTOM_PAD_LINES,
+            )
         };
 
-        ring_h
-            .saturating_add(view_height)
-            .saturating_add(pad_lines)
+        ring_h.saturating_add(view_height).saturating_add(pad_lines)
     }
 
     pub fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
@@ -289,22 +288,30 @@ impl BottomPane<'_> {
     /// Attempt to navigate history upwards from the composer. Returns true if consumed.
     pub(crate) fn try_history_up(&mut self) -> bool {
         let consumed = self.composer.try_history_up();
-        if consumed { self.request_redraw(); }
+        if consumed {
+            self.request_redraw();
+        }
         consumed
     }
 
     /// Attempt to navigate history downwards from the composer. Returns true if consumed.
     pub(crate) fn try_history_down(&mut self) -> bool {
         let consumed = self.composer.try_history_down();
-        if consumed { self.request_redraw(); }
+        if consumed {
+            self.request_redraw();
+        }
         consumed
     }
 
     /// Returns true if the composer is currently browsing history.
-    pub(crate) fn history_is_browsing(&self) -> bool { self.composer.history_is_browsing() }
+    pub(crate) fn history_is_browsing(&self) -> bool {
+        self.composer.history_is_browsing()
+    }
 
     /// After a chat scroll-up, make the next Down key scroll chat instead of moving within input.
-    pub(crate) fn mark_next_down_scrolls_history(&mut self) { self.composer.mark_next_down_scrolls_history(); }
+    pub(crate) fn mark_next_down_scrolls_history(&mut self) {
+        self.composer.mark_next_down_scrolls_history();
+    }
 
     /// Handle Ctrl-C in the bottom pane. If a modal view is active it gets a
     /// chance to consume the event (e.g. to dismiss itself).
@@ -360,7 +367,9 @@ impl BottomPane<'_> {
     /// Attempt to close the file-search popup if visible. Returns true if closed.
     pub(crate) fn close_file_popup_if_active(&mut self) -> bool {
         let closed = self.composer.close_file_popup_if_active();
-        if closed { self.request_redraw(); }
+        if closed {
+            self.request_redraw();
+        }
         closed
     }
 
@@ -516,7 +525,12 @@ impl BottomPane<'_> {
         current_model: String,
         current_effort: ReasoningEffort,
     ) {
-        let view = ModelSelectionView::new(presets, current_model, current_effort, self.app_event_tx.clone());
+        let view = ModelSelectionView::new(
+            presets,
+            current_model,
+            current_effort,
+            self.app_event_tx.clone(),
+        );
         self.active_view = Some(Box::new(view));
         // Status shown in composer title now
         self.status_view_active = false;
@@ -589,16 +603,31 @@ impl BottomPane<'_> {
         rows: Vec<resume_selection_view::ResumeRow>,
     ) {
         use resume_selection_view::ResumeSelectionView;
-        let view = ResumeSelectionView::new(title, subtitle.unwrap_or_default(), rows, self.app_event_tx.clone());
+        let view = ResumeSelectionView::new(
+            title,
+            subtitle.unwrap_or_default(),
+            rows,
+            self.app_event_tx.clone(),
+        );
         self.active_view = Some(Box::new(view));
         self.status_view_active = false;
         self.request_redraw()
     }
 
     /// Show GitHub settings (token status + watcher toggle)
-    pub fn show_github_settings(&mut self, watcher_enabled: bool, token_status: String, ready: bool) {
+    pub fn show_github_settings(
+        &mut self,
+        watcher_enabled: bool,
+        token_status: String,
+        ready: bool,
+    ) {
         use github_settings_view::GithubSettingsView;
-        let view = GithubSettingsView::new(watcher_enabled, token_status, ready, self.app_event_tx.clone());
+        let view = GithubSettingsView::new(
+            watcher_enabled,
+            token_status,
+            ready,
+            self.app_event_tx.clone(),
+        );
         self.active_view = Some(Box::new(view));
         self.status_view_active = false;
         self.request_redraw();
@@ -611,7 +640,10 @@ impl BottomPane<'_> {
     }
 
     /// Show MCP servers status/toggle UI
-    pub fn show_mcp_settings(&mut self, rows: crate::bottom_pane::mcp_settings_view::McpServerRows) {
+    pub fn show_mcp_settings(
+        &mut self,
+        rows: crate::bottom_pane::mcp_settings_view::McpServerRows,
+    ) {
         use mcp_settings_view::McpSettingsView;
         let view = McpSettingsView::new(rows, self.app_event_tx.clone());
         self.active_view = Some(Box::new(view));
@@ -641,7 +673,13 @@ impl BottomPane<'_> {
         is_new: bool,
     ) {
         use crate::bottom_pane::agents_settings_view::SubagentEditorView;
-        let view = SubagentEditorView::new_with_data(name, available_agents, existing, is_new, self.app_event_tx.clone());
+        let view = SubagentEditorView::new_with_data(
+            name,
+            available_agents,
+            existing,
+            is_new,
+            self.app_event_tx.clone(),
+        );
         self.active_view = Some(Box::new(view));
         self.status_view_active = false;
         self.request_redraw();
@@ -659,7 +697,9 @@ impl BottomPane<'_> {
         self.composer.flash_footer_notice(text);
         // Ask app to schedule a redraw shortly to clear the notice automatically
         self.app_event_tx
-            .send(AppEvent::ScheduleFrameIn(std::time::Duration::from_millis(2100)));
+            .send(AppEvent::ScheduleFrameIn(std::time::Duration::from_millis(
+                2100,
+            )));
         self.request_redraw();
     }
 
@@ -737,7 +777,7 @@ impl BottomPane<'_> {
     pub(crate) fn clear_live_ring(&mut self) {
         self.live_ring = None;
     }
-    
+
     // test helper removed
 
     /// Ensure input focus is maintained, especially after redraws or content updates
@@ -850,18 +890,18 @@ impl WidgetRef for &BottomPane<'_> {
 
             // Add horizontal padding (2 chars on each side) for Message input
             let horizontal_padding = 1u16;
-        let composer_rect = Rect {
-            x: area.x + horizontal_padding,
-            y: area.y + y_offset,
-            width: area.width.saturating_sub(horizontal_padding * 2),
-            // Reserve bottom padding
-            height: (area.height - y_offset)
-                - BottomPane::BOTTOM_PAD_LINES.min((area.height - y_offset).saturating_sub(1)),
-        };
-        // Paint the composer area background before rendering widgets
-        let comp_bg = ratatui::style::Style::default().bg(crate::colors::background());
-        fill_rect(buf, composer_rect, None, comp_bg);
-        (&self.composer).render_ref(composer_rect, buf);
+            let composer_rect = Rect {
+                x: area.x + horizontal_padding,
+                y: area.y + y_offset,
+                width: area.width.saturating_sub(horizontal_padding * 2),
+                // Reserve bottom padding
+                height: (area.height - y_offset)
+                    - BottomPane::BOTTOM_PAD_LINES.min((area.height - y_offset).saturating_sub(1)),
+            };
+            // Paint the composer area background before rendering widgets
+            let comp_bg = ratatui::style::Style::default().bg(crate::colors::background());
+            fill_rect(buf, composer_rect, None, comp_bg);
+            (&self.composer).render_ref(composer_rect, buf);
         }
     }
 }

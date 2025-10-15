@@ -17,9 +17,9 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 
+use super::BottomPane;
 use super::bottom_pane_view::{BottomPaneView, ConditionalUpdate};
 use super::form_text_field::FormTextField;
-use super::BottomPane;
 
 /// Interactive view shown for `/login` to manage stored accounts.
 pub(crate) struct LoginAccountsView {
@@ -27,9 +27,20 @@ pub(crate) struct LoginAccountsView {
 }
 
 impl LoginAccountsView {
-    pub fn new(codex_home: PathBuf, app_event_tx: AppEventSender) -> (Self, Rc<RefCell<LoginAccountsState>>) {
-        let state = Rc::new(RefCell::new(LoginAccountsState::new(codex_home, app_event_tx)));
-        (Self { state: state.clone() }, state)
+    pub fn new(
+        codex_home: PathBuf,
+        app_event_tx: AppEventSender,
+    ) -> (Self, Rc<RefCell<LoginAccountsState>>) {
+        let state = Rc::new(RefCell::new(LoginAccountsState::new(
+            codex_home,
+            app_event_tx,
+        )));
+        (
+            Self {
+                state: state.clone(),
+            },
+            state,
+        )
     }
 }
 
@@ -119,7 +130,9 @@ impl LoginAccountsState {
     fn reload_accounts(&mut self) {
         match auth_accounts::list_accounts(&self.codex_home) {
             Ok(raw_accounts) => {
-                let active_id = auth_accounts::get_active_account_id(&self.codex_home).ok().flatten();
+                let active_id = auth_accounts::get_active_account_id(&self.codex_home)
+                    .ok()
+                    .flatten();
                 self.active_account_id = active_id.clone();
                 self.accounts = raw_accounts
                     .into_iter()
@@ -177,12 +190,9 @@ impl LoginAccountsState {
         }
 
         if let Some(api_key) = auth_json.openai_api_key.as_ref() {
-            if let Err(err) = auth_accounts::upsert_api_key_account(
-                &self.codex_home,
-                api_key.clone(),
-                None,
-                true,
-            ) {
+            if let Err(err) =
+                auth_accounts::upsert_api_key_account(&self.codex_home, api_key.clone(), None, true)
+            {
                 self.feedback = Some(Feedback {
                     message: format!("Failed to record API key login: {err}"),
                     is_error: true,
@@ -233,7 +243,9 @@ impl LoginAccountsState {
             KeyCode::Char('d') => {
                 if self.selected < account_count {
                     if let Some(account) = self.accounts.get(self.selected) {
-                        self.mode = ViewMode::ConfirmRemove { account_id: account.id.clone() };
+                        self.mode = ViewMode::ConfirmRemove {
+                            account_id: account.id.clone(),
+                        };
                     }
                 }
             }
@@ -290,8 +302,9 @@ impl LoginAccountsState {
                     is_error: false,
                 });
                 self.reload_accounts();
-                self.app_event_tx
-                    .send(AppEvent::LoginUsingChatGptChanged { using_chatgpt_auth: mode == AuthMode::ChatGPT });
+                self.app_event_tx.send(AppEvent::LoginUsingChatGptChanged {
+                    using_chatgpt_auth: mode == AuthMode::ChatGPT,
+                });
                 true
             }
             Err(err) => {
@@ -323,11 +336,16 @@ impl LoginAccountsState {
                 let using_chatgpt = self
                     .active_account_id
                     .as_ref()
-                    .and_then(|id| auth_accounts::find_account(&self.codex_home, id).ok().flatten())
+                    .and_then(|id| {
+                        auth_accounts::find_account(&self.codex_home, id)
+                            .ok()
+                            .flatten()
+                    })
                     .map(|acc| acc.mode == AuthMode::ChatGPT)
                     .unwrap_or(false);
-                self.app_event_tx
-                    .send(AppEvent::LoginUsingChatGptChanged { using_chatgpt_auth: using_chatgpt });
+                self.app_event_tx.send(AppEvent::LoginUsingChatGptChanged {
+                    using_chatgpt_auth: using_chatgpt,
+                });
             }
             Ok(None) => {
                 self.feedback = Some(Feedback {
@@ -389,7 +407,11 @@ impl LoginAccountsState {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(crate::colors::border()))
-            .style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()))
+            .style(
+                Style::default()
+                    .bg(crate::colors::background())
+                    .fg(crate::colors::text()),
+            )
             .title(" Manage Accounts ")
             .title_alignment(Alignment::Center);
         let inner = block.inner(area);
@@ -398,11 +420,18 @@ impl LoginAccountsState {
         let mut lines = Vec::new();
         if let Some(feedback) = &self.feedback {
             let style = if feedback.is_error {
-                Style::default().fg(crate::colors::error()).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(crate::colors::error())
+                    .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(crate::colors::success()).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(crate::colors::success())
+                    .add_modifier(Modifier::BOLD)
             };
-            lines.push(Line::from(vec![Span::styled(feedback.message.clone(), style)]));
+            lines.push(Line::from(vec![Span::styled(
+                feedback.message.clone(),
+                style,
+            )]));
             lines.push(Line::from(""));
         }
 
@@ -488,24 +517,47 @@ impl LoginAccountsState {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::styled("↑↓", Style::default().fg(crate::colors::function())),
-            Span::styled(" Navigate  ", Style::default().fg(crate::colors::text_dim())),
+            Span::styled(
+                " Navigate  ",
+                Style::default().fg(crate::colors::text_dim()),
+            ),
             Span::styled("Enter", Style::default().fg(crate::colors::success())),
             Span::styled(" Select  ", Style::default().fg(crate::colors::text_dim())),
-            Span::styled("d", Style::default().fg(crate::colors::warning()).add_modifier(Modifier::BOLD)),
-            Span::styled(" Disconnect  ", Style::default().fg(crate::colors::text_dim())),
-            Span::styled("Esc", Style::default().fg(crate::colors::error()).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "d",
+                Style::default()
+                    .fg(crate::colors::warning())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " Disconnect  ",
+                Style::default().fg(crate::colors::text_dim()),
+            ),
+            Span::styled(
+                "Esc",
+                Style::default()
+                    .fg(crate::colors::error())
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" Close", Style::default().fg(crate::colors::text_dim())),
         ]));
 
         if matches!(self.mode, ViewMode::ConfirmRemove { .. }) {
             lines.push(Line::from(""));
-            lines.push(Line::from(vec![Span::styled("Confirm removal?", Style::default().add_modifier(Modifier::BOLD))]));
+            lines.push(Line::from(vec![Span::styled(
+                "Confirm removal?",
+                Style::default().add_modifier(Modifier::BOLD),
+            )]));
             lines.push(Line::from("Press Enter to disconnect or Esc to cancel."));
         }
 
         Paragraph::new(lines)
             .alignment(Alignment::Left)
-            .style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()))
+            .style(
+                Style::default()
+                    .bg(crate::colors::background())
+                    .fg(crate::colors::text()),
+            )
             .render(
                 Rect {
                     x: inner.x.saturating_add(1),
@@ -531,9 +583,20 @@ pub(crate) struct LoginAddAccountView {
 }
 
 impl LoginAddAccountView {
-    pub fn new(codex_home: PathBuf, app_event_tx: AppEventSender) -> (Self, Rc<RefCell<LoginAddAccountState>>) {
-        let state = Rc::new(RefCell::new(LoginAddAccountState::new(codex_home, app_event_tx)));
-        (Self { state: state.clone() }, state)
+    pub fn new(
+        codex_home: PathBuf,
+        app_event_tx: AppEventSender,
+    ) -> (Self, Rc<RefCell<LoginAddAccountState>>) {
+        let state = Rc::new(RefCell::new(LoginAddAccountState::new(
+            codex_home,
+            app_event_tx,
+        )));
+        (
+            Self {
+                state: state.clone(),
+            },
+            state,
+        )
     }
 }
 
@@ -608,7 +671,9 @@ impl LoginAddAccountState {
                         self.app_event_tx.send(AppEvent::LoginStartChatGpt);
                     } else {
                         self.feedback = None;
-                        self.step = AddStep::ApiKey { field: FormTextField::new_single_line() };
+                        self.step = AddStep::ApiKey {
+                            field: FormTextField::new_single_line(),
+                        };
                     }
                 }
                 _ => {}
@@ -633,8 +698,9 @@ impl LoginAddAccountState {
                                 });
                                 self.app_event_tx
                                     .send_background_event("Added API key account");
-                                self.app_event_tx
-                                    .send(AppEvent::LoginUsingChatGptChanged { using_chatgpt_auth: false });
+                                self.app_event_tx.send(AppEvent::LoginUsingChatGptChanged {
+                                    using_chatgpt_auth: false,
+                                });
                                 self.finish_and_show_accounts();
                             }
                             Err(err) => {
@@ -696,7 +762,11 @@ impl LoginAddAccountState {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(crate::colors::border()))
-            .style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()))
+            .style(
+                Style::default()
+                    .bg(crate::colors::background())
+                    .fg(crate::colors::text()),
+            )
             .title(" Add Account ")
             .title_alignment(Alignment::Center);
         let inner = block.inner(area);
@@ -705,11 +775,18 @@ impl LoginAddAccountState {
         let mut lines = Vec::new();
         if let Some(feedback) = &self.feedback {
             let style = if feedback.is_error {
-                Style::default().fg(crate::colors::error()).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(crate::colors::error())
+                    .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(crate::colors::success()).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(crate::colors::success())
+                    .add_modifier(Modifier::BOLD)
             };
-            lines.push(Line::from(vec![Span::styled(feedback.message.clone(), style)]));
+            lines.push(Line::from(vec![Span::styled(
+                feedback.message.clone(),
+                style,
+            )]));
             lines.push(Line::from(""));
         }
 
@@ -721,23 +798,40 @@ impl LoginAddAccountState {
                 for (idx, option) in options.iter().enumerate() {
                     let mut spans = Vec::new();
                     if idx == *selected {
-                        spans.push(Span::styled("› ", Style::default().fg(crate::colors::primary())));
-                        spans.push(
-                            Span::styled((*option).to_string(), Style::default().fg(crate::colors::primary()).add_modifier(Modifier::BOLD)),
-                        );
+                        spans.push(Span::styled(
+                            "› ",
+                            Style::default().fg(crate::colors::primary()),
+                        ));
+                        spans.push(Span::styled(
+                            (*option).to_string(),
+                            Style::default()
+                                .fg(crate::colors::primary())
+                                .add_modifier(Modifier::BOLD),
+                        ));
                     } else {
                         spans.push(Span::raw("  "));
-                        spans.push(Span::styled((*option).to_string(), Style::default().fg(crate::colors::text_dim())));
+                        spans.push(Span::styled(
+                            (*option).to_string(),
+                            Style::default().fg(crate::colors::text_dim()),
+                        ));
                     }
                     lines.push(Line::from(spans));
                 }
                 lines.push(Line::from(""));
                 lines.push(Line::from(vec![
                     Span::styled("↑↓", Style::default().fg(crate::colors::function())),
-                    Span::styled(" Navigate  ", Style::default().fg(crate::colors::text_dim())),
+                    Span::styled(
+                        " Navigate  ",
+                        Style::default().fg(crate::colors::text_dim()),
+                    ),
                     Span::styled("Enter", Style::default().fg(crate::colors::success())),
                     Span::styled(" Select  ", Style::default().fg(crate::colors::text_dim())),
-                    Span::styled("Esc", Style::default().fg(crate::colors::error()).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        "Esc",
+                        Style::default()
+                            .fg(crate::colors::error())
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(" Back", Style::default().fg(crate::colors::text_dim())),
                 ]));
             }
@@ -748,12 +842,19 @@ impl LoginAddAccountState {
                 lines.push(Line::from(vec![
                     Span::styled("Enter", Style::default().fg(crate::colors::success())),
                     Span::styled(" Save  ", Style::default().fg(crate::colors::text_dim())),
-                    Span::styled("Esc", Style::default().fg(crate::colors::error()).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        "Esc",
+                        Style::default()
+                            .fg(crate::colors::error())
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(" Cancel", Style::default().fg(crate::colors::text_dim())),
                 ]));
             }
             AddStep::Waiting { auth_url } => {
-                lines.push(Line::from("Finish signing in with ChatGPT in your browser."));
+                lines.push(Line::from(
+                    "Finish signing in with ChatGPT in your browser.",
+                ));
                 if let Some(url) = auth_url {
                     lines.push(Line::from(vec![Span::styled(
                         url.clone(),
@@ -762,15 +863,27 @@ impl LoginAddAccountState {
                 }
                 lines.push(Line::from(""));
                 lines.push(Line::from(vec![
-                    Span::styled("Esc", Style::default().fg(crate::colors::error()).add_modifier(Modifier::BOLD)),
-                    Span::styled(" Cancel login", Style::default().fg(crate::colors::text_dim())),
+                    Span::styled(
+                        "Esc",
+                        Style::default()
+                            .fg(crate::colors::error())
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        " Cancel login",
+                        Style::default().fg(crate::colors::text_dim()),
+                    ),
                 ]));
             }
         }
 
         Paragraph::new(lines)
             .alignment(Alignment::Left)
-            .style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()))
+            .style(
+                Style::default()
+                    .bg(crate::colors::background())
+                    .fg(crate::colors::text()),
+            )
             .render(
                 Rect {
                     x: inner.x.saturating_add(1),
@@ -783,7 +896,9 @@ impl LoginAddAccountState {
     }
 
     pub fn acknowledge_chatgpt_started(&mut self, auth_url: String) {
-        self.step = AddStep::Waiting { auth_url: Some(auth_url) };
+        self.step = AddStep::Waiting {
+            auth_url: Some(auth_url),
+        };
         self.feedback = Some(Feedback {
             message: "Browser opened. Complete sign-in to finish.".to_string(),
             is_error: false,
@@ -792,22 +907,32 @@ impl LoginAddAccountState {
 
     pub fn acknowledge_chatgpt_failed(&mut self, error: String) {
         self.step = AddStep::Choose { selected: 0 };
-        self.feedback = Some(Feedback { message: error, is_error: true });
+        self.feedback = Some(Feedback {
+            message: error,
+            is_error: true,
+        });
     }
 
     pub fn on_chatgpt_complete(&mut self, result: Result<(), String>) {
         match result {
             Ok(()) => {
-                self.feedback = Some(Feedback { message: "ChatGPT account connected".to_string(), is_error: false });
+                self.feedback = Some(Feedback {
+                    message: "ChatGPT account connected".to_string(),
+                    is_error: false,
+                });
                 self.app_event_tx
                     .send_background_event("ChatGPT account connected");
-                self.app_event_tx
-                    .send(AppEvent::LoginUsingChatGptChanged { using_chatgpt_auth: true });
+                self.app_event_tx.send(AppEvent::LoginUsingChatGptChanged {
+                    using_chatgpt_auth: true,
+                });
                 self.finish_and_show_accounts();
             }
             Err(err) => {
                 self.step = AddStep::Choose { selected: 0 };
-                self.feedback = Some(Feedback { message: err, is_error: true });
+                self.feedback = Some(Feedback {
+                    message: err,
+                    is_error: true,
+                });
             }
         }
     }

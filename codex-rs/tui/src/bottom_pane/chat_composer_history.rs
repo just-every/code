@@ -65,11 +65,7 @@ impl ChatComposerHistory {
             return;
         }
         // Avoid inserting a duplicate if identical to the previous entry.
-        if self
-            .local_history
-            .last()
-            .is_some_and(|prev| prev == text)
-        {
+        if self.local_history.last().is_some_and(|prev| prev == text) {
             return;
         }
         self.local_history.push(text.to_string());
@@ -86,7 +82,9 @@ impl ChatComposerHistory {
     }
 
     /// Returns true if the user is currently browsing history.
-    pub fn is_browsing(&self) -> bool { self.history_cursor.is_some() }
+    pub fn is_browsing(&self) -> bool {
+        self.history_cursor.is_some()
+    }
 
     /// Should Up/Down key presses be interpreted as history navigation given
     /// the current content and cursor position of `textarea`?

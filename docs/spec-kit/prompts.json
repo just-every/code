@@ -1,0 +1,91 @@
+{
+  "spec-plan": {
+    "version": "20251002-plan-a",
+    "gemini": {
+      "role": "Researcher",
+      "prompt": "Context:\n${CONTEXT}\n\nTask:\nSurvey SPEC ${SPEC_ID}. Summarize:\n1. Acceptance criteria and evidence requirements.\n2. Conflicts, gaps, stale telemetry, blocked tasks.\n3. Related files/modules/tests worth touching.\n4. Questions to clarify before planning.\nKeep under 400 words. Cite file paths or memory IDs.\n\nOutput JSON:\n{\n  \"stage\": \"spec-plan\",\n  \"prompt_version\": \"${PROMPT_VERSION}\",\n  \"agent\": \"gemini\",\n  \"model\": \"${MODEL_ID}\",\n  \"model_release\": \"${MODEL_RELEASE}\",\n  \"reasoning_mode\": \"${REASONING_MODE}\",\n  \"research_summary\": [ { \"topic\": string, \"details\": string } ],\n  \"questions\": [ string ]\n}\nPersist to local-memory (spec-tracker)."
+    },
+    "claude": {
+      "role": "Synthesizer",
+      "prompt": "Inputs:\n- SPEC packet\n- Gemini research (${PREVIOUS_OUTPUTS.gemini})\n\nProduce JSON:\n{\n  \"stage\": \"spec-plan\",\n  \"prompt_version\": \"${PROMPT_VERSION}\",\n  \"agent\": \"claude\",\n  \"model\": \"${MODEL_ID}\",\n  \"model_release\": \"${MODEL_RELEASE}\",\n  \"reasoning_mode\": \"${REASONING_MODE}\",\n  \"work_breakdown\": [ { \"step\": string, \"rationale\": string, \"success_signal\": string } ],\n  \"acceptance_mapping\": [ { \"requirement\": string, \"validation_step\": string, \"artifact\": string } ],\n  \"risks\": [ { \"risk\": string, \"owner\": string, \"mitigation\": string } ]\n}\nFill arrays even if empty. Use ${PREVIOUS_OUTPUTS.gemini} for context references."
+    },
+    "gpt_pro": {
+      "role": "Executor & QA",
+      "prompt": "Inputs:\n- SPEC packet\n- Gemini and Claude outputs (${PREVIOUS_OUTPUTS})\n\nValidate feasibility and emit JSON:\n{\n  \"stage\": \"spec-plan\",\n  \"prompt_version\": \"${PROMPT_VERSION}\",\n  \"agent\": \"gpt_pro\",\n  \"model\": \"${MODEL_ID}\",\n  \"model_release\": \"${MODEL_RELEASE}\",\n  \"reasoning_mode\": \"${REASONING_MODE}\",\n  \"feasibility_notes\": [ string ],\n  \"missing_items\": [ string ],\n  \"final_plan\": {\n    \"work_breakdown\": [...copy of consensus steps...],\n    \"acceptance_mapping\": [...],\n    \"risks\": [...],\n    \"consensus\": { \"agreements\": [ string ], \"conflicts\": [ string ] }\n  }\n}\nReference local evidence paths."
+    }
+  },
+  "spec-tasks": {
+    "version": "20251002-tasks-a",
+    "gemini": {
+      "role": "Researcher",
+      "prompt": "Context:\n${CONTEXT}\n\nOutput JSON:\n{\n  \"stage\": \"spec-tasks\",\n  \"prompt_version\": \"${PROMPT_VERSION}\",\n  \"agent\": \"gemini\",\n  \"model\": \"${MODEL_ID}\",\n  \"model_release\": \"${MODEL_RELEASE}\",\n  \"reasoning_mode\": \"${REASONING_MODE}\",\n  \"surfaces\": [ { \"area\": string, \"files\": [string], \"tests\": [string], \"notes\": string } ],\n  \"dependencies\": [ string ],\n  \"spec_status\": [ { \"task_id\": string, \"status\": string } ]\n}\nIdentify dependencies or blockers for ${SPEC_ID}."
+    },
+    "claude": {
+      "role": "Synthesizer",
+      "prompt": "Inputs: SPEC packet, Gemini analysis (${PREVIOUS_OUTPUTS.gemini}), Plan summary (${PREVIOUS_OUTPUTS.plan}).\n\nProduce JSON:\n{\n  \"stage\": \"spec-tasks\",\n  \"prompt_version\": \"${PROMPT_VERSION}\",\n  \"agent\": \"claude\",\n  \"model\": \"${MODEL_ID}\",\n  \"model_release\": \"${MODEL_RELEASE}\",\n  \"reasoning_mode\": \"${REASONING_MODE}\",\n  \"tasks\": [ { \"order\": number, \"task_id\": string, \"title\": string, \"status\": string, \"validation_step\": string, \"artifact\": string, \"notes\": string } ],\n  \"acceptance_coverage\": [ string ],\n  \"followups\": [ string ]\n}\nEnsure acceptance mapping coverage and include lint/tests."
+    },
+    "gpt_pro": {
+      "role": "Executor & QA",
+      "prompt": "Review Gemini/Claude JSON outputs, verify guardrail requirements (branch cleanliness, lint/test hooks). Emit JSON:\n{\n  \"stage\": \"spec-tasks\",\n  \"prompt_version\": \"${PROMPT_VERSION}\",\n  \"agent\": \"gpt_pro\",\n  \"model\": \"${MODEL_ID}\",\n  \"model_release\": \"${MODEL_RELEASE}\",\n  \"reasoning_mode\": \"${REASONING_MODE}\",\n  \"validated_tasks\": [...],\n  \"command_plan\": [ string ],\n  \"consensus\": { \"agreements\": [ string ], \"conflicts\": [ string ] }\n}\nReference SPEC.md update steps and docs paths."
+    }
+  },
+  "spec-implement": {
+    "version": "20251002-implement-a",
+    "gemini": {
+      "prompt": "Given ${CONTEXT} and task list (${PREVIOUS_OUTPUTS.tasks}), emit JSON:\n{\n  \"stage\": \"spec-implement\",\n  \"prompt_version\": \"${PROMPT_VERSION}\",\n  \"agent\": \"gemini\",\n  \"model\": \"${MODEL_ID}\",\n  \"model_release\": \"${MODEL_RELEASE}\",\n  \"reasoning_mode\": \"${REASONING_MODE}\",\n  \"code_paths\": [ { \"area\": string, \"files\": [string], \"notes\": string } ],\n  \"recent_changes\": [ string ],\n  \"edge_cases\": [ string ],\n  \"tests\": [ string ]\n}\nFlag tricky integration points." 
+    },
+    "claude": {
+      "prompt": "Outline implementation strategy as JSON:\n{\n  \"stage\": \"spec-implement\",\n  \"prompt_version\": \"${PROMPT_VERSION}\",\n  \"agent\": \"claude\",\n  \"model\": \"${MODEL_ID}\",\n  \"model_release\": \"${MODEL_RELEASE}\",\n  \"reasoning_mode\": \"${REASONING_MODE}\",\n  \"approach\": [ { \"task_id\": string, \"summary\": string } ],\n  \"operations\": [ { \"file\": string, \"change_type\": string, \"description\": string } ],\n  \"validation_plan\": [ { \"command\": string, \"purpose\": string } ]\n}\nReference Gemini findings." 
+    },
+    "gpt_codex": {
+      "prompt": "Emit code diff proposals as JSON:\n{\n  \"stage\": \"spec-implement\",\n  \"prompt_version\": \"${PROMPT_VERSION}\",\n  \"agent\": \"gpt_codex\",\n  \"model\": \"${MODEL_ID}\",\n  \"model_release\": \"${MODEL_RELEASE}\",\n  \"reasoning_mode\": \"${REASONING_MODE}\",\n  \"diff_proposals\": [ { \"path\": string, \"change\": string (diff or summary), \"rationale\": string, \"confidence\": number } ],\n  \"test_commands\": [ string ],\n  \"tool_calls\": [ string ],\n  \"risks\": [ string ]\n}\nKeep output terse and focus on actionable edits." 
+    },
+    "gpt_pro": {
+      "prompt": "Validate feasibility, schedule `/spec-ops-implement`, and output JSON:\n{\n  \"stage\": \"spec-implement\",\n  \"prompt_version\": \"${PROMPT_VERSION}\",\n  \"agent\": \"gpt_pro\",\n  \"model\": \"${MODEL_ID}\",\n  \"model_release\": \"${MODEL_RELEASE}\",\n  \"reasoning_mode\": \"${REASONING_MODE}\",\n  \"checklist\": [ { \"step\": string, \"command\": string } ],\n  \"risks\": [ { \"risk\": string, \"mitigation\": string } ],\n  \"consensus\": { \"agreements\": [ string ], \"conflicts\": [ string ] }\n}\nApply diffs only when orchestrator runs." 
+    }
+  },
+  "spec-validate": {
+    "version": "20251002-validate-a",
+    "gemini": {
+      "prompt": "Summarize telemetry from `/spec-ops-validate` as JSON:\n{\n  \"stage\": \"spec-validate\",\n  \"prompt_version\": \"${PROMPT_VERSION}\",\n  \"agent\": \"gemini\",\n  \"model\": \"${MODEL_ID}\",\n  \"model_release\": \"${MODEL_RELEASE}\",\n  \"reasoning_mode\": \"${REASONING_MODE}\",\n  \"scenarios\": [ { \"name\": string, \"status\": string, \"failures\": [string], \"log\": string } ],\n  \"evidence\": [ string ]\n}" 
+    },
+    "claude": {
+      "prompt": "Crosswalk acceptance criteria vs telemetry results. Output JSON:\n{\n  \"stage\": \"spec-validate\",\n  \"prompt_version\": \"${PROMPT_VERSION}\",\n  \"agent\": \"claude\",\n  \"model\": \"${MODEL_ID}\",\n  \"model_release\": \"${MODEL_RELEASE}\",\n  \"reasoning_mode\": \"${REASONING_MODE}\",\n  \"analysis\": [ { \"requirement\": string, \"status\": string, \"notes\": string } ],\n  \"remediation\": [ string ]\n}" 
+    },
+    "gpt_pro": {
+      "prompt": "Confirm shell outputs, ensure evidence hashes exist, and deliver final decision as JSON:\n{\n  \"stage\": \"spec-validate\",\n  \"prompt_version\": \"${PROMPT_VERSION}\",\n  \"agent\": \"gpt_pro\",\n  \"model\": \"${MODEL_ID}\",\n  \"model_release\": \"${MODEL_RELEASE}\",\n  \"reasoning_mode\": \"${REASONING_MODE}\",\n  \"decision\": string,\n  \"next_actions\": [ string ],\n  \"consensus\": { \"agreements\": [ string ], \"conflicts\": [ string ] }\n}" 
+    }
+  },
+  "spec-audit": {
+    "version": "20251002-audit-a",
+    "gemini": {
+      "prompt": "Collect audit artifacts and emit JSON:\n{\n  \"stage\": \"spec-audit\",\n  \"prompt_version\": \"${PROMPT_VERSION}\",\n  \"agent\": \"gemini\",\n  \"model\": \"${MODEL_ID}\",\n  \"model_release\": \"${MODEL_RELEASE}\",\n  \"reasoning_mode\": \"${REASONING_MODE}\",\n  \"diff_summary\": string,\n  \"telemetry\": [ string ],\n  \"todos\": [ string ],\n  \"compliance_flags\": [ string ]\n}" 
+    },
+    "claude": {
+      "prompt": "Draft audit memo as JSON:\n{\n  \"stage\": \"spec-audit\",\n  \"prompt_version\": \"${PROMPT_VERSION}\",\n  \"agent\": \"claude\",\n  \"model\": \"${MODEL_ID}\",\n  \"model_release\": \"${MODEL_RELEASE}\",\n  \"reasoning_mode\": \"${REASONING_MODE}\",\n  \"decision\": string,\n  \"evidence\": [ { \"name\": string, \"path\": string } ],\n  \"risks\": [ { \"risk\": string, \"mitigation\": string } ],\n  \"open_items\": [ string ]\n}" 
+    },
+    "gpt_pro": {
+      "prompt": "Verify guardrails and output JSON:\n{\n  \"stage\": \"spec-audit\",\n  \"prompt_version\": \"${PROMPT_VERSION}\",\n  \"agent\": \"gpt_pro\",\n  \"model\": \"${MODEL_ID}\",\n  \"model_release\": \"${MODEL_RELEASE}\",\n  \"reasoning_mode\": \"${REASONING_MODE}\",\n  \"checks\": [ { \"item\": string, \"status\": string } ],\n  \"recommendation\": string,\n  \"conditions\": [ string ],\n  \"consensus\": { \"agreements\": [ string ], \"conflicts\": [ string ] }\n}" 
+    }
+  },
+  "spec-unlock": {
+    "version": "20251002-unlock-a",
+    "gemini": {
+      "prompt": "Explain lock context as JSON:\n{\n  \"stage\": \"spec-unlock\",\n  \"prompt_version\": \"${PROMPT_VERSION}\",\n  \"agent\": \"gemini\",\n  \"model\": \"${MODEL_ID}\",\n  \"model_release\": \"${MODEL_RELEASE}\",\n  \"reasoning_mode\": \"${REASONING_MODE}\",\n  \"branch_state\": string,\n  \"pending_work\": [ string ],\n  \"risks\": [ string ]\n}" 
+    },
+    "claude": {
+      "prompt": "Write unlock justification memo as JSON:\n{\n  \"stage\": \"spec-unlock\",\n  \"prompt_version\": \"${PROMPT_VERSION}\",\n  \"agent\": \"claude\",\n  \"model\": \"${MODEL_ID}\",\n  \"model_release\": \"${MODEL_RELEASE}\",\n  \"reasoning_mode\": \"${REASONING_MODE}\",\n  \"rationale\": string,\n  \"safeguards\": [ string ],\n  \"followups\": [ string ]\n}" 
+    },
+    "gpt_pro": {
+      "prompt": "Check guardrail compliance and decide unlock as JSON:\n{\n  \"stage\": \"spec-unlock\",\n  \"prompt_version\": \"${PROMPT_VERSION}\",\n  \"agent\": \"gpt_pro\",\n  \"model\": \"${MODEL_ID}\",\n  \"model_release\": \"${MODEL_RELEASE}\",\n  \"reasoning_mode\": \"${REASONING_MODE}\",\n  \"decision\": string,\n  \"steps\": [ string ],\n  \"consensus\": { \"agreements\": [ string ], \"conflicts\": [ string ] }\n}" 
+    }
+  },
+  "spec-auto": {
+    "version": "20251002-auto-notes-a",
+    "orchestrator_notes": [
+      "Before each stage: ensure guardrail shell succeeded; fan out prompts above; collect outputs.",
+      "After each stage: persist Gemini/Claude/GPT transcripts (with MCP IDs) to evidence dir and local-memory.",
+      "On failure: emit resume token {stage, reason, suggested fix}."
+    ]
+  }
+}

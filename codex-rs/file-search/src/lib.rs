@@ -302,7 +302,10 @@ pub fn run_streaming(
     _prefer_cwd: bool,
 ) -> anyhow::Result<FileSearchResults> {
     if cancel_flag.load(Ordering::Relaxed) {
-        return Ok(FileSearchResults { matches: Vec::new(), total_match_count: 0 });
+        return Ok(FileSearchResults {
+            matches: Vec::new(),
+            total_match_count: 0,
+        });
     }
 
     // Convert NonZeroUsize → NonZero<usize>

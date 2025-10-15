@@ -6,9 +6,9 @@ use codex_core::LocalShellExecAction;
 use codex_core::LocalShellStatus;
 use codex_core::ModelClient;
 use codex_core::ModelProviderInfo;
+use codex_core::NewConversation;
 use codex_core::OpenRouterConfig;
 use codex_core::OpenRouterProviderConfig;
-use codex_core::NewConversation;
 use codex_core::Prompt;
 use codex_core::ReasoningItemContent;
 use codex_core::ResponseEvent;
@@ -28,8 +28,8 @@ use core_test_support::responses;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use futures::StreamExt;
-use serde_json::json;
 use serde_json::Value;
+use serde_json::json;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
@@ -1453,10 +1453,7 @@ async fn openrouter_metadata_is_forwarded_in_responses_payload() {
         event.expect("stream event");
     }
 
-    let requests = server
-        .received_requests()
-        .await
-        .expect("request captured");
+    let requests = server.received_requests().await.expect("request captured");
     let request_body = requests[0]
         .body_json::<serde_json::Value>()
         .expect("request body json");
@@ -1465,7 +1462,10 @@ async fn openrouter_metadata_is_forwarded_in_responses_payload() {
         request_body["provider"]["order"],
         json!(["openai/gpt-4o-mini"])
     );
-    assert_eq!(request_body["provider"]["allow_fallbacks"], Value::Bool(true));
+    assert_eq!(
+        request_body["provider"]["allow_fallbacks"],
+        Value::Bool(true)
+    );
     assert_eq!(request_body["route"], json!({ "strategy": "balanced" }));
     assert_eq!(request_body["dry_run"], Value::Bool(true));
 }

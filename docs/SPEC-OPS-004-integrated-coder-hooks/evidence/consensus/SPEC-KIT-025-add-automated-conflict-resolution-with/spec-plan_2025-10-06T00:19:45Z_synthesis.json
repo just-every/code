@@ -1,0 +1,12 @@
+{
+  "stage": "${stage}",
+  "specId": "${spec}",
+  "timestamp": "${timestamp_run}",
+  "prompt_version": "${prompt_version}",
+  "agents": [],
+  "consensus": {
+    "agreements": [],
+    "conflicts": []
+  },
+  "status": "ok"
+}

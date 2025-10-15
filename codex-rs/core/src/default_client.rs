@@ -51,13 +51,19 @@ fn sanitize_user_agent(candidate: String, fallback: &str) -> String {
         .map(|ch| if matches!(ch, ' '..='~') { ch } else { '_' })
         .collect();
     if !sanitized.is_empty() && HeaderValue::from_str(sanitized.as_str()).is_ok() {
-        tracing::warn!("Sanitized Codex user agent because provided suffix contained invalid header characters");
+        tracing::warn!(
+            "Sanitized Codex user agent because provided suffix contained invalid header characters"
+        );
         sanitized
     } else if HeaderValue::from_str(fallback).is_ok() {
-        tracing::warn!("Falling back to base Codex user agent because provided suffix could not be sanitized");
+        tracing::warn!(
+            "Falling back to base Codex user agent because provided suffix could not be sanitized"
+        );
         fallback.to_string()
     } else {
-        tracing::warn!("Falling back to default Codex originator because base user agent string is invalid");
+        tracing::warn!(
+            "Falling back to default Codex originator because base user agent string is invalid"
+        );
         DEFAULT_ORIGINATOR.to_string()
     }
 }

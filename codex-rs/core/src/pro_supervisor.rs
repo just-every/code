@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use tokio::task::AbortHandle;
 
-use crate::codex::{Session, PRO_SUBMISSION_ID};
+use crate::codex::{PRO_SUBMISSION_ID, Session};
 use crate::protocol::{ProEvent, ProPhase, ProStats};
 
 /// Lightweight Pro Mode supervisor that periodically publishes status ticks.

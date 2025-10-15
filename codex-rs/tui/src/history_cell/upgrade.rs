@@ -1,4 +1,4 @@
-use super::semantic::{lines_from_ratatui, lines_to_ratatui, SemanticLine};
+use super::semantic::{SemanticLine, lines_from_ratatui, lines_to_ratatui};
 use super::*;
 use crate::theme::current_theme;
 
@@ -12,7 +12,11 @@ pub(crate) struct UpgradeNoticeState {
 }
 
 impl UpgradeNoticeState {
-    pub(crate) fn new(lines: Vec<Line<'static>>, backdrop: ratatui::style::Color, border_style: Style) -> Self {
+    pub(crate) fn new(
+        lines: Vec<Line<'static>>,
+        backdrop: ratatui::style::Color,
+        border_style: Style,
+    ) -> Self {
         Self {
             lines: lines_from_ratatui(lines),
             backdrop,
@@ -40,10 +44,16 @@ impl UpgradeNoticeCell {
         let dim_style = Style::default().bg(backdrop).fg(crate::colors::text_dim());
 
         let mut lines: Vec<Line<'static>> = Vec::new();
-        lines.push(Line::from(vec![Span::styled("★ Upgrade Available ★", title_style)]));
+        lines.push(Line::from(vec![Span::styled(
+            "★ Upgrade Available ★",
+            title_style,
+        )]));
         lines.push(Line::from(vec![
             Span::styled("Latest release: ", dim_style),
-            Span::styled(format!("{current_version} → {latest_version}"), highlight_style),
+            Span::styled(
+                format!("{current_version} → {latest_version}"),
+                highlight_style,
+            ),
         ]));
         lines.push(Line::from(vec![Span::styled(String::new(), base_style)]));
         lines.push(Line::from(vec![
@@ -127,7 +137,11 @@ impl HistoryCell for UpgradeNoticeCell {
             .alignment(Alignment::Center)
             .scroll((skip_rows, 0))
             .block(block)
-            .style(Style::default().bg(self.state.backdrop).fg(crate::colors::text()))
+            .style(
+                Style::default()
+                    .bg(self.state.backdrop)
+                    .fg(crate::colors::text()),
+            )
             .render(render_area, buf);
     }
 }

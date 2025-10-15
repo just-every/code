@@ -1,0 +1,84 @@
+{
+  "stage": "spec-plan",
+  "prompt_version": "20251002-plan-a",
+  "agent": "claude",
+  "model": "claude-4.5-sonnet",
+  "model_release": "2025-09",
+  "reasoning_mode": "auto",
+  "work_breakdown": [
+    {
+      "step": "Create fork assessment playbook in FORK_DEVIATIONS.md",
+      "rationale": "R1 requires documenting fork deviations and validation triggers.",
+      "success_signal": "scripts/doc-structure-validate.sh --mode=templates passes with updated playbook"
+    },
+    {
+      "step": "Document rebase workflow with dry-run evidence capture",
+      "rationale": "R2 mandates reproducible rebase guidance and evidence archiving.",
+      "success_signal": "Dry-run evidence stored under docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-030/rebase/"
+    },
+    {
+      "step": "Implement nightly drift detection telemetry via scripts/spec-kit/nightly_sync_detect.py",
+      "rationale": "R3 automation requirement for monitoring upstream drift.",
+      "success_signal": "Telemetry JSON matches schema v1 and is archived in the evidence directory"
+    },
+    {
+      "step": "Wire HAL-enabled validation reporting and lint_tasks.py checks",
+      "rationale": "R4 demands HAL-aware evidence governance.",
+      "success_signal": "scripts/spec-kit/lint_tasks.py output and HAL telemetry captured or documented skip"
+    },
+    {
+      "step": "Update SPEC.md task tracker and archive evidence",
+      "rationale": "SPEC.md must reflect completion with dated notes per governance.",
+      "success_signal": "SPEC.md shows Done status with evidence references"
+    }
+  ],
+  "acceptance_mapping": [
+    {
+      "requirement": "R1",
+      "validation_step": "Run scripts/doc-structure-validate.sh --mode=templates",
+      "artifact": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-030/validation/doc-structure-validate.log"
+    },
+    {
+      "requirement": "R2",
+      "validation_step": "Execute rebase dry-run and capture logs",
+      "artifact": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-030/rebase/dry-run-*.log"
+    },
+    {
+      "requirement": "R3",
+      "validation_step": "Invoke scripts/spec-kit/nightly_sync_detect.py and verify telemetry",
+      "artifact": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-030/nightly/drift-telemetry-*.json"
+    },
+    {
+      "requirement": "R4",
+      "validation_step": "Run scripts/spec-kit/lint_tasks.py and HAL validation",
+      "artifact": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-030/validation/{lint-tasks-*.json,hal-telemetry-*.json}"
+    }
+  ],
+  "risks": [
+    {
+      "risk": "Documentation rot",
+      "owner": "spec-kit-030",
+      "mitigation": "Automate reminders via nightly drift alerts and schedule quarterly reviews"
+    },
+    {
+      "risk": "Nightly drift false positives",
+      "owner": "spec-kit-030",
+      "mitigation": "Configure allowlists and document tuning guidelines"
+    },
+    {
+      "risk": "HAL unavailable",
+      "owner": "spec-kit-030",
+      "mitigation": "Support SPEC_OPS_HAL_SKIP=1 fallback and track secret provisioning status"
+    },
+    {
+      "risk": "Nightly job venue undefined",
+      "owner": "user",
+      "mitigation": "Decide execution environment before implementation"
+    },
+    {
+      "risk": "Evidence footprint exceeds 25MB",
+      "owner": "spec-kit-030",
+      "mitigation": "Monitor with /spec-evidence-stats and prune/compress as needed"
+    }
+  ]
+}

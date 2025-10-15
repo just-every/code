@@ -1,0 +1,25 @@
+{
+  "stage": "spec-audit",
+  "prompt_version": "20251002-audit-a",
+  "agent": "claude",
+  "model": "claude-3.7-sonnet",
+  "model_release": "2025-09",
+  "reasoning_mode": "synthesis",
+  "decision": "hold",
+  "evidence": [
+    {"name": "plan telemetry", "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-plan_2025-10-14T15:58:30Z-79323873.json"},
+    {"name": "tasks telemetry", "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-tasks_2025-10-14T16:19:16Z-1583422877.json"},
+    {"name": "implement telemetry", "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-implement_2025-10-14T16:39:43Z-997018070.json"},
+    {"name": "validate telemetry", "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-validate_2025-10-14T16:58:53Z-971619013.json"},
+    {"name": "policy override log", "path": "docs/SPEC-KIT-045-mini/telemetry/policy-overrides_2025-10-14T16:19:16Z.txt"},
+    {"name": "mock HAL artifact", "path": "docs/SPEC-KIT-045-mini/telemetry/20251014-165853Z-hal-mock.json"}
+  ],
+  "risks": [
+    {"risk": "Policy overrides still active", "mitigation": "Run guardrails with SPEC_OPS_POLICY_* commands enabled"},
+    {"risk": "HAL mock only", "mitigation": "Perform live HAL validation prior to production unlock"}
+  ],
+  "open_items": [
+    "Track clean-policy rerun results in unlock-notes.md",
+    "Archive unlock stage telemetry once executed"
+  ]
+}

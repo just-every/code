@@ -1,0 +1,150 @@
+{
+  "drift_detected": true,
+  "missing_evidence": [],
+  "missing_memory": [
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/20250926-024834Z-code-mcp-list.json",
+      "spec": "GLOBAL"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/20250926-024843Z-code-mcp-get-repo_search.json",
+      "spec": "GLOBAL"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/20250926-024844Z-code-mcp-get-doc_index.json",
+      "spec": "GLOBAL"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/20250926-024845Z-code-mcp-get-shell_lite.json",
+      "spec": "GLOBAL"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/20250926-024850Z-code-mcp-get-git_status.json",
+      "spec": "GLOBAL"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/20250926-024851Z-code-mcp-get-spec_registry.json",
+      "spec": "GLOBAL"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/20250926-024953Z-codex-mcp-client-repo-search.json",
+      "spec": "GLOBAL"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/20250926-025004Z-codex-mcp-client-git-status.json",
+      "spec": "GLOBAL"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/20250926-025019Z-codex-mcp-client-spec-registry.json",
+      "spec": "GLOBAL"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/20250926-025058Z-curl-spec-registry-sse.txt",
+      "spec": "GLOBAL"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/20250926-025124Z-npx-doc-index-help.txt",
+      "spec": "GLOBAL"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/20250926-025136Z-npx-shell-lite-help.txt",
+      "spec": "GLOBAL"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/20250926-025145Z-uvx-git-status-help.txt",
+      "spec": "GLOBAL"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/20250926-025248Z-codex-mcp-client-doc-index.json",
+      "spec": "GLOBAL"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/20250926-025309Z-codex-mcp-client-shell-lite.json",
+      "spec": "GLOBAL"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/20250926-135123Z-codex-mcp-client-spec-registry-v0.json",
+      "spec": "GLOBAL"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/20250926-222846Z-code-mcp-list.json",
+      "spec": "GLOBAL"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/20250926-222922Z-codex-mcp-client-uniprof.json",
+      "spec": "GLOBAL"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/20250926-231931Z-code-mcp-list.json",
+      "spec": "GLOBAL"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/20250926-231931Z-codex-mcp-client-hal.json",
+      "spec": "GLOBAL"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-013/baseline_2025-09-27T18:35:18Z-748128599.md",
+      "spec": "SPEC-KIT-013"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-013/spec-audit_2025-09-27T18:35:46Z-1486816263.json",
+      "spec": "SPEC-KIT-013"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-013/spec-audit_2025-09-27T18:35:46Z-1486816263.log",
+      "spec": "SPEC-KIT-013"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-013/spec-implement_2025-09-27T18:35:30Z-1189413869.json",
+      "spec": "SPEC-KIT-013"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-013/spec-implement_2025-09-27T18:35:30Z-1189413869.log",
+      "spec": "SPEC-KIT-013"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-013/spec-plan_2025-09-27T18:35:18Z-748128599.json",
+      "spec": "SPEC-KIT-013"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-013/spec-plan_2025-09-27T18:35:18Z-748128599.log",
+      "spec": "SPEC-KIT-013"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-013/spec-tasks_2025-09-27T18:35:25Z-279227690.json",
+      "spec": "SPEC-KIT-013"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-013/spec-tasks_2025-09-27T18:35:25Z-279227690.log",
+      "spec": "SPEC-KIT-013"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-013/spec-unlock_2025-09-27T18:35:52Z-898914632.json",
+      "spec": "SPEC-KIT-013"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-013/spec-unlock_2025-09-27T18:35:52Z-898914632.log",
+      "spec": "SPEC-KIT-013"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-013/spec-validate_2025-09-27T18:35:40Z-2916431701.json",
+      "spec": "SPEC-KIT-013"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-013/spec-validate_2025-09-27T18:35:40Z-2916431701.log",
+      "spec": "SPEC-KIT-013"
+    },
+    {
+      "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-015/nightly_sync_detect_20250927T215031Z.log",
+      "spec": "SPEC-KIT-015"
+    }
+  ],
+  "stats": {
+    "allowlist_size": 0,
+    "evidence_files_scanned": 34,
+    "memory_entries_scanned": 36,
+    "memory_reference_count": 0,
+    "memory_reference_paths": 0,
+    "spec_filter": []
+  }
+}

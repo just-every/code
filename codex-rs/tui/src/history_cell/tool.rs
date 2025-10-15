@@ -1,4 +1,4 @@
-use super::semantic::{lines_from_ratatui, lines_to_ratatui, SemanticLine};
+use super::semantic::{SemanticLine, lines_from_ratatui, lines_to_ratatui};
 use super::*;
 use crate::theme::current_theme;
 use std::time::{Duration, Instant, SystemTime};
@@ -123,11 +123,7 @@ impl RunningToolCallCell {
         self.state.title == title
     }
 
-    pub(crate) fn finalize_web_search(
-        &self,
-        success: bool,
-        query: Option<String>,
-    ) -> ToolCallCell {
+    pub(crate) fn finalize_web_search(&self, success: bool, query: Option<String>) -> ToolCallCell {
         let duration = self.elapsed_duration();
         let title = if success {
             "Web Search"
@@ -222,18 +218,15 @@ impl HistoryCell for RunningToolCallCell {
         if self.state.title == "Waiting" {
             let show_elapsed = !self.state.wait_has_target;
             let mut spans = Vec::new();
-            spans.push(
-                Span::styled(
-                    "Waiting...",
-                    Style::default()
-                        .fg(crate::colors::text())
-                        .add_modifier(Modifier::BOLD),
-                ),
-            );
+            spans.push(Span::styled(
+                "Waiting...",
+                Style::default()
+                    .fg(crate::colors::text())
+                    .add_modifier(Modifier::BOLD),
+            ));
             let cap_ms = self.state.wait_cap_ms.unwrap_or(600_000);
-            let cap_str = Self::strip_zero_seconds_suffix(
-                format_duration(Duration::from_millis(cap_ms)),
-            );
+            let cap_str =
+                Self::strip_zero_seconds_suffix(format_duration(Duration::from_millis(cap_ms)));
             let suffix = if show_elapsed {
                 let elapsed_str = Self::strip_zero_seconds_suffix(format_duration(elapsed));
                 format!(" ({} / up to {})", elapsed_str, cap_str)

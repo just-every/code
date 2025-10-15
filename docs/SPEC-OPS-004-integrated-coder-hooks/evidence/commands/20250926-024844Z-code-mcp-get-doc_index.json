@@ -1,0 +1,12 @@
+{
+  "name": "doc_index",
+  "command": "npx",
+  "args": [
+    "-y",
+    "open-docs-mcp",
+    "--docsDir",
+    "/home/thetu/code/docs"
+  ],
+  "env": null,
+  "startup_timeout_ms": null
+}

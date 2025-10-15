@@ -1,0 +1,23 @@
+{
+  "stage": "spec-implement",
+  "prompt_version": "20251002-implement-a",
+  "agent": "gpt_codex",
+  "model": "gpt-5-codex",
+  "model_release": "2025-10-01",
+  "reasoning_mode": "impl-review",
+  "diff_proposals": [
+    "Add new telemetry artifacts (plan/tasks JSON+logs, baseline note) under docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/ with stubbed policy metadata and agent roster.",
+    "Extend docs/SPEC-KIT-045-mini/telemetry with timestamped roster/schema/diff/policy/size outputs and retire legacy mock-hal.diff & fixture-size.txt.",
+    "Revise docs/SPEC-KIT-045-mini/{plan.md,tasks.md,unlock-notes.md,checksums.sha256} plus SPEC.md T49 to cite 2025-10-14 evidence bundle and completed rehearsal tasks."
+  ],
+  "test_commands": [
+    "python3 scripts/spec-kit/lint_tasks.py",
+    "cargo fmt",
+    "cargo clippy --workspace --all-targets --all-features"
+  ],
+  "risks": [
+    "Stubbed policy overrides remain; unlock posture records follow-up to run clean policy checks before production sign-off.",
+    "New telemetry JSON derives from curated rehearsal data; future automation must regenerate instead of hard-coding values.",
+    "Evidence directory growth should be monitored; current bundle remains within <100 KB target but repeated refreshes could accumulate."
+  ]
+}

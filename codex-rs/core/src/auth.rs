@@ -17,9 +17,9 @@ use std::time::Duration;
 
 use codex_protocol::mcp_protocol::AuthMode;
 
+use crate::config::resolve_codex_path_for_read;
 use crate::token_data::TokenData;
 use crate::token_data::parse_id_token;
-use crate::config::resolve_codex_path_for_read;
 
 #[derive(Debug, Clone)]
 pub struct CodexAuth {
@@ -230,12 +230,8 @@ pub fn login_with_api_key(codex_home: &Path, api_key: &str) -> std::io::Result<(
         last_refresh: None,
     };
     write_auth_json(&get_auth_file(codex_home), &auth_dot_json)?;
-    let _ = crate::auth_accounts::upsert_api_key_account(
-        codex_home,
-        api_key.to_string(),
-        None,
-        true,
-    )?;
+    let _ =
+        crate::auth_accounts::upsert_api_key_account(codex_home, api_key.to_string(), None, true)?;
     Ok(())
 }
 
@@ -400,9 +396,7 @@ async fn update_tokens(
 
     if let Some(codex_home) = auth_file.parent() {
         if let Some(tokens) = auth_dot_json.tokens.clone() {
-            let last_refresh = auth_dot_json
-                .last_refresh
-                .unwrap_or_else(Utc::now);
+            let last_refresh = auth_dot_json.last_refresh.unwrap_or_else(Utc::now);
             let email = tokens.id_token.email.clone();
             let _ = crate::auth_accounts::upsert_chatgpt_account(
                 codex_home,

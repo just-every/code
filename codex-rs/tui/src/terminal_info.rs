@@ -259,13 +259,7 @@ fn osc_background_query_supported() -> bool {
         return false;
     }
 
-    const UNSUPPORTED_TERMS: [&str; 5] = [
-        "dumb",
-        "linux",
-        "vt100",
-        "xterm-color",
-        "ansi",
-    ];
+    const UNSUPPORTED_TERMS: [&str; 5] = ["dumb", "linux", "vt100", "xterm-color", "ansi"];
     if UNSUPPORTED_TERMS.contains(&term_lower.as_str()) {
         return false;
     }

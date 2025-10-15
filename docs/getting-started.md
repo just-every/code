@@ -52,6 +52,37 @@ For more information on how to use AGENTS.md, see the [official AGENTS.md docume
 
 ### Tips & shortcuts
 
+### Spec Kit workflow quickstart
+
+When working on SPEC tasks, run guardrail commands before multi-agent stages:
+
+1. `/spec-ops-plan <SPEC-ID>` – prepares the workspace and writes telemetry JSON (schema v1) under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/<SPEC-ID>/`.
+2. `/spec-ops-tasks`, `/spec-ops-implement`, `/spec-ops-validate`, `/spec-ops-audit`, `/spec-ops-unlock` – each stage records telemetry with stage-specific fields (`tool.status`, `lock_status`, `scenarios`, etc.).
+3. `/spec-auto <SPEC-ID>` orchestrates the full pipeline; it stops if telemetry fails schema validation or consensus degrades.
+
+Set `SPEC_OPS_CARGO_MANIFEST` when the Rust workspace lives outside the repo root (defaults to `codex-rs/Cargo.toml`). Use `--allow-fail` sparingly when triaging baseline regressions; reset the flag once fixes land so failures propagate again.
+
+#### HAL smoke & evidence checklist
+
+- Configure HAL MCP via `docs/hal/hal_config.toml` + `docs/hal/hal_profile.json`, then run:
+  - `cargo run -p codex-mcp-client --bin call_tool -- --tool health … -- npx -y hal-mcp`
+  - `/spec-ops-validate SPEC-KIT-018` with HAL healthy and again with HAL offline.
+- Store the resulting JSON/logs under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-018/` (include timestamps for healthy vs degraded runs, e.g., healthy `20250929-163421Z-hal-health.json`, degraded telemetry `spec-validate_2025-09-29T16:25:38Z-2828521850.json`).
+- Export `SPEC_OPS_TELEMETRY_HAL=1` when running guardrails to add `hal.summary` (`status`, `failed_checks`, `artifacts`) to telemetry; this helps `/spec-auto` gate on HAL outcomes.
+
+#### Telemetry & consensus troubleshooting
+
+- Schema failures → open the newest JSON in the evidence directory and verify the common envelope fields (`command`, `specId`, `sessionId`, `timestamp`, `schemaVersion`, `artifacts[]`) and stage payloads (Plan `baseline.*`, Tasks `tool.status`, Implement `lock_status`/`hook_status`, Validate/Audit `scenarios`, Unlock `unlock_status`). See docs/SPEC-KIT-013-telemetry-schema-guard/spec.md for the authoritative checklist.
+- Degraded consensus → rerun the affected `/spec-*` stage with higher budgets (e.g., `/spec-plan --deep-research`) and confirm each agent response includes `model`, `model_release`, and `reasoning_mode` per docs/spec-kit/model-strategy.md.
+- Persistent HAL failures → confirm `SPEC_OPS_CARGO_MANIFEST` is pointing to the correct workspace, then re-run the HAL smoke commands. Capture a degraded run (e.g., `spec-validate_2025-09-29T16:25:38Z-2828521850.json`) before toggling overrides so the evidence trail records the failure.
+- For session-specific recovery steps, follow RESTART.md; it now links back to this troubleshooting section for canonical guidance.
+
+Troubleshooting:
+
+- If guardrail telemetry fails schema validation, open the latest JSON in the evidence directory and verify required fields per docs/SPEC-KIT-013-telemetry-schema-guard/spec.md.
+- `scripts/spec-kit/lint_tasks.py` validates SPEC.md tracking after updating docs or task status.
+- Use `/spec-audit` to re-run consensus after resolving degraded verdicts; consult docs/spec-kit/model-strategy.md for escalation rules.
+
 #### Use `@` for file search
 
 Typing `@` triggers a fuzzy-filename search over the workspace root. Use up/down to select among the results and Tab or Enter to replace the `@` with the selected path. You can use Esc to cancel the search.

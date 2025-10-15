@@ -1317,8 +1317,7 @@ fn parse_jq_filter_and_path(args: &[String]) -> (Option<String>, Option<String>)
 fn git_grep_flag_consumes_value(flag: &str) -> bool {
     matches!(
         flag,
-        "-e"
-            | "-f"
+        "-e" | "-f"
             | "-g"
             | "-O"
             | "-A"

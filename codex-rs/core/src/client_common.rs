@@ -223,7 +223,11 @@ impl Prompt {
 #[derive(Debug)]
 pub enum ResponseEvent {
     Created,
-    OutputItemDone { item: ResponseItem, sequence_number: Option<u64>, output_index: Option<u32> },
+    OutputItemDone {
+        item: ResponseItem,
+        sequence_number: Option<u64>,
+        output_index: Option<u32>,
+    },
     Completed {
         response_id: String,
         token_usage: Option<TokenUsage>,
@@ -330,7 +334,7 @@ pub struct TextFormat {
 fn limit_screenshots_in_input(input: &mut Vec<ResponseItem>) {
     // Find all screenshot positions
     let mut screenshot_positions = Vec::new();
-    
+
     for (idx, item) in input.iter().enumerate() {
         if let ResponseItem::Message { content, .. } = item {
             let has_screenshot = content
@@ -341,26 +345,26 @@ fn limit_screenshots_in_input(input: &mut Vec<ResponseItem>) {
             }
         }
     }
-    
+
     // If we have 5 or fewer screenshots, no action needed
     if screenshot_positions.len() <= 5 {
         return;
     }
-    
+
     // Determine which screenshots to keep
     let mut positions_to_keep = std::collections::HashSet::new();
-    
+
     // Keep the first screenshot
     if let Some(&first) = screenshot_positions.first() {
         positions_to_keep.insert(first);
     }
-    
+
     // Keep the last 4 screenshots
     let last_four_start = screenshot_positions.len().saturating_sub(4);
     for &pos in &screenshot_positions[last_four_start..] {
         positions_to_keep.insert(pos);
     }
-    
+
     // Replace screenshots that should be removed
     for &pos in &screenshot_positions {
         if !positions_to_keep.contains(&pos) {
@@ -381,7 +385,7 @@ fn limit_screenshots_in_input(input: &mut Vec<ResponseItem>) {
             }
         }
     }
-    
+
     tracing::debug!(
         "Limited screenshots from {} to {} (kept first and last 4)",
         screenshot_positions.len(),
@@ -521,7 +525,10 @@ mod tests {
             stream: true,
             include: vec![],
             prompt_cache_key: None,
-            text: Some(Text { verbosity: OpenAiTextVerbosity::Low, format: None }),
+            text: Some(Text {
+                verbosity: OpenAiTextVerbosity::Low,
+                format: None,
+            }),
         };
 
         let v = serde_json::to_value(&req).expect("json");

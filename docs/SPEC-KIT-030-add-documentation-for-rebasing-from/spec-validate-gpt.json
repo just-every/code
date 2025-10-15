@@ -1,0 +1,23 @@
+{
+  "stage": "spec-validate",
+  "prompt_version": "20251002-validate-a",
+  "agent": "gpt_pro",
+  "model": "gpt-5-codex",
+  "model_release": "2025-09",
+  "reasoning_mode": "high",
+  "decision": "blocked",
+  "next_actions": [
+    "Supply HAL_SECRET_KAVEDARR_API_KEY (or configure SPEC_OPS_HAL_SKIP=1 per policy) before re-running validation.",
+    "Re-run SPEC_OPS_TELEMETRY_HAL=1 /spec-ops-validate after credentials are available so HAL smoke captures telemetry.",
+    "Document HAL skip policy once credential workflow is confirmed to keep acceptance mapping consistent."
+  ],
+  "consensus": {
+    "agreements": [
+      "Gemini and Claude concur that HAL smoke failed because HAL_SECRET_KAVEDARR_API_KEY is unset.",
+      "Agents halt further validation tasks until HAL telemetry prerequisites are satisfied."
+    ],
+    "conflicts": [
+      "None"
+    ]
+  }
+}

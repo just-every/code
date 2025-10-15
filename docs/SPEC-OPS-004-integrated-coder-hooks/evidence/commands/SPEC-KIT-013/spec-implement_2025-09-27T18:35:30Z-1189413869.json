@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "command": "spec-ops-implement",
+  "specId": "SPEC-KIT-013",
+  "sessionId": "2025-09-27T18:35:30Z-1189413869",
+  "timestamp": "2025-09-27T18:35:30Z",
+  "lock_status": "locked",
+  "hook_status": "ok",
+  "artifacts": [
+    { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-013/spec-implement_2025-09-27T18:35:30Z-1189413869.log" }
+  ]
+}

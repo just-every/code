@@ -15,9 +15,9 @@ use time::macros::format_description;
 use uuid::Uuid;
 
 use super::SESSIONS_SUBDIR;
+use crate::config::resolve_codex_path_for_read;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
-use crate::config::resolve_codex_path_for_read;
 
 /// Returned page of conversation summaries.
 #[derive(Debug, Default, PartialEq)]
@@ -337,7 +337,6 @@ async fn read_head_and_flags(
 
     Ok((head, saw_session_meta, saw_user_event))
 }
-
 
 /// Locate a recorded conversation rollout file by its UUID string using the existing
 /// paginated listing implementation. Returns `Ok(Some(path))` if found, `Ok(None)` if not present

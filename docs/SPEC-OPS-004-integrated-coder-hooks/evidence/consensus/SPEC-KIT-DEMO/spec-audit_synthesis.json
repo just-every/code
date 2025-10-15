@@ -1,0 +1,25 @@
+{
+  "specId": "SPEC-KIT-DEMO",
+  "stage": "spec-audit",
+  "timestamp": "2025-10-12T16:24:23Z",
+  "status": "degraded",
+  "agents": {
+    "active": [
+      {"model": "gemini-2.5-pro", "role": "evidence-review"},
+      {"model": "claude-4.5-sonnet", "role": "audit-memo"},
+      {"model": "gpt-5-codex", "role": "checks"}
+    ],
+    "degraded": ["gpt_pro", "gpt_codex"]
+  },
+  "consensus": {
+    "agreements": [
+      "Treat audit outcome as conditional pass until HAL rerun, lint, and halt screenshot are delivered.",
+      "Update docs/SPEC-KIT-DEMO/audit.md with outstanding actions and reference 2025-10-12 telemetry.",
+      "Monitor evidence footprint (22 MB command, 204 KB consensus) via evidence_stats results."
+    ],
+    "conflicts_resolved": [
+      "Clarified SPEC.md row T26 is present with refreshed telemetry; prior agent using truncated view was superseded by current repo state.",
+      "Confirmed consensus artifacts dated 2025-10-05 remain acceptable as historical baseline but require refresh before unlock."
+    ]
+  }
+}

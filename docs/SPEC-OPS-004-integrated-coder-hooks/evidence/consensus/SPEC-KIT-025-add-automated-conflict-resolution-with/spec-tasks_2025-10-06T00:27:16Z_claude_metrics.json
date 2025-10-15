@@ -1,0 +1,16 @@
+{
+  "agent": "claude",
+  "model_id": "claude-4.5-sonnet",
+  "model_release": "2025-09-29",
+  "reasoning_mode": "auto",
+  "output_path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-025-add-automated-conflict-resolution-with/spec-tasks_2025-10-06T00:27:16Z_claude.json",
+  "latency_ms": 7233,
+  "prompt_tokens": null,
+  "completion_tokens": null,
+  "reasoning_tokens": null,
+  "total_tokens": null,
+  "cache_hit": null,
+  "cost_usd": null,
+  "status": "error",
+  "error": "agent execution failed"
+}

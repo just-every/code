@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "command": "spec-ops-audit",
+  "specId": "SPEC-KIT-DEMO",
+  "sessionId": "2025-10-12T16:24:23Z-43914755",
+  "timestamp": "2025-10-12T16:33:37Z",
+  "scenarios": [
+    {
+      "name": "audit guardrail bootstrap",
+      "status": "skipped"
+    }
+  ],
+  "policy": {
+  "prefilter": {
+    "model": "gpt-5-codex",
+    "status": "passed",
+    "note": "/home/thetu/code/codex-rs/target/dev-fast/code exec --sandbox workspace-write --model gpt-5-codex -- \"Policy prefilter for SPEC-KIT-DEMO/spec-audit\""
+  },
+  "final": {
+    "model": "gpt-5",
+    "status": "passed",
+    "note": "/home/thetu/code/codex-rs/target/dev-fast/code exec --sandbox workspace-write --model gpt-5 -- \"Policy final check for SPEC-KIT-DEMO/spec-audit\""
+  }
+},
+  "artifacts": [
+    { "path": "/home/thetu/code/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-DEMO/spec-audit_2025-10-12T16:24:23Z-43914755.log" }
+  ]
+}

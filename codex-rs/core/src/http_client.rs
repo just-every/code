@@ -37,7 +37,11 @@ pub fn build_http_client() -> reqwest::Client {
             if let Ok(rd) = fs::read_dir(path) {
                 for entry in rd.flatten() {
                     let p = entry.path();
-                    if p.extension().and_then(|s| s.to_str()).map(|s| matches!(s, "crt" | "pem" | "der")).unwrap_or(false) {
+                    if p.extension()
+                        .and_then(|s| s.to_str())
+                        .map(|s| matches!(s, "crt" | "pem" | "der"))
+                        .unwrap_or(false)
+                    {
                         if let Some(cert) = load_cert(p) {
                             builder = builder.add_root_certificate(cert);
                         }

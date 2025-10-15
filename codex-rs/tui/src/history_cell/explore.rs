@@ -183,8 +183,7 @@ impl ExploreAggregationCell {
         let summary = match action {
             ExecAction::Search => parsed.iter().find_map(|p| match p {
                 ParsedCommand::Search { query, path, cmd } => {
-                    let formatted_path =
-                        format_search_target(path.as_deref(), cwd, session_root);
+                    let formatted_path = format_search_target(path.as_deref(), cwd, session_root);
                     let pretty_query =
                         query.clone().filter(|q| !q.trim().is_empty()).or_else(|| {
                             if query.is_none() {
@@ -209,8 +208,7 @@ impl ExploreAggregationCell {
             }),
             ExecAction::Read => parsed.iter().find_map(|p| match p {
                 ParsedCommand::Read { name, cmd, .. } => {
-                    let (annotation, range) =
-                        super::parse_read_line_annotation_with_range(cmd);
+                    let (annotation, range) = super::parse_read_line_annotation_with_range(cmd);
                     let display_path = format_read_target(name, cwd, session_root);
                     Some(ExploreSummary::Read {
                         display_path,
@@ -480,7 +478,10 @@ fn build_command_summary(cmd: &str, original_command: &[String]) -> CommandSumma
         None
     };
 
-    CommandSummary { display, annotation }
+    CommandSummary {
+        display,
+        annotation,
+    }
 }
 
 fn normalize_separators(mut value: String) -> String {
