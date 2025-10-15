@@ -10,15 +10,41 @@
 
 **Created:**
 - `codex-rs/tui/src/spec_kit/mod.rs`
-- `codex-rs/tui/src/spec_kit/state.rs` (simplified version)
+- `codex-rs/tui/src/spec_kit/state.rs` (foundation)
 - `codex-rs/tui/src/spec_kit/handler.rs` (skeleton)
 - Registered module in lib.rs
+- **Commit:** 892d1e4a2
 
 **Compilation:** ✅ Successful
 
 ---
 
-## Step 1.2: State Struct Extraction (IN PROGRESS)
+## Step 1.2: COMPLETE ✅
+
+**Replaced state.rs with actual definitions:**
+- Extracted 245 lines from chatwidget.rs
+- 5 structs (SpecAutoPhase, GuardrailWait, SpecAutoState, GuardrailEvaluation, GuardrailOutcome)
+- 3 helper functions
+- 4 validation functions
+- **Commit:** 3448e2bcb
+
+**Compilation:** ✅ Successful
+
+---
+
+## Step 1.3: COMPLETE ✅
+
+**Removed duplicate inline definitions from chatwidget.rs:**
+- Deleted 223 lines (181 predicted)
+- Added import statement
+- chatwidget.rs: 23,028 → 22,847 lines
+- **Commit:** 872a9e03c
+
+**Compilation:** ✅ Successful (35.01s)
+
+---
+
+## Step 1.4: Handler Method Extraction (TODO - NEXT)
 
 ### Inline Structs Found in chatwidget.rs
 
