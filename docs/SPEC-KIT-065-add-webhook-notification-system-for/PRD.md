@@ -154,7 +154,8 @@ Spec-Kit orchestrates multi-agent development through the `/spec-auto` pipeline 
 [spec_ops.webhooks]
 enabled = true
 max_concurrency = 4
-spool_dir = "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-065-add-webhook-notification-system-for/webhooks/spool"
+spool_dir = "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/webhooks"
+# Implementation creates per-SPEC subdirectories: webhooks/SPEC-KIT-065-.../, webhooks/SPEC-KIT-070-.../, etc.
 
 [[spec_ops.webhooks.subscriptions]]
 id = "chatops-slack"
