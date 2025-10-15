@@ -540,6 +540,7 @@ pub(crate) struct ChatWidget<'a> {
     // Upstream: Does not have /spec-auto pipeline
     // Preserve: This field and all SpecAutoState/SpecAutoPhase code during rebases
     spec_auto_state: Option<SpecAutoState>,
+    spec_kit: crate::spec_kit::SpecKitHandler,
     // === END FORK-SPECIFIC ===
 
     // Stable synthetic request bucket for pre‑turn system notices (set on first use)
@@ -2724,6 +2725,7 @@ impl ChatWidget<'_> {
             system_cell_by_id: HashMap::new(),
             standard_terminal_mode: !config.tui.alternate_screen,
             spec_auto_state: None,
+            spec_kit: crate::spec_kit::SpecKitHandler::new(),
         };
         if let Ok(Some(active_id)) = auth_accounts::get_active_account_id(&config.codex_home) {
             if let Ok(records) = account_usage::list_rate_limit_snapshots(&config.codex_home) {
@@ -2956,6 +2958,7 @@ impl ChatWidget<'_> {
             synthetic_system_req: None,
             system_cell_by_id: HashMap::new(),
             spec_auto_state: None,
+            spec_kit: crate::spec_kit::SpecKitHandler::new(),
         };
         if let Ok(Some(active_id)) = auth_accounts::get_active_account_id(&config.codex_home) {
             if let Ok(records) = account_usage::list_rate_limit_snapshots(&config.codex_home) {
