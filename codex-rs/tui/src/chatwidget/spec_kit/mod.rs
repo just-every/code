@@ -10,8 +10,8 @@ pub mod consensus;
 pub mod handler;
 pub mod state;
 
-// Consensus module (types used internally by chatwidget)
-// Not re-exported - accessed via spec_kit::consensus::
+// Re-export key consensus functions
+pub use consensus::collect_consensus_artifacts;
 
 // Re-export state types and helpers
 pub use state::{

@@ -187,3 +187,203 @@ pub(in super::super) fn validate_required_fields(stage: SpecStage, summary: &Val
         SpecStage::Unlock => obj.contains_key("unlock_decision"),
     }
 }
+
+// ============================================================================
+// CORE CONSENSUS LOGIC
+// ============================================================================
+
+use crate::local_memory_util::{self, LocalMemorySearchResult};
+use std::fs;
+use std::path::Path;
+
+/// Collect consensus artifacts from evidence files or local-memory
+pub fn collect_consensus_artifacts(
+    evidence_root: &Path,
+    spec_id: &str,
+    stage: SpecStage,
+) -> Result<(Vec<ConsensusArtifactData>, Vec<String>), String> {
+    let mut warnings: Vec<String> = Vec::new();
+
+    match load_artifacts_from_evidence(evidence_root, spec_id, stage) {
+        Ok(Some((artifacts, mut evidence_warnings))) => {
+            warnings.append(&mut evidence_warnings);
+            return Ok((artifacts, warnings));
+        }
+        Ok(None) => {}
+        Err(err) => warnings.push(err),
+    }
+
+    let (entries, mut memory_warnings) = fetch_memory_entries(spec_id, stage)?;
+    warnings.append(&mut memory_warnings);
+
+    let mut artifacts: Vec<ConsensusArtifactData> = Vec::new();
+
+    for result in entries {
+        let memory_id = result.memory.id.clone();
+        let content_str = result.memory.content.trim();
+        if content_str.is_empty() {
+            warnings.push("local-memory entry had empty content".to_string());
+            continue;
+        }
+
+        let value = match serde_json::from_str::<Value>(content_str) {
+            Ok(v) => v,
+            Err(err) => {
+                warnings.push(format!("unable to parse consensus artifact JSON: {err}"));
+                continue;
+            }
+        };
+
+        let agent = match value
+            .get("agent")
+            .or_else(|| value.get("model"))
+            .and_then(|v| v.as_str())
+        {
+            Some(agent) if !agent.trim().is_empty() => agent.trim().to_string(),
+            _ => {
+                warnings.push("consensus artifact missing agent field".to_string());
+                continue;
+            }
+        };
+
+        let stage_matches = value
+            .get("stage")
+            .or_else(|| value.get("stage_name"))
+            .and_then(|v| v.as_str())
+            .and_then(parse_consensus_stage)
+            .map(|parsed| parsed == stage)
+            .unwrap_or(false);
+
+        if !stage_matches {
+            warnings.push(format!(
+                "skipping local-memory entry for agent {} because stage did not match {}",
+                agent,
+                stage.command_name()
+            ));
+            continue;
+        }
+
+        let spec_matches = value
+            .get("spec_id")
+            .or_else(|| value.get("specId"))
+            .and_then(|v| v.as_str())
+            .map(|reported| reported.eq_ignore_ascii_case(spec_id))
+            .unwrap_or(true);
+
+        if !spec_matches {
+            warnings.push(format!(
+                "skipping local-memory entry for agent {} because spec id did not match {}",
+                agent, spec_id
+            ));
+            continue;
+        }
+
+        let version = value
+            .get("prompt_version")
+            .or_else(|| value.get("promptVersion"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        artifacts.push(ConsensusArtifactData {
+            memory_id,
+            agent,
+            version,
+            content: value,
+        });
+    }
+
+    Ok((artifacts, warnings))
+}
+
+fn load_artifacts_from_evidence(
+    evidence_root: &Path,
+    spec_id: &str,
+    stage: SpecStage,
+) -> Result<Option<(Vec<ConsensusArtifactData>, Vec<String>)>, String> {
+    let consensus_dir = evidence_root.join(spec_id);
+    if !consensus_dir.exists() {
+        return Ok(None);
+    }
+
+    let stage_prefix = format!("{}_", stage.command_name());
+    let suffix = "_artifact.json";
+
+    let entries = fs::read_dir(&consensus_dir).map_err(|e| {
+        format!(
+            "Failed to read consensus evidence directory {}: {}",
+            consensus_dir.display(),
+            e
+        )
+    })?;
+
+    let mut artifacts: Vec<ConsensusArtifactData> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+
+    for entry_res in entries {
+        let entry = entry_res.map_err(|e| format!("Failed to read directory entry: {e}"))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.starts_with(&stage_prefix) || !name.ends_with(suffix) {
+            continue;
+        }
+
+        let contents = fs::read_to_string(&path).map_err(|e| {
+            format!("Failed to read consensus artifact {}: {}", path.display(), e)
+        })?;
+
+        let value: Value = serde_json::from_str(&contents).map_err(|e| {
+            format!(
+                "Failed to parse consensus artifact JSON {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+
+        let agent = value
+            .get("agent")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let version = value
+            .get("prompt_version")
+            .or_else(|| value.get("promptVersion"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        artifacts.push(ConsensusArtifactData {
+            memory_id: None,
+            agent,
+            version,
+            content: value,
+        });
+    }
+
+    if artifacts.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some((artifacts, warnings)))
+    }
+}
+
+fn fetch_memory_entries(
+    spec_id: &str,
+    stage: SpecStage,
+) -> Result<(Vec<LocalMemorySearchResult>, Vec<String>), String> {
+    let results = local_memory_util::search_by_stage(spec_id, stage.command_name(), 20)?;
+    if results.is_empty() {
+        // TODO: After Oct 2 migration, implement Byterover fallback fetching here and persist results into local-memory.
+        Err(format!(
+            "No local-memory entries found for {} stage '{}'",
+            spec_id,
+            stage.command_name()
+        ))
+    } else {
+        Ok((results, Vec::new()))
+    }
+}
