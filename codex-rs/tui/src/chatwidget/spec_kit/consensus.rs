@@ -670,3 +670,33 @@ pub fn run_spec_consensus(
 
     Ok((lines, consensus_ok))
 }
+
+use std::io::Write;
+
+/// Persist consensus verdict to evidence directory
+pub fn persist_consensus_verdict(
+    cwd: &Path,
+    spec_id: &str,
+    stage: SpecStage,
+    verdict: &ConsensusVerdict,
+) -> Result<PathBuf, String> {
+    let consensus_dir = cwd
+        .join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus")
+        .join(spec_id);
+    fs::create_dir_all(&consensus_dir)
+        .map_err(|e| format!("Failed to create consensus directory: {e}"))?;
+
+    let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H_%M_%S%.3fZ");
+    let filename = format!("{}_{}_verdict.json", stage.command_name(), timestamp);
+    let path = consensus_dir.join(&filename);
+
+    let json = serde_json::to_string_pretty(verdict)
+        .map_err(|e| format!("Failed to serialize verdict: {e}"))?;
+
+    let mut file = fs::File::create(&path)
+        .map_err(|e| format!("Failed to create verdict file: {e}"))?;
+    file.write_all(json.as_bytes())
+        .map_err(|e| format!("Failed to write verdict: {e}"))?;
+
+    Ok(path)
+}
