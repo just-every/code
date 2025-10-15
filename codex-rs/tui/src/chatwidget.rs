@@ -22,6 +22,11 @@ use crate::local_memory_util::{self, LocalMemorySearchResult};
 use crate::slash_command::HalMode;
 use crate::slash_command::SlashCommand;
 use crate::slash_command::SpecAutoInvocation;
+use crate::spec_kit::{
+    SpecAutoPhase, SpecAutoState, GuardrailWait, GuardrailEvaluation, GuardrailOutcome,
+    guardrail_for_stage, spec_ops_stage_prefix, expected_guardrail_command,
+    validate_guardrail_evidence, require_string_field, require_object,
+};
 use crate::spec_prompts;
 use crate::spec_prompts::{SpecAgent, SpecStage};
 use crate::spec_status::{SpecStatusArgs, collect_report, degraded_warning, render_dashboard};
@@ -16674,157 +16679,8 @@ impl ChatWidget<'_> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum SpecAutoPhase {
-    Guardrail,
-    ExecutingAgents {
-        // Track which agents we're waiting for completion
-        expected_agents: Vec<String>,
-        // Track which agents have completed (populated from AgentStatusUpdateEvent)
-        completed_agents: std::collections::HashSet<String>,
-    },
-    CheckingConsensus,
-}
-
-fn guardrail_for_stage(stage: SpecStage) -> SlashCommand {
-    match stage {
-        SpecStage::Plan => SlashCommand::SpecOpsPlan,
-        SpecStage::Tasks => SlashCommand::SpecOpsTasks,
-        SpecStage::Implement => SlashCommand::SpecOpsImplement,
-        SpecStage::Validate => SlashCommand::SpecOpsValidate,
-        SpecStage::Audit => SlashCommand::SpecOpsAudit,
-        SpecStage::Unlock => SlashCommand::SpecOpsUnlock,
-    }
-}
-
-fn spec_ops_stage_prefix(stage: SpecStage) -> &'static str {
-    match stage {
-        SpecStage::Plan => "plan_",
-        SpecStage::Tasks => "tasks_",
-        SpecStage::Implement => "implement_",
-        SpecStage::Validate => "validate_",
-        SpecStage::Audit => "audit_",
-        SpecStage::Unlock => "unlock_",
-    }
-}
-
-struct GuardrailEvaluation {
-    success: bool,
-    summary: String,
-    failures: Vec<String>,
-}
-
-fn validate_guardrail_evidence(
-    cwd: &std::path::Path,
-    stage: SpecStage,
-    telemetry: &Value,
-) -> (Vec<String>, usize) {
-    if matches!(stage, SpecStage::Validate) {
-        return (Vec::new(), 0);
-    }
-
-    let Some(artifacts_value) = telemetry.get("artifacts") else {
-        return (vec!["No evidence artifacts recorded".to_string()], 0);
-    };
-    let Some(artifacts) = artifacts_value.as_array() else {
-        return (
-            vec!["Telemetry artifacts field is not an array".to_string()],
-            0,
-        );
-    };
-    if artifacts.is_empty() {
-        return (vec!["Telemetry artifacts array is empty".to_string()], 0);
-    }
-
-    let mut failures = Vec::new();
-    let mut ok_count = 0usize;
-    for (idx, artifact_value) in artifacts.iter().enumerate() {
-        let path_opt = match artifact_value {
-            Value::String(s) => Some(s.as_str()),
-            Value::Object(map) => map.get("path").and_then(|p| p.as_str()),
-            _ => None,
-        };
-        let Some(path_str) = path_opt else {
-            failures.push(format!("Artifact #{} missing path", idx + 1));
-            continue;
-        };
-
-        let raw_path = PathBuf::from(path_str);
-        let resolved = if raw_path.is_absolute() {
-            raw_path.clone()
-        } else {
-            cwd.join(&raw_path)
-        };
-        if resolved.exists() {
-            ok_count += 1;
-        } else {
-            failures.push(format!(
-                "Artifact #{} not found at {}",
-                idx + 1,
-                resolved.display()
-            ));
-        }
-    }
-
-    if ok_count == 0 {
-        failures.push("No evidence artifacts found on disk".to_string());
-    }
-
-    (failures, ok_count)
-}
-
-fn expected_guardrail_command(stage: SpecStage) -> &'static str {
-    match stage {
-        SpecStage::Plan => "spec-ops-plan",
-        SpecStage::Tasks => "spec-ops-tasks",
-        SpecStage::Implement => "spec-ops-implement",
-        SpecStage::Validate => "spec-ops-validate",
-        SpecStage::Audit => "spec-ops-audit",
-        SpecStage::Unlock => "spec-ops-unlock",
-    }
-}
-
-fn get_nested<'a>(root: &'a Value, path: &[&str]) -> Option<&'a Value> {
-    let mut current = root;
-    for segment in path {
-        current = current.get(*segment)?;
-    }
-    Some(current)
-}
-
-fn require_string_field<'a>(
-    root: &'a Value,
-    path: &[&str],
-    errors: &mut Vec<String>,
-) -> Option<&'a str> {
-    let label = path.join(".");
-    match get_nested(root, path).and_then(|value| value.as_str()) {
-        Some(value) if !value.trim().is_empty() => Some(value),
-        Some(_) => {
-            errors.push(format!("Field {label} must be a non-empty string"));
-            None
-        }
-        None => {
-            errors.push(format!("Missing required string field {label}"));
-            None
-        }
-    }
-}
-
-fn require_object<'a>(
-    root: &'a Value,
-    path: &[&str],
-    errors: &mut Vec<String>,
-) -> Option<&'a serde_json::Map<String, Value>> {
-    let label = path.join(".");
-    match get_nested(root, path).and_then(|value| value.as_object()) {
-        Some(map) => Some(map),
-        None => {
-            errors.push(format!("Missing required object field {label}"));
-            None
-        }
-    }
-}
+// === FORK-SPECIFIC: Spec-kit state moved to spec_kit module ===
+// Extracted to spec_kit/state.rs to isolate from upstream code
 
 fn validate_guardrail_schema(stage: SpecStage, telemetry: &Value) -> Vec<String> {
     let mut failures = Vec::new();
@@ -17137,78 +16993,6 @@ fn evaluate_guardrail_value(stage: SpecStage, value: &Value) -> GuardrailEvaluat
                 failures,
             }
         }
-    }
-}
-
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-struct GuardrailWait {
-    stage: SpecStage,
-    command: SlashCommand,
-    task_id: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-struct SpecAutoState {
-    spec_id: String,
-    goal: String,
-    stages: Vec<SpecStage>,
-    current_index: usize,
-    phase: SpecAutoPhase,
-    waiting_guardrail: Option<GuardrailWait>,
-    validate_retries: u32,
-    pending_prompt_summary: Option<String>,
-    hal_mode: Option<HalMode>,
-}
-
-#[derive(Debug, Clone)]
-struct GuardrailOutcome {
-    success: bool,
-    summary: String,
-    telemetry_path: Option<PathBuf>,
-    failures: Vec<String>,
-}
-
-impl SpecAutoState {
-    #[allow(dead_code)]
-    fn new(
-        spec_id: String,
-        goal: String,
-        resume_from: SpecStage,
-        hal_mode: Option<HalMode>,
-    ) -> Self {
-        let stages = vec![
-            SpecStage::Plan,
-            SpecStage::Tasks,
-            SpecStage::Implement,
-            SpecStage::Validate,
-            SpecStage::Audit,
-            SpecStage::Unlock,
-        ];
-        let start_index = stages
-            .iter()
-            .position(|stage| *stage == resume_from)
-            .unwrap_or(0);
-        Self {
-            spec_id,
-            goal,
-            stages,
-            current_index: start_index,
-            phase: SpecAutoPhase::Guardrail,
-            waiting_guardrail: None,
-            validate_retries: 0,
-            pending_prompt_summary: None,
-            hal_mode,
-        }
-    }
-
-    fn current_stage(&self) -> Option<SpecStage> {
-        self.stages.get(self.current_index).copied()
-    }
-
-    #[allow(dead_code)]
-    fn is_executing_agents(&self) -> bool {
-        matches!(self.phase, SpecAutoPhase::ExecutingAgents { .. })
     }
 }
 
