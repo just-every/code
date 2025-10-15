@@ -35,8 +35,9 @@
 
 | Order | Task ID | Title | Status | Owners | PRD | Branch | PR | Last Validation | Evidence | Notes |
 |-------|---------|-------|--------|--------|-----|--------|----|-----------------|----------|-------|
-| 1 | T60 | Template validation | **DONE** | Code |  |  |  | 2025-10-15 | docs/SPEC-KIT-060-template-validation-test/ | PASSED: Templates 55% faster (13.5 min vs 30 min). Quality maintained. Proceeding to Phase 2. |
-| 2 | T65 | Port /clarify command | **IN PROGRESS** | Code |  |  |  |  |  | Structured ambiguity resolution. 3 agents (gemini, claude, code). Max 5 questions. Updates spec.md clarifications section. |
+| 1 | T60 | Template validation | **DONE** | Code |  |  |  | 2025-10-15 | docs/SPEC-KIT-060-template-validation-test/ | PASSED: Templates 55% faster. Proceeding to Phase 2. |
+| 2 | T65 | Port /clarify command | **DONE** | Code |  |  |  | 2025-10-15 |  | PASSED: Found 5 real ambiguities, user answered, stored in local-memory. Improves spec quality. |
+| 3 | T66 | Port /analyze command | **IN PROGRESS** | Code |  |  |  |  |  | Cross-artifact consistency checking. 3 agents. Read-only analysis. |
 | 2 | T49 | Testing framework | Backlog | Code |  |  |  |  | docs/SPEC-KIT-045-mini/ | Full 6-stage run completed 2025-10-14. All 5 agents validated. Framework operational. Pending: Clean run without policy stubs. |
 | 3 | T48 | Config validation utility | Blocked | Code |  |  |  |  | docs/SPEC-KIT-040-add-simple-config-validation-utility/ | Plan/tasks created, no implementation. Low priority - not blocking core work. |
 | 4 | T47 | Spec-status dashboard | Done | Code |  |  |  | 2025-10-08 |  | Native Rust implementation. Completed 2025-10-08. |
