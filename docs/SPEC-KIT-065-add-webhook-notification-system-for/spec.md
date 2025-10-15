@@ -65,14 +65,14 @@
 ### Functional Requirements
 
 - **FR1**: Emit configurable HTTPS webhooks for stage, pipeline, task completion, and optional anomaly events with signed payloads.
-- **FR2**: Maintain asynchronous spool with exponential backoff, idempotency keys, and dead-letter storage without blocking guardrails.
+- **FR2**: Maintain asynchronous spool with exponential backoff, idempotency keys, and dead-letter storage scoped to each SPEC's evidence directory without blocking guardrails.
 - **FR3**: Provide CLI/TUI commands to test, list, and replay deliveries, reflecting state in evidence logs.
 
 ### Non-Functional Requirements
 
 - **Performance**: Additional per-stage latency ≤200 ms, p95 webhook delivery ≤5 s.
 - **Security**: HMAC-SHA256 signatures, secrets only via env vars, no plaintext logging.
-- **Scalability**: Support ≥10 subscriptions per event with bounded spool (<5 MB per SPEC).
+- **Scalability**: Support ≥10 subscriptions per event with bounded spool (<5 MB per SPEC-specific evidence directory).
 - **Reliability**: ≥99.5% successful delivery to healthy endpoints within retry policy; failures visible and replayable.
 
 ---
@@ -80,7 +80,7 @@
 ## Success Criteria
 
 - Sample SPEC demonstrates end-to-end notifications (success + failure paths) with passing unit/integration tests.
-- Evidence tree records every delivery attempt, replay, and outcome for SPEC-KIT-065.
+- Evidence tree records every delivery attempt, replay, and outcome for SPEC-KIT-065 under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-065-add-webhook-notification-system-for/webhooks/`.
 - Documentation updated with configuration, payload schema, and replay workflow.
 - `/spec-notify` tooling validated in automation and smoke tests.
 
@@ -96,16 +96,16 @@
 
 **Validation Commands**:
 ```bash
-# Run individual stages once implemented
-/speckit.plan SPEC-KIT-065-add-webhook-notification-system-for
-/speckit.tasks SPEC-KIT-065-add-webhook-notification-system-for
-/speckit.implement SPEC-KIT-065-add-webhook-notification-system-for
+# Run individual stages once implemented (current command names; `/speckit.*` will replace them post-migration)
+/spec-plan SPEC-KIT-065-add-webhook-notification-system-for
+/spec-tasks SPEC-KIT-065-add-webhook-notification-system-for
+/spec-ops-implement SPEC-KIT-065-add-webhook-notification-system-for
 
 # Full pipeline
-/speckit.auto SPEC-KIT-065-add-webhook-notification-system-for
+/spec-auto SPEC-KIT-065-add-webhook-notification-system-for
 
 # Status & evidence review
-/speckit.status SPEC-KIT-065-add-webhook-notification-system-for
+/spec-status SPEC-KIT-065-add-webhook-notification-system-for
 ```
 
 ---
@@ -119,6 +119,14 @@
 **Resolution**: Pending design review; PRD allows either provided guardrail hooks remain non-blocking.
 
 **Updated sections**: n/a
+
+### 2025-10-15 - Worker implementation decision
+
+**Clarification needed**: Finalize runtime ownership and evidence storage boundaries for the webhook worker.
+
+**Resolution**: Webhook worker will be a Rust long-lived service embedded in the Codex CLI runtime. Guardrail scripts trigger it asynchronously, while each SPEC stores spool and dead-letter artifacts beneath its own evidence directory (`docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/<SPEC-ID>/webhooks/`).
+
+**Updated sections**: Requirements, Success Criteria, Configuration
 
 ---
 
@@ -134,4 +142,3 @@
 
 - Feature ships behind `SPECKIT_WEBHOOKS_ENABLED`; default-off until documentation and validation complete.
 - Coordinate with SPEC operations team before enabling in CI to ensure network policies allow outbound HTTPS.
-

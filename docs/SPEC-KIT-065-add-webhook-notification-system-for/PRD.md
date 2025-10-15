@@ -154,7 +154,7 @@ Spec-Kit orchestrates multi-agent development through the `/spec-auto` pipeline 
 [spec_ops.webhooks]
 enabled = true
 max_concurrency = 4
-spool_dir = "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/webhook_spool"
+spool_dir = "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-065-add-webhook-notification-system-for/webhooks/spool"
 
 [[spec_ops.webhooks.subscriptions]]
 id = "chatops-slack"
@@ -227,7 +227,7 @@ Body example:
     "sessionId": "abcd-1234",
     "timestamp": "2025-10-14T10:05:06Z",
     "artifacts": [
-      { "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-065/plan_2025-10-14.log" }
+      { "path": "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-065-add-webhook-notification-system-for/plan_2025-10-14.log" }
     ]
   },
   "consensus": {
@@ -245,7 +245,7 @@ Body example:
   },
   "evidence": {
     "paths": [
-      "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-065/plan_2025-10-14.log"
+      "docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-065-add-webhook-notification-system-for/plan_2025-10-14.log"
     ]
   }
 }
@@ -341,4 +341,3 @@ if not hmac.compare_digest(expected, request.headers["X-SpecKit-Signature"]):
 - Extend `/spec-status` to surface most recent webhook deliveries and outstanding failures.
 - Document best practices for secret rotation and endpoint testing in `docs/SPEC-KIT-065-add-webhook-notification-system-for/tasks.md` once `/tasks` stage runs.
 - Coordinate with telemetry schema updates to ensure optional anomaly fields map cleanly to webhook payload extensions.
-
