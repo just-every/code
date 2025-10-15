@@ -32,7 +32,7 @@ use spec_kit::{
 };
 use crate::spec_prompts;
 use crate::spec_prompts::{SpecAgent, SpecStage};
-use crate::spec_status::{SpecStatusArgs, collect_report, degraded_warning, render_dashboard};
+// spec_status functions moved to spec_kit::handler
 use codex_common::elapsed::format_duration;
 use codex_common::model_presets::ModelPreset;
 use codex_common::model_presets::builtin_model_presets;
@@ -15085,6 +15085,11 @@ impl ChatWidget<'_> {
     // Upstream: Does not have /spec-consensus command
     // Preserve: This entire function during rebases
     pub(crate) fn handle_spec_consensus_command(&mut self, raw_args: String) {
+        spec_kit::handle_spec_consensus(self, raw_args);
+    }
+
+    // Implementation method (called by spec_kit::handle_spec_consensus)
+    fn handle_spec_consensus_impl(&mut self, raw_args: String) {
         let trimmed = raw_args.trim();
         if trimmed.is_empty() {
             self.history_push(crate::history_cell::new_error_event(

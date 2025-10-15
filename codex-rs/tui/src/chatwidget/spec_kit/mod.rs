@@ -12,9 +12,9 @@ pub mod state;
 // Re-export state types and helpers
 pub use state::{
     GuardrailEvaluation, GuardrailOutcome, GuardrailWait, SpecAutoPhase, SpecAutoState,
-    expected_guardrail_command, get_nested, guardrail_for_stage, require_object,
+    expected_guardrail_command, guardrail_for_stage, require_object,
     require_string_field, spec_ops_stage_prefix, validate_guardrail_evidence,
 };
 
 // Re-export handler functions
-pub use handler::{halt_spec_auto_with_error, handle_spec_status};
+pub use handler::{halt_spec_auto_with_error, handle_spec_consensus, handle_spec_status};

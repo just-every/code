@@ -68,4 +68,10 @@ pub fn halt_spec_auto_with_error(widget: &mut ChatWidget, reason: String) {
     widget.spec_auto_state = None;
 }
 
+/// Handle /spec-consensus command (inspect consensus artifacts)
+pub fn handle_spec_consensus(widget: &mut ChatWidget, raw_args: String) {
+    // Delegate to ChatWidget method for now (complex logic with many private helpers)
+    widget.handle_spec_consensus_impl(raw_args);
+}
+
 // Additional handler functions will be added here in subsequent commits
