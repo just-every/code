@@ -63,6 +63,7 @@ mod sanitize;
 mod session_log;
 mod shimmer;
 mod slash_command;
+mod spec_kit;
 mod spec_prompts;
 pub mod spec_status;
 mod streaming;
