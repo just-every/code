@@ -4,7 +4,7 @@ This playbook gives Claude Code everything it needs to operate safely inside **j
 
 ## 0. Prerequisites & Known Limitations (October 2025)
 - **Foundation docs now exist:** `product-requirements.md` and `PLANNING.md` were added in response to guardrail audits. If either goes missing, stop and recreate or escalate.
-- **Consensus automation is pending:** multi-agent prompts exist but are still triggered manually from the TUI. `/spec-plan --consensus` is aspirational until the consensus runner lands.
+- **Consensus automation is pending:** multi-agent prompts exist but are still triggered manually from the TUI. `/speckit.plan --consensus` is aspirational until the consensus runner lands.
 - **Cargo workspace location:** run Rust commands from `codex-rs/` (for example `cd codex-rs && cargo test -p codex-tui spec_auto`). Guardrail scripts set `SPEC_OPS_CARGO_MANIFEST` when needed, but manual commands must honour the workspace root.
 - **HAL secrets:** full validation requires `HAL_SECRET_KAVEDARR_API_KEY`. If unavailable, set `SPEC_OPS_HAL_SKIP=1` (decision on default behaviour pending) and document the skip in results.
 - **Evidence footprint:** keep evidence under the 25 MB per-SPEC soft limit; use `/spec-evidence-stats` after large runs.
@@ -20,23 +20,125 @@ This playbook gives Claude Code everything it needs to operate safely inside **j
 Always check local-memory before answering, then write back key outcomes (importance ≥7) so it stays authoritative. If you consult the Byterover layer, mirror the insight to local-memory immediately and call out the source with language like “According to Byterover memory layer…”.
 
 ## 2. Operating Modes & Slash Commands
-- `/constitution` – multi-agent edits to constitution + product requirements. Surface disagreements and require human confirmation.
-- `/specify` – single high-reasoning GPT-5 Codex pass to draft/update PRDs and sync SPEC.md.
-- `/plan`, `/tasks`, `/implement`, `/validate`, `/audit`, `/unlock` – multi-agent flows. Follow the Spec Kit skeletons exactly (see §4).
-- `/spec-ops-plan|tasks|implement|validate|audit|unlock` – guardrail shell wrappers. They must land telemetry under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/<SPEC-ID>/`.
-- `/spec-ops-auto` – wraps `scripts/spec_ops_004/spec_auto.sh` (plan→unlock). Enforce clean tree unless `SPEC_OPS_ALLOW_DIRTY=1`.
-- `/spec-evidence-stats` – wraps `scripts/spec_ops_004/evidence_stats.sh`; use after large runs to monitor repo footprint.
-- `/spec-consensus` – inspects local-memory consensus artifacts for a given stage.
 
-If any slash command or CLI is unavailable, degrade gracefully and record which model/step was substituted.
+### Core Spec-Kit Commands (/speckit.* namespace)
 
-**Slash command quick start**
-- Guardrail only: `/spec-ops-plan SPEC-KIT-DEMO`
-- Manual consensus (current reality): run `/spec-plan SPEC-KIT-DEMO Align ingestion tasks` then capture results in local-memory.
-- Full pipeline (shell stages only): `/spec-ops-auto SPEC-KIT-DEMO --from plan`
-- Guardrail + consensus (dry-run default): `/spec-plan --consensus SPEC-KIT-DEMO Align ingestion tasks`
-- Execute consensus (requires Codex CLI creds): `/spec-plan --consensus-exec SPEC-KIT-DEMO Align ingestion tasks`
-- Evidence footprint: `/spec-evidence-stats --spec SPEC-KIT-DEMO`
+**Intake & Creation:**
+- `/speckit.new <description>` – Create new SPEC with multi-agent PRD consensus (Tier 2: 3 agents - gemini, claude, code). Uses templates for consistent structure. ~13 min, ~$0.60.
+- `/speckit.specify SPEC-ID [description]` – Draft/update PRD with multi-agent analysis (Tier 2: 3 agents - gemini, claude, code). ~10-12 min, ~$0.80.
+
+**Quality Commands:**
+- `/speckit.clarify SPEC-ID` – Structured ambiguity resolution (Tier 2: 3 agents - gemini, claude, code). Identifies unclear requirements. ~8-10 min, ~$0.80.
+- `/speckit.analyze SPEC-ID` – Cross-artifact consistency checking with auto-fix (Tier 2: 3 agents - gemini, claude, code). ~8-10 min, ~$0.80.
+- `/speckit.checklist SPEC-ID` – Requirement quality scoring (Tier 2-lite: 2 agents - claude, code). ~5-8 min, ~$0.35.
+
+**Development Stages:**
+- `/speckit.plan SPEC-ID [context]` – Multi-agent work breakdown (Tier 2: 3 agents - gemini, claude, gpt_pro). ~10-12 min, ~$1.00.
+- `/speckit.tasks SPEC-ID` – Task decomposition with consensus (Tier 2: 3 agents - gemini, claude, gpt_pro). ~10-12 min, ~$1.00.
+- `/speckit.implement SPEC-ID` – Code generation + validation (Tier 3: 4 agents - gemini, claude, gpt_codex, gpt_pro). ~15-20 min, ~$2.00.
+- `/speckit.validate SPEC-ID` – Test strategy consensus (Tier 2: 3 agents - gemini, claude, gpt_pro). ~10-12 min, ~$1.00.
+- `/speckit.audit SPEC-ID` – Compliance checking (Tier 2: 3 agents - gemini, claude, gpt_pro). ~10-12 min, ~$1.00.
+- `/speckit.unlock SPEC-ID` – Final approval (Tier 2: 3 agents - gemini, claude, gpt_pro). ~10-12 min, ~$1.00.
+
+**Automation:**
+- `/speckit.auto SPEC-ID` – Full 6-stage pipeline with auto-advancement (Tier 4: dynamic 3-5 agents, uses Tier 2 for most stages, Tier 3 for implement, adds arbiter if conflicts). ~60 min, ~$11.
+
+**Diagnostic:**
+- `/speckit.status SPEC-ID` – Native TUI dashboard (Tier 0: instant, no agents). Shows stage completion, artifacts, evidence paths. <1s, $0.
+
+### Guardrail Commands (Shell wrappers)
+
+- `/spec-ops-plan SPEC-ID` – Baseline + policy checks for plan. Must land telemetry under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/<SPEC-ID>/`.
+- `/spec-ops-tasks SPEC-ID` – Validation for tasks stage.
+- `/spec-ops-implement SPEC-ID` – Pre-implementation checks.
+- `/spec-ops-validate SPEC-ID` – Test harness execution.
+- `/spec-ops-audit SPEC-ID` – Compliance scanning.
+- `/spec-ops-unlock SPEC-ID` – Final validation.
+- `/spec-ops-auto SPEC-ID [--from STAGE]` – Full pipeline wrapper. Wraps `scripts/spec_ops_004/spec_auto.sh` (plan→unlock). Enforce clean tree unless `SPEC_OPS_ALLOW_DIRTY=1`.
+
+### Utility Commands
+
+- `/spec-evidence-stats [--spec SPEC-ID]` – Evidence footprint monitoring. Wraps `scripts/spec_ops_004/evidence_stats.sh`. Use after large runs to monitor repo footprint.
+- `/spec-consensus SPEC-ID STAGE` – Inspect local-memory consensus artifacts for a given stage.
+
+### Legacy Commands (Backward Compatible)
+
+**Deprecated but still functional (will be removed in future release):**
+- `/new-spec` → use `/speckit.new`
+- `/spec-plan` → use `/speckit.plan`
+- `/spec-tasks` → use `/speckit.tasks`
+- `/spec-implement` → use `/speckit.implement`
+- `/spec-validate` → use `/speckit.validate`
+- `/spec-audit` → use `/speckit.audit`
+- `/spec-unlock` → use `/speckit.unlock`
+- `/spec-auto` → use `/speckit.auto`
+- `/spec-status` → use `/speckit.status`
+
+### Command Usage Examples
+
+**Quick start (new feature):**
+```bash
+# Create SPEC
+/speckit.new Add user authentication with OAuth2
+
+# Quality checks (optional)
+/speckit.clarify SPEC-KIT-###
+/speckit.analyze SPEC-KIT-###
+/speckit.checklist SPEC-KIT-###
+
+# Full automation
+/speckit.auto SPEC-KIT-###
+
+# Check status
+/speckit.status SPEC-KIT-###
+```
+
+**Individual stage workflow:**
+```bash
+# Manual stage-by-stage
+/speckit.plan SPEC-KIT-065
+/speckit.tasks SPEC-KIT-065
+/speckit.implement SPEC-KIT-065
+/speckit.validate SPEC-KIT-065
+/speckit.audit SPEC-KIT-065
+/speckit.unlock SPEC-KIT-065
+```
+
+**Guardrail validation:**
+```bash
+# Run guardrail checks (separate from multi-agent)
+/spec-ops-plan SPEC-KIT-065
+/spec-ops-auto SPEC-KIT-065 --from plan
+
+# Monitor evidence footprint
+/spec-evidence-stats --spec SPEC-KIT-065
+```
+
+### Tiered Model Strategy
+
+**Tier 0: Native TUI** (0 agents, $0, <1s)
+- `/speckit.status` - Pure Rust implementation
+
+**Tier 1: Single Agent** (1 agent: code, ~$0.10, 1-3 min)
+- Future optimization for deterministic scaffolding
+
+**Tier 2-lite: Dual Agent** (2 agents: claude, code, ~$0.35, 5-8 min)
+- `/speckit.checklist` - Quality evaluation without research
+
+**Tier 2: Triple Agent** (3 agents: gemini, claude, code/gpt_pro, ~$0.80-1.00, 8-12 min)
+- `/speckit.new`, `/speckit.specify`, `/speckit.clarify`, `/speckit.analyze`
+- `/speckit.plan`, `/speckit.tasks`, `/speckit.validate`, `/speckit.audit`, `/speckit.unlock`
+- Use for analysis, planning, consensus (no code generation)
+
+**Tier 3: Quad Agent** (4 agents: gemini, claude, gpt_codex, gpt_pro, ~$2.00, 15-20 min)
+- `/speckit.implement` only - Code generation + validation
+
+**Tier 4: Dynamic** (3-5 agents adaptively, ~$11, 60 min)
+- `/speckit.auto` - Uses Tier 2 for most stages, Tier 3 for implement, adds arbiter if conflicts
+
+### Degradation & Fallbacks
+
+If any slash command or CLI is unavailable, degrade gracefully and record which model/step was substituted. If Gemini agent fails (produces empty output), orchestrator continues with 2/3 agents - consensus still valid.
 
 ## 3. Telemetry & Evidence Expectations
 - Telemetry schema v1: every JSON needs `command`, `specId`, `sessionId`, `timestamp`, `schemaVersion`, `artifacts[]`.
