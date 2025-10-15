@@ -6,8 +6,12 @@
 //! Uses free functions instead of methods to avoid Rust borrow checker issues
 //! when accessing ChatWidget fields.
 
+pub mod consensus;
 pub mod handler;
 pub mod state;
+
+// Consensus module (types used internally by chatwidget)
+// Not re-exported - accessed via spec_kit::consensus::
 
 // Re-export state types and helpers
 pub use state::{
