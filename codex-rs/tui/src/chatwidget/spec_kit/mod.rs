@@ -7,11 +7,15 @@
 //! when accessing ChatWidget fields.
 
 pub mod consensus;
+pub mod guardrail;
 pub mod handler;
 pub mod state;
 
 // Re-export key consensus functions
 pub use consensus::{collect_consensus_artifacts, load_latest_consensus_synthesis, run_spec_consensus};
+
+// Re-export guardrail functions
+pub use guardrail::{collect_guardrail_outcome, evaluate_guardrail_value, read_latest_spec_ops_telemetry, validate_guardrail_schema};
 
 // Re-export state types and helpers
 pub use state::{
