@@ -1657,6 +1657,32 @@ impl App<'_> {
                                 widget.handle_branch_command(command_args);
                             }
                         }
+                        // SpecKit standardized commands (prompt-expanding)
+                        SlashCommand::SpecKitPlan
+                        | SlashCommand::SpecKitTasks
+                        | SlashCommand::SpecKitImplement
+                        | SlashCommand::SpecKitValidate
+                        | SlashCommand::SpecKitAudit
+                        | SlashCommand::SpecKitUnlock
+                        | SlashCommand::SpecKitAuto
+                        | SlashCommand::SpecKitClarify
+                        | SlashCommand::SpecKitAnalyze
+                        | SlashCommand::SpecKitChecklist => {
+                            // Prompt-expanded in the chat widget
+                        }
+                        // SpecKit special handlers
+                        SlashCommand::SpecKitNew | SlashCommand::SpecKitSpecify => {
+                            // Routed to subagent orchestrators
+                        }
+                        SlashCommand::SpecKitStatus => {
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                widget.handle_spec_status_command(command_args);
+                            }
+                        }
+                        // Legacy spec commands (backward compat)
+                        SlashCommand::NewSpec => {
+                            // Redirect to SpecKitNew
+                        }
                         SlashCommand::SpecPlan
                         | SlashCommand::SpecTasks
                         | SlashCommand::SpecImplement
@@ -1664,7 +1690,7 @@ impl App<'_> {
                         | SlashCommand::SpecAudit
                         | SlashCommand::SpecUnlock
                         | SlashCommand::SpecAuto => {
-                            // Prompt-expanded in the chat widget; no additional dispatch required here.
+                            // Prompt-expanded (legacy)
                         }
                         SlashCommand::SpecStatus => {
                             if let AppState::Chat { widget } = &mut self.app_state {

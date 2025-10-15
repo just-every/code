@@ -121,8 +121,37 @@ pub enum SlashCommand {
     Code,
     // === FORK-SPECIFIC: spec-kit slash commands ===
     // Upstream: Does not have spec-kit automation
-    // Preserve: All spec-* commands during rebases
-    // Migration: T30 will move these to Project Commands (config.toml)
+    // Preserve: All spec-kit commands during rebases
+    // Phase 3: Standardized /speckit.* namespace
+    #[strum(serialize = "speckit.new")]
+    SpecKitNew,
+    #[strum(serialize = "speckit.specify")]
+    SpecKitSpecify,
+    #[strum(serialize = "speckit.clarify")]
+    SpecKitClarify,
+    #[strum(serialize = "speckit.analyze")]
+    SpecKitAnalyze,
+    #[strum(serialize = "speckit.checklist")]
+    SpecKitChecklist,
+    #[strum(serialize = "speckit.plan")]
+    SpecKitPlan,
+    #[strum(serialize = "speckit.tasks")]
+    SpecKitTasks,
+    #[strum(serialize = "speckit.implement")]
+    SpecKitImplement,
+    #[strum(serialize = "speckit.validate")]
+    SpecKitValidate,
+    #[strum(serialize = "speckit.audit")]
+    SpecKitAudit,
+    #[strum(serialize = "speckit.unlock")]
+    SpecKitUnlock,
+    #[strum(serialize = "speckit.auto")]
+    SpecKitAuto,
+    #[strum(serialize = "speckit.status")]
+    SpecKitStatus,
+    // Legacy names (backward compat - remove in future release)
+    #[strum(serialize = "new-spec")]
+    NewSpec,
     #[strum(serialize = "spec-plan")]
     SpecPlan,
     #[strum(serialize = "spec-tasks")]
@@ -192,8 +221,24 @@ impl SlashCommand {
             SlashCommand::Prompts => "show example prompts",
             SlashCommand::Model => "choose model & reasoning effort",
             SlashCommand::Agents => "create and configure agents",
-            SlashCommand::SpecPlan => "multi-agent planning flow (requires SPEC ID and goal)",
-            SlashCommand::SpecTasks => "multi-agent task synthesis (requires SPEC ID)",
+            // SpecKit standardized commands
+            SlashCommand::SpecKitNew => "create new SPEC from description with templates (55% faster)",
+            SlashCommand::SpecKitSpecify => "generate PRD with multi-agent consensus",
+            SlashCommand::SpecKitClarify => "resolve spec ambiguities (max 5 questions)",
+            SlashCommand::SpecKitAnalyze => "check cross-artifact consistency",
+            SlashCommand::SpecKitChecklist => "evaluate requirement quality (generates scores)",
+            SlashCommand::SpecKitPlan => "create work breakdown with multi-agent consensus",
+            SlashCommand::SpecKitTasks => "generate task list with validation mapping",
+            SlashCommand::SpecKitImplement => "write code with multi-agent consensus",
+            SlashCommand::SpecKitValidate => "run test strategy with validation",
+            SlashCommand::SpecKitAudit => "compliance review with multi-agent",
+            SlashCommand::SpecKitUnlock => "final approval for merge",
+            SlashCommand::SpecKitAuto => "full 6-stage pipeline with auto-advancement",
+            SlashCommand::SpecKitStatus => "show SPEC progress dashboard",
+            // Legacy (deprecated)
+            SlashCommand::NewSpec => "DEPRECATED: use /speckit.new",
+            SlashCommand::SpecPlan => "DEPRECATED: use /speckit.plan",
+            SlashCommand::SpecTasks => "DEPRECATED: use /speckit.tasks",
             SlashCommand::SpecImplement => "multi-agent implementation design (requires SPEC ID)",
             SlashCommand::SpecValidate => "multi-agent validation consensus (requires SPEC ID)",
             SlashCommand::SpecAudit => "multi-agent audit/go-no-go (requires SPEC ID)",
@@ -249,6 +294,7 @@ impl SlashCommand {
         matches!(
             self,
             SlashCommand::Plan | SlashCommand::Solve | SlashCommand::Code
+            | SlashCommand::SpecKitClarify | SlashCommand::SpecKitAnalyze | SlashCommand::SpecKitChecklist
         )
     }
 
@@ -257,6 +303,11 @@ impl SlashCommand {
         matches!(
             self,
             SlashCommand::Plan | SlashCommand::Solve | SlashCommand::Code
+            | SlashCommand::SpecKitNew | SlashCommand::SpecKitSpecify | SlashCommand::SpecKitClarify
+            | SlashCommand::SpecKitAnalyze | SlashCommand::SpecKitChecklist | SlashCommand::SpecKitPlan
+            | SlashCommand::SpecKitTasks | SlashCommand::SpecKitImplement | SlashCommand::SpecKitValidate
+            | SlashCommand::SpecKitAudit | SlashCommand::SpecKitUnlock | SlashCommand::SpecKitAuto
+            | SlashCommand::SpecKitStatus
         )
     }
 
@@ -355,6 +406,15 @@ impl SlashCommand {
             SlashCommand::Code => Some(codex_core::slash_commands::format_code_command(
                 args, None, None,
             )),
+            // SpecKit commands use subagent orchestrators
+            SlashCommand::SpecKitClarify | SlashCommand::SpecKitAnalyze | SlashCommand::SpecKitChecklist => {
+                Some(codex_core::slash_commands::format_subagent_command(
+                    self.command().strip_prefix("speckit.").unwrap_or(self.command()),
+                    args,
+                    None,
+                    None,
+                ).prompt)
+            }
             _ => None,
         }
     }
