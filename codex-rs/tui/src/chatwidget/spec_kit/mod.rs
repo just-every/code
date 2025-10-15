@@ -11,7 +11,7 @@ pub mod handler;
 pub mod state;
 
 // Re-export key consensus functions
-pub use consensus::collect_consensus_artifacts;
+pub use consensus::{collect_consensus_artifacts, load_latest_consensus_synthesis, run_spec_consensus};
 
 // Re-export state types and helpers
 pub use state::{

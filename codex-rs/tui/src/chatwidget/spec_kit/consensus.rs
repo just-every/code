@@ -478,3 +478,195 @@ pub fn load_latest_consensus_synthesis(
         path: latest_path,
     }))
 }
+
+use std::collections::HashSet;
+
+/// Run consensus check for spec stage
+pub fn run_spec_consensus(
+    cwd: &Path,
+    spec_id: &str,
+    stage: SpecStage,
+    telemetry_enabled: bool,
+) -> Result<(Vec<ratatui::text::Line<'static>>, bool), String> {
+    let evidence_root = cwd.join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus");
+
+    let (artifacts, mut warnings) = collect_consensus_artifacts(&evidence_root, spec_id, stage)?;
+    if artifacts.is_empty() {
+        return Err(format!(
+            "No structured local-memory entries found for {} stage '{}'. Ensure agents stored their JSON via local-memory remember.",
+            spec_id,
+            stage.command_name()
+        ));
+    }
+
+    let synthesis_summary = match load_latest_consensus_synthesis(cwd, spec_id, stage) {
+        Ok(summary) => summary,
+        Err(err) => {
+            warnings.push(format!("Failed to load consensus synthesis: {}", err));
+            None
+        }
+    };
+
+    let mut present_agents: HashSet<String> = HashSet::new();
+    let mut aggregator_summary: Option<Value> = None;
+    let mut aggregator_version: Option<String> = None;
+    let mut aggregator_agent: Option<String> = None;
+    let mut agreements: Vec<String> = Vec::new();
+    let mut conflicts: Vec<String> = Vec::new();
+    let mut required_fields_ok = false;
+
+    for artifact in &artifacts {
+        let agent_lower = artifact.agent.to_ascii_lowercase();
+        present_agents.insert(agent_lower.clone());
+        if artifact.agent.eq_ignore_ascii_case("gpt_pro") {
+            let consensus_node = artifact
+                .content
+                .get("consensus")
+                .cloned()
+                .unwrap_or(Value::Null);
+            agreements = extract_string_list(consensus_node.get("agreements"));
+            conflicts = extract_string_list(consensus_node.get("conflicts"));
+            required_fields_ok = validate_required_fields(stage, &artifact.content);
+            aggregator_summary = Some(artifact.content.clone());
+            aggregator_version = artifact.version.clone();
+            aggregator_agent = Some(artifact.agent.clone());
+        }
+    }
+
+    let expected_agents = expected_agents_for_stage(stage)
+        .into_iter()
+        .map(|agent| agent.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+
+    let mut missing_agents: Vec<String> = expected_agents
+        .into_iter()
+        .filter(|agent| !present_agents.contains(agent))
+        .collect();
+
+    if aggregator_summary.is_none() {
+        required_fields_ok = false;
+    }
+
+    let mut synthesis_evidence_path: Option<PathBuf> = None;
+    let mut prompt_version =
+        crate::spec_prompts::stage_version_enum(stage).unwrap_or_else(|| "unversioned".to_string());
+    let has_conflict;
+    let degraded;
+    let consensus_ok;
+
+    if let Some(summary) = &synthesis_summary {
+        synthesis_evidence_path = Some(summary.path.clone());
+        if let Some(version) = &summary.prompt_version {
+            if !version.trim().is_empty() {
+                prompt_version = version.clone();
+            }
+        }
+        agreements = summary.agreements.clone();
+        conflicts = summary.conflicts.clone();
+        missing_agents = summary.missing_agents.clone();
+        has_conflict = summary.status.eq_ignore_ascii_case("conflict") || !conflicts.is_empty();
+        degraded = summary.status.eq_ignore_ascii_case("degraded")
+            || (!missing_agents.is_empty() && !has_conflict);
+        consensus_ok = summary.status.eq_ignore_ascii_case("ok");
+    } else {
+        has_conflict = !conflicts.is_empty();
+        degraded = aggregator_summary.is_none() || !missing_agents.is_empty();
+        consensus_ok = !aggregator_summary.is_none()
+            && conflicts.is_empty()
+            && missing_agents.is_empty()
+            && required_fields_ok;
+    }
+
+    let consensus_ok = if consensus_ok {
+        true
+    } else {
+        false
+    };
+    let has_conflict = if consensus_ok { false } else { has_conflict };
+    let degraded = if consensus_ok { false } else { degraded };
+
+    missing_agents.sort_unstable();
+    missing_agents.dedup();
+    conflicts.sort_unstable();
+    conflicts.dedup();
+
+    let consensus_status = if consensus_ok {
+        "ok"
+    } else if has_conflict {
+        "conflict"
+    } else if degraded {
+        "degraded"
+    } else {
+        "unknown"
+    };
+    let consensus_status = consensus_status.to_string();
+
+    let mut lines: Vec<ratatui::text::Line<'static>> = Vec::new();
+    let status_label = if consensus_ok {
+        "CONSENSUS OK"
+    } else if has_conflict {
+        "CONSENSUS CONFLICT"
+    } else if degraded {
+        "CONSENSUS DEGRADED"
+    } else {
+        "CONSENSUS UNKNOWN"
+    };
+    lines.push(ratatui::text::Line::from(format!(
+        "[Spec Consensus] {} {} — {}",
+        stage.display_name(),
+        spec_id,
+        status_label
+    )));
+    lines.push(ratatui::text::Line::from(format!(
+        "  Prompt version: {}",
+        prompt_version
+    )));
+
+    for warning in warnings.drain(..) {
+        lines.push(ratatui::text::Line::from(format!("  Warning: {warning}")));
+    }
+
+    if let Some(path) = synthesis_evidence_path.as_ref() {
+        lines.push(ratatui::text::Line::from(format!(
+            "  Synthesis: {}",
+            path.display()
+        )));
+    }
+
+    if !missing_agents.is_empty() {
+        lines.push(ratatui::text::Line::from(format!(
+            "  Missing agents: {}",
+            missing_agents.join(", ")
+        )));
+    }
+
+    if aggregator_summary.is_none() {
+        lines.push(ratatui::text::Line::from(
+            "  Aggregator (gpt_pro) summary not found in local-memory.",
+        ));
+    }
+
+    if !agreements.is_empty() {
+        lines.push(ratatui::text::Line::from(format!(
+            "  Agreements: {}",
+            agreements.join("; ")
+        )));
+    }
+
+    if !conflicts.is_empty() {
+        lines.push(ratatui::text::Line::from(format!(
+            "  Conflicts: {}",
+            conflicts.join("; ")
+        )));
+    }
+
+    lines.push(ratatui::text::Line::from(format!(
+        "  Artifacts: {} agent(s)",
+        present_agents.len()
+    )));
+
+    // Persistence logic would go here if telemetry_enabled
+    // (Extracted in later batch)
+
+    Ok((lines, consensus_ok))
+}
