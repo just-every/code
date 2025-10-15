@@ -4,8 +4,11 @@
 //! Using free functions instead of methods to avoid Rust borrow checker issues.
 
 use super::super::ChatWidget; // Parent module (friend access to private fields)
+use super::state::{GuardrailWait, SpecAutoPhase};
 use crate::app_event::BackgroundPlacement;
 use crate::history_cell::HistoryCellType;
+use crate::slash_command::{HalMode, SlashCommand};
+use crate::spec_prompts::SpecStage;
 use crate::spec_status::{SpecStatusArgs, collect_report, degraded_warning, render_dashboard};
 
 /// Handle /speckit.status command (native dashboard)
@@ -83,6 +86,124 @@ pub fn handle_guardrail(
 ) {
     // Delegate to ChatWidget method for now (complex logic with environment setup)
     widget.handle_guardrail_impl(command, raw_args, hal_override);
+}
+
+// === Spec Auto Pipeline Methods ===
+
+/// Handle /speckit.auto command initiation
+pub fn handle_spec_auto(
+    widget: &mut ChatWidget,
+    spec_id: String,
+    goal: String,
+    resume_from: SpecStage,
+    hal_mode: Option<HalMode>,
+) {
+    let mut header: Vec<ratatui::text::Line<'static>> = Vec::new();
+    header.push(ratatui::text::Line::from(format!("/spec-auto {}", spec_id)));
+    if !goal.trim().is_empty() {
+        header.push(ratatui::text::Line::from(format!("Goal: {}", goal)));
+    }
+    header.push(ratatui::text::Line::from(format!(
+        "Resume from: {}",
+        resume_from.display_name()
+    )));
+    match hal_mode {
+        Some(HalMode::Live) => header.push(ratatui::text::Line::from("HAL mode: live")),
+        Some(HalMode::Mock) => header.push(ratatui::text::Line::from("HAL mode: mock")),
+        None => header.push(ratatui::text::Line::from("HAL mode: mock (default)")),
+    }
+    widget.history_push(crate::history_cell::PlainHistoryCell::new(
+        header,
+        HistoryCellType::Notice,
+    ));
+
+    widget.spec_auto_state = Some(super::state::SpecAutoState::new(
+        spec_id,
+        goal,
+        resume_from,
+        hal_mode,
+    ));
+    advance_spec_auto(widget);
+}
+
+/// Advance spec-auto pipeline to next stage
+pub fn advance_spec_auto(widget: &mut ChatWidget) {
+    if widget.spec_auto_state.is_none() {
+        return;
+    }
+    if widget
+        .spec_auto_state
+        .as_ref()
+        .and_then(|state| state.waiting_guardrail.as_ref())
+        .is_some()
+    {
+        return;
+    }
+
+    enum NextAction {
+        PipelineComplete,
+        RunGuardrail {
+            command: SlashCommand,
+            args: String,
+            hal_mode: Option<HalMode>,
+        },
+    }
+
+    loop {
+        let next_action = {
+            let Some(state) = widget.spec_auto_state.as_mut() else {
+                return;
+            };
+
+            if state.current_index >= state.stages.len() {
+                NextAction::PipelineComplete
+            } else {
+                let stage = state.stages[state.current_index];
+                let hal_mode = state.hal_mode;
+                match &state.phase {
+                    SpecAutoPhase::Guardrail => {
+                        let command = super::state::guardrail_for_stage(stage);
+                        let args = state.spec_id.clone();
+                        state.waiting_guardrail = Some(GuardrailWait {
+                            stage,
+                            command,
+                            task_id: None,
+                        });
+                        NextAction::RunGuardrail {
+                            command,
+                            args,
+                            hal_mode,
+                        }
+                    }
+                    SpecAutoPhase::ExecutingAgents { .. } => {
+                        return;
+                    }
+                    SpecAutoPhase::CheckingConsensus => {
+                        return;
+                    }
+                }
+            }
+        };
+
+        match next_action {
+            NextAction::PipelineComplete => {
+                widget.history_push(crate::history_cell::PlainHistoryCell::new(
+                    vec![ratatui::text::Line::from("/spec-auto pipeline complete")],
+                    HistoryCellType::Notice,
+                ));
+                widget.spec_auto_state = None;
+                return;
+            }
+            NextAction::RunGuardrail {
+                command,
+                args,
+                hal_mode,
+            } => {
+                widget.handle_spec_ops_command(command, args, hal_mode);
+                return;
+            }
+        }
+    }
 }
 
 // Additional handler functions will be added here in subsequent commits
