@@ -43,6 +43,7 @@
 | 6 | T46 | Fork rebasing docs | Backlog | Code |  |  |  |  |  | Documented in FORK_DEVIATIONS.md, TUI.md. Can formalize if needed. |
 | 7 | T61 | Webhook notification system for task completion | Backlog | Code | docs/SPEC-KIT-065-add-webhook-notification-system-for/PRD.md | feat/spec-auto-telemetry |  |  |  | Created via /new-spec |
 | 8 | T62 | Implement search autocomplete with fuzzy matching | Backlog | Code | docs/SPEC-KIT-070-implement-search-autocomplete-with-fuzzy-matching/PRD.md | feat/spec-auto-telemetry |  |  |  | Created via /new-spec |
+| 9 | T63 | Webhook notifications for task completion events v2 | Backlog | Code | docs/SPEC-KIT-075-add-webhook-notification-system-for/PRD.md | feat/spec-auto-telemetry |  |  |  | Created via /new-spec |
 
 ---
 
