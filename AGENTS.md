@@ -38,9 +38,9 @@
 - `/speckit.auto SPEC-ID` → Full 6-stage pipeline (Tier 4: dynamic 3-5 agents). Auto-advancement, conflict resolution via arbiter. ~60 min, ~$11.
 - `/speckit.status SPEC-ID` → Native TUI dashboard (Tier 0: no agents). Instant status, <1s, $0.
 
-**Guardrails (Shell wrappers - /spec-ops-* namespace):**
-- `/spec-ops-plan|tasks|implement|validate|audit|unlock SPEC-ID` → SPEC-OPS-004 validation commands. Run clean-tree and branch guardrails, trigger project hooks, log evidence under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/`. Emit telemetry schema v1. Set `SPEC_OPS_CARGO_MANIFEST` (default `codex-rs/Cargo.toml`) or `--manifest-path` for workspace splits. Use `--allow-dirty` (or `SPEC_OPS_ALLOW_DIRTY=1`) with `--allow-fail` when dirty tree tolerated. `SPEC_OPS_TELEMETRY_HAL=1` enables HAL summary payloads.
-- `/spec-ops-auto SPEC-ID [--from STAGE]` → Full pipeline wrapper with telemetry.
+**Guardrails (Shell wrappers):**
+- `/guardrail.plan|tasks|implement|validate|audit|unlock SPEC-ID` → SPEC-OPS-004 validation commands. Run clean-tree and branch guardrails, trigger project hooks, log evidence under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/`. Emit telemetry schema v1. Set `SPEC_OPS_CARGO_MANIFEST` (default `codex-rs/Cargo.toml`) or `--manifest-path` for workspace splits. Use `--allow-dirty` (or `SPEC_OPS_ALLOW_DIRTY=1`) with `--allow-fail` when dirty tree tolerated. `SPEC_OPS_TELEMETRY_HAL=1` enables HAL summary payloads. (note: legacy `/spec-ops-*` commands still work)
+- `/guardrail.auto SPEC-ID [--from STAGE]` → Full pipeline wrapper with telemetry. (note: legacy `/spec-ops-auto` still works)
 
 **Utilities:**
 - `/spec-evidence-stats [--spec SPEC-ID]` → Evidence footprint monitoring.

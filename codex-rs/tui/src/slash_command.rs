@@ -15,9 +15,7 @@ const BUILD_PROFILE: Option<&str> = option_env!("CODEX_PROFILE");
 fn demo_command_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
-        let profile_matches = |
-            profile: &str
-        | {
+        let profile_matches = |profile: &str| {
             let normalized = profile.trim().to_ascii_lowercase();
             normalized == "perf" || normalized.starts_with("dev")
         };
@@ -45,9 +43,7 @@ fn demo_command_enabled() -> bool {
 fn pro_command_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
-        let profile_matches = |
-            profile: &str
-        | {
+        let profile_matches = |profile: &str| {
             let normalized = profile.trim().to_ascii_lowercase();
             normalized.starts_with("dev") || normalized == "pref" || normalized == "perf"
         };
@@ -149,7 +145,22 @@ pub enum SlashCommand {
     SpecKitAuto,
     #[strum(serialize = "speckit.status")]
     SpecKitStatus,
-    // Legacy names (backward compat - remove in future release)
+    // Guardrail commands (Phase 3 Week 2)
+    #[strum(serialize = "guardrail.plan")]
+    GuardrailPlan,
+    #[strum(serialize = "guardrail.tasks")]
+    GuardrailTasks,
+    #[strum(serialize = "guardrail.implement")]
+    GuardrailImplement,
+    #[strum(serialize = "guardrail.validate")]
+    GuardrailValidate,
+    #[strum(serialize = "guardrail.audit")]
+    GuardrailAudit,
+    #[strum(serialize = "guardrail.unlock")]
+    GuardrailUnlock,
+    #[strum(serialize = "guardrail.auto")]
+    GuardrailAuto,
+    // Legacy names (backward compat - will be removed in future release)
     #[strum(serialize = "new-spec")]
     NewSpec,
     #[strum(serialize = "spec-plan")]
@@ -222,7 +233,9 @@ impl SlashCommand {
             SlashCommand::Model => "choose model & reasoning effort",
             SlashCommand::Agents => "create and configure agents",
             // SpecKit standardized commands
-            SlashCommand::SpecKitNew => "create new SPEC from description with templates (55% faster)",
+            SlashCommand::SpecKitNew => {
+                "create new SPEC from description with templates (55% faster)"
+            }
             SlashCommand::SpecKitSpecify => "generate PRD with multi-agent consensus",
             SlashCommand::SpecKitClarify => "resolve spec ambiguities (max 5 questions)",
             SlashCommand::SpecKitAnalyze => "check cross-artifact consistency",
@@ -243,29 +256,37 @@ impl SlashCommand {
             SlashCommand::SpecValidate => "multi-agent validation consensus (requires SPEC ID)",
             SlashCommand::SpecAudit => "multi-agent audit/go-no-go (requires SPEC ID)",
             SlashCommand::SpecUnlock => "multi-agent unlock justification (requires SPEC ID)",
-            SlashCommand::SpecAuto => "full automated pipeline with visible agents (orchestrator-driven)",
+            SlashCommand::SpecAuto => {
+                "full automated pipeline with visible agents (orchestrator-driven)"
+            }
             SlashCommand::SpecOpsPlan => "run Spec Ops plan automation (requires SPEC ID)",
             SlashCommand::SpecOpsTasks => "run Spec Ops tasks automation (requires SPEC ID)",
             SlashCommand::SpecOpsImplement => {
                 "run Spec Ops implement automation (requires SPEC ID)"
             }
-            SlashCommand::SpecOpsValidate => {
-                "run Spec Ops validate automation (requires SPEC ID)"
-            }
-            SlashCommand::SpecOpsAudit => {
-                "run Spec Ops audit automation (requires SPEC ID)"
-            }
-            SlashCommand::SpecOpsUnlock => {
-                "unlock SPEC.md copy-on-write lock (requires SPEC ID)"
-            }
+            SlashCommand::SpecOpsValidate => "run Spec Ops validate automation (requires SPEC ID)",
+            SlashCommand::SpecOpsAudit => "run Spec Ops audit automation (requires SPEC ID)",
+            SlashCommand::SpecOpsUnlock => "unlock SPEC.md copy-on-write lock (requires SPEC ID)",
             SlashCommand::SpecOpsAuto => {
                 "run Spec Ops guardrail sequence (requires SPEC ID; optional --from)"
             }
             SlashCommand::SpecEvidenceStats => {
                 "summarize guardrail/consensus evidence sizes (optional --spec)"
             }
-            SlashCommand::SpecConsensus => "check multi-agent consensus via local-memory (requires SPEC ID & stage)",
-            SlashCommand::SpecStatus => "show comprehensive SPEC status (guardrails, consensus, agents)",
+            SlashCommand::SpecConsensus => {
+                "check multi-agent consensus via local-memory (requires SPEC ID & stage)"
+            }
+            SlashCommand::SpecStatus => {
+                "show comprehensive SPEC status (guardrails, consensus, agents)"
+            }
+            // Guardrail commands
+            SlashCommand::GuardrailPlan => "run guardrail validation for plan stage",
+            SlashCommand::GuardrailTasks => "run guardrail validation for tasks stage",
+            SlashCommand::GuardrailImplement => "run guardrail validation for implement stage",
+            SlashCommand::GuardrailValidate => "run guardrail validation for validate stage",
+            SlashCommand::GuardrailAudit => "run guardrail validation for audit stage",
+            SlashCommand::GuardrailUnlock => "run guardrail validation for unlock stage",
+            SlashCommand::GuardrailAuto => "run full guardrail pipeline with telemetry",
             SlashCommand::Pro => "manage Pro mode (toggle/status/auto)",
             SlashCommand::Branch => {
                 "work in an isolated /branch then /merge when done (great for parallel work)"
@@ -293,8 +314,12 @@ impl SlashCommand {
     pub fn is_prompt_expanding(self) -> bool {
         matches!(
             self,
-            SlashCommand::Plan | SlashCommand::Solve | SlashCommand::Code
-            | SlashCommand::SpecKitClarify | SlashCommand::SpecKitAnalyze | SlashCommand::SpecKitChecklist
+            SlashCommand::Plan
+                | SlashCommand::Solve
+                | SlashCommand::Code
+                | SlashCommand::SpecKitClarify
+                | SlashCommand::SpecKitAnalyze
+                | SlashCommand::SpecKitChecklist
         )
     }
 
@@ -302,12 +327,22 @@ impl SlashCommand {
     pub fn requires_arguments(self) -> bool {
         matches!(
             self,
-            SlashCommand::Plan | SlashCommand::Solve | SlashCommand::Code
-            | SlashCommand::SpecKitNew | SlashCommand::SpecKitSpecify | SlashCommand::SpecKitClarify
-            | SlashCommand::SpecKitAnalyze | SlashCommand::SpecKitChecklist | SlashCommand::SpecKitPlan
-            | SlashCommand::SpecKitTasks | SlashCommand::SpecKitImplement | SlashCommand::SpecKitValidate
-            | SlashCommand::SpecKitAudit | SlashCommand::SpecKitUnlock | SlashCommand::SpecKitAuto
-            | SlashCommand::SpecKitStatus
+            SlashCommand::Plan
+                | SlashCommand::Solve
+                | SlashCommand::Code
+                | SlashCommand::SpecKitNew
+                | SlashCommand::SpecKitSpecify
+                | SlashCommand::SpecKitClarify
+                | SlashCommand::SpecKitAnalyze
+                | SlashCommand::SpecKitChecklist
+                | SlashCommand::SpecKitPlan
+                | SlashCommand::SpecKitTasks
+                | SlashCommand::SpecKitImplement
+                | SlashCommand::SpecKitValidate
+                | SlashCommand::SpecKitAudit
+                | SlashCommand::SpecKitUnlock
+                | SlashCommand::SpecKitAuto
+                | SlashCommand::SpecKitStatus
         )
     }
 
@@ -407,14 +442,19 @@ impl SlashCommand {
                 args, None, None,
             )),
             // SpecKit commands use subagent orchestrators
-            SlashCommand::SpecKitClarify | SlashCommand::SpecKitAnalyze | SlashCommand::SpecKitChecklist => {
-                Some(codex_core::slash_commands::format_subagent_command(
-                    self.command().strip_prefix("speckit.").unwrap_or(self.command()),
+            SlashCommand::SpecKitClarify
+            | SlashCommand::SpecKitAnalyze
+            | SlashCommand::SpecKitChecklist => Some(
+                codex_core::slash_commands::format_subagent_command(
+                    self.command()
+                        .strip_prefix("speckit.")
+                        .unwrap_or(self.command()),
                     args,
                     None,
                     None,
-                ).prompt)
-            }
+                )
+                .prompt,
+            ),
             _ => None,
         }
     }
@@ -686,7 +726,11 @@ mod tests {
     fn legacy_spec_alias_emits_notice() {
         let message = process_slash_command_message("/spec-plan SPEC-OPS-999");
         match message {
-            ProcessedCommand::RegularCommand { command, command_text, notice } => {
+            ProcessedCommand::RegularCommand {
+                command,
+                command_text,
+                notice,
+            } => {
                 assert_eq!(command, SlashCommand::SpecOpsPlan);
                 assert_eq!(command_text, "/spec-ops-plan SPEC-OPS-999");
                 let notice = notice.expect("expected deprecation notice");
@@ -723,7 +767,10 @@ mod tests {
     #[test]
     fn spec_ops_auto_maps_to_spec_auto_script() {
         let command = SlashCommand::SpecOpsAuto;
-        assert!(command.is_spec_ops(), "/spec-ops-auto should be recognized as Spec Ops command");
+        assert!(
+            command.is_spec_ops(),
+            "/spec-ops-auto should be recognized as Spec Ops command"
+        );
         let meta = command.spec_ops().expect("Spec Ops metadata");
         assert_eq!(meta.display, "auto");
         assert_eq!(meta.script, "spec_auto.sh");

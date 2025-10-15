@@ -139,13 +139,9 @@ fn model_metadata(stage: SpecStage, agent: SpecAgent) -> Vec<(String, String)> {
             ("gemini-2.5-flash", "2025-05-14", "fast")
         }
         (_, SpecAgent::Gemini) => ("gemini-2.5-pro", "2025-05-14", "thinking"),
-        (SpecStage::Unlock, SpecAgent::Claude) => {
-            ("claude-4.5-sonnet", "2025-09-29", "balanced")
-        }
+        (SpecStage::Unlock, SpecAgent::Claude) => ("claude-4.5-sonnet", "2025-09-29", "balanced"),
         (_, SpecAgent::Claude) => ("claude-4.5-sonnet", "2025-09-29", "balanced"),
-        (SpecStage::Implement, SpecAgent::GptCodex) => {
-            ("gpt-5-codex", "2025-09-29", "auto")
-        }
+        (SpecStage::Implement, SpecAgent::GptCodex) => ("gpt-5-codex", "2025-09-29", "auto"),
         (_, SpecAgent::GptCodex) => ("gpt-5-codex", "2025-09-29", "auto"),
         (SpecStage::Implement, SpecAgent::GptPro) => ("gpt-5", "2025-08-06", "high"),
         (_, SpecAgent::GptPro) => ("gpt-5", "2025-08-06", "high"),
@@ -449,9 +445,8 @@ mod tests {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn build_stub_script(responses: &[(&str, &str)]) -> String {
-        let mut script = String::from(
-            "#!/usr/bin/env python3\nimport json\nimport sys\nresponses = {\n",
-        );
+        let mut script =
+            String::from("#!/usr/bin/env python3\nimport json\nimport sys\nresponses = {\n");
         for (key, json) in responses {
             script.push_str(&format!("    {key:?}: json.loads({json:?}),\n"));
         }
@@ -553,7 +548,10 @@ mod tests {
         ]}}"#;
 
         let entries = with_local_memory_stub(
-            &[("stage:spec-plan", populated), ("default", r#"{"success": true, "data": {"results": []}}"#)],
+            &[
+                ("stage:spec-plan", populated),
+                ("default", r#"{"success": true, "data": {"results": []}}"#),
+            ],
             || gather_local_memory_context("SPEC-OPS-123", SpecStage::Plan).unwrap(),
         );
 
@@ -579,10 +577,9 @@ mod tests {
             {"memory": {"id": "mem-plan-01", "content": "Plan consensus summary"}}
         ]}}"#;
 
-        let prompt = with_local_memory_stub(
-            &[("stage:spec-plan", populated)],
-            || build_stage_prompt(SpecStage::Plan, "SPEC-OPS-123 Align migration").unwrap(),
-        );
+        let prompt = with_local_memory_stub(&[("stage:spec-plan", populated)], || {
+            build_stage_prompt(SpecStage::Plan, "SPEC-OPS-123 Align migration").unwrap()
+        });
 
         assert!(prompt.contains("## Local-memory context"));
         assert!(prompt.contains("mem-plan-01"));
@@ -605,10 +602,9 @@ mod tests {
             {"memory": {"id": "mem-tasks-01", "content": "Task breakdown from prior run"}}
         ]}}"#;
 
-        let prompt = with_local_memory_stub(
-            &[("stage:spec-tasks", populated)],
-            || build_stage_prompt(SpecStage::Tasks, "SPEC-OPS-123").unwrap(),
-        );
+        let prompt = with_local_memory_stub(&[("stage:spec-tasks", populated)], || {
+            build_stage_prompt(SpecStage::Tasks, "SPEC-OPS-123").unwrap()
+        });
 
         assert!(prompt.contains("mem-tasks-01"));
         assert!(prompt.contains("Task breakdown from prior run"));

@@ -65,10 +65,10 @@
 ### 2.4 Guardrail Layer (Shell wrappers)
 **Purpose:** Validation and policy enforcement separate from agent orchestration
 
-**Commands:** `/spec-ops-{plan,tasks,implement,validate,audit,unlock,auto}`
+**Commands:** `/guardrail.{plan,tasks,implement,validate,audit,unlock,auto}` (note: legacy `/spec-ops-*` commands still work)
 - Stage-specific scripts (`spec_ops_004/commands/spec_ops_{stage}.sh`) share helpers via `common.sh`
 - Telemetry emitted as JSON (schema v1) per stage with optional HAL payloads
-- `/spec-ops-auto` orchestrates sequential execution with clean tree enforcement
+- `/guardrail.auto` orchestrates sequential execution with clean tree enforcement
 
 **Telemetry schema v1:**
 - Common: `command`, `specId`, `sessionId`, `timestamp`, `schemaVersion`, `artifacts[]`
@@ -164,11 +164,11 @@ bash scripts/setup-hooks.sh
 ```bash
 # Individual stage
 /speckit.plan SPEC-KIT-###
-/spec-ops-plan SPEC-KIT-###
+/guardrail.plan SPEC-KIT-###
 
 # Full pipeline
 /speckit.auto SPEC-KIT-###
-/spec-ops-auto SPEC-KIT-### --from plan
+/guardrail.auto SPEC-KIT-### --from plan
 
 # Evidence monitoring
 /spec-evidence-stats --spec SPEC-KIT-###
@@ -191,7 +191,7 @@ python3 scripts/spec-kit/lint_tasks.py
 - ✅ Backward compatibility maintained
 
 **Phase 3 Week 2** (Planned):
-- [ ] Guardrail namespace: `/spec-ops-*` → `/guardrail.*`
+- [ ] Guardrail namespace: `/spec-ops-*` → `/guardrail.*` (documentation updated, implementation pending)
 - [ ] Remove legacy `/spec-*` enum variants
 - [ ] Final testing and release notes
 - [ ] Migration complete
@@ -259,7 +259,7 @@ python3 scripts/spec-kit/lint_tasks.py
 
 - Default HAL mode: mock or live?
 - Evidence archival strategy for >25MB SPECs
-- Guardrail namespace finalization: `/guardrail.*` vs `/spec-ops-*`
+- Guardrail namespace implementation: `/guardrail.*` commands (documentation updated, TUI routing pending)
 - Separate spec-kit repo vs embedded in Codex fork?
 - Cost tracking telemetry for governance reporting
 

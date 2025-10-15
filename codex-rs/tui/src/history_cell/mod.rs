@@ -1,12 +1,14 @@
 use crate::diff_render::create_diff_summary_with_width;
 use crate::exec_command::strip_bash_lc_and_escape;
+use crate::insert_history::word_wrap_lines;
 use crate::sanitize::Mode as SanitizeMode;
 use crate::sanitize::Options as SanitizeOptions;
 use crate::sanitize::sanitize_for_tui;
 use crate::slash_command::SlashCommand;
-use crate::util::buffer::{fill_rect, write_line};
-use crate::insert_history::word_wrap_lines;
 use crate::text_formatting::format_json_compact;
+use crate::util::buffer::{fill_rect, write_line};
+use ::image::DynamicImage;
+use ::image::ImageReader;
 use base64::Engine;
 use codex_ansi_escape::ansi_escape_line;
 use codex_common::create_config_summary_entries;
@@ -22,8 +24,6 @@ use codex_core::protocol::McpInvocation;
 use codex_core::protocol::SessionConfiguredEvent;
 use codex_core::protocol::TokenUsage;
 use codex_protocol::num_format::format_with_separators;
-use ::image::DynamicImage;
-use ::image::ImageReader;
 use mcp_types::EmbeddedResourceResource;
 use mcp_types::ResourceLink;
 use ratatui::prelude::*;
@@ -54,30 +54,25 @@ mod animated;
 mod explore;
 mod image;
 mod loading;
-mod reasoning;
-mod tool;
-mod wait_status;
-mod plan_update;
 mod plain;
-mod upgrade;
+mod plan_update;
+mod reasoning;
 mod semantic;
 mod text;
+mod tool;
+mod upgrade;
+mod wait_status;
 
 pub(crate) use animated::AnimatedWelcomeCell;
 pub(crate) use explore::{ExploreAggregationCell, ExploreEntryStatus};
 pub(crate) use image::ImageOutputCell;
 pub(crate) use loading::LoadingCell;
-pub(crate) use reasoning::CollapsibleReasoningCell;
-pub(crate) use tool::{
-    RunningToolCallCell,
-    RunningToolCallState,
-    ToolCallCell,
-    ToolCallStatus,
-};
-pub(crate) use wait_status::WaitStatusCell;
-pub(crate) use plan_update::PlanUpdateCell;
 pub(crate) use plain::PlainHistoryCell;
+pub(crate) use plan_update::PlanUpdateCell;
+pub(crate) use reasoning::CollapsibleReasoningCell;
+pub(crate) use tool::{RunningToolCallCell, RunningToolCallState, ToolCallCell, ToolCallStatus};
 pub(crate) use upgrade::UpgradeNoticeCell;
+pub(crate) use wait_status::WaitStatusCell;
 
 // ==================== Core Types ====================
 
@@ -629,11 +624,8 @@ impl AssistantMarkdownCell {
                 let mut content_lines: Vec<Line<'static>> = Vec::new();
                 for (idx, candidate) in chunk.into_iter().enumerate() {
                     if idx == 0 {
-                        let flat: String = candidate
-                            .spans
-                            .iter()
-                            .map(|s| s.content.as_ref())
-                            .collect();
+                        let flat: String =
+                            candidate.spans.iter().map(|s| s.content.as_ref()).collect();
                         if let Some(s) = flat.strip_prefix("⟦LANG:") {
                             if let Some(end) = s.find('⟧') {
                                 lang_label = Some(s[..end].to_string());
@@ -809,9 +801,7 @@ impl AssistantMarkdownCell {
                     }
 
                     let full_height = lines.len() as u16 + 2;
-                    let card_w = max_line_width
-                        .saturating_add(6)
-                        .min(area.width.max(6));
+                    let card_w = max_line_width.saturating_add(6).min(area.width.max(6));
 
                     let temp_area = Rect::new(0, 0, card_w, full_height);
                     let mut temp_buf = Buffer::empty(temp_area);
@@ -997,9 +987,7 @@ impl HistoryCell for ExecCell {
         let block_skip = after_pre_skip.min(out_block_total);
         let after_block_skip = after_pre_skip.saturating_sub(block_skip);
 
-        let pre_height = pre_total
-            .saturating_sub(pre_skip)
-            .min(area.height);
+        let pre_height = pre_total.saturating_sub(pre_skip).min(area.height);
         let mut remaining_height = area.height.saturating_sub(pre_height);
 
         let block_height = out_block_total
@@ -1007,14 +995,12 @@ impl HistoryCell for ExecCell {
             .min(remaining_height);
         remaining_height = remaining_height.saturating_sub(block_height);
 
-        let status_line_to_render = if self.output.is_none()
-            && after_block_skip == 0
-            && remaining_height > 0
-        {
-            self.streaming_status_line()
-        } else {
-            None
-        };
+        let status_line_to_render =
+            if self.output.is_none() && after_block_skip == 0 && remaining_height > 0 {
+                self.streaming_status_line()
+            } else {
+                None
+            };
         let status_height = status_line_to_render.is_some().then_some(1).unwrap_or(0);
 
         let mut cur_y = area.y;
@@ -1102,7 +1088,14 @@ impl HistoryCell for ExecCell {
                 };
                 let bg_style = Style::default().bg(crate::colors::background());
                 fill_rect(buf, status_area, Some(' '), bg_style);
-                write_line(buf, status_area.x, status_area.y, status_area.width, &line, bg_style);
+                write_line(
+                    buf,
+                    status_area.x,
+                    status_area.y,
+                    status_area.width,
+                    &line,
+                    bg_style,
+                );
             }
         }
     }
@@ -1118,13 +1111,11 @@ impl ExecCell {
     }
 
     fn parsed_action(&self) -> ExecAction {
-        self
-            .parsed_meta
+        self.parsed_meta
             .as_ref()
             .map(|meta| meta.action)
             .unwrap_or(ExecAction::Run)
     }
-
 
     pub(crate) fn set_waiting(&self, waiting: bool) {
         let mut state = self.wait_state.borrow_mut();
@@ -1313,9 +1304,7 @@ impl ExecCell {
         (
             layout.pre_total,
             layout.out_block_total,
-            layout
-                .out_block_total
-                .saturating_add(status_height),
+            layout.out_block_total.saturating_add(status_height),
         )
     }
 
@@ -1375,14 +1364,22 @@ impl ExecCell {
             }
             if self.stream_preview.is_some() {
                 let wait_state = self.wait_state_snapshot();
-                let status_label = if wait_state.waiting { "Waiting" } else { "Running" };
+                let status_label = if wait_state.waiting {
+                    "Waiting"
+                } else {
+                    "Running"
+                };
                 let status = self.streaming_status_line_for_label(status_label);
                 return (pre.clone(), out.clone(), status);
             }
         }
 
         let wait_state = self.wait_state_snapshot();
-        let status_label = if wait_state.waiting { "Waiting" } else { "Running" };
+        let status_label = if wait_state.waiting {
+            "Waiting"
+        } else {
+            "Running"
+        };
 
         let (pre, mut out, status) = if self.parsed.is_empty() {
             if let (Some(pre_cached), Some(out_cached)) = (
@@ -1496,10 +1493,7 @@ impl ExecCell {
         Option<Line<'static>>,
     ) {
         let mut pre = self.generic_command_lines();
-        let display_output = self
-            .output
-            .as_ref()
-            .or(self.stream_preview.as_ref());
+        let display_output = self.output.as_ref().or(self.stream_preview.as_ref());
         let mut out = output_lines(display_output, false, false);
         let has_output = !trim_empty_lines(out.clone()).is_empty();
 
@@ -1507,10 +1501,7 @@ impl ExecCell {
             if let Some(last) = pre.last_mut() {
                 last.spans.insert(
                     0,
-                    Span::styled(
-                        "┌ ",
-                        Style::default().fg(crate::colors::text_dim()),
-                    ),
+                    Span::styled("┌ ", Style::default().fg(crate::colors::text_dim())),
                 );
             }
         }
@@ -1552,10 +1543,7 @@ impl ExecCell {
             if idx > 0 {
                 line.spans.insert(
                     0,
-                    Span::styled(
-                        "  ",
-                        Style::default().fg(crate::colors::text()),
-                    ),
+                    Span::styled("  ", Style::default().fg(crate::colors::text())),
                 );
             }
         }
@@ -1570,7 +1558,11 @@ impl ExecCell {
             return None;
         }
         let wait_state = self.wait_state_snapshot();
-        let status_label = if wait_state.waiting { "Waiting" } else { "Running" };
+        let status_label = if wait_state.waiting {
+            "Waiting"
+        } else {
+            "Running"
+        };
         self.streaming_status_line_for_label(status_label)
     }
 
@@ -1949,7 +1941,10 @@ config.toml.example\tNOTICE\r\n";
         assert!(first_line.contains("AGENTS.md"));
         assert!(first_line.contains("docs"));
         assert!(first_line.contains("package.json"));
-        assert!(first_line.contains("  docs"), "expected spaces between ls columns: {first_line:?}");
+        assert!(
+            first_line.contains("  docs"),
+            "expected spaces between ls columns: {first_line:?}"
+        );
     }
 
     #[test]
@@ -2001,16 +1996,12 @@ config.toml.example\tNOTICE\r\n";
         assert!(formatted.contains("    for path in root.rglob(*.py):"));
         assert!(formatted.contains("        try:"));
         assert!(formatted.contains("            size = path.stat().st_size"));
-        assert!(formatted.contains(
-            "        except (PermissionError, FileNotFoundError):"
-        ));
+        assert!(formatted.contains("        except (PermissionError, FileNotFoundError):"));
         assert!(formatted.contains("            continue"));
         assert!(formatted.contains("    candidates.append((size, path))"));
         assert!(formatted.contains("    candidates.sort(reverse=True)"));
         assert!(formatted.contains("    for size, path in candidates[:10]:"));
-        assert!(formatted.contains(
-            "        print(f{size:>9} bytes - {path})"
-        ));
+        assert!(formatted.contains("        print(f{size:>9} bytes - {path})"));
         assert!(formatted.trim_end().ends_with("PY"));
     }
 
@@ -2021,13 +2012,15 @@ config.toml.example\tNOTICE\r\n";
         assert!(formatted.contains("    py_count = 0"));
         assert!(formatted.contains("    total_size = 0"));
         assert!(formatted.contains("            py_count += 1"));
-        assert!(formatted.contains(
-            "            total_size += os.path.getsize(os.path.join(root, name))"
-        ));
+        assert!(
+            formatted
+                .contains("            total_size += os.path.getsize(os.path.join(root, name))")
+        );
         assert!(formatted.contains("        print(Total Python files:, py_count)"));
-        assert!(formatted.contains(
-            "        print(Approx total size (KB):, round(total_size / 1024, 1))"
-        ));
+        assert!(
+            formatted
+                .contains("        print(Approx total size (KB):, round(total_size / 1024, 1))")
+        );
     }
 
     #[test]
@@ -2037,7 +2030,10 @@ config.toml.example\tNOTICE\r\n";
         assert!(formatted.contains("node -e '\n"));
         assert!(formatted.contains("    const fs = require(fs);"));
         assert!(formatted.contains("    let count = 0;"));
-        assert!(formatted.contains("    [a.js, b.js].forEach(file => { count += 1; console.log(file); });"));
+        assert!(
+            formatted
+                .contains("    [a.js, b.js].forEach(file => { count += 1; console.log(file); });")
+        );
         assert!(formatted.contains("    if (count > 0) { console.log(`Total: ${count}`); }"));
     }
 
@@ -4536,9 +4532,7 @@ fn popular_commands_lines(_latest_version: Option<&str>) -> Vec<Line<'static>> {
 /// Create a notice cell that shows the "Popular commands" immediately.
 /// If `connecting_mcp` is true, include a dim status line to inform users
 /// that external MCP servers are being connected in the background.
-pub(crate) fn new_upgrade_prelude(
-    latest_version: Option<&str>,
-) -> Option<UpgradeNoticeCell> {
+pub(crate) fn new_upgrade_prelude(latest_version: Option<&str>) -> Option<UpgradeNoticeCell> {
     if !crate::updates::upgrade_ui_enabled() {
         return None;
     }
@@ -5201,11 +5195,7 @@ fn heredoc_delimiter(token: &str) -> Option<String> {
     } else if delim.starts_with('\'') && delim.ends_with('\'') && delim.len() >= 2 {
         delim = delim[1..delim.len() - 1].to_string();
     }
-    if delim.is_empty() {
-        None
-    } else {
-        Some(delim)
-    }
+    if delim.is_empty() { None } else { Some(delim) }
 }
 
 fn split_heredoc_script_lines(script_tokens: &[String]) -> Vec<String> {
@@ -5217,16 +5207,11 @@ fn split_heredoc_script_lines(script_tokens: &[String]) -> Vec<String> {
     let mut current_has_assignment = false;
 
     for (idx, token) in script_tokens.iter().enumerate() {
-        if !current.is_empty()
-            && paren_depth == 0
-            && bracket_depth == 0
-            && brace_depth == 0
-        {
+        if !current.is_empty() && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 {
             let token_lower = token.to_ascii_lowercase();
             let current_first = current.first().map(|s| s.to_ascii_lowercase());
             let should_flush_before = is_statement_boundary_token(token)
-                && !(token_lower == "import"
-                    && current_first.as_deref() == Some("from"));
+                && !(token_lower == "import" && current_first.as_deref() == Some("from"));
             if should_flush_before {
                 let line = current.join(" ");
                 lines.push(line.trim().to_string());
@@ -5236,7 +5221,12 @@ fn split_heredoc_script_lines(script_tokens: &[String]) -> Vec<String> {
         }
 
         current.push(token.clone());
-        adjust_bracket_depth(token, &mut paren_depth, &mut bracket_depth, &mut brace_depth);
+        adjust_bracket_depth(
+            token,
+            &mut paren_depth,
+            &mut bracket_depth,
+            &mut brace_depth,
+        );
 
         if is_assignment_operator(token) {
             current_has_assignment = true;
@@ -5416,11 +5406,7 @@ fn merge_from_import_lines(lines: Vec<String>) -> Vec<String> {
             && idx + 1 < lines.len()
             && lines[idx + 1].trim_start().starts_with("import ")
         {
-            let combined = format!(
-                "{} {}",
-                line.trim_end(),
-                lines[idx + 1].trim_start()
-            );
+            let combined = format!("{} {}", line.trim_end(), lines[idx + 1].trim_start());
             merged.push(combined);
             idx += 2;
         } else {
@@ -5434,19 +5420,7 @@ fn merge_from_import_lines(lines: Vec<String>) -> Vec<String> {
 fn is_assignment_operator(token: &str) -> bool {
     matches!(
         token,
-        "="
-            | "+="
-            | "-="
-            | "*="
-            | "/="
-            | "//="
-            | "%="
-            | "^="
-            | "|="
-            | "&="
-            | "**="
-            | "<<="
-            | ">>="
+        "=" | "+=" | "-=" | "*=" | "/=" | "//=" | "%=" | "^=" | "|=" | "&=" | "**=" | "<<=" | ">>="
     )
 }
 
@@ -5938,24 +5912,26 @@ fn escape_token_for_display(token: &str) -> String {
 }
 
 fn is_shell_word(token: &str) -> bool {
-    token.chars().all(|ch| matches!(
-        ch,
-        'a'..='z'
-            | 'A'..='Z'
-            | '0'..='9'
-            | '_'
-            | '-'
-            | '.'
-            | '/'
-            | ':'
-            | ','
-            | '@'
-            | '%'
-            | '+'
-            | '='
-            | '['
-            | ']'
-    ))
+    token.chars().all(|ch| {
+        matches!(
+            ch,
+            'a'..='z'
+                | 'A'..='Z'
+                | '0'..='9'
+                | '_'
+                | '-'
+                | '.'
+                | '/'
+                | ':'
+                | ','
+                | '@'
+                | '%'
+                | '+'
+                | '='
+                | '['
+                | ']'
+        )
+    })
 }
 
 fn script_has_semicolon_outside_quotes(script: &str) -> bool {
@@ -6663,9 +6639,10 @@ pub(crate) fn new_running_custom_tool_call(
                 wait_cap_ms = json.get("timeout_ms").and_then(|v| v.as_u64());
                 if let Some(for_what) = json.get("for").and_then(|v| v.as_str()) {
                     let cleaned = clean_wait_command(for_what);
-                    let mut spans = vec![
-                        Span::styled("└ for ", Style::default().fg(crate::colors::text_dim())),
-                    ];
+                    let mut spans = vec![Span::styled(
+                        "└ for ",
+                        Style::default().fg(crate::colors::text_dim()),
+                    )];
                     spans.push(Span::styled(
                         cleaned,
                         Style::default().fg(crate::colors::text_dim()),
@@ -6680,7 +6657,10 @@ pub(crate) fn new_running_custom_tool_call(
                                 "└ call_id: ",
                                 Style::default().fg(crate::colors::text_dim()),
                             ),
-                            Span::styled(cid.to_string(), Style::default().fg(crate::colors::text())),
+                            Span::styled(
+                                cid.to_string(),
+                                Style::default().fg(crate::colors::text()),
+                            ),
                         ]));
                     }
                     wait_has_call_id = true;
@@ -7947,7 +7927,9 @@ pub(crate) fn new_status_output(
                     format_with_separators(remaining)
                 )));
                 if total_usage.total_tokens > limit_u64 {
-                    lines.push(Line::from("    • Compacting will trigger on the next turn".dim()));
+                    lines.push(Line::from(
+                        "    • Compacting will trigger on the next turn".dim(),
+                    ));
                 }
             }
             _ => {
@@ -7970,12 +7952,18 @@ pub(crate) fn new_status_output(
                             "  • {} tokens before overflow",
                             format_with_separators(remaining)
                         )));
-                        lines.push(Line::from("  • Auto-compaction runs after overflow errors".to_string()));
+                        lines.push(Line::from(
+                            "  • Auto-compaction runs after overflow errors".to_string(),
+                        ));
                     } else {
-                        lines.push(Line::from("  • Auto-compaction runs after overflow errors".to_string()));
+                        lines.push(Line::from(
+                            "  • Auto-compaction runs after overflow errors".to_string(),
+                        ));
                     }
                 } else {
-                    lines.push(Line::from("  • Auto-compaction runs after overflow errors".to_string()));
+                    lines.push(Line::from(
+                        "  • Auto-compaction runs after overflow errors".to_string(),
+                    ));
                 }
             }
         }
@@ -7988,7 +7976,10 @@ pub(crate) fn new_warning_event(message: String) -> PlainHistoryCell {
     let warn_style = Style::default().fg(crate::colors::warning());
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(2);
     lines.push(Line::from("notice"));
-    lines.push(Line::from(vec![Span::styled(format!("⚠ {message}"), warn_style)]));
+    lines.push(Line::from(vec![Span::styled(
+        format!("⚠ {message}"),
+        warn_style,
+    )]));
     PlainHistoryCell::new(lines, HistoryCellType::Notice)
 }
 
@@ -8469,9 +8460,7 @@ fn format_inline_shell_for_display(command_escaped: &str) -> Option<String> {
         return None;
     }
 
-    let shell_idx = tokens
-        .iter()
-        .position(|t| is_shell_invocation_token(t))?;
+    let shell_idx = tokens.iter().position(|t| is_shell_invocation_token(t))?;
 
     let flag_idx = shell_idx + 1;
     if flag_idx >= tokens.len() {

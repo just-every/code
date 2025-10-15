@@ -20,8 +20,8 @@
 ### Guardrail Commands (Shell Wrappers)
 
 **✅ Fully Operational:**
-- `/spec-ops-plan`, `/spec-ops-tasks`, `/spec-ops-implement`, `/spec-ops-validate`, `/spec-ops-audit`, `/spec-ops-unlock` - Run directly from TUI
-- `/spec-ops-auto` - Wrapper for `scripts/spec_ops_004/spec_auto.sh`
+- `/guardrail.plan`, `/guardrail.tasks`, `/guardrail.implement`, `/guardrail.validate`, `/guardrail.audit`, `/guardrail.unlock` - Run directly from TUI (note: legacy `/spec-ops-*` commands still work)
+- `/guardrail.auto` - Wrapper for `scripts/spec_ops_004/spec_auto.sh` (note: legacy `/spec-ops-auto` still works)
 - All emit telemetry to `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/<SPEC-ID>/`
 
 ### Consensus Runner
@@ -152,7 +152,7 @@
 - ✅ Progress indicators show stage X/6
 
 **Guardrail Integration:**
-- ✅ `/spec-ops-*` commands run independently
+- ✅ `/guardrail.*` commands run independently (note: legacy `/spec-ops-*` commands still work)
 - ✅ Telemetry schema v1 validated
 - ✅ HAL validation optional (`SPEC_OPS_HAL_SKIP=1`)
 - ✅ Clean tree enforcement (`SPEC_OPS_ALLOW_DIRTY=1` override)
@@ -234,8 +234,8 @@
 **Guardrail Validation:**
 ```bash
 # Run validation separate from multi-agent
-/spec-ops-plan SPEC-KIT-065
-/spec-ops-auto SPEC-KIT-065 --from plan
+/guardrail.plan SPEC-KIT-065
+/guardrail.auto SPEC-KIT-065 --from plan
 
 # Monitor evidence footprint
 /spec-evidence-stats --spec SPEC-KIT-065

@@ -1697,7 +1697,14 @@ impl App<'_> {
                                 widget.handle_spec_status_command(command_args);
                             }
                         }
-                        SlashCommand::SpecOpsPlan
+                        SlashCommand::GuardrailPlan
+                        | SlashCommand::GuardrailTasks
+                        | SlashCommand::GuardrailImplement
+                        | SlashCommand::GuardrailValidate
+                        | SlashCommand::GuardrailAudit
+                        | SlashCommand::GuardrailUnlock
+                        | SlashCommand::GuardrailAuto
+                        | SlashCommand::SpecOpsPlan
                         | SlashCommand::SpecOpsTasks
                         | SlashCommand::SpecOpsImplement
                         | SlashCommand::SpecOpsValidate

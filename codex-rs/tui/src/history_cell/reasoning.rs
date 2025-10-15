@@ -1,5 +1,5 @@
-use super::semantic::{lines_from_ratatui, lines_to_ratatui, SemanticLine};
 use super::semantic;
+use super::semantic::{SemanticLine, lines_from_ratatui, lines_to_ratatui};
 use super::*;
 use std::cell::{Cell, RefCell};
 use unicode_width::UnicodeWidthStr as _;
@@ -329,10 +329,9 @@ fn extract_section_titles_locked(
             continue;
         }
         let all_bold = !l.spans.is_empty()
-            && l
-                .spans
-                .iter()
-                .all(|s| s.style.add_modifier.contains(Modifier::BOLD) || s.content.trim().is_empty());
+            && l.spans.iter().all(|s| {
+                s.style.add_modifier.contains(Modifier::BOLD) || s.content.trim().is_empty()
+            });
         if all_bold {
             titles.push(l.clone());
         }

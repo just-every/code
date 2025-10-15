@@ -20,9 +20,11 @@ impl AppEventSender {
     /// channel. Routes both high‑priority and bulk events to the same sender.
     #[allow(dead_code)]
     pub(crate) fn new(app_event_tx: Sender<AppEvent>) -> Self {
-        Self { high_tx: app_event_tx.clone(), bulk_tx: app_event_tx }
+        Self {
+            high_tx: app_event_tx.clone(),
+            bulk_tx: app_event_tx,
+        }
     }
-
 
     /// Send an event to the app event channel. If it fails, we swallow the
     /// error and log it.
@@ -43,7 +45,11 @@ impl AppEventSender {
                 | AppEvent::SetTerminalTitle { .. }
         );
 
-        let tx = if is_high { &self.high_tx } else { &self.bulk_tx };
+        let tx = if is_high {
+            &self.high_tx
+        } else {
+            &self.bulk_tx
+        };
         if let Err(e) = tx.send(event) {
             tracing::error!("failed to send event: {e}");
         }
@@ -73,14 +79,7 @@ impl AppEventSender {
     }
 
     /// Convenience: place a background event before the next provider/tool output.
-    pub(crate) fn send_background_event_before_next_output(
-        &self,
-        message: impl Into<String>,
-    ) {
-        self.send_background_event_with_placement(
-            message,
-            BackgroundPlacement::BeforeNextOutput,
-        );
+    pub(crate) fn send_background_event_before_next_output(&self, message: impl Into<String>) {
+        self.send_background_event_with_placement(message, BackgroundPlacement::BeforeNextOutput);
     }
-
 }

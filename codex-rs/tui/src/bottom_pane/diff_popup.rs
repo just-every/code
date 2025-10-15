@@ -1,9 +1,9 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Tabs, Widget};
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
 use super::{BottomPane, BottomPaneView, CancellationEvent};
 
@@ -17,7 +17,11 @@ pub(crate) struct DiffPopupView {
 #[allow(dead_code)]
 impl DiffPopupView {
     pub fn new(tabs: Vec<(String, Vec<Line<'static>>)>) -> Self {
-        Self { tabs, selected: 0, complete: false }
+        Self {
+            tabs,
+            selected: 0,
+            complete: false,
+        }
     }
 }
 
@@ -26,10 +30,14 @@ impl<'a> BottomPaneView<'a> for DiffPopupView {
         if key_event.kind == KeyEventKind::Press || key_event.kind == KeyEventKind::Repeat {
             match key_event.code {
                 KeyCode::Left => {
-                    if self.selected > 0 { self.selected -= 1; }
+                    if self.selected > 0 {
+                        self.selected -= 1;
+                    }
                 }
                 KeyCode::Right => {
-                    if self.selected + 1 < self.tabs.len() { self.selected += 1; }
+                    if self.selected + 1 < self.tabs.len() {
+                        self.selected += 1;
+                    }
                 }
                 KeyCode::Esc => {
                     self.complete = true;
@@ -39,7 +47,9 @@ impl<'a> BottomPaneView<'a> for DiffPopupView {
         }
     }
 
-    fn is_complete(&self) -> bool { self.complete }
+    fn is_complete(&self) -> bool {
+        self.complete
+    }
 
     fn on_ctrl_c(&mut self, _pane: &mut BottomPane<'a>) -> CancellationEvent {
         self.complete = true;
@@ -53,7 +63,12 @@ impl<'a> BottomPaneView<'a> for DiffPopupView {
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
         // Reserve the full popup area
-        let inner = Rect { x: area.x, y: area.y, width: area.width, height: area.height };
+        let inner = Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: area.height,
+        };
 
         // Base clear
         Clear.render(inner, buf);
@@ -80,8 +95,12 @@ impl<'a> BottomPaneView<'a> for DiffPopupView {
         tabs_bg.render(tabs_area_all, buf);
 
         // Center the tabs vertically within the 3-row header
-        let [_, tabs_area, _] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Length(1)])
-            .areas(tabs_area_all);
+        let [_, tabs_area, _] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(tabs_area_all);
 
         // Prepare tab titles
         let titles = self
@@ -93,8 +112,16 @@ impl<'a> BottomPaneView<'a> for DiffPopupView {
         // Unselected tabs use selection background; selected tab uses normal background
         let tabs = Tabs::new(titles)
             .select(self.selected)
-            .style(Style::default().bg(crate::colors::selection()).fg(crate::colors::text()))
-            .highlight_style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()))
+            .style(
+                Style::default()
+                    .bg(crate::colors::selection())
+                    .fg(crate::colors::text()),
+            )
+            .highlight_style(
+                Style::default()
+                    .bg(crate::colors::background())
+                    .fg(crate::colors::text()),
+            )
             .divider(" ");
         Widget::render(tabs, tabs_area, buf);
 

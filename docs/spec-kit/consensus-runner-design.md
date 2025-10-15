@@ -60,8 +60,8 @@ Shell entry point `scripts/spec_ops_004/consensus_runner.sh` that:
 - `/spec-consensus <SPEC-ID> <stage>` displays automation results
 
 **Guardrail Commands:**
-- `/spec-ops-plan|tasks|implement|validate|audit|unlock` - validation wrappers (separate from multi-agent)
-- `/spec-ops-auto` - full pipeline wrapper with telemetry
+- `/guardrail.plan|tasks|implement|validate|audit|unlock` - validation wrappers (separate from multi-agent) (note: legacy `/spec-ops-*` commands still work)
+- `/guardrail.auto` - full pipeline wrapper with telemetry (note: legacy `/spec-ops-auto` still works)
 - Legacy `/spec-*` commands still functional, map to `/speckit.*` internally
 
 **Agent Allocation:**
@@ -96,13 +96,13 @@ Shell entry point `scripts/spec_ops_004/consensus_runner.sh` that:
 - Previous outputs handling: Empty JSON object supplied on first run
 - SPEC directory mapping: Convention-based (`docs/SPEC-<AREA>-<slug>/`)
 - Smoke test SPEC: SPEC-KIT-045-mini validates full pipeline
-- `/spec-ops-auto --with-consensus`: Implemented via `/speckit.auto`
+- Full pipeline automation: Implemented via `/speckit.auto` or `/guardrail.auto` (note: legacy `/spec-ops-auto` still works)
 - Credential requirements: Documented in CLAUDE.md and AGENTS.md
 
 **Open Questions (Future):**
 - Cost tracking telemetry for governance reporting
 - Evidence archival strategy for >25MB SPECs
-- Guardrail namespace: `/spec-ops-*` → `/guardrail.*` (planned Phase 3 Week 2)
+- Guardrail namespace implementation: `/guardrail.*` commands (documentation updated, TUI routing pending)
 
 ## Phase 3 Achievements
 
@@ -115,7 +115,7 @@ Shell entry point `scripts/spec_ops_004/consensus_runner.sh` that:
 6. Tiered model strategy reduces costs 40% ($15→$11) ✅
 
 **Next Evolution (Phase 3 Week 2):**
-- Guardrail namespace separation (`/spec-ops-*` → `/guardrail.*`)
+- Guardrail namespace implementation (`/guardrail.*` routing in TUI - documentation complete)
 - Final testing and release notes
 - Migration documentation complete
 

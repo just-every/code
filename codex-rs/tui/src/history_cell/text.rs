@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use crate::history::state::{InlineSpan, MessageLine, MessageLineKind, TextTone};
 use crate::theme::Theme;
 
-use super::semantic::{lines_from_ratatui, SemanticLine, SemanticSpan, Tone};
+use super::semantic::{SemanticLine, SemanticSpan, Tone, lines_from_ratatui};
 
 pub(crate) fn message_lines_from_ratatui(lines: Vec<Line<'static>>) -> Vec<MessageLine> {
     let semantic_lines = lines_from_ratatui(lines);
@@ -15,7 +15,10 @@ pub(crate) fn message_lines_from_ratatui(lines: Vec<Line<'static>>) -> Vec<Messa
 }
 
 pub(crate) fn message_lines_to_ratatui(lines: &[MessageLine], theme: &Theme) -> Vec<Line<'static>> {
-    lines.iter().map(|line| message_line_to_line(line, theme)).collect()
+    lines
+        .iter()
+        .map(|line| message_line_to_line(line, theme))
+        .collect()
 }
 
 pub(crate) fn inline_span_to_span(span: &InlineSpan, theme: &Theme) -> Span<'static> {
@@ -65,9 +68,7 @@ fn message_line_from_semantic(line: SemanticLine) -> MessageLine {
         .into_iter()
         .map(inline_span_from_semantic)
         .collect();
-    let is_blank = spans
-        .iter()
-        .all(|span| span.text.trim().is_empty());
+    let is_blank = spans.iter().all(|span| span.text.trim().is_empty());
     MessageLine {
         kind: if is_blank {
             MessageLineKind::Blank

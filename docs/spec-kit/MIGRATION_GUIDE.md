@@ -39,21 +39,21 @@ As of Phase 3 (October 2025), all spec-kit commands have been standardized under
 | `/speckit.analyze` | Consistency checking | Tier 2 (3 agents) |
 | `/speckit.checklist` | Quality scoring | Tier 2-lite (2 agents) |
 
-### Guardrail Commands (Unchanged)
+### Guardrail Commands
 
-| Command | Purpose | Notes |
-|---------|---------|-------|
-| `/spec-ops-plan` | Plan validation | Shell wrapper |
-| `/spec-ops-tasks` | Tasks validation | Shell wrapper |
-| `/spec-ops-implement` | Implementation checks | Shell wrapper |
-| `/spec-ops-validate` | Test execution | Shell wrapper |
-| `/spec-ops-audit` | Compliance scan | Shell wrapper |
-| `/spec-ops-unlock` | Final validation | Shell wrapper |
-| `/spec-ops-auto` | Full pipeline wrapper | Shell wrapper |
-| `/spec-evidence-stats` | Evidence monitoring | Utility |
-| `/spec-consensus` | Consensus inspection | Utility |
+| Old Command | New Command | Purpose | Notes |
+|-------------|-------------|---------|-------|
+| `/spec-ops-plan` | `/guardrail.plan` | Plan validation | ✅ Both work (legacy supported) |
+| `/spec-ops-tasks` | `/guardrail.tasks` | Tasks validation | ✅ Both work (legacy supported) |
+| `/spec-ops-implement` | `/guardrail.implement` | Implementation checks | ✅ Both work (legacy supported) |
+| `/spec-ops-validate` | `/guardrail.validate` | Test execution | ✅ Both work (legacy supported) |
+| `/spec-ops-audit` | `/guardrail.audit` | Compliance scan | ✅ Both work (legacy supported) |
+| `/spec-ops-unlock` | `/guardrail.unlock` | Final validation | ✅ Both work (legacy supported) |
+| `/spec-ops-auto` | `/guardrail.auto` | Full pipeline wrapper | ✅ Both work (legacy supported) |
+| `/spec-evidence-stats` | (unchanged) | Evidence monitoring | Utility command |
+| `/spec-consensus` | (unchanged) | Consensus inspection | Utility command |
 
-**Note:** Guardrail commands (`/spec-ops-*`) will be renamed to `/guardrail.*` in Phase 3 Week 2.
+**Note:** Prefer using `/guardrail.*` namespace going forward. Legacy `/spec-ops-*` commands still work for backward compatibility.
 
 ---
 
@@ -352,7 +352,7 @@ These commands have **no legacy equivalent** and are new in Phase 3:
 **A:** They continue to work. Update at your convenience. Consider switching to `/speckit.*` for new scripts.
 
 ### Q: What about `/spec-ops-*` commands?
-**A:** They are separate (guardrail layer). Planned rename to `/guardrail.*` in Phase 3 Week 2.
+**A:** They are separate (guardrail layer). New `/guardrail.*` namespace available. Legacy `/spec-ops-*` commands still work for backward compatibility.
 
 ### Q: How do I update my team's documentation?
 **A:** Replace `/spec-*` references with `/speckit.*` equivalents. See Quick Reference Table above.

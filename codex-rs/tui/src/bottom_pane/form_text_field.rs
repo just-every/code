@@ -28,13 +28,25 @@ pub struct FormTextField {
 
 impl FormTextField {
     pub fn new_single_line() -> Self {
-        Self { textarea: TextArea::new(), state: RefCell::new(TextAreaState::default()), single_line: true, filter: InputFilter::None }
+        Self {
+            textarea: TextArea::new(),
+            state: RefCell::new(TextAreaState::default()),
+            single_line: true,
+            filter: InputFilter::None,
+        }
     }
     pub fn new_multi_line() -> Self {
-        Self { textarea: TextArea::new(), state: RefCell::new(TextAreaState::default()), single_line: false, filter: InputFilter::None }
+        Self {
+            textarea: TextArea::new(),
+            state: RefCell::new(TextAreaState::default()),
+            single_line: false,
+            filter: InputFilter::None,
+        }
     }
 
-    pub fn set_filter(&mut self, filter: InputFilter) { self.filter = filter; }
+    pub fn set_filter(&mut self, filter: InputFilter) {
+        self.filter = filter;
+    }
 
     fn id_char_allowed(c: char) -> bool {
         c.is_ascii_alphanumeric() || c == '-' || c == '_'
@@ -57,10 +69,16 @@ impl FormTextField {
 
     // Intentionally no "move_cursor_to_end" to avoid unused-warn; add if needed.
 
-    pub fn text(&self) -> &str { self.textarea.text() }
+    pub fn text(&self) -> &str {
+        self.textarea.text()
+    }
 
-    pub fn cursor_is_at_start(&self) -> bool { self.textarea.cursor() == 0 }
-    pub fn cursor_is_at_end(&self) -> bool { self.textarea.cursor() == self.textarea.text().len() }
+    pub fn cursor_is_at_start(&self) -> bool {
+        self.textarea.cursor() == 0
+    }
+    pub fn cursor_is_at_end(&self) -> bool {
+        self.textarea.cursor() == self.textarea.text().len()
+    }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
         // For single-line inputs, swallow Enter (treat as no-op here; the form
@@ -107,7 +125,9 @@ impl FormTextField {
                     .chars()
                     .filter(|&c| Self::id_char_allowed(c))
                     .collect();
-                if !filtered.is_empty() { self.textarea.insert_str(&filtered); }
+                if !filtered.is_empty() {
+                    self.textarea.insert_str(&filtered);
+                }
             }
             InputFilter::None => {
                 if self.single_line {
@@ -119,7 +139,11 @@ impl FormTextField {
     }
 
     pub fn desired_height(&self, width: u16) -> u16 {
-        if self.single_line { 1 } else { self.textarea.desired_height(width).max(1) }
+        if self.single_line {
+            1
+        } else {
+            self.textarea.desired_height(width).max(1)
+        }
     }
 
     /// Render the field text within `area`. When `focused` is true, draw a thin

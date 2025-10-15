@@ -1,4 +1,4 @@
-use crate::theme::{current_theme, Theme};
+use crate::theme::{Theme, current_theme};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -95,11 +95,7 @@ impl SemanticLine {
 
     pub(crate) fn to_line(&self, theme: &Theme) -> Line<'static> {
         let style = Style::default().fg(self.tone.to_color(theme));
-        let spans: Vec<Span<'static>> = self
-            .spans
-            .iter()
-            .map(|span| span.to_span(theme))
-            .collect();
+        let spans: Vec<Span<'static>> = self.spans.iter().map(|span| span.to_span(theme)).collect();
         Line::from(spans).style(style)
     }
 }

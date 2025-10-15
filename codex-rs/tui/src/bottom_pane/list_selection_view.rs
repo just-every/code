@@ -3,14 +3,14 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 use ratatui::buffer::Buffer;
+use ratatui::layout::Alignment;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use ratatui::widgets::{Paragraph, Block, Borders, Clear};
-use ratatui::layout::Alignment;
 use ratatui::widgets::Widget;
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::app_event_sender::AppEventSender;
 
@@ -52,17 +52,26 @@ impl ListSelectionView {
         let para = Paragraph::new(Line::from(""));
         para.render(area, buf);
     }
-    
+
     fn wrapped_lines_for(text: &str, width: u16) -> u16 {
-        if text.is_empty() || width == 0 { return 0; }
+        if text.is_empty() || width == 0 {
+            return 0;
+        }
         let w = width as usize;
         let mut lines: u16 = 0;
         for part in text.split('\n') {
             let len = part.chars().count();
-            if len == 0 { lines = lines.saturating_add(1); continue; }
+            if len == 0 {
+                lines = lines.saturating_add(1);
+                continue;
+            }
             let mut l = (len / w) as u16;
-            if len % w != 0 { l = l.saturating_add(1); }
-            if l == 0 { l = 1; }
+            if len % w != 0 {
+                l = l.saturating_add(1);
+            }
+            if l == 0 {
+                l = 1;
+            }
             lines = lines.saturating_add(l);
         }
         lines
@@ -98,9 +107,18 @@ impl ListSelectionView {
         let rows_visible = target_rows;
 
         // Total height = borders (2) + subtitle + spacer + rows + bottom spacer + footer
-        let total_height = 2 + subtitle_rows + spacer_top_rows + rows_visible + bottom_spacer_rows + footer_rows;
+        let total_height =
+            2 + subtitle_rows + spacer_top_rows + rows_visible + bottom_spacer_rows + footer_rows;
 
-        (content_width, subtitle_rows, spacer_top_rows, bottom_spacer_rows, footer_rows, rows_visible, total_height)
+        (
+            content_width,
+            subtitle_rows,
+            spacer_top_rows,
+            bottom_spacer_rows,
+            footer_rows,
+            rows_visible,
+            total_height,
+        )
     }
     pub fn new(
         title: String,
@@ -206,20 +224,36 @@ impl BottomPaneView<'_> for ListSelectionView {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(crate::colors::border()))
-            .style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()))
+            .style(
+                Style::default()
+                    .bg(crate::colors::background())
+                    .fg(crate::colors::text()),
+            )
             .title(self.title.clone())
             .title_alignment(Alignment::Center);
         let inner = block.inner(area);
         block.render(area, buf);
 
         // Layout inside the block: optional subtitle header, spacer, rows, footer
-        let (content_width, subtitle_rows, spacer_top, bottom_spacer_rows, footer_rows, rows_visible, _total) =
-            self.compute_layout(area.width);
+        let (
+            content_width,
+            subtitle_rows,
+            spacer_top,
+            bottom_spacer_rows,
+            footer_rows,
+            rows_visible,
+            _total,
+        ) = self.compute_layout(area.width);
         let mut next_y = inner.y;
         if let Some(sub) = &self.subtitle {
             let sub_h = subtitle_rows;
             if sub_h > 0 {
-                let subtitle_area = Rect { x: inner.x.saturating_add(1), y: next_y, width: content_width, height: sub_h };
+                let subtitle_area = Rect {
+                    x: inner.x.saturating_add(1),
+                    y: next_y,
+                    width: content_width,
+                    height: sub_h,
+                };
                 Paragraph::new(sub.clone())
                     .style(Style::default().fg(crate::colors::text_dim()))
                     .render(subtitle_area, buf);
@@ -227,7 +261,12 @@ impl BottomPaneView<'_> for ListSelectionView {
             }
         }
         if spacer_top > 0 && next_y < inner.y.saturating_add(inner.height) {
-            let spacer_area = Rect { x: inner.x.saturating_add(1), y: next_y, width: content_width, height: 1 };
+            let spacer_area = Rect {
+                x: inner.x.saturating_add(1),
+                y: next_y,
+                width: content_width,
+                height: 1,
+            };
             Self::render_dim_prefix_line(spacer_area, buf);
             next_y = next_y.saturating_add(1);
         }
@@ -239,7 +278,10 @@ impl BottomPaneView<'_> for ListSelectionView {
             x: inner.x.saturating_add(1),
             y: next_y,
             width: content_width,
-            height: inner.height.saturating_sub(next_y.saturating_sub(inner.y)).saturating_sub(reserved),
+            height: inner
+                .height
+                .saturating_sub(next_y.saturating_sub(inner.y))
+                .saturating_sub(reserved),
         };
 
         let rows: Vec<GenericDisplayRow> = self
@@ -260,37 +302,69 @@ impl BottomPaneView<'_> for ListSelectionView {
                     name: display_name,
                     match_indices: None,
                     is_current: it.is_current,
-                    description: if is_selected { it.description.clone() } else { None },
+                    description: if is_selected {
+                        it.description.clone()
+                    } else {
+                        None
+                    },
                     name_color: None,
                 }
             })
             .collect();
         if rows_area.height > 0 {
             let max_rows_to_render = rows_visible.min(rows_area.height);
-            render_rows(rows_area, buf, &rows, &self.state, max_rows_to_render as usize, true);
+            render_rows(
+                rows_area,
+                buf,
+                &rows,
+                &self.state,
+                max_rows_to_render as usize,
+                true,
+            );
         }
 
         if self.footer_hint.is_some() {
             // Bottom spacer above footer, if reserved
             if bottom_spacer_rows > 0 && rows_area.height > 0 {
                 let spacer_y = inner.y + inner.height - footer_rows - bottom_spacer_rows;
-                let spacer_area = Rect { x: inner.x.saturating_add(1), y: spacer_y, width: content_width, height: bottom_spacer_rows };
+                let spacer_area = Rect {
+                    x: inner.x.saturating_add(1),
+                    y: spacer_y,
+                    width: content_width,
+                    height: bottom_spacer_rows,
+                };
                 Paragraph::new(Line::from(""))
-                    .style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()))
+                    .style(
+                        Style::default()
+                            .bg(crate::colors::background())
+                            .fg(crate::colors::text()),
+                    )
                     .render(spacer_area, buf);
             }
             // Render footer on the last inner line
-            let footer_area = Rect { x: inner.x.saturating_add(1), y: inner.y + inner.height - 1, width: content_width, height: 1 };
+            let footer_area = Rect {
+                x: inner.x.saturating_add(1),
+                y: inner.y + inner.height - 1,
+                width: content_width,
+                height: 1,
+            };
             let line = Line::from(vec![
                 Span::styled("↑↓", Style::default().fg(crate::colors::function())),
-                Span::styled(" Navigate  ", Style::default().fg(crate::colors::text_dim())),
+                Span::styled(
+                    " Navigate  ",
+                    Style::default().fg(crate::colors::text_dim()),
+                ),
                 Span::styled("Enter", Style::default().fg(crate::colors::success())),
                 Span::styled(" Select  ", Style::default().fg(crate::colors::text_dim())),
                 Span::styled("Esc", Style::default().fg(crate::colors::error())),
                 Span::styled(" Cancel", Style::default().fg(crate::colors::text_dim())),
             ]);
             Paragraph::new(line)
-                .style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()))
+                .style(
+                    Style::default()
+                        .bg(crate::colors::background())
+                        .fg(crate::colors::text()),
+                )
                 .render(footer_area, buf);
         }
     }

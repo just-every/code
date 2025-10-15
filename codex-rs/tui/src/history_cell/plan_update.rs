@@ -1,4 +1,4 @@
-use super::semantic::{lines_from_ratatui, lines_to_ratatui, SemanticLine};
+use super::semantic::{SemanticLine, lines_from_ratatui, lines_to_ratatui};
 use super::*;
 use crate::theme::current_theme;
 

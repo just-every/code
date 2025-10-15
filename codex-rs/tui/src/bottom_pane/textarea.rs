@@ -728,8 +728,6 @@ impl TextArea {
         }
     }
 
-
-
     fn clamp_pos_to_nearest_boundary(&self, mut pos: usize) -> usize {
         if pos > self.text.len() {
             pos = self.text.len();
@@ -814,7 +812,6 @@ impl TextArea {
             None => self.text.len(),
         }
     }
-
 
     #[allow(clippy::unwrap_used)]
     fn wrapped_lines(&self, width: u16) -> Ref<'_, Vec<Range<usize>>> {
@@ -1480,9 +1477,7 @@ mod tests {
         t.set_cursor(4);
         let area = Rect::new(0, 0, 4, 10);
         let default_state = TextAreaState::default();
-        let (x, y) = t
-            .cursor_pos_with_state(area, &default_state)
-            .unwrap();
+        let (x, y) = t.cursor_pos_with_state(area, &default_state).unwrap();
         assert_eq!((x, y), (0, 1));
 
         // With state and small height, cursor should be visible at row 0, col 0

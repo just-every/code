@@ -5,23 +5,23 @@
 #![deny(clippy::disallowed_methods)]
 use app::App;
 use codex_core::BUILT_IN_OSS_MODEL_PROVIDER_ID;
-use codex_core::config::set_cached_terminal_background;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::ConfigToml;
 use codex_core::config::find_codex_home;
 use codex_core::config::load_config_as_toml_with_cli_overrides;
-use codex_core::protocol::AskForApproval;
-use codex_core::protocol::SandboxPolicy;
+use codex_core::config::set_cached_terminal_background;
 use codex_core::config_types::CachedTerminalBackground;
 use codex_core::config_types::ThemeColors;
 use codex_core::config_types::ThemeConfig;
 use codex_core::config_types::ThemeName;
-use regex_lite::Regex;
+use codex_core::protocol::AskForApproval;
+use codex_core::protocol::SandboxPolicy;
 use codex_login::AuthMode;
 use codex_login::CodexAuth;
 use codex_ollama::DEFAULT_OSS_MODEL;
 use codex_protocol::config_types::SandboxMode;
+use regex_lite::Regex;
 use std::fs::OpenOptions;
 use std::path::PathBuf;
 use tracing_appender::non_blocking;
@@ -36,36 +36,36 @@ mod bottom_pane;
 mod chatwidget;
 mod citation_regex;
 mod cli;
-mod common;
 mod colors;
+mod common;
 mod diff_render;
 mod exec_command;
 mod file_search;
 mod get_git_diff;
 mod glitch_animation;
-mod history_cell;
 mod history;
+mod history_cell;
 mod insert_history;
 pub mod live_wrap;
 mod local_memory_util;
 mod markdown;
 mod markdown_renderer;
 mod markdown_stream;
-mod syntax_highlight;
 pub mod onboarding;
 mod pager_overlay;
 mod render;
+mod syntax_highlight;
 // mod scroll_view; // Orphaned after trait-based HistoryCell migration
+mod layout_consts;
+mod rate_limits_view;
+mod resume;
+mod sanitize;
 mod session_log;
 mod shimmer;
 mod slash_command;
-pub mod spec_status;
 mod spec_prompts;
-mod rate_limits_view;
-mod resume;
+pub mod spec_status;
 mod streaming;
-mod sanitize;
-mod layout_consts;
 mod terminal_info;
 // mod text_block; // Orphaned after trait-based HistoryCell migration
 mod text_formatting;
@@ -75,19 +75,19 @@ mod util {
     pub mod buffer;
     pub mod list_window;
 }
+mod clipboard_paste;
+mod greeting;
+mod height_manager;
 mod spinner;
+mod transcript_app;
 mod tui;
 mod ui_consts;
 mod user_approval_widget;
-mod height_manager;
-mod transcript_app;
-mod clipboard_paste;
-mod greeting;
 // Upstream introduced a standalone status indicator widget. Our fork renders
 // status within the composer title; keep the module private unless tests need it.
-mod status_indicator_widget;
 #[cfg(target_os = "macos")]
 mod agent_install_helpers;
+mod status_indicator_widget;
 
 mod updates;
 
@@ -262,9 +262,8 @@ pub async fn run_main(
     };
 
     // use RUST_LOG env var, defaulting based on debug flag.
-    let env_filter = || {
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter))
-    };
+    let env_filter =
+        || EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
 
     // Build layered subscriber:
     let file_layer = tracing_subscriber::fmt::layer()
@@ -295,7 +294,7 @@ pub async fn run_main(
         latest_upgrade_version,
         theme_configured_explicitly,
     )
-        .map_err(|err| std::io::Error::other(err.to_string()))
+    .map_err(|err| std::io::Error::other(err.to_string()))
 }
 
 fn run_ratatui_app(
@@ -403,26 +402,42 @@ fn print_timing_summary(summary: &str) {
 fn cleanup_session_worktrees_and_print() {
     use std::process::Command;
     let pid = std::process::id();
-    let home = match std::env::var_os("HOME") { Some(h) => std::path::PathBuf::from(h), None => return };
+    let home = match std::env::var_os("HOME") {
+        Some(h) => std::path::PathBuf::from(h),
+        None => return,
+    };
     let session_dir = home.join(".code").join("working").join("_session");
     let file = session_dir.join(format!("pid-{}.txt", pid));
-    let Ok(data) = std::fs::read_to_string(&file) else { return };
+    let Ok(data) = std::fs::read_to_string(&file) else {
+        return;
+    };
     let mut entries: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new();
     for line in data.lines() {
-        if line.trim().is_empty() { continue; }
+        if line.trim().is_empty() {
+            continue;
+        }
         if let Some((root_s, path_s)) = line.split_once('\t') {
-            entries.push((std::path::PathBuf::from(root_s), std::path::PathBuf::from(path_s)));
+            entries.push((
+                std::path::PathBuf::from(root_s),
+                std::path::PathBuf::from(path_s),
+            ));
         }
     }
     // Deduplicate paths in case of retries
     use std::collections::HashSet;
     let mut seen = HashSet::new();
     entries.retain(|(_, p)| seen.insert(p.clone()));
-    if entries.is_empty() { let _ = std::fs::remove_file(&file); return; }
+    if entries.is_empty() {
+        let _ = std::fs::remove_file(&file);
+        return;
+    }
 
     eprintln!("Cleaning remaining worktrees ({}).", entries.len());
     for (git_root, worktree) in entries {
-        let wt_str = match worktree.to_str() { Some(s) => s, None => continue };
+        let wt_str = match worktree.to_str() {
+            Some(s) => s,
+            None => continue,
+        };
         let _ = Command::new("git")
             .current_dir(&git_root)
             .args(["worktree", "remove", wt_str, "--force"])
@@ -434,9 +449,7 @@ fn cleanup_session_worktrees_and_print() {
 
 fn maybe_apply_terminal_theme_detection(config: &mut Config, theme_configured_explicitly: bool) {
     if theme_configured_explicitly {
-        tracing::info!(
-            "Terminal theme autodetect skipped due to explicit theme configuration"
-        );
+        tracing::info!("Terminal theme autodetect skipped due to explicit theme configuration");
         return;
     }
 
@@ -463,10 +476,15 @@ fn maybe_apply_terminal_theme_detection(config: &mut Config, theme_configured_ex
     }
 
     let term = std::env::var("TERM").ok().filter(|value| !value.is_empty());
-    let term_program = std::env::var("TERM_PROGRAM").ok().filter(|value| !value.is_empty());
-    let term_program_version =
-        std::env::var("TERM_PROGRAM_VERSION").ok().filter(|value| !value.is_empty());
-    let colorfgbg = std::env::var("COLORFGBG").ok().filter(|value| !value.is_empty());
+    let term_program = std::env::var("TERM_PROGRAM")
+        .ok()
+        .filter(|value| !value.is_empty());
+    let term_program_version = std::env::var("TERM_PROGRAM_VERSION")
+        .ok()
+        .filter(|value| !value.is_empty());
+    let colorfgbg = std::env::var("COLORFGBG")
+        .ok()
+        .filter(|value| !value.is_empty());
 
     if let Some(cached) = config.tui.cached_terminal_background.as_ref() {
         if cached_background_matches_env(
@@ -526,9 +544,7 @@ fn apply_detected_theme(theme: &mut ThemeConfig, is_dark: bool) {
             "Detected dark terminal background; switching default theme to Dark - Carbon Night"
         );
     } else {
-        tracing::info!(
-            "Detected light terminal background; keeping default Light - Photon theme"
-        );
+        tracing::info!("Detected light terminal background; keeping default Light - Photon theme");
     }
 }
 
@@ -541,7 +557,10 @@ fn cached_background_matches_env(
 ) -> bool {
     fn matches(expected: &Option<String>, actual: &Option<String>) -> bool {
         match expected {
-            Some(expected) => actual.as_ref().map(|value| value == expected).unwrap_or(false),
+            Some(expected) => actual
+                .as_ref()
+                .map(|value| value == expected)
+                .unwrap_or(false),
             None => true,
         }
     }
@@ -562,7 +581,11 @@ pub enum LoginStatus {
 /// Determine current login status based on auth.json presence.
 pub fn get_login_status(config: &Config) -> LoginStatus {
     let codex_home = config.codex_home.clone();
-    match CodexAuth::from_codex_home(&codex_home, AuthMode::ChatGPT, &config.responses_originator_header) {
+    match CodexAuth::from_codex_home(
+        &codex_home,
+        AuthMode::ChatGPT,
+        &config.responses_originator_header,
+    ) {
         Ok(Some(auth)) => LoginStatus::AuthMode(auth.mode),
         _ => LoginStatus::NotAuthenticated,
     }
@@ -617,4 +640,3 @@ fn determine_repo_trust_state(
         Ok(true)
     }
 }
- 

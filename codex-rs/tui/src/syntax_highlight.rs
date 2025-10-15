@@ -3,9 +3,12 @@ use ratatui::text::{Line, Span};
 
 // syntect imports
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{Style as SynStyle, Theme, ThemeItem, ThemeSet, ThemeSettings, StyleModifier, FontStyle, Color as SynColor};
-use syntect::parsing::{SyntaxReference, SyntaxSet};
+use syntect::highlighting::{
+    Color as SynColor, FontStyle, Style as SynStyle, StyleModifier, Theme, ThemeItem, ThemeSet,
+    ThemeSettings,
+};
 use syntect::parsing::SyntaxSetBuilder;
+use syntect::parsing::{SyntaxReference, SyntaxSet};
 use syntect::util::LinesWithEndings;
 
 // Convert a ratatui Color to RGB tuple; mirrored locally to avoid exposing internals.
@@ -71,7 +74,11 @@ pub fn init_highlight_from_config(cfg: &codex_core::config_types::HighlightConfi
     } else if let Some(rest) = val_trim.strip_prefix("syntect:") {
         // Deprecated prefix; ignore and treat as bare name for compatibility.
         let name = rest.trim();
-        if name.is_empty() { HighlightPref::Auto } else { HighlightPref::Name(name.to_string()) }
+        if name.is_empty() {
+            HighlightPref::Auto
+        } else {
+            HighlightPref::Name(name.to_string())
+        }
     } else if val_trim.eq_ignore_ascii_case("follow-ui") {
         // Deprecated alias; treat as auto.
         HighlightPref::Auto
@@ -98,7 +105,11 @@ fn extra_syntax_set() -> &'static Option<SyntaxSet> {
             match builder.add_from_folder(&folder, true) {
                 Ok(_) => Some(builder.build()),
                 Err(e) => {
-                    tracing::warn!("Failed to load extra syntaxes from {}: {}", folder.display(), e);
+                    tracing::warn!(
+                        "Failed to load extra syntaxes from {}: {}",
+                        folder.display(),
+                        e
+                    );
                     None
                 }
             }
@@ -112,19 +123,34 @@ fn themes() -> &'static ThemeSet {
     THEMES.get_or_init(|| {
         let mut ts = ThemeSet::load_defaults();
         // Insert Codex built-in themes
-        ts.themes.insert("Code Dark".to_string(), build_code_dark_theme());
-        ts.themes.insert("Code Light".to_string(), build_code_light_theme());
+        ts.themes
+            .insert("Code Dark".to_string(), build_code_dark_theme());
+        ts.themes
+            .insert("Code Light".to_string(), build_code_light_theme());
         ts
     })
 }
 
-fn hex(rgb: (u8, u8, u8)) -> SynColor { SynColor { r: rgb.0, g: rgb.1, b: rgb.2, a: 0xFF } }
-fn hexa(r: u8, g: u8, b: u8, a: u8) -> SynColor { SynColor { r, g, b, a } }
+fn hex(rgb: (u8, u8, u8)) -> SynColor {
+    SynColor {
+        r: rgb.0,
+        g: rgb.1,
+        b: rgb.2,
+        a: 0xFF,
+    }
+}
+fn hexa(r: u8, g: u8, b: u8, a: u8) -> SynColor {
+    SynColor { r, g, b, a }
+}
 
-fn item(scope: &str, fg: (u8,u8,u8), style: Option<FontStyle>) -> ThemeItem {
+fn item(scope: &str, fg: (u8, u8, u8), style: Option<FontStyle>) -> ThemeItem {
     ThemeItem {
         scope: scope.parse().unwrap_or_default(),
-        style: StyleModifier { foreground: Some(hex(fg)), background: None, font_style: style },
+        style: StyleModifier {
+            foreground: Some(hex(fg)),
+            background: None,
+            font_style: style,
+        },
     }
 }
 
@@ -134,32 +160,32 @@ fn build_code_dark_theme() -> Theme {
     t.settings = {
         let mut s = ThemeSettings::default();
         // Globals
-        s.foreground = Some(hex((0xD4,0xD4,0xD4)));
-        s.background = Some(hex((0x1E,0x1E,0x1E)));
-        s.caret = Some(hex((0xAE,0xAF,0xAD)));
-        s.selection = Some(hex((0x26,0x4F,0x78)));
-        s.line_highlight = Some(hex((0x2A,0x2A,0x2A)));
+        s.foreground = Some(hex((0xD4, 0xD4, 0xD4)));
+        s.background = Some(hex((0x1E, 0x1E, 0x1E)));
+        s.caret = Some(hex((0xAE, 0xAF, 0xAD)));
+        s.selection = Some(hex((0x26, 0x4F, 0x78)));
+        s.line_highlight = Some(hex((0x2A, 0x2A, 0x2A)));
         // UI extras
-        s.misspelling = Some(hex((0xF1,0x4C,0x4C)));
-        s.minimap_border = Some(hex((0x01,0x04,0x09))); // #010409
-        s.accent = Some(hex((0x00,0x78,0xD4)));
-        s.bracket_contents_foreground = Some(hex((0xFF,0xD7,0x00))); // gold
-        s.brackets_foreground = Some(hex((0x88,0x88,0x88)));
-        s.brackets_background = Some(hexa(0,100,0,0x1A)); // #0064001A
-        s.tags_foreground = Some(hex((0x56,0x9C,0xD6)));
-        s.highlight = Some(hexa(0xAD,0xD6,0xFF,0x26));
-        s.find_highlight = Some(hex((0x9E,0x6A,0x03)));
-        s.find_highlight_foreground = Some(hex((0x00,0x00,0x00)));
-        s.gutter = Some(hex((0x1E,0x1E,0x1E)));
-        s.gutter_foreground = Some(hex((0x6E,0x76,0x81)));
-        s.selection_foreground = Some(hex((0xD4,0xD4,0xD4)));
-        s.selection_border = Some(hexa(0,0,0,0x00));
-        s.inactive_selection = Some(hex((0x3A,0x3D,0x41)));
-        s.inactive_selection_foreground = Some(hex((0xD4,0xD4,0xD4)));
-        s.guide = Some(hex((0x40,0x40,0x40)));
-        s.active_guide = Some(hex((0x70,0x70,0x70)));
-        s.stack_guide = Some(hex((0x58,0x58,0x58)));
-        s.shadow = Some(hexa(0,0,0,0x5C)); // 0.36
+        s.misspelling = Some(hex((0xF1, 0x4C, 0x4C)));
+        s.minimap_border = Some(hex((0x01, 0x04, 0x09))); // #010409
+        s.accent = Some(hex((0x00, 0x78, 0xD4)));
+        s.bracket_contents_foreground = Some(hex((0xFF, 0xD7, 0x00))); // gold
+        s.brackets_foreground = Some(hex((0x88, 0x88, 0x88)));
+        s.brackets_background = Some(hexa(0, 100, 0, 0x1A)); // #0064001A
+        s.tags_foreground = Some(hex((0x56, 0x9C, 0xD6)));
+        s.highlight = Some(hexa(0xAD, 0xD6, 0xFF, 0x26));
+        s.find_highlight = Some(hex((0x9E, 0x6A, 0x03)));
+        s.find_highlight_foreground = Some(hex((0x00, 0x00, 0x00)));
+        s.gutter = Some(hex((0x1E, 0x1E, 0x1E)));
+        s.gutter_foreground = Some(hex((0x6E, 0x76, 0x81)));
+        s.selection_foreground = Some(hex((0xD4, 0xD4, 0xD4)));
+        s.selection_border = Some(hexa(0, 0, 0, 0x00));
+        s.inactive_selection = Some(hex((0x3A, 0x3D, 0x41)));
+        s.inactive_selection_foreground = Some(hex((0xD4, 0xD4, 0xD4)));
+        s.guide = Some(hex((0x40, 0x40, 0x40)));
+        s.active_guide = Some(hex((0x70, 0x70, 0x70)));
+        s.stack_guide = Some(hex((0x58, 0x58, 0x58)));
+        s.shadow = Some(hexa(0, 0, 0, 0x5C)); // 0.36
         // CSS strings (kept empty per mapping)
         s.popup_css = Some(String::new());
         s.phantom_css = Some(String::new());
@@ -173,63 +199,107 @@ fn build_code_dark_theme() -> Theme {
     let _bold_italic = Some(FontStyle::BOLD | FontStyle::ITALIC);
     t.scopes = vec![
         // Comments
-        item("comment", (0x6A,0x99,0x55), italic),
+        item("comment", (0x6A, 0x99, 0x55), italic),
         // Strings
-        item("string", (0xCE,0x91,0x78), None),
-        item("string.regexp", (0xD1,0x69,0x69), None),
-        item("string.template", (0xCE,0x91,0x78), None),
-        item("constant.regexp", (0x64,0x66,0x95), None),
-        item("constant.character.escape", (0xD7,0xBA,0x7D), None),
+        item("string", (0xCE, 0x91, 0x78), None),
+        item("string.regexp", (0xD1, 0x69, 0x69), None),
+        item("string.template", (0xCE, 0x91, 0x78), None),
+        item("constant.regexp", (0x64, 0x66, 0x95), None),
+        item("constant.character.escape", (0xD7, 0xBA, 0x7D), None),
         // Numbers / constants
-        item("constant.numeric", (0xB5,0xCE,0xA8), None),
-        item("constant.language.boolean", (0x56,0x9C,0xD6), None),
-        item("constant.language.null", (0x56,0x9C,0xD6), None),
+        item("constant.numeric", (0xB5, 0xCE, 0xA8), None),
+        item("constant.language.boolean", (0x56, 0x9C, 0xD6), None),
+        item("constant.language.null", (0x56, 0x9C, 0xD6), None),
         // Keywords / operators / storage
-        item("keyword", (0xC5,0x86,0xC0), None),
-        item("keyword.control", (0xC5,0x86,0xC0), None),
-        item("keyword.operator", (0xD4,0xD4,0xD4), None),
-        item("storage, storage.type, storage.modifier", (0x56,0x9C,0xD6), None),
+        item("keyword", (0xC5, 0x86, 0xC0), None),
+        item("keyword.control", (0xC5, 0x86, 0xC0), None),
+        item("keyword.operator", (0xD4, 0xD4, 0xD4), None),
+        item(
+            "storage, storage.type, storage.modifier",
+            (0x56, 0x9C, 0xD6),
+            None,
+        ),
         // Variables / properties
-        item("variable, variable.other.readwrite, meta.definition.variable", (0x9C,0xDC,0xFE), None),
-        item("variable.language", (0x56,0x9C,0xD6), None),
-        item("variable.other.member", (0x9C,0xDC,0xFE), None),
-        item("variable.other.constant", (0x9C,0xDC,0xFE), None),
-        item("variable.parameter", (0x9C,0xDC,0xFE), None),
-        item("meta.object-literal.key, support.type.property-name, variable.other.property", (0x9C,0xDC,0xFE), None),
-        item("support.type.property-name.json", (0x9C,0xDC,0xFE), None),
+        item(
+            "variable, variable.other.readwrite, meta.definition.variable",
+            (0x9C, 0xDC, 0xFE),
+            None,
+        ),
+        item("variable.language", (0x56, 0x9C, 0xD6), None),
+        item("variable.other.member", (0x9C, 0xDC, 0xFE), None),
+        item("variable.other.constant", (0x9C, 0xDC, 0xFE), None),
+        item("variable.parameter", (0x9C, 0xDC, 0xFE), None),
+        item(
+            "meta.object-literal.key, support.type.property-name, variable.other.property",
+            (0x9C, 0xDC, 0xFE),
+            None,
+        ),
+        item("support.type.property-name.json", (0x9C, 0xDC, 0xFE), None),
         // Functions
-        item("function, entity.name.function, support.function, meta.function-call", (0xDC,0xDC,0xAA), None),
-        item("meta.function entity.name.function", (0xDC,0xDC,0xAA), None),
+        item(
+            "function, entity.name.function, support.function, meta.function-call",
+            (0xDC, 0xDC, 0xAA),
+            None,
+        ),
+        item(
+            "meta.function entity.name.function",
+            (0xDC, 0xDC, 0xAA),
+            None,
+        ),
         // Types / classes
-        item("type, entity.name.type, support.type, entity.name.class, support.class, entity.name.interface, entity.name.enum", (0x4E,0xC9,0xB0), None),
+        item(
+            "type, entity.name.type, support.type, entity.name.class, support.class, entity.name.interface, entity.name.enum",
+            (0x4E, 0xC9, 0xB0),
+            None,
+        ),
         // HTML / XML
-        item("entity.name.tag", (0x56,0x9C,0xD6), None),
-        item("entity.other.attribute-name", (0x9C,0xDC,0xFE), None),
-        item("punctuation.definition.tag", (0x80,0x80,0x80), None),
+        item("entity.name.tag", (0x56, 0x9C, 0xD6), None),
+        item("entity.other.attribute-name", (0x9C, 0xDC, 0xFE), None),
+        item("punctuation.definition.tag", (0x80, 0x80, 0x80), None),
         // Markdown
-        item("markup.heading", (0x56,0x9C,0xD6), None),
-        item("markup.bold", (0x56,0x9C,0xD6), None),
-        item("markup.italic", (0xD4,0xD4,0xD4), None),
-        item("markup.strikethrough", (0xD4,0xD4,0xD4), None),
-        item("markup.inline.raw", (0xCE,0x91,0x78), None),
-        item("markup.quote", (0x6A,0x99,0x55), None),
+        item("markup.heading", (0x56, 0x9C, 0xD6), None),
+        item("markup.bold", (0x56, 0x9C, 0xD6), None),
+        item("markup.italic", (0xD4, 0xD4, 0xD4), None),
+        item("markup.strikethrough", (0xD4, 0xD4, 0xD4), None),
+        item("markup.inline.raw", (0xCE, 0x91, 0x78), None),
+        item("markup.quote", (0x6A, 0x99, 0x55), None),
         // Diffs
-        item("diff.header", (0x56,0x9C,0xD6), None),
-        item("markup.inserted", (0x3F,0xB9,0x50), None),
-        item("markup.deleted", (0xF8,0x51,0x49), None),
-        item("markup.changed", (0x56,0x9C,0xD6), None),
-        item("markup.ignored", (0x80,0x80,0x80), None),
-        item("meta.diff.header, meta.diff.range", (0x56,0x9C,0xD6), None),
-        item("source.diff", (0xD4,0xD4,0xD4), None),
+        item("diff.header", (0x56, 0x9C, 0xD6), None),
+        item("markup.inserted", (0x3F, 0xB9, 0x50), None),
+        item("markup.deleted", (0xF8, 0x51, 0x49), None),
+        item("markup.changed", (0x56, 0x9C, 0xD6), None),
+        item("markup.ignored", (0x80, 0x80, 0x80), None),
+        item(
+            "meta.diff.header, meta.diff.range",
+            (0x56, 0x9C, 0xD6),
+            None,
+        ),
+        item("source.diff", (0xD4, 0xD4, 0xD4), None),
         // Punctuation helpers
-        item("punctuation.definition.quote.begin.markdown", (0x6A,0x99,0x55), None),
-        item("punctuation.definition.list.begin.markdown", (0x67,0x96,0xE6), None),
-        item("punctuation.section.embedded", (0x56,0x9C,0xD6), None),
-        item("punctuation.section.template-expression", (0x56,0x9C,0xD6), None),
-        item("punctuation.definition.parameters", (0xD4,0xD4,0xD4), None),
-        item("punctuation.separator.key-value", (0xD4,0xD4,0xD4), None),
+        item(
+            "punctuation.definition.quote.begin.markdown",
+            (0x6A, 0x99, 0x55),
+            None,
+        ),
+        item(
+            "punctuation.definition.list.begin.markdown",
+            (0x67, 0x96, 0xE6),
+            None,
+        ),
+        item("punctuation.section.embedded", (0x56, 0x9C, 0xD6), None),
+        item(
+            "punctuation.section.template-expression",
+            (0x56, 0x9C, 0xD6),
+            None,
+        ),
+        item(
+            "punctuation.definition.parameters",
+            (0xD4, 0xD4, 0xD4),
+            None,
+        ),
+        item("punctuation.separator.key-value", (0xD4, 0xD4, 0xD4), None),
         // Invalid
-        item("invalid", (0xF4,0x47,0x47), None),
+        item("invalid", (0xF4, 0x47, 0x47), None),
     ];
     t
 }
@@ -240,32 +310,32 @@ fn build_code_light_theme() -> Theme {
     t.settings = {
         let mut s = ThemeSettings::default();
         // Globals
-        s.foreground = Some(hex((0x00,0x00,0x00)));
-        s.background = Some(hex((0xFF,0xFF,0xFF)));
-        s.caret = Some(hex((0x00,0x00,0x00)));
-        s.selection = Some(hex((0xAD,0xD6,0xFF)));
-        s.line_highlight = Some(hex((0xF3,0xF3,0xF3))); // per mapping
+        s.foreground = Some(hex((0x00, 0x00, 0x00)));
+        s.background = Some(hex((0xFF, 0xFF, 0xFF)));
+        s.caret = Some(hex((0x00, 0x00, 0x00)));
+        s.selection = Some(hex((0xAD, 0xD6, 0xFF)));
+        s.line_highlight = Some(hex((0xF3, 0xF3, 0xF3))); // per mapping
         // UI extras
-        s.misspelling = Some(hex((0xE5,0x14,0x00)));
-        s.minimap_border = Some(hexa(0xD4,0xD4,0xD4,0x4D));
-        s.accent = Some(hex((0x00,0x78,0xD4)));
-        s.bracket_contents_foreground = Some(hex((0xFF,0xD7,0x00)));
-        s.brackets_foreground = Some(hex((0xB9,0xB9,0xB9)));
-        s.brackets_background = Some(hexa(0,100,0,0x1A)); // 0.10
-        s.tags_foreground = Some(hex((0x80,0x00,0x00)));
-        s.highlight = Some(hexa(0xAD,0xD6,0xFF,0x80));
-        s.find_highlight = Some(hex((0x9E,0x6A,0x03)));
-        s.find_highlight_foreground = Some(hex((0x00,0x00,0x00)));
-        s.gutter = Some(hex((0xFF,0xFF,0xFF)));
-        s.gutter_foreground = Some(hexa(0,0,0,0x80)); // 0.50
-        s.selection_foreground = Some(hex((0x00,0x00,0x00)));
-        s.selection_border = Some(hexa(0,0,0,0x00));
-        s.inactive_selection = Some(hex((0xE5,0xEB,0xF1)));
-        s.inactive_selection_foreground = Some(hex((0x00,0x00,0x00)));
-        s.guide = Some(hex((0xD3,0xD3,0xD3)));
-        s.active_guide = Some(hex((0x93,0x93,0x93)));
-        s.stack_guide = Some(hexa(0,0,0,0x00));
-        s.shadow = Some(hexa(0,0,0,0x5C)); // 0.36
+        s.misspelling = Some(hex((0xE5, 0x14, 0x00)));
+        s.minimap_border = Some(hexa(0xD4, 0xD4, 0xD4, 0x4D));
+        s.accent = Some(hex((0x00, 0x78, 0xD4)));
+        s.bracket_contents_foreground = Some(hex((0xFF, 0xD7, 0x00)));
+        s.brackets_foreground = Some(hex((0xB9, 0xB9, 0xB9)));
+        s.brackets_background = Some(hexa(0, 100, 0, 0x1A)); // 0.10
+        s.tags_foreground = Some(hex((0x80, 0x00, 0x00)));
+        s.highlight = Some(hexa(0xAD, 0xD6, 0xFF, 0x80));
+        s.find_highlight = Some(hex((0x9E, 0x6A, 0x03)));
+        s.find_highlight_foreground = Some(hex((0x00, 0x00, 0x00)));
+        s.gutter = Some(hex((0xFF, 0xFF, 0xFF)));
+        s.gutter_foreground = Some(hexa(0, 0, 0, 0x80)); // 0.50
+        s.selection_foreground = Some(hex((0x00, 0x00, 0x00)));
+        s.selection_border = Some(hexa(0, 0, 0, 0x00));
+        s.inactive_selection = Some(hex((0xE5, 0xEB, 0xF1)));
+        s.inactive_selection_foreground = Some(hex((0x00, 0x00, 0x00)));
+        s.guide = Some(hex((0xD3, 0xD3, 0xD3)));
+        s.active_guide = Some(hex((0x93, 0x93, 0x93)));
+        s.stack_guide = Some(hexa(0, 0, 0, 0x00));
+        s.shadow = Some(hexa(0, 0, 0, 0x5C)); // 0.36
         // CSS strings and underline options
         s.popup_css = Some(String::new());
         s.phantom_css = Some(String::new());
@@ -278,58 +348,106 @@ fn build_code_light_theme() -> Theme {
     let _bold_italic = Some(FontStyle::BOLD | FontStyle::ITALIC);
     t.scopes = vec![
         // Comments
-        item("comment", (0x00,0x80,0x00), italic),
+        item("comment", (0x00, 0x80, 0x00), italic),
         // Strings / regex
-        item("string", (0xA3,0x15,0x15), None),
-        item("string.regexp", (0x81,0x1F,0x3F), None),
-        item("constant.regexp", (0xAF,0x00,0xDB), None),
-        item("constant.character.escape", (0xEE,0x00,0x00), None),
+        item("string", (0xA3, 0x15, 0x15), None),
+        item("string.regexp", (0x81, 0x1F, 0x3F), None),
+        item("constant.regexp", (0xAF, 0x00, 0xDB), None),
+        item("constant.character.escape", (0xEE, 0x00, 0x00), None),
         // Numbers / units
-        item("constant.numeric, keyword.other.unit", (0x09,0x86,0x58), None),
-        item("constant.language.boolean", (0x00,0x00,0xFF), None),
+        item(
+            "constant.numeric, keyword.other.unit",
+            (0x09, 0x86, 0x58),
+            None,
+        ),
+        item("constant.language.boolean", (0x00, 0x00, 0xFF), None),
         // Keywords / storage
-        item("keyword, keyword.control, storage, storage.type, storage.modifier", (0x00,0x00,0xFF), None),
-        item("keyword.operator", (0x00,0x00,0x00), None),
+        item(
+            "keyword, keyword.control, storage, storage.type, storage.modifier",
+            (0x00, 0x00, 0xFF),
+            None,
+        ),
+        item("keyword.operator", (0x00, 0x00, 0x00), None),
         // Variables
-        item("variable, variable.other.readwrite, meta.definition.variable", (0x00,0x10,0x80), None),
-        item("variable.parameter", (0x00,0x10,0x80), None),
+        item(
+            "variable, variable.other.readwrite, meta.definition.variable",
+            (0x00, 0x10, 0x80),
+            None,
+        ),
+        item("variable.parameter", (0x00, 0x10, 0x80), None),
         // Functions
-        item("entity.name.function, support.function, meta.function-call", (0x79,0x5E,0x26), None),
-        item("meta.function entity.name.function", (0x79,0x5E,0x26), None),
+        item(
+            "entity.name.function, support.function, meta.function-call",
+            (0x79, 0x5E, 0x26),
+            None,
+        ),
+        item(
+            "meta.function entity.name.function",
+            (0x79, 0x5E, 0x26),
+            None,
+        ),
         // Types / classes
-        item("entity.name.type, support.type, entity.name.class, support.class, entity.name.interface, entity.name.enum", (0x26,0x7F,0x99), None),
+        item(
+            "entity.name.type, support.type, entity.name.class, support.class, entity.name.interface, entity.name.enum",
+            (0x26, 0x7F, 0x99),
+            None,
+        ),
         // HTML / CSS / JSON
-        item("entity.name.tag", (0x80,0x00,0x00), None),
-        item("entity.name.selector", (0x80,0x00,0x00), None),
-        item("entity.other.attribute-name", (0xE5,0x00,0x00), None),
-        item("punctuation.definition.tag", (0x80,0x00,0x00), None),
-        item("meta.object-literal.key, support.type.property-name, variable.other.property", (0x00,0x10,0x80), None),
-        item("support.type.property-name.json, meta.structure.dictionary.key.python", (0x04,0x51,0xA5), None),
+        item("entity.name.tag", (0x80, 0x00, 0x00), None),
+        item("entity.name.selector", (0x80, 0x00, 0x00), None),
+        item("entity.other.attribute-name", (0xE5, 0x00, 0x00), None),
+        item("punctuation.definition.tag", (0x80, 0x00, 0x00), None),
+        item(
+            "meta.object-literal.key, support.type.property-name, variable.other.property",
+            (0x00, 0x10, 0x80),
+            None,
+        ),
+        item(
+            "support.type.property-name.json, meta.structure.dictionary.key.python",
+            (0x04, 0x51, 0xA5),
+            None,
+        ),
         // Markdown
-        item("markup.heading", (0x80,0x00,0x00), None),
-        item("markup.bold", (0x00,0x00,0x80), None),
-        item("markup.italic", (0x00,0x00,0x00), None),
-        item("markup.strikethrough", (0x00,0x00,0x00), None),
-        item("markup.inline.raw", (0x80,0x00,0x00), None),
-        item("markup.quote", (0x04,0x51,0xA5), None),
+        item("markup.heading", (0x80, 0x00, 0x00), None),
+        item("markup.bold", (0x00, 0x00, 0x80), None),
+        item("markup.italic", (0x00, 0x00, 0x00), None),
+        item("markup.strikethrough", (0x00, 0x00, 0x00), None),
+        item("markup.inline.raw", (0x80, 0x00, 0x00), None),
+        item("markup.quote", (0x04, 0x51, 0xA5), None),
         // Diffs
-        item("diff.header", (0x00,0x00,0x80), None),
-        item("markup.inserted", (0x1A,0x7F,0x37), None),
-        item("markup.deleted", (0xCF,0x22,0x2E), None),
-        item("markup.changed", (0x04,0x51,0xA5), None),
-        item("markup.ignored", (0x80,0x80,0x80), None),
-        item("meta.diff.header", (0x00,0x00,0x80), None),
-        item("meta.diff.range", (0x04,0x51,0xA5), None),
-        item("source.diff", (0x00,0x00,0x00), None),
+        item("diff.header", (0x00, 0x00, 0x80), None),
+        item("markup.inserted", (0x1A, 0x7F, 0x37), None),
+        item("markup.deleted", (0xCF, 0x22, 0x2E), None),
+        item("markup.changed", (0x04, 0x51, 0xA5), None),
+        item("markup.ignored", (0x80, 0x80, 0x80), None),
+        item("meta.diff.header", (0x00, 0x00, 0x80), None),
+        item("meta.diff.range", (0x04, 0x51, 0xA5), None),
+        item("source.diff", (0x00, 0x00, 0x00), None),
         // Punctuation helpers
-        item("punctuation.definition.quote.begin.markdown", (0x04,0x51,0xA5), None),
-        item("punctuation.definition.list.begin.markdown", (0x04,0x51,0xA5), None),
-        item("punctuation.section.embedded", (0x00,0x00,0xFF), None),
-        item("punctuation.section.template-expression", (0x00,0x00,0xFF), None),
-        item("punctuation.definition.parameters", (0x00,0x00,0x00), None),
-        item("punctuation.separator.key-value", (0x00,0x00,0x00), None),
+        item(
+            "punctuation.definition.quote.begin.markdown",
+            (0x04, 0x51, 0xA5),
+            None,
+        ),
+        item(
+            "punctuation.definition.list.begin.markdown",
+            (0x04, 0x51, 0xA5),
+            None,
+        ),
+        item("punctuation.section.embedded", (0x00, 0x00, 0xFF), None),
+        item(
+            "punctuation.section.template-expression",
+            (0x00, 0x00, 0xFF),
+            None,
+        ),
+        item(
+            "punctuation.definition.parameters",
+            (0x00, 0x00, 0x00),
+            None,
+        ),
+        item("punctuation.separator.key-value", (0x00, 0x00, 0x00), None),
         // Invalid
-        item("invalid", (0xE5,0x14,0x00), None),
+        item("invalid", (0xE5, 0x14, 0x00), None),
     ];
     t
 }
@@ -342,7 +460,11 @@ fn current_theme_name<'a>(ts: &'a ThemeSet) -> &'a str {
     };
     match pref {
         HighlightPref::Name(ref name) => {
-            if let Some((_k, _v)) = ts.themes.iter().find(|(k, _)| k.to_ascii_lowercase() == name.to_ascii_lowercase()) {
+            if let Some((_k, _v)) = ts
+                .themes
+                .iter()
+                .find(|(k, _)| k.to_ascii_lowercase() == name.to_ascii_lowercase())
+            {
                 // SAFETY: We just looked up the same key; fetch again by exact key to get &'a str
                 for key in ts.themes.keys() {
                     if key.to_ascii_lowercase() == name.to_ascii_lowercase() {
@@ -354,10 +476,16 @@ fn current_theme_name<'a>(ts: &'a ThemeSet) -> &'a str {
         }
         HighlightPref::Auto => {}
     }
-    if is_light_bg() { "Code Light" } else { "Code Dark" }
+    if is_light_bg() {
+        "Code Light"
+    } else {
+        "Code Dark"
+    }
 }
 
-fn blending_enabled() -> bool { false }
+fn blending_enabled() -> bool {
+    false
+}
 
 fn default_theme<'a>() -> &'a Theme {
     // Use the currently selected theme (rotatable via Ctrl+Y)
@@ -366,8 +494,19 @@ fn default_theme<'a>() -> &'a Theme {
     // Prefer the Solarized themes; fall back to first available if missing.
     ts.themes
         .get(name)
-        .or_else(|| ts.themes.get(if is_light_bg() { "Code Light" } else { "Code Dark" }))
-        .unwrap_or_else(|| ts.themes.values().next().expect("at least one syntect theme"))
+        .or_else(|| {
+            ts.themes.get(if is_light_bg() {
+                "Code Light"
+            } else {
+                "Code Dark"
+            })
+        })
+        .unwrap_or_else(|| {
+            ts.themes
+                .values()
+                .next()
+                .expect("at least one syntect theme")
+        })
 }
 
 // Build a syntect Theme derived from the active TUI theme so code in history
@@ -393,15 +532,24 @@ fn build_ui_aware_theme() -> Theme {
         s.selection = Some(to_rgb(colors::selection()));
         // Subtle line highlight to match history rows
         let bg = colors::background();
-        let lh = crate::colors::mix_toward(bg, colors::info(), if is_light_bg() { 0.06 } else { 0.04 });
+        let lh =
+            crate::colors::mix_toward(bg, colors::info(), if is_light_bg() { 0.06 } else { 0.04 });
         s.line_highlight = Some(to_rgb(lh));
         s
     };
 
     // Helpers for common scopes
-    let item_rgb = |scope: &str, col: ratatui::style::Color, style: Option<FontStyle>| -> ThemeItem {
-        ThemeItem { scope: scope.parse().unwrap_or_default(), style: StyleModifier { foreground: Some(to_rgb(col)), background: None, font_style: style } }
-    };
+    let item_rgb =
+        |scope: &str, col: ratatui::style::Color, style: Option<FontStyle>| -> ThemeItem {
+            ThemeItem {
+                scope: scope.parse().unwrap_or_default(),
+                style: StyleModifier {
+                    foreground: Some(to_rgb(col)),
+                    background: None,
+                    font_style: style,
+                },
+            }
+        };
 
     // Derived palette
     let text = colors::text();
@@ -419,31 +567,67 @@ fn build_ui_aware_theme() -> Theme {
         // Comments and doc comments
         item_rgb("comment, punctuation.definition.comment", text_dim, italic),
         // Strings / regex / escapes (mix slightly toward text for legibility)
-        item_rgb("string, string.regexp, constant.character.escape", crate::colors::mix_toward(string_c, text, 0.15), None),
+        item_rgb(
+            "string, string.regexp, constant.character.escape",
+            crate::colors::mix_toward(string_c, text, 0.15),
+            None,
+        ),
         // Numbers and constants
-        item_rgb("constant.numeric, constant.language, constant.other", text_bright, None),
+        item_rgb(
+            "constant.numeric, constant.language, constant.other",
+            text_bright,
+            None,
+        ),
         // Keywords and operators
-        item_rgb("keyword, keyword.control, storage, storage.type, storage.modifier", keyword, None),
+        item_rgb(
+            "keyword, keyword.control, storage, storage.type, storage.modifier",
+            keyword,
+            None,
+        ),
         item_rgb("keyword.operator", text, None),
         // Functions and calls
-        item_rgb("entity.name.function, support.function, meta.function-call, meta.function entity.name.function", func, None),
+        item_rgb(
+            "entity.name.function, support.function, meta.function-call, meta.function entity.name.function",
+            func,
+            None,
+        ),
         // Variables / properties
-        item_rgb("variable, variable.other.readwrite, variable.other.property, meta.definition.variable", text, None),
+        item_rgb(
+            "variable, variable.other.readwrite, variable.other.property, meta.definition.variable",
+            text,
+            None,
+        ),
         // Types / classes / interfaces
-        item_rgb("entity.name.type, support.type, entity.name.class, support.class, entity.name.interface, entity.name.enum", info, None),
+        item_rgb(
+            "entity.name.type, support.type, entity.name.class, support.class, entity.name.interface, entity.name.enum",
+            info,
+            None,
+        ),
         // HTML / tags / attributes
         item_rgb("entity.name.tag, punctuation.definition.tag", info, None),
-        item_rgb("entity.other.attribute-name, support.type.property-name, variable.other.property", text, None),
+        item_rgb(
+            "entity.other.attribute-name, support.type.property-name, variable.other.property",
+            text,
+            None,
+        ),
         // Markdown accents
         item_rgb("markup.heading", info, None),
         item_rgb("markup.bold", info, None),
         item_rgb("markup.italic", text, None),
-        item_rgb("markup.inline.raw", crate::colors::mix_toward(text, info, 0.20), None),
+        item_rgb(
+            "markup.inline.raw",
+            crate::colors::mix_toward(text, info, 0.20),
+            None,
+        ),
         item_rgb("markup.quote", text_dim, None),
         // Diffs (aligned with our success/warning/error)
         item_rgb("markup.inserted", colors::success(), None),
         item_rgb("markup.deleted", colors::error(), None),
-        item_rgb("markup.changed, diff.header, meta.diff.header, meta.diff.range", info, None),
+        item_rgb(
+            "markup.changed, diff.header, meta.diff.header, meta.diff.range",
+            info,
+            None,
+        ),
     ];
     t
 }
@@ -471,14 +655,26 @@ fn try_syntax_for_lang<'a>(ps: &'a SyntaxSet, lang: &str) -> Option<&'a SyntaxRe
             // Graceful fallback: if TOML isn't bundled in this build of syntect,
             // approximate with INI so keys/sections/strings get some color.
             if lang.eq_ignore_ascii_case("toml") {
-                ps.find_syntax_by_name("INI").or_else(|| ps.find_syntax_by_extension("ini"))
-            } else { None }
+                ps.find_syntax_by_name("INI")
+                    .or_else(|| ps.find_syntax_by_extension("ini"))
+            } else {
+                None
+            }
         })
 }
 
 // Removed unused helper to keep build warning-free.
 
-fn span_from_syn((SynStyle { foreground, font_style, .. }, text): (SynStyle, &str)) -> Span<'static> {
+fn span_from_syn(
+    (
+        SynStyle {
+            foreground,
+            font_style,
+            ..
+        },
+        text,
+    ): (SynStyle, &str),
+) -> Span<'static> {
     use ratatui::style::{Color, Modifier, Style};
     // Map syntect Style to ratatui Style
     let fg = adjust_color(Color::Rgb(foreground.r, foreground.g, foreground.b));
@@ -493,7 +689,11 @@ fn span_from_syn((SynStyle { foreground, font_style, .. }, text): (SynStyle, &st
         style = style.add_modifier(Modifier::UNDERLINED);
     }
     // Strip a single trailing newline from syntect's line so our Line has no '\n'
-    let content = if let Some(stripped) = text.strip_suffix('\n') { stripped } else { text };
+    let content = if let Some(stripped) = text.strip_suffix('\n') {
+        stripped
+    } else {
+        text
+    };
     Span::styled(content.to_string(), style)
 }
 
@@ -511,36 +711,69 @@ pub(crate) fn highlight_code_block(content: &str, lang: Option<&str>) -> Vec<Lin
 
     // Resolve across default and optional extra syntax sets
     let mut ps = syntax_set();
-    let mut syntax = if let Some(l) = lang.and_then(|l| if l.trim().is_empty() { None } else { Some(l) }) {
-        if let Some(s) = try_syntax_for_lang(ps, l) { s } else if let Some(ref extra) = *extra_syntax_set() {
-            if let Some(s2) = try_syntax_for_lang(extra, l) { ps = extra; s2 } else { ps.find_syntax_plain_text() }
-        } else { ps.find_syntax_plain_text() }
-    } else { ps.find_syntax_plain_text() };
+    let mut syntax =
+        if let Some(l) = lang.and_then(|l| if l.trim().is_empty() { None } else { Some(l) }) {
+            if let Some(s) = try_syntax_for_lang(ps, l) {
+                s
+            } else if let Some(ref extra) = *extra_syntax_set() {
+                if let Some(s2) = try_syntax_for_lang(extra, l) {
+                    ps = extra;
+                    s2
+                } else {
+                    ps.find_syntax_plain_text()
+                }
+            } else {
+                ps.find_syntax_plain_text()
+            }
+        } else {
+            ps.find_syntax_plain_text()
+        };
 
     if std::ptr::eq(syntax, ps.find_syntax_plain_text()) {
         if let Some(dl) = autodetect_lang(content) {
-            if let Some(s2) = try_syntax_for_lang(ps, dl) { syntax = s2; }
-            else if let Some(ref extra) = *extra_syntax_set() {
-                if let Some(s3) = try_syntax_for_lang(extra, dl) { ps = extra; syntax = s3; }
+            if let Some(s2) = try_syntax_for_lang(ps, dl) {
+                syntax = s2;
+            } else if let Some(ref extra) = *extra_syntax_set() {
+                if let Some(s3) = try_syntax_for_lang(extra, dl) {
+                    ps = extra;
+                    syntax = s3;
+                }
             }
         }
         if std::ptr::eq(syntax, ps.find_syntax_plain_text()) {
             if let Some(first) = content.lines().next() {
-                if let Some(s4) = ps.find_syntax_by_first_line(first) { syntax = s4; }
-                else if let Some(ref extra) = *extra_syntax_set() {
-                    if let Some(s5) = extra.find_syntax_by_first_line(first) { ps = extra; syntax = s5; }
+                if let Some(s4) = ps.find_syntax_by_first_line(first) {
+                    syntax = s4;
+                } else if let Some(ref extra) = *extra_syntax_set() {
+                    if let Some(s5) = extra.find_syntax_by_first_line(first) {
+                        ps = extra;
+                        syntax = s5;
+                    }
                 }
             }
         }
     }
 
     // TOML special-case: if labelled or looks like Cargo/Clear TOML and still plain, try INI.
-    if (lang.map(|l| l.eq_ignore_ascii_case("toml")).unwrap_or(false) || content.contains("[package]"))
+    if (lang
+        .map(|l| l.eq_ignore_ascii_case("toml"))
+        .unwrap_or(false)
+        || content.contains("[package]"))
         && std::ptr::eq(syntax, ps.find_syntax_plain_text())
     {
-        if let Some(sini) = ps.find_syntax_by_name("INI").or_else(|| ps.find_syntax_by_extension("ini")) { syntax = sini; }
-        else if let Some(ref extra) = *extra_syntax_set() {
-            if let Some(sini2) = extra.find_syntax_by_name("INI").or_else(|| extra.find_syntax_by_extension("ini")) { ps = extra; syntax = sini2; }
+        if let Some(sini) = ps
+            .find_syntax_by_name("INI")
+            .or_else(|| ps.find_syntax_by_extension("ini"))
+        {
+            syntax = sini;
+        } else if let Some(ref extra) = *extra_syntax_set() {
+            if let Some(sini2) = extra
+                .find_syntax_by_name("INI")
+                .or_else(|| extra.find_syntax_by_extension("ini"))
+            {
+                ps = extra;
+                syntax = sini2;
+            }
         }
     }
 
@@ -548,7 +781,9 @@ pub(crate) fn highlight_code_block(content: &str, lang: Option<&str>) -> Vec<Lin
     let mut out: Vec<Line<'static>> = Vec::new();
     for line in LinesWithEndings::from(content) {
         // syntect returns (Style, &str) pairs; convert to ratatui Spans
-        let ranges = highlighter.highlight_line(line, ps).unwrap_or_else(|_| vec![(SynStyle::default(), line)]);
+        let ranges = highlighter
+            .highlight_line(line, ps)
+            .unwrap_or_else(|_| vec![(SynStyle::default(), line)]);
         let spans: Vec<Span<'static>> = ranges.into_iter().map(span_from_syn).collect();
         out.push(Line::from(spans));
     }
@@ -559,7 +794,9 @@ pub(crate) fn highlight_code_block(content: &str, lang: Option<&str>) -> Vec<Lin
     if content.ends_with('\n') {
         if let Some(last) = out.last() {
             let is_empty = last.spans.is_empty() || last.spans.iter().all(|s| s.content.is_empty());
-            if is_empty { out.pop(); }
+            if is_empty {
+                out.pop();
+            }
         }
     }
     out
@@ -609,8 +846,12 @@ fn adjust_color(c: Color) -> Color {
             let mixed = mix_rgb((cr, cg, cb), (tr, tg, tb), t);
             l_fg = relative_luminance(mixed);
             ratio = contrast_ratio(l_fg, l_bg);
-            r = mixed.0; g = mixed.1; b = mixed.2;
-            if ratio >= target { break; }
+            r = mixed.0;
+            g = mixed.1;
+            b = mixed.2;
+            if ratio >= target {
+                break;
+            }
         }
     }
     Color::Rgb(r, g, b)
@@ -618,7 +859,10 @@ fn adjust_color(c: Color) -> Color {
 
 // --- Language aliasing ---
 fn normalize_lang(lang: &str) -> &str {
-    let l = lang.trim().trim_matches(|c: char| c == '.' || c == '#').to_ascii_lowercase();
+    let l = lang
+        .trim()
+        .trim_matches(|c: char| c == '.' || c == '#')
+        .to_ascii_lowercase();
     match l.as_str() {
         // Shells
         "sh" | "bash" | "zsh" | "shell" | "console" | "shellsession" => "bash",
@@ -748,7 +992,11 @@ fn autodetect_lang(content: &str) -> Option<&'static str> {
     // 4) HTML/XML
     if trimmed_all.starts_with('<') && trimmed_all.contains('>') {
         let l = lower.trim_start();
-        if l.starts_with("<!doctype html") || l.starts_with("<html") || l.starts_with("<head") || l.starts_with("<body") {
+        if l.starts_with("<!doctype html")
+            || l.starts_with("<html")
+            || l.starts_with("<head")
+            || l.starts_with("<body")
+        {
             return Some("html");
         }
         if l.starts_with("<?xml") || l.starts_with("<svg") {
@@ -773,18 +1021,26 @@ fn autodetect_lang(content: &str) -> Option<&'static str> {
     }
 
     // 7) Shell-ish commands (very loose; prefer only when signals are clear)
-    if sample.lines().take(8).any(|l| l.trim_start().starts_with("$ "))
+    if sample
+        .lines()
+        .take(8)
+        .any(|l| l.trim_start().starts_with("$ "))
         || sample.contains(" && ")
         || sample.contains(" | ")
-        || sample.lines().take(8).any(|l| l.trim_start().starts_with("echo "))
+        || sample
+            .lines()
+            .take(8)
+            .any(|l| l.trim_start().starts_with("echo "))
     {
         return Some("bash");
     }
 
     // 8) SQL
-    if ["select ", "insert ", "update ", "delete ", "create ", "alter ", "drop "]
-        .iter()
-        .any(|kw| lower.contains(*kw))
+    if [
+        "select ", "insert ", "update ", "delete ", "create ", "alter ", "drop ",
+    ]
+    .iter()
+    .any(|kw| lower.contains(*kw))
         && sample.contains(';')
     {
         return Some("sql");
@@ -801,19 +1057,31 @@ fn autodetect_lang(content: &str) -> Option<&'static str> {
                 "package" | "dependencies" | "dev-dependencies" | "build-dependencies" |
                 "workspace" | "profile" | _ if section.contains('.') || section.contains('-')
             );
-            if is_toml_section { return Some("toml"); }
+            if is_toml_section {
+                return Some("toml");
+            }
         }
     }
     // Strong TOML signals across first 50 lines
     let toml_signals = {
         let lines: Vec<&str> = s.lines().take(50).collect();
-        let has_dotted_keys = lines.iter().any(|l| l.trim_start().split_once('=').map(|(k, _)| k.contains('.')).unwrap_or(false));
+        let has_dotted_keys = lines.iter().any(|l| {
+            l.trim_start()
+                .split_once('=')
+                .map(|(k, _)| k.contains('.'))
+                .unwrap_or(false)
+        });
         let has_inline_table = lines.iter().any(|l| l.contains("={") || l.contains(" = {"));
         let has_array = lines.iter().any(|l| l.contains("=[") || l.contains(" = ["));
-        let has_quoted_assign = lines.iter().any(|l| l.contains("= \"") || l.contains("=\""));
-        (has_dotted_keys as u8 + has_inline_table as u8 + has_array as u8 + has_quoted_assign as u8) >= 2
+        let has_quoted_assign = lines
+            .iter()
+            .any(|l| l.contains("= \"") || l.contains("=\""));
+        (has_dotted_keys as u8 + has_inline_table as u8 + has_array as u8 + has_quoted_assign as u8)
+            >= 2
     };
-    if toml_signals { return Some("toml"); }
+    if toml_signals {
+        return Some("toml");
+    }
     // Fallback to INI if it looks like sectioned key=value without YAML/hints
     if let Some(first_line) = s.lines().find(|l| !l.trim().is_empty()) {
         let fl = first_line.trim();
@@ -828,7 +1096,10 @@ fn autodetect_lang(content: &str) -> Option<&'static str> {
         .map(|l| l.trim())
         .filter(|l| !l.is_empty())
         .take(20)
-        .filter(|l| l.starts_with("- ") || (l.contains(':') && !l.contains("://") && !l.contains("::") && !l.contains(":=")))
+        .filter(|l| {
+            l.starts_with("- ")
+                || (l.contains(':') && !l.contains("://") && !l.contains("::") && !l.contains(":="))
+        })
         .count();
     if yaml_signals >= 3 {
         return Some("yaml");

@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use codex_core::config::Config;
-use ratatui::text::Line;
 use ratatui::style::Modifier;
+use ratatui::text::Line;
 
 use super::HeaderEmitter;
 use super::StreamKind;
@@ -11,8 +11,18 @@ use super::StreamState;
 /// Sink for history insertions and animation control.
 pub(crate) trait HistorySink {
     fn insert_history(&self, lines: Vec<Line<'static>>);
-    fn insert_history_with_kind(&self, id: Option<String>, kind: StreamKind, lines: Vec<Line<'static>>);
-    fn insert_final_answer(&self, id: Option<String>, lines: Vec<Line<'static>>, full_markdown_source: String);
+    fn insert_history_with_kind(
+        &self,
+        id: Option<String>,
+        kind: StreamKind,
+        lines: Vec<Line<'static>>,
+    );
+    fn insert_final_answer(
+        &self,
+        id: Option<String>,
+        lines: Vec<Line<'static>>,
+        full_markdown_source: String,
+    );
     fn start_commit_animation(&self);
     fn stop_commit_animation(&self);
 }
@@ -26,15 +36,38 @@ impl HistorySink for AppEventHistorySink {
         self.0
             .send(crate::app_event::AppEvent::InsertHistory(lines))
     }
-    fn insert_history_with_kind(&self, id: Option<String>, kind: StreamKind, lines: Vec<Line<'static>>) {
-        tracing::debug!("sink.insert_history_with_kind kind={:?} id={:?} lines={}", kind, id, lines.len());
+    fn insert_history_with_kind(
+        &self,
+        id: Option<String>,
+        kind: StreamKind,
+        lines: Vec<Line<'static>>,
+    ) {
+        tracing::debug!(
+            "sink.insert_history_with_kind kind={:?} id={:?} lines={}",
+            kind,
+            id,
+            lines.len()
+        );
         self.0
             .send(crate::app_event::AppEvent::InsertHistoryWithKind { id, kind, lines })
     }
-    fn insert_final_answer(&self, id: Option<String>, lines: Vec<Line<'static>>, full_markdown_source: String) {
-        tracing::debug!("sink.insert_final_answer id={:?} lines={} source_len={}", id, lines.len(), full_markdown_source.len());
-        self.0
-            .send(crate::app_event::AppEvent::InsertFinalAnswer { id, lines, source: full_markdown_source })
+    fn insert_final_answer(
+        &self,
+        id: Option<String>,
+        lines: Vec<Line<'static>>,
+        full_markdown_source: String,
+    ) {
+        tracing::debug!(
+            "sink.insert_final_answer id={:?} lines={} source_len={}",
+            id,
+            lines.len(),
+            full_markdown_source.len()
+        );
+        self.0.send(crate::app_event::AppEvent::InsertFinalAnswer {
+            id,
+            lines,
+            source: full_markdown_source,
+        })
     }
     fn start_commit_animation(&self) {
         self.0
@@ -64,7 +97,10 @@ impl StreamController {
         Self {
             config,
             header: HeaderEmitter::new(),
-            states: [StreamState::new_for_kind(StreamKind::Answer), StreamState::new_for_kind(StreamKind::Reasoning)],
+            states: [
+                StreamState::new_for_kind(StreamKind::Answer),
+                StreamState::new_for_kind(StreamKind::Reasoning),
+            ],
             current_stream: None,
             current_stream_id: None,
             finishing_after_drain: false,
@@ -79,7 +115,6 @@ impl StreamController {
     pub(crate) fn is_write_cycle_active(&self) -> bool {
         self.current_stream.is_some()
     }
-    
 
     pub(crate) fn clear_all(&mut self) {
         tracing::debug!("clear_all called, current_stream={:?}", self.current_stream);
@@ -97,14 +132,14 @@ impl StreamController {
     fn state(&self, kind: StreamKind) -> &StreamState {
         &self.states[Self::idx(kind)]
     }
-fn state_mut(&mut self, kind: StreamKind) -> &mut StreamState {
-    &mut self.states[Self::idx(kind)]
-}
+    fn state_mut(&mut self, kind: StreamKind) -> &mut StreamState {
+        &mut self.states[Self::idx(kind)]
+    }
 
-/// Record the latest provider sequence_number for this stream kind.
-pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<u64>) {
-    self.state_mut(kind).last_sequence_number = seq;
-}
+    /// Record the latest provider sequence_number for this stream kind.
+    pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<u64>) {
+        self.state_mut(kind).last_sequence_number = seq;
+    }
 
     fn emit_header_if_needed(&mut self, kind: StreamKind, out_lines: &mut Lines) -> bool {
         let emitted = self.header.maybe_emit(kind, out_lines);
@@ -117,7 +152,11 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
     /// Optionally append a separate dimmed debug marker line indicating the
     /// current reasoning summary index (parsed from the stream id like "…#s3").
     /// This avoids mutating the model content so title detection remains intact.
-    fn maybe_append_reasoning_debug_marker(&self, kind: StreamKind, lines: &mut Vec<Line<'static>>) {
+    fn maybe_append_reasoning_debug_marker(
+        &self,
+        kind: StreamKind,
+        lines: &mut Vec<Line<'static>>,
+    ) {
         // Only when explicitly enabled to avoid noise in normal use.
         let enabled = match std::env::var("CODEX_DEBUG_REASONING_INDEX") {
             Ok(val) => !val.is_empty() && val != "0",
@@ -126,14 +165,24 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
         if !enabled || !matches!(kind, StreamKind::Reasoning) {
             return;
         }
-        let id = match self.current_stream_id() { Some(s) => s.clone(), None => return };
+        let id = match self.current_stream_id() {
+            Some(s) => s.clone(),
+            None => return,
+        };
         // Parse trailing #s<idx>
         let idx = id.split('#').last().and_then(|frag| frag.strip_prefix('s'));
         if let Some(sidx) = idx {
-            let seq_part = self.state(kind).last_sequence_number.map(|n| format!(" seq{}", n)).unwrap_or_default();
+            let seq_part = self
+                .state(kind)
+                .last_sequence_number
+                .map(|n| format!(" seq{}", n))
+                .unwrap_or_default();
             let marker = format!("[s{}{}]", sidx, seq_part);
             let dim = crate::colors::text_dim();
-            lines.push(Line::from(ratatui::text::Span::styled(marker, ratatui::style::Style::default().fg(dim))));
+            lines.push(Line::from(ratatui::text::Span::styled(
+                marker,
+                ratatui::style::Style::default().fg(dim),
+            )));
         }
     }
 
@@ -142,12 +191,12 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
         // Removed - we don't need to add extra blank lines
         // The markdown renderer and section breaks already handle spacing
     }
-    
+
     /// Get the current stream kind being processed
     pub(crate) fn current_stream(&self) -> Option<StreamKind> {
         self.current_stream
     }
-    
+
     /// Get the current stream ID
     pub(crate) fn current_stream_id(&self) -> Option<&String> {
         self.current_stream_id.as_ref()
@@ -155,8 +204,18 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
 
     /// Begin a stream, flushing previously completed lines from any other
     /// active stream to maintain ordering.
-    pub(crate) fn begin_with_id(&mut self, kind: StreamKind, id: Option<String>, sink: &impl HistorySink) {
-        tracing::debug!("stream.begin kind={:?} prev={:?} new_id={:?}", kind, self.current_stream, id);
+    pub(crate) fn begin_with_id(
+        &mut self,
+        kind: StreamKind,
+        id: Option<String>,
+        sink: &impl HistorySink,
+    ) {
+        tracing::debug!(
+            "stream.begin kind={:?} prev={:?} new_id={:?}",
+            kind,
+            self.current_stream,
+            id
+        );
         // NOTE (dup‑guard): Historically we cleared `current_stream[_id]` even when
         // `kind` did not change, which caused the active Answer stream to lose its id.
         // Downstream, the UI could not find the streaming cell by id on finalization
@@ -165,7 +224,11 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
         // and adopt the new one so the final can match and replace in‑place.
         if let Some(current) = self.current_stream {
             if current != kind {
-                tracing::debug!("Switching from {:?} to {:?}, flushing previous", current, kind);
+                tracing::debug!(
+                    "Switching from {:?} to {:?}, flushing previous",
+                    current,
+                    kind
+                );
                 // Synchronously flush completed lines from previous stream.
                 let cfg = self.config.clone();
                 let step = {
@@ -181,7 +244,11 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
                     result
                 };
                 if !step.history.is_empty() {
-                    tracing::debug!("stream.flush prev={:?} lines={}", current, step.history.len());
+                    tracing::debug!(
+                        "stream.flush prev={:?} lines={}",
+                        current,
+                        step.history.len()
+                    );
                     let mut lines: Lines = Vec::new();
                     self.emit_header_if_needed(current, &mut lines);
                     lines.extend(step.history);
@@ -203,16 +270,27 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
                         let step = {
                             let prev_state = self.state_mut(current);
                             let newly_completed = prev_state.collector.commit_complete_lines(&cfg);
-                            if !newly_completed.is_empty() { prev_state.enqueue(newly_completed); }
+                            if !newly_completed.is_empty() {
+                                prev_state.enqueue(newly_completed);
+                            }
                             let result = prev_state.drain_all();
-                            tracing::debug!("Flushing {:?} due to id change {:?} -> {:?}", current, self.current_stream_id, id);
+                            tracing::debug!(
+                                "Flushing {:?} due to id change {:?} -> {:?}",
+                                current,
+                                self.current_stream_id,
+                                id
+                            );
                             result
                         };
                         if !step.history.is_empty() {
                             let mut lines: Lines = Vec::new();
                             self.emit_header_if_needed(current, &mut lines);
                             lines.extend(step.history);
-                            sink.insert_history_with_kind(self.current_stream_id.clone(), current, lines);
+                            sink.insert_history_with_kind(
+                                self.current_stream_id.clone(),
+                                current,
+                                lines,
+                            );
                         }
                         // Now adopt the new id; do not reset kind.
                         self.current_stream_id = Some(new_id.clone());
@@ -235,18 +313,29 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
             }
             // Emit header immediately for reasoning; for answers, optionally emit immediately.
             if matches!(kind, StreamKind::Reasoning)
-                || (matches!(kind, StreamKind::Answer) && self.config.tui.stream.answer_header_immediate)
+                || (matches!(kind, StreamKind::Answer)
+                    && self.config.tui.stream.answer_header_immediate)
             {
                 let mut header_lines = Vec::new();
                 if self.emit_header_if_needed(kind, &mut header_lines) {
                     // Always associate header lines with the active stream id so
                     // the TUI can enforce strict per-stream ordering.
-                    sink.insert_history_with_kind(self.current_stream_id.clone(), kind, header_lines);
+                    sink.insert_history_with_kind(
+                        self.current_stream_id.clone(),
+                        kind,
+                        header_lines,
+                    );
                     self.thinking_placeholder_shown = true;
                     // For answers, optionally insert an empty streaming cell with a hidden header so
                     // the UI can show a body placeholder (ellipsis) before the first text arrives.
-                    if matches!(kind, StreamKind::Answer) && self.config.tui.stream.show_answer_ellipsis {
-                        sink.insert_history_with_kind(self.current_stream_id.clone(), kind, vec![ratatui::text::Line::from("codex")]);
+                    if matches!(kind, StreamKind::Answer)
+                        && self.config.tui.stream.show_answer_ellipsis
+                    {
+                        sink.insert_history_with_kind(
+                            self.current_stream_id.clone(),
+                            kind,
+                            vec![ratatui::text::Line::from("codex")],
+                        );
                     }
                 }
             }
@@ -264,12 +353,17 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
             tracing::debug!("push_and_maybe_commit called but no current_stream");
             return;
         };
-        tracing::debug!("push_and_maybe_commit for {:?}, delta.len={} contains_nl={}", kind, delta.len(), delta.contains('\n'));
+        tracing::debug!(
+            "push_and_maybe_commit for {:?}, delta.len={} contains_nl={}",
+            kind,
+            delta.len(),
+            delta.contains('\n')
+        );
         let cfg = self.config.clone();
 
         // Check header flag before borrowing state (used only to avoid double headers)
         let _just_emitted_header = self.header.consume_header_flag();
-        
+
         // Mutate collector and counters in a short scope to avoid long mutable borrows.
         {
             let state = self.state_mut(kind);
@@ -277,7 +371,8 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
                 state.has_seen_delta = true;
             }
             state.collector.push_delta(delta);
-            state.tail_chars_since_commit = state.tail_chars_since_commit.saturating_add(delta.len());
+            state.tail_chars_since_commit =
+                state.tail_chars_since_commit.saturating_add(delta.len());
         }
         if delta.contains('\n') {
             let mut newly_completed = self.state_mut(kind).collector.commit_complete_lines(&cfg);
@@ -285,7 +380,8 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
             if !newly_completed.is_empty() {
                 let mut skip_count = 0;
                 while skip_count < newly_completed.len()
-                    && crate::render::line_utils::is_blank_line_trim(&newly_completed[skip_count]) {
+                    && crate::render::line_utils::is_blank_line_trim(&newly_completed[skip_count])
+                {
                     skip_count += 1;
                 }
                 if skip_count > 1 {
@@ -304,7 +400,9 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
                 };
                 let mut styled: Vec<Line<'static>> = Vec::with_capacity(newly_completed.len());
                 for mut line in newly_completed {
-                    if let Some(c) = color { line.style = line.style.patch(ratatui::style::Style::default().fg(c)); }
+                    if let Some(c) = color {
+                        line.style = line.style.patch(ratatui::style::Style::default().fg(c));
+                    }
                     // No per-span overrides needed for Answer: line FG is already bright.
                     styled.push(line);
                 }
@@ -325,8 +423,16 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
 
         // Char-threshold soft commit (when no newline has arrived for a while)
         if !delta.contains('\n') {
-            let threshold = self.config.tui.stream.soft_commit_chars
-                .or(if self.config.tui.stream.responsive { Some(160) } else { None });
+            let threshold =
+                self.config
+                    .tui
+                    .stream
+                    .soft_commit_chars
+                    .or(if self.config.tui.stream.responsive {
+                        Some(160)
+                    } else {
+                        None
+                    });
             if let Some(limit) = threshold {
                 let ready = { self.state(kind).tail_chars_since_commit >= limit };
                 if ready {
@@ -335,7 +441,9 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
                     let cfg2 = self.config.clone();
                     let mut newly_completed = {
                         let state = self.state_mut(kind);
-                        state.collector.commit_soft_lines(&cfg2, relax_list, relax_code)
+                        state
+                            .collector
+                            .commit_soft_lines(&cfg2, relax_list, relax_code)
                     };
                     if !newly_completed.is_empty() {
                         // Apply stream-specific color
@@ -343,9 +451,13 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
                             StreamKind::Reasoning => Some(crate::colors::text_dim()),
                             StreamKind::Answer => Some(crate::colors::text_bright()),
                         };
-                        let mut styled: Vec<Line<'static>> = Vec::with_capacity(newly_completed.len());
+                        let mut styled: Vec<Line<'static>> =
+                            Vec::with_capacity(newly_completed.len());
                         for mut line in newly_completed.drain(..) {
-                            if let Some(c) = color { line.style = line.style.patch(ratatui::style::Style::default().fg(c)); }
+                            if let Some(c) = color {
+                                line.style =
+                                    line.style.patch(ratatui::style::Style::default().fg(c));
+                            }
                             styled.push(line);
                         }
                         {
@@ -378,11 +490,10 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
                     let mut saw_heading = false;
                     for l in preview.iter().skip(committed) {
                         if !l.spans.is_empty()
-                            && l
-                                .spans
-                                .iter()
-                                .all(|s| s.style.add_modifier.contains(Modifier::BOLD)
-                                    || s.content.trim().is_empty())
+                            && l.spans.iter().all(|s| {
+                                s.style.add_modifier.contains(Modifier::BOLD)
+                                    || s.content.trim().is_empty()
+                            })
                         {
                             saw_heading = true;
                             break;
@@ -405,10 +516,12 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
                     };
                     if !newly_completed.is_empty() {
                         let color = Some(crate::colors::text_dim());
-                        let mut styled: Vec<Line<'static>> = Vec::with_capacity(newly_completed.len());
+                        let mut styled: Vec<Line<'static>> =
+                            Vec::with_capacity(newly_completed.len());
                         for mut line in newly_completed.drain(..) {
                             if let Some(c) = color {
-                                line.style = line.style.patch(ratatui::style::Style::default().fg(c));
+                                line.style =
+                                    line.style.patch(ratatui::style::Style::default().fg(c));
                             }
                             styled.push(line);
                         }
@@ -440,10 +553,10 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
         // Scope the mutable borrow of state to collector ops only
         let mut newly_completed = {
             let state = self.state_mut(StreamKind::Reasoning);
-        // Insert an explicit section break so upcoming section titles are
-        // rendered on a fresh line. Without this, bold titles that arrive
-        // mid-line can be glued to the previous sentence and fail to be
-        // recognized as titles in collapsed view.
+            // Insert an explicit section break so upcoming section titles are
+            // rendered on a fresh line. Without this, bold titles that arrive
+            // mid-line can be glued to the previous sentence and fail to be
+            // recognized as titles in collapsed view.
             state.collector.insert_section_break();
             state.collector.commit_complete_lines(&cfg)
         };
@@ -451,7 +564,8 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
         if !newly_completed.is_empty() {
             let mut skip_count = 0;
             while skip_count < newly_completed.len()
-                && crate::render::line_utils::is_blank_line_trim(&newly_completed[skip_count]) {
+                && crate::render::line_utils::is_blank_line_trim(&newly_completed[skip_count])
+            {
                 skip_count += 1;
             }
             if skip_count > 1 {
@@ -521,7 +635,8 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
             // Reduce leading blanks to at most one
             let mut skip_count = 0;
             while skip_count < out_lines.len()
-                && crate::render::line_utils::is_blank_line_trim(&out_lines[skip_count]) {
+                && crate::render::line_utils::is_blank_line_trim(&out_lines[skip_count])
+            {
                 skip_count += 1;
             }
             if skip_count > 1 {
@@ -537,7 +652,9 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
             let mut out_lines: Vec<Line<'static>> = out_lines
                 .into_iter()
                 .map(|mut line| {
-                    if let Some(c) = color { line.style = line.style.patch(ratatui::style::Style::default().fg(c)); }
+                    if let Some(c) = color {
+                        line.style = line.style.patch(ratatui::style::Style::default().fg(c));
+                    }
                     line
                 })
                 .collect();
@@ -551,10 +668,15 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
                 };
                 if enabled {
                     if let Some(id) = self.current_stream_id() {
-                        if let Some(sidx) = id.split('#').last().and_then(|frag| frag.strip_prefix('s')) {
+                        if let Some(sidx) =
+                            id.split('#').last().and_then(|frag| frag.strip_prefix('s'))
+                        {
                             let marker = format!("[s{} final]", sidx);
                             let dim = crate::colors::text_dim();
-                            out_lines.push(Line::from(ratatui::text::Span::styled(marker, ratatui::style::Style::default().fg(dim))));
+                            out_lines.push(Line::from(ratatui::text::Span::styled(
+                                marker,
+                                ratatui::style::Style::default().fg(dim),
+                            )));
                         }
                     }
                 }
@@ -571,7 +693,11 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
                     lines_with_header.len(),
                     full_source_before_drain.len()
                 );
-                sink.insert_final_answer(self.current_stream_id.clone(), lines_with_header, full_source_before_drain);
+                sink.insert_final_answer(
+                    self.current_stream_id.clone(),
+                    lines_with_header,
+                    full_source_before_drain,
+                );
             } else if !lines_with_header.is_empty() {
                 tracing::debug!(
                     "stream.finalize REASONING id={:?} header={} out_lines={}",
@@ -579,7 +705,11 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
                     emitted_header,
                     lines_with_header.len()
                 );
-                sink.insert_history_with_kind(self.current_stream_id.clone(), kind, lines_with_header);
+                sink.insert_history_with_kind(
+                    self.current_stream_id.clone(),
+                    kind,
+                    lines_with_header,
+                );
             }
 
             // Cleanup
@@ -613,8 +743,13 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
             return false;
         };
         // Timeout-based soft commit: if no newline arrived and nothing is queued, force a soft commit.
-        let timeout_ms = self.config.tui.stream.soft_commit_timeout_ms
-            .or(if self.config.tui.stream.responsive { Some(400) } else { None });
+        let timeout_ms = self.config.tui.stream.soft_commit_timeout_ms.or(
+            if self.config.tui.stream.responsive {
+                Some(400)
+            } else {
+                None
+            },
+        );
         if let Some(ms) = timeout_ms {
             let queue_empty = self.state(kind).is_idle();
             let overdue = self
@@ -628,7 +763,9 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
                 let cfg2 = self.config.clone();
                 let mut newly_completed = {
                     let state = self.state_mut(kind);
-                    state.collector.commit_soft_lines(&cfg2, relax_list, relax_code)
+                    state
+                        .collector
+                        .commit_soft_lines(&cfg2, relax_list, relax_code)
                 };
                 if !newly_completed.is_empty() {
                     let color = match kind {
@@ -637,7 +774,9 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
                     };
                     let mut styled: Vec<Line<'static>> = Vec::with_capacity(newly_completed.len());
                     for mut line in newly_completed.drain(..) {
-                        if let Some(c) = color { line.style = line.style.patch(ratatui::style::Style::default().fg(c)); }
+                        if let Some(c) = color {
+                            line.style = line.style.patch(ratatui::style::Style::default().fg(c));
+                        }
                         styled.push(line);
                     }
                     {
@@ -664,7 +803,8 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
             if !history.is_empty() {
                 let mut skip_count = 0;
                 while skip_count < history.len()
-                    && crate::render::line_utils::is_blank_line_trim(&history[skip_count]) {
+                    && crate::render::line_utils::is_blank_line_trim(&history[skip_count])
+                {
                     skip_count += 1;
                 }
                 if skip_count > 1 {
@@ -681,7 +821,9 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
             let mut history: Vec<Line<'static>> = history
                 .into_iter()
                 .map(|mut line| {
-                    if let Some(c) = color { line.style = line.style.patch(ratatui::style::Style::default().fg(c)); }
+                    if let Some(c) = color {
+                        line.style = line.style.patch(ratatui::style::Style::default().fg(c));
+                    }
                     line
                 })
                 .collect();
@@ -713,12 +855,18 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
     /// Apply a full final answer: replace queued content with only the remaining tail,
     /// then finalize immediately and notify completion.
     pub(crate) fn apply_final_answer(&mut self, message: &str, sink: &impl HistorySink) -> bool {
-        tracing::debug!("apply_final_answer called with: {:?}...", message.chars().take(100).collect::<String>());
+        tracing::debug!(
+            "apply_final_answer called with: {:?}...",
+            message.chars().take(100).collect::<String>()
+        );
         self.apply_full_final(StreamKind::Answer, message, true, sink)
     }
 
     pub(crate) fn apply_final_reasoning(&mut self, message: &str, sink: &impl HistorySink) -> bool {
-        tracing::debug!("apply_final_reasoning called with: {:?}...", message.chars().take(100).collect::<String>());
+        tracing::debug!(
+            "apply_final_reasoning called with: {:?}...",
+            message.chars().take(100).collect::<String>()
+        );
         self.apply_full_final(StreamKind::Reasoning, message, false, sink)
     }
 
@@ -729,9 +877,14 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
         immediate: bool,
         sink: &impl HistorySink,
     ) -> bool {
-        tracing::debug!("apply_full_final for {:?}, immediate={}, message_len={}, current_stream={:?}", 
-            kind, immediate, message.len(), self.current_stream);
-        
+        tracing::debug!(
+            "apply_full_final for {:?}, immediate={}, message_len={}, current_stream={:?}",
+            kind,
+            immediate,
+            message.len(),
+            self.current_stream
+        );
+
         // Check if we're already processing this stream
         if self.current_stream == Some(kind) {
             let state = self.state(kind);
@@ -760,29 +913,38 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
             } else if self.finishing_after_drain {
                 // We're already in the process of finishing this stream (animation phase)
                 // This is likely a duplicate event - ignore it
-                tracing::debug!("Already finishing {:?} stream, ignoring duplicate final event", kind);
+                tracing::debug!(
+                    "Already finishing {:?} stream, ignoring duplicate final event",
+                    kind
+                );
                 return false;
             }
             // else: We have a stream open but no deltas yet - could be a header-only stream
             // Fall through to inject the message
         }
-        
+
         // Strict ordering policy: We must already have begun this stream with an id.
         // Do NOT auto-begin without an id; the caller (ChatWidget) is responsible for
         // seeding the stream with `begin_with_id(kind, Some(id), ...)` prior to applying
         // a full final. If this is violated, drop and log.
         if self.current_stream != Some(kind) {
-            tracing::error!("strict ordering: apply_full_final called without active {:?} stream; missing begin_with_id(id)", kind);
+            tracing::error!(
+                "strict ordering: apply_full_final called without active {:?} stream; missing begin_with_id(id)",
+                kind
+            );
             return false;
         }
 
         {
             let state = self.state_mut(kind);
-            tracing::debug!("State for {:?}: has_seen_delta={}, committed_count={}, message_empty={}",
-                kind, state.has_seen_delta, 
+            tracing::debug!(
+                "State for {:?}: has_seen_delta={}, committed_count={}, message_empty={}",
+                kind,
+                state.has_seen_delta,
                 state.collector.committed_count(),
-                message.is_empty());
-            
+                message.is_empty()
+            );
+
             // Inject the full message since we haven't been streaming it
             if !message.is_empty() {
                 tracing::debug!("Injecting full message into {:?} collector", kind);

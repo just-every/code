@@ -2,8 +2,8 @@
 use std::io::Result;
 
 use crate::insert_history;
-use crate::tui;
 use crate::transcript_app::TuiEvent;
+use crate::tui;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
@@ -216,9 +216,7 @@ impl PagerView {
         let pct_text = format!(" {percent}% ");
         let pct_w = pct_text.chars().count() as u16;
         if pct_w < sep_rect.width {
-            let padding = sep_rect
-                .width
-                .saturating_sub(pct_w.saturating_add(1));
+            let padding = sep_rect.width.saturating_sub(pct_w.saturating_add(1));
             let pct_x = sep_rect.x.saturating_add(padding);
             Span::from(pct_text)
                 .dim()
@@ -345,17 +343,22 @@ impl PagerView {
         };
         let mut out: Vec<Line<'static>> = Vec::with_capacity(end - start);
         let mut bold_done = false;
-        for (row, src_line) in wrapped.iter().enumerate().skip(start).take(end.saturating_sub(start)) {
+        for (row, src_line) in wrapped
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(end.saturating_sub(start))
+        {
             let mut line = src_line.clone();
             if let Some(src) = src_idx.get(row).copied() {
                 if src >= hi_start && src < hi_end {
-                for (i, s) in line.spans.iter_mut().enumerate() {
-                    s.style.add_modifier |= Modifier::REVERSED;
-                    if !bold_done && i == 0 {
-                        s.style.add_modifier |= Modifier::BOLD;
-                        bold_done = true;
+                    for (i, s) in line.spans.iter_mut().enumerate() {
+                        s.style.add_modifier |= Modifier::REVERSED;
+                        if !bold_done && i == 0 {
+                            s.style.add_modifier |= Modifier::BOLD;
+                            bold_done = true;
+                        }
                     }
-                }
                 }
             }
             out.push(line);
@@ -399,7 +402,7 @@ impl TranscriptOverlay {
         let mut pairs: Vec<(&str, &str)> = vec![("q", "quit"), ("Esc", "edit prev")];
         if let Some((start, end)) = self.highlight_range {
             if end > start {
-            pairs.push(("⏎", "edit message"));
+                pairs.push(("⏎", "edit message"));
             }
         }
         render_key_hints(line2, buf, &pairs);

@@ -73,8 +73,8 @@
 - ✅ `/speckit.status` - Native TUI dashboard (Tier 0: instant, no agents, <1s, $0)
 
 **Guardrails (Shell wrappers):**
-- ✅ `/spec-ops-{plan,tasks,implement,validate,audit,unlock}` - Validation scripts per stage
-- ✅ `/spec-ops-auto` - Full pipeline wrapper with telemetry
+- ✅ `/guardrail.{plan,tasks,implement,validate,audit,unlock}` - Validation scripts per stage (note: legacy `/spec-ops-*` commands still work)
+- ✅ `/guardrail.auto` - Full pipeline wrapper with telemetry (note: legacy `/spec-ops-auto` still works)
 - ✅ Baseline audits per stage
 - ✅ Policy compliance checks (constitution, model strategy)
 - ✅ HAL validation (mock mode, optional live mode)

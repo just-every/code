@@ -2,8 +2,8 @@
 use std::io::Result;
 
 use crate::insert_history;
-use crate::util::buffer::fill_rect;
 use crate::tui;
+use crate::util::buffer::fill_rect;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
@@ -188,9 +188,7 @@ impl TranscriptApp {
         }
 
         let desired_sep_y = content_area.bottom();
-        let min_sep_y = area
-            .y
-            .max(area_bottom.saturating_sub(RESERVED_BOTTOM_ROWS));
+        let min_sep_y = area.y.max(area_bottom.saturating_sub(RESERVED_BOTTOM_ROWS));
         let max_sep_y = area_bottom.saturating_sub(1);
         if max_sep_y < area.y {
             return;
@@ -225,9 +223,7 @@ impl TranscriptApp {
             let pct_text = format!(" {percent}% ");
             let pct_w = pct_text.chars().count() as u16;
             if pct_w < sep_rect.width {
-                let padding = sep_rect
-                    .width
-                    .saturating_sub(pct_w.saturating_add(1));
+                let padding = sep_rect.width.saturating_sub(pct_w.saturating_add(1));
                 let pct_x = sep_rect.x.saturating_add(padding);
                 Span::from(pct_text)
                     .dim()

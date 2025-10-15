@@ -8,8 +8,8 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 
-use super::bottom_pane_view::BottomPaneView;
 use super::BottomPane;
+use super::bottom_pane_view::BottomPaneView;
 
 /// Interactive UI for GitHub workflow monitoring settings.
 /// Shows token status and allows toggling the watcher on/off.
@@ -24,7 +24,12 @@ pub(crate) struct GithubSettingsView {
 }
 
 impl GithubSettingsView {
-    pub fn new(watcher_enabled: bool, token_status: String, ready: bool, app_event_tx: AppEventSender) -> Self {
+    pub fn new(
+        watcher_enabled: bool,
+        token_status: String,
+        ready: bool,
+        app_event_tx: AppEventSender,
+    ) -> Self {
         Self {
             watcher_enabled,
             token_status,
@@ -45,16 +50,38 @@ impl GithubSettingsView {
 impl<'a> BottomPaneView<'a> for GithubSettingsView {
     fn handle_key_event(&mut self, _pane: &mut BottomPane<'a>, key_event: KeyEvent) {
         match key_event {
-            KeyEvent { code: KeyCode::Up, modifiers: KeyModifiers::NONE, .. } => {
-                if self.selected_row > 0 { self.selected_row -= 1; }
+            KeyEvent {
+                code: KeyCode::Up,
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => {
+                if self.selected_row > 0 {
+                    self.selected_row -= 1;
+                }
             }
-            KeyEvent { code: KeyCode::Down, modifiers: KeyModifiers::NONE, .. } => {
-                if self.selected_row < 1 { self.selected_row += 1; }
+            KeyEvent {
+                code: KeyCode::Down,
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => {
+                if self.selected_row < 1 {
+                    self.selected_row += 1;
+                }
             }
-            KeyEvent { code: KeyCode::Left | KeyCode::Right, modifiers: KeyModifiers::NONE, .. } => {
-                if self.selected_row == 0 { self.toggle(); }
+            KeyEvent {
+                code: KeyCode::Left | KeyCode::Right,
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => {
+                if self.selected_row == 0 {
+                    self.toggle();
+                }
             }
-            KeyEvent { code: KeyCode::Enter, modifiers: KeyModifiers::NONE, .. } => {
+            KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => {
                 if self.selected_row == 0 {
                     // Toggle and stay; Enter behaves like toggle
                     self.toggle();
@@ -63,26 +90,42 @@ impl<'a> BottomPaneView<'a> for GithubSettingsView {
                     self.is_complete = true;
                 }
             }
-            KeyEvent { code: KeyCode::Char(' '), modifiers: KeyModifiers::NONE, .. } => {
-                if self.selected_row == 0 { self.toggle(); }
+            KeyEvent {
+                code: KeyCode::Char(' '),
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => {
+                if self.selected_row == 0 {
+                    self.toggle();
+                }
             }
-            KeyEvent { code: KeyCode::Esc, .. } => {
+            KeyEvent {
+                code: KeyCode::Esc, ..
+            } => {
                 self.is_complete = true;
             }
             _ => {}
         }
     }
 
-    fn is_complete(&self) -> bool { self.is_complete }
+    fn is_complete(&self) -> bool {
+        self.is_complete
+    }
 
-    fn desired_height(&self, _width: u16) -> u16 { 9 }
+    fn desired_height(&self, _width: u16) -> u16 {
+        9
+    }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
         Clear.render(area, buf);
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(crate::colors::border()))
-            .style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()))
+            .style(
+                Style::default()
+                    .bg(crate::colors::background())
+                    .fg(crate::colors::text()),
+            )
             .title(" GitHub Settings ")
             .title_alignment(Alignment::Center);
         let inner = block.inner(area);
@@ -91,14 +134,27 @@ impl<'a> BottomPaneView<'a> for GithubSettingsView {
         let status_line = if self.token_ready {
             Line::from(vec![
                 Span::styled("Status: ", Style::default().fg(crate::colors::text_dim())),
-                Span::styled("Ready", Style::default().fg(crate::colors::success()).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Ready",
+                    Style::default()
+                        .fg(crate::colors::success())
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw("  "),
-                Span::styled(&self.token_status, Style::default().fg(crate::colors::dim())),
+                Span::styled(
+                    &self.token_status,
+                    Style::default().fg(crate::colors::dim()),
+                ),
             ])
         } else {
             Line::from(vec![
                 Span::styled("Status: ", Style::default().fg(crate::colors::text_dim())),
-                Span::styled("No token", Style::default().fg(crate::colors::warning()).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "No token",
+                    Style::default()
+                        .fg(crate::colors::warning())
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw("  "),
                 Span::styled(
                     "Set GH_TOKEN/GITHUB_TOKEN or run: 'gh auth login'",
@@ -107,21 +163,44 @@ impl<'a> BottomPaneView<'a> for GithubSettingsView {
             ])
         };
 
-        let toggle_label = if self.watcher_enabled { "Enabled" } else { "Disabled" };
+        let toggle_label = if self.watcher_enabled {
+            "Enabled"
+        } else {
+            "Disabled"
+        };
         let mut toggle_style = Style::default().fg(crate::colors::text());
-        if self.selected_row == 0 { toggle_style = toggle_style.bg(crate::colors::selection()).add_modifier(Modifier::BOLD); }
+        if self.selected_row == 0 {
+            toggle_style = toggle_style
+                .bg(crate::colors::selection())
+                .add_modifier(Modifier::BOLD);
+        }
 
         let lines = vec![
             status_line,
             Line::from(""),
             Line::from(vec![
-                Span::styled("Workflow Monitoring: ", Style::default().fg(crate::colors::text_dim())),
+                Span::styled(
+                    "Workflow Monitoring: ",
+                    Style::default().fg(crate::colors::text_dim()),
+                ),
                 Span::styled(toggle_label, toggle_style),
             ]),
             Line::from(""),
             Line::from(vec![
-                Span::styled(if self.selected_row == 1 { "› " } else { "  " }, Style::default()),
-                Span::styled("Close", if self.selected_row == 1 { Style::default().bg(crate::colors::selection()).add_modifier(Modifier::BOLD) } else { Style::default() }),
+                Span::styled(
+                    if self.selected_row == 1 { "› " } else { "  " },
+                    Style::default(),
+                ),
+                Span::styled(
+                    "Close",
+                    if self.selected_row == 1 {
+                        Style::default()
+                            .bg(crate::colors::selection())
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    },
+                ),
             ]),
             Line::from(""),
             Line::from(vec![
@@ -136,10 +215,19 @@ impl<'a> BottomPaneView<'a> for GithubSettingsView {
             ]),
         ];
 
-        let paragraph = Paragraph::new(lines)
-            .alignment(Alignment::Left)
-            .style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()));
-        paragraph.render(Rect { x: inner.x.saturating_add(1), y: inner.y, width: inner.width.saturating_sub(2), height: inner.height }, buf);
+        let paragraph = Paragraph::new(lines).alignment(Alignment::Left).style(
+            Style::default()
+                .bg(crate::colors::background())
+                .fg(crate::colors::text()),
+        );
+        paragraph.render(
+            Rect {
+                x: inner.x.saturating_add(1),
+                y: inner.y,
+                width: inner.width.saturating_sub(2),
+                height: inner.height,
+            },
+            buf,
+        );
     }
 }
-

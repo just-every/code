@@ -48,13 +48,13 @@ Always check local-memory before answering, then write back key outcomes (import
 
 ### Guardrail Commands (Shell wrappers)
 
-- `/spec-ops-plan SPEC-ID` – Baseline + policy checks for plan. Must land telemetry under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/<SPEC-ID>/`.
-- `/spec-ops-tasks SPEC-ID` – Validation for tasks stage.
-- `/spec-ops-implement SPEC-ID` – Pre-implementation checks.
-- `/spec-ops-validate SPEC-ID` – Test harness execution.
-- `/spec-ops-audit SPEC-ID` – Compliance scanning.
-- `/spec-ops-unlock SPEC-ID` – Final validation.
-- `/spec-ops-auto SPEC-ID [--from STAGE]` – Full pipeline wrapper. Wraps `scripts/spec_ops_004/spec_auto.sh` (plan→unlock). Enforce clean tree unless `SPEC_OPS_ALLOW_DIRTY=1`.
+- `/guardrail.plan SPEC-ID` – Baseline + policy checks for plan. Must land telemetry under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/<SPEC-ID>/`. (note: legacy `/spec-ops-plan` still works)
+- `/guardrail.tasks SPEC-ID` – Validation for tasks stage. (note: legacy `/spec-ops-tasks` still works)
+- `/guardrail.implement SPEC-ID` – Pre-implementation checks. (note: legacy `/spec-ops-implement` still works)
+- `/guardrail.validate SPEC-ID` – Test harness execution. (note: legacy `/spec-ops-validate` still works)
+- `/guardrail.audit SPEC-ID` – Compliance scanning. (note: legacy `/spec-ops-audit` still works)
+- `/guardrail.unlock SPEC-ID` – Final validation. (note: legacy `/spec-ops-unlock` still works)
+- `/guardrail.auto SPEC-ID [--from STAGE]` – Full pipeline wrapper. Wraps `scripts/spec_ops_004/spec_auto.sh` (plan→unlock). Enforce clean tree unless `SPEC_OPS_ALLOW_DIRTY=1`. (note: legacy `/spec-ops-auto` still works)
 
 ### Utility Commands
 
@@ -107,8 +107,8 @@ Always check local-memory before answering, then write back key outcomes (import
 **Guardrail validation:**
 ```bash
 # Run guardrail checks (separate from multi-agent)
-/spec-ops-plan SPEC-KIT-065
-/spec-ops-auto SPEC-KIT-065 --from plan
+/guardrail.plan SPEC-KIT-065
+/guardrail.auto SPEC-KIT-065 --from plan
 
 # Monitor evidence footprint
 /spec-evidence-stats --spec SPEC-KIT-065
@@ -149,7 +149,7 @@ If any slash command or CLI is unavailable, degrade gracefully and record which 
   - Validate/Audit – `scenarios[{name,status}]` (`passed|failed|skipped`).
   - Unlock – `unlock_status`.
 - Enable `SPEC_OPS_TELEMETRY_HAL=1` during HAL smoke tests to capture `hal.summary.{status,failed_checks,artifacts}`. Collect both healthy and degraded runs.
-- `/spec-auto` halts on schema violations or missing artifacts. Investigate immediately.
+- `/guardrail.auto` (or legacy `/spec-auto`) halts on schema violations or missing artifacts. Investigate immediately.
 - Evidence root: `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/`. Keep it under control with `/spec-evidence-stats`; propose offloading if any single SPEC exceeds 25 MB.
 
 ## 4. Deliverable Formats (No Deviations)
@@ -235,7 +235,7 @@ If any slash command or CLI is unavailable, degrade gracefully and record which 
 
 ## 11. Escalate Early
 - Claude should explicitly state blockers, degraded guardrails, or missing telemetry.
-- When HAL telemetry is missing or malformed, pause and re-run the relevant `/spec-ops-*` stage with `SPEC_OPS_TELEMETRY_HAL=1` after restoring prerequisites.
+- When HAL telemetry is missing or malformed, pause and re-run the relevant guardrail command (e.g., `/guardrail.plan`) with `SPEC_OPS_TELEMETRY_HAL=1` after restoring prerequisites. (note: legacy `/spec-ops-*` commands still work)
 - For consensus drift (agents missing, conflicting verdicts), re-run the stage or run `/spec-consensus <SPEC-ID> <stage>` and include findings in the report.
 
 Stay inside these guardrails and Claude Code will be a courteous teammate instead of an incident report.

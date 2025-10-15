@@ -5,7 +5,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Duration, Local, Utc};
 use serde::Deserialize;
 use walkdir::WalkDir;
@@ -483,10 +483,7 @@ fn render_stage_line(report: &SpecStatusReport, snapshot: &StageSnapshot) -> Str
     }
 
     if snapshot.is_stale {
-        parts.push(format!(
-            "stale>{}h",
-            report.stale_cutoff.num_hours()
-        ));
+        parts.push(format!("stale>{}h", report.stale_cutoff.num_hours()));
     }
 
     if snapshot.consensus.disagreement {
@@ -840,11 +837,7 @@ fn collect_stage_snapshot(
 
         for scenario in &record.scenarios {
             if !scenario.status.eq_ignore_ascii_case("passed") {
-                notes.push(format!(
-                    "scenario {} => {}",
-                    scenario.name,
-                    scenario.status
-                ));
+                notes.push(format!("scenario {} => {}", scenario.name, scenario.status));
             }
         }
     }
@@ -855,10 +848,9 @@ fn collect_stage_snapshot(
 
     for agent in &consensus.agents {
         match agent.status {
-            AgentStatus::Conflicted => notes.push(format!(
-                "agent {} reported conflicts",
-                agent.agent
-            )),
+            AgentStatus::Conflicted => {
+                notes.push(format!("agent {} reported conflicts", agent.agent))
+            }
             AgentStatus::Error => {
                 let detail = if agent.notes.is_empty() {
                     String::from("error")
@@ -1297,7 +1289,6 @@ impl StringOrInt {
             StringOrInt::Int(i) => i.to_string(),
         }
     }
-
 }
 
 impl GuardrailRecord {

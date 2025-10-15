@@ -15003,10 +15003,7 @@ impl ChatWidget<'_> {
 
         if !is_stats {
             match hal_mode {
-                Some(mode) => banner.push_str(&format!(
-                    "  HAL mode: {}\n",
-                    mode.as_env_value()
-                )),
+                Some(mode) => banner.push_str(&format!("  HAL mode: {}\n", mode.as_env_value())),
                 None => banner.push_str("  HAL mode: mock (default)\n"),
             }
         }
@@ -17174,7 +17171,12 @@ struct GuardrailOutcome {
 
 impl SpecAutoState {
     #[allow(dead_code)]
-    fn new(spec_id: String, goal: String, resume_from: SpecStage, hal_mode: Option<HalMode>) -> Self {
+    fn new(
+        spec_id: String,
+        goal: String,
+        resume_from: SpecStage,
+        hal_mode: Option<HalMode>,
+    ) -> Self {
         let stages = vec![
             SpecStage::Plan,
             SpecStage::Tasks,
@@ -17243,12 +17245,7 @@ impl ChatWidget<'_> {
             crate::history_cell::HistoryCellType::Notice,
         ));
 
-        self.spec_auto_state = Some(SpecAutoState::new(
-            spec_id,
-            goal,
-            resume_from,
-            hal_mode,
-        ));
+        self.spec_auto_state = Some(SpecAutoState::new(spec_id, goal, resume_from, hal_mode));
         self.advance_spec_auto();
     }
 

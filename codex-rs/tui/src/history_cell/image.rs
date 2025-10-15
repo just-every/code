@@ -12,7 +12,11 @@ impl ImageCellState {
         let width = image.width();
         let height = image.height();
         let rgba = image.to_rgba8().into_raw();
-        Self { width, height, rgba }
+        Self {
+            width,
+            height,
+            rgba,
+        }
     }
 }
 
@@ -48,9 +52,6 @@ impl HistoryCell for ImageOutputCell {
             self.state.height,
             self.state.rgba.len()
         );
-        vec![
-            Line::from(description),
-            Line::from(""),
-        ]
+        vec![Line::from(description), Line::from("")]
     }
 }

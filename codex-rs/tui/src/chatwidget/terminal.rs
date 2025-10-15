@@ -872,7 +872,7 @@ cliff.toml          flake.lock          NOTICE              \x1b[34mrelease-note
 
     #[test]
     fn sanitize_for_tui_expands_tabs() {
-        use crate::sanitize::{sanitize_for_tui, Mode as SanitizeMode, Options as SanitizeOptions};
+        use crate::sanitize::{Mode as SanitizeMode, Options as SanitizeOptions, sanitize_for_tui};
 
         let filtered = "col1\tcol2\tcol3";
         let sanitized = sanitize_for_tui(

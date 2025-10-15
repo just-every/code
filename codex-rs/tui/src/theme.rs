@@ -8,7 +8,8 @@ use std::sync::RwLock;
 lazy_static! {
     static ref CURRENT_THEME: RwLock<Theme> = RwLock::new(Theme::default());
     static ref CUSTOM_THEME_LABEL: RwLock<Option<String>> = RwLock::new(None);
-    static ref CUSTOM_THEME_COLORS: RwLock<Option<codex_core::config_types::ThemeColors>> = RwLock::new(None);
+    static ref CUSTOM_THEME_COLORS: RwLock<Option<codex_core::config_types::ThemeColors>> =
+        RwLock::new(None);
     static ref CUSTOM_THEME_IS_DARK: RwLock<Option<bool>> = RwLock::new(None);
 }
 
@@ -281,10 +282,16 @@ fn apply_custom_colors(theme: &mut Theme, colors: &ThemeColors) {
 ///   in modern terminals known to support it well.
 fn needs_ansi256_fallback() -> bool {
     // Hard overrides first
-    if std::env::var("CODE_FORCE_TRUECOLOR").map(|v| v == "1").unwrap_or(false) {
+    if std::env::var("CODE_FORCE_TRUECOLOR")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
         return false;
     }
-    if std::env::var("CODE_FORCE_ANSI256").map(|v| v == "1").unwrap_or(false) {
+    if std::env::var("CODE_FORCE_ANSI256")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
         return true;
     }
 
@@ -299,7 +306,9 @@ fn needs_ansi256_fallback() -> bool {
     }
 
     // Environment advertisement
-    let colorterm = std::env::var("COLORTERM").unwrap_or_default().to_lowercase();
+    let colorterm = std::env::var("COLORTERM")
+        .unwrap_or_default()
+        .to_lowercase();
     let has_truecolor_env = colorterm.contains("truecolor") || colorterm.contains("24bit");
 
     // Known good terminals
@@ -329,7 +338,9 @@ fn quantize_theme_to_ansi256(theme: &mut Theme) {
     // ANSI palette's "white" (15) is a light gray. This specifically fixes
     // macOS Terminal.app where bright white can appear gray.
     fn preserve_true_white(c: Color, for_background: bool) -> Option<Color> {
-        if !for_background { return None; }
+        if !for_background {
+            return None;
+        }
         if let Color::Rgb(r, g, b) = c {
             if r >= 245 && g >= 245 && b >= 245 {
                 // On limited-color terminals we want a strong white for light themes.
@@ -344,7 +355,8 @@ fn quantize_theme_to_ansi256(theme: &mut Theme) {
     let q = quantize_color_to_ansi256;
     theme.primary = q(theme.primary);
     theme.secondary = q(theme.secondary);
-    theme.background = preserve_true_white(theme.background, true).unwrap_or_else(|| q(theme.background));
+    theme.background =
+        preserve_true_white(theme.background, true).unwrap_or_else(|| q(theme.background));
     theme.foreground = q(theme.foreground);
     theme.border = q(theme.border);
     theme.border_focused = q(theme.border_focused);
@@ -392,7 +404,10 @@ fn rgb_to_ansi256_index(r: u8, g: u8, b: u8) -> u8 {
         let mut best_d = i32::MAX;
         for (i, s) in STEPS.iter().enumerate() {
             let d = (*s as i32 - v as i32).abs();
-            if d < best_d { best_d = d; best_i = i; }
+            if d < best_d {
+                best_d = d;
+                best_i = i;
+            }
         }
         best_i
     };
@@ -407,7 +422,11 @@ fn rgb_to_ansi256_index(r: u8, g: u8, b: u8) -> u8 {
     // Candidate 2: grayscale (232..255)
     let gray_level = {
         let v = (r as u16 + g as u16 + b as u16) / 3;
-        if v <= 8 { 0 } else { ((v as i32 - 8) / 10).clamp(0, 23) as u8 }
+        if v <= 8 {
+            0
+        } else {
+            ((v as i32 - 8) / 10).clamp(0, 23) as u8
+        }
     };
     let gray_value = 8 + 10 * gray_level;
     let gray_index = 232 + gray_level;
@@ -461,177 +480,177 @@ fn get_predefined_theme(name: ThemeName) -> Theme {
     match name {
         ThemeName::DarkCarbonNight => Theme {
             // Dark default - sleek modern dark theme
-            primary: Color::Rgb(37, 194, 255),        // #25C2FF
-            secondary: Color::Rgb(179, 146, 240),     // #B392F0
-            background: Color::Rgb(11, 13, 16),       // #0B0D10
-            foreground: Color::Rgb(230, 237, 243),    // #E6EDF3
-            border: Color::Rgb(83, 85, 88),           // #535558  (↑ contrast)
+            primary: Color::Rgb(37, 194, 255),         // #25C2FF
+            secondary: Color::Rgb(179, 146, 240),      // #B392F0
+            background: Color::Rgb(11, 13, 16),        // #0B0D10
+            foreground: Color::Rgb(230, 237, 243),     // #E6EDF3
+            border: Color::Rgb(83, 85, 88),            // #535558  (↑ contrast)
             border_focused: Color::Rgb(106, 109, 114), // toned contrast vs border
-            selection: Color::Rgb(23, 32, 42),        // #17202A
-            cursor: Color::Rgb(230, 237, 243),        // #E6EDF3
-            success: Color::Rgb(63, 185, 80),         // #3FB950
-            warning: Color::Rgb(210, 153, 34),        // #D29922
-            error: Color::Rgb(248, 81, 73),           // #F85149
-            info: Color::Rgb(121, 192, 255),          // #79C0FF
-            text: Color::Rgb(230, 237, 243),          // #E6EDF3
-            text_dim: Color::Rgb(139, 148, 158),      // #8B949E
-            text_bright: Color::White,                // #FFFFFF
-            keyword: Color::Rgb(179, 146, 240),       // #B392F0
-            string: Color::Rgb(165, 214, 255),        // #A5D6FF
-            comment: Color::Rgb(110, 118, 129),       // #6E7681
-            function: Color::Rgb(126, 231, 135),      // #7EE787
-            spinner: Color::Rgb(59, 67, 79),          // #3B434F
-            progress: Color::Rgb(37, 194, 255),       // #25C2FF
+            selection: Color::Rgb(23, 32, 42),         // #17202A
+            cursor: Color::Rgb(230, 237, 243),         // #E6EDF3
+            success: Color::Rgb(63, 185, 80),          // #3FB950
+            warning: Color::Rgb(210, 153, 34),         // #D29922
+            error: Color::Rgb(248, 81, 73),            // #F85149
+            info: Color::Rgb(121, 192, 255),           // #79C0FF
+            text: Color::Rgb(230, 237, 243),           // #E6EDF3
+            text_dim: Color::Rgb(139, 148, 158),       // #8B949E
+            text_bright: Color::White,                 // #FFFFFF
+            keyword: Color::Rgb(179, 146, 240),        // #B392F0
+            string: Color::Rgb(165, 214, 255),         // #A5D6FF
+            comment: Color::Rgb(110, 118, 129),        // #6E7681
+            function: Color::Rgb(126, 231, 135),       // #7EE787
+            spinner: Color::Rgb(59, 67, 79),           // #3B434F
+            progress: Color::Rgb(37, 194, 255),        // #25C2FF
         },
 
         ThemeName::LightPhoton => Theme {
             // Light default - clean professional light theme
-            primary: Color::Rgb(0, 162, 255),       // #00A2FF
-            secondary: Color::Rgb(110, 89, 203),    // #6E59CB
-            background: Color::Rgb(250, 250, 250),  // #FAFAFA
-            foreground: Color::Rgb(31, 35, 40),     // #1F2328
-            border: Color::Rgb(206, 206, 206),      // #CECECE  (↑ contrast)
+            primary: Color::Rgb(0, 162, 255),          // #00A2FF
+            secondary: Color::Rgb(110, 89, 203),       // #6E59CB
+            background: Color::Rgb(250, 250, 250),     // #FAFAFA
+            foreground: Color::Rgb(31, 35, 40),        // #1F2328
+            border: Color::Rgb(206, 206, 206),         // #CECECE  (↑ contrast)
             border_focused: Color::Rgb(160, 160, 160), // toned contrast vs border
-            selection: Color::Rgb(234, 242, 255),   // #EAF2FF
-            cursor: Color::Rgb(31, 35, 40),         // #1F2328
-            success: Color::Rgb(26, 127, 55),       // #1A7F37
-            warning: Color::Rgb(154, 103, 0),       // #9A6700
-            error: Color::Rgb(207, 34, 46),         // #CF222E
-            info: Color::Rgb(9, 105, 218),          // #0969DA
-            text: Color::Rgb(79, 91, 106),          // #4f5b6a
-            text_dim: Color::Rgb(171, 180, 199),    // #abb4c7
-            text_bright: Color::Rgb(0, 0, 20),      // #000014
-            keyword: Color::Rgb(110, 89, 203),      // #6E59CB
-            string: Color::Rgb(11, 125, 105),       // #0B7D69
-            comment: Color::Rgb(100, 115, 132),     // #647384
-            function: Color::Rgb(0, 95, 204),       // #005FCC
-            spinner: Color::Rgb(156, 163, 175),     // #9CA3AF
-            progress: Color::Rgb(0, 95, 204),       // #005FCC
+            selection: Color::Rgb(234, 242, 255),      // #EAF2FF
+            cursor: Color::Rgb(31, 35, 40),            // #1F2328
+            success: Color::Rgb(26, 127, 55),          // #1A7F37
+            warning: Color::Rgb(154, 103, 0),          // #9A6700
+            error: Color::Rgb(207, 34, 46),            // #CF222E
+            info: Color::Rgb(9, 105, 218),             // #0969DA
+            text: Color::Rgb(79, 91, 106),             // #4f5b6a
+            text_dim: Color::Rgb(171, 180, 199),       // #abb4c7
+            text_bright: Color::Rgb(0, 0, 20),         // #000014
+            keyword: Color::Rgb(110, 89, 203),         // #6E59CB
+            string: Color::Rgb(11, 125, 105),          // #0B7D69
+            comment: Color::Rgb(100, 115, 132),        // #647384
+            function: Color::Rgb(0, 95, 204),          // #005FCC
+            spinner: Color::Rgb(156, 163, 175),        // #9CA3AF
+            progress: Color::Rgb(0, 95, 204),          // #005FCC
         },
 
         ThemeName::LightPrismRainbow => Theme {
             // Light - Prism Rainbow
-            primary: Color::Rgb(58, 134, 255),        // #3A86FF
-            secondary: Color::Rgb(131, 56, 236),      // #8338EC
-            background: Color::Rgb(251, 251, 253),    // #FBFBFD
-            foreground: Color::Rgb(31, 35, 48),       // #1F2330
-            border: Color::Rgb(157, 157, 159),        // #9D9D9F  (↑ contrast)
+            primary: Color::Rgb(58, 134, 255),         // #3A86FF
+            secondary: Color::Rgb(131, 56, 236),       // #8338EC
+            background: Color::Rgb(251, 251, 253),     // #FBFBFD
+            foreground: Color::Rgb(31, 35, 48),        // #1F2330
+            border: Color::Rgb(157, 157, 159),         // #9D9D9F  (↑ contrast)
             border_focused: Color::Rgb(122, 122, 125), // toned contrast vs border
-            selection: Color::Rgb(238, 243, 255),     // #EEF3FF
-            cursor: Color::Rgb(31, 35, 48),           // #1F2330
-            success: Color::Rgb(46, 196, 182),        // #2EC4B6
-            warning: Color::Rgb(255, 190, 11),        // #FFBE0B
-            error: Color::Rgb(255, 0, 110),           // #FF006E
-            info: Color::Rgb(0, 187, 249),            // #00BBF9
-            text: Color::Rgb(31, 35, 48),             // #1F2330
-            text_dim: Color::Rgb(107, 114, 128),      // #6B7280
-            text_bright: Color::Black,                // #000000
-            keyword: Color::Rgb(131, 56, 236),        // #8338EC
-            string: Color::Rgb(46, 196, 182),         // #2EC4B6
-            comment: Color::Rgb(138, 143, 162),       // #8A8FA2
-            function: Color::Rgb(58, 134, 255),       // #3A86FF
-            spinner: Color::Rgb(165, 174, 192),       // #A5AEC0
-            progress: Color::Rgb(58, 134, 255),       // #3A86FF
+            selection: Color::Rgb(238, 243, 255),      // #EEF3FF
+            cursor: Color::Rgb(31, 35, 48),            // #1F2330
+            success: Color::Rgb(46, 196, 182),         // #2EC4B6
+            warning: Color::Rgb(255, 190, 11),         // #FFBE0B
+            error: Color::Rgb(255, 0, 110),            // #FF006E
+            info: Color::Rgb(0, 187, 249),             // #00BBF9
+            text: Color::Rgb(31, 35, 48),              // #1F2330
+            text_dim: Color::Rgb(107, 114, 128),       // #6B7280
+            text_bright: Color::Black,                 // #000000
+            keyword: Color::Rgb(131, 56, 236),         // #8338EC
+            string: Color::Rgb(46, 196, 182),          // #2EC4B6
+            comment: Color::Rgb(138, 143, 162),        // #8A8FA2
+            function: Color::Rgb(58, 134, 255),        // #3A86FF
+            spinner: Color::Rgb(165, 174, 192),        // #A5AEC0
+            progress: Color::Rgb(58, 134, 255),        // #3A86FF
         },
 
         ThemeName::LightVividTriad => Theme {
             // Light - Vivid Triad
-            primary: Color::Rgb(0, 224, 255),        // #00E0FF
-            secondary: Color::Rgb(255, 166, 230),    // #FFA6E6
-            background: Color::Rgb(250, 250, 250),   // #FAFAFA
-            foreground: Color::Rgb(30, 34, 39),      // #1E2227
-            border: Color::Rgb(156, 156, 156),       // #9C9C9C  (↑ contrast)
+            primary: Color::Rgb(0, 224, 255),          // #00E0FF
+            secondary: Color::Rgb(255, 166, 230),      // #FFA6E6
+            background: Color::Rgb(250, 250, 250),     // #FAFAFA
+            foreground: Color::Rgb(30, 34, 39),        // #1E2227
+            border: Color::Rgb(156, 156, 156),         // #9C9C9C  (↑ contrast)
             border_focused: Color::Rgb(127, 127, 127), // toned contrast vs border
-            selection: Color::Rgb(230, 251, 255),    // #E6FBFF
-            cursor: Color::Rgb(30, 34, 39),          // #1E2227
-            success: Color::Rgb(0, 179, 107),        // #00B36B
-            warning: Color::Rgb(255, 181, 0),        // #FFB500
-            error: Color::Rgb(233, 53, 97),          // #E93561
-            info: Color::Rgb(0, 224, 255),           // #00E0FF
-            text: Color::Rgb(30, 34, 39),            // #1E2227
-            text_dim: Color::Rgb(106, 115, 128),     // #6A7380
-            text_bright: Color::Black,               // #000000
-            keyword: Color::Rgb(255, 78, 205),       // #FF4ECD
-            string: Color::Rgb(14, 159, 110),        // #0E9F6E
-            comment: Color::Rgb(139, 149, 163),      // #8B95A3
-            function: Color::Rgb(0, 224, 255),       // #00E0FF
-            spinner: Color::Rgb(154, 163, 175),      // #9AA3AF
-            progress: Color::Rgb(0, 224, 255),       // #00E0FF
+            selection: Color::Rgb(230, 251, 255),      // #E6FBFF
+            cursor: Color::Rgb(30, 34, 39),            // #1E2227
+            success: Color::Rgb(0, 179, 107),          // #00B36B
+            warning: Color::Rgb(255, 181, 0),          // #FFB500
+            error: Color::Rgb(233, 53, 97),            // #E93561
+            info: Color::Rgb(0, 224, 255),             // #00E0FF
+            text: Color::Rgb(30, 34, 39),              // #1E2227
+            text_dim: Color::Rgb(106, 115, 128),       // #6A7380
+            text_bright: Color::Black,                 // #000000
+            keyword: Color::Rgb(255, 78, 205),         // #FF4ECD
+            string: Color::Rgb(14, 159, 110),          // #0E9F6E
+            comment: Color::Rgb(139, 149, 163),        // #8B95A3
+            function: Color::Rgb(0, 224, 255),         // #00E0FF
+            spinner: Color::Rgb(154, 163, 175),        // #9AA3AF
+            progress: Color::Rgb(0, 224, 255),         // #00E0FF
         },
 
         ThemeName::LightPorcelain => Theme {
             // Light - Porcelain
-            primary: Color::Rgb(39, 110, 241),        // #276EF1
-            secondary: Color::Rgb(123, 97, 255),      // #7B61FF
-            background: Color::Rgb(245, 247, 250),    // #F5F7FA
-            foreground: Color::Rgb(27, 31, 35),       // #1B1F23
-            border: Color::Rgb(152, 154, 157),        // #989A9D  (↑ contrast)
+            primary: Color::Rgb(39, 110, 241),         // #276EF1
+            secondary: Color::Rgb(123, 97, 255),       // #7B61FF
+            background: Color::Rgb(245, 247, 250),     // #F5F7FA
+            foreground: Color::Rgb(27, 31, 35),        // #1B1F23
+            border: Color::Rgb(152, 154, 157),         // #989A9D  (↑ contrast)
             border_focused: Color::Rgb(122, 124, 127), // toned contrast vs border
-            selection: Color::Rgb(231, 240, 255),     // #E7F0FF
-            cursor: Color::Rgb(27, 31, 35),           // #1B1F23
-            success: Color::Rgb(43, 168, 74),         // #2BA84A
-            warning: Color::Rgb(184, 110, 0),         // #B86E00
-            error: Color::Rgb(217, 45, 32),           // #D92D20
-            info: Color::Rgb(20, 115, 230),           // #1473E6
-            text: Color::Rgb(27, 31, 35),             // #1B1F23
-            text_dim: Color::Rgb(91, 102, 115),       // #5B6673
-            text_bright: Color::Black,                // #000000
-            keyword: Color::Rgb(123, 97, 255),        // #7B61FF
-            string: Color::Rgb(15, 123, 108),         // #0F7B6C
-            comment: Color::Rgb(140, 153, 166),       // #8C99A6
-            function: Color::Rgb(39, 110, 241),       // #276EF1
-            spinner: Color::Rgb(154, 168, 181),       // #9AA8B5
-            progress: Color::Rgb(39, 110, 241),       // #276EF1
+            selection: Color::Rgb(231, 240, 255),      // #E7F0FF
+            cursor: Color::Rgb(27, 31, 35),            // #1B1F23
+            success: Color::Rgb(43, 168, 74),          // #2BA84A
+            warning: Color::Rgb(184, 110, 0),          // #B86E00
+            error: Color::Rgb(217, 45, 32),            // #D92D20
+            info: Color::Rgb(20, 115, 230),            // #1473E6
+            text: Color::Rgb(27, 31, 35),              // #1B1F23
+            text_dim: Color::Rgb(91, 102, 115),        // #5B6673
+            text_bright: Color::Black,                 // #000000
+            keyword: Color::Rgb(123, 97, 255),         // #7B61FF
+            string: Color::Rgb(15, 123, 108),          // #0F7B6C
+            comment: Color::Rgb(140, 153, 166),        // #8C99A6
+            function: Color::Rgb(39, 110, 241),        // #276EF1
+            spinner: Color::Rgb(154, 168, 181),        // #9AA8B5
+            progress: Color::Rgb(39, 110, 241),        // #276EF1
         },
 
         ThemeName::LightSandbar => Theme {
             // Light - Sandbar
-            primary: Color::Rgb(201, 122, 0),        // #C97A00
-            secondary: Color::Rgb(91, 138, 114),     // #5B8A72
-            background: Color::Rgb(251, 248, 243),   // #FBF8F3
-            foreground: Color::Rgb(45, 42, 36),      // #2D2A24
-            border: Color::Rgb(158, 155, 150),       // #9E9B96  (↑ contrast)
+            primary: Color::Rgb(201, 122, 0),          // #C97A00
+            secondary: Color::Rgb(91, 138, 114),       // #5B8A72
+            background: Color::Rgb(251, 248, 243),     // #FBF8F3
+            foreground: Color::Rgb(45, 42, 36),        // #2D2A24
+            border: Color::Rgb(158, 155, 150),         // #9E9B96  (↑ contrast)
             border_focused: Color::Rgb(127, 123, 117), // toned contrast vs border
-            selection: Color::Rgb(243, 232, 209),    // #F3E8D1
-            cursor: Color::Rgb(45, 42, 36),          // #2D2A24
-            success: Color::Rgb(46, 125, 50),        // #2E7D32
-            warning: Color::Rgb(183, 110, 0),        // #B76E00
-            error: Color::Rgb(198, 40, 40),          // #C62828
-            info: Color::Rgb(14, 116, 144),          // #0E7490
-            text: Color::Rgb(45, 42, 36),            // #2D2A24
-            text_dim: Color::Rgb(124, 114, 101),     // #7C7265
-            text_bright: Color::Black,               // #000000
-            keyword: Color::Rgb(142, 68, 173),       // #8E44AD
-            string: Color::Rgb(46, 125, 50),         // #2E7D32
-            comment: Color::Rgb(138, 129, 119),      // #8A8177
-            function: Color::Rgb(201, 122, 0),       // #C97A00
-            spinner: Color::Rgb(183, 172, 158),      // #B7AC9E
-            progress: Color::Rgb(201, 122, 0),       // #C97A00
+            selection: Color::Rgb(243, 232, 209),      // #F3E8D1
+            cursor: Color::Rgb(45, 42, 36),            // #2D2A24
+            success: Color::Rgb(46, 125, 50),          // #2E7D32
+            warning: Color::Rgb(183, 110, 0),          // #B76E00
+            error: Color::Rgb(198, 40, 40),            // #C62828
+            info: Color::Rgb(14, 116, 144),            // #0E7490
+            text: Color::Rgb(45, 42, 36),              // #2D2A24
+            text_dim: Color::Rgb(124, 114, 101),       // #7C7265
+            text_bright: Color::Black,                 // #000000
+            keyword: Color::Rgb(142, 68, 173),         // #8E44AD
+            string: Color::Rgb(46, 125, 50),           // #2E7D32
+            comment: Color::Rgb(138, 129, 119),        // #8A8177
+            function: Color::Rgb(201, 122, 0),         // #C97A00
+            spinner: Color::Rgb(183, 172, 158),        // #B7AC9E
+            progress: Color::Rgb(201, 122, 0),         // #C97A00
         },
 
         ThemeName::LightGlacier => Theme {
             // Light - Glacier
-            primary: Color::Rgb(14, 165, 233),        // #0EA5E9
-            secondary: Color::Rgb(109, 40, 217),      // #6D28D9
-            background: Color::Rgb(244, 248, 251),    // #F4F8FB
-            foreground: Color::Rgb(24, 34, 48),       // #182230
-            border: Color::Rgb(151, 155, 158),        // #979B9E  (↑ contrast)
+            primary: Color::Rgb(14, 165, 233),         // #0EA5E9
+            secondary: Color::Rgb(109, 40, 217),       // #6D28D9
+            background: Color::Rgb(244, 248, 251),     // #F4F8FB
+            foreground: Color::Rgb(24, 34, 48),        // #182230
+            border: Color::Rgb(151, 155, 158),         // #979B9E  (↑ contrast)
             border_focused: Color::Rgb(118, 122, 125), // toned contrast vs border
-            selection: Color::Rgb(230, 243, 255),     // #E6F3FF
-            cursor: Color::Rgb(24, 34, 48),           // #182230
-            success: Color::Rgb(22, 163, 74),         // #16A34A
-            warning: Color::Rgb(202, 138, 4),         // #CA8A04
-            error: Color::Rgb(220, 38, 38),           // #DC2626
-            info: Color::Rgb(2, 132, 199),            // #0284C7
-            text: Color::Rgb(24, 34, 48),             // #182230
-            text_dim: Color::Rgb(108, 127, 147),      // #6C7F93
-            text_bright: Color::Black,                // #000000
-            keyword: Color::Rgb(109, 40, 217),        // #6D28D9
-            string: Color::Rgb(15, 118, 110),         // #0F766E
-            comment: Color::Rgb(112, 136, 161),       // #7088A1
-            function: Color::Rgb(14, 165, 233),       // #0EA5E9
-            spinner: Color::Rgb(156, 178, 199),       // #9CB2C7
-            progress: Color::Rgb(14, 165, 233),       // #0EA5E9
+            selection: Color::Rgb(230, 243, 255),      // #E6F3FF
+            cursor: Color::Rgb(24, 34, 48),            // #182230
+            success: Color::Rgb(22, 163, 74),          // #16A34A
+            warning: Color::Rgb(202, 138, 4),          // #CA8A04
+            error: Color::Rgb(220, 38, 38),            // #DC2626
+            info: Color::Rgb(2, 132, 199),             // #0284C7
+            text: Color::Rgb(24, 34, 48),              // #182230
+            text_dim: Color::Rgb(108, 127, 147),       // #6C7F93
+            text_bright: Color::Black,                 // #000000
+            keyword: Color::Rgb(109, 40, 217),         // #6D28D9
+            string: Color::Rgb(15, 118, 110),          // #0F766E
+            comment: Color::Rgb(112, 136, 161),        // #7088A1
+            function: Color::Rgb(14, 165, 233),        // #0EA5E9
+            spinner: Color::Rgb(156, 178, 199),        // #9CB2C7
+            progress: Color::Rgb(14, 165, 233),        // #0EA5E9
         },
 
         ThemeName::DarkShinobiDusk => Theme {
@@ -661,52 +680,52 @@ fn get_predefined_theme(name: ThemeName) -> Theme {
 
         ThemeName::DarkOledBlackPro => Theme {
             // True black for OLED displays with vibrant accents
-            primary: Color::Rgb(0, 209, 255),        // #00D1FF
-            secondary: Color::Rgb(255, 116, 208),    // #FF74D0
-            background: Color::Black,                // #000000
-            foreground: Color::Rgb(218, 218, 218),   // #DADADA
-            border: Color::Rgb(80, 80, 80),          // #505050  (↑ contrast)
+            primary: Color::Rgb(0, 209, 255),          // #00D1FF
+            secondary: Color::Rgb(255, 116, 208),      // #FF74D0
+            background: Color::Black,                  // #000000
+            foreground: Color::Rgb(218, 218, 218),     // #DADADA
+            border: Color::Rgb(80, 80, 80),            // #505050  (↑ contrast)
             border_focused: Color::Rgb(112, 112, 112), // toned contrast vs border
-            selection: Color::Rgb(13, 13, 13),       // #0D0D0D
-            cursor: Color::Rgb(218, 218, 218),       // #DADADA
-            success: Color::Rgb(33, 243, 114),       // #21F372
-            warning: Color::Rgb(255, 209, 102),      // #FFD166
-            error: Color::Rgb(255, 59, 48),          // #FF3B30
-            info: Color::Rgb(37, 194, 255),          // #25C2FF
-            text: Color::Rgb(208, 208, 208),         // #D0D0D0
-            text_dim: Color::Rgb(128, 128, 128),     // #808080
-            text_bright: Color::White,               // #FFFFFF
-            keyword: Color::Rgb(255, 116, 208),      // #FF74D0
-            string: Color::Rgb(186, 255, 128),       // #BAFF80
-            comment: Color::Rgb(102, 102, 102),      // #666666
-            function: Color::Rgb(37, 194, 255),      // #25C2FF
-            spinner: Color::Rgb(45, 45, 45),         // #2D2D2D
-            progress: Color::Rgb(0, 209, 255),       // #00D1FF
+            selection: Color::Rgb(13, 13, 13),         // #0D0D0D
+            cursor: Color::Rgb(218, 218, 218),         // #DADADA
+            success: Color::Rgb(33, 243, 114),         // #21F372
+            warning: Color::Rgb(255, 209, 102),        // #FFD166
+            error: Color::Rgb(255, 59, 48),            // #FF3B30
+            info: Color::Rgb(37, 194, 255),            // #25C2FF
+            text: Color::Rgb(208, 208, 208),           // #D0D0D0
+            text_dim: Color::Rgb(128, 128, 128),       // #808080
+            text_bright: Color::White,                 // #FFFFFF
+            keyword: Color::Rgb(255, 116, 208),        // #FF74D0
+            string: Color::Rgb(186, 255, 128),         // #BAFF80
+            comment: Color::Rgb(102, 102, 102),        // #666666
+            function: Color::Rgb(37, 194, 255),        // #25C2FF
+            spinner: Color::Rgb(45, 45, 45),           // #2D2D2D
+            progress: Color::Rgb(0, 209, 255),         // #00D1FF
         },
 
         ThemeName::DarkAmberTerminal => Theme {
             // Retro amber CRT monitor aesthetic
-            primary: Color::Rgb(255, 176, 0),        // #FFB000
-            secondary: Color::Rgb(255, 209, 138),    // #FFD18A
-            background: Color::Rgb(12, 12, 8),       // #0C0C08
-            foreground: Color::Rgb(255, 209, 138),   // #FFD18A
-            border: Color::Rgb(85, 85, 81),          // #555551  (↑ contrast)
+            primary: Color::Rgb(255, 176, 0),          // #FFB000
+            secondary: Color::Rgb(255, 209, 138),      // #FFD18A
+            background: Color::Rgb(12, 12, 8),         // #0C0C08
+            foreground: Color::Rgb(255, 209, 138),     // #FFD18A
+            border: Color::Rgb(85, 85, 81),            // #555551  (↑ contrast)
             border_focused: Color::Rgb(116, 116, 110), // toned contrast vs border
-            selection: Color::Rgb(26, 20, 8),        // #1A1408
-            cursor: Color::Rgb(255, 209, 138),       // #FFD18A
-            success: Color::Rgb(255, 207, 51),       // #FFCF33
-            warning: Color::Rgb(255, 158, 0),        // #FF9E00
-            error: Color::Rgb(255, 94, 58),          // #FF5E3A
-            info: Color::Rgb(255, 184, 77),          // #FFB84D
-            text: Color::Rgb(255, 209, 138),         // #FFD18A
-            text_dim: Color::Rgb(163, 131, 77),      // #A3834D
-            text_bright: Color::Rgb(255, 241, 194),  // #FFF1C2
-            keyword: Color::Rgb(255, 193, 77),       // #FFC14D
-            string: Color::Rgb(255, 224, 138),       // #FFE08A
-            comment: Color::Rgb(156, 124, 63),       // #9C7C3F
-            function: Color::Rgb(255, 176, 0),       // #FFB000
-            spinner: Color::Rgb(58, 45, 23),         // #3A2D17
-            progress: Color::Rgb(255, 176, 0),       // #FFB000
+            selection: Color::Rgb(26, 20, 8),          // #1A1408
+            cursor: Color::Rgb(255, 209, 138),         // #FFD18A
+            success: Color::Rgb(255, 207, 51),         // #FFCF33
+            warning: Color::Rgb(255, 158, 0),          // #FF9E00
+            error: Color::Rgb(255, 94, 58),            // #FF5E3A
+            info: Color::Rgb(255, 184, 77),            // #FFB84D
+            text: Color::Rgb(255, 209, 138),           // #FFD18A
+            text_dim: Color::Rgb(163, 131, 77),        // #A3834D
+            text_bright: Color::Rgb(255, 241, 194),    // #FFF1C2
+            keyword: Color::Rgb(255, 193, 77),         // #FFC14D
+            string: Color::Rgb(255, 224, 138),         // #FFE08A
+            comment: Color::Rgb(156, 124, 63),         // #9C7C3F
+            function: Color::Rgb(255, 176, 0),         // #FFB000
+            spinner: Color::Rgb(58, 45, 23),           // #3A2D17
+            progress: Color::Rgb(255, 176, 0),         // #FFB000
         },
 
         ThemeName::DarkAuroraFlux => Theme {
@@ -736,27 +755,27 @@ fn get_predefined_theme(name: ThemeName) -> Theme {
 
         ThemeName::DarkCharcoalRainbow => Theme {
             // Accessible high-contrast with rainbow accents
-            primary: Color::Rgb(26, 209, 255),        // #1AD1FF
-            secondary: Color::Rgb(255, 138, 0),       // #FF8A00
-            background: Color::Rgb(18, 18, 18),       // #121212
-            foreground: Color::Rgb(232, 232, 232),    // #E8E8E8
-            border: Color::Rgb(88, 88, 88),           // #585858  (↑ contrast)
+            primary: Color::Rgb(26, 209, 255),         // #1AD1FF
+            secondary: Color::Rgb(255, 138, 0),        // #FF8A00
+            background: Color::Rgb(18, 18, 18),        // #121212
+            foreground: Color::Rgb(232, 232, 232),     // #E8E8E8
+            border: Color::Rgb(88, 88, 88),            // #585858  (↑ contrast)
             border_focused: Color::Rgb(120, 120, 120), // toned contrast vs border
-            selection: Color::Rgb(26, 26, 26),        // #1A1A1A
-            cursor: Color::Rgb(232, 232, 232),        // #E8E8E8
-            success: Color::Rgb(0, 194, 168),         // #00C2A8
-            warning: Color::Rgb(255, 160, 0),         // #FFA000
-            error: Color::Rgb(255, 77, 109),          // #FF4D6D
-            info: Color::Rgb(26, 209, 255),           // #1AD1FF
-            text: Color::Rgb(232, 232, 232),          // #E8E8E8
-            text_dim: Color::Rgb(154, 154, 154),      // #9A9A9A
-            text_bright: Color::White,                // #FFFFFF
-            keyword: Color::Rgb(255, 138, 0),         // #FF8A00
-            string: Color::Rgb(0, 229, 255),          // #00E5FF
-            comment: Color::Rgb(108, 108, 108),       // #6C6C6C
-            function: Color::Rgb(179, 136, 255),      // #B388FF
-            spinner: Color::Rgb(42, 42, 42),          // #2A2A2A
-            progress: Color::Rgb(26, 209, 255),       // #1AD1FF
+            selection: Color::Rgb(26, 26, 26),         // #1A1A1A
+            cursor: Color::Rgb(232, 232, 232),         // #E8E8E8
+            success: Color::Rgb(0, 194, 168),          // #00C2A8
+            warning: Color::Rgb(255, 160, 0),          // #FFA000
+            error: Color::Rgb(255, 77, 109),           // #FF4D6D
+            info: Color::Rgb(26, 209, 255),            // #1AD1FF
+            text: Color::Rgb(232, 232, 232),           // #E8E8E8
+            text_dim: Color::Rgb(154, 154, 154),       // #9A9A9A
+            text_bright: Color::White,                 // #FFFFFF
+            keyword: Color::Rgb(255, 138, 0),          // #FF8A00
+            string: Color::Rgb(0, 229, 255),           // #00E5FF
+            comment: Color::Rgb(108, 108, 108),        // #6C6C6C
+            function: Color::Rgb(179, 136, 255),       // #B388FF
+            spinner: Color::Rgb(42, 42, 42),           // #2A2A2A
+            progress: Color::Rgb(26, 209, 255),        // #1AD1FF
         },
 
         ThemeName::DarkZenGarden => Theme {
@@ -786,27 +805,27 @@ fn get_predefined_theme(name: ThemeName) -> Theme {
 
         ThemeName::DarkPaperLightPro => Theme {
             // Premium paper-like light theme
-            primary: Color::Rgb(0, 95, 204),        // #005FCC
-            secondary: Color::Rgb(111, 66, 193),    // #6F42C1
-            background: Color::Rgb(247, 247, 245),  // #F7F7F5
-            foreground: Color::Rgb(27, 31, 35),     // #1B1F23
-            border: Color::Rgb(154, 154, 152),      // #9A9A98  (↑ contrast)
+            primary: Color::Rgb(0, 95, 204),           // #005FCC
+            secondary: Color::Rgb(111, 66, 193),       // #6F42C1
+            background: Color::Rgb(247, 247, 245),     // #F7F7F5
+            foreground: Color::Rgb(27, 31, 35),        // #1B1F23
+            border: Color::Rgb(154, 154, 152),         // #9A9A98  (↑ contrast)
             border_focused: Color::Rgb(122, 122, 120), // toned contrast vs border
-            selection: Color::Rgb(231, 237, 243),   // #E7EDF3
-            cursor: Color::Rgb(27, 31, 35),         // #1B1F23
-            success: Color::Rgb(26, 127, 55),       // #1A7F37
-            warning: Color::Rgb(154, 103, 0),       // #9A6700
-            error: Color::Rgb(207, 34, 46),         // #CF222E
-            info: Color::Rgb(9, 105, 218),          // #0969DA
-            text: Color::Rgb(36, 41, 47),           // #24292F
-            text_dim: Color::Rgb(87, 96, 106),      // #57606A
-            text_bright: Color::Black,              // #000000
-            keyword: Color::Rgb(111, 66, 193),      // #6F42C1
-            string: Color::Rgb(11, 125, 105),       // #0B7D69
-            comment: Color::Rgb(140, 149, 159),     // #8C959F
-            function: Color::Rgb(0, 95, 204),       // #005FCC
-            spinner: Color::Rgb(140, 149, 159),     // #8C959F
-            progress: Color::Rgb(0, 95, 204),       // #005FCC
+            selection: Color::Rgb(231, 237, 243),      // #E7EDF3
+            cursor: Color::Rgb(27, 31, 35),            // #1B1F23
+            success: Color::Rgb(26, 127, 55),          // #1A7F37
+            warning: Color::Rgb(154, 103, 0),          // #9A6700
+            error: Color::Rgb(207, 34, 46),            // #CF222E
+            info: Color::Rgb(9, 105, 218),             // #0969DA
+            text: Color::Rgb(36, 41, 47),              // #24292F
+            text_dim: Color::Rgb(87, 96, 106),         // #57606A
+            text_bright: Color::Black,                 // #000000
+            keyword: Color::Rgb(111, 66, 193),         // #6F42C1
+            string: Color::Rgb(11, 125, 105),          // #0B7D69
+            comment: Color::Rgb(140, 149, 159),        // #8C959F
+            function: Color::Rgb(0, 95, 204),          // #005FCC
+            spinner: Color::Rgb(140, 149, 159),        // #8C959F
+            progress: Color::Rgb(0, 95, 204),          // #005FCC
         },
 
         ThemeName::Custom => {
