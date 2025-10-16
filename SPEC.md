@@ -40,7 +40,7 @@
 | 4 | T67 | Port /checklist command | **DONE** | Code |  |  |  | 2025-10-15 |  | PASSED: /speckit.checklist operational. |
 | 5 | T68 | Phase 3 Week 1: /speckit.* namespace | **DONE** | Code |  |  |  | 2025-10-15 | Commits: 0e03195be, babb790a4 | All 13 /speckit.* commands + 7 /guardrail.* commands. Docs updated (11 files). |
 | 6 | T69 | Phase 3 Week 2: /guardrail.* namespace | **DONE** | Code |  |  |  | 2025-10-15 | Commit: babb790a4 | Guardrail namespace complete. 84 files, backward compat maintained. |
-| 2 | T49 | Testing framework | Backlog | Code |  |  |  |  | docs/SPEC-KIT-045-mini/ | Full 6-stage run completed 2025-10-14. All 5 agents validated. Framework operational. Pending: Clean run without policy stubs. |
+| 2 | T49 | Testing framework | **DONE** | Code |  |  |  | 2025-10-16 | docs/SPEC-KIT-045-mini/ | Full 6-stage run completed. All 5 agents validated. Framework operational. Commands updated to /guardrail.* namespace. |
 | 3 | T48 | Config validation utility | Blocked | Code |  |  |  |  | docs/SPEC-KIT-040-add-simple-config-validation-utility/ | Plan/tasks created, no implementation. Low priority - not blocking core work. |
 | 4 | T47 | Spec-status dashboard | Done | Code |  |  |  | 2025-10-08 |  | Native Rust implementation. Completed 2025-10-08. |
 | 5 | T26 | SPEC-KIT-DEMO baseline | Backlog | Code |  |  |  |  | docs/SPEC-KIT-DEMO/ | Needs HAL secrets. Not blocking. |
@@ -182,10 +182,15 @@ docs/SPEC-OPS-004-integrated-coder-hooks/evidence/
 4. If pass: Proceed to /clarify, /analyze, /checklist
 5. If fail: Revert templates, document why
 
-**After T60**:
-- Update product-requirements.md (still outdated)
-- Update PLANNING.md (still outdated)
-- Complete T49 clean run (remove policy stubs)
+**Completed:**
+- ✅ Update product-requirements.md (v1.2, 2025-10-16)
+- ✅ Update PLANNING.md (v1.2, 2025-10-16)
+- ✅ T49 testing framework modernized
+
+**Remaining Backlog:**
+- T48: Config validation utility (blocked, low priority)
+- T26: SPEC-KIT-DEMO baseline (needs HAL secrets, not blocking)
+- T61-64: Feature ideas (webhook, search) - not started
 
 ---
 
