@@ -1055,6 +1055,9 @@ mod tests {
     fn build_display_without_ratio_skips_gauge() {
         let mut s = snapshot();
         s.primary_to_secondary_ratio_percent = f64::NAN;
+        // Also set window minutes to 0 to prevent fallback calculation
+        s.primary_window_minutes = 0;
+        s.secondary_window_minutes = 0;
         let display = build_limits_view(&s, RateLimitResetInfo::default(), DEFAULT_GRID_CONFIG);
         assert!(display.gauge_lines(80).is_empty());
         assert!(display.legend_lines.is_empty());
