@@ -16933,6 +16933,8 @@ mod tests {
                 "gpt_pro" => "high",
                 _ => "auto",
             },
+            "work_breakdown": [ { "step": "Do the thing" } ],
+            "acceptance_mapping": [ { "requirement": "R1", "validation": "V1", "artifact": "A1" } ],
             "final_plan": {
                 "work_breakdown": [ { "step": "Do the thing" } ]
             },
