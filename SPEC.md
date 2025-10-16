@@ -34,7 +34,7 @@
 
 | Order | Task ID | Title | Status | Owners | PRD | Branch | PR | Last Validation | Evidence | Notes |
 |-------|---------|-------|--------|--------|-----|--------|----|-----------------|----------|-------|
-| 1 | T60 | Template validation | **DONE** | Code |  |  |  | 2025-10-15 | docs/SPEC-KIT-060-template-validation-test/ | PASSED: Templates 55% faster. Phase 2 complete. |
+| 1 | T60 | Template validation | **In Progress** | Code |  |  |  |  | docs/SPEC-KIT-060-template-validation-test/ | 3 of 4 tests complete. Need: Run template test D, fill [TBD] metrics, document decision. |
 | 2 | T65 | Port /clarify command | **DONE** | Code |  |  |  | 2025-10-15 |  | PASSED: /speckit.clarify operational. |
 | 3 | T66 | Port /analyze command | **DONE** | Code |  |  |  | 2025-10-15 |  | PASSED: /speckit.analyze operational. |
 | 4 | T67 | Port /checklist command | **DONE** | Code |  |  |  | 2025-10-15 |  | PASSED: /speckit.checklist operational. |
