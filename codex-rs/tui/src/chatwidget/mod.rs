@@ -16827,7 +16827,11 @@ mod tests {
 
     impl LocalMemoryMock {
         fn new(response: serde_json::Value) -> Self {
-            let guard = LM_MOCK_LOCK.lock().unwrap();
+            // Handle poisoned mutex - clear it and continue
+            let guard = LM_MOCK_LOCK.lock().unwrap_or_else(|poisoned| {
+                eprintln!("Mutex was poisoned, clearing and continuing");
+                poisoned.into_inner()
+            });
             let dir = tempdir().expect("mock dir");
             let script_path = dir.path().join("local-memory");
             let mut script = File::create(&script_path).expect("mock script");
