@@ -14695,6 +14695,10 @@ impl ChatWidget<'_> {
 
     // Implementation method (called by spec_kit::handle_spec_consensus)
     fn handle_spec_consensus_impl(&mut self, raw_args: String) {
+        spec_kit::handler::handle_spec_consensus_impl(self, raw_args);
+    }
+
+    fn load_latest_consensus_synthesis(
         &self,
         spec_id: &str,
         stage: SpecStage,
