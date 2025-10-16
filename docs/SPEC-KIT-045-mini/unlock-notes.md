@@ -1,6 +1,6 @@
 # Unlock Notes: SPEC-KIT-045 Mini
 
-Record the unlock/hold rationale after a rehearsal run of `/spec-ops-unlock SPEC-KIT-045-mini`.
+Record the unlock/hold rationale after a rehearsal run of `/guardrail.unlock SPEC-KIT-045-mini`.
 
 Template:
 - Date/Time: <UTC timestamp>

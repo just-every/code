@@ -1,6 +1,6 @@
 # SPEC-KIT-045 Mini Fixture (<=100 KB)
 
-This directory holds the synthetic SPEC bundle used for fast rehearsals while developing the systematic testing framework. The goal is to keep the entire tree under **100 KB** so `/spec-ops-*` stages and `/spec-auto --from <stage>` can be iterated on in minutes instead of hours.
+This directory holds the synthetic SPEC bundle used for fast rehearsals while developing the systematic testing framework. The goal is to keep the entire tree under **100 KB** so `/guardrail.*` stages and `/speckit.auto --from <stage>` can be iterated on in minutes instead of hours.
 
 ## Contents
 - `spec.md` – trimmed requirements covering spawn audit, telemetry checks, and HAL toggle expectations.
