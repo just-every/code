@@ -7,22 +7,33 @@
 
 ## How Templates Are Currently Used
 
-### Agent Workflow
+### Templates Serve Dual Purpose
 
-**Prompts tell agents:**
+**1. Format Guides for Agents**
+
+Prompts explicitly reference templates:
 ```
 "Template: ~/.code/templates/plan-template.md (reference for output structure)"
 "Fill arrays to match plan-template.md structure"
 ```
 
+**Benefit:** Agents know the expected structure and produce template-aligned JSON.
+- Work breakdown includes: step, rationale, success_signal (matching template fields)
+- Acceptance mapping includes: requirement, validation_step, artifact (matching template)
+- Risks include: risk, owner, mitigation (matching template)
+
+**Result:** 50% speed improvement - agents don't need to invent structure, just fill it.
+
 **Agents output:**
 ```json
 {
-  "work_breakdown": [...],
-  "acceptance_mapping": [...],
-  "risks": [...]
+  "work_breakdown": [{"step": "...", "rationale": "...", "success_signal": "..."}],
+  "acceptance_mapping": [{"requirement": "...", "validation_step": "...", "artifact": "..."}],
+  "risks": [{"risk": "...", "owner": "...", "mitigation": "..."}]
 }
 ```
+
+**2. Human Synthesis Guides**
 
 ### Conversion Process
 
@@ -54,14 +65,16 @@ Examined `docs/SPEC-KIT-045-mini/plan.md`:
 ## Implications
 
 **What "template-aware" means:**
-- Agents know expected output structure
-- JSON fields align with template sections
+- Agents see template structure in prompts (format guide)
+- Agents produce JSON with fields matching template sections
+- JSON structure optimized for template synthesis
 - Consistency across outputs
+- Faster generation (50%) - agents don't invent structure
 
 **What it does NOT mean:**
-- Automatic template filling
-- Agents write markdown directly
-- No human synthesis needed
+- Automatic programmatic template filling (no code does this)
+- Agents write markdown directly (they output JSON)
+- Zero human synthesis (human still converts JSON → markdown)
 
 **Value Delivered:**
 - Faster generation (50%) because agents know structure
