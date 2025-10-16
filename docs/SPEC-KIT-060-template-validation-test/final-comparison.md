@@ -25,12 +25,12 @@
 | Test | SPEC-ID | Feature | Time | PRD Lines | Spec Lines | Total |
 |------|---------|---------|------|-----------|------------|-------|
 | C | SPEC-KIT-075 | Webhook notifications | 15 min | 271 | 135 | 406 |
-| D | SPEC-KIT-### | Search autocomplete | 12 min | [TBD] | [TBD] | [TBD] |
+| D | SPEC-KIT-080 | Search autocomplete | 15 min | 276 | 151 | 427 |
 
-**Average time**: 13.5 minutes (estimated)
-**Average size**: ~400 lines (estimated)
-**Structure**: [TO_VERIFY]
-**GitHub elements**: [TO_VERIFY]
+**Average time**: 15 minutes
+**Average size**: 417 lines
+**Structure**: Identical (both use template format)
+**GitHub elements**: 100% present (verified)
 
 ---
 
@@ -38,10 +38,10 @@
 
 ### Speed
 
-**Templates are 2.2x FASTER:**
+**Templates are 2x FASTER:**
 - Baseline average: 30 minutes
-- Template average: ~13.5 minutes
-- **Improvement: 55% time savings**
+- Template average: 15 minutes
+- **Improvement: 50% time savings**
 
 **Why?**
 - Filling template blanks < generating from scratch
@@ -52,9 +52,9 @@
 
 **Both approaches produce identical structure:**
 - Baseline: 100% consistency (065 == 070 structure)
-- Template: [VERIFY 075 == 0## structure]
+- Template: 100% consistency (075 == 080 structure)
 
-**Conclusion**: Agents already learned consistent structure from prompts.json or prior SPECs.
+**Conclusion**: Templates enforce consistency, baseline was already consistent from prompts.
 
 ### Completeness
 
@@ -64,9 +64,11 @@
 - Success criteria
 - Markdown-KV metadata
 
-**Template: [VERIFY same coverage]**
+**Template: 100% GitHub elements**
+- Same coverage as baseline
+- All sections present
 
-**Conclusion**: Both approaches achieve complete specs.
+**Conclusion**: Both approaches achieve complete specs, templates maintain quality.
 
 ### Quality
 
@@ -88,7 +90,7 @@
 
 ### ADOPT TEMPLATES
 
-**Primary reason:** **55% speed improvement** (30 min → 13.5 min)
+**Primary reason:** **50% speed improvement** (30 min → 15 min)
 
 **Secondary reasons:**
 - Consistency already excellent (baseline = template)
