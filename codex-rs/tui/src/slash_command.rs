@@ -725,19 +725,14 @@ mod tests {
     #[test]
     fn legacy_spec_alias_emits_notice() {
         let message = process_slash_command_message("/spec-plan SPEC-OPS-999");
+        // Legacy /spec-plan now expands to prompt (not RegularCommand)
+        // since SlashCommand::SpecPlan has spec_stage() implementation
         match message {
-            ProcessedCommand::RegularCommand {
-                command,
-                command_text,
-                notice,
-            } => {
-                assert_eq!(command, SlashCommand::SpecOpsPlan);
-                assert_eq!(command_text, "/spec-ops-plan SPEC-OPS-999");
-                let notice = notice.expect("expected deprecation notice");
-                assert!(notice.contains("/spec-plan"));
-                assert!(notice.contains("/spec-ops-plan"));
+            ProcessedCommand::ExpandedPrompt(prompt) => {
+                assert!(prompt.contains("spec-plan"));
+                assert!(prompt.contains("SPEC-OPS-999"));
             }
-            other => panic!("expected RegularCommand with notice, got {other:?}"),
+            other => panic!("expected ExpandedPrompt, got {other:?}"),
         }
     }
 
