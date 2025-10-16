@@ -376,16 +376,57 @@ fn fetch_memory_entries(
     stage: SpecStage,
 ) -> Result<(Vec<LocalMemorySearchResult>, Vec<String>), String> {
     let results = local_memory_util::search_by_stage(spec_id, stage.command_name(), 20)?;
-    if results.is_empty() {
-        // TODO: After Oct 2 migration, implement Byterover fallback fetching here and persist results into local-memory.
-        Err(format!(
-            "No local-memory entries found for {} stage '{}'",
-            spec_id,
-            stage.command_name()
-        ))
-    } else {
-        Ok((results, Vec::new()))
+    if !results.is_empty() {
+        return Ok((results, Vec::new()));
     }
+
+    // Fallback: Try Byterover knowledge store
+    let mut warnings = Vec::new();
+
+    match fetch_from_byterover(spec_id, stage) {
+        Ok(byterover_results) if !byterover_results.is_empty() => {
+            warnings.push("Loaded consensus artifacts from Byterover (local-memory was empty)".to_string());
+            Ok((byterover_results, warnings))
+        }
+        Ok(_) => {
+            Err(format!(
+                "No consensus entries found in local-memory or Byterover for {} stage '{}'",
+                spec_id,
+                stage.command_name()
+            ))
+        }
+        Err(err) => {
+            warnings.push(format!("Byterover fallback failed: {}", err));
+            Err(format!(
+                "No local-memory entries found for {} stage '{}' (Byterover unavailable: {})",
+                spec_id,
+                stage.command_name(),
+                err
+            ))
+        }
+    }
+}
+
+/// Fetch consensus artifacts from Byterover and persist to local-memory
+fn fetch_from_byterover(
+    spec_id: &str,
+    stage: SpecStage,
+) -> Result<Vec<LocalMemorySearchResult>, String> {
+    // Query Byterover for consensus artifacts
+    let query = format!("spec:{} stage:{} consensus", spec_id, stage.command_name());
+
+    // Note: This would use mcp__byterover-mcp__byterover-retrieve-knowledge
+    // For now, return empty since MCP calls from Rust require special handling
+    // This is a placeholder for the actual MCP integration
+
+    // TODO: Implement actual Byterover MCP call when MCP client is available in consensus module
+    // The MCP tools are only available at the top level (Claude Code context)
+    // Need to either:
+    //   1. Pass MCP client reference down to consensus module, or
+    //   2. Make this a ChatWidget method that can access MCP tools, or
+    //   3. Use local-memory CLI to query Byterover indirectly
+
+    Err("Byterover MCP integration not yet implemented in consensus module".to_string())
 }
 
 /// Load latest consensus synthesis file for spec/stage
