@@ -665,8 +665,84 @@ pub fn run_spec_consensus(
         present_agents.len()
     )));
 
-    // Persistence logic would go here if telemetry_enabled
-    // (Extracted in later batch)
+    // Persistence: Write verdict, telemetry, and remember in local-memory
+    if telemetry_enabled {
+        let evidence_slug = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+        let verdict_obj = ConsensusVerdict {
+            spec_id: spec_id.to_string(),
+            stage: stage.command_name().to_string(),
+            recorded_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            prompt_version: Some(prompt_version.clone()),
+            consensus_ok,
+            degraded,
+            required_fields_ok,
+            missing_agents: missing_agents.clone(),
+            agreements: agreements.clone(),
+            conflicts: conflicts.clone(),
+            aggregator_agent: aggregator_agent.clone(),
+            aggregator_version: aggregator_version.clone(),
+            aggregator: aggregator_summary.clone(),
+            synthesis_path: synthesis_evidence_path.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            artifacts: artifacts
+                .iter()
+                .map(|artifact| ConsensusArtifactVerdict {
+                    memory_id: artifact.memory_id.clone(),
+                    agent: artifact.agent.clone(),
+                    version: artifact.version.clone(),
+                    content: artifact.content.clone(),
+                })
+                .collect(),
+        };
+
+        match persist_consensus_verdict(cwd, spec_id, stage, &verdict_obj) {
+            Ok(verdict_path) => {
+                lines.push(ratatui::text::Line::from(format!(
+                    "  Evidence: {}",
+                    verdict_path.display()
+                )));
+
+                let verdict_handle = ConsensusEvidenceHandle {
+                    path: verdict_path.clone(),
+                    sha256: String::new(), // Not computing hash for now
+                };
+
+                // Persist telemetry bundle
+                match persist_consensus_telemetry_bundle(
+                    cwd,
+                    spec_id,
+                    stage,
+                    &verdict_obj,
+                    &verdict_handle,
+                    &evidence_slug,
+                    &consensus_status,
+                ) {
+                    Ok(_paths) => {
+                        // Success - telemetry written
+                    }
+                    Err(err) => {
+                        lines.push(ratatui::text::Line::from(format!(
+                            "  Warning: failed to persist telemetry bundle: {}",
+                            err
+                        )));
+                    }
+                }
+
+                // Remember in local-memory
+                if let Err(err) = remember_consensus_verdict(spec_id, stage, &verdict_obj) {
+                    lines.push(ratatui::text::Line::from(format!(
+                        "  Warning: failed to store in local-memory: {}",
+                        err
+                    )));
+                }
+            }
+            Err(err) => {
+                lines.push(ratatui::text::Line::from(format!(
+                    "  Warning: failed to persist consensus evidence: {}",
+                    err
+                )));
+            }
+        }
+    }
 
     Ok((lines, consensus_ok))
 }
@@ -699,4 +775,179 @@ pub fn persist_consensus_verdict(
         .map_err(|e| format!("Failed to write verdict: {e}"))?;
 
     Ok(path)
+}
+
+/// Persist consensus telemetry bundle with artifacts
+pub fn persist_consensus_telemetry_bundle(
+    cwd: &Path,
+    spec_id: &str,
+    stage: SpecStage,
+    verdict: &ConsensusVerdict,
+    verdict_handle: &ConsensusEvidenceHandle,
+    slug: &str,
+    consensus_status: &str,
+) -> Result<ConsensusTelemetryPaths, String> {
+    let base = cwd
+        .join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus")
+        .join(spec_id);
+    fs::create_dir_all(&base).map_err(|e| {
+        format!(
+            "failed to create consensus evidence directory {}: {}",
+            base.display(),
+            e
+        )
+    })?;
+
+    let stage_name = stage.command_name();
+
+    let to_relative = |path: &Path| -> String {
+        path.strip_prefix(cwd)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned()
+    };
+
+    // Write individual agent artifacts
+    let mut agent_paths: Vec<PathBuf> = Vec::new();
+    for artifact in &verdict.artifacts {
+        let agent_slug = telemetry_agent_slug(&artifact.agent);
+        let filename = format!("{}_{agent_slug}_{slug}_artifact.json", stage_name);
+        let agent_path = base.join(&filename);
+
+        let json = serde_json::to_string_pretty(&artifact.content)
+            .map_err(|e| format!("Failed to serialize agent artifact: {e}"))?;
+
+        let mut file = fs::File::create(&agent_path)
+            .map_err(|e| format!("Failed to create agent artifact file: {e}"))?;
+        file.write_all(json.as_bytes())
+            .map_err(|e| format!("Failed to write agent artifact: {e}"))?;
+
+        agent_paths.push(agent_path);
+    }
+
+    // Write consensus telemetry bundle
+    let telemetry_filename = format!("{}_{slug}_telemetry.json", stage_name);
+    let telemetry_path = base.join(&telemetry_filename);
+
+    let telemetry_bundle = serde_json::json!({
+        "spec_id": spec_id,
+        "stage": stage_name,
+        "slug": slug,
+        "consensus_status": consensus_status,
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "verdict": to_relative(&verdict_handle.path),
+        "artifacts": agent_paths.iter().map(|p| to_relative(p)).collect::<Vec<_>>(),
+    });
+
+    let json = serde_json::to_string_pretty(&telemetry_bundle)
+        .map_err(|e| format!("Failed to serialize telemetry bundle: {e}"))?;
+
+    let mut file = fs::File::create(&telemetry_path)
+        .map_err(|e| format!("Failed to create telemetry file: {e}"))?;
+    file.write_all(json.as_bytes())
+        .map_err(|e| format!("Failed to write telemetry: {e}"))?;
+
+    // Write synthesis metadata
+    let synthesis_filename = format!("{}_{slug}_synthesis.json", stage_name);
+    let synthesis_path = base.join(&synthesis_filename);
+
+    let synthesis_data = serde_json::json!({
+        "spec_id": spec_id,
+        "stage": stage_name,
+        "status": consensus_status,
+        "missing_agents": verdict.missing_agents,
+        "consensus": {
+            "agreements": verdict.agreements,
+            "conflicts": verdict.conflicts,
+        },
+        "prompt_version": verdict.prompt_version,
+    });
+
+    let json = serde_json::to_string_pretty(&synthesis_data)
+        .map_err(|e| format!("Failed to serialize synthesis: {e}"))?;
+
+    let mut file = fs::File::create(&synthesis_path)
+        .map_err(|e| format!("Failed to create synthesis file: {e}"))?;
+    file.write_all(json.as_bytes())
+        .map_err(|e| format!("Failed to write synthesis: {e}"))?;
+
+    Ok(ConsensusTelemetryPaths {
+        agent_paths,
+        telemetry_path,
+        synthesis_path,
+    })
+}
+
+/// Remember consensus verdict in local-memory
+pub fn remember_consensus_verdict(
+    spec_id: &str,
+    stage: SpecStage,
+    verdict: &ConsensusVerdict,
+) -> Result<(), String> {
+    use std::process::Command;
+
+    let mut summary_value = serde_json::json!({
+        "spec_id": spec_id,
+        "stage": stage.command_name(),
+        "status": if verdict.consensus_ok {
+            "ok"
+        } else if !verdict.conflicts.is_empty() {
+            "conflict"
+        } else {
+            "degraded"
+        },
+        "missing_agents": verdict.missing_agents,
+        "agreements": verdict.agreements,
+        "conflicts": verdict.conflicts,
+    });
+
+    if let Some(version) = &verdict.prompt_version {
+        if let serde_json::Value::Object(obj) = &mut summary_value {
+            obj.insert(
+                "promptVersion".to_string(),
+                serde_json::Value::String(version.clone()),
+            );
+        }
+    }
+
+    if let Some(path) = &verdict.synthesis_path {
+        if let serde_json::Value::Object(obj) = &mut summary_value {
+            obj.insert(
+                "synthesisPath".to_string(),
+                serde_json::Value::String(path.clone()),
+            );
+        }
+    }
+
+    let summary = serde_json::to_string(&summary_value)
+        .map_err(|e| format!("failed to serialize consensus summary: {e}"))?;
+
+    let mut cmd = Command::new("local-memory");
+    cmd.arg("remember")
+        .arg(summary)
+        .arg("--importance")
+        .arg("8")
+        .arg("--domain")
+        .arg("spec-tracker")
+        .arg("--tags")
+        .arg(format!("spec:{}", spec_id))
+        .arg("--tags")
+        .arg(format!("stage:{}", stage.command_name()))
+        .arg("--tags")
+        .arg("consensus")
+        .arg("--tags")
+        .arg("verdict");
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("failed to run local-memory remember: {e}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "local-memory remember failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    Ok(())
 }
