@@ -45,10 +45,6 @@
 | 4 | T47 | Spec-status dashboard | Done | Code |  |  |  | 2025-10-08 |  | Native Rust implementation. Completed 2025-10-08. |
 | 5 | T26 | SPEC-KIT-DEMO baseline | Backlog | Code |  |  |  |  | docs/SPEC-KIT-DEMO/ | Needs HAL secrets. Not blocking. |
 | 6 | T46 | Fork rebasing docs | Backlog | Code |  |  |  |  |  | Documented in FORK_DEVIATIONS.md, TUI.md. Can formalize if needed. |
-| 7 | T61 | Webhook notification system for task completion | Backlog | Code | docs/SPEC-KIT-065-add-webhook-notification-system-for/PRD.md | feat/spec-auto-telemetry |  |  |  | Created via /new-spec |
-| 8 | T62 | Implement search autocomplete with fuzzy matching | Backlog | Code | docs/SPEC-KIT-070-implement-search-autocomplete-with-fuzzy-matching/PRD.md | feat/spec-auto-telemetry |  |  |  | Created via /new-spec |
-| 9 | T63 | Webhook notifications for task completion events v2 | Backlog | Code | docs/SPEC-KIT-075-add-webhook-notification-system-for/PRD.md | feat/spec-auto-telemetry |  |  |  | Created via /new-spec |
-| 10 | T64 | Implement search autocomplete with fuzzy matching | Backlog | Code | docs/SPEC-KIT-080-implement-search-autocomplete-with-fuzzy-matching/PRD.md | feat/spec-auto-telemetry |  |  |  | Created via /new-spec |
 
 ---
 
@@ -87,6 +83,7 @@
 | T30 | Project Commands migration | **REJECTED** | Can't replace orchestrator delegation. Keep Rust enum. |
 | T37 | Stream guardrail output | **OBSOLETE** | Orchestrator already visible. No TUI streaming needed. |
 | T40-T42 | Progress indicators | **OBSOLETE** | Orchestrator shows progress. |
+| T61-64 | Webhook/search features | **OBSOLETE** | Test artifacts from T60 validation, not real features. |
 
 ---
 
