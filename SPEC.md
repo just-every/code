@@ -43,6 +43,14 @@
 | 2 | T49 | Testing framework | **DONE** | Code |  |  |  | 2025-10-16 | docs/SPEC-KIT-045-mini/ | Full 6-stage run completed. All 5 agents validated. Framework operational. Commands updated to /guardrail.* namespace. |
 | 4 | T47 | Spec-status dashboard | Done | Code |  |  |  | 2025-10-08 |  | Native Rust implementation. Completed 2025-10-08. |
 | 6 | T46 | Fork rebasing docs | **DONE** | Code |  |  |  | 2025-10-16 | FORK_DEVIATIONS.md | Complete with accurate refactoring status (98.8% isolation). Rebase strategy documented. |
+| 7 | T70 | Extract handle_guardrail_impl | **In Progress** | Code |  |  |  |  | REVIEW.md | Extract 223 lines from ChatWidget to complete isolation (98.8% → 99.8%). High priority. |
+| 8 | T71 | Document template-JSON conversion | **In Progress** | Code |  |  |  |  | REVIEW.md | Clarify how agents' JSON output converts to markdown templates. Critical ambiguity. |
+| 9 | T72 | Introduce SpecKitError enum | Backlog | Code |  |  |  |  | REVIEW.md | Replace String errors with structured enum. Improves debugging. |
+| 10 | T73 | Abstract Evidence Repository | Backlog | Code |  |  |  |  | REVIEW.md | Break filesystem coupling with trait abstraction. Enables testing. |
+| 11 | T74 | Command Registry Pattern | Backlog | Code |  |  |  |  | REVIEW.md | Replace enum with registry to eliminate slash_command.rs conflicts. |
+| 12 | T75 | Extract app.rs routing | Backlog | Code |  |  |  |  | REVIEW.md | Isolate spec-kit routing from app.rs. Reduces conflict surface. |
+| 13 | T76 | SpecKitContext trait | Backlog | Code |  |  |  |  | REVIEW.md | Decouple spec_kit from ChatWidget via trait. Enables independent reuse. |
+| 14 | T77 | Validate template integration | Backlog | Code |  |  |  |  | REVIEW.md | Verify agents actually use templates end-to-end. |
 
 ---
 
