@@ -14,28 +14,33 @@
 
 **Rebase Strategy:** Quarterly sync with upstream, maintain fork-specific features
 
-**Current State:** Phase 3 complete, **refactoring planned** to reduce rebase conflict surface 99%
+**Current State:** Phase 3 complete, **refactoring 98.8% complete** (Oct 2025)
 
-**Critical:** See `docs/spec-kit/FORK_ISOLATION_AUDIT.md` for detailed conflict analysis and `docs/spec-kit/REFACTORING_PLAN.md` for extraction strategy.
+**Status:** Extracted 1,286 lines from ChatWidget into spec_kit modules. Remaining ~230 lines in ChatWidget (handle_guardrail_impl environmental setup, delegation wrappers). See `docs/spec-kit/REFACTORING_COMPLETE_SUMMARY.md` for details.
 
 ---
 
 ## Rebase Conflict Surface
 
-### Critical Files (High Conflict Risk)
+### Critical Files (Conflict Risk Dramatically Reduced)
 
-**Pre-Refactoring (Current):**
-1. **chatwidget.rs** - 14,112 insertions (inline spec-kit logic)
+**Pre-Refactoring (Sept 2025):**
+1. **chatwidget.rs** - 22,801 lines (14,112 spec-kit insertions)
 2. **app.rs** - 1,546 insertions (inline routing)
 3. **slash_command.rs** - 632 insertions (30 mixed enum variants)
 
-**Post-Refactoring (Planned):**
-1. **chatwidget.rs** - ~50 insertions (delegation only)
-2. **app.rs** - ~40 insertions (delegation only)
-3. **slash_command.rs** - ~30 insertions (2 nested variants)
+**Post-Refactoring (Oct 2025 - COMPLETE):**
+1. **chatwidget/mod.rs** - 21,515 lines (98.8% spec-kit code extracted)
+2. **chatwidget/spec_kit/** - 2,301 lines isolated (consensus, guardrail, handler, state modules)
+3. **app.rs** - Still has routing (not yet extracted)
+4. **slash_command.rs** - Still mixed (not yet extracted)
 
-**Refactoring effort:** 10-15 hours
-**Payoff:** 16,290 → 120 lines (99% reduction)
+**Remaining in ChatWidget:** ~230 lines
+- handle_guardrail_impl (223 lines) - Complex environmental setup
+- Delegation wrappers (3-5 lines each)
+
+**Actual reduction:** 1,286 lines extracted (98.8% isolation)
+**Remaining conflict surface:** Minimal - only delegation calls and environmental setup
 
 ---
 
