@@ -21,20 +21,16 @@ use std::time::{Duration, Instant, SystemTime};
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 
-use crate::local_memory_util::{self, LocalMemorySearchResult};
 use crate::slash_command::HalMode;
 use crate::slash_command::SlashCommand;
 use crate::slash_command::SpecAutoInvocation;
 use spec_kit::{
-    SpecAutoPhase, SpecAutoState, GuardrailWait, GuardrailEvaluation, GuardrailOutcome,
-    guardrail_for_stage, spec_ops_stage_prefix, expected_guardrail_command,
-    validate_guardrail_evidence, require_string_field, require_object,
+    SpecAutoState, GuardrailOutcome, spec_ops_stage_prefix,
+    validate_guardrail_evidence,
 };
 use spec_kit::consensus::{
     expected_agents_for_stage, extract_string_list, parse_consensus_stage,
-    telemetry_agent_slug, telemetry_value_truthy, validate_required_fields,
-    ConsensusArtifactData, ConsensusArtifactVerdict, ConsensusEvidenceHandle,
-    ConsensusSynthesisConsensusRaw, ConsensusSynthesisRaw, ConsensusSynthesisSummary,
+    telemetry_agent_slug, telemetry_value_truthy, validate_required_fields, ConsensusArtifactVerdict, ConsensusEvidenceHandle, ConsensusSynthesisRaw, ConsensusSynthesisSummary,
     ConsensusTelemetryPaths, ConsensusVerdict,
 };
 use spec_kit::{evaluate_guardrail_value, validate_guardrail_schema};
@@ -16235,7 +16231,6 @@ fn parse_spec_stage_invocation(input: &str) -> Option<SpecStageInvocation> {
         .or_else(|| parse_for_stage("/spec-unlock ", SpecStage::Unlock))
 }
 
-const SPEC_AUTO_MAX_VALIDATE_RETRIES: u32 = 2;
 
 impl ChatWidget<'_> {
     fn queue_consensus_runner(

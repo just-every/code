@@ -5,8 +5,6 @@
 
 use crate::spec_prompts::SpecStage;
 use serde_json::Value;
-use std::fs::File;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use super::state::{GuardrailEvaluation, GuardrailOutcome, expected_guardrail_command, require_string_field, require_object, validate_guardrail_evidence};
