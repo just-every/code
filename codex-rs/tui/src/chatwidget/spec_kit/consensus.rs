@@ -317,7 +317,7 @@ fn load_artifacts_from_evidence(
     })?;
 
     let mut artifacts: Vec<ConsensusArtifactData> = Vec::new();
-    let mut warnings: Vec<String> = Vec::new();
+    let warnings: Vec<String> = Vec::new();
 
     for entry_res in entries {
         let entry = entry_res.map_err(|e| format!("Failed to read directory entry: {e}"))?;
