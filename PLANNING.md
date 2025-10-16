@@ -1,9 +1,9 @@
 # Spec-Kit Multi-Agent Framework - Architecture & Planning
 
-> Status: v1.1 (2025-10-15). Phase 3 standardization complete. Complements `product-requirements.md` and fulfils the constitution's mandatory context references.
+> Status: v1.2 (2025-10-16). Phase 3 complete, refactoring complete, global templates deployed. Complements `product-requirements.md` and fulfils the constitution's mandatory context references.
 
 ## 1. Monorepo Overview
-- **Repository:** just-every/code (feature branch: feat/spec-auto-telemetry, 76+ commits)
+- **Repository:** just-every/code (branch: main)
 - **Primary language:** Rust (Codex CLI fork with spec-kit extensions)
 - **Secondary tooling:** Bash guardrail scripts, MCP (Model Context Protocol) servers, Python utilities
 - **Upstream:** anthropics/claude-code (fork maintained with FORK_DEVIATIONS.md rebase strategy)
@@ -53,14 +53,16 @@
 - **Code (Claude Code):** General-purpose, orchestration
 
 ### 2.3 Template System
-**Location:** `templates/` directory
-- `spec-template.md` – P1/P2/P3 user scenario format (GitHub-inspired)
-- `PRD-template.md` – Structured requirements
-- `plan-template.md` – Work breakdown with acceptance mapping
-- `tasks-template.md` – Checkbox task lists
+**Location:** `~/.code/templates/` (globally installed)
+**Templates:** 11 total covering all stages
+- `PRD-template.md`, `spec-template.md` – Intake (P1/P2/P3 user scenarios)
+- `plan-template.md`, `tasks-template.md` – Development stages
+- `implement-template.md`, `validate-template.md`, `audit-template.md`, `unlock-template.md` – Execution stages
+- `clarify-template.md`, `analyze-template.md`, `checklist-template.md` – Quality commands
 
-**Performance:** 55% faster generation vs baseline (validated SPEC-KIT-060)
-**Adoption:** 100% (all commands use templates)
+**Performance:** 50% faster generation vs baseline (validated SPEC-KIT-060)
+**Integration:** All prompts.json agents reference template structure
+**Installation:** `scripts/install-templates.sh` copies to ~/.code/templates/
 
 ### 2.4 Guardrail Layer (Shell wrappers)
 **Purpose:** Validation and policy enforcement separate from agent orchestration
@@ -184,17 +186,25 @@ python3 scripts/spec-kit/lint_tasks.py
 
 **Phase 3 Complete** (October 2025):
 - ✅ All 13 /speckit.* commands functional
+- ✅ All 7 /guardrail.* commands functional
 - ✅ Tiered model strategy (40% cost reduction)
-- ✅ Template system (55% speed improvement)
+- ✅ Template system complete (11 templates, 50% speed improvement)
 - ✅ GitHub quality commands (clarify, analyze, checklist)
 - ✅ Native status dashboard (instant, $0)
-- ✅ Backward compatibility maintained
+- ✅ Backward compatibility maintained (legacy /spec-* still works)
+- ✅ Global template installation (~/.code/templates/)
 
-**Phase 3 Week 2** (Planned):
-- [ ] Guardrail namespace: `/spec-ops-*` → `/guardrail.*` (documentation updated, implementation pending)
-- [ ] Remove legacy `/spec-*` enum variants
-- [ ] Final testing and release notes
-- [ ] Migration complete
+**Refactoring Complete** (October 2025):
+- ✅ Extracted 1,286 lines from ChatWidget (98.8% isolation from upstream)
+- ✅ Created spec-kit modules: consensus.rs, guardrail.rs, handler.rs, state.rs
+- ✅ Friend module + free function pattern established
+- ✅ 100% test coverage maintained (71/71 passing)
+- ✅ Byterover dependency removed
+
+**Future Considerations:**
+- Remove legacy /spec-* enum variants (keeping for backward compat)
+- Evidence archival strategy for large SPECs (>25MB)
+- Extract spec-kit to separate package (keeping embedded for now)
 
 **Future Considerations:**
 - Extract spec-kit to separate repo vs embedded tooling
