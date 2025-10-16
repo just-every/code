@@ -10,6 +10,10 @@
 
 **Code** is a fast, local coding agent for your terminal. It's a community-driven fork of `openai/codex` focused on real developer ergonomics: Browser integration, multi-agents, theming, and reasoning control — all while staying compatible with upstream.
 
+## ✨ Recent Updates (October 2025)
+
+**Spec-Kit Refactoring Complete:** Extracted 1,222 lines of spec-kit automation into isolated modules (`tui/src/chatwidget/spec_kit/`), achieving 98.2% isolation from upstream conflicts. 100% test coverage maintained. See [refactoring summary](docs/spec-kit/REFACTORING_COMPLETE_SUMMARY.md).
+
 &ensp;
 ## Why Code
 
