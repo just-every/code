@@ -42,7 +42,7 @@
 | 6 | T69 | Phase 3 Week 2: /guardrail.* namespace | **DONE** | Code |  |  |  | 2025-10-15 | Commit: babb790a4 | Guardrail namespace complete. 84 files, backward compat maintained. |
 | 2 | T49 | Testing framework | **DONE** | Code |  |  |  | 2025-10-16 | docs/SPEC-KIT-045-mini/ | Full 6-stage run completed. All 5 agents validated. Framework operational. Commands updated to /guardrail.* namespace. |
 | 4 | T47 | Spec-status dashboard | Done | Code |  |  |  | 2025-10-08 |  | Native Rust implementation. Completed 2025-10-08. |
-| 6 | T46 | Fork rebasing docs | Backlog | Code |  |  |  |  |  | Documented in FORK_DEVIATIONS.md, TUI.md. Can formalize if needed. |
+| 6 | T46 | Fork rebasing docs | **DONE** | Code |  |  |  | 2025-10-16 | FORK_DEVIATIONS.md | Complete with accurate refactoring status (98.8% isolation). Rebase strategy documented. |
 
 ---
 
@@ -186,8 +186,7 @@ docs/SPEC-OPS-004-integrated-coder-hooks/evidence/
 - ✅ T60 template validation complete
 - ✅ T61-64 test artifacts removed
 
-**Remaining Backlog:**
-- T46: Fork rebasing docs (already documented, can formalize if needed)
+**All Backlog Items Complete** ✅
 
 ---
 
