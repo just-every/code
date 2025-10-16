@@ -231,25 +231,32 @@
 
 ## 10. Open Questions
 
-- Default HAL mode: mock or live?
-- Evidence archival when exceeding 25MB per SPEC
-- Extract spec-kit to separate repo or keep embedded?
-- Future guardrail namespace: /guardrail.* vs /spec-ops-* (planned Week 2)
+- Default HAL mode: mock or live? (Pending decision)
+- Evidence archival when exceeding 25MB per SPEC (Monitoring)
+- Extract spec-kit to separate repo or keep embedded? (Keeping embedded for now)
+- ~~Future guardrail namespace: /guardrail.* vs /spec-ops-*~~ ✅ RESOLVED: /guardrail.* implemented (Phase 3 Week 2)
 
 ## 11. Review Notes
 
 **Phase 3 standardization:** 2025-10-15
 - ✅ All 13 /speckit.* commands functional
+- ✅ All 7 /guardrail.* commands functional
 - ✅ Tiered model strategy applied (40% cost reduction)
-- ✅ Template validation complete (55% speed improvement)
+- ✅ Template system complete (11 templates, all stages covered)
 - ✅ GitHub quality commands ported (clarify, analyze, checklist)
 - ✅ Backward compatibility maintained (/spec-* still works)
-- Next: Guardrail namespace separation, final documentation
+- ✅ Global template installation (~/.code/templates/)
+
+**Refactoring:** 2025-10-16
+- ✅ Extracted 1,286 lines from ChatWidget (98.8% isolation)
+- ✅ Created spec-kit modules (consensus, guardrail, handler, state)
+- ✅ 100% test coverage maintained (71/71 passing)
+- ✅ Byterover dependency removed, using only local-memory
 
 **Scope correction:** 2025-10-14
 - Previous versions incorrectly described Kavedarr product
 - Corrected to describe spec-kit automation framework
 - Kavedarr is an example use case, not the product itself
 
-**Status:** v1.1 (Phase 3 standardization complete)
+**Status:** v1.2 (2025-10-16) — Phase 3 complete + refactoring complete + global templates
 **Owner:** @just-every/automation

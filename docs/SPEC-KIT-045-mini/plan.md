@@ -14,7 +14,7 @@
 ## Acceptance Mapping
 | Requirement (Spec) | Validation Step | Test/Check Artifact |
 | --- | --- | --- |
-| R1: `/spec-ops-plan` records four-agent roster | Review 2025-10-14 guardrail log/JSON and export `roster_2025-10-14T15:58:30Z.json` | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-plan_2025-10-14T15:58:30Z-79323873.{json,log}; roster_2025-10-14T15:58:30Z.json |
+| R1: `/guardrail.plan` records four-agent roster | Review 2025-10-14 guardrail log/JSON and export `roster_2025-10-14T15:58:30Z.json` | docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-045-mini/spec-plan_2025-10-14T15:58:30Z-79323873.{json,log}; roster_2025-10-14T15:58:30Z.json |
 | R2: HAL mock telemetry matches schema v1 with documented rationale | Run jq assertions and capture HAL mock diff for 15:58:30Z preparation | docs/SPEC-KIT-045-mini/telemetry/plan-schema-check_2025-10-14T15:58:30Z.txt; docs/SPEC-KIT-045-mini/telemetry/mock-hal_2025-10-14T15:58:30Z.diff |
 | R3: Fixture docs cite evidence and rerun guidance | Ensure plan/tasks/unlock + checksums reference 2025-10-14 files and rerun commands | docs/SPEC-KIT-045-mini/{plan.md,tasks.md,unlock-notes.md,checksums.sha256}; SPEC.md row T49 notes |
 
