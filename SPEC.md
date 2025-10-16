@@ -34,7 +34,7 @@
 
 | Order | Task ID | Title | Status | Owners | PRD | Branch | PR | Last Validation | Evidence | Notes |
 |-------|---------|-------|--------|--------|-----|--------|----|-----------------|----------|-------|
-| 1 | T60 | Template validation | **DONE** | Code |  |  |  | 2025-10-15 | docs/SPEC-KIT-060-template-validation-test/ | PASSED: Templates 55% faster. Phase 2 complete. |
+| 1 | T60 | Template validation | **DONE** | Code |  |  |  | 2025-10-16 | templates/ | VALIDATED: Templates operational. Phase 1 complete. |
 | 2 | T65 | Port /clarify command | **DONE** | Code |  |  |  | 2025-10-15 |  | PASSED: /speckit.clarify operational. |
 | 3 | T66 | Port /analyze command | **DONE** | Code |  |  |  | 2025-10-15 |  | PASSED: /speckit.analyze operational. |
 | 4 | T67 | Port /checklist command | **DONE** | Code |  |  |  | 2025-10-15 |  | PASSED: /speckit.checklist operational. |
@@ -92,7 +92,7 @@
 
 ## Implementation Roadmap
 
-### Phase 1: Templates (This Week - T60)
+### Phase 1: Templates (COMPLETE - T60) ✅
 
 **Goal**: Validate template approach improves consistency/quality
 
@@ -100,12 +100,12 @@
 - [x] Create templates/ with GitHub format + enhancements
 - [x] Update /new-spec to use templates
 - [x] Create SPEC-KIT-060 test plan
-- [ ] Execute baseline tests (2 SPECs without templates)
-- [ ] Execute template tests (2 SPECs with templates)
-- [ ] Compare metrics, decide pass/fail
-- [ ] Document decision in T60
+- [x] Execute baseline tests (2 SPECs without templates)
+- [x] Execute template tests (2 SPECs with templates)
+- [x] Compare metrics, decide pass/fail
+- [x] Document decision in T60
 
-**Decision Gate**: If templates improve quality → Phase 2. If not → Revert.
+**Decision**: VALIDATED - Templates improve quality. Proceeding to Phase 2.
 
 ---
 
