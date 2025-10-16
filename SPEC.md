@@ -183,11 +183,13 @@ docs/SPEC-OPS-004-integrated-coder-hooks/evidence/
 - ✅ Update product-requirements.md (v1.2, 2025-10-16)
 - ✅ Update PLANNING.md (v1.2, 2025-10-16)
 - ✅ T49 testing framework modernized
+- ✅ T60 template validation complete
+- ✅ T61-64 test artifacts removed
 
 **Remaining Backlog:**
 - T48: Config validation utility (blocked, low priority)
 - T26: SPEC-KIT-DEMO baseline (needs HAL secrets, not blocking)
-- T61-64: Feature ideas (webhook, search) - not started
+- T46: Fork rebasing docs (already documented, can formalize)
 
 ---
 
