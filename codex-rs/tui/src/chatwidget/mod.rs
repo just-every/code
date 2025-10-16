@@ -1007,24 +1007,7 @@ enum SystemPlacement {
 
 impl ChatWidget<'_> {
     fn spec_kit_telemetry_enabled(&self) -> bool {
-        if let Ok(value) = std::env::var("SPEC_KIT_TELEMETRY_ENABLED") {
-            if telemetry_value_truthy(&value) {
-                return true;
-            }
-        }
-
-        if let Some(value) = self
-            .config
-            .shell_environment_policy
-            .r#set
-            .get("SPEC_KIT_TELEMETRY_ENABLED")
-        {
-            if telemetry_value_truthy(value) {
-                return true;
-            }
-        }
-
-        false
+        spec_kit::state::spec_kit_telemetry_enabled(&self.config.shell_environment_policy)
     }
 
     fn fmt_short_duration(&self, d: Duration) -> String {
@@ -14712,55 +14695,6 @@ impl ChatWidget<'_> {
 
     // Implementation method (called by spec_kit::handle_spec_consensus)
     fn handle_spec_consensus_impl(&mut self, raw_args: String) {
-        let trimmed = raw_args.trim();
-        if trimmed.is_empty() {
-            self.history_push(crate::history_cell::new_error_event(
-                "Usage: /spec-consensus <SPEC-ID> <stage>".to_string(),
-            ));
-            return;
-        }
-
-        let mut parts = trimmed.split_whitespace();
-        let Some(spec_id) = parts.next() else {
-            self.history_push(crate::history_cell::new_error_event(
-                "Usage: /spec-consensus <SPEC-ID> <stage>".to_string(),
-            ));
-            return;
-        };
-
-        let Some(stage_str) = parts.next() else {
-            self.history_push(crate::history_cell::new_error_event(
-                "Usage: /spec-consensus <SPEC-ID> <stage>".to_string(),
-            ));
-            return;
-        };
-
-        let Some(stage) = parse_consensus_stage(stage_str) else {
-            self.history_push(crate::history_cell::new_error_event(format!(
-                "Unknown stage '{stage_str}'. Expected plan, tasks, implement, validate, audit, or unlock.",
-            )));
-            return;
-        };
-
-        match self.run_spec_consensus(spec_id, stage) {
-            Ok((lines, ok)) => {
-                let cell = crate::history_cell::PlainHistoryCell::new(
-                    lines,
-                    if ok {
-                        crate::history_cell::HistoryCellType::Notice
-                    } else {
-                        crate::history_cell::HistoryCellType::Error
-                    },
-                );
-                self.history_push(cell);
-            }
-            Err(err) => {
-                self.history_push(crate::history_cell::new_error_event(err));
-            }
-        }
-    }
-
-    fn load_latest_consensus_synthesis(
         &self,
         spec_id: &str,
         stage: SpecStage,

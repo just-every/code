@@ -75,8 +75,7 @@ pub fn halt_spec_auto_with_error(widget: &mut ChatWidget, reason: String) {
 
 /// Handle /spec-consensus command (inspect consensus artifacts)
 pub fn handle_spec_consensus(widget: &mut ChatWidget, raw_args: String) {
-    // Delegate to ChatWidget method for now (complex logic with many private helpers)
-    widget.handle_spec_consensus_impl(raw_args);
+    handle_spec_consensus_impl(widget, raw_args);
 }
 
 /// Handle /guardrail.* and /spec-ops-* commands (guardrail validation)
@@ -580,3 +579,55 @@ fn check_consensus_and_advance_spec_auto(widget: &mut ChatWidget) {
 }
 
 // Additional handler functions will be added here in subsequent commits
+
+use super::consensus::parse_consensus_stage;
+
+/// Handle /spec-consensus command implementation
+pub fn handle_spec_consensus_impl(widget: &mut ChatWidget, raw_args: String) {
+    let trimmed = raw_args.trim();
+    if trimmed.is_empty() {
+        widget.history_push(crate::history_cell::new_error_event(
+            "Usage: /spec-consensus <SPEC-ID> <stage>".to_string(),
+        ));
+        return;
+    }
+
+    let mut parts = trimmed.split_whitespace();
+    let Some(spec_id) = parts.next() else {
+        widget.history_push(crate::history_cell::new_error_event(
+            "Usage: /spec-consensus <SPEC-ID> <stage>".to_string(),
+        ));
+        return;
+    };
+
+    let Some(stage_str) = parts.next() else {
+        widget.history_push(crate::history_cell::new_error_event(
+            "Usage: /spec-consensus <SPEC-ID> <stage>".to_string(),
+        ));
+        return;
+    };
+
+    let Some(stage) = parse_consensus_stage(stage_str) else {
+        widget.history_push(crate::history_cell::new_error_event(format!(
+            "Unknown stage '{stage_str}'. Expected plan, tasks, implement, validate, audit, or unlock.",
+        )));
+        return;
+    };
+
+    match widget.run_spec_consensus(spec_id, stage) {
+        Ok((lines, ok)) => {
+            let cell = crate::history_cell::PlainHistoryCell::new(
+                lines,
+                if ok {
+                    HistoryCellType::Notice
+                } else {
+                    HistoryCellType::Error
+                },
+            );
+            widget.history_push(cell);
+        }
+        Err(err) => {
+            widget.history_push(crate::history_cell::new_error_event(err));
+        }
+    }
+}
