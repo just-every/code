@@ -42,7 +42,6 @@
 | 6 | T69 | Phase 3 Week 2: /guardrail.* namespace | **DONE** | Code |  |  |  | 2025-10-15 | Commit: babb790a4 | Guardrail namespace complete. 84 files, backward compat maintained. |
 | 2 | T49 | Testing framework | **DONE** | Code |  |  |  | 2025-10-16 | docs/SPEC-KIT-045-mini/ | Full 6-stage run completed. All 5 agents validated. Framework operational. Commands updated to /guardrail.* namespace. |
 | 4 | T47 | Spec-status dashboard | Done | Code |  |  |  | 2025-10-08 |  | Native Rust implementation. Completed 2025-10-08. |
-| 5 | T26 | SPEC-KIT-DEMO baseline | Backlog | Code |  |  |  |  | docs/SPEC-KIT-DEMO/ | Needs HAL secrets. Not blocking. |
 | 6 | T46 | Fork rebasing docs | Backlog | Code |  |  |  |  |  | Documented in FORK_DEVIATIONS.md, TUI.md. Can formalize if needed. |
 
 ---
@@ -82,6 +81,7 @@
 | T30 | Project Commands migration | **REJECTED** | Can't replace orchestrator delegation. Keep Rust enum. |
 | T37 | Stream guardrail output | **OBSOLETE** | Orchestrator already visible. No TUI streaming needed. |
 | T40-T42 | Progress indicators | **OBSOLETE** | Orchestrator shows progress. |
+| T26 | SPEC-KIT-DEMO baseline | **OBSOLETE** | Docs already exist. Extraneous documentation task. |
 | T48 | Config validation utility | **REJECTED** | Low priority, not blocking. Plan/tasks exist if needed later. |
 | T61-64 | Webhook/search features | **OBSOLETE** | Test artifacts from T60 validation, not real features. |
 
@@ -187,8 +187,7 @@ docs/SPEC-OPS-004-integrated-coder-hooks/evidence/
 - ✅ T61-64 test artifacts removed
 
 **Remaining Backlog:**
-- T26: SPEC-KIT-DEMO baseline (needs HAL secrets, not blocking)
-- T46: Fork rebasing docs (already documented, can formalize)
+- T46: Fork rebasing docs (already documented, can formalize if needed)
 
 ---
 
