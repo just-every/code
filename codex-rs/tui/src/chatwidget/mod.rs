@@ -14547,7 +14547,7 @@ impl ChatWidget<'_> {
                     "Consensus synthesis stage mismatch: expected {}, found {}",
                     stage.command_name(),
                     raw_stage
-                ));
+                ).into());
             }
         }
 
@@ -14556,7 +14556,7 @@ impl ChatWidget<'_> {
                 return Err(format!(
                     "Consensus synthesis spec mismatch: expected {}, found {}",
                     spec_id, raw_spec
-                ));
+                ).into());
             }
         }
 
@@ -14574,7 +14574,7 @@ impl ChatWidget<'_> {
         &mut self,
         spec_id: &str,
         stage: SpecStage,
-    ) -> Result<(Vec<ratatui::text::Line<'static>>, bool), String> {
+    ) -> spec_kit::Result<(Vec<ratatui::text::Line<'static>>, bool)> {
         let evidence_root = self
             .config
             .cwd
@@ -14589,7 +14589,7 @@ impl ChatWidget<'_> {
                 "No structured local-memory entries found for {} stage '{}'. Ensure agents stored their JSON via local-memory remember.",
                 spec_id,
                 stage.command_name()
-            ));
+            ).into());
         }
 
         let synthesis_summary = match self.load_latest_consensus_synthesis(spec_id, stage) {
@@ -16018,7 +16018,7 @@ impl ChatWidget<'_> {
         &self,
         spec_id: &str,
         stage: SpecStage,
-    ) -> Result<GuardrailOutcome, String> {
+    ) -> spec_kit::Result<GuardrailOutcome> {
         let (path, value) = self.read_latest_spec_ops_telemetry(spec_id, stage)?;
         let mut evaluation = evaluate_guardrail_value(stage, &value);
         let schema_failures = validate_guardrail_schema(stage, &value);
@@ -21333,7 +21333,7 @@ impl spec_kit::SpecKitContext for ChatWidget<'_> {
         &self,
         spec_id: &str,
         stage: SpecStage,
-    ) -> std::result::Result<spec_kit::GuardrailOutcome, String> {
+    ) -> spec_kit::Result<spec_kit::GuardrailOutcome> {
         ChatWidget::collect_guardrail_outcome(self, spec_id, stage)
     }
 
@@ -21341,7 +21341,7 @@ impl spec_kit::SpecKitContext for ChatWidget<'_> {
         &mut self,
         spec_id: &str,
         stage: SpecStage,
-    ) -> std::result::Result<(Vec<ratatui::text::Line<'static>>, bool), String> {
+    ) -> spec_kit::Result<(Vec<ratatui::text::Line<'static>>, bool)> {
         ChatWidget::run_spec_consensus(self, spec_id, stage)
     }
 }

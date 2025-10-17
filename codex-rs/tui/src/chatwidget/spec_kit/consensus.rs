@@ -3,6 +3,7 @@
 //! This module handles consensus validation across multiple AI agents,
 //! artifact collection from local-memory, and synthesis result persistence.
 
+use super::error::{Result, SpecKitError};
 use crate::spec_prompts::SpecStage;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -201,7 +202,7 @@ pub(crate) fn collect_consensus_artifacts(
     evidence_root: &Path,
     spec_id: &str,
     stage: SpecStage,
-) -> Result<(Vec<ConsensusArtifactData>, Vec<String>), String> {
+) -> Result<(Vec<ConsensusArtifactData>, Vec<String>)> {
     let mut warnings: Vec<String> = Vec::new();
 
     match load_artifacts_from_evidence(evidence_root, spec_id, stage) {
@@ -210,7 +211,7 @@ pub(crate) fn collect_consensus_artifacts(
             return Ok((artifacts, warnings));
         }
         Ok(None) => {}
-        Err(err) => warnings.push(err),
+        Err(err) => warnings.push(err.to_string()),
     }
 
     let (entries, mut memory_warnings) = fetch_memory_entries(spec_id, stage)?;
@@ -299,7 +300,7 @@ fn load_artifacts_from_evidence(
     evidence_root: &Path,
     spec_id: &str,
     stage: SpecStage,
-) -> Result<Option<(Vec<ConsensusArtifactData>, Vec<String>)>, String> {
+) -> Result<Option<(Vec<ConsensusArtifactData>, Vec<String>)>> {
     let consensus_dir = evidence_root.join(spec_id);
     if !consensus_dir.exists() {
         return Ok(None);
@@ -378,14 +379,14 @@ fn load_artifacts_from_evidence(
 fn fetch_memory_entries(
     spec_id: &str,
     stage: SpecStage,
-) -> Result<(Vec<LocalMemorySearchResult>, Vec<String>), String> {
+) -> Result<(Vec<LocalMemorySearchResult>, Vec<String>)> {
     let results = local_memory_util::search_by_stage(spec_id, stage.command_name(), 20)?;
     if results.is_empty() {
         Err(format!(
             "No local-memory entries found for {} stage '{}'",
             spec_id,
             stage.command_name()
-        ))
+        ).into())
     } else {
         Ok((results, Vec::new()))
     }
@@ -396,7 +397,7 @@ pub(crate) fn load_latest_consensus_synthesis(
     cwd: &Path,
     spec_id: &str,
     stage: SpecStage,
-) -> Result<Option<ConsensusSynthesisSummary>, String> {
+) -> Result<Option<ConsensusSynthesisSummary>> {
     let base = cwd
         .join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus")
         .join(spec_id);
@@ -459,7 +460,7 @@ pub(crate) fn load_latest_consensus_synthesis(
                 "Consensus synthesis stage mismatch: expected {}, found {}",
                 stage.command_name(),
                 raw_stage
-            ));
+            ).into());
         }
     }
 
@@ -468,7 +469,7 @@ pub(crate) fn load_latest_consensus_synthesis(
             return Err(format!(
                 "Consensus synthesis spec mismatch: expected {}, found {}",
                 spec_id, raw_spec
-            ));
+            ).into());
         }
     }
 
@@ -490,7 +491,7 @@ pub fn run_spec_consensus(
     spec_id: &str,
     stage: SpecStage,
     telemetry_enabled: bool,
-) -> Result<(Vec<ratatui::text::Line<'static>>, bool), String> {
+) -> Result<(Vec<ratatui::text::Line<'static>>, bool)> {
     let evidence_root = cwd.join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus");
 
     let (artifacts, mut warnings) = collect_consensus_artifacts(&evidence_root, spec_id, stage)?;
@@ -499,7 +500,7 @@ pub fn run_spec_consensus(
             "No structured local-memory entries found for {} stage '{}'. Ensure agents stored their JSON via local-memory remember.",
             spec_id,
             stage.command_name()
-        ));
+        ).into());
     }
 
     let synthesis_summary = match load_latest_consensus_synthesis(cwd, spec_id, stage) {
@@ -756,7 +757,7 @@ pub(crate) fn persist_consensus_verdict(
     spec_id: &str,
     stage: SpecStage,
     verdict: &ConsensusVerdict,
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf> {
     let consensus_dir = cwd
         .join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus")
         .join(spec_id);
@@ -787,7 +788,7 @@ pub(crate) fn persist_consensus_telemetry_bundle(
     verdict_handle: &ConsensusEvidenceHandle,
     slug: &str,
     consensus_status: &str,
-) -> Result<ConsensusTelemetryPaths, String> {
+) -> Result<ConsensusTelemetryPaths> {
     let base = cwd
         .join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus")
         .join(spec_id);
@@ -884,7 +885,7 @@ pub(crate) fn remember_consensus_verdict(
     spec_id: &str,
     stage: SpecStage,
     verdict: &ConsensusVerdict,
-) -> Result<(), String> {
+) -> Result<()> {
     use std::process::Command;
 
     let mut summary_value = serde_json::json!({
@@ -947,7 +948,7 @@ pub(crate) fn remember_consensus_verdict(
         return Err(format!(
             "local-memory remember failed: {}",
             String::from_utf8_lossy(&output.stderr)
-        ));
+        ).into());
     }
 
     Ok(())

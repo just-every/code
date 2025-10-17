@@ -697,7 +697,7 @@ pub fn handle_spec_consensus_impl(widget: &mut ChatWidget, raw_args: String) {
             widget.history_push(cell);
         }
         Err(err) => {
-            widget.history_push(crate::history_cell::new_error_event(err));
+            widget.history_push(crate::history_cell::new_error_event(err.to_string()));
         }
     }
 }

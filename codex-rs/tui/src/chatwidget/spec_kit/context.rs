@@ -3,6 +3,7 @@
 //! This trait decouples spec-kit from ChatWidget, enabling independent testing
 //! and reuse.
 
+use super::error::{Result, SpecKitError};
 use super::state::{GuardrailOutcome, SpecAutoState};
 use crate::app_event::BackgroundPlacement;
 use crate::history_cell::HistoryCell;
@@ -73,7 +74,7 @@ pub trait SpecKitContext {
         &self,
         spec_id: &str,
         stage: SpecStage,
-    ) -> std::result::Result<GuardrailOutcome, String>;
+    ) -> Result<GuardrailOutcome>;
 
     /// Run consensus checking for a spec/stage
     /// Returns (output_lines, consensus_ok)
@@ -81,7 +82,7 @@ pub trait SpecKitContext {
         &mut self,
         spec_id: &str,
         stage: SpecStage,
-    ) -> std::result::Result<(Vec<ratatui::text::Line<'static>>, bool), String>;
+    ) -> Result<(Vec<ratatui::text::Line<'static>>, bool)>;
 }
 
 #[cfg(test)]
@@ -170,7 +171,7 @@ mod tests {
             &self,
             _spec_id: &str,
             _stage: SpecStage,
-        ) -> std::result::Result<GuardrailOutcome, String> {
+        ) -> Result<GuardrailOutcome> {
             // Mock: Return success by default
             Ok(GuardrailOutcome {
                 success: true,
@@ -184,7 +185,7 @@ mod tests {
             &mut self,
             _spec_id: &str,
             _stage: SpecStage,
-        ) -> std::result::Result<(Vec<ratatui::text::Line<'static>>, bool), String> {
+        ) -> Result<(Vec<ratatui::text::Line<'static>>, bool)> {
             // Mock: Return consensus OK
             use ratatui::text::Line;
             Ok((vec![Line::from("Mock consensus OK")], true))

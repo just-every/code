@@ -23,6 +23,7 @@ pub mod state;
 pub use context::SpecKitContext;
 
 // Re-export error types
+pub use error::{Result, SpecKitError};
 
 // Re-export evidence types
 
