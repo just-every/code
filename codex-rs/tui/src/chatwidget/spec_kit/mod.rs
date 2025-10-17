@@ -12,6 +12,7 @@ pub mod consensus;
 pub mod context;
 pub mod error;
 pub mod evidence;
+pub mod file_modifier;
 pub mod guardrail;
 pub mod handler;
 pub mod quality;
@@ -49,10 +50,18 @@ pub use handler::{
     advance_spec_auto, auto_submit_spec_stage_prompt, halt_spec_auto_with_error, handle_guardrail,
     handle_spec_auto, handle_spec_consensus, handle_spec_status, on_spec_auto_agents_complete,
     on_spec_auto_task_complete, on_spec_auto_task_started,
+    // Quality gate handlers (T85)
+    on_quality_gate_agents_complete, on_quality_gate_answers, on_quality_gate_cancelled,
 };
 
 // Re-export quality gate functions
 pub use quality::{
     classify_issue_agreement, find_dissent, find_majority_answer, merge_agent_issues,
     parse_quality_issue_from_agent, resolve_quality_issue, should_auto_resolve,
+};
+
+// Re-export file modification functions
+pub use file_modifier::{
+    apply_modification, restore_from_backup, ChangeType, InsertPosition, LineChange,
+    ModificationOutcome, SpecModification,
 };

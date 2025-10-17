@@ -3,8 +3,10 @@
 //! Implements agent-driven auto-resolution with intelligent escalation
 
 use super::error::{Result, SpecKitError};
+use super::file_modifier::{InsertPosition, ModificationOutcome, SpecModification, apply_modification};
 use super::state::*;
 use std::collections::HashMap;
+use std::path::Path;
 
 /// Classify agent agreement level and find majority answer
 ///
@@ -290,6 +292,110 @@ pub fn merge_agent_issues(agent_issues: Vec<Vec<QualityIssue>>) -> Vec<QualityIs
     }
 
     merged.into_values().collect()
+}
+
+/// Apply auto-resolution to appropriate file
+pub fn apply_auto_resolution(
+    issue: &QualityIssue,
+    answer: &str,
+    spec_dir: &Path,
+) -> Result<ModificationOutcome> {
+    let modification = match issue.gate_type {
+        QualityGateType::Clarify => {
+            // Clarify issues: Add clarified requirement or update existing
+            if let Some(req_id) = extract_requirement_id(&issue.description) {
+                SpecModification::UpdateRequirement {
+                    search_text: req_id.clone(),
+                    replacement_text: format!("{} (clarified: {})", req_id, answer),
+                }
+            } else {
+                SpecModification::AddRequirement {
+                    section: "Objectives".to_string(),
+                    requirement_text: format!("{}: {}", issue.description, answer),
+                    position: InsertPosition::End,
+                }
+            }
+        }
+
+        QualityGateType::Checklist => {
+            // Checklist issues: Update low-scoring requirements
+            if let Some(improved) = &issue.suggested_fix {
+                SpecModification::UpdateRequirement {
+                    search_text: issue.description.clone(),
+                    replacement_text: improved.clone(),
+                }
+            } else {
+                return Err(SpecKitError::from_string(
+                    "Checklist issue has no suggested improvement",
+                ));
+            }
+        }
+
+        QualityGateType::Analyze => {
+            // Analyze issues: Fix terminology or add missing items
+            if issue.issue_type.contains("terminology") {
+                // Extract old/new terms from suggestion
+                if let Some(fix) = &issue.suggested_fix {
+                    if let Some((old, new)) = parse_terminology_fix(fix) {
+                        SpecModification::ReplaceTerminology {
+                            old_term: old,
+                            new_term: new,
+                            case_sensitive: false,
+                        }
+                    } else {
+                        return Err(SpecKitError::from_string(
+                            "Cannot parse terminology fix from suggestion",
+                        ));
+                    }
+                } else {
+                    return Err(SpecKitError::from_string("No suggested fix for terminology issue"));
+                }
+            } else if issue.issue_type.contains("missing") {
+                // Add missing requirement/task
+                SpecModification::AddRequirement {
+                    section: "Objectives".to_string(),
+                    requirement_text: issue.suggested_fix.clone().unwrap_or_else(|| answer.to_string()),
+                    position: InsertPosition::End,
+                }
+            } else {
+                // Generic update
+                SpecModification::AppendToSection {
+                    section: "Notes".to_string(),
+                    text: format!("- {}: {}", issue.description, answer),
+                }
+            }
+        }
+    };
+
+    let file_path = spec_dir.join("spec.md");  // TODO: Determine correct file based on issue
+    apply_modification(&file_path, &modification)
+}
+
+/// Extract requirement ID from question text
+fn extract_requirement_id(text: &str) -> Option<String> {
+    // Look for patterns like "R1:", "R2:", etc.
+    if let Some(start) = text.find('R') {
+        if let Some(end) = text[start..].find(':') {
+            return Some(text[start..start + end].to_string());
+        }
+    }
+    None
+}
+
+/// Parse terminology fix from suggestion text
+fn parse_terminology_fix(suggestion: &str) -> Option<(String, String)> {
+    // Look for "replace X with Y" or "X → Y" or similar
+    if let Some(pos) = suggestion.find(" with ") {
+        let old = suggestion[..pos].trim().to_string();
+        let new = suggestion[pos + 6..].trim().to_string();
+        return Some((old, new));
+    }
+    if let Some(pos) = suggestion.find(" → ") {
+        let old = suggestion[..pos].trim().to_string();
+        let new = suggestion[pos + 5..].trim().to_string();
+        return Some((old, new));
+    }
+    None
 }
 
 #[cfg(test)]

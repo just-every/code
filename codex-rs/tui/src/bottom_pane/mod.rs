@@ -18,6 +18,7 @@ mod agents_overview_view;
 mod approval_modal_view;
 mod bottom_pane_view;
 mod chat_composer;
+mod quality_gate_modal;
 mod chat_composer_history;
 pub mod chrome_selection_view;
 mod command_popup;
@@ -68,6 +69,7 @@ use codex_core::config_types::TextVerbosity;
 use codex_core::config_types::ThemeName;
 use codex_core::protocol::Op;
 use model_selection_view::ModelSelectionView;
+use quality_gate_modal::QualityGateModal;
 use theme_selection_view::ThemeSelectionView;
 pub(crate) use undo_restore_view::UndoRestoreView;
 use verbosity_selection_view::VerbositySelectionView;
@@ -580,6 +582,20 @@ impl BottomPane<'_> {
         self.status_view_active = false;
         self.request_redraw();
     }
+
+    // === FORK-SPECIFIC: Quality gate modal (T85) ===
+    /// Show quality gate questions modal
+    pub fn show_quality_gate_modal(
+        &mut self,
+        checkpoint: crate::chatwidget::spec_kit::QualityCheckpoint,
+        questions: Vec<crate::chatwidget::spec_kit::EscalatedQuestion>,
+    ) {
+        let modal = QualityGateModal::new(checkpoint, questions, self.app_event_tx.clone());
+        self.active_view = Some(Box::new(modal));
+        self.status_view_active = false;
+        self.request_redraw()
+    }
+    // === END FORK-SPECIFIC ===
 
     /// Show a generic list selection popup with items and actions.
     pub fn show_list_selection(

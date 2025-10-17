@@ -434,6 +434,21 @@ pub(crate) enum AppEvent {
         args_write: Option<Vec<String>>,
         instructions: Option<String>,
     },
+
+    // === FORK-SPECIFIC: Quality gate events (T85) ===
+    // Upstream: Does not have quality gates
+    // Preserve: These event variants during rebases
+    /// Quality gate escalation questions have been answered
+    QualityGateAnswersSubmitted {
+        checkpoint: crate::chatwidget::spec_kit::QualityCheckpoint,
+        answers: std::collections::HashMap<String, String>,
+    },
+
+    /// Quality gate was cancelled by user
+    QualityGateCancelled {
+        checkpoint: crate::chatwidget::spec_kit::QualityCheckpoint,
+    },
+    // === END FORK-SPECIFIC ===
 }
 
 // No helper constructor; use `AppEvent::CodexEvent(ev)` directly to avoid shadowing.

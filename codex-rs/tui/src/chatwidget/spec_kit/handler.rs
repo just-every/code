@@ -454,9 +454,12 @@ pub fn on_spec_auto_agents_complete(widget: &mut ChatWidget) {
         return;
     };
 
-    // Only proceed if we're in ExecutingAgents phase
+    // Check which phase we're in
     let expected_agents = match &state.phase {
         SpecAutoPhase::ExecutingAgents {
+            expected_agents, ..
+        } => expected_agents.clone(),
+        SpecAutoPhase::QualityGateExecuting {
             expected_agents, ..
         } => expected_agents.clone(),
         _ => return, // Not in agent execution phase
@@ -471,14 +474,25 @@ pub fn on_spec_auto_agents_complete(widget: &mut ChatWidget) {
     }
 
     // Update completed agents in state
-    if let Some(state) = widget.spec_auto_state.as_mut() {
-        if let SpecAutoPhase::ExecutingAgents {
-            completed_agents, ..
-        } = &mut state.phase
-        {
-            *completed_agents = completed_names.clone();
+    let is_quality_gate = if let Some(state) = widget.spec_auto_state.as_mut() {
+        match &mut state.phase {
+            SpecAutoPhase::ExecutingAgents {
+                completed_agents, ..
+            } => {
+                *completed_agents = completed_names.clone();
+                false
+            }
+            SpecAutoPhase::QualityGateExecuting {
+                completed_agents, ..
+            } => {
+                *completed_agents = completed_names.clone();
+                true
+            }
+            _ => false,
         }
-    }
+    } else {
+        false
+    };
 
     // Check if all expected agents completed
     let all_expected_complete = expected_agents
@@ -486,12 +500,16 @@ pub fn on_spec_auto_agents_complete(widget: &mut ChatWidget) {
         .all(|expected| completed_names.contains(&expected.to_lowercase()));
 
     if all_expected_complete {
-        // All agents done - trigger consensus check
-        if let Some(state) = widget.spec_auto_state.as_mut() {
-            state.phase = SpecAutoPhase::CheckingConsensus;
+        if is_quality_gate {
+            // Quality gate agents done - process results
+            on_quality_gate_agents_complete(widget);
+        } else {
+            // Regular stage agents done - trigger consensus check
+            if let Some(state) = widget.spec_auto_state.as_mut() {
+                state.phase = SpecAutoPhase::CheckingConsensus;
+            }
+            check_consensus_and_advance_spec_auto(widget);
         }
-
-        check_consensus_and_advance_spec_auto(widget);
     } else {
         // Check for failed agents
         let has_failures = widget
@@ -640,4 +658,116 @@ pub fn handle_spec_consensus_impl(widget: &mut ChatWidget, raw_args: String) {
             widget.history_push(crate::history_cell::new_error_event(err));
         }
     }
+}
+
+// === Quality Gate Handlers (T85) ===
+
+/// Handle quality gate agents completing
+pub fn on_quality_gate_agents_complete(widget: &mut ChatWidget) {
+    let Some(state) = widget.spec_auto_state.as_mut() else {
+        return;
+    };
+
+    // Only proceed if in QualityGateExecuting phase
+    let (checkpoint, _results) = match &state.phase {
+        SpecAutoPhase::QualityGateExecuting { checkpoint, results, .. } => {
+            (*checkpoint, results.clone())
+        }
+        _ => return,
+    };
+
+    // TODO: Parse agent results into QualityIssue objects
+    // TODO: Merge issues by ID
+    // TODO: Classify by agreement
+    // TODO: Resolve what can be auto-resolved
+    // TODO: Collect escalations
+
+    // PLACEHOLDER: Create dummy escalations for testing
+    let escalations = vec![
+        super::state::EscalatedQuestion {
+            id: "Q1".to_string(),
+            gate_type: super::state::QualityGateType::Clarify,
+            question: "Should OAuth2 support refresh tokens?".to_string(),
+            context: "Industry standard but adds complexity".to_string(),
+            agent_answers: {
+                let mut map = std::collections::HashMap::new();
+                map.insert("gemini".to_string(), "yes (standard)".to_string());
+                map.insert("claude".to_string(), "yes (standard)".to_string());
+                map.insert("code".to_string(), "no (SPEC says simple)".to_string());
+                map
+            },
+            gpt5_reasoning: Some("GPT-5: Dissenting view has merit - SPEC emphasizes simplicity. Multiple providers already add complexity.".to_string()),
+            magnitude: super::state::Magnitude::Important,
+            suggested_options: vec![
+                "Yes - support refresh tokens".to_string(),
+                "No - keep it simple".to_string(),
+            ],
+        },
+    ];
+
+    widget.history_push(crate::history_cell::PlainHistoryCell::new(
+        vec![
+            ratatui::text::Line::from(format!("Quality Gate: {} - {} issues escalated", checkpoint.name(), escalations.len())),
+        ],
+        crate::history_cell::HistoryCellType::Notice,
+    ));
+
+    // Show modal with escalated questions
+    widget.bottom_pane.show_quality_gate_modal(checkpoint, escalations);
+
+    // Transition to awaiting human phase
+    if let Some(state) = widget.spec_auto_state.as_mut() {
+        state.phase = SpecAutoPhase::QualityGateAwaitingHuman {
+            checkpoint,
+            questions: Vec::new(),  // Will be populated from modal state
+            answers: std::collections::HashMap::new(),
+        };
+    }
+}
+
+/// Handle quality gate answers submitted by user
+pub fn on_quality_gate_answers(
+    widget: &mut ChatWidget,
+    checkpoint: super::state::QualityCheckpoint,
+    answers: std::collections::HashMap<String, String>,
+) {
+    // Check state exists
+    if widget.spec_auto_state.is_none() {
+        return;
+    }
+
+    widget.history_push(crate::history_cell::PlainHistoryCell::new(
+        vec![
+            ratatui::text::Line::from(format!(
+                "Quality Gate: {} - {} answers applied",
+                checkpoint.name(),
+                answers.len()
+            )),
+        ],
+        crate::history_cell::HistoryCellType::Notice,
+    ));
+
+    // TODO: Apply answers to quality gate issues
+    // TODO: Apply file modifications using apply_auto_resolution
+    // TODO: Track modifications in state.quality_modifications
+
+    // Mark checkpoint complete and transition to next stage
+    if let Some(state) = widget.spec_auto_state.as_mut() {
+        state.completed_checkpoints.insert(checkpoint);
+        state.phase = SpecAutoPhase::Guardrail;
+    }
+
+    // Continue pipeline
+    advance_spec_auto(widget);
+}
+
+/// Handle quality gate cancelled by user
+pub fn on_quality_gate_cancelled(
+    widget: &mut ChatWidget,
+    checkpoint: super::state::QualityCheckpoint,
+) {
+    halt_spec_auto_with_error(
+        widget,
+        format!("Quality gate {} cancelled by user", checkpoint.name()),
+    );
 }

@@ -2577,6 +2577,21 @@ impl App<'_> {
                     // Schedule the next redraw with the requested duration
                     self.schedule_redraw_in(duration);
                 }
+
+                // === FORK-SPECIFIC: Quality gate events (T85) ===
+                AppEvent::QualityGateAnswersSubmitted { checkpoint, answers } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        // Delegate to quality gate handler in spec_kit
+                        spec_kit::on_quality_gate_answers(widget, checkpoint, answers);
+                    }
+                }
+                AppEvent::QualityGateCancelled { checkpoint } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        // Delegate to quality gate handler
+                        spec_kit::on_quality_gate_cancelled(widget, checkpoint);
+                    }
+                }
+                // === END FORK-SPECIFIC ===
             }
         }
         if self.alt_screen_active {
