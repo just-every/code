@@ -333,7 +333,11 @@ fn load_artifacts_from_evidence(
         }
 
         let contents = fs::read_to_string(&path).map_err(|e| {
-            format!("Failed to read consensus artifact {}: {}", path.display(), e)
+            format!(
+                "Failed to read consensus artifact {}: {}",
+                path.display(),
+                e
+            )
         })?;
 
         let value: Value = serde_json::from_str(&contents).map_err(|e| {
@@ -576,11 +580,7 @@ pub fn run_spec_consensus(
             && required_fields_ok;
     }
 
-    let consensus_ok = if consensus_ok {
-        true
-    } else {
-        false
-    };
+    let consensus_ok = if consensus_ok { true } else { false };
     let has_conflict = if consensus_ok { false } else { has_conflict };
     let degraded = if consensus_ok { false } else { degraded };
 
@@ -681,7 +681,9 @@ pub fn run_spec_consensus(
             aggregator_agent: aggregator_agent.clone(),
             aggregator_version: aggregator_version.clone(),
             aggregator: aggregator_summary.clone(),
-            synthesis_path: synthesis_evidence_path.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            synthesis_path: synthesis_evidence_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned()),
             artifacts: artifacts
                 .iter()
                 .map(|artifact| ConsensusArtifactVerdict {
@@ -768,8 +770,8 @@ pub fn persist_consensus_verdict(
     let json = serde_json::to_string_pretty(verdict)
         .map_err(|e| format!("Failed to serialize verdict: {e}"))?;
 
-    let mut file = fs::File::create(&path)
-        .map_err(|e| format!("Failed to create verdict file: {e}"))?;
+    let mut file =
+        fs::File::create(&path).map_err(|e| format!("Failed to create verdict file: {e}"))?;
     file.write_all(json.as_bytes())
         .map_err(|e| format!("Failed to write verdict: {e}"))?;
 

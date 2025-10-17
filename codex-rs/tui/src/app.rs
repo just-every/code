@@ -1,6 +1,7 @@
 use crate::app_event::{AppEvent, TerminalRunController, TerminalRunEvent};
 use crate::app_event_sender::AppEventSender;
 use crate::chatwidget::{ChatWidget, GhostState};
+use crate::chatwidget::spec_kit;
 use crate::exec_command::strip_bash_lc_and_escape;
 use crate::file_search::FileSearchManager;
 use crate::get_git_diff::get_git_diff;
@@ -1617,6 +1618,14 @@ impl App<'_> {
                     }
                 }
                 AppEvent::DispatchCommand(command, command_text) => {
+                    // === FORK-SPECIFIC: Try spec-kit registry first ===
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        if spec_kit::try_dispatch_spec_kit_command(widget, &command_text, &self.app_event_tx) {
+                            continue; // Command handled by spec-kit registry
+                        }
+                    }
+                    // === END FORK-SPECIFIC ===
+
                     // Persist UI-only slash commands to cross-session history.
                     // For prompt-expanding commands (/plan, /solve, /code) we let the
                     // expanded prompt be recorded by the normal submission path.

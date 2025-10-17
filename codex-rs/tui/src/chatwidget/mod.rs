@@ -1,5 +1,5 @@
 // Spec-kit submodule for friend access to ChatWidget private fields
-mod spec_kit;
+pub(crate) mod spec_kit;
 
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
@@ -24,18 +24,18 @@ use ratatui::style::Style;
 use crate::slash_command::HalMode;
 use crate::slash_command::SlashCommand;
 use crate::slash_command::SpecAutoInvocation;
-use spec_kit::{
-    SpecAutoState, GuardrailOutcome, spec_ops_stage_prefix,
-    validate_guardrail_evidence,
-};
-use spec_kit::consensus::{
-    expected_agents_for_stage, extract_string_list, parse_consensus_stage,
-    telemetry_agent_slug, telemetry_value_truthy, validate_required_fields, ConsensusArtifactVerdict, ConsensusEvidenceHandle, ConsensusSynthesisRaw, ConsensusSynthesisSummary,
-    ConsensusTelemetryPaths, ConsensusVerdict,
-};
-use spec_kit::{evaluate_guardrail_value, validate_guardrail_schema};
 use crate::spec_prompts;
 use crate::spec_prompts::{SpecAgent, SpecStage};
+use spec_kit::consensus::{
+    ConsensusArtifactVerdict, ConsensusEvidenceHandle, ConsensusSynthesisRaw,
+    ConsensusSynthesisSummary, ConsensusTelemetryPaths, ConsensusVerdict,
+    expected_agents_for_stage, extract_string_list, parse_consensus_stage, telemetry_agent_slug,
+    telemetry_value_truthy, validate_required_fields,
+};
+use spec_kit::{
+    GuardrailOutcome, SpecAutoState, spec_ops_stage_prefix, validate_guardrail_evidence,
+};
+use spec_kit::{evaluate_guardrail_value, validate_guardrail_schema};
 // spec_status functions moved to spec_kit::handler
 use codex_common::elapsed::format_duration;
 use codex_common::model_presets::ModelPreset;
@@ -13885,7 +13885,6 @@ impl ChatWidget<'_> {
     }
 }
 
-
 impl ChatWidget<'_> {
     pub(crate) fn open_review_dialog(&mut self) {
         if self.is_task_running() {
@@ -14460,225 +14459,6 @@ impl ChatWidget<'_> {
         hal_override: Option<HalMode>,
     ) {
         spec_kit::handle_guardrail(self, command, raw_args, hal_override);
-    }
-
-    // Implementation method (called by spec_kit::handle_guardrail)
-    fn handle_guardrail_impl(
-        &mut self,
-        command: SlashCommand,
-        raw_args: String,
-        hal_override: Option<HalMode>,
-    ) {
-        let Some(meta) = command.spec_ops() else {
-            return;
-        };
-        let trimmed = raw_args.trim();
-        let is_stats = meta.script == "evidence_stats.sh";
-
-        let mut spec_id = String::new();
-        let mut remainder = String::new();
-        let mut spec_task = String::new();
-        let mut hal_from_args: Option<HalMode> = None;
-
-        if !is_stats {
-            if trimmed.is_empty() {
-                self.history_push(crate::history_cell::new_error_event(format!(
-                    "`/{}` requires a SPEC ID (e.g. `/{} SPEC-OPS-005`).",
-                    command.command(),
-                    command.command()
-                )));
-                self.request_redraw();
-                return;
-            }
-
-            let mut tokens = trimmed.split_whitespace().peekable();
-            spec_id = tokens.next().unwrap().to_string();
-
-            let mut remainder_tokens: Vec<String> = Vec::new();
-            while let Some(token) = tokens.next() {
-                if token == "--hal" || token == "--hal-mode" {
-                    let Some(value) = tokens.next() else {
-                        self.history_push(crate::history_cell::new_error_event(
-                            "`--hal` flag requires a value (mock|live).".to_string(),
-                        ));
-                        self.request_redraw();
-                        return;
-                    };
-                    hal_from_args = match HalMode::from_str(value) {
-                        Some(mode) => Some(mode),
-                        None => {
-                            self.history_push(crate::history_cell::new_error_event(format!(
-                                "Unknown HAL mode '{value}'. Expected 'mock' or 'live'."
-                            )));
-                            self.request_redraw();
-                            return;
-                        }
-                    };
-                    continue;
-                }
-
-                if let Some((flag, value)) = token.split_once('=') {
-                    if flag == "--hal" || flag == "--hal-mode" {
-                        hal_from_args = match HalMode::from_str(value) {
-                            Some(mode) => Some(mode),
-                            None => {
-                                self.history_push(crate::history_cell::new_error_event(format!(
-                                    "Unknown HAL mode '{value}'. Expected 'mock' or 'live'."
-                                )));
-                                self.request_redraw();
-                                return;
-                            }
-                        };
-                        continue;
-                    }
-                }
-
-                remainder_tokens.push(token.to_string());
-            }
-
-            remainder = remainder_tokens.join(" ");
-            spec_task = if remainder_tokens.is_empty() {
-                spec_id.clone()
-            } else {
-                format!("{spec_id} {remainder}")
-            };
-        }
-
-        let script_path = if meta.script == "spec_auto.sh" || meta.script == "evidence_stats.sh" {
-            format!("scripts/spec_ops_004/{}", meta.script)
-        } else {
-            format!("scripts/spec_ops_004/commands/{}", meta.script)
-        };
-
-        let mut banner = String::new();
-        if is_stats {
-            banner.push_str(&format!("Spec Ops /{}\n", meta.display));
-        } else {
-            banner.push_str(&format!("Spec Ops /{} → {}\n", meta.display, spec_id));
-        }
-        banner.push_str(&format!("  Script: {}\n", script_path));
-
-        let mut stage_prompt_version: Option<String> = None;
-        if script_path.contains("/commands/") {
-            let resolution = codex_core::slash_commands::format_subagent_command(
-                command.command(),
-                &spec_task,
-                Some(&self.config.agents),
-                Some(&self.config.subagent_commands),
-            );
-
-            let agent_roster = if resolution.models.is_empty() {
-                "claude,gemini,code".to_string()
-            } else {
-                resolution.models.join(",")
-            };
-
-            let prompt_hint = if resolution.orchestrator_instructions.is_some()
-                || resolution.agent_instructions.is_some()
-            {
-                "custom prompt overrides"
-            } else {
-                "default prompt profile"
-            };
-
-            banner.push_str(&format!("  Agents: {}\n", agent_roster));
-            banner.push_str(&format!("  Prompt: {}\n", prompt_hint));
-        }
-
-        let hal_mode = if hal_override.is_some() {
-            hal_override
-        } else {
-            hal_from_args
-        };
-
-        if let Some(stage) = spec_stage_for_multi_agent_followup(command) {
-            let stage_version = spec_prompts::stage_version_enum(stage);
-            if let Some(version) = stage_version.clone() {
-                stage_prompt_version = Some(version.clone());
-                banner.push_str(&format!("  Prompt version: {}\n", version));
-            }
-            if spec_prompts::agent_prompt(stage.key(), SpecAgent::Gemini).is_some() {
-                banner.push_str(&format!(
-                    "  Multi-agent stage available: /{}\n",
-                    stage.command_name()
-                ));
-            }
-            if let Some(notes) = spec_prompts::orchestrator_notes(stage.key()) {
-                if !notes.is_empty() {
-                    banner.push_str("  Notes:\n");
-                    for note in notes {
-                        banner.push_str("    - ");
-                        banner.push_str(&note);
-                        banner.push('\n');
-                    }
-                }
-            }
-        }
-
-        if !is_stats {
-            match hal_mode {
-                Some(mode) => banner.push_str(&format!("  HAL mode: {}\n", mode.as_env_value())),
-                None => banner.push_str("  HAL mode: mock (default)\n"),
-            }
-        }
-
-        self.insert_background_event_with_placement(banner, BackgroundPlacement::Tail);
-
-        // Commands with scripts (guardrails, automation) execute via shell; otherwise, comments/notes only.
-        if meta.script == "COMMENT_ONLY" {
-            return;
-        }
-
-        let mut env = HashMap::new();
-        if let Some(version) = stage_prompt_version {
-            env.insert("SPEC_OPS_004_PROMPT_VERSION".to_string(), version);
-        }
-        if let Ok(prompt_version) = std::env::var("SPEC_OPS_004_PROMPT_VERSION") {
-            env.insert("SPEC_OPS_004_PROMPT_VERSION".to_string(), prompt_version);
-        }
-        if let Ok(code_version) = std::env::var("SPEC_OPS_004_CODE_VERSION") {
-            env.insert("SPEC_OPS_004_CODE_VERSION".to_string(), code_version);
-        }
-
-        if let Some(mode) = hal_mode {
-            env.insert(
-                "SPEC_OPS_HAL_MODE".to_string(),
-                mode.as_env_value().to_string(),
-            );
-            if matches!(mode, HalMode::Live) {
-                env.entry("SPEC_OPS_TELEMETRY_HAL".to_string())
-                    .or_insert_with(|| "1".to_string());
-            }
-        }
-
-        let command_line = if is_stats {
-            if trimmed.is_empty() {
-                format!("scripts/env_run.sh {script_path}")
-            } else {
-                format!("scripts/env_run.sh {script_path} {trimmed}")
-            }
-        } else if remainder.is_empty() {
-            format!("scripts/env_run.sh {script_path} {spec_id}")
-        } else {
-            format!("scripts/env_run.sh {script_path} {spec_id} {remainder}")
-        };
-
-        let wrapped = wrap_command(&command_line);
-        if wrapped.is_empty() {
-            self.history_push(crate::history_cell::new_error_event(
-                "Unable to build Spec Ops command invocation.".to_string(),
-            ));
-            self.request_redraw();
-            return;
-        }
-
-        self.submit_op(Op::RunProjectCommand {
-            name: format!("spec_ops_{}", meta.display),
-            command: Some(wrapped),
-            display: Some(command_line),
-            env,
-        });
-        self.request_redraw();
     }
 
     pub(crate) fn handle_spec_status_command(&mut self, raw_args: String) {
@@ -16087,18 +15867,6 @@ impl ChatWidget<'_> {
     }
 }
 
-fn spec_stage_for_multi_agent_followup(command: SlashCommand) -> Option<SpecStage> {
-    match command {
-        SlashCommand::SpecOpsPlan => Some(SpecStage::Plan),
-        SlashCommand::SpecOpsTasks => Some(SpecStage::Tasks),
-        SlashCommand::SpecOpsImplement => Some(SpecStage::Implement),
-        SlashCommand::SpecOpsValidate => Some(SpecStage::Validate),
-        SlashCommand::SpecOpsAudit => Some(SpecStage::Audit),
-        SlashCommand::SpecOpsUnlock => Some(SpecStage::Unlock),
-        _ => None,
-    }
-}
-
 #[derive(Debug, Clone)]
 struct SpecStageInvocation {
     stage: SpecStage,
@@ -16168,7 +15936,6 @@ fn parse_spec_stage_invocation(input: &str) -> Option<SpecStageInvocation> {
         .or_else(|| parse_for_stage("/spec-audit ", SpecStage::Audit))
         .or_else(|| parse_for_stage("/spec-unlock ", SpecStage::Unlock))
 }
-
 
 impl ChatWidget<'_> {
     fn queue_consensus_runner(
@@ -21517,3 +21284,49 @@ impl ChatWidget<'_> {
         }
     }
 }
+
+// === FORK-SPECIFIC: SpecKitContext trait implementation ===
+// Upstream: Does not have spec-kit context trait
+// Preserve: This entire impl block during rebases
+impl spec_kit::SpecKitContext for ChatWidget<'_> {
+    fn history_push(&mut self, cell: impl crate::history_cell::HistoryCell + 'static) {
+        ChatWidget::history_push(self, cell);
+    }
+
+    fn push_background(&mut self, message: String, placement: crate::app_event::BackgroundPlacement) {
+        self.insert_background_event_with_placement(message, placement);
+    }
+
+    fn request_redraw(&mut self) {
+        self.request_redraw();
+    }
+
+    fn submit_operation(&self, op: codex_core::protocol::Op) {
+        self.submit_op(op);
+    }
+
+    fn submit_prompt(&mut self, display: String, prompt: String) {
+        self.submit_prompt_with_display(display, prompt);
+    }
+
+    fn working_directory(&self) -> &std::path::Path {
+        &self.config.cwd
+    }
+
+    fn agent_config(&self) -> &[codex_core::config_types::AgentConfig] {
+        &self.config.agents
+    }
+
+    fn subagent_commands(&self) -> &[codex_core::config_types::SubagentCommandConfig] {
+        &self.config.subagent_commands
+    }
+
+    fn spec_auto_state_mut(&mut self) -> &mut Option<spec_kit::SpecAutoState> {
+        &mut self.spec_auto_state
+    }
+
+    fn spec_auto_state(&self) -> &Option<spec_kit::SpecAutoState> {
+        &self.spec_auto_state
+    }
+}
+// === END FORK-SPECIFIC ===
