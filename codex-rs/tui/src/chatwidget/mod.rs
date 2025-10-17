@@ -21328,5 +21328,21 @@ impl spec_kit::SpecKitContext for ChatWidget<'_> {
     fn spec_auto_state(&self) -> &Option<spec_kit::SpecAutoState> {
         &self.spec_auto_state
     }
+
+    fn collect_guardrail_outcome(
+        &self,
+        spec_id: &str,
+        stage: SpecStage,
+    ) -> std::result::Result<spec_kit::GuardrailOutcome, String> {
+        ChatWidget::collect_guardrail_outcome(self, spec_id, stage)
+    }
+
+    fn run_spec_consensus(
+        &mut self,
+        spec_id: &str,
+        stage: SpecStage,
+    ) -> std::result::Result<(Vec<ratatui::text::Line<'static>>, bool), String> {
+        ChatWidget::run_spec_consensus(self, spec_id, stage)
+    }
 }
 // === END FORK-SPECIFIC ===

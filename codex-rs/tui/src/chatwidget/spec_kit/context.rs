@@ -3,7 +3,7 @@
 //! This trait decouples spec-kit from ChatWidget, enabling independent testing
 //! and reuse.
 
-use super::state::SpecAutoState;
+use super::state::{GuardrailOutcome, SpecAutoState};
 use crate::app_event::BackgroundPlacement;
 use crate::history_cell::HistoryCell;
 use crate::spec_prompts::SpecStage;
@@ -65,6 +65,23 @@ pub trait SpecKitContext {
     fn take_spec_auto_state(&mut self) -> Option<SpecAutoState> {
         self.spec_auto_state_mut().take()
     }
+
+    // === Guardrail & Consensus Operations (T79-Revised) ===
+
+    /// Collect guardrail outcome for a spec/stage
+    fn collect_guardrail_outcome(
+        &self,
+        spec_id: &str,
+        stage: SpecStage,
+    ) -> std::result::Result<GuardrailOutcome, String>;
+
+    /// Run consensus checking for a spec/stage
+    /// Returns (output_lines, consensus_ok)
+    fn run_spec_consensus(
+        &mut self,
+        spec_id: &str,
+        stage: SpecStage,
+    ) -> std::result::Result<(Vec<ratatui::text::Line<'static>>, bool), String>;
 }
 
 #[cfg(test)]
@@ -148,6 +165,30 @@ mod tests {
         fn spec_auto_state(&self) -> &Option<SpecAutoState> {
             &self.spec_auto_state
         }
+
+        fn collect_guardrail_outcome(
+            &self,
+            _spec_id: &str,
+            _stage: SpecStage,
+        ) -> std::result::Result<GuardrailOutcome, String> {
+            // Mock: Return success by default
+            Ok(GuardrailOutcome {
+                success: true,
+                summary: "Mock guardrail success".to_string(),
+                telemetry_path: Some(PathBuf::from("/mock/telemetry.json")),
+                failures: Vec::new(),
+            })
+        }
+
+        fn run_spec_consensus(
+            &mut self,
+            _spec_id: &str,
+            _stage: SpecStage,
+        ) -> std::result::Result<(Vec<ratatui::text::Line<'static>>, bool), String> {
+            // Mock: Return consensus OK
+            use ratatui::text::Line;
+            Ok((vec![Line::from("Mock consensus OK")], true))
+        }
     }
 
     #[test]
@@ -201,5 +242,29 @@ mod tests {
         let taken = ctx.take_spec_auto_state();
         assert!(taken.is_some());
         assert!(ctx.spec_auto_state().is_none());
+    }
+
+    #[test]
+    fn test_mock_context_collect_guardrail() {
+        let ctx = MockSpecKitContext::new();
+
+        let result = ctx.collect_guardrail_outcome("SPEC-TEST", SpecStage::Plan);
+        assert!(result.is_ok());
+
+        let outcome = result.unwrap();
+        assert!(outcome.success);
+        assert!(outcome.summary.contains("Mock"));
+    }
+
+    #[test]
+    fn test_mock_context_run_consensus() {
+        let mut ctx = MockSpecKitContext::new();
+
+        let result = ctx.run_spec_consensus("SPEC-TEST", SpecStage::Plan);
+        assert!(result.is_ok());
+
+        let (lines, ok) = result.unwrap();
+        assert!(ok);
+        assert_eq!(lines.len(), 1);
     }
 }
