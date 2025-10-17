@@ -36,16 +36,16 @@
 
 | Order | Task ID | Title | Status | Owners | PRD | Branch | PR | Last Validation | Evidence | Notes |
 |-------|---------|-------|--------|--------|-----|--------|----|-----------------|----------|-------|
-| 1 | T80 | Unify orchestration paths | TODO | Code |  |  |  |  |  | CRITICAL: Eliminate duplicate Rust/bash orchestration. Make handler.rs canonical, bash wrapper calls TUI. Resolves behavioral drift. |
-| 2 | T81 | Consolidate consensus logic | TODO | Code |  |  |  |  |  | CRITICAL: Implement consensus synthesis fully in Rust or native MCP client. Remove bash→Python→MCP chain. Fixes brittle integration. |
-| 3 | T82 | Complete SpecKitContext migration | TODO | Code |  |  |  |  |  | CRITICAL: Migrate all 10 handlers to trait-based design. Enables isolated testing. Completes T76 abstraction. |
-| 4 | T83 | Configuration schema validation | TODO | Code |  |  |  |  |  | MODERATE: Add JSON Schema validation for config.toml. Centralize quality_gates_enabled, telemetry settings. Prevent typo-induced bugs. |
-| 5 | T84 | Typed error handling migration | TODO | Code |  |  |  |  |  | MODERATE: Replace `Result<T, String>` with `SpecKitError` in guardrail.rs, consensus.rs. Improves error context and recovery. |
-| 6 | T86 | Code hygiene pass | TODO | Code |  |  |  |  |  | MODERATE: Fix 50 compiler warnings (unused imports, dead code). Run `cargo fix`, `cargo clippy --fix`. Production hygiene. |
-| 7 | T87 | E2E pipeline tests | TODO | Code |  |  |  |  |  | OPPORTUNITY: Full `/speckit.auto` integration test with all 6 stages + 3 quality checkpoints. Validates end-to-end flow. |
-| 8 | T88 | Agent cancellation protocol | TODO | Code |  |  |  |  |  | OPPORTUNITY: Implement SIGTERM propagation to child agents. Add timeout enforcement. Prevents orphaned processes. |
-| 9 | T89 | MCP tool discovery | TODO | Code |  |  |  |  |  | OPPORTUNITY: Registry mechanism for dynamic MCP tool loading. Reduces config.toml maintenance. |
-| 10 | T90 | Observability metrics | TODO | Code |  |  |  |  |  | OPPORTUNITY: Add metrics endpoint (success rates, timing, errors). Enable monitoring and alerting. |
+| 1 | T80 | Unify orchestration paths | TODO | Code | docs/spec-kit/REBASE_SAFETY_MATRIX_T80-T90.md |  |  |  |  | CRITICAL: Eliminate duplicate Rust/bash orchestration. **REBASE-SAFE**: New file `orchestrator.rs` (500 lines), handler.rs +5 lines delegation. Isolation: 99.5%. |
+| 2 | T81 | Consolidate consensus logic | TODO | Code | docs/spec-kit/REBASE_SAFETY_MATRIX_T80-T90.md |  |  |  |  | CRITICAL: Implement consensus synthesis fully in Rust. **REBASE-SAFE**: New file `consensus_native.rs` (300 lines), NO upstream changes. Isolation: 100%. |
+| 3 | T82 | Complete SpecKitContext migration | TODO | Code | docs/spec-kit/REBASE_SAFETY_MATRIX_T80-T90.md |  |  |  |  | CRITICAL: Migrate 8 remaining handlers to trait. **REBASE-SAFE**: context.rs +50 lines, chatwidget/mod.rs +20 lines delegation. Isolation: 99.8%. |
+| 4 | T83 | Configuration schema validation | TODO | Code | docs/spec-kit/REBASE_SAFETY_MATRIX_T80-T90.md |  |  |  |  | MODERATE: Config validation without touching core. **REBASE-SAFE**: New file `config_validator.rs` (200 lines), handler.rs +3 lines. Isolation: 100%. |
+| 5 | T84 | Typed error handling migration | TODO | Code | docs/spec-kit/REBASE_SAFETY_MATRIX_T80-T90.md |  |  |  |  | MODERATE: Replace `Result<T, String>` with `SpecKitError`. **REBASE-SAFE**: Internal refactoring in spec_kit/ only. Isolation: 100%. |
+| 6 | T86 | Code hygiene pass | TODO | Code | docs/spec-kit/REBASE_SAFETY_MATRIX_T80-T90.md |  |  |  |  | MODERATE: Fix 50 compiler warnings. **REBASE-SAFE**: Automated `cargo fix`/`clippy` on spec_kit/ only. Isolation: 100%. |
+| 7 | T87 | E2E pipeline tests | TODO | Code | docs/spec-kit/REBASE_SAFETY_MATRIX_T80-T90.md |  |  |  |  | OPPORTUNITY: Full `/speckit.auto` test. **REBASE-SAFE**: New file `tui/tests/spec_auto_e2e.rs` (500 lines). Isolation: 100%. |
+| 8 | T88 | Agent cancellation protocol | TODO | Code | docs/spec-kit/REBASE_SAFETY_MATRIX_T80-T90.md |  |  |  |  | OPPORTUNITY: SIGTERM propagation, timeouts. **REBASE-SAFE**: New file `agent_lifecycle.rs` (300 lines), app.rs +5 lines hook. Isolation: 99%. |
+| 9 | T89 | MCP tool discovery | TODO | Code | docs/spec-kit/REBASE_SAFETY_MATRIX_T80-T90.md |  |  |  |  | OPPORTUNITY: Dynamic tool loading registry. **REBASE-SAFE**: New file `mcp_registry.rs` (250 lines), NO upstream MCP changes. Isolation: 100%. |
+| 10 | T90 | Observability metrics | TODO | Code | docs/spec-kit/REBASE_SAFETY_MATRIX_T80-T90.md |  |  |  |  | OPPORTUNITY: Metrics endpoint (success/timing/errors). **REBASE-SAFE**: New file `metrics.rs` (300 lines), handler.rs +20 lines instrumentation. Isolation: 99.5%. |
 
 ### Completed Tasks
 
