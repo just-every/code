@@ -640,6 +640,8 @@ fn check_consensus_and_advance_spec_auto(widget: &mut ChatWidget) {
     };
 
     let spec_id = state.spec_id.clone();
+    let retry_count = state.agent_retry_count;  // FORK-SPECIFIC: Track retries
+    const MAX_AGENT_RETRIES: u32 = 3;  // FORK-SPECIFIC: Max retry attempts
 
     // Show checking status
     widget.history_push(crate::history_cell::PlainHistoryCell::new(
@@ -653,6 +655,52 @@ fn check_consensus_and_advance_spec_auto(widget: &mut ChatWidget) {
     // Run consensus check
     match widget.run_spec_consensus(&spec_id, current_stage) {
         Ok((consensus_lines, consensus_ok)) => {
+            // FORK-SPECIFIC: Detect empty/invalid results and retry (just-every/code)
+            let results_empty_or_invalid = consensus_lines.iter().any(|line| {
+                let text = line.to_string();
+                text.contains("No structured local-memory entries") ||
+                text.contains("No consensus artifacts") ||
+                text.contains("Missing agent artifacts") ||
+                text.contains("No local-memory entries found")
+            });
+
+            const MAX_AGENT_RETRIES: u32 = 3;
+
+            if (results_empty_or_invalid || !consensus_ok) && retry_count < MAX_AGENT_RETRIES {
+                widget.history_push(crate::history_cell::PlainHistoryCell::new(
+                    consensus_lines.clone(),
+                    HistoryCellType::Notice,
+                ));
+
+                widget.history_push(crate::history_cell::PlainHistoryCell::new(
+                    vec![
+                        ratatui::text::Line::from(format!(
+                            "⚠ Empty/invalid agent results. Retrying {}/{} ...",
+                            retry_count + 1,
+                            MAX_AGENT_RETRIES
+                        )),
+                    ],
+                    crate::history_cell::HistoryCellType::Notice,
+                ));
+
+                // Increment retry and re-execute
+                if let Some(state) = widget.spec_auto_state.as_mut() {
+                    state.agent_retry_count += 1;
+                    state.agent_retry_context = Some(format!(
+                        "Previous attempt returned invalid/empty results (retry {}/{}). Store ALL analysis in local-memory with remember command.",
+                        retry_count + 1,
+                        MAX_AGENT_RETRIES
+                    ));
+                    // Reset to Guardrail phase to re-run the stage
+                    state.phase = SpecAutoPhase::Guardrail;
+                }
+
+                // Re-trigger guardrail → agents for this stage
+                advance_spec_auto(widget);
+                return;
+            }
+
+            // Show consensus result
             widget.history_push(crate::history_cell::PlainHistoryCell::new(
                 consensus_lines,
                 if consensus_ok {
@@ -671,8 +719,10 @@ fn check_consensus_and_advance_spec_auto(widget: &mut ChatWidget) {
                     HistoryCellType::Notice,
                 ));
 
-                // Move to next stage
+                // FORK-SPECIFIC: Reset retry counter on success
                 if let Some(state) = widget.spec_auto_state.as_mut() {
+                    state.agent_retry_count = 0;
+                    state.agent_retry_context = None;
                     state.phase = SpecAutoPhase::Guardrail;
                     state.current_index += 1;
                 }
@@ -680,21 +730,52 @@ fn check_consensus_and_advance_spec_auto(widget: &mut ChatWidget) {
                 // Trigger next stage
                 advance_spec_auto(widget);
             } else {
+                // Consensus failed after retries
                 halt_spec_auto_with_error(
                     widget,
                     format!(
-                        "Consensus failed for {} - see evidence above",
-                        current_stage.display_name()
+                        "Consensus failed for {} after {} retries",
+                        current_stage.display_name(),
+                        retry_count
                     ),
                 );
             }
         }
         Err(err) => {
+            // FORK-SPECIFIC: Retry on consensus errors (just-every/code)
+            if retry_count < MAX_AGENT_RETRIES {
+                widget.history_push(crate::history_cell::PlainHistoryCell::new(
+                    vec![
+                        ratatui::text::Line::from(format!(
+                            "⚠ Consensus error: {}. Retrying {}/{} ...",
+                            err,
+                            retry_count + 1,
+                            MAX_AGENT_RETRIES
+                        )),
+                    ],
+                    crate::history_cell::HistoryCellType::Notice,
+                ));
+
+                if let Some(state) = widget.spec_auto_state.as_mut() {
+                    state.agent_retry_count += 1;
+                    state.agent_retry_context = Some(format!(
+                        "Previous attempt had consensus error (retry {}/{}). Ensure proper local-memory storage.",
+                        retry_count + 1,
+                        MAX_AGENT_RETRIES
+                    ));
+                    state.phase = SpecAutoPhase::Guardrail;
+                }
+
+                advance_spec_auto(widget);
+                return;
+            }
+
             halt_spec_auto_with_error(
                 widget,
                 format!(
-                    "Failed to check consensus for {}: {}",
+                    "Consensus check failed for {} after {} retries: {}",
                     current_stage.display_name(),
+                    retry_count,
                     err
                 ),
             );
