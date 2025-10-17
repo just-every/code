@@ -345,23 +345,30 @@ pub fn handle_spec_auto(widget: &mut ChatWidget, spec_id: String) {
     // Use lifecycle manager instead of direct spawning
 }
 
-// ✅ HOOK: App shutdown (+5 lines)
-impl App {
-    pub fn cleanup(&mut self) {
-        if let Some(lifecycle) = &mut self.agent_lifecycle {
-            lifecycle.cancel_all();  // +1 line
-        }
+// ✅ BETTER: Drop implementation (automatic cleanup, NO app.rs hook)
+impl Drop for AgentLifecycleManager {
+    fn drop(&mut self) {
+        // Automatically cancel all agents when dropped
+        self.cancel_all();
     }
 }
+
+// ✅ STORE: In SpecAutoState (gets dropped when pipeline completes)
+pub struct SpecAutoState {
+    // ... existing fields ...
+    agent_lifecycle: Option<AgentLifecycleManager>,  // +1 field
+}
+
+// When pipeline completes: widget.spec_auto_state = None; → Drop → agents cancelled
 ```
 
-**Rebase Impact:**
+**Rebase Impact (REVISED - ZERO UPSTREAM CHANGES)**:
 - New file: `agent_lifecycle.rs` - **Zero conflict**
+- Changed: `state.rs` - **+1 field** (internal to spec_kit)
 - Changed: `handler.rs` - **+10 lines** (use new manager)
-- Changed: `app.rs` - **+5 lines** (cleanup hook)
-- Unchanged: Agent spawning upstream code - **Zero conflict** (wrapped, not modified)
+- Changed: `app.rs` - **ZERO LINES** (Drop handles cleanup automatically)
 
-**Isolation:** 99% (tiny app.rs hook, but well-isolated)
+**Isolation:** 100% (was 99%, now improved to 100%)
 
 ---
 
