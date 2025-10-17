@@ -5,7 +5,7 @@
 use crate::slash_command::{HalMode, SlashCommand};
 use crate::spec_prompts::SpecStage;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 /// Phase tracking for /speckit.auto pipeline
@@ -19,6 +19,32 @@ pub enum SpecAutoPhase {
         completed_agents: HashSet<String>,
     },
     CheckingConsensus,
+
+    // === Quality Gate Phases (T85) ===
+    /// Executing quality gate agents
+    QualityGateExecuting {
+        checkpoint: QualityCheckpoint,
+        gates: Vec<QualityGateType>,
+        active_gates: HashSet<QualityGateType>,
+        expected_agents: Vec<String>,
+        completed_agents: HashSet<String>,
+        results: HashMap<String, Value>,  // agent_id -> JSON result
+    },
+
+    /// Processing quality gate results (classification + GPT-5 validation)
+    QualityGateProcessing {
+        checkpoint: QualityCheckpoint,
+        auto_resolved: Vec<QualityIssue>,
+        escalated: Vec<QualityIssue>,
+        gpt5_validations_pending: usize,
+    },
+
+    /// Awaiting human answers for escalated questions
+    QualityGateAwaitingHuman {
+        checkpoint: QualityCheckpoint,
+        questions: Vec<EscalatedQuestion>,
+        answers: HashMap<String, String>,  // question_id -> human_answer
+    },
 }
 
 /// Waiting state for guardrail execution
@@ -42,6 +68,11 @@ pub struct SpecAutoState {
     pub validate_retries: u32,
     pub pending_prompt_summary: Option<String>,
     pub hal_mode: Option<HalMode>,
+
+    // === Quality Gate State (T85) ===
+    pub quality_gates_enabled: bool,
+    pub completed_checkpoints: HashSet<QualityCheckpoint>,
+    pub quality_modifications: Vec<String>,  // Track files modified by quality gates
 }
 
 impl SpecAutoState {
@@ -51,6 +82,16 @@ impl SpecAutoState {
         goal: String,
         resume_from: SpecStage,
         hal_mode: Option<HalMode>,
+    ) -> Self {
+        Self::with_quality_gates(spec_id, goal, resume_from, hal_mode, true)
+    }
+
+    pub fn with_quality_gates(
+        spec_id: String,
+        goal: String,
+        resume_from: SpecStage,
+        hal_mode: Option<HalMode>,
+        quality_gates_enabled: bool,
     ) -> Self {
         let stages = vec![
             SpecStage::Plan,
@@ -64,16 +105,35 @@ impl SpecAutoState {
             .iter()
             .position(|stage| *stage == resume_from)
             .unwrap_or(0);
+
+        // Determine initial phase based on quality gates
+        let initial_phase = if quality_gates_enabled && resume_from == SpecStage::Plan {
+            // Start with pre-planning quality checkpoint
+            SpecAutoPhase::QualityGateExecuting {
+                checkpoint: QualityCheckpoint::PrePlanning,
+                gates: QualityCheckpoint::PrePlanning.gates().to_vec(),
+                active_gates: HashSet::new(),
+                expected_agents: Vec::new(),
+                completed_agents: HashSet::new(),
+                results: HashMap::new(),
+            }
+        } else {
+            SpecAutoPhase::Guardrail
+        };
+
         Self {
             spec_id,
             goal,
             stages,
             current_index: start_index,
-            phase: SpecAutoPhase::Guardrail,
+            phase: initial_phase,
             waiting_guardrail: None,
             validate_retries: 0,
             pending_prompt_summary: None,
             hal_mode,
+            quality_gates_enabled,
+            completed_checkpoints: HashSet::new(),
+            quality_modifications: Vec::new(),
         }
     }
 
@@ -101,6 +161,161 @@ pub struct GuardrailOutcome {
     pub summary: String,
     pub telemetry_path: Option<PathBuf>,
     pub failures: Vec<String>,
+}
+
+// === Quality Gate Types (T85) ===
+
+/// Quality checkpoint in the pipeline
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum QualityCheckpoint {
+    /// Before planning (runs clarify + checklist)
+    PrePlanning,
+    /// After plan created (runs analyze)
+    PostPlan,
+    /// After tasks created (runs analyze)
+    PostTasks,
+}
+
+impl QualityCheckpoint {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::PrePlanning => "pre-planning",
+            Self::PostPlan => "post-plan",
+            Self::PostTasks => "post-tasks",
+        }
+    }
+
+    pub fn gates(&self) -> &[QualityGateType] {
+        match self {
+            Self::PrePlanning => &[QualityGateType::Clarify, QualityGateType::Checklist],
+            Self::PostPlan => &[QualityGateType::Analyze],
+            Self::PostTasks => &[QualityGateType::Analyze],
+        }
+    }
+}
+
+/// Type of quality gate
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum QualityGateType {
+    /// Identify and resolve ambiguities
+    Clarify,
+    /// Score and improve requirements
+    Checklist,
+    /// Check consistency across artifacts
+    Analyze,
+}
+
+impl QualityGateType {
+    pub fn command_name(&self) -> &'static str {
+        match self {
+            Self::Clarify => "clarify",
+            Self::Checklist => "checklist",
+            Self::Analyze => "analyze",
+        }
+    }
+}
+
+/// Agent confidence level (derived from agreement)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Confidence {
+    /// All agents agree (3/3)
+    High,
+    /// Majority agree (2/3)
+    Medium,
+    /// No consensus (0-1/3)
+    Low,
+}
+
+/// Issue magnitude/severity
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Magnitude {
+    /// Blocks progress, affects core functionality
+    Critical,
+    /// Significant but not blocking
+    Important,
+    /// Nice-to-have, cosmetic, minor
+    Minor,
+}
+
+/// Whether agents can resolve the issue
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resolvability {
+    /// Straightforward fix, apply immediately
+    AutoFix,
+    /// Fix available but needs validation
+    SuggestFix,
+    /// Requires human judgment
+    NeedHuman,
+}
+
+/// Quality issue identified by agents
+#[derive(Debug, Clone)]
+pub struct QualityIssue {
+    pub id: String,
+    pub gate_type: QualityGateType,
+    pub issue_type: String,
+    pub description: String,
+    pub confidence: Confidence,
+    pub magnitude: Magnitude,
+    pub resolvability: Resolvability,
+    pub suggested_fix: Option<String>,
+    pub context: String,
+    pub affected_artifacts: Vec<String>,
+    pub agent_answers: HashMap<String, String>,
+    pub agent_reasoning: HashMap<String, String>,
+}
+
+/// GPT-5 validation result for majority answers
+#[derive(Debug, Clone)]
+pub struct GPT5ValidationResult {
+    pub agrees_with_majority: bool,
+    pub reasoning: String,
+    pub recommended_answer: Option<String>,
+    pub confidence: Confidence,
+}
+
+/// Resolution decision for a quality issue
+#[derive(Debug, Clone)]
+pub enum Resolution {
+    /// Auto-apply the answer
+    AutoApply {
+        answer: String,
+        confidence: Confidence,
+        reason: String,
+        validation: Option<GPT5ValidationResult>,
+    },
+    /// Escalate to human
+    Escalate {
+        reason: String,
+        all_answers: HashMap<String, String>,
+        gpt5_reasoning: Option<String>,
+        recommended: Option<String>,
+    },
+}
+
+/// Escalated question requiring human input
+#[derive(Debug, Clone)]
+pub struct EscalatedQuestion {
+    pub id: String,
+    pub gate_type: QualityGateType,
+    pub question: String,
+    pub context: String,
+    pub agent_answers: HashMap<String, String>,
+    pub gpt5_reasoning: Option<String>,
+    pub magnitude: Magnitude,
+    pub suggested_options: Vec<String>,
+}
+
+/// Outcome of a quality checkpoint (one or more gates)
+#[derive(Debug, Clone)]
+pub struct QualityCheckpointOutcome {
+    pub checkpoint: QualityCheckpoint,
+    pub total_issues: usize,
+    pub auto_resolved: usize,
+    pub escalated: usize,
+    pub escalated_questions: Vec<EscalatedQuestion>,
+    pub auto_resolutions: Vec<(QualityIssue, String)>,  // (issue, applied_answer)
+    pub telemetry_path: Option<PathBuf>,
 }
 
 // === Helper Functions ===

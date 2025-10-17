@@ -87,5 +87,54 @@
       "After each stage: persist Gemini/Claude/GPT transcripts (with MCP IDs) to evidence dir and local-memory.",
       "On failure: emit resume token {stage, reason, suggested fix}."
     ]
+  },
+  "quality-gate-clarify": {
+    "version": "20251016-clarify-gate-a",
+    "gemini": {
+      "role": "Ambiguity Detector",
+      "prompt": "Analyze SPEC ${SPEC_ID} for ambiguities, unclear requirements, or missing details.\n\nClassification Rules:\n- confidence: high (obvious ambiguity), medium (probable), low (uncertain)\n- magnitude: critical (blocks progress), important (significant), minor (nice-to-have)\n- resolvability: auto-fix (industry standard/obvious), suggest-fix (reasonable default), need-human (judgment required)\n\nOutput JSON:\n{\n  \"stage\": \"quality-gate-clarify\",\n  \"agent\": \"gemini\",\n  \"model\": \"${MODEL_ID}\",\n  \"issues\": [\n    {\n      \"id\": string,\n      \"question\": string,\n      \"answer\": string (your answer),\n      \"confidence\": \"high\"|\"medium\"|\"low\",\n      \"magnitude\": \"critical\"|\"important\"|\"minor\",\n      \"resolvability\": \"auto-fix\"|\"suggest-fix\"|\"need-human\",\n      \"reasoning\": string,\n      \"context\": string,\n      \"affected_requirements\": [string]\n    }\n  ]\n}\n\nAuto-fix examples: \"Log errors?\"→yes, \"HTTPS?\"→yes (security). Escalate architectural decisions."
+    },
+    "claude": {
+      "role": "Ambiguity Resolver",
+      "prompt": "Review SPEC ${SPEC_ID} for unclear or ambiguous requirements.\n\nFor each ambiguity:\n1. Determine if answer is obvious (industry standard, security best practice)\n2. Classify confidence based on your certainty\n3. Assess impact (critical architectural decision vs minor detail)\n\nOutput JSON:\n{\n  \"stage\": \"quality-gate-clarify\",\n  \"agent\": \"claude\",\n  \"model\": \"${MODEL_ID}\",\n  \"issues\": [\n    {\n      \"id\": string,\n      \"question\": string,\n      \"answer\": string,\n      \"confidence\": \"high\"|\"medium\"|\"low\",\n      \"magnitude\": \"critical\"|\"important\"|\"minor\",\n      \"resolvability\": \"auto-fix\"|\"suggest-fix\"|\"need-human\",\n      \"reasoning\": string,\n      \"context\": string\n    }\n  ]\n}\n\nBe conservative: if unsure or critical, mark need-human."
+    },
+    "code": {
+      "role": "Implementation Validator",
+      "prompt": "Identify ambiguities in SPEC ${SPEC_ID} from implementation perspective.\n\nFocus on:\n- Missing technical details (APIs, data formats, protocols)\n- Unclear acceptance criteria\n- Implementation assumptions\n\nOutput JSON:\n{\n  \"stage\": \"quality-gate-clarify\",\n  \"agent\": \"code\",\n  \"model\": \"${MODEL_ID}\",\n  \"issues\": [\n    {\n      \"id\": string,\n      \"question\": string,\n      \"answer\": string (technical answer),\n      \"confidence\": \"high\"|\"medium\"|\"low\",\n      \"magnitude\": \"critical\"|\"important\"|\"minor\",\n      \"resolvability\": \"auto-fix\"|\"suggest-fix\"|\"need-human\",\n      \"reasoning\": string,\n      \"context\": string\n    }\n  ]\n}\n\nMark architectural or business decisions as need-human."
+    }
+  },
+  "quality-gate-checklist": {
+    "version": "20251016-checklist-gate-a",
+    "gemini": {
+      "role": "Requirement Scorer",
+      "prompt": "Score each requirement in SPEC ${SPEC_ID} on 0-10 scale.\n\nCriteria:\n- Specificity: Concrete vs vague\n- Testability: Can verify completion\n- Completeness: All details present\n- Clarity: Unambiguous language\n\nFor requirements scoring <6.0, suggest improvement if obvious.\n\nOutput JSON:\n{\n  \"stage\": \"quality-gate-checklist\",\n  \"agent\": \"gemini\",\n  \"model\": \"${MODEL_ID}\",\n  \"requirements\": [\n    {\n      \"id\": string,\n      \"text\": string,\n      \"scores\": {\n        \"specificity\": number,\n        \"testability\": number,\n        \"completeness\": number,\n        \"clarity\": number\n      },\n      \"overall\": number (average),\n      \"needs_improvement\": boolean (<6.0),\n      \"suggested_improvement\": string|null,\n      \"confidence\": \"high\"|\"medium\"|\"low\",\n      \"resolvability\": \"auto-fix\"|\"suggest-fix\"|\"need-human\"\n    }\n  ]\n}"
+    },
+    "claude": {
+      "role": "Quality Assessor",
+      "prompt": "Evaluate requirement quality in SPEC ${SPEC_ID}. Score 0-10, suggest improvements.\n\nOutput JSON:\n{\n  \"stage\": \"quality-gate-checklist\",\n  \"agent\": \"claude\",\n  \"model\": \"${MODEL_ID}\",\n  \"requirements\": [\n    {\n      \"id\": string,\n      \"text\": string,\n      \"scores\": {\"specificity\": number, \"testability\": number, \"completeness\": number, \"clarity\": number},\n      \"overall\": number,\n      \"needs_improvement\": boolean,\n      \"suggested_improvement\": string|null,\n      \"confidence\": \"high\"|\"medium\"|\"low\",\n      \"resolvability\": \"auto-fix\"|\"suggest-fix\"|\"need-human\"\n    }\n  ]\n}"
+    },
+    "code": {
+      "role": "Implementation Assessor",
+      "prompt": "Score requirements in SPEC ${SPEC_ID} from implementability perspective.\n\nOutput JSON:\n{\n  \"stage\": \"quality-gate-checklist\",\n  \"agent\": \"code\",\n  \"model\": \"${MODEL_ID}\",\n  \"requirements\": [\n    {\n      \"id\": string,\n      \"text\": string,\n      \"scores\": {\"specificity\": number, \"testability\": number, \"completeness\": number, \"clarity\": number},\n      \"overall\": number,\n      \"needs_improvement\": boolean,\n      \"suggested_improvement\": string|null,\n      \"confidence\": \"high\"|\"medium\"|\"low\",\n      \"resolvability\": \"auto-fix\"|\"suggest-fix\"|\"need-human\"\n    }\n  ]\n}"
+    }
+  },
+  "quality-gate-analyze": {
+    "version": "20251016-analyze-gate-a",
+    "gemini": {
+      "role": "Consistency Checker",
+      "prompt": "Check consistency between artifacts for SPEC ${SPEC_ID}.\n\nContext: ${ARTIFACTS} (spec.md, plan.md if post-plan, tasks.md if post-tasks)\n\nLook for:\n- Missing requirements in downstream artifacts\n- Terminology mismatches\n- Contradictions\n- Coverage gaps\n\nOutput JSON:\n{\n  \"stage\": \"quality-gate-analyze\",\n  \"agent\": \"gemini\",\n  \"model\": \"${MODEL_ID}\",\n  \"issues\": [\n    {\n      \"id\": string,\n      \"type\": \"missing_requirement\"|\"terminology\"|\"contradiction\"|\"coverage_gap\",\n      \"description\": string,\n      \"severity\": \"critical\"|\"important\"|\"minor\",\n      \"affected_artifacts\": [string],\n      \"suggested_fix\": string|null,\n      \"confidence\": \"high\"|\"medium\"|\"low\",\n      \"resolvability\": \"auto-fix\"|\"suggest-fix\"|\"need-human\"\n    }\n  ]\n}\n\nAuto-fix minor terminology issues. Escalate missing requirements."
+    },
+    "claude": {
+      "role": "Artifact Validator",
+      "prompt": "Validate artifact consistency for SPEC ${SPEC_ID}.\n\nArtifacts: ${ARTIFACTS}\n\nOutput JSON:\n{\n  \"stage\": \"quality-gate-analyze\",\n  \"agent\": \"claude\",\n  \"model\": \"${MODEL_ID}\",\n  \"issues\": [\n    {\n      \"id\": string,\n      \"type\": string,\n      \"description\": string,\n      \"severity\": \"critical\"|\"important\"|\"minor\",\n      \"affected_artifacts\": [string],\n      \"suggested_fix\": string|null,\n      \"confidence\": \"high\"|\"medium\"|\"low\",\n      \"resolvability\": \"auto-fix\"|\"suggest-fix\"|\"need-human\"\n    }\n  ]\n}"
+    },
+    "code": {
+      "role": "Coverage Validator",
+      "prompt": "Check that downstream artifacts cover all SPEC requirements.\n\nSPEC: ${SPEC_ID}\nArtifacts: ${ARTIFACTS}\n\nOutput JSON:\n{\n  \"stage\": \"quality-gate-analyze\",\n  \"agent\": \"code\",\n  \"model\": \"${MODEL_ID}\",\n  \"issues\": [\n    {\n      \"id\": string,\n      \"type\": string,\n      \"description\": string,\n      \"severity\": \"critical\"|\"important\"|\"minor\",\n      \"affected_artifacts\": [string],\n      \"suggested_fix\": string|null,\n      \"confidence\": \"high\"|\"medium\"|\"low\",\n      \"resolvability\": \"auto-fix\"|\"suggest-fix\"|\"need-human\"\n    }\n  ]\n}"
+    }
+  },
+  "gpt5-validation": {
+    "version": "20251016-validation-a",
+    "prompt": "You are validating a majority answer (2/3 agents agreed) for a quality gate issue.\n\nSPEC Content:\n${SPEC_CONTENT}\n\nPRD Content:\n${PRD_CONTENT}\n\nQuestion: ${QUESTION}\n\nAgent Answers:\n- Agent 1 (agrees): ${ANSWER_1} - Reasoning: ${REASONING_1}\n- Agent 2 (agrees): ${ANSWER_2} - Reasoning: ${REASONING_2}\n- Agent 3 (disagrees): ${ANSWER_3} - Reasoning: ${REASONING_3}\n\nMajority Answer: ${MAJORITY_ANSWER}\nDissenting Reasoning: ${DISSENT_REASONING}\n\nYour Task:\n1. Analyze SPEC intent and requirements context\n2. Evaluate if majority answer aligns with SPEC goals\n3. Consider if dissenting reasoning reveals valid concern\n4. Determine if majority should be applied or escalated\n\nOutput JSON:\n{\n  \"agrees_with_majority\": boolean,\n  \"reasoning\": string (detailed analysis),\n  \"recommended_answer\": string|null (if you disagree),\n  \"confidence\": \"high\"|\"medium\"|\"low\",\n  \"critical_flag\": boolean (true if issue is architectural/critical)\n}\n\nIf the dissenting view makes a valid point about SPEC intent, reject the majority."
   }
 }

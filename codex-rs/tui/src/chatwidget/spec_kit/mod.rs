@@ -14,6 +14,7 @@ pub mod error;
 pub mod evidence;
 pub mod guardrail;
 pub mod handler;
+pub mod quality;
 pub mod routing;
 pub mod state;
 
@@ -38,6 +39,9 @@ pub use routing::try_dispatch_spec_kit_command;
 // Re-export state types and helpers
 pub use state::{
     GuardrailOutcome, SpecAutoState, spec_ops_stage_prefix, validate_guardrail_evidence,
+    // Quality gate types (T85)
+    Confidence, EscalatedQuestion, GPT5ValidationResult, Magnitude, QualityCheckpoint,
+    QualityCheckpointOutcome, QualityGateType, QualityIssue, Resolvability, Resolution,
 };
 
 // Re-export handler functions
@@ -45,4 +49,10 @@ pub use handler::{
     advance_spec_auto, auto_submit_spec_stage_prompt, halt_spec_auto_with_error, handle_guardrail,
     handle_spec_auto, handle_spec_consensus, handle_spec_status, on_spec_auto_agents_complete,
     on_spec_auto_task_complete, on_spec_auto_task_started,
+};
+
+// Re-export quality gate functions
+pub use quality::{
+    classify_issue_agreement, find_dissent, find_majority_answer, merge_agent_issues,
+    parse_quality_issue_from_agent, resolve_quality_issue, should_auto_resolve,
 };

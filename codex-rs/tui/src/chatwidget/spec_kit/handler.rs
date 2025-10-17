@@ -182,6 +182,16 @@ pub fn advance_spec_auto(widget: &mut ChatWidget) {
                     SpecAutoPhase::CheckingConsensus => {
                         return;
                     }
+                    // Quality gate phases - not implemented yet, continue for now
+                    SpecAutoPhase::QualityGateExecuting { .. } => {
+                        return; // TODO: Implement quality gate execution
+                    }
+                    SpecAutoPhase::QualityGateProcessing { .. } => {
+                        return; // TODO: Implement result processing
+                    }
+                    SpecAutoPhase::QualityGateAwaitingHuman { .. } => {
+                        return; // TODO: Implement human escalation UI
+                    }
                 }
             }
         };
