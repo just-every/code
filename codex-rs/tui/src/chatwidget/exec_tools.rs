@@ -799,11 +799,14 @@ pub(super) fn handle_exec_end_now(
                     spec_kit::auto_submit_spec_stage_prompt(chat, stage, &spec_id);
                 } else {
                     // Guardrail failed - halt pipeline
-                    spec_kit::halt_spec_auto_with_error(chat, format!(
-                        "Guardrail {} failed with exit code {}",
-                        wait.stage.display_name(),
-                        exit_code
-                    ));
+                    spec_kit::halt_spec_auto_with_error(
+                        chat,
+                        format!(
+                            "Guardrail {} failed with exit code {}",
+                            wait.stage.display_name(),
+                            exit_code
+                        ),
+                    );
                 }
             }
         }
