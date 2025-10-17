@@ -19,6 +19,7 @@ pub mod guardrail;
 pub mod handler;
 pub mod local_memory_client;
 pub mod mcp_registry;
+pub mod metrics;
 pub mod quality;
 pub mod routing;
 pub mod state;
