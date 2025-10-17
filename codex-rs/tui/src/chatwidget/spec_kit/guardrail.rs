@@ -3,11 +3,21 @@
 //! This module handles guardrail script validation, telemetry parsing,
 //! schema compliance checking, and outcome evaluation.
 
-use crate::spec_prompts::SpecStage;
+use super::super::ChatWidget;
+use super::super::agent_install::wrap_command;
+use super::error::{Result, SpecKitError};
+use super::state::{
+    GuardrailEvaluation, GuardrailOutcome, expected_guardrail_command, require_object,
+    require_string_field, validate_guardrail_evidence,
+};
+use crate::app_event::BackgroundPlacement;
+use crate::slash_command::{HalMode, SlashCommand};
+use crate::spec_prompts::{self, SpecAgent, SpecStage};
+use codex_core::protocol::Op;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
-use super::state::{GuardrailEvaluation, GuardrailOutcome, expected_guardrail_command, require_string_field, require_object, validate_guardrail_evidence};
 
 pub fn validate_guardrail_schema(stage: SpecStage, telemetry: &Value) -> Vec<String> {
     let mut failures = Vec::new();
@@ -165,7 +175,6 @@ pub fn validate_guardrail_schema(stage: SpecStage, telemetry: &Value) -> Vec<Str
 
     failures
 }
-
 
 pub fn evaluate_guardrail_value(stage: SpecStage, value: &Value) -> GuardrailEvaluation {
     match stage {
@@ -329,17 +338,22 @@ pub fn read_latest_spec_ops_telemetry(
     cwd: &Path,
     spec_id: &str,
     stage: SpecStage,
-) -> Result<(PathBuf, Value), String> {
+) -> Result<(PathBuf, Value)> {
     let evidence_dir = cwd
         .join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands")
         .join(spec_id);
     let prefix = super::state::spec_ops_stage_prefix(stage);
-    let entries = std::fs::read_dir(&evidence_dir)
-        .map_err(|e| format!("{} ({}): {}", spec_id, stage.command_name(), e))?;
+    let entries = std::fs::read_dir(&evidence_dir).map_err(|e| SpecKitError::DirectoryRead {
+        path: evidence_dir.clone(),
+        source: e,
+    })?;
 
     let mut latest: Option<(PathBuf, SystemTime)> = None;
     for entry_res in entries {
-        let entry = entry_res.map_err(|e| e.to_string())?;
+        let entry = entry_res.map_err(|e| SpecKitError::DirectoryRead {
+            path: evidence_dir.clone(),
+            source: e,
+        })?;
         let path = entry.path();
         if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
             continue;
@@ -363,21 +377,24 @@ pub fn read_latest_spec_ops_telemetry(
         }
     }
 
-    let (path, _) = latest.ok_or_else(|| {
-        format!(
-            "No telemetry files matching {}* in {}",
-            prefix,
-            evidence_dir.display()
-        )
+    let (path, _) = latest.ok_or_else(|| SpecKitError::NoTelemetryFound {
+        spec_id: spec_id.to_string(),
+        stage: stage.command_name().to_string(),
+        pattern: format!("{}*", prefix),
+        directory: evidence_dir.clone(),
     })?;
 
-    let mut file =
-        std::fs::File::open(&path).map_err(|e| format!("Failed to open {}: {e}", path.display()))?;
+    let mut file = std::fs::File::open(&path).map_err(|e| SpecKitError::FileRead {
+        path: path.clone(),
+        source: e,
+    })?;
     let mut buf = String::new();
-    std::io::Read::read_to_string(&mut file, &mut buf)
-        .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
-    let value: Value = serde_json::from_str(&buf)
-        .map_err(|e| format!("Failed to parse telemetry JSON {}: {e}", path.display()))?;
+    std::io::Read::read_to_string(&mut file, &mut buf).map_err(|e| SpecKitError::FileRead {
+        path: path.clone(),
+        source: e,
+    })?;
+    let value: Value =
+        serde_json::from_str(&buf).map_err(|e| SpecKitError::JsonParse { path: path.clone(), source: e })?;
     Ok((path, value))
 }
 
@@ -386,7 +403,7 @@ pub fn collect_guardrail_outcome(
     cwd: &Path,
     spec_id: &str,
     stage: SpecStage,
-) -> Result<GuardrailOutcome, String> {
+) -> Result<GuardrailOutcome> {
     let (path, value) = read_latest_spec_ops_telemetry(cwd, spec_id, stage)?;
     let mut evaluation = evaluate_guardrail_value(stage, &value);
     let schema_failures = validate_guardrail_schema(stage, &value);
@@ -402,11 +419,9 @@ pub fn collect_guardrail_outcome(
             | SpecStage::Audit
             | SpecStage::Unlock
     ) {
-        let (evidence_failures, artifact_count) =
-            validate_guardrail_evidence(cwd, stage, &value);
+        let (evidence_failures, artifact_count) = validate_guardrail_evidence(cwd, stage, &value);
         if artifact_count > 0 {
-            evaluation.summary =
-                format!("{} | {} artifacts", evaluation.summary, artifact_count);
+            evaluation.summary = format!("{} | {} artifacts", evaluation.summary, artifact_count);
         }
         if !evidence_failures.is_empty() {
             evaluation.failures.extend(evidence_failures);
@@ -419,4 +434,236 @@ pub fn collect_guardrail_outcome(
         telemetry_path: Some(path),
         failures: evaluation.failures,
     })
+}
+
+/// Map slash command to spec stage for multi-agent followup (if applicable)
+fn spec_stage_for_multi_agent_followup(command: SlashCommand) -> Option<SpecStage> {
+    match command {
+        SlashCommand::SpecOpsPlan => Some(SpecStage::Plan),
+        SlashCommand::SpecOpsTasks => Some(SpecStage::Tasks),
+        SlashCommand::SpecOpsImplement => Some(SpecStage::Implement),
+        SlashCommand::SpecOpsValidate => Some(SpecStage::Validate),
+        SlashCommand::SpecOpsAudit => Some(SpecStage::Audit),
+        SlashCommand::SpecOpsUnlock => Some(SpecStage::Unlock),
+        _ => None,
+    }
+}
+
+/// Implementation for guardrail command handler (extracted from ChatWidget)
+pub fn handle_guardrail_impl(
+    widget: &mut ChatWidget,
+    command: SlashCommand,
+    raw_args: String,
+    hal_override: Option<HalMode>,
+) {
+    let Some(meta) = command.spec_ops() else {
+        return;
+    };
+    let trimmed = raw_args.trim();
+    let is_stats = meta.script == "evidence_stats.sh";
+
+    let mut spec_id = String::new();
+    let mut remainder = String::new();
+    let mut spec_task = String::new();
+    let mut hal_from_args: Option<HalMode> = None;
+
+    if !is_stats {
+        if trimmed.is_empty() {
+            widget.history_push(crate::history_cell::new_error_event(format!(
+                "`/{}` requires a SPEC ID (e.g. `/{} SPEC-OPS-005`).",
+                command.command(),
+                command.command()
+            )));
+            widget.request_redraw();
+            return;
+        }
+
+        let mut tokens = trimmed.split_whitespace().peekable();
+        spec_id = tokens.next().unwrap().to_string();
+
+        let mut remainder_tokens: Vec<String> = Vec::new();
+        while let Some(token) = tokens.next() {
+            if token == "--hal" || token == "--hal-mode" {
+                let Some(value) = tokens.next() else {
+                    widget.history_push(crate::history_cell::new_error_event(
+                        "`--hal` flag requires a value (mock|live).".to_string(),
+                    ));
+                    widget.request_redraw();
+                    return;
+                };
+                hal_from_args = match HalMode::from_str(value) {
+                    Some(mode) => Some(mode),
+                    None => {
+                        widget.history_push(crate::history_cell::new_error_event(format!(
+                            "Unknown HAL mode '{value}'. Expected 'mock' or 'live'."
+                        )));
+                        widget.request_redraw();
+                        return;
+                    }
+                };
+                continue;
+            }
+
+            if let Some((flag, value)) = token.split_once('=') {
+                if flag == "--hal" || flag == "--hal-mode" {
+                    hal_from_args = match HalMode::from_str(value) {
+                        Some(mode) => Some(mode),
+                        None => {
+                            widget.history_push(crate::history_cell::new_error_event(format!(
+                                "Unknown HAL mode '{value}'. Expected 'mock' or 'live'."
+                            )));
+                            widget.request_redraw();
+                            return;
+                        }
+                    };
+                    continue;
+                }
+            }
+
+            remainder_tokens.push(token.to_string());
+        }
+
+        remainder = remainder_tokens.join(" ");
+        spec_task = if remainder_tokens.is_empty() {
+            spec_id.clone()
+        } else {
+            format!("{spec_id} {remainder}")
+        };
+    }
+
+    let script_path = if meta.script == "spec_auto.sh" || meta.script == "evidence_stats.sh" {
+        format!("scripts/spec_ops_004/{}", meta.script)
+    } else {
+        format!("scripts/spec_ops_004/commands/{}", meta.script)
+    };
+
+    let mut banner = String::new();
+    if is_stats {
+        banner.push_str(&format!("Spec Ops /{}\n", meta.display));
+    } else {
+        banner.push_str(&format!("Spec Ops /{} → {}\n", meta.display, spec_id));
+    }
+    banner.push_str(&format!("  Script: {}\n", script_path));
+
+    let mut stage_prompt_version: Option<String> = None;
+    if script_path.contains("/commands/") {
+        let resolution = codex_core::slash_commands::format_subagent_command(
+            command.command(),
+            &spec_task,
+            Some(&widget.config.agents),
+            Some(&widget.config.subagent_commands),
+        );
+
+        let agent_roster = if resolution.models.is_empty() {
+            "claude,gemini,code".to_string()
+        } else {
+            resolution.models.join(",")
+        };
+
+        let prompt_hint = if resolution.orchestrator_instructions.is_some()
+            || resolution.agent_instructions.is_some()
+        {
+            "custom prompt overrides"
+        } else {
+            "default prompt profile"
+        };
+
+        banner.push_str(&format!("  Agents: {}\n", agent_roster));
+        banner.push_str(&format!("  Prompt: {}\n", prompt_hint));
+    }
+
+    let hal_mode = if hal_override.is_some() {
+        hal_override
+    } else {
+        hal_from_args
+    };
+
+    if let Some(stage) = spec_stage_for_multi_agent_followup(command) {
+        let stage_version = spec_prompts::stage_version_enum(stage);
+        if let Some(version) = stage_version.clone() {
+            stage_prompt_version = Some(version.clone());
+            banner.push_str(&format!("  Prompt version: {}\n", version));
+        }
+        if spec_prompts::agent_prompt(stage.key(), SpecAgent::Gemini).is_some() {
+            banner.push_str(&format!(
+                "  Multi-agent stage available: /{}\n",
+                stage.command_name()
+            ));
+        }
+        if let Some(notes) = spec_prompts::orchestrator_notes(stage.key()) {
+            if !notes.is_empty() {
+                banner.push_str("  Notes:\n");
+                for note in notes {
+                    banner.push_str("    - ");
+                    banner.push_str(&note);
+                    banner.push('\n');
+                }
+            }
+        }
+    }
+
+    if !is_stats {
+        match hal_mode {
+            Some(mode) => banner.push_str(&format!("  HAL mode: {}\n", mode.as_env_value())),
+            None => banner.push_str("  HAL mode: mock (default)\n"),
+        }
+    }
+
+    widget.insert_background_event_with_placement(banner, BackgroundPlacement::Tail);
+
+    // Commands with scripts (guardrails, automation) execute via shell; otherwise, comments/notes only.
+    if meta.script == "COMMENT_ONLY" {
+        return;
+    }
+
+    let mut env = HashMap::new();
+    if let Some(version) = stage_prompt_version {
+        env.insert("SPEC_OPS_004_PROMPT_VERSION".to_string(), version);
+    }
+    if let Ok(prompt_version) = std::env::var("SPEC_OPS_004_PROMPT_VERSION") {
+        env.insert("SPEC_OPS_004_PROMPT_VERSION".to_string(), prompt_version);
+    }
+    if let Ok(code_version) = std::env::var("SPEC_OPS_004_CODE_VERSION") {
+        env.insert("SPEC_OPS_004_CODE_VERSION".to_string(), code_version);
+    }
+
+    if let Some(mode) = hal_mode {
+        env.insert(
+            "SPEC_OPS_HAL_MODE".to_string(),
+            mode.as_env_value().to_string(),
+        );
+        if matches!(mode, HalMode::Live) {
+            env.entry("SPEC_OPS_TELEMETRY_HAL".to_string())
+                .or_insert_with(|| "1".to_string());
+        }
+    }
+
+    let command_line = if is_stats {
+        if trimmed.is_empty() {
+            format!("scripts/env_run.sh {script_path}")
+        } else {
+            format!("scripts/env_run.sh {script_path} {trimmed}")
+        }
+    } else if remainder.is_empty() {
+        format!("scripts/env_run.sh {script_path} {spec_id}")
+    } else {
+        format!("scripts/env_run.sh {script_path} {spec_id} {remainder}")
+    };
+
+    let wrapped = wrap_command(&command_line);
+    if wrapped.is_empty() {
+        widget.history_push(crate::history_cell::new_error_event(
+            "Unable to build Spec Ops command invocation.".to_string(),
+        ));
+        widget.request_redraw();
+        return;
+    }
+
+    widget.submit_op(Op::RunProjectCommand {
+        name: format!("spec_ops_{}", meta.display),
+        command: Some(wrapped),
+        display: Some(command_line),
+        env,
+    });
+    widget.request_redraw();
 }

@@ -641,7 +641,7 @@ pub enum SpecAutoParseError {
     UnknownHalMode(String),
 }
 
-fn parse_spec_auto_args(args: &str) -> Result<SpecAutoInvocation, SpecAutoParseError> {
+pub fn parse_spec_auto_args(args: &str) -> Result<SpecAutoInvocation, SpecAutoParseError> {
     let mut tokens = args.trim().split_whitespace();
     let Some(spec_token) = tokens.next() else {
         return Err(SpecAutoParseError::MissingSpecId);

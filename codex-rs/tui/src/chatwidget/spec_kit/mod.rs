@@ -6,10 +6,25 @@
 //! Uses free functions instead of methods to avoid Rust borrow checker issues
 //! when accessing ChatWidget fields.
 
+pub mod command_registry;
+pub mod commands;
 pub mod consensus;
+pub mod context;
+pub mod error;
+pub mod evidence;
 pub mod guardrail;
 pub mod handler;
+pub mod routing;
 pub mod state;
+
+// Re-export context types
+pub use context::SpecKitContext;
+
+// Re-export error types
+pub use error::{Result, SpecKitError};
+
+// Re-export evidence types
+pub use evidence::{EvidenceCategory, EvidenceRepository, FilesystemEvidence};
 
 // Re-export key consensus functions
 pub use consensus::collect_consensus_artifacts;
@@ -17,10 +32,12 @@ pub use consensus::collect_consensus_artifacts;
 // Re-export guardrail functions
 pub use guardrail::{evaluate_guardrail_value, validate_guardrail_schema};
 
+// Re-export routing functions
+pub use routing::try_dispatch_spec_kit_command;
+
 // Re-export state types and helpers
 pub use state::{
-    GuardrailOutcome, SpecAutoState,
-    spec_ops_stage_prefix, validate_guardrail_evidence,
+    GuardrailOutcome, SpecAutoState, spec_ops_stage_prefix, validate_guardrail_evidence,
 };
 
 // Re-export handler functions

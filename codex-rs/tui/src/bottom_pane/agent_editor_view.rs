@@ -675,8 +675,13 @@ mod tests {
         // Layout height may vary by 1-2 lines depending on formatting
         let expected_height = preferred_layout.lines.len().saturating_add(2) as u16;
         let actual_height = view.desired_height(area.width);
-        assert!((expected_height.saturating_sub(1)..=expected_height.saturating_add(1)).contains(&actual_height),
-                "Height mismatch: expected {} ±1, got {}", expected_height, actual_height);
+        assert!(
+            (expected_height.saturating_sub(1)..=expected_height.saturating_add(1))
+                .contains(&actual_height),
+            "Height mismatch: expected {} ±1, got {}",
+            expected_height,
+            actual_height
+        );
 
         let spacer_idx = (preferred_layout.instr_offset + preferred_layout.instr_height) as usize;
         // Spacer line check - layout may have changed, skip this assertion

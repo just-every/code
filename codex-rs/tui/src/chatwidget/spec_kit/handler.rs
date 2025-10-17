@@ -85,8 +85,8 @@ pub fn handle_guardrail(
     raw_args: String,
     hal_override: Option<crate::slash_command::HalMode>,
 ) {
-    // Delegate to ChatWidget method for now (complex logic with environment setup)
-    widget.handle_guardrail_impl(command, raw_args, hal_override);
+    // Delegate to guardrail module implementation
+    super::guardrail::handle_guardrail_impl(widget, command, raw_args, hal_override);
 }
 
 // === Spec Auto Pipeline Methods ===

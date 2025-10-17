@@ -1043,8 +1043,14 @@ mod tests {
 
         // Check that percentages are present and correct
         // The exact label format may vary, so check for the percentages themselves
-        assert!(summary.contains("30%"), "Should contain hourly percentage 30%");
-        assert!(summary.contains("60%"), "Should contain weekly percentage 60%");
+        assert!(
+            summary.contains("30%"),
+            "Should contain hourly percentage 30%"
+        );
+        assert!(
+            summary.contains("60%"),
+            "Should contain weekly percentage 60%"
+        );
 
         // Verify they're not swapped by checking context
         let lines: Vec<&str> = summary.lines().collect();
