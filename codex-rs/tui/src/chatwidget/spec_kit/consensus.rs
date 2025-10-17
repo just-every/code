@@ -197,7 +197,7 @@ use std::fs;
 use std::path::Path;
 
 /// Collect consensus artifacts from evidence files or local-memory
-pub fn collect_consensus_artifacts(
+pub(crate) fn collect_consensus_artifacts(
     evidence_root: &Path,
     spec_id: &str,
     stage: SpecStage,
@@ -392,7 +392,7 @@ fn fetch_memory_entries(
 }
 
 /// Load latest consensus synthesis file for spec/stage
-pub fn load_latest_consensus_synthesis(
+pub(crate) fn load_latest_consensus_synthesis(
     cwd: &Path,
     spec_id: &str,
     stage: SpecStage,
@@ -751,7 +751,7 @@ pub fn run_spec_consensus(
 use std::io::Write;
 
 /// Persist consensus verdict to evidence directory
-pub fn persist_consensus_verdict(
+pub(crate) fn persist_consensus_verdict(
     cwd: &Path,
     spec_id: &str,
     stage: SpecStage,
@@ -779,7 +779,7 @@ pub fn persist_consensus_verdict(
 }
 
 /// Persist consensus telemetry bundle with artifacts
-pub fn persist_consensus_telemetry_bundle(
+pub(crate) fn persist_consensus_telemetry_bundle(
     cwd: &Path,
     spec_id: &str,
     stage: SpecStage,
@@ -880,7 +880,7 @@ pub fn persist_consensus_telemetry_bundle(
 }
 
 /// Remember consensus verdict in local-memory
-pub fn remember_consensus_verdict(
+pub(crate) fn remember_consensus_verdict(
     spec_id: &str,
     stage: SpecStage,
     verdict: &ConsensusVerdict,

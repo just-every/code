@@ -26,12 +26,11 @@ use crate::slash_command::HalMode;
 use crate::slash_command::SlashCommand;
 use crate::slash_command::SpecAutoInvocation;
 use crate::spec_prompts;
-use crate::spec_prompts::{SpecAgent, SpecStage};
+use crate::spec_prompts::SpecStage;
 use spec_kit::consensus::{
     ConsensusArtifactVerdict, ConsensusEvidenceHandle, ConsensusSynthesisRaw,
     ConsensusSynthesisSummary, ConsensusTelemetryPaths, ConsensusVerdict,
-    expected_agents_for_stage, extract_string_list, parse_consensus_stage, telemetry_agent_slug,
-    telemetry_value_truthy, validate_required_fields,
+    expected_agents_for_stage, extract_string_list, telemetry_agent_slug, validate_required_fields,
 };
 use spec_kit::{
     GuardrailOutcome, SpecAutoState, spec_ops_stage_prefix, validate_guardrail_evidence,

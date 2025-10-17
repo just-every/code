@@ -2,7 +2,6 @@
 
 use super::super::command_registry::SpecKitCommand;
 use super::super::super::ChatWidget;
-use super::super::handler;
 use crate::slash_command::HalMode;
 
 /// Command: /guardrail.plan (and /spec-ops-plan)

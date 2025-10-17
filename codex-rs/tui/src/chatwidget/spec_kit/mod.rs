@@ -23,13 +23,11 @@ pub mod state;
 pub use context::SpecKitContext;
 
 // Re-export error types
-pub use error::{Result, SpecKitError};
 
 // Re-export evidence types
-pub use evidence::{EvidenceCategory, EvidenceRepository, FilesystemEvidence};
 
-// Re-export key consensus functions
-pub use consensus::collect_consensus_artifacts;
+// Re-export key consensus functions (pub(crate) since types are private)
+pub(crate) use consensus::collect_consensus_artifacts;
 
 // Re-export guardrail functions
 pub use guardrail::{evaluate_guardrail_value, validate_guardrail_schema};
@@ -41,30 +39,22 @@ pub use routing::try_dispatch_spec_kit_command;
 pub use state::{
     GuardrailOutcome, SpecAutoState, spec_ops_stage_prefix, validate_guardrail_evidence,
     // Quality gate types (T85)
-    Confidence, EscalatedQuestion, GPT5ValidationResult, Magnitude, QualityCheckpoint,
-    QualityCheckpointOutcome, QualityGateType, QualityIssue, Resolvability, Resolution,
+    Confidence, EscalatedQuestion, Magnitude, QualityCheckpoint, QualityGateType, QualityIssue, Resolvability, Resolution,
 };
 
 // Re-export handler functions
 pub use handler::{
     advance_spec_auto, auto_submit_spec_stage_prompt, halt_spec_auto_with_error, handle_guardrail,
     handle_spec_auto, handle_spec_consensus, handle_spec_status, on_spec_auto_agents_complete,
-    on_spec_auto_task_complete, on_spec_auto_task_started,
-    // Quality gate handlers (T85)
-    on_gpt5_validations_complete, on_quality_gate_agents_complete, on_quality_gate_answers,
+    on_spec_auto_task_complete, on_spec_auto_task_started, on_quality_gate_answers,
     on_quality_gate_cancelled,
 };
 
 // Re-export quality gate functions
 pub use quality::{
-    apply_auto_resolution, build_quality_checkpoint_telemetry, build_quality_gate_commit_message,
-    build_quality_gate_summary, classify_issue_agreement, find_dissent, find_majority_answer,
+    classify_issue_agreement,
     merge_agent_issues, parse_quality_issue_from_agent, resolve_quality_issue,
     should_auto_resolve,
 };
 
 // Re-export file modification functions
-pub use file_modifier::{
-    apply_modification, restore_from_backup, ChangeType, InsertPosition, LineChange,
-    ModificationOutcome, SpecModification,
-};

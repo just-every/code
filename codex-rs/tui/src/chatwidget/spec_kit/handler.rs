@@ -8,7 +8,6 @@ use super::evidence::EvidenceRepository;
 use super::state::{GuardrailWait, SpecAutoPhase};
 use crate::app_event::BackgroundPlacement;
 use crate::history_cell::HistoryCellType;
-use crate::local_memory_util;
 use crate::slash_command::{HalMode, SlashCommand};
 use crate::spec_prompts::SpecStage;
 use crate::spec_status::{SpecStatusArgs, collect_report, degraded_warning, render_dashboard};
@@ -1402,7 +1401,7 @@ fn execute_quality_checkpoint(
         let prompt = build_quality_gate_prompt(&spec_id, *gate, checkpoint);
 
         // Format as subagent command and submit
-        let formatted = codex_core::slash_commands::format_subagent_command(
+        let _formatted = codex_core::slash_commands::format_subagent_command(
             gate.command_name(),
             &spec_id,
             None,
