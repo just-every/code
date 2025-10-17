@@ -985,6 +985,7 @@ fn call_gpt5_validation_sync(
 ) -> super::error::Result<super::state::GPT5ValidationResult> {
     use super::error::SpecKitError;
     use super::state::{Confidence, GPT5ValidationResult};
+    use serde_json::json;
 
     // Build validation prompt
     let prompt = build_gpt5_validation_prompt(
@@ -996,38 +997,25 @@ fn call_gpt5_validation_sync(
         dissent,
     );
 
-    // TODO: Make actual HTTP call to GPT-5 API
-    // For MVP, return placeholder that always agrees
-    // Real implementation would use reqwest or similar to call OpenAI API
+    // Get API key from environment
+    let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| {
+        SpecKitError::from_string(
+            "OPENAI_API_KEY not set - cannot call GPT-5 validation. Set environment variable or disable quality gates."
+        )
+    })?;
 
-    // Placeholder: Parse question text to make a reasonable guess
-    let critical_keywords = ["architectural", "schema", "breaking", "fundamental"];
-    let question_lower = question.to_lowercase();
-    let is_critical = critical_keywords.iter().any(|k| question_lower.contains(k));
+    // Make synchronous HTTP call to OpenAI API
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| SpecKitError::from_string(format!("Failed to build HTTP client: {}", e)))?;
 
-    // Conservative: If critical or dissent exists, be cautious
-    let agrees = !is_critical && dissent.is_none();
-
-    Ok(GPT5ValidationResult {
-        agrees_with_majority: agrees,
-        reasoning: format!(
-            "Placeholder validation: {} (critical={}, has_dissent={})",
-            if agrees { "Agrees" } else { "Rejects" },
-            is_critical,
-            dissent.is_some()
-        ),
-        recommended_answer: if !agrees { Some(dissent.unwrap_or("Needs human judgment").to_string()) } else { None },
-        confidence: if agrees { Confidence::High } else { Confidence::Medium },
-    })
-
-    // REAL IMPLEMENTATION (commented out - needs API key + async runtime):
-    /*
-    let client = reqwest::blocking::Client::new();
     let response = client
         .post("https://api.openai.com/v1/chat/completions")
         .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
         .json(&json!({
-            "model": "gpt-5-pro",
+            "model": "gpt-4o",  // Using GPT-4o as proxy for GPT-5
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.3,
             "response_format": {"type": "json_object"}
@@ -1035,19 +1023,33 @@ fn call_gpt5_validation_sync(
         .send()
         .map_err(|e| SpecKitError::from_string(format!("GPT-5 API call failed: {}", e)))?;
 
-    let json: serde_json::Value = response.json()
+    if !response.status().is_success() {
+        return Err(SpecKitError::from_string(format!(
+            "GPT-5 API returned error: {}",
+            response.status()
+        )));
+    }
+
+    let response_json: serde_json::Value = response
+        .json()
         .map_err(|e| SpecKitError::from_string(format!("Failed to parse GPT-5 response: {}", e)))?;
 
-    let content = json["choices"][0]["message"]["content"]
+    let content = response_json["choices"][0]["message"]["content"]
         .as_str()
         .ok_or_else(|| SpecKitError::from_string("No content in GPT-5 response"))?;
 
-    let result: serde_json::Value = serde_json::from_str(content)
-        .map_err(|e| SpecKitError::JsonParse { ... })?;
+    let result: serde_json::Value = serde_json::from_str(content).map_err(|e| {
+        SpecKitError::from_string(format!("Failed to parse GPT-5 JSON response: {}", e))
+    })?;
 
     Ok(GPT5ValidationResult {
-        agrees_with_majority: result["agrees_with_majority"].as_bool().unwrap_or(false),
-        reasoning: result["reasoning"].as_str().unwrap_or("").to_string(),
+        agrees_with_majority: result["agrees_with_majority"]
+            .as_bool()
+            .unwrap_or(false),
+        reasoning: result["reasoning"]
+            .as_str()
+            .unwrap_or("No reasoning provided")
+            .to_string(),
         recommended_answer: result["recommended_answer"].as_str().map(String::from),
         confidence: match result["confidence"].as_str() {
             Some("high") => Confidence::High,
@@ -1055,7 +1057,6 @@ fn call_gpt5_validation_sync(
             _ => Confidence::Low,
         },
     })
-    */
 }
 
 /// Build GPT-5 validation prompt
