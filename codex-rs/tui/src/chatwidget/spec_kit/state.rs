@@ -31,12 +31,11 @@ pub enum SpecAutoPhase {
         results: HashMap<String, Value>,  // agent_id -> JSON result
     },
 
-    /// Processing quality gate results (classification + GPT-5 validation)
+    /// Processing quality gate results (classification + inline GPT-5 validation)
     QualityGateProcessing {
         checkpoint: QualityCheckpoint,
         auto_resolved: Vec<QualityIssue>,
         escalated: Vec<QualityIssue>,
-        gpt5_validations_pending: usize,
     },
 
     /// Awaiting human answers for escalated questions
