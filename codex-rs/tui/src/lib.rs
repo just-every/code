@@ -71,8 +71,12 @@ mod streaming;
 pub use chatwidget::spec_kit::{
     classify_issue_agreement, merge_agent_issues, parse_quality_issue_from_agent,
     resolve_quality_issue, should_auto_resolve, Confidence, Magnitude, QualityCheckpoint,
-    QualityGateType, QualityIssue, Resolution, Resolvability,
+    QualityGateType, QualityIssue, Resolution, Resolvability, SpecAutoState,
 };
+
+// Re-export supporting types for E2E testing (T87)
+pub use spec_prompts::SpecStage;
+pub use slash_command::HalMode;
 mod terminal_info;
 // mod text_block; // Orphaned after trait-based HistoryCell migration
 mod text_formatting;
