@@ -51,7 +51,8 @@ pub use handler::{
     handle_spec_auto, handle_spec_consensus, handle_spec_status, on_spec_auto_agents_complete,
     on_spec_auto_task_complete, on_spec_auto_task_started,
     // Quality gate handlers (T85)
-    on_quality_gate_agents_complete, on_quality_gate_answers, on_quality_gate_cancelled,
+    on_gpt5_validations_complete, on_quality_gate_agents_complete, on_quality_gate_answers,
+    on_quality_gate_cancelled,
 };
 
 // Re-export quality gate functions

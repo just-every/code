@@ -8,6 +8,7 @@ use super::evidence::EvidenceRepository;
 use super::state::{GuardrailWait, SpecAutoPhase};
 use crate::app_event::BackgroundPlacement;
 use crate::history_cell::HistoryCellType;
+use crate::local_memory_util;
 use crate::slash_command::{HalMode, SlashCommand};
 use crate::spec_prompts::SpecStage;
 use crate::spec_status::{SpecStatusArgs, collect_report, degraded_warning, render_dashboard};
@@ -193,12 +194,15 @@ pub fn advance_spec_auto(widget: &mut ChatWidget) {
                     SpecAutoPhase::CheckingConsensus => {
                         return;
                     }
-                    // Quality gate phases - not implemented yet, continue for now
+                    // Quality gate phases
                     SpecAutoPhase::QualityGateExecuting { .. } => {
                         return; // Waiting for quality gate agents
                     }
                     SpecAutoPhase::QualityGateProcessing { .. } => {
                         return; // Processing results
+                    }
+                    SpecAutoPhase::QualityGateValidating { .. } => {
+                        return; // Waiting for GPT-5 validation responses
                     }
                     SpecAutoPhase::QualityGateAwaitingHuman { .. } => {
                         return; // Waiting for human input
@@ -491,44 +495,65 @@ pub fn on_spec_auto_agents_complete(widget: &mut ChatWidget) {
         }
     }
 
-    // Update completed agents in state
-    let is_quality_gate = if let Some(state) = widget.spec_auto_state.as_mut() {
+    // Update completed agents in state and determine phase type
+    let phase_type = if let Some(state) = widget.spec_auto_state.as_mut() {
         match &mut state.phase {
             SpecAutoPhase::ExecutingAgents {
                 completed_agents, ..
             } => {
                 *completed_agents = completed_names.clone();
-                false
+                "regular"
             }
             SpecAutoPhase::QualityGateExecuting {
                 completed_agents, ..
             } => {
                 *completed_agents = completed_names.clone();
-                true
+                "quality_gate"
             }
-            _ => false,
+            SpecAutoPhase::QualityGateValidating { .. } => {
+                // GPT-5 validation phase - single agent (GPT-5)
+                "gpt5_validation"
+            }
+            _ => "none",
         }
     } else {
-        false
+        "none"
     };
 
-    // Check if all expected agents completed
-    let all_expected_complete = expected_agents
-        .iter()
-        .all(|expected| completed_names.contains(&expected.to_lowercase()));
+    // Handle different phase types
+    match phase_type {
+        "quality_gate" => {
+            // Check if all quality gate agents completed
+            let all_complete = expected_agents
+                .iter()
+                .all(|exp| completed_names.contains(&exp.to_lowercase()));
 
-    if all_expected_complete {
-        if is_quality_gate {
-            // Quality gate agents done - process results
-            on_quality_gate_agents_complete(widget);
-        } else {
-            // Regular stage agents done - trigger consensus check
-            if let Some(state) = widget.spec_auto_state.as_mut() {
-                state.phase = SpecAutoPhase::CheckingConsensus;
+            if all_complete {
+                on_quality_gate_agents_complete(widget);
             }
-            check_consensus_and_advance_spec_auto(widget);
         }
-    } else {
+        "gpt5_validation" => {
+            // GPT-5 validation completing - check local-memory
+            on_gpt5_validations_complete(widget);
+        }
+        "regular" => {
+            // Regular stage agents
+            let all_complete = expected_agents
+                .iter()
+                .all(|exp| completed_names.contains(&exp.to_lowercase()));
+
+            if all_complete {
+                if let Some(state) = widget.spec_auto_state.as_mut() {
+                    state.phase = SpecAutoPhase::CheckingConsensus;
+                }
+                check_consensus_and_advance_spec_auto(widget);
+            }
+        }
+        _ => {}
+    }
+
+    // Check for failures in any phase
+    if !matches!(phase_type, "gpt5_validation") {
         // Check for failed agents
         let has_failures = widget
             .active_agents
@@ -806,105 +831,38 @@ pub fn on_quality_gate_agents_complete(widget: &mut ChatWidget) {
         state.quality_auto_resolved.extend(auto_resolved_list.clone());
     }
 
-    // Step 5: Handle majority issues - validate with GPT-5 synchronously
-    let mut gpt5_validated = Vec::new();
-    let mut gpt5_rejected = Vec::new();
-
+    // Step 5: Handle majority issues - submit to GPT-5 for validation
     if !majority_issues.is_empty() {
         widget.history_push(crate::history_cell::PlainHistoryCell::new(
             vec![
-                ratatui::text::Line::from(format!("Validating {} majority answers with GPT-5...", majority_issues.len())),
+                ratatui::text::Line::from(format!("Submitting {} majority answers to GPT-5 for validation...", majority_issues.len())),
             ],
             crate::history_cell::HistoryCellType::Notice,
         ));
 
-        // Read SPEC for context
-        let spec_path = cwd.join(format!("docs/{}/spec.md", spec_id));
-        let spec_content = std::fs::read_to_string(&spec_path).unwrap_or_default();
-        let prd_path = cwd.join(format!("docs/{}/PRD.md", spec_id));
-        let prd_content = std::fs::read_to_string(&prd_path).ok();
+        // Submit GPT-5 validation prompts via agent system
+        submit_gpt5_validations(widget, &majority_issues, &spec_id, &cwd);
 
-        for issue in majority_issues {
-            let (_, majority_answer, dissent) = super::quality::classify_issue_agreement(&issue.agent_answers);
-            let majority = majority_answer.unwrap_or_default();
+        // Transition to validating phase - wait for GPT-5 responses
+        if let Some(state) = widget.spec_auto_state.as_mut() {
+            let auto_resolved_issues: Vec<_> = auto_resolved_list.iter().map(|(issue, _)| issue.clone()).collect();
 
-            // Call GPT-5 validation synchronously
-            match call_gpt5_validation_sync(
-                &issue.description,
-                &spec_content,
-                prd_content.as_deref(),
-                &issue.agent_answers,
-                &majority,
-                dissent.as_deref(),
-            ) {
-                Ok(validation) => {
-                    if validation.agrees_with_majority {
-                        // GPT-5 validated - auto-apply
-                        let spec_dir = cwd.join(format!("docs/{}", spec_id));
-                        match super::quality::apply_auto_resolution(&issue, &majority, &spec_dir) {
-                            Ok(outcome) => {
-                                widget.history_push(crate::history_cell::PlainHistoryCell::new(
-                                    vec![
-                                        ratatui::text::Line::from(format!("✅ GPT-5 validated: {} → {}", issue.description, majority)),
-                                    ],
-                                    crate::history_cell::HistoryCellType::Notice,
-                                ));
-
-                                gpt5_validated.push((issue.clone(), majority.clone()));
-
-                                if let Some(state) = widget.spec_auto_state.as_mut() {
-                                    let file_name = outcome.file_path.file_name()
-                                        .and_then(|n| n.to_str())
-                                        .unwrap_or("unknown")
-                                        .to_string();
-                                    if !state.quality_modifications.contains(&file_name) {
-                                        state.quality_modifications.push(file_name);
-                                    }
-                                }
-                            }
-                            Err(err) => {
-                                widget.history_push(crate::history_cell::new_error_event(format!(
-                                    "Failed to apply GPT-5 validated resolution: {}", err
-                                )));
-                            }
-                        }
-                    } else {
-                        // GPT-5 rejected majority - escalate
-                        gpt5_rejected.push((issue, validation));
-                    }
-                }
-                Err(err) => {
-                    // Validation failed - escalate to be safe
-                    widget.history_push(crate::history_cell::new_error_event(format!(
-                        "GPT-5 validation failed for '{}': {} - escalating",
-                        issue.description, err
-                    )));
-
-                    gpt5_rejected.push((issue, super::state::GPT5ValidationResult {
-                        agrees_with_majority: false,
-                        reasoning: format!("Validation API error: {}", err),
-                        recommended_answer: None,
-                        confidence: super::state::Confidence::Low,
-                    }));
-                }
-            }
+            state.phase = SpecAutoPhase::QualityGateValidating {
+                checkpoint,
+                auto_resolved: auto_resolved_issues,
+                pending_validations: majority_issues.into_iter().map(|issue| {
+                    let (_, majority, _) = super::quality::classify_issue_agreement(&issue.agent_answers);
+                    (issue, majority.unwrap_or_default())
+                }).collect(),
+                completed_validations: std::collections::HashMap::new(),
+            };
         }
+
+        return; // Wait for GPT-5 responses
     }
 
-    // Track GPT-5 validated resolutions
-    if let Some(state) = widget.spec_auto_state.as_mut() {
-        state.quality_auto_resolved.extend(gpt5_validated.clone());
-    }
-
-    // Combine GPT-5 rejected + no consensus for final escalation
+    // No majority issues - handle no consensus escalations
     let mut all_escalations = Vec::new();
-
-    // Add GPT-5 rejected issues
-    for (issue, validation) in gpt5_rejected {
-        all_escalations.push((issue, Some(validation)));
-    }
-
-    // Add no consensus issues
     for issue in no_consensus_issues {
         all_escalations.push((issue, None));
     }
@@ -920,10 +878,10 @@ pub fn on_quality_gate_agents_complete(widget: &mut ChatWidget) {
                     question: issue.description.clone(),
                     context: issue.context.clone(),
                     agent_answers: issue.agent_answers.clone(),
-                    gpt5_reasoning: validation_opt.as_ref().map(|v| v.reasoning.clone()),
+                    gpt5_reasoning: validation_opt.as_ref().map(|v: &super::state::GPT5ValidationResult| v.reasoning.clone()),
                     magnitude: issue.magnitude,
                     suggested_options: validation_opt
-                        .and_then(|v| v.recommended_answer)
+                        .and_then(|v: super::state::GPT5ValidationResult| v.recommended_answer)
                         .into_iter()
                         .collect(),
                 };
@@ -936,7 +894,7 @@ pub fn on_quality_gate_agents_complete(widget: &mut ChatWidget) {
                 ratatui::text::Line::from(format!(
                     "Quality Gate: {} - {} auto-resolved, {} need your input",
                     checkpoint.name(),
-                    auto_resolved_list.len() + gpt5_validated.len(),
+                    auto_resolved_list.len(),
                     escalated_questions.len()
                 )),
             ],
@@ -972,91 +930,51 @@ pub fn on_quality_gate_agents_complete(widget: &mut ChatWidget) {
     }
 }
 
-/// Call GPT-5 synchronously for validation
-///
-/// Makes HTTP API call to GPT-5, parses response, returns validation result
-fn call_gpt5_validation_sync(
-    question: &str,
-    spec_content: &str,
-    prd_content: Option<&str>,
-    agent_answers: &std::collections::HashMap<String, String>,
-    majority_answer: &str,
-    dissent: Option<&str>,
-) -> super::error::Result<super::state::GPT5ValidationResult> {
-    use super::error::SpecKitError;
-    use super::state::{Confidence, GPT5ValidationResult};
-    use serde_json::json;
+/// Submit GPT-5 validation prompts via existing agent system
+fn submit_gpt5_validations(
+    widget: &mut ChatWidget,
+    majority_issues: &[super::state::QualityIssue],
+    spec_id: &str,
+    cwd: &std::path::Path,
+) {
+    // Read SPEC content for validation context
+    let spec_path = cwd.join(format!("docs/{}/spec.md", spec_id));
+    let spec_content = std::fs::read_to_string(&spec_path).unwrap_or_default();
 
-    // Build validation prompt
-    let prompt = build_gpt5_validation_prompt(
-        question,
-        spec_content,
-        prd_content,
-        agent_answers,
-        majority_answer,
-        dissent,
-    );
+    let prd_path = cwd.join(format!("docs/{}/PRD.md", spec_id));
+    let prd_content = std::fs::read_to_string(&prd_path).ok();
 
-    // Get API key from environment
-    let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| {
-        SpecKitError::from_string(
-            "OPENAI_API_KEY not set - cannot call GPT-5 validation. Set environment variable or disable quality gates."
-        )
-    })?;
+    // Submit ONE combined validation prompt (not separate per issue)
+    // This way we get one agent response with all validations
+    let mut validation_prompts = Vec::new();
 
-    // Make synchronous HTTP call to OpenAI API
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| SpecKitError::from_string(format!("Failed to build HTTP client: {}", e)))?;
+    for (idx, issue) in majority_issues.iter().enumerate() {
+        let (_, majority_answer, dissent) = super::quality::classify_issue_agreement(&issue.agent_answers);
 
-    let response = client
-        .post("https://api.openai.com/v1/chat/completions")
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
-        .json(&json!({
-            "model": "gpt-4o",  // Using GPT-4o as proxy for GPT-5
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.3,
-            "response_format": {"type": "json_object"}
-        }))
-        .send()
-        .map_err(|e| SpecKitError::from_string(format!("GPT-5 API call failed: {}", e)))?;
-
-    if !response.status().is_success() {
-        return Err(SpecKitError::from_string(format!(
-            "GPT-5 API returned error: {}",
-            response.status()
-        )));
+        validation_prompts.push(format!(
+            "Issue {}: {}\nMajority answer: {}\nDissent: {}\n",
+            idx + 1,
+            issue.description,
+            majority_answer.as_deref().unwrap_or("unknown"),
+            dissent.as_deref().unwrap_or("N/A")
+        ));
     }
 
-    let response_json: serde_json::Value = response
-        .json()
-        .map_err(|e| SpecKitError::from_string(format!("Failed to parse GPT-5 response: {}", e)))?;
+    let combined_prompt = format!(
+        "You are validating {} quality gate issues for SPEC {}.\n\nSPEC Content:\n{}\n\n{}\n\nValidate each issue and output JSON array:\n[\n  {{\n    \"issue_index\": 1,\n    \"agrees_with_majority\": boolean,\n    \"reasoning\": string,\n    \"recommended_answer\": string|null,\n    \"confidence\": \"high\"|\"medium\"|\"low\"\n  }}\n]\n\nIssues:\n{}",
+        majority_issues.len(),
+        spec_id,
+        spec_content,
+        prd_content.as_deref().unwrap_or(""),
+        validation_prompts.join("\n")
+    );
 
-    let content = response_json["choices"][0]["message"]["content"]
-        .as_str()
-        .ok_or_else(|| SpecKitError::from_string("No content in GPT-5 response"))?;
-
-    let result: serde_json::Value = serde_json::from_str(content).map_err(|e| {
-        SpecKitError::from_string(format!("Failed to parse GPT-5 JSON response: {}", e))
-    })?;
-
-    Ok(GPT5ValidationResult {
-        agrees_with_majority: result["agrees_with_majority"]
-            .as_bool()
-            .unwrap_or(false),
-        reasoning: result["reasoning"]
-            .as_str()
-            .unwrap_or("No reasoning provided")
-            .to_string(),
-        recommended_answer: result["recommended_answer"].as_str().map(String::from),
-        confidence: match result["confidence"].as_str() {
-            Some("high") => Confidence::High,
-            Some("medium") => Confidence::Medium,
-            _ => Confidence::Low,
-        },
-    })
+    // Submit via existing agent system
+    // Agent will store result in local-memory with stage="gpt5-validation"
+    widget.submit_prompt_with_display(
+        format!("[GPT-5 Validation] {}", spec_id),
+        combined_prompt,
+    );
 }
 
 /// Build GPT-5 validation prompt
@@ -1216,149 +1134,203 @@ pub fn on_quality_gate_answers(
 }
 
 /// Handle GPT-5 validations completing
-// DELETED: pub fn on_gpt5_validations_complete(widget: &mut ChatWidget) {
-// DELETED:     let Some(state) = widget.spec_auto_state.as_ref() else {
-// DELETED:         return;
-// DELETED:     };
-// DELETED: 
-// DELETED:     let (checkpoint, auto_resolved, pending_validations, completed_validations) = match &state.phase {
-// DELETED:         SpecAutoPhase::QualityGateValidating {
-// DELETED:             checkpoint,
-// DELETED:             auto_resolved,
-// DELETED:             pending_validations,
-// DELETED:             completed_validations,
-// DELETED:             ..
-// DELETED:         } => (
-// DELETED:             *checkpoint,
-// DELETED:             auto_resolved.clone(),
-// DELETED:             pending_validations.clone(),
-// DELETED:             completed_validations.clone(),
-// DELETED:         ),
-// DELETED:         _ => return,
-// DELETED:     };
-// DELETED: 
-// DELETED:     let spec_id = state.spec_id.clone();
-// DELETED:     let cwd = widget.config.cwd.clone();
-// DELETED: 
-// DELETED:     // Check if all validations completed
-// DELETED:     if completed_validations.len() < pending_validations.len() {
-// DELETED:         return; // Still waiting
-// DELETED:     }
-// DELETED: 
-// DELETED:     widget.history_push(crate::history_cell::PlainHistoryCell::new(
-// DELETED:         vec![
-// DELETED:             ratatui::text::Line::from(format!("GPT-5 validation complete: {} results processed", completed_validations.len())),
-// DELETED:         ],
-// DELETED:         crate::history_cell::HistoryCellType::Notice,
-// DELETED:     ));
-// DELETED: 
-// DELETED:     // Process validation results
-// DELETED:     let mut validated_auto_resolved = Vec::new();
-// DELETED:     let mut validation_rejected = Vec::new();
-// DELETED: 
-// DELETED:     for (idx, (issue, majority_answer)) in pending_validations.iter().enumerate() {
-// DELETED:         if let Some(validation) = completed_validations.get(&idx) {
-// DELETED:             if validation.agrees_with_majority {
-// DELETED:                 // GPT-5 validated - auto-apply
-// DELETED:                 let spec_dir = cwd.join(format!("docs/{}", spec_id));
-// DELETED:                 match super::quality::apply_auto_resolution(issue, majority_answer, &spec_dir) {
-// DELETED:                     Ok(outcome) => {
-// DELETED:                         widget.history_push(crate::history_cell::PlainHistoryCell::new(
-// DELETED:                             vec![
-// DELETED:                                 ratatui::text::Line::from(format!("✅ GPT-5 validated: {} → {}", issue.description, majority_answer)),
-// DELETED:                             ],
-// DELETED:                             crate::history_cell::HistoryCellType::Notice,
-// DELETED:                         ));
-// DELETED: 
-// DELETED:                         validated_auto_resolved.push((issue.clone(), majority_answer.clone()));
-// DELETED: 
-// DELETED:                         if let Some(state) = widget.spec_auto_state.as_mut() {
-// DELETED:                             let file_name = outcome.file_path.file_name()
-// DELETED:                                 .and_then(|n| n.to_str())
-// DELETED:                                 .unwrap_or("unknown")
-// DELETED:                                 .to_string();
-// DELETED:                             if !state.quality_modifications.contains(&file_name) {
-// DELETED:                                 state.quality_modifications.push(file_name);
-// DELETED:                             }
-// DELETED:                         }
-// DELETED:                     }
-// DELETED:                     Err(err) => {
-// DELETED:                         widget.history_push(crate::history_cell::new_error_event(format!(
-// DELETED:                             "Failed to apply GPT-5 validated resolution: {}", err
-// DELETED:                         )));
-// DELETED:                     }
-// DELETED:                 }
-// DELETED:             } else {
-// DELETED:                 // GPT-5 rejected - escalate
-// DELETED:                 validation_rejected.push((issue.clone(), validation.clone()));
-// DELETED:             }
-// DELETED:         }
-// DELETED:     }
-// DELETED: 
-// DELETED:     // Track validated resolutions
-// DELETED:     if let Some(state) = widget.spec_auto_state.as_mut() {
-// DELETED:         state.quality_auto_resolved.extend(validated_auto_resolved.clone());
-// DELETED:     }
-// DELETED: 
-// DELETED:     if validation_rejected.is_empty() {
-// DELETED:         // All validations accepted - continue pipeline
-// DELETED:         widget.history_push(crate::history_cell::PlainHistoryCell::new(
-// DELETED:             vec![
-// DELETED:                 ratatui::text::Line::from(format!("Quality Gate: {} complete - all validations accepted", checkpoint.name())),
-// DELETED:             ],
-// DELETED:             crate::history_cell::HistoryCellType::Notice,
-// DELETED:         ));
-// DELETED: 
-// DELETED:         if let Some(state) = widget.spec_auto_state.as_mut() {
-// DELETED:             state.completed_checkpoints.insert(checkpoint);
-// DELETED:             state.quality_checkpoint_outcomes.push((
-// DELETED:                 checkpoint,
-// DELETED:                 auto_resolved.len() + validated_auto_resolved.len(),
-// DELETED:                 0,
-// DELETED:             ));
-// DELETED:             state.phase = SpecAutoPhase::Guardrail;
-// DELETED:         }
-// DELETED: 
-// DELETED:         advance_spec_auto(widget);
-// DELETED:     } else {
-// DELETED:         // Some validations rejected - escalate those issues
-// DELETED:         let escalated_questions: Vec<_> = validation_rejected.iter().map(|(issue, validation)| {
-// DELETED:             super::state::EscalatedQuestion {
-// DELETED:                 id: issue.id.clone(),
-// DELETED:                 gate_type: issue.gate_type,
-// DELETED:                 question: issue.description.clone(),
-// DELETED:                 context: issue.context.clone(),
-// DELETED:                 agent_answers: issue.agent_answers.clone(),
-// DELETED:                 gpt5_reasoning: Some(validation.reasoning.clone()),
-// DELETED:                 magnitude: issue.magnitude,
-// DELETED:                 suggested_options: validation.recommended_answer.clone().into_iter().collect(),
-// DELETED:             }
-// DELETED:         }).collect();
-// DELETED: 
-// DELETED:         widget.history_push(crate::history_cell::PlainHistoryCell::new(
-// DELETED:             vec![
-// DELETED:                 ratatui::text::Line::from(format!(
-// DELETED:                     "Quality Gate: {} - {} GPT-5 validated, {} rejected (escalating)",
-// DELETED:                     checkpoint.name(),
-// DELETED:                     validated_auto_resolved.len(),
-// DELETED:                     validation_rejected.len()
-// DELETED:                 )),
-// DELETED:             ],
-// DELETED:             crate::history_cell::HistoryCellType::Notice,
-// DELETED:         ));
-// DELETED: 
-// DELETED:         widget.bottom_pane.show_quality_gate_modal(checkpoint, escalated_questions.clone());
-// DELETED: 
-// DELETED:         if let Some(state) = widget.spec_auto_state.as_mut() {
-// DELETED:             state.phase = SpecAutoPhase::QualityGateAwaitingHuman {
-// DELETED:                 checkpoint,
-// DELETED:                 escalated_issues: validation_rejected.into_iter().map(|(issue, _)| issue).collect(),
-// DELETED:                 escalated_questions,
-// DELETED:                 answers: std::collections::HashMap::new(),
-// DELETED:             };
-// DELETED:         }
-// DELETED:     }
-// DELETED: }
+pub fn on_gpt5_validations_complete(widget: &mut ChatWidget) {
+    let Some(state) = widget.spec_auto_state.as_ref() else {
+        return;
+    };
+
+    let (checkpoint, auto_resolved, pending_validations) = match &state.phase {
+        SpecAutoPhase::QualityGateValidating {
+            checkpoint,
+            auto_resolved,
+            pending_validations,
+            ..
+        } => (
+            *checkpoint,
+            auto_resolved.clone(),
+            pending_validations.clone(),
+        ),
+        _ => return,
+    };
+
+    let spec_id = state.spec_id.clone();
+    let cwd = widget.config.cwd.clone();
+
+    // Query local-memory for GPT-5 validation result
+    // Agent stores result with stage="gpt5-validation"
+    let validation_results = match crate::local_memory_util::search_by_stage(
+        &spec_id,
+        "gpt5-validation",
+        10,
+    ) {
+        Ok(results) if !results.is_empty() => results,
+        _ => {
+            // GPT-5 hasn't completed yet or failed
+            return;
+        }
+    };
+
+    // Parse the first result (should be the GPT-5 validation array)
+    let validation_json: serde_json::Value = match serde_json::from_str(&validation_results[0].memory.content) {
+        Ok(json) => json,
+        Err(err) => {
+            widget.history_push(crate::history_cell::new_error_event(format!(
+                "Failed to parse GPT-5 validation JSON: {}",
+                err
+            )));
+            return;
+        }
+    };
+
+    // Expect array of validations
+    let validation_array = match validation_json.as_array() {
+        Some(arr) => arr,
+        None => {
+            widget.history_push(crate::history_cell::new_error_event(
+                "GPT-5 validation response was not an array".to_string(),
+            ));
+            return;
+        }
+    };
+
+    widget.history_push(crate::history_cell::PlainHistoryCell::new(
+        vec![
+            ratatui::text::Line::from(format!("GPT-5 validation complete: {} results processed", validation_array.len())),
+        ],
+        crate::history_cell::HistoryCellType::Notice,
+    ));
+
+    // Process validation results
+    let mut validated_auto_resolved = Vec::new();
+    let mut validation_rejected = Vec::new();
+
+    for validation_item in validation_array {
+        let issue_index = validation_item["issue_index"].as_u64().unwrap_or(0) as usize;
+
+        // Match to pending validation (issue_index is 1-based in prompt)
+        if issue_index == 0 || issue_index > pending_validations.len() {
+            continue;
+        }
+
+        let (issue, majority_answer) = &pending_validations[issue_index - 1];
+        let agrees = validation_item["agrees_with_majority"].as_bool().unwrap_or(false);
+
+        let validation = super::state::GPT5ValidationResult {
+            agrees_with_majority: agrees,
+            reasoning: validation_item["reasoning"]
+                .as_str()
+                .unwrap_or("No reasoning")
+                .to_string(),
+            recommended_answer: validation_item["recommended_answer"]
+                .as_str()
+                .map(String::from),
+            confidence: match validation_item["confidence"].as_str() {
+                Some("high") => super::state::Confidence::High,
+                Some("medium") => super::state::Confidence::Medium,
+                _ => super::state::Confidence::Low,
+            },
+        };
+
+        if agrees {
+            // GPT-5 validated - auto-apply
+            let spec_dir = cwd.join(format!("docs/{}", spec_id));
+            match super::quality::apply_auto_resolution(issue, majority_answer, &spec_dir) {
+                Ok(outcome) => {
+                    widget.history_push(crate::history_cell::PlainHistoryCell::new(
+                        vec![
+                            ratatui::text::Line::from(format!("✅ GPT-5 validated: {} → {}", issue.description, majority_answer)),
+                        ],
+                        crate::history_cell::HistoryCellType::Notice,
+                    ));
+
+                    validated_auto_resolved.push((issue.clone(), majority_answer.clone()));
+
+                    if let Some(state) = widget.spec_auto_state.as_mut() {
+                        let file_name = outcome.file_path.file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("unknown")
+                            .to_string();
+                        if !state.quality_modifications.contains(&file_name) {
+                            state.quality_modifications.push(file_name);
+                        }
+                    }
+                }
+                Err(err) => {
+                    widget.history_push(crate::history_cell::new_error_event(format!(
+                        "Failed to apply GPT-5 validated resolution: {}", err
+                    )));
+                }
+            }
+        } else {
+            // GPT-5 rejected - escalate
+            validation_rejected.push((issue.clone(), validation));
+        }
+    }
+
+    // Track validated resolutions
+    if let Some(state) = widget.spec_auto_state.as_mut() {
+        state.quality_auto_resolved.extend(validated_auto_resolved.clone());
+    }
+
+    if validation_rejected.is_empty() {
+        // All validations accepted - continue pipeline
+        widget.history_push(crate::history_cell::PlainHistoryCell::new(
+            vec![
+                ratatui::text::Line::from(format!("Quality Gate: {} complete - all validations accepted", checkpoint.name())),
+            ],
+            crate::history_cell::HistoryCellType::Notice,
+        ));
+
+        if let Some(state) = widget.spec_auto_state.as_mut() {
+            state.completed_checkpoints.insert(checkpoint);
+            state.quality_checkpoint_outcomes.push((
+                checkpoint,
+                auto_resolved.len() + validated_auto_resolved.len(),
+                0,
+            ));
+            state.phase = SpecAutoPhase::Guardrail;
+        }
+
+        advance_spec_auto(widget);
+    } else {
+        // Some validations rejected - escalate those issues
+        let escalated_questions: Vec<_> = validation_rejected.iter().map(|(issue, validation)| {
+            super::state::EscalatedQuestion {
+                id: issue.id.clone(),
+                gate_type: issue.gate_type,
+                question: issue.description.clone(),
+                context: issue.context.clone(),
+                agent_answers: issue.agent_answers.clone(),
+                gpt5_reasoning: Some(validation.reasoning.clone()),
+                magnitude: issue.magnitude,
+                suggested_options: validation.recommended_answer.clone().into_iter().collect(),
+            }
+        }).collect();
+
+        widget.history_push(crate::history_cell::PlainHistoryCell::new(
+            vec![
+                ratatui::text::Line::from(format!(
+                    "Quality Gate: {} - {} GPT-5 validated, {} rejected (escalating)",
+                    checkpoint.name(),
+                    validated_auto_resolved.len(),
+                    validation_rejected.len()
+                )),
+            ],
+            crate::history_cell::HistoryCellType::Notice,
+        ));
+
+        widget.bottom_pane.show_quality_gate_modal(checkpoint, escalated_questions.clone());
+
+        if let Some(state) = widget.spec_auto_state.as_mut() {
+            state.phase = SpecAutoPhase::QualityGateAwaitingHuman {
+                checkpoint,
+                escalated_issues: validation_rejected.into_iter().map(|(issue, _)| issue).collect(),
+                escalated_questions,
+                answers: std::collections::HashMap::new(),
+            };
+        }
+    }
+}
 
 /// Handle quality gate cancelled by user
 pub fn on_quality_gate_cancelled(
