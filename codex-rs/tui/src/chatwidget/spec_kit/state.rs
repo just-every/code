@@ -88,6 +88,11 @@ pub struct SpecAutoState {
     // === Agent Lifecycle (T88) ===
     #[allow(dead_code)]  // Will be used when agent spawning is integrated
     pub agent_lifecycle: Option<super::agent_lifecycle::AgentLifecycleManager>,
+
+    // FORK-SPECIFIC: Agent retry state (just-every/code)
+    // Tracks retry attempts when agents fail, timeout, or return invalid results
+    pub agent_retry_count: u32,
+    pub agent_retry_context: Option<String>,  // Additional context for retry attempts
 }
 
 impl SpecAutoState {
@@ -143,6 +148,9 @@ impl SpecAutoState {
             quality_checkpoint_outcomes: Vec::new(),
             // T88: Agent lifecycle manager (automatic cleanup via Drop)
             agent_lifecycle: None,
+            // FORK-SPECIFIC: Agent retry tracking
+            agent_retry_count: 0,
+            agent_retry_context: None,
         }
     }
 

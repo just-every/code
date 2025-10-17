@@ -574,16 +574,56 @@ pub fn on_spec_auto_agents_complete(widget: &mut ChatWidget) {
             .any(|a| matches!(a.status, super::super::AgentStatus::Failed));
 
         if has_failures {
-            let missing: Vec<_> = expected_agents
-                .iter()
-                .filter(|exp| !completed_names.contains(&exp.to_lowercase()))
-                .map(|s| s.as_str())
-                .collect();
+            // FORK-SPECIFIC: Retry logic for failed agents (just-every/code)
+            let (retry_count, current_stage) = {
+                let Some(state) = widget.spec_auto_state.as_ref() else { return };
+                let Some(stage) = state.current_stage() else { return };
+                (state.agent_retry_count, stage)
+            };
 
-            halt_spec_auto_with_error(
-                widget,
-                format!("Agent execution incomplete. Missing/failed: {:?}", missing),
-            );
+            const MAX_AGENT_RETRIES: u32 = 3;
+
+            if retry_count < MAX_AGENT_RETRIES {
+                // Retry the stage
+                widget.history_push(crate::history_cell::PlainHistoryCell::new(
+                    vec![
+                        ratatui::text::Line::from(format!(
+                            "⚠ Agent failures detected. Retrying {}/{} ...",
+                            retry_count + 1,
+                            MAX_AGENT_RETRIES
+                        )),
+                    ],
+                    crate::history_cell::HistoryCellType::Notice,
+                ));
+
+                // Increment retry count
+                if let Some(state) = widget.spec_auto_state.as_mut() {
+                    state.agent_retry_count += 1;
+                    state.agent_retry_context = Some(format!(
+                        "Previous attempt failed (retry {}/{}). Be more thorough and check for edge cases.",
+                        retry_count + 1,
+                        MAX_AGENT_RETRIES
+                    ));
+                }
+
+                // Re-execute the stage with retry context
+                let Some(state) = widget.spec_auto_state.as_ref() else { return };
+                let spec_id = state.spec_id.clone();
+                auto_submit_spec_stage_prompt(widget, current_stage, &spec_id);
+                return;
+            } else {
+                // Max retries exhausted
+                let missing: Vec<_> = expected_agents
+                    .iter()
+                    .filter(|exp| !completed_names.contains(&exp.to_lowercase()))
+                    .map(|s| s.as_str())
+                    .collect();
+
+                halt_spec_auto_with_error(
+                    widget,
+                    format!("Agent execution failed after {} retries. Missing/failed: {:?}", MAX_AGENT_RETRIES, missing),
+                );
+            }
         }
     }
 }
