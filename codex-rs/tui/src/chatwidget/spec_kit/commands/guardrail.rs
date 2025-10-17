@@ -234,19 +234,41 @@ impl SpecKitCommand for GuardrailAutoCommand {
     }
 
     fn execute(&self, widget: &mut ChatWidget, args: String) {
-        widget.handle_spec_ops_command(
-            crate::slash_command::SlashCommand::GuardrailAuto,
-            args,
-            None,
+        // T80: Redirect to native TUI implementation instead of bash script
+        // Parse args: SPEC-ID [--from STAGE]
+        let parts: Vec<&str> = args.split_whitespace().collect();
+        let spec_id = parts.first().map(|s| s.to_string()).unwrap_or_default();
+
+        let mut resume_from = crate::spec_prompts::SpecStage::Plan;
+        if let Some(pos) = parts.iter().position(|&p| p == "--from") {
+            if let Some(stage_str) = parts.get(pos + 1) {
+                resume_from = match *stage_str {
+                    "tasks" => crate::spec_prompts::SpecStage::Tasks,
+                    "implement" => crate::spec_prompts::SpecStage::Implement,
+                    "validate" => crate::spec_prompts::SpecStage::Validate,
+                    "audit" => crate::spec_prompts::SpecStage::Audit,
+                    "unlock" => crate::spec_prompts::SpecStage::Unlock,
+                    _ => crate::spec_prompts::SpecStage::Plan,
+                };
+            }
+        }
+
+        // Call native /speckit.auto implementation
+        super::super::handler::handle_spec_auto(
+            widget,
+            spec_id,
+            String::new(),  // goal
+            resume_from,
+            None,  // hal_mode
         );
     }
 
     fn is_guardrail(&self) -> bool {
-        true
+        false  // T80: No longer a guardrail wrapper, redirects to native implementation
     }
 
     fn guardrail_script(&self) -> Option<(&'static str, &'static str)> {
-        Some(("auto", "spec_auto.sh"))
+        None  // T80: No bash script, uses native Rust orchestration
     }
 }
 

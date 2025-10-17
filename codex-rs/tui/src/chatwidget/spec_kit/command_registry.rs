@@ -362,6 +362,14 @@ mod tests {
         ];
 
         for guardrail in guardrails {
+            // T80: Skip guardrail.auto - it's now a redirect to /speckit.auto, not a guardrail
+            if guardrail == "guardrail.auto" {
+                let cmd = registry.find(guardrail);
+                assert!(cmd.is_some(), "guardrail.auto should still be registered");
+                assert!(!cmd.unwrap().is_guardrail(), "guardrail.auto should NOT be guardrail (redirects to /speckit.auto)");
+                continue;
+            }
+
             let cmd = registry
                 .find(guardrail)
                 .expect(&format!("{} should be registered", guardrail));
