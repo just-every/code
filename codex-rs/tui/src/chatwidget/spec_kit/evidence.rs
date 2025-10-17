@@ -60,6 +60,14 @@ pub trait EvidenceRepository: Send + Sync {
 
     /// Check if evidence exists for a spec/stage
     fn has_evidence(&self, spec_id: &str, stage: SpecStage, category: EvidenceCategory) -> bool;
+
+    /// Write quality gate checkpoint telemetry
+    fn write_quality_checkpoint_telemetry(
+        &self,
+        spec_id: &str,
+        checkpoint: super::state::QualityCheckpoint,
+        telemetry: &Value,
+    ) -> Result<PathBuf>;
 }
 
 /// Evidence category (commands vs consensus)
@@ -376,6 +384,41 @@ impl EvidenceRepository for FilesystemEvidence {
             })
             .is_some()
     }
+
+    fn write_quality_checkpoint_telemetry(
+        &self,
+        spec_id: &str,
+        checkpoint: super::state::QualityCheckpoint,
+        telemetry: &Value,
+    ) -> Result<PathBuf> {
+        let evidence_dir = self.evidence_dir(spec_id, EvidenceCategory::Consensus);
+
+        std::fs::create_dir_all(&evidence_dir).map_err(|e| {
+            SpecKitError::DirectoryCreate {
+                path: evidence_dir.clone(),
+                source: e,
+            }
+        })?;
+
+        let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+        let filename = format!(
+            "{}_quality-gate-{}_{}.json",
+            spec_id,
+            checkpoint.name(),
+            timestamp
+        );
+        let path = evidence_dir.join(filename);
+
+        let json = serde_json::to_string_pretty(telemetry)
+            .map_err(|e| SpecKitError::JsonSerialize { source: e })?;
+
+        std::fs::write(&path, json).map_err(|e| SpecKitError::FileWrite {
+            path: path.clone(),
+            source: e,
+        })?;
+
+        Ok(path)
+    }
 }
 
 impl Default for FilesystemEvidence {
@@ -490,6 +533,17 @@ mod tests {
                 EvidenceCategory::Commands => self.telemetry.lock().unwrap().contains_key(&key),
                 EvidenceCategory::Consensus => self.consensus.lock().unwrap().contains_key(&key),
             }
+        }
+
+        fn write_quality_checkpoint_telemetry(
+            &self,
+            spec_id: &str,
+            checkpoint: super::state::QualityCheckpoint,
+            telemetry: &Value,
+        ) -> Result<PathBuf> {
+            let key = format!("{}_{}", spec_id, checkpoint.name());
+            self.consensus.lock().unwrap().insert(key.clone(), telemetry.clone());
+            Ok(PathBuf::from(format!("/mock/quality-gate-{}.json", key)))
         }
     }
 

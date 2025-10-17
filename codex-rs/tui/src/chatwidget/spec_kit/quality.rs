@@ -398,6 +398,175 @@ fn parse_terminology_fix(suggestion: &str) -> Option<(String, String)> {
     None
 }
 
+/// Build telemetry JSON for quality checkpoint
+pub fn build_quality_checkpoint_telemetry(
+    spec_id: &str,
+    checkpoint: QualityCheckpoint,
+    auto_resolved: &[(QualityIssue, String)],
+    escalated: &[(QualityIssue, String)],  // (issue, human_answer)
+) -> serde_json::Value {
+    use serde_json::json;
+
+    let auto_resolved_details: Vec<_> = auto_resolved
+        .iter()
+        .map(|(issue, answer)| {
+            json!({
+                "issue_id": issue.id,
+                "question": issue.description,
+                "gate_type": issue.gate_type.command_name(),
+                "agent_answers": issue.agent_answers,
+                "agreement": match issue.confidence {
+                    Confidence::High => "unanimous",
+                    Confidence::Medium => "majority",
+                    Confidence::Low => "none",
+                },
+                "applied_answer": answer,
+                "affected_artifacts": issue.affected_artifacts,
+                "timestamp": chrono::Local::now().to_rfc3339(),
+            })
+        })
+        .collect();
+
+    let escalated_details: Vec<_> = escalated
+        .iter()
+        .map(|(issue, answer)| {
+            json!({
+                "issue_id": issue.id,
+                "question": issue.description,
+                "gate_type": issue.gate_type.command_name(),
+                "agent_answers": issue.agent_answers,
+                "agreement": "none_or_gpt5_rejected",
+                "human_answer": answer,
+                "affected_artifacts": issue.affected_artifacts,
+                "timestamp": chrono::Local::now().to_rfc3339(),
+            })
+        })
+        .collect();
+
+    json!({
+        "command": "quality-gate",
+        "specId": spec_id,
+        "checkpoint": checkpoint.name(),
+        "timestamp": chrono::Local::now().to_rfc3339(),
+        "schemaVersion": "v1.1",
+        "gates": checkpoint.gates().iter().map(|g| g.command_name()).collect::<Vec<_>>(),
+        "summary": {
+            "total_issues": auto_resolved.len() + escalated.len(),
+            "auto_resolved": auto_resolved.len(),
+            "escalated": escalated.len(),
+        },
+        "auto_resolved_details": auto_resolved_details,
+        "escalated_details": escalated_details,
+    })
+}
+
+/// Generate git commit message for quality gate modifications
+pub fn build_quality_gate_commit_message(
+    spec_id: &str,
+    checkpoint_outcomes: &[(QualityCheckpoint, usize, usize)],  // (checkpoint, auto_resolved, escalated)
+    modified_files: &[String],
+) -> String {
+    let total_auto: usize = checkpoint_outcomes.iter().map(|(_, auto, _)| auto).sum();
+    let total_escalated: usize = checkpoint_outcomes.iter().map(|(_, _, esc)| esc).sum();
+
+    let mut message = format!(
+        "quality-gates: auto-resolved {} issues, {} human-answered\n\n",
+        total_auto, total_escalated
+    );
+
+    for (checkpoint, auto_resolved, escalated) in checkpoint_outcomes {
+        message.push_str(&format!(
+            "Checkpoint: {}\n",
+            checkpoint.name()
+        ));
+
+        for gate in checkpoint.gates() {
+            message.push_str(&format!("- {}: ", gate.command_name()));
+            // This is simplified - real version would track per-gate counts
+            message.push_str(&format!("{} auto-resolved", auto_resolved));
+            if *escalated > 0 {
+                message.push_str(&format!(", {} human-answered", escalated));
+            }
+            message.push('\n');
+        }
+        message.push('\n');
+    }
+
+    message.push_str("Files modified:\n");
+    for file in modified_files {
+        message.push_str(&format!("- {}\n", file));
+    }
+
+    message.push_str(&format!("\nTelemetry: quality-gate-*_{}.json\n", spec_id));
+    message.push_str("\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n");
+    message.push_str("Co-Authored-By: Claude <noreply@anthropic.com>\n");
+
+    message
+}
+
+/// Build post-pipeline review summary
+pub fn build_quality_gate_summary(
+    auto_resolved: &[(QualityIssue, String)],
+    escalated: &[(QualityIssue, String)],
+    modified_files: &[String],
+) -> Vec<ratatui::text::Line<'static>> {
+    use ratatui::prelude::Stylize;
+    use ratatui::text::{Line, Span};
+    use ratatui::style::{Color, Style};
+
+    let mut lines = Vec::new();
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("Quality Gates Summary", Style::default().fg(Color::Cyan).bold()),
+    ]));
+    lines.push(Line::from(""));
+
+    lines.push(Line::from(vec![
+        Span::styled("✅ Auto-resolved: ", Style::default().fg(Color::Green)),
+        Span::raw(format!("{} issues", auto_resolved.len())),
+    ]));
+
+    for (issue, answer) in auto_resolved {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(issue.description.clone(), Style::default().dim()),
+            Span::raw(" → "),
+            Span::styled(answer.clone(), Style::default().fg(Color::Green)),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("⏸️  Human-answered: ", Style::default().fg(Color::Yellow)),
+        Span::raw(format!("{} issues", escalated.len())),
+    ]));
+
+    for (issue, answer) in escalated {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(issue.description.clone(), Style::default().dim()),
+            Span::raw(" → "),
+            Span::styled(answer.clone(), Style::default().fg(Color::Yellow)),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("📝 Files modified: ", Style::default().fg(Color::Magenta)),
+        Span::raw(modified_files.join(", ")),
+    ]));
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("Review changes: ", Style::default().dim()),
+        Span::raw("git diff "),
+        Span::styled(modified_files.join(" "), Style::default().fg(Color::Cyan)),
+    ]));
+
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

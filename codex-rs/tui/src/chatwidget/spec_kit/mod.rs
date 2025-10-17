@@ -56,8 +56,10 @@ pub use handler::{
 
 // Re-export quality gate functions
 pub use quality::{
-    classify_issue_agreement, find_dissent, find_majority_answer, merge_agent_issues,
-    parse_quality_issue_from_agent, resolve_quality_issue, should_auto_resolve,
+    apply_auto_resolution, build_quality_checkpoint_telemetry, build_quality_gate_commit_message,
+    build_quality_gate_summary, classify_issue_agreement, find_dissent, find_majority_answer,
+    merge_agent_issues, parse_quality_issue_from_agent, resolve_quality_issue,
+    should_auto_resolve,
 };
 
 // Re-export file modification functions

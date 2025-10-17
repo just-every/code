@@ -73,6 +73,9 @@ pub struct SpecAutoState {
     pub quality_gates_enabled: bool,
     pub completed_checkpoints: HashSet<QualityCheckpoint>,
     pub quality_modifications: Vec<String>,  // Track files modified by quality gates
+    pub quality_auto_resolved: Vec<(QualityIssue, String)>,  // All auto-resolutions
+    pub quality_escalated: Vec<(QualityIssue, String)>,  // All human-answered questions
+    pub quality_checkpoint_outcomes: Vec<(QualityCheckpoint, usize, usize)>,  // (checkpoint, auto, escalated)
 }
 
 impl SpecAutoState {
@@ -134,6 +137,9 @@ impl SpecAutoState {
             quality_gates_enabled,
             completed_checkpoints: HashSet::new(),
             quality_modifications: Vec::new(),
+            quality_auto_resolved: Vec::new(),
+            quality_escalated: Vec::new(),
+            quality_checkpoint_outcomes: Vec::new(),
         }
     }
 
