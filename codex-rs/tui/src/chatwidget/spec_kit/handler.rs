@@ -119,6 +119,12 @@ pub fn handle_spec_auto(
         HistoryCellType::Notice,
     ));
 
+    // Validate configuration before starting pipeline (T83)
+    if let Err(err) = super::config_validator::SpecKitConfigValidator::validate(&widget.config) {
+        widget.history_push(crate::history_cell::new_error_event(format!("Configuration validation failed: {}", err)));
+        return;
+    }
+
     widget.spec_auto_state = Some(super::state::SpecAutoState::new(
         spec_id,
         goal,

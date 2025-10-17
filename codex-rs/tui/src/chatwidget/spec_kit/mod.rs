@@ -8,6 +8,7 @@
 
 pub mod command_registry;
 pub mod commands;
+pub mod config_validator;
 pub mod consensus;
 pub mod context;
 pub mod error;
