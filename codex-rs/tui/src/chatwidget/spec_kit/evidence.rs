@@ -538,7 +538,7 @@ mod tests {
         fn write_quality_checkpoint_telemetry(
             &self,
             spec_id: &str,
-            checkpoint: super::state::QualityCheckpoint,
+            checkpoint: crate::chatwidget::spec_kit::state::QualityCheckpoint,
             telemetry: &Value,
         ) -> Result<PathBuf> {
             let key = format!("{}_{}", spec_id, checkpoint.name());

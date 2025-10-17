@@ -42,7 +42,8 @@ pub enum SpecAutoPhase {
     /// Awaiting human answers for escalated questions
     QualityGateAwaitingHuman {
         checkpoint: QualityCheckpoint,
-        questions: Vec<EscalatedQuestion>,
+        escalated_issues: Vec<QualityIssue>,  // Store original issues
+        escalated_questions: Vec<EscalatedQuestion>,  // For UI display
         answers: HashMap<String, String>,  // question_id -> human_answer
     },
 }

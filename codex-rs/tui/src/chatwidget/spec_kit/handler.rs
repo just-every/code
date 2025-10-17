@@ -4,6 +4,7 @@
 //! Using free functions instead of methods to avoid Rust borrow checker issues.
 
 use super::super::ChatWidget; // Parent module (friend access to private fields)
+use super::evidence::EvidenceRepository;
 use super::state::{GuardrailWait, SpecAutoPhase};
 use crate::app_event::BackgroundPlacement;
 use crate::history_cell::HistoryCellType;
@@ -198,6 +199,13 @@ pub fn advance_spec_auto(widget: &mut ChatWidget) {
 
         match next_action {
             NextAction::PipelineComplete => {
+                // Finalize quality gates if enabled
+                if let Some(state) = widget.spec_auto_state.as_ref() {
+                    if state.quality_gates_enabled && !state.quality_checkpoint_outcomes.is_empty() {
+                        finalize_quality_gates(widget);
+                    }
+                }
+
                 widget.history_push(crate::history_cell::PlainHistoryCell::new(
                     vec![ratatui::text::Line::from("/spec-auto pipeline complete")],
                     HistoryCellType::Notice,
@@ -664,64 +672,178 @@ pub fn handle_spec_consensus_impl(widget: &mut ChatWidget, raw_args: String) {
 
 /// Handle quality gate agents completing
 pub fn on_quality_gate_agents_complete(widget: &mut ChatWidget) {
-    let Some(state) = widget.spec_auto_state.as_mut() else {
+    let Some(state) = widget.spec_auto_state.as_ref() else {
         return;
     };
 
     // Only proceed if in QualityGateExecuting phase
-    let (checkpoint, _results) = match &state.phase {
-        SpecAutoPhase::QualityGateExecuting { checkpoint, results, .. } => {
-            (*checkpoint, results.clone())
+    let (checkpoint, results, gates) = match &state.phase {
+        SpecAutoPhase::QualityGateExecuting { checkpoint, results, gates, .. } => {
+            (*checkpoint, results.clone(), gates.clone())
         }
         _ => return,
     };
 
-    // TODO: Parse agent results into QualityIssue objects
-    // TODO: Merge issues by ID
-    // TODO: Classify by agreement
-    // TODO: Resolve what can be auto-resolved
-    // TODO: Collect escalations
+    let spec_id = state.spec_id.clone();
+    let cwd = widget.config.cwd.clone();
 
-    // PLACEHOLDER: Create dummy escalations for testing
-    let escalations = vec![
-        super::state::EscalatedQuestion {
-            id: "Q1".to_string(),
-            gate_type: super::state::QualityGateType::Clarify,
-            question: "Should OAuth2 support refresh tokens?".to_string(),
-            context: "Industry standard but adds complexity".to_string(),
-            agent_answers: {
-                let mut map = std::collections::HashMap::new();
-                map.insert("gemini".to_string(), "yes (standard)".to_string());
-                map.insert("claude".to_string(), "yes (standard)".to_string());
-                map.insert("code".to_string(), "no (SPEC says simple)".to_string());
-                map
-            },
-            gpt5_reasoning: Some("GPT-5: Dissenting view has merit - SPEC emphasizes simplicity. Multiple providers already add complexity.".to_string()),
-            magnitude: super::state::Magnitude::Important,
-            suggested_options: vec![
-                "Yes - support refresh tokens".to_string(),
-                "No - keep it simple".to_string(),
-            ],
-        },
-    ];
+    // Step 1: Parse agent results into QualityIssue objects
+    let mut all_agent_issues = Vec::new();
+
+    for (agent_id, agent_result) in &results {
+        for gate in &gates {
+            match super::quality::parse_quality_issue_from_agent(agent_id, agent_result, *gate) {
+                Ok(issues) => all_agent_issues.push(issues),
+                Err(err) => {
+                    widget.history_push(crate::history_cell::new_error_event(format!(
+                        "Failed to parse {} results from {}: {}",
+                        gate.command_name(),
+                        agent_id,
+                        err
+                    )));
+                }
+            }
+        }
+    }
+
+    // Step 2: Merge issues from multiple agents by ID
+    let merged_issues = super::quality::merge_agent_issues(all_agent_issues);
 
     widget.history_push(crate::history_cell::PlainHistoryCell::new(
         vec![
-            ratatui::text::Line::from(format!("Quality Gate: {} - {} issues escalated", checkpoint.name(), escalations.len())),
+            ratatui::text::Line::from(format!("Quality Gate: {} - found {} issues from {} gates", checkpoint.name(), merged_issues.len(), gates.len())),
         ],
         crate::history_cell::HistoryCellType::Notice,
     ));
 
-    // Show modal with escalated questions
-    widget.bottom_pane.show_quality_gate_modal(checkpoint, escalations);
+    if merged_issues.is_empty() {
+        // No issues found - continue to next stage
+        if let Some(state) = widget.spec_auto_state.as_mut() {
+            state.completed_checkpoints.insert(checkpoint);
+            state.phase = SpecAutoPhase::Guardrail;
+        }
+        advance_spec_auto(widget);
+        return;
+    }
 
-    // Transition to awaiting human phase
+    // Step 3: Classify and resolve
+    let mut auto_resolved_list = Vec::new();
+    let mut escalated_list = Vec::new();
+
+    for issue in merged_issues {
+        let resolution = super::quality::resolve_quality_issue(&issue);
+
+        match resolution {
+            super::state::Resolution::AutoApply { answer, .. } => {
+                // Auto-resolve: apply to file
+                let spec_dir = cwd.join(format!("docs/{}", spec_id));
+                match super::quality::apply_auto_resolution(&issue, &answer, &spec_dir) {
+                    Ok(outcome) => {
+                        widget.history_push(crate::history_cell::PlainHistoryCell::new(
+                            vec![
+                                ratatui::text::Line::from(format!("✅ Auto-resolved: {} → {}", issue.description, answer)),
+                            ],
+                            crate::history_cell::HistoryCellType::Notice,
+                        ));
+
+                        auto_resolved_list.push((issue.clone(), answer.clone()));
+
+                        // Track modified file
+                        if let Some(state) = widget.spec_auto_state.as_mut() {
+                            let file_name = outcome.file_path.file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("unknown")
+                                .to_string();
+                            if !state.quality_modifications.contains(&file_name) {
+                                state.quality_modifications.push(file_name);
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        widget.history_push(crate::history_cell::new_error_event(format!(
+                            "Failed to apply auto-resolution for '{}': {}",
+                            issue.description, err
+                        )));
+                    }
+                }
+            }
+
+            super::state::Resolution::Escalate { gpt5_reasoning, recommended, .. } => {
+                // Build escalated question
+                let escalated_q = super::state::EscalatedQuestion {
+                    id: issue.id.clone(),
+                    gate_type: issue.gate_type,
+                    question: issue.description.clone(),
+                    context: issue.context.clone(),
+                    agent_answers: issue.agent_answers.clone(),
+                    gpt5_reasoning,
+                    magnitude: issue.magnitude,
+                    suggested_options: if let Some(rec) = recommended {
+                        vec![rec]
+                    } else {
+                        Vec::new()
+                    },
+                };
+
+                escalated_list.push((issue, escalated_q));
+            }
+        }
+    }
+
+    // Track in state
     if let Some(state) = widget.spec_auto_state.as_mut() {
-        state.phase = SpecAutoPhase::QualityGateAwaitingHuman {
+        state.quality_auto_resolved.extend(auto_resolved_list.clone());
+        state.quality_checkpoint_outcomes.push((
             checkpoint,
-            questions: Vec::new(),  // Will be populated from modal state
-            answers: std::collections::HashMap::new(),
-        };
+            auto_resolved_list.len(),
+            escalated_list.len(),
+        ));
+    }
+
+    if escalated_list.is_empty() {
+        // No escalations - continue pipeline
+        widget.history_push(crate::history_cell::PlainHistoryCell::new(
+            vec![
+                ratatui::text::Line::from(format!("Quality Gate: {} complete - all issues auto-resolved", checkpoint.name())),
+            ],
+            crate::history_cell::HistoryCellType::Notice,
+        ));
+
+        if let Some(state) = widget.spec_auto_state.as_mut() {
+            state.completed_checkpoints.insert(checkpoint);
+            state.phase = SpecAutoPhase::Guardrail;
+        }
+
+        advance_spec_auto(widget);
+    } else {
+        // Has escalations - show modal
+        let escalated_questions: Vec<_> = escalated_list.iter().map(|(_, q)| q.clone()).collect();
+
+        widget.history_push(crate::history_cell::PlainHistoryCell::new(
+            vec![
+                ratatui::text::Line::from(format!(
+                    "Quality Gate: {} - {} auto-resolved, {} need your input",
+                    checkpoint.name(),
+                    auto_resolved_list.len(),
+                    escalated_questions.len()
+                )),
+            ],
+            crate::history_cell::HistoryCellType::Notice,
+        ));
+
+        // Show modal
+        widget.bottom_pane.show_quality_gate_modal(checkpoint, escalated_questions.clone());
+
+        // Transition to awaiting human phase
+        if let Some(state) = widget.spec_auto_state.as_mut() {
+            let (issues, questions): (Vec<_>, Vec<_>) = escalated_list.into_iter().unzip();
+            state.phase = SpecAutoPhase::QualityGateAwaitingHuman {
+                checkpoint,
+                escalated_issues: issues,
+                escalated_questions: questions,
+                answers: std::collections::HashMap::new(),
+            };
+        }
     }
 }
 
@@ -731,15 +853,28 @@ pub fn on_quality_gate_answers(
     checkpoint: super::state::QualityCheckpoint,
     answers: std::collections::HashMap<String, String>,
 ) {
-    // Check state exists
-    if widget.spec_auto_state.is_none() {
+    let Some(state) = widget.spec_auto_state.as_ref() else {
         return;
-    }
+    };
+
+    let spec_id = state.spec_id.clone();
+    let cwd = widget.config.cwd.clone();
+
+    // Get escalated issues from state
+    let escalated_issues = match &state.phase {
+        SpecAutoPhase::QualityGateAwaitingHuman { escalated_issues, .. } => escalated_issues.clone(),
+        _ => {
+            widget.history_push(crate::history_cell::new_error_event(
+                "Not in QualityGateAwaitingHuman phase".to_string(),
+            ));
+            return;
+        }
+    };
 
     widget.history_push(crate::history_cell::PlainHistoryCell::new(
         vec![
             ratatui::text::Line::from(format!(
-                "Quality Gate: {} - {} answers applied",
+                "Quality Gate: {} - applying {} human answers",
                 checkpoint.name(),
                 answers.len()
             )),
@@ -747,9 +882,49 @@ pub fn on_quality_gate_answers(
         crate::history_cell::HistoryCellType::Notice,
     ));
 
-    // TODO: Apply answers to quality gate issues
-    // TODO: Apply file modifications using apply_auto_resolution
-    // TODO: Track modifications in state.quality_modifications
+    // Apply each answer to its corresponding issue
+    let mut applied_answers = Vec::new();
+
+    for issue in &escalated_issues {
+        if let Some(answer) = answers.get(&issue.id) {
+            let spec_dir = cwd.join(format!("docs/{}", spec_id));
+
+            match super::quality::apply_auto_resolution(issue, answer, &spec_dir) {
+                Ok(outcome) => {
+                    widget.history_push(crate::history_cell::PlainHistoryCell::new(
+                        vec![
+                            ratatui::text::Line::from(format!("✅ Applied: {} → {}", issue.description, answer)),
+                        ],
+                        crate::history_cell::HistoryCellType::Notice,
+                    ));
+
+                    applied_answers.push((issue.clone(), answer.clone()));
+
+                    // Track modified file
+                    if let Some(state) = widget.spec_auto_state.as_mut() {
+                        let file_name = outcome.file_path.file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("unknown")
+                            .to_string();
+                        if !state.quality_modifications.contains(&file_name) {
+                            state.quality_modifications.push(file_name);
+                        }
+                    }
+                }
+                Err(err) => {
+                    widget.history_push(crate::history_cell::new_error_event(format!(
+                        "Failed to apply answer for '{}': {}",
+                        issue.description, err
+                    )));
+                }
+            }
+        }
+    }
+
+    // Track answered questions in state
+    if let Some(state) = widget.spec_auto_state.as_mut() {
+        state.quality_escalated.extend(applied_answers);
+    }
 
     // Mark checkpoint complete and transition to next stage
     if let Some(state) = widget.spec_auto_state.as_mut() {
@@ -770,4 +945,109 @@ pub fn on_quality_gate_cancelled(
         widget,
         format!("Quality gate {} cancelled by user", checkpoint.name()),
     );
+}
+
+/// Finalize quality gates at pipeline completion
+fn finalize_quality_gates(widget: &mut ChatWidget) {
+    let Some(state) = widget.spec_auto_state.as_ref() else {
+        return;
+    };
+
+    let spec_id = state.spec_id.clone();
+    let cwd = widget.config.cwd.clone();
+    let auto_resolved = state.quality_auto_resolved.clone();
+    let escalated = state.quality_escalated.clone();
+    let modified_files = state.quality_modifications.clone();
+    let checkpoint_outcomes = state.quality_checkpoint_outcomes.clone();
+
+    // Step 1: Persist telemetry for each checkpoint
+    let repo = super::evidence::FilesystemEvidence::new(cwd.clone(), None);
+
+    for (checkpoint, _auto_count, _esc_count) in &checkpoint_outcomes {
+        // Build telemetry JSON
+        let telemetry = super::quality::build_quality_checkpoint_telemetry(
+            &spec_id,
+            *checkpoint,
+            &auto_resolved,
+            &escalated,
+        );
+
+        match repo.write_quality_checkpoint_telemetry(&spec_id, *checkpoint, &telemetry) {
+            Ok(path) => {
+                widget.history_push(crate::history_cell::PlainHistoryCell::new(
+                    vec![
+                        ratatui::text::Line::from(format!("📊 Telemetry: {}", path.display())),
+                    ],
+                    HistoryCellType::Notice,
+                ));
+            }
+            Err(err) => {
+                widget.history_push(crate::history_cell::new_error_event(format!(
+                    "Failed to write telemetry for {}: {}",
+                    checkpoint.name(),
+                    err
+                )));
+            }
+        }
+    }
+
+    // Step 2: Create git commit if there are modifications
+    if !modified_files.is_empty() {
+        let commit_msg = super::quality::build_quality_gate_commit_message(
+            &spec_id,
+            &checkpoint_outcomes,
+            &modified_files,
+        );
+
+        // Execute git commit
+        let git_result = std::process::Command::new("git")
+            .current_dir(&cwd)
+            .args(&["add", "docs/"])
+            .output();
+
+        if let Ok(add_output) = git_result {
+            if add_output.status.success() {
+                let commit_result = std::process::Command::new("git")
+                    .current_dir(&cwd)
+                    .args(&["commit", "-m", &commit_msg])
+                    .output();
+
+                match commit_result {
+                    Ok(output) if output.status.success() => {
+                        widget.history_push(crate::history_cell::PlainHistoryCell::new(
+                            vec![
+                                ratatui::text::Line::from("✅ Quality gate changes committed"),
+                            ],
+                            HistoryCellType::Notice,
+                        ));
+                    }
+                    Ok(output) => {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        widget.history_push(crate::history_cell::new_error_event(format!(
+                            "Git commit failed: {}",
+                            stderr
+                        )));
+                    }
+                    Err(err) => {
+                        widget.history_push(crate::history_cell::new_error_event(format!(
+                            "Failed to run git commit: {}",
+                            err
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
+    // Step 3: Show review summary
+    let summary_lines = super::quality::build_quality_gate_summary(
+        &auto_resolved,
+        &escalated,
+        &modified_files,
+    );
+
+    widget.history_push(crate::history_cell::PlainHistoryCell::new(
+        summary_lines,
+        HistoryCellType::Notice,
+    ));
 }
