@@ -1,5 +1,6 @@
 // Spec-kit submodule for friend access to ChatWidget private fields
-pub(crate) mod spec_kit;
+// Made public for integration testing (T78)
+pub mod spec_kit;
 
 use once_cell::sync::Lazy;
 use std::collections::HashMap;

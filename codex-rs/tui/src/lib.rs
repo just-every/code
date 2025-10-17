@@ -66,6 +66,13 @@ mod slash_command;
 mod spec_prompts;
 pub mod spec_status;
 mod streaming;
+
+// Re-export spec_kit types for integration testing (T78)
+pub use chatwidget::spec_kit::{
+    classify_issue_agreement, merge_agent_issues, parse_quality_issue_from_agent,
+    resolve_quality_issue, should_auto_resolve, Confidence, Magnitude, QualityCheckpoint,
+    QualityGateType, QualityIssue, Resolution, Resolvability,
+};
 mod terminal_info;
 // mod text_block; // Orphaned after trait-based HistoryCell migration
 mod text_formatting;
