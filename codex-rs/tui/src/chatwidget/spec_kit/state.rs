@@ -109,20 +109,9 @@ impl SpecAutoState {
             .position(|stage| *stage == resume_from)
             .unwrap_or(0);
 
-        // Determine initial phase based on quality gates
-        let initial_phase = if quality_gates_enabled && resume_from == SpecStage::Plan {
-            // Start with pre-planning quality checkpoint
-            SpecAutoPhase::QualityGateExecuting {
-                checkpoint: QualityCheckpoint::PrePlanning,
-                gates: QualityCheckpoint::PrePlanning.gates().to_vec(),
-                active_gates: HashSet::new(),
-                expected_agents: Vec::new(),
-                completed_agents: HashSet::new(),
-                results: HashMap::new(),
-            }
-        } else {
-            SpecAutoPhase::Guardrail
-        };
+        // Always start with Guardrail phase
+        // Quality checkpoints will be triggered by advance_spec_auto when needed
+        let initial_phase = SpecAutoPhase::Guardrail;
 
         Self {
             spec_id,

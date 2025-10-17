@@ -162,6 +162,16 @@ pub fn advance_spec_auto(widget: &mut ChatWidget) {
             } else {
                 let stage = state.stages[state.current_index];
                 let hal_mode = state.hal_mode;
+
+                // Check if we should run a quality checkpoint before this stage
+                if state.quality_gates_enabled {
+                    if let Some(checkpoint) = determine_quality_checkpoint(stage, &state.completed_checkpoints) {
+                        // Execute quality checkpoint instead of proceeding to guardrail
+                        execute_quality_checkpoint(widget, checkpoint);
+                        return;
+                    }
+                }
+
                 match &state.phase {
                     SpecAutoPhase::Guardrail => {
                         let command = super::state::guardrail_for_stage(stage);
@@ -1358,6 +1368,116 @@ pub fn on_quality_gate_cancelled(
         widget,
         format!("Quality gate {} cancelled by user", checkpoint.name()),
     );
+}
+
+/// Determine which quality checkpoint should run before the given stage
+fn determine_quality_checkpoint(
+    stage: SpecStage,
+    completed: &std::collections::HashSet<super::state::QualityCheckpoint>,
+) -> Option<super::state::QualityCheckpoint> {
+    use super::state::QualityCheckpoint;
+
+    match stage {
+        SpecStage::Plan => {
+            if !completed.contains(&QualityCheckpoint::PrePlanning) {
+                Some(QualityCheckpoint::PrePlanning)
+            } else {
+                None
+            }
+        }
+        SpecStage::Tasks => {
+            if !completed.contains(&QualityCheckpoint::PostPlan) {
+                Some(QualityCheckpoint::PostPlan)
+            } else {
+                None
+            }
+        }
+        SpecStage::Implement => {
+            if !completed.contains(&QualityCheckpoint::PostTasks) {
+                Some(QualityCheckpoint::PostTasks)
+            } else {
+                None
+            }
+        }
+        _ => None,  // No checkpoints for Validate, Audit, Unlock
+    }
+}
+
+/// Execute quality checkpoint by starting quality gate agents
+fn execute_quality_checkpoint(
+    widget: &mut ChatWidget,
+    checkpoint: super::state::QualityCheckpoint,
+) {
+    let Some(state) = widget.spec_auto_state.as_ref() else {
+        return;
+    };
+
+    let spec_id = state.spec_id.clone();
+
+    widget.history_push(crate::history_cell::PlainHistoryCell::new(
+        vec![
+            ratatui::text::Line::from(format!("Starting Quality Checkpoint: {}", checkpoint.name())),
+        ],
+        crate::history_cell::HistoryCellType::Notice,
+    ));
+
+    // Build prompts for each gate in the checkpoint
+    let gates = checkpoint.gates();
+
+    // Submit prompts to agents (gemini, claude, code)
+    for gate in gates {
+        let prompt = build_quality_gate_prompt(&spec_id, *gate, checkpoint);
+
+        // Format as subagent command and submit
+        let formatted = codex_core::slash_commands::format_subagent_command(
+            gate.command_name(),
+            &spec_id,
+            None,
+            None,
+        );
+
+        // Override with quality gate prompt
+        widget.submit_prompt_with_display(
+            format!("Quality Gate: {} - {}", checkpoint.name(), gate.command_name()),
+            prompt,
+        );
+    }
+
+    // Transition to quality gate executing phase
+    if let Some(state) = widget.spec_auto_state.as_mut() {
+        state.phase = SpecAutoPhase::QualityGateExecuting {
+            checkpoint,
+            gates: gates.to_vec(),
+            active_gates: gates.iter().copied().collect(),
+            expected_agents: vec!["gemini".to_string(), "claude".to_string(), "code".to_string()],
+            completed_agents: std::collections::HashSet::new(),
+            results: std::collections::HashMap::new(),
+        };
+    }
+}
+
+/// Build quality gate prompt for a specific gate
+fn build_quality_gate_prompt(
+    spec_id: &str,
+    gate: super::state::QualityGateType,
+    checkpoint: super::state::QualityCheckpoint,
+) -> String {
+    // Load prompt template from prompts.json
+    // For now, simplified version
+
+    let gate_name = match gate {
+        super::state::QualityGateType::Clarify => "quality-gate-clarify",
+        super::state::QualityGateType::Checklist => "quality-gate-checklist",
+        super::state::QualityGateType::Analyze => "quality-gate-analyze",
+    };
+
+    format!(
+        "Quality Gate: {} at checkpoint {}\n\nAnalyze SPEC {} for issues.\n\nSee prompts.json[\"{}\"] for full instructions.",
+        gate.command_name(),
+        checkpoint.name(),
+        spec_id,
+        gate_name
+    )
 }
 
 /// Finalize quality gates at pipeline completion
