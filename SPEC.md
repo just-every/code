@@ -32,6 +32,23 @@
 
 ## Active Tasks
 
+### Architecture & Technical Debt (from 2025-10-17 Review)
+
+| Order | Task ID | Title | Status | Owners | PRD | Branch | PR | Last Validation | Evidence | Notes |
+|-------|---------|-------|--------|--------|-----|--------|----|-----------------|----------|-------|
+| 1 | T80 | Unify orchestration paths | TODO | Code |  |  |  |  |  | CRITICAL: Eliminate duplicate Rust/bash orchestration. Make handler.rs canonical, bash wrapper calls TUI. Resolves behavioral drift. |
+| 2 | T81 | Consolidate consensus logic | TODO | Code |  |  |  |  |  | CRITICAL: Implement consensus synthesis fully in Rust or native MCP client. Remove bash→Python→MCP chain. Fixes brittle integration. |
+| 3 | T82 | Complete SpecKitContext migration | TODO | Code |  |  |  |  |  | CRITICAL: Migrate all 10 handlers to trait-based design. Enables isolated testing. Completes T76 abstraction. |
+| 4 | T83 | Configuration schema validation | TODO | Code |  |  |  |  |  | MODERATE: Add JSON Schema validation for config.toml. Centralize quality_gates_enabled, telemetry settings. Prevent typo-induced bugs. |
+| 5 | T84 | Typed error handling migration | TODO | Code |  |  |  |  |  | MODERATE: Replace `Result<T, String>` with `SpecKitError` in guardrail.rs, consensus.rs. Improves error context and recovery. |
+| 6 | T86 | Code hygiene pass | TODO | Code |  |  |  |  |  | MODERATE: Fix 50 compiler warnings (unused imports, dead code). Run `cargo fix`, `cargo clippy --fix`. Production hygiene. |
+| 7 | T87 | E2E pipeline tests | TODO | Code |  |  |  |  |  | OPPORTUNITY: Full `/speckit.auto` integration test with all 6 stages + 3 quality checkpoints. Validates end-to-end flow. |
+| 8 | T88 | Agent cancellation protocol | TODO | Code |  |  |  |  |  | OPPORTUNITY: Implement SIGTERM propagation to child agents. Add timeout enforcement. Prevents orphaned processes. |
+| 9 | T89 | MCP tool discovery | TODO | Code |  |  |  |  |  | OPPORTUNITY: Registry mechanism for dynamic MCP tool loading. Reduces config.toml maintenance. |
+| 10 | T90 | Observability metrics | TODO | Code |  |  |  |  |  | OPPORTUNITY: Add metrics endpoint (success rates, timing, errors). Enable monitoring and alerting. |
+
+### Completed Tasks
+
 | Order | Task ID | Title | Status | Owners | PRD | Branch | PR | Last Validation | Evidence | Notes |
 |-------|---------|-------|--------|--------|-----|--------|----|-----------------|----------|-------|
 | 1 | T60 | Template validation | **DONE** | Code |  |  |  | 2025-10-16 | docs/SPEC-KIT-060-template-validation-test/ | COMPLETE: All 4 tests run. Templates 2x faster (50% improvement). Decision: ADOPT. |
