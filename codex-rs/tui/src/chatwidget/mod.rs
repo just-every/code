@@ -21344,5 +21344,37 @@ impl spec_kit::SpecKitContext for ChatWidget<'_> {
     ) -> spec_kit::Result<(Vec<ratatui::text::Line<'static>>, bool)> {
         ChatWidget::run_spec_consensus(self, spec_id, stage)
     }
+
+    // === T82: Extended Operations ===
+
+    fn submit_user_message(&mut self, display: String, items: Vec<InputItem>) {
+        let user_msg = crate::chatwidget::message::UserMessage {
+            display_text: display,
+            ordered_items: items,
+        };
+        self.submit_user_message(user_msg);
+    }
+
+    fn execute_spec_ops_command(&mut self, command: SlashCommand, args: String, hal_mode: Option<HalMode>) {
+        self.handle_spec_ops_command(command, args, hal_mode);
+    }
+
+    fn active_agent_names(&self) -> Vec<String> {
+        self.active_agents
+            .iter()
+            .filter(|a| matches!(a.status, crate::chatwidget::AgentStatus::Completed))
+            .map(|a| a.name.to_lowercase())
+            .collect()
+    }
+
+    fn has_failed_agents(&self) -> bool {
+        self.active_agents
+            .iter()
+            .any(|a| matches!(a.status, crate::chatwidget::AgentStatus::Failed))
+    }
+
+    fn show_quality_gate_modal(&mut self, checkpoint: spec_kit::QualityCheckpoint, questions: Vec<spec_kit::EscalatedQuestion>) {
+        self.bottom_pane.show_quality_gate_modal(checkpoint, questions);
+    }
 }
 // === END FORK-SPECIFIC ===

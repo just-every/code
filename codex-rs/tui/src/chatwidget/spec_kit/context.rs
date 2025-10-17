@@ -4,12 +4,13 @@
 //! and reuse.
 
 use super::error::{Result, SpecKitError};
-use super::state::{GuardrailOutcome, SpecAutoState};
+use super::state::{EscalatedQuestion, GuardrailOutcome, QualityCheckpoint, SpecAutoState};
 use crate::app_event::BackgroundPlacement;
 use crate::history_cell::HistoryCell;
+use crate::slash_command::{HalMode, SlashCommand};
 use crate::spec_prompts::SpecStage;
 use codex_core::config_types::{AgentConfig, SubagentCommandConfig};
-use codex_core::protocol::Op;
+use codex_core::protocol::{InputItem, Op};
 use std::path::Path;
 
 /// Minimal context interface required by spec-kit operations
@@ -83,6 +84,23 @@ pub trait SpecKitContext {
         spec_id: &str,
         stage: SpecStage,
     ) -> Result<(Vec<ratatui::text::Line<'static>>, bool)>;
+
+    // === Extended Operations (T82) ===
+
+    /// Submit user message with ordered items
+    fn submit_user_message(&mut self, display: String, items: Vec<InputItem>);
+
+    /// Execute spec-ops command (guardrail/consensus)
+    fn execute_spec_ops_command(&mut self, command: SlashCommand, args: String, hal_mode: Option<HalMode>);
+
+    /// Get active agent statuses (for completion checking)
+    fn active_agent_names(&self) -> Vec<String>;
+
+    /// Check if any agents have failed
+    fn has_failed_agents(&self) -> bool;
+
+    /// Show quality gate modal for escalated questions
+    fn show_quality_gate_modal(&mut self, checkpoint: QualityCheckpoint, questions: Vec<EscalatedQuestion>);
 }
 
 #[cfg(test)]
@@ -101,6 +119,12 @@ mod tests {
         pub submitted_prompts: Vec<(String, String)>,
         pub spec_auto_state: Option<SpecAutoState>,
         pub redraw_requested: bool,
+        // T82: Extended fields
+        pub user_messages: Vec<(String, Vec<InputItem>)>,
+        pub spec_ops_commands: Vec<(SlashCommand, String, Option<HalMode>)>,
+        pub active_agent_names: Vec<String>,
+        pub has_failed_agents: bool,
+        pub quality_gate_modals: Vec<(QualityCheckpoint, Vec<EscalatedQuestion>)>,
     }
 
     impl MockSpecKitContext {
@@ -115,6 +139,12 @@ mod tests {
                 submitted_prompts: Vec::new(),
                 spec_auto_state: None,
                 redraw_requested: false,
+                // T82: Extended fields
+                user_messages: Vec::new(),
+                spec_ops_commands: Vec::new(),
+                active_agent_names: Vec::new(),
+                has_failed_agents: false,
+                quality_gate_modals: Vec::new(),
             }
         }
 
@@ -189,6 +219,28 @@ mod tests {
             // Mock: Return consensus OK
             use ratatui::text::Line;
             Ok((vec![Line::from("Mock consensus OK")], true))
+        }
+
+        // === T82: Extended Operations ===
+
+        fn submit_user_message(&mut self, display: String, items: Vec<InputItem>) {
+            self.user_messages.push((display, items));
+        }
+
+        fn execute_spec_ops_command(&mut self, command: SlashCommand, args: String, hal_mode: Option<HalMode>) {
+            self.spec_ops_commands.push((command, args, hal_mode));
+        }
+
+        fn active_agent_names(&self) -> Vec<String> {
+            self.active_agent_names.clone()
+        }
+
+        fn has_failed_agents(&self) -> bool {
+            self.has_failed_agents
+        }
+
+        fn show_quality_gate_modal(&mut self, checkpoint: QualityCheckpoint, questions: Vec<EscalatedQuestion>) {
+            self.quality_gate_modals.push((checkpoint, questions));
         }
     }
 
