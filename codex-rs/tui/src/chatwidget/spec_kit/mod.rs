@@ -15,6 +15,7 @@ pub mod evidence;
 pub mod file_modifier;
 pub mod guardrail;
 pub mod handler;
+pub mod local_memory_client;
 pub mod quality;
 pub mod routing;
 pub mod state;

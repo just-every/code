@@ -4,6 +4,7 @@
 //! artifact collection from local-memory, and synthesis result persistence.
 
 use super::error::{Result, SpecKitError};
+use super::local_memory_client::LocalMemoryClient;
 use crate::spec_prompts::SpecStage;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -380,13 +381,16 @@ fn fetch_memory_entries(
     spec_id: &str,
     stage: SpecStage,
 ) -> Result<(Vec<LocalMemorySearchResult>, Vec<String>)> {
-    let results = local_memory_util::search_by_stage(spec_id, stage.command_name(), 20)?;
+    // Use robust client with retry logic
+    let client = LocalMemoryClient::new();
+    let results = client.search_by_stage(spec_id, stage)?;
+
     if results.is_empty() {
-        Err(format!(
-            "No local-memory entries found for {} stage '{}'",
-            spec_id,
-            stage.command_name()
-        ).into())
+        Err(SpecKitError::NoConsensusFound {
+            spec_id: spec_id.to_string(),
+            stage: stage.command_name().to_string(),
+            directory: std::path::PathBuf::from("local-memory"),
+        })
     } else {
         Ok((results, Vec::new()))
     }
@@ -922,34 +926,9 @@ pub(crate) fn remember_consensus_verdict(
     }
 
     let summary = serde_json::to_string(&summary_value)
-        .map_err(|e| format!("failed to serialize consensus summary: {e}"))?;
+        .map_err(|e| SpecKitError::JsonSerialize { source: e })?;
 
-    let mut cmd = Command::new("local-memory");
-    cmd.arg("remember")
-        .arg(summary)
-        .arg("--importance")
-        .arg("8")
-        .arg("--domain")
-        .arg("spec-tracker")
-        .arg("--tags")
-        .arg(format!("spec:{}", spec_id))
-        .arg("--tags")
-        .arg(format!("stage:{}", stage.command_name()))
-        .arg("--tags")
-        .arg("consensus")
-        .arg("--tags")
-        .arg("verdict");
-
-    let output = cmd
-        .output()
-        .map_err(|e| format!("failed to run local-memory remember: {e}"))?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "local-memory remember failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ).into());
-    }
-
-    Ok(())
+    // Use robust client with retry logic
+    let client = LocalMemoryClient::new();
+    client.store_verdict(spec_id, stage, &summary)
 }
