@@ -81,6 +81,12 @@ pub struct ModelProviderInfo {
     /// the connection as lost.
     pub stream_idle_timeout_ms: Option<u64>,
 
+    // FORK-SPECIFIC: Total timeout for agent execution (just-every/code enhancement)
+    // Prevents agents from running indefinitely even with periodic heartbeats
+    // Default: 30 minutes (1,800,000 ms)
+    #[serde(default)]
+    pub agent_total_timeout_ms: Option<u64>,
+
     /// Whether this provider requires some form of standard authentication (API key, ChatGPT token).
     #[serde(default)]
     pub requires_openai_auth: bool,
@@ -359,6 +365,16 @@ impl ModelProviderInfo {
             .map(Duration::from_millis)
             .unwrap_or(Duration::from_millis(DEFAULT_STREAM_IDLE_TIMEOUT_MS))
     }
+
+    // FORK-SPECIFIC: Total timeout for agent execution (just-every/code)
+    /// Maximum total time allowed for agent to complete, regardless of activity.
+    /// Prevents indefinite execution even with periodic heartbeats.
+    pub fn agent_total_timeout(&self) -> Duration {
+        const DEFAULT_AGENT_TOTAL_TIMEOUT_MS: u64 = 30 * 60 * 1000; // 30 minutes
+        self.agent_total_timeout_ms
+            .map(Duration::from_millis)
+            .unwrap_or(Duration::from_millis(DEFAULT_AGENT_TOTAL_TIMEOUT_MS))
+    }
 }
 
 const DEFAULT_OLLAMA_PORT: u32 = 11434;
@@ -410,6 +426,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 request_max_retries: None,
                 stream_max_retries: None,
                 stream_idle_timeout_ms: None,
+                agent_total_timeout_ms: None,  // FORK-SPECIFIC: Use default 30min
                 requires_openai_auth: true,
                 openrouter: None,
             },
@@ -455,6 +472,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str) -> ModelProviderInfo {
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        agent_total_timeout_ms: None,  // FORK-SPECIFIC: Use default 30min
         requires_openai_auth: false,
         openrouter: None,
     }

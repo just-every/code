@@ -427,13 +427,27 @@ impl ModelClient {
                     let stream = resp.bytes_stream().map_err(CodexErr::Reqwest);
                     let debug_logger = Arc::clone(&self.debug_logger);
                     let request_id_clone = request_id.clone();
-                    tokio::spawn(process_sse(
-                        stream,
-                        tx_event,
-                        self.provider.stream_idle_timeout(),
-                        debug_logger,
-                        request_id_clone,
-                    ));
+
+                    // FORK-SPECIFIC: Wrap with total timeout (just-every/code)
+                    // Prevents agents from running >30min even with periodic heartbeats
+                    let total_timeout = self.provider.agent_total_timeout();
+                    let idle_timeout = self.provider.stream_idle_timeout();
+
+                    tokio::spawn(async move {
+                        let process_result = timeout(
+                            total_timeout,
+                            process_sse(stream, tx_event.clone(), idle_timeout, debug_logger, request_id_clone)
+                        ).await;
+
+                        if process_result.is_err() {
+                            // Total timeout exceeded
+                            warn!("Agent execution exceeded total timeout ({:.1}min)", total_timeout.as_secs_f64() / 60.0);
+                            let _ = tx_event.send(Err(CodexErr::Stream(
+                                format!("Agent timeout: exceeded {:.1} minute limit", total_timeout.as_secs_f64() / 60.0),
+                                None
+                            ))).await;
+                        }
+                    });
 
                     return Ok(ResponseStream { rx_event });
                 }
