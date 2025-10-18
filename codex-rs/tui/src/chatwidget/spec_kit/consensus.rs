@@ -4,7 +4,7 @@
 //! artifact collection from local-memory, and synthesis result persistence.
 
 use super::error::{Result, SpecKitError};
-use super::local_memory_client::LocalMemoryClient;
+// FORK-SPECIFIC (just-every/code): LocalMemoryClient removed, using native MCP
 use crate::spec_prompts::SpecStage;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -198,104 +198,131 @@ use crate::local_memory_util::{self, LocalMemorySearchResult};
 use std::fs;
 use std::path::Path;
 
-/// Collect consensus artifacts from evidence files or local-memory
-pub(crate) fn collect_consensus_artifacts(
+/// Collect consensus artifacts from local-memory (primary) or evidence files (fallback)
+// FORK-SPECIFIC (just-every/code): Made async for native MCP with ARCH-002 fallback
+pub(crate) async fn collect_consensus_artifacts(
     evidence_root: &Path,
     spec_id: &str,
     stage: SpecStage,
+    mcp_manager: &codex_core::mcp_connection_manager::McpConnectionManager,
 ) -> Result<(Vec<ConsensusArtifactData>, Vec<String>)> {
     let mut warnings: Vec<String> = Vec::new();
 
-    match load_artifacts_from_evidence(evidence_root, spec_id, stage) {
-        Ok(Some((artifacts, mut evidence_warnings))) => {
-            warnings.append(&mut evidence_warnings);
+    // ARCH-002: Try MCP first (faster, more current), fallback to files if unavailable
+    match fetch_memory_entries(spec_id, stage, mcp_manager).await {
+        Ok((entries, mut memory_warnings)) => {
+            warnings.append(&mut memory_warnings);
+
+            // Parse MCP results into artifacts
+            let mut artifacts: Vec<ConsensusArtifactData> = Vec::new();
+
+            for result in entries {
+                let memory_id = result.memory.id.clone();
+                let content_str = result.memory.content.trim();
+                if content_str.is_empty() {
+                    warnings.push("local-memory entry had empty content".to_string());
+                    continue;
+                }
+
+                let value = match serde_json::from_str::<Value>(content_str) {
+                    Ok(v) => v,
+                    Err(err) => {
+                        warnings.push(format!("unable to parse consensus artifact JSON: {err}"));
+                        continue;
+                    }
+                };
+
+                let agent = match value
+                    .get("agent")
+                    .or_else(|| value.get("model"))
+                    .and_then(|v| v.as_str())
+                {
+                    Some(agent) if !agent.trim().is_empty() => agent.trim().to_string(),
+                    _ => {
+                        warnings.push("consensus artifact missing agent field".to_string());
+                        continue;
+                    }
+                };
+
+                let stage_matches = value
+                    .get("stage")
+                    .or_else(|| value.get("stage_name"))
+                    .and_then(|v| v.as_str())
+                    .and_then(parse_consensus_stage)
+                    .map(|parsed| parsed == stage)
+                    .unwrap_or(false);
+
+                if !stage_matches {
+                    warnings.push(format!(
+                        "skipping local-memory entry for agent {} because stage did not match {}",
+                        agent,
+                        stage.command_name()
+                    ));
+                    continue;
+                }
+
+                let spec_matches = value
+                    .get("spec_id")
+                    .or_else(|| value.get("specId"))
+                    .and_then(|v| v.as_str())
+                    .map(|reported| reported.eq_ignore_ascii_case(spec_id))
+                    .unwrap_or(true);
+
+                if !spec_matches {
+                    warnings.push(format!(
+                        "skipping local-memory entry for agent {} because spec id did not match {}",
+                        agent, spec_id
+                    ));
+                    continue;
+                }
+
+                let version = value
+                    .get("prompt_version")
+                    .or_else(|| value.get("promptVersion"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                artifacts.push(ConsensusArtifactData {
+                    memory_id,
+                    agent,
+                    version,
+                    content: value,
+                });
+            }
+
             return Ok((artifacts, warnings));
         }
-        Ok(None) => {}
-        Err(err) => warnings.push(err.to_string()),
+        Err(mcp_err) => {
+            // ARCH-002: Fallback to file-based evidence if MCP unavailable
+            tracing::warn!("MCP fetch failed, falling back to file-based evidence: {}", mcp_err);
+            warnings.push(format!(
+                "⚠ Using file-based evidence (local-memory MCP unavailable: {})",
+                mcp_err
+            ));
+
+            match load_artifacts_from_evidence(evidence_root, spec_id, stage) {
+                Ok(Some((artifacts, mut evidence_warnings))) => {
+                    warnings.append(&mut evidence_warnings);
+                    return Ok((artifacts, warnings));
+                }
+                Ok(None) => {
+                    warnings.push("No file-based evidence found either".to_string());
+                }
+                Err(err) => {
+                    warnings.push(format!("File-based evidence also failed: {}", err));
+                }
+            }
+        }
     }
 
-    let (entries, mut memory_warnings) = fetch_memory_entries(spec_id, stage)?;
-    warnings.append(&mut memory_warnings);
-
-    let mut artifacts: Vec<ConsensusArtifactData> = Vec::new();
-
-    for result in entries {
-        let memory_id = result.memory.id.clone();
-        let content_str = result.memory.content.trim();
-        if content_str.is_empty() {
-            warnings.push("local-memory entry had empty content".to_string());
-            continue;
-        }
-
-        let value = match serde_json::from_str::<Value>(content_str) {
-            Ok(v) => v,
-            Err(err) => {
-                warnings.push(format!("unable to parse consensus artifact JSON: {err}"));
-                continue;
-            }
-        };
-
-        let agent = match value
-            .get("agent")
-            .or_else(|| value.get("model"))
-            .and_then(|v| v.as_str())
-        {
-            Some(agent) if !agent.trim().is_empty() => agent.trim().to_string(),
-            _ => {
-                warnings.push("consensus artifact missing agent field".to_string());
-                continue;
-            }
-        };
-
-        let stage_matches = value
-            .get("stage")
-            .or_else(|| value.get("stage_name"))
-            .and_then(|v| v.as_str())
-            .and_then(parse_consensus_stage)
-            .map(|parsed| parsed == stage)
-            .unwrap_or(false);
-
-        if !stage_matches {
-            warnings.push(format!(
-                "skipping local-memory entry for agent {} because stage did not match {}",
-                agent,
-                stage.command_name()
-            ));
-            continue;
-        }
-
-        let spec_matches = value
-            .get("spec_id")
-            .or_else(|| value.get("specId"))
-            .and_then(|v| v.as_str())
-            .map(|reported| reported.eq_ignore_ascii_case(spec_id))
-            .unwrap_or(true);
-
-        if !spec_matches {
-            warnings.push(format!(
-                "skipping local-memory entry for agent {} because spec id did not match {}",
-                agent, spec_id
-            ));
-            continue;
-        }
-
-        let version = value
-            .get("prompt_version")
-            .or_else(|| value.get("promptVersion"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        artifacts.push(ConsensusArtifactData {
-            memory_id,
-            agent,
-            version,
-            content: value,
-        });
-    }
-
-    Ok((artifacts, warnings))
+    // If both MCP and file-based evidence failed
+    Err(SpecKitError::NoConsensusFound {
+        spec_id: spec_id.to_string(),
+        stage: stage.command_name().to_string(),
+        directory: evidence_root.to_path_buf(),
+    })
 }
+
 
 fn load_artifacts_from_evidence(
     evidence_root: &Path,
@@ -377,13 +404,29 @@ fn load_artifacts_from_evidence(
     }
 }
 
-fn fetch_memory_entries(
+// FORK-SPECIFIC (just-every/code): Native MCP for local-memory
+async fn fetch_memory_entries(
     spec_id: &str,
     stage: SpecStage,
+    mcp_manager: &codex_core::mcp_connection_manager::McpConnectionManager,
 ) -> Result<(Vec<LocalMemorySearchResult>, Vec<String>)> {
-    // Use robust client with retry logic
-    let client = LocalMemoryClient::new();
-    let results = client.search_by_stage(spec_id, stage)?;
+    use serde_json::json;
+
+    let query = format!("{} {}", spec_id, stage.command_name());
+    let args = json!({
+        "query": query,
+        "limit": 20,
+        "tags": [format!("spec:{}", spec_id), format!("stage:{}", stage.command_name())],
+        "search_type": "hybrid"
+    });
+
+    let result = mcp_manager
+        .call_tool("local-memory", "search", Some(args), Some(std::time::Duration::from_secs(30)))
+        .await
+        .map_err(|e| SpecKitError::from_string(format!("MCP local-memory search failed: {}", e)))?;
+
+    let results = parse_mcp_search_results(&result)
+        .map_err(|e| SpecKitError::from_string(format!("Failed to parse MCP results: {}", e)))?;
 
     if results.is_empty() {
         Err(SpecKitError::NoConsensusFound {
@@ -394,6 +437,29 @@ fn fetch_memory_entries(
     } else {
         Ok((results, Vec::new()))
     }
+}
+
+// FORK-SPECIFIC (just-every/code): Parse MCP search results
+fn parse_mcp_search_results(result: &mcp_types::CallToolResult) -> Result<Vec<LocalMemorySearchResult>> {
+    if result.content.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut all_results = Vec::new();
+    for content_item in &result.content {
+        if let mcp_types::ContentBlock::TextContent(text_content) = content_item {
+            let text = &text_content.text;
+            if let Ok(json_results) = serde_json::from_str::<Vec<serde_json::Value>>(text) {
+                for json_result in json_results {
+                    if let Ok(parsed) = serde_json::from_value::<LocalMemorySearchResult>(json_result) {
+                        all_results.push(parsed);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(all_results)
 }
 
 /// Load latest consensus synthesis file for spec/stage
@@ -490,15 +556,17 @@ pub(crate) fn load_latest_consensus_synthesis(
 use std::collections::HashSet;
 
 /// Run consensus check for spec stage
-pub fn run_spec_consensus(
+// FORK-SPECIFIC (just-every/code): Made async for native MCP
+pub async fn run_spec_consensus(
     cwd: &Path,
     spec_id: &str,
     stage: SpecStage,
     telemetry_enabled: bool,
+    mcp_manager: &codex_core::mcp_connection_manager::McpConnectionManager,
 ) -> Result<(Vec<ratatui::text::Line<'static>>, bool)> {
     let evidence_root = cwd.join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus");
 
-    let (artifacts, mut warnings) = collect_consensus_artifacts(&evidence_root, spec_id, stage)?;
+    let (artifacts, mut warnings) = collect_consensus_artifacts(&evidence_root, spec_id, stage, mcp_manager).await?;
     if artifacts.is_empty() {
         return Err(format!(
             "No structured local-memory entries found for {} stage '{}'. Ensure agents stored their JSON via local-memory remember.",
@@ -734,7 +802,7 @@ pub fn run_spec_consensus(
                 }
 
                 // Remember in local-memory
-                if let Err(err) = remember_consensus_verdict(spec_id, stage, &verdict_obj) {
+                if let Err(err) = remember_consensus_verdict(spec_id, stage, &verdict_obj, mcp_manager).await {
                     lines.push(ratatui::text::Line::from(format!(
                         "  Warning: failed to store in local-memory: {}",
                         err
@@ -885,12 +953,14 @@ pub(crate) fn persist_consensus_telemetry_bundle(
 }
 
 /// Remember consensus verdict in local-memory
-pub(crate) fn remember_consensus_verdict(
+// FORK-SPECIFIC (just-every/code): Made async for native MCP
+pub(crate) async fn remember_consensus_verdict(
     spec_id: &str,
     stage: SpecStage,
     verdict: &ConsensusVerdict,
+    mcp_manager: &codex_core::mcp_connection_manager::McpConnectionManager,
 ) -> Result<()> {
-    use std::process::Command;
+    use serde_json::json;
 
     let mut summary_value = serde_json::json!({
         "spec_id": spec_id,
@@ -928,7 +998,18 @@ pub(crate) fn remember_consensus_verdict(
     let summary = serde_json::to_string(&summary_value)
         .map_err(|e| SpecKitError::JsonSerialize { source: e })?;
 
-    // Use robust client with retry logic
-    let client = LocalMemoryClient::new();
-    client.store_verdict(spec_id, stage, &summary)
+    // Call local-memory store_memory via MCP
+    let args = json!({
+        "content": summary,
+        "domain": "spec-kit",
+        "tags": [format!("spec:{}", spec_id), format!("stage:{}", stage.command_name()), "consensus-verdict"],
+        "importance": 8
+    });
+
+    mcp_manager
+        .call_tool("local-memory", "store_memory", Some(args), Some(std::time::Duration::from_secs(10)))
+        .await
+        .map_err(|e| SpecKitError::from_string(format!("MCP local-memory store failed: {}", e)))?;
+
+    Ok(())
 }

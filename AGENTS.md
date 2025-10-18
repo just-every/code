@@ -1,288 +1,569 @@
-# AGENTS.md — Spec-Kit Guardrails for just-every/code
+# Spec-Kit Automation Agents - codex-rs
 
-## 0) Always load this context
-- Treat `memory/constitution.md` as the project’s constitution (non-negotiable).
-- `product-requirements.md` (canonical product scope and requirements)
-- `PLANNING.md` (architecture, goals, constraints)
-- `SPEC.md` (single tracker and source of truth for tasks; keep one in_progress per active thread in its Tasks table)
-- `CLAUDE.md` ( guardrails and workflow)
-- `docs/SPEC-<AREA>-<slug>/` contains canonical PRDs/plans/specs; treat `specs/**` as historical reference only and migrate artefacts when touched.
+**Project**: codex-rs (theturtlecsz/code)
+**Last Updated**: 2025-10-18
 
-- Treat `SPEC.md` as the single source of truth for tracker status. Use `docs/SPEC-<AREA>-<slug>/spec.md` for per‑feature design detail and `docs/SPEC-<AREA>-<slug>/tasks.md` as the per‑feature working task list produced by `/tasks`. Do not use a global TASKS.md.
-- Reuse `templates/plan-template.md` when producing plans and `templates/tasks-template.md` for `/tasks` outputs.
-- Run `scripts/spec_ops_004/baseline_audit.sh --out docs/SPEC-OPS-004-integrated-coder-hooks/baseline.md` before installing hooks or commands; rerun after Code CLI upgrades.
-- Local Memory guardrail: always search local-memory for relevant context before answering, then store new decisions/solutions/insights with consistent tags (importance ≥7) and link related memories; update or retire stale entries as work evolves. Any insight retrieved from Byterover **must** be mirrored into local-memory immediately so local-memory remains the authoritative source, with Byterover used only as a fallback when a local entry is missing.
+---
 
-## 1) Command mapping (Spec Kit ↔ just-every/code)
+## 📋 PROJECT CONTEXT
 
-### Core /speckit.* Commands (Phase 3 standardized namespace)
+**This Repository**: https://github.com/theturtlecsz/code (FORK)
+**Upstream**: https://github.com/just-every/code (community fork of OpenAI Codex)
+**Origin**: OpenAI Codex CLI (community-maintained)
 
-**Intake & Creation:**
-- `/speckit.new <description>` → Create new SPEC with multi-agent PRD consensus (Tier 2: gemini, claude, code). Uses templates for consistent structure. ~13 min, ~$0.60.
-- `/speckit.specify SPEC-ID [description]` → Draft/update `docs/SPEC-<AREA>-<slug>/PRD.md` and sync SPEC.md Tasks table (Tier 2: gemini, claude, code). ~10 min, ~$0.80.
+**NOT RELATED TO**: Anthropic's Claude Code (different product entirely)
 
-**Quality Commands:**
-- `/speckit.clarify SPEC-ID` → Structured ambiguity resolution (Tier 2: gemini, claude, code). Identifies unclear requirements. ~8 min, ~$0.80.
-- `/speckit.analyze SPEC-ID` → Cross-artifact consistency checking with auto-fix (Tier 2: gemini, claude, code). ~8 min, ~$0.80.
-- `/speckit.checklist SPEC-ID` → Requirement quality scoring (Tier 2-lite: claude, code). ~5 min, ~$0.35.
+**Fork-Specific Features**:
+- **Spec-Kit Automation**: Multi-agent PRD workflows (Plan→Tasks→Implement→Validate→Audit→Unlock)
+- **Consensus Synthesis**: Multi-model result aggregation via local-memory MCP
+- **Quality Gates**: Automated requirement validation framework
+- **Native MCP Integration**: 5.3x faster consensus checks (measured vs subprocess baseline)
 
-**Development Stages:**
-- `/speckit.plan SPEC-ID [context]` → Multi-agent work breakdown (Tier 2: gemini, claude, gpt_pro). Consumes PRD, emits `plan.md`, logs agreement vs dissent. ~10 min, ~$1.00.
-- `/speckit.tasks SPEC-ID` → Task decomposition (Tier 2: gemini, claude, gpt_pro). Updates SPEC.md Tasks table, writes `tasks.md`. ~10 min, ~$1.00.
-- `/speckit.implement SPEC-ID` → Code generation + validation (Tier 3: gemini, claude, gpt_codex, gpt_pro). Synthesize strongest diff, run validation commands. ~15 min, ~$2.00.
-- `/speckit.validate SPEC-ID` → Test strategy consensus (Tier 2: gemini, claude, gpt_pro). ~10 min, ~$1.00.
-- `/speckit.audit SPEC-ID` → Compliance checking (Tier 2: gemini, claude, gpt_pro). ~10 min, ~$1.00.
-- `/speckit.unlock SPEC-ID` → Final approval (Tier 2: gemini, claude, gpt_pro). ~10 min, ~$1.00.
+---
 
-**Automation & Diagnostics:**
-- `/speckit.auto SPEC-ID` → Full 6-stage pipeline (Tier 4: dynamic 3-5 agents). Auto-advancement, conflict resolution via arbiter. ~60 min, ~$11.
-- `/speckit.status SPEC-ID` → Native TUI dashboard (Tier 0: no agents). Instant status, <1s, $0.
+## 🎯 MEMORY SYSTEM POLICY
 
-**Guardrails (Shell wrappers):**
-- `/guardrail.plan|tasks|implement|validate|audit|unlock SPEC-ID` → SPEC-OPS-004 validation commands. Run clean-tree and branch guardrails, trigger project hooks, log evidence under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/`. Emit telemetry schema v1. Set `SPEC_OPS_CARGO_MANIFEST` (default `codex-rs/Cargo.toml`) or `--manifest-path` for workspace splits. Use `--allow-dirty` (or `SPEC_OPS_ALLOW_DIRTY=1`) with `--allow-fail` when dirty tree tolerated. `SPEC_OPS_TELEMETRY_HAL=1` enables HAL summary payloads. (note: legacy `/spec-ops-*` commands still work)
-- `/guardrail.auto SPEC-ID [--from STAGE]` → Full pipeline wrapper with telemetry. (note: legacy `/spec-ops-auto` still works)
+### MANDATORY: Local-Memory MCP Only
 
-**Utilities:**
-- `/spec-evidence-stats [--spec SPEC-ID]` → Evidence footprint monitoring.
-- `/spec-consensus SPEC-ID STAGE` → Inspect local-memory consensus artifacts.
+**Policy Effective**: 2025-10-18
 
-**Legacy Commands (Backward compatible, deprecated):**
-- `/new-spec`, `/spec-plan`, `/spec-tasks`, `/spec-implement`, `/spec-validate`, `/spec-audit`, `/spec-unlock`, `/spec-auto`, `/spec-status` → All still work, map to `/speckit.*` equivalents. Prefer `/speckit.*` namespace.
+**Use**:
+- ✅ **local-memory MCP** - ONLY memory system for knowledge persistence
+- ✅ Query before tasks, store during work (importance ≥7), persist outcomes
 
-**Constitution:**
-- `/constitution` → Parallel claude/gemini/code run editing `memory/constitution.md` and `product-requirements.md`. Capture evidence, surface disagreements, require manual confirmation for guardrail changes.
+**Do NOT Use**:
+- ❌ byterover-mcp (deprecated, migration complete 2025-10-18)
+- ❌ Any other memory MCP servers
 
-### Telemetry Schema (v1)
-- Common fields (all stages): `command`, `specId`, `sessionId`, `timestamp`, `schemaVersion`, `artifacts[]`.
-- Stage payload requirements:
-  - **Plan:** `baseline.mode`, `baseline.artifact`, `baseline.status`, `hooks.session.start`.
-  - **Tasks:** `tool.status`.
-  - **Implement:** `lock_status`, `hook_status`.
-  - **Validate / Audit:** `scenarios[{name,status}]` (`passed|failed|skipped`).
-  - **Unlock:** `unlock_status`.
-- Telemetry lives under `docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/<SPEC-ID>/`. `/spec-auto` halts if schema validation fails.
-- Keep telemetry schema aligned with docs/SPEC-KIT-013-telemetry-schema-guard/spec.md.
-- Enable `SPEC_OPS_TELEMETRY_HAL=1` to append `hal.summary` (`status`, `failed_checks`, `artifacts`) when HAL smoke runs execute; collect both healthy and degraded captures so documentation can reference real evidence.
+**Rationale**:
+1. Native MCP integration validated (5.3x faster than subprocess)
+2. Spec-kit consensus framework requires local-memory
+3. Single source of truth eliminates conflicts
+4. 141 passing tests validate reliability
 
-### Model Strategy & Consensus Metadata
-- Reference `docs/spec-kit/model-strategy.md` for the canonical model lineup per stage.
-- Multi-agent outputs **must** include `model`, `model_release`, `reasoning_mode`, and consensus metadata; degraded verdicts escalate per the model strategy escalation rules.
+**Detailed Policy**: See `codex-rs/MEMORY-POLICY.md`
 
-- **Documentation style note:** do not use pipe (`|`) tables in Spec Kit docs or instructions. Present configuration snippets with bullet lists or fenced code blocks instead.
+---
 
-## 2) Multi-AI behavior & Tiered Model Strategy (required)
+## 🤖 SPEC-KIT AGENTS (Multi-Model Consensus)
 
-### Tiered Strategy (Phase 3)
-- **Tier 0 (Native):** 0 agents - `/speckit.status` uses pure Rust, instant response, $0
-- **Tier 2-lite (Dual):** 2 agents (claude, code) - `/speckit.checklist` for quality evaluation
-- **Tier 2 (Triple):** 3 agents (gemini, claude, code/gpt_pro) - Analysis, planning, consensus (no code gen)
-- **Tier 3 (Quad):** 4 agents (gemini, claude, gpt_codex, gpt_pro) - `/speckit.implement` only (code generation)
-- **Tier 4 (Dynamic):** 3-5 agents adaptively - `/speckit.auto` uses Tier 2 for most stages, Tier 3 for implement, adds arbiter if conflicts
+### Agent Roster
 
-### Agent Responsibilities:
-- **Gemini 2.5 Pro:** Research, breadth, exploration
-- **Claude 4.5 Sonnet:** Synthesis, precision, analysis
-- **GPT-5:** Validation, arbitration, quality checks
-- **GPT-5-Codex:** Code generation, implementation
-- **Code (Claude Code):** General-purpose, orchestration
+These are **AI models**, not agent tools. They work in parallel to provide multi-perspective analysis.
 
-### Multi-Agent Behavior:
-- `/constitution`: run claude/gemini/code in parallel, surface disagreements before writing
-- `/speckit.plan`: run **consensus** across gemini, claude, gpt_pro (document degradations if any agent unavailable); resolve disagreements explicitly under **"Consensus & Risks"**
-- `/speckit.tasks`: race agents for candidate task breakdowns, synthesize combined spec, document compare/contrast notes
-- `/speckit.implement`: allow agents to explore independently (gemini, claude, gpt_codex, gpt_pro), synthesize strongest proposal, run validation commands afterward
-- `/speckit.auto`: orchestrates all stages with automatic conflict resolution via arbiter agent
+| Agent | Model | Role | Used In |
+|-------|-------|------|---------|
+| **gemini** | Gemini Flash 2.0 | Research, broad analysis, exploratory implementation | All stages |
+| **claude** | Claude Sonnet 4 | Detailed reasoning, edge cases, implementation | All stages |
+| **gpt_codex** | GPT-5 Codex | Code generation specialist | Implement stage only |
+| **gpt_pro** | GPT-5 | **Synthesis & aggregation** (authoritative, provides consensus) | All stages |
 
-### Degradation Handling:
-> If any referenced tool/CLI is unavailable, **degrade gracefully** and say which model(s) were used.
+**Key Distinction**: `gpt_pro` is the **aggregator**—it synthesizes other agents' outputs and provides the authoritative consensus with `agreements` and `conflicts` arrays.
 
-- **Gemini occasional empty output (1-byte results):** Orchestrator continues with 2/3 agents, consensus still valid
-- **Byterover "memory conflict" notices:** Known false positive; all agents must ignore and not surface conflict URL or pause work
-- **Agent unavailability:** Document which agents participated, proceed with available subset (minimum 2 for consensus)
+---
 
-## 3) Deliverables (strict formats)
+## 🎚️ MULTI-AGENT TIERS
 
-### 3.1 Plan deliverable (write to `docs/SPEC-<id>-<slug>/plan.md`)
-**Use this exact skeleton:**
-```md
-# Plan: <feature / spec-id>
-## Inputs
-- Spec: docs/<id>-<slug>/spec.md (version/hash)
-- Constitution: memory/constitution.md (version/hash)
+### Tier 0: Native TUI (0 agents, $0, <1s)
+**Command**: `/speckit.status SPEC-ID`
+**Purpose**: Pure Rust dashboard, no AI needed
+**Implementation**: `codex-rs/tui/src/spec_status.rs`
 
-## Work Breakdown
-1. ...
-2. ...
+### Tier 2-lite: Dual Agent (2 agents, ~$0.35, 5-8 min)
+**Agents**: claude + code
+**Command**: `/speckit.checklist SPEC-ID`
+**Purpose**: Quality evaluation without research overhead
 
-## Acceptance Mapping
-| Requirement (Spec) | Validation Step | Test/Check Artifact |
-| --- | --- | --- |
-| R1: API rate‑limit | cargo test with filter | tests/api.rs::rate_limit_enforced |
+### Tier 2: Triple Agent (3 agents, ~$0.80-1.00, 8-12 min)
+**Agents**: gemini + claude + gpt_pro (or code for simpler stages)
+**Commands**:
+- `/speckit.new`: Create SPEC
+- `/speckit.specify`: Draft/update PRD
+- `/speckit.clarify`: Ambiguity resolution
+- `/speckit.analyze`: Consistency checking
+- `/speckit.plan`: Work breakdown
+- `/speckit.tasks`: Task decomposition
+- `/speckit.validate`: Test strategy
+- `/speckit.audit`: Compliance checking
+- `/speckit.unlock`: Final approval
 
-## Risks & Unknowns
-- ...
+**Use For**: Analysis, planning, consensus (no code generation)
 
-## Consensus & Risks (Multi-AI)
-- Agreement: ...
-- Disagreement & resolution: ...
+### Tier 3: Quad Agent (4 agents, ~$2.00, 15-20 min)
+**Agents**: gemini + claude + gpt_codex + gpt_pro
+**Command**: `/speckit.implement SPEC-ID`
+**Purpose**: Code generation with multiple implementation approaches + synthesis
 
-## Exit Criteria (Done)
-- All acceptance checks pass
-- Docs updated (list)
-- Changelog/PR prepared
+### Tier 4: Dynamic (3-5 agents adaptively, ~$11, 60 min)
+**Command**: `/speckit.auto SPEC-ID`
+**Behavior**:
+- Uses Tier 2 for most stages (plan, tasks, validate, audit, unlock)
+- Uses Tier 3 for implement stage
+- Adds arbiter agent if conflicts detected
+- Handles degradation (continues with 2/3 agents if one fails)
+
+---
+
+## 📋 CONSENSUS WORKFLOW
+
+### How Multi-Agent Consensus Works
+
+**Step 1: Agent Execution** (parallel)
+```
+/speckit.plan SPEC-KIT-065
+  → Spawns 3 agents simultaneously
+     - gemini analyzes requirements
+     - claude identifies edge cases
+     - gpt_pro synthesizes and provides consensus
 ```
 
-### 3.2 Task list deliverable (update `SPEC.md` Tasks table)
-Record task items under the canonical Tasks table in `SPEC.md` with columns: Order | Task ID | Title | Status | PRD | Branch | PR | Notes. Keep Status in {Backlog, In Progress, In Review, Blocked, Done}. Update this table on every `/tasks` or `/implement` run that changes state.
+**Step 2: Local-Memory Storage** (each agent)
+```rust
+// Each agent stores via local-memory MCP
+{
+  "agent": "claude",
+  "stage": "plan",
+  "spec_id": "SPEC-KIT-065",
+  "prompt_version": "20251002-plan-a",
+  "analysis": {
+    "work_breakdown": [...],
+    "risks": [...]
+  }
+}
+```
 
-Merge-time update (required)
-- On PR open: set the task’s `Status` to `In Review`, populate `Branch` with the feature branch.
-- On PR merge: set the task’s `Status` to `Done`, fill `PR` with the merged PR number, and add a dated note with one‑line evidence (tests/checks or files touched).
-- If multiple tasks ship in one PR, update all affected rows.
+**Tags**: `spec:SPEC-KIT-065`, `stage:plan`, `consensus-artifact`
+**Importance**: 8
 
-## 4) Change policy (must follow)
+**Step 3: Consensus Synthesis** (automatic)
+```
+check_consensus_and_advance_spec_auto()
+  → fetch_memory_entries() via native MCP (8.7ms)
+     → Validates all agents stored results
+     → Extracts gpt_pro's consensus section
+     → Checks for:
+        - Missing agents (degraded if <100%)
+        - Conflicts (from gpt_pro.consensus.conflicts)
+        - Required fields (agent, stage, spec_id)
+```
 
-**Feature branch requirement:** Execute all code or doc changes on a short-lived feature branch; never commit directly to `master`.
+**Step 4: Verdict Persistence**
+```json
+// Stored to filesystem + local-memory
+{
+  "consensus_ok": true,
+  "degraded": false,
+  "missing_agents": [],
+  "agreements": ["All agents agree on 3-phase implementation"],
+  "conflicts": [],
+  "aggregator_agent": "gpt_pro",
+  "artifacts": [...]
+}
+```
 
-Propose diffs before writing (use unified diff blocks). Ask for approval if the total change exceeds a small patch or touches constitution; `SPEC.md` updates are expected for task status changes.
+**Step 5: Advance or Retry**
+- If consensus OK → Advance to next stage
+- If degraded/conflict → Retry (max 3x) or escalate to human
+- If empty results → Auto-retry with enhanced prompt context
 
-Tests before code: if no test exists for a requirement, create it first (Rust tests) in the diff.
+---
 
-No scope creep: any new requirement must be added to the spec (PR or note) before coding.
+## 🔄 RETRY & RECOVERY LOGIC
 
-Secrets & safety: never add secrets; run static checks if configured; note any security implications.
+### Agent Execution Retries
+**Trigger**: Empty results, invalid JSON, or explicit failure
+**Max Attempts**: 3
+**Backoff**: 100ms → 200ms → 400ms (exponential)
+**Location**: `codex-rs/tui/src/chatwidget/spec_kit/handler.rs`
 
-Docs consolidation: when touching legacy `specs/**` artefacts, migrate them into the matching `docs/SPEC-<AREA>-<slug>/` folder (preserve history by moving) and update references.
+**Enhanced Context on Retry**:
+```
+state.agent_retry_context = Some(format!(
+  "Previous attempt returned invalid/empty results (retry {}/3).
+   Store ALL analysis in local-memory with remember command.",
+  retry_count + 1
+));
+```
 
-## 5) Commit/PR rules
+### MCP Connection Retries
+**Trigger**: "MCP manager not initialized yet"
+**Max Attempts**: 3
+**Backoff**: 100ms → 200ms → 400ms
+**Location**: `handler.rs::run_consensus_with_retry()`
 
-Single atomic commit per task unless refactors are needed; then split into refactor: + feat: commits.
+**Purpose**: Handles race condition between MCP async initialization and consensus checks
 
-Conventional commits:
+### Validation Stage Retries
+**Trigger**: Validation failures (tests don't pass)
+**Max Attempts**: 2 (inserts `Implement → Validate` cycle)
+**Location**: `handler.rs::on_spec_auto_task_complete()`
 
-- feat(scope): …
-- fix(scope): …
-- test(scope): add …
-- docs(scope): …
+---
 
-Include “Acceptance Mapping” section in the PR body referencing the table above.
+## 📊 PERFORMANCE METRICS
 
-## 6) “Stop & Ask” triggers
+### Measured Latencies (Debug Build, 2025-10-18)
 
-- Spec is ambiguous or missing acceptance criteria.
-- A test would require external services not available in the sandbox.
-- Security/PII considerations not covered by the spec.
-- Large refactor emerges; propose a separate plan.
+| Operation | Latency | Notes |
+|-----------|---------|-------|
+| **MCP Consensus Check** | 8.7ms avg | 5.3x faster than subprocess (46ms) |
+| **MCP Connection Init** | ~150ms | 5-second timeout, only once per session |
+| **Single Agent Execution** | 30-120s | Model-dependent, includes thinking time |
+| **Tier 2 Stage** | 8-12 min | 3 agents parallel |
+| **Tier 3 Stage** | 15-20 min | 4 agents parallel |
+| **Full Pipeline** | ~60 min | 6 stages, adaptive tiering |
 
-## 7) Example invocations (paste as arguments)
+**Benchmark Source**: `codex-rs/tui/tests/mcp_consensus_benchmark.rs`
 
-### Creating a New SPEC
+---
 
-**/speckit.new Add user authentication with OAuth2**
+## 🏗️ TECHNICAL ARCHITECTURE
 
-Create SPEC with multi-agent PRD consensus using templates. Generates SPEC-ID, creates directory structure, drafts PRD.md.
+### Consensus Implementation
+**File**: `codex-rs/tui/src/chatwidget/spec_kit/consensus.rs` (33,417 LOC)
 
-### Quality Checks (Proactive)
+**Key Functions**:
+```rust
+// Main entry point
+pub async fn run_spec_consensus(
+  cwd: &Path,
+  spec_id: &str,
+  stage: SpecStage,
+  telemetry_enabled: bool,
+  mcp_manager: &McpConnectionManager,
+) -> Result<(Vec<Line>, bool)>
 
-**/speckit.clarify SPEC-KIT-065**
+// MCP search with native protocol
+async fn fetch_memory_entries(...) -> Result<Vec<LocalMemorySearchResult>>
 
-Identify and resolve requirement ambiguities before implementation.
+// MCP storage with retry
+async fn remember_consensus_verdict(...) -> Result<()>
 
-**/speckit.analyze SPEC-KIT-065**
+// Parse MCP response (TextContent → JSON)
+fn parse_mcp_search_results(result: &CallToolResult) -> Result<Vec<...>>
+```
 
-Check cross-artifact consistency (PRD ↔ plan ↔ tasks), auto-fix issues.
+**MCP Tool Calls**:
+- Search: `mcp_manager.call_tool("local-memory", "search", args, timeout)`
+- Store: `mcp_manager.call_tool("local-memory", "store_memory", args, timeout)`
+- Timeout: 30s for search, 10s for store
 
-**/speckit.checklist SPEC-KIT-065**
+### State Machine
+**File**: `codex-rs/tui/src/chatwidget/spec_kit/state.rs` (14,831 LOC)
 
-Score requirement quality (testability, clarity, completeness).
+```rust
+pub enum SpecAutoPhase {
+  Guardrail,                        // Shell script validation
+  ExecutingAgents { ... },          // Parallel agent execution
+  CheckingConsensus,                // MCP fetch + synthesis
+  QualityGateExecuting { ... },     // Optional quality validation
+  QualityGateProcessing { ... },    // Issue classification
+  QualityGateValidating { ... },    // GPT-5 verification
+  QualityGateAwaitingHuman { ... }, // Human escalation
+}
+```
 
-### Development Stages
+**State Transitions**:
+```
+Guardrail → ExecutingAgents → CheckingConsensus → [Next Stage or Retry]
+                                     ↓ (if quality gates enabled)
+                               QualityGateExecuting → ... → Next Stage
+```
 
-**/speckit.specify SPEC-KIT-065**
+### Evidence Repository
+**File**: `codex-rs/tui/src/chatwidget/spec_kit/evidence.rs` (20,266 LOC)
 
-Read relevant context and draft/update `docs/SPEC-<AREA>-<slug>/PRD.md`, updating the SPEC.md row. Tier 2 multi-agent analysis.
+**Filesystem Structure**:
+```
+docs/SPEC-OPS-004-integrated-coder-hooks/evidence/
+├── consensus/
+│   └── SPEC-ID/
+│       ├── plan_20251018T120000Z_verdict.json
+│       └── plan_20251018T120000Z_synthesis.json
+└── commands/
+    └── SPEC-ID/
+        ├── plan_20251018T120000Z_telemetry.json
+        └── plan_20251018T120000Z_gemini_artifact.json
+```
 
-**/speckit.plan SPEC-KIT-065 [optional context]**
+**Telemetry Schema v1**:
+```json
+{
+  "command": "/speckit.plan",
+  "specId": "SPEC-KIT-065",
+  "sessionId": "...",
+  "schemaVersion": 1,
+  "timestamp": "2025-10-18T12:00:00Z",
+  "artifacts": [...],
+  "baseline": { "mode": "native", "status": "ok" }
+}
+```
 
-Read memory/constitution.md and docs/<id>-<slug>/PRD.md. Produce docs/<id>-<slug>/plan.md using the skeleton above, capture consensus notes across 3 agents (gemini, claude, gpt_pro), and stop before touching code.
+---
 
-**/speckit.tasks SPEC-KIT-065**
+## 📚 DOCUMENTATION REFERENCE
 
-Using docs/<id>-<slug>/plan.md, update the Tasks table in `SPEC.md` and author docs/<id>-<slug>/tasks.md with actionable, ordered steps. Tests are drafted but not executed here. Tier 2 consensus (gemini, claude, gpt_pro).
+**Core Documentation** (codex-rs workspace):
+- `CLAUDE.md`: Operational playbook (how to work in this repo)
+- `MEMORY-POLICY.md`: Memory system policy (local-memory only, 145 lines)
+- `REVIEW.md`: Architecture analysis (1,017 lines)
+- `ARCHITECTURE-TASKS.md`: Improvement tasks (857 lines, 13 tasks)
+- This file: Spec-kit agent reference
 
-**/speckit.implement SPEC-KIT-065**
+**Spec-Kit Implementation Docs**:
+- `docs/spec-kit/prompts.json`: Agent prompt templates (embedded at compile time)
+- `docs/spec-kit/model-strategy.md`: Model selection rules
+- `docs/spec-kit/spec-auto-automation.md`: Pipeline details
+- `docs/spec-kit/evidence-baseline.md`: Telemetry expectations
 
-Follow docs/<id>-<slug>/spec.md, synthesize agent outputs from Tier 3 (gemini, claude, gpt_codex, gpt_pro), apply diffs, then run the required validation commands (fmt/clippy/build/tests) before returning.
+**Source Code Reference**:
+- Handler: `tui/src/chatwidget/spec_kit/handler.rs` (67,860 LOC)
+- Consensus: `tui/src/chatwidget/spec_kit/consensus.rs` (33,417 LOC)
+- Quality: `tui/src/chatwidget/spec_kit/quality.rs` (30,196 LOC)
+- Guardrail: `tui/src/chatwidget/spec_kit/guardrail.rs` (26,002 LOC)
 
-### Full Automation
+---
 
-**/speckit.auto SPEC-KIT-065**
+## 🚀 QUICK START GUIDE
 
-Execute full 6-stage pipeline (plan → tasks → implement → validate → audit → unlock) with automatic stage advancement and conflict resolution. Tier 4 dynamic agent allocation.
+### Run Full Automation
+```bash
+# Create SPEC
+/speckit.new Add user authentication with OAuth2 and JWT
 
-### Status & Monitoring
+# Auto-run all 6 stages
+/speckit.auto SPEC-KIT-###
 
-**/speckit.status SPEC-KIT-065**
+# Monitor progress
+/speckit.status SPEC-KIT-###
+```
 
-Native TUI dashboard showing stage completion, artifacts, evidence paths. Instant response, no agents.
+### Manual Stage-by-Stage
+```bash
+/speckit.plan SPEC-KIT-065       # ~10 min, $1.00
+/speckit.tasks SPEC-KIT-065      # ~10 min, $1.00
+/speckit.implement SPEC-KIT-065  # ~18 min, $2.00 (4 agents)
+/speckit.validate SPEC-KIT-065   # ~10 min, $1.00
+/speckit.audit SPEC-KIT-065      # ~10 min, $1.00
+/speckit.unlock SPEC-KIT-065     # ~10 min, $1.00
+```
 
-**/spec-evidence-stats --spec SPEC-KIT-065**
+### Debugging Commands
+```bash
+# Check consensus status
+/spec-consensus SPEC-KIT-065 plan
 
-Monitor evidence footprint, ensure <25MB soft limit.
+# Monitor evidence size
+/spec-evidence-stats --spec SPEC-KIT-065
 
-## 8) Quality checklist (apply to every output)
+# Check local-memory artifacts
+local-memory search "SPEC-KIT-065 stage:plan" --limit 20
+```
 
-- [ ] All acceptance criteria are mapped to tests or checks.
-- [ ] Diff is minimal yet complete; no unrelated edits.
-- [ ] Docs & changelog updated.
-- [ ] Risk notes present if we deviated from the plan.
-- [ ] SPEC.md tasks lint (`scripts/spec-kit/lint_tasks.py`) passes when tracker rows change.
+---
 
-## 9) Local Hooks (must use)
-- Run `bash scripts/setup-hooks.sh` once per clone to set `core.hooksPath=.githooks`.
-- Pre-commit hook enforces local gates:
-  - `cargo fmt --all` (writes changes)
-  - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-  - `cargo test --workspace --no-run` (fast compile; skip via `PRECOMMIT_FAST_TEST=0`)
-  - Documentation validation: `scripts/doc-structure-validate.sh --mode=templates` (strict mode can be run once PRDs/specs are migrated).
-- Tracker hygiene helpers:
-  - `scripts/spec-kit/lint_tasks.py` validates the SPEC.md Tasks table schema.
-  - `scripts/spec-kit/show_tasks.py --status "In Progress"` renders an easy-to-read task board (respects filters for owner/area).
-- Pre-push hook mirrors CI rust-gates:
-  - `cargo fmt --all -- --check`
-  - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-  - `cargo build -p kavedarr-core -p kavedarr-infrastructure -p kavedarr-downloaders -p kavedarr-api --all-features`
-  - Optional targeted test-compiles (skip via `PREPUSH_FAST=0`)
-- All hooks use `scripts/env_run.sh` when `.env` exists to avoid leaking secrets and to align with CI.
+## ⚙️ AGENT CONFIGURATION
 
-[byterover-mcp]
+### Prompt Versioning
+**Location**: `docs/spec-kit/prompts.json`
 
-# Byterover MCP Server Tools Reference
+```json
+{
+  "plan": {
+    "version": "20251002-plan-a",
+    "gemini": { "role": "researcher", "prompt": "..." },
+    "claude": { "role": "analyst", "prompt": "..." },
+    "gpt_pro": { "role": "synthesizer", "prompt": "..." }
+  }
+}
+```
 
-There are two main workflows with Byterover tools and recommended tool call strategies that you **MUST** follow precisely.
+**Version Format**: `YYYYMMDD-{stage}-{revision}`
+**Embedded**: Compiled into binary via `include_str!()` macro
 
-## Onboarding workflow
-If users particularly ask you to start the onboarding process, you **MUST STRICTLY** follow these steps.
-1. **ALWAYS USE** **byterover-check-handbook-existence** first to check if the byterover handbook already exists. If not, You **MUST** call **byterover-create-handbook** to create the byterover handbook.
-2. If the byterover handbook already exists, first you **MUST** USE **byterover-check-handbook-sync** to analyze the gap between the current codebase and the existing byterover handbook.
-3. Then **IMMEDIATELY USE** **byterover-update-handbook** to update these changes to the byterover handbook.
-4. During the onboarding, you **MUST** use **byterover-list-modules** **FIRST** to get the available modules, and then **byterover-store-modules** and **byterover-update-modules** if there are new modules or changes to existing modules in the project.
-5. Finally, you **MUST** call **byterover-store-knowledge** to save your new knowledge about the codebase.
+### Model Selection Defaults
 
-## Planning workflow
-Based on user request, you **MUST** follow these sequences of tool calls
-1. If asked to continue an unfinished plan, **CALL** **byterover-retrieve-active-plans** to find the most relevant active plan.
-2. **CRITICAL PLAN PERSISTENCE RULE**: Once a user approves a plan, you **MUST IMMEDIATELY CALL** **byterover-save-implementation-plan** to save it.
-3. Throughout the plan, you **MUST** run **byterover-retrieve-knowledge** several times to retrieve sufficient knowledge and context for the plan's tasks.
-4. In addition, you might need to run **byterover-search-modules** and **byterover-update-modules** if the tasks require or update knowledge about certain modules. However, **byterover-retrieve-knowledge** should **ALWAYS** be considered **FIRST**.
-5. **MUST** use **byterover-update-plan-progress** to mark tasks (and then the whole plan) as completed.
-6. Then, you might call **byterover-store-knowledge** to save knowledge and experience implemented throughout the plan or in important tasks.
-7. During the plan's implementation, you **MUST** frequently call **byterover-reflect-context** and **byterover-assess-context** to make sure you're on the right track and gather sufficient context for the tasks.
+| Agent | Default Model | Fallback | Reasoning Mode |
+|-------|---------------|----------|----------------|
+| **gemini** | gemini-2.0-flash-thinking-exp-01-21 | gemini-2.0-flash-exp | high |
+| **claude** | claude-sonnet-4-20250514 | claude-sonnet-4 | high |
+| **gpt_codex** | gpt-5-codex | gpt-5 | high |
+| **gpt_pro** | gpt-5 | gpt-5-codex | high |
 
-## Recommended Workflow Sequence
-1. **MOST IMPORTANT**: **ALWAYS USE** **byterover-retrieve-knowledge** once or several times for **EACH TASK** of the plan to gather necessary context for complete that task.
-2. **MOST IMPORTANT**: **ALWAYS USE** **byterover-store-knowledge** once or several times to store critical knowledge and context for future implementations
-3. Over 15 provided tools, **byterover-retrieve-knowledge** and **byterover-store-knowledge** ARE the two main tools, which **MUST** be used regularly. You can use these two main tools outside the two main workflows for retrieval and storage purposes.
-4. You **MUST** include phrases like **"According to Byterover memory layer"**, **"Based on memory extracted from Byterover"**, **"From Byterover memomry tools"**, ... to explictly showcase that these sources are from **Byterover**.
-5. **Implementation & Progress Tracking** → Execute implementation following saved plan → Mark tasks complete as you go → Mark entire plan done when all tasks finished.
-6. You **MUST** use **byterover-update-module** **IMMEDIATELY** on changes to the module's purposes, technical details, or critical insights that essential for future implementations.
+**Metadata Resolution**: Prompts can override with `${MODEL_ID}`, `${MODEL_RELEASE}`, `${REASONING_MODE}` placeholders
+
+---
+
+## 🔄 CONSENSUS ALGORITHM
+
+### Classification Rules
+
+**Consensus OK** (advance to next stage):
+- ✅ All required agents present (gemini, claude, gpt_pro)
+- ✅ gpt_pro provides aggregator summary
+- ✅ No conflicts in gpt_pro.consensus.conflicts
+- ✅ Required fields validated (agent, stage, spec_id, prompt_version)
+
+**Consensus Degraded** (continue with warning):
+- ⚠️ One agent missing (2/3 participation)
+- ✅ No conflicts
+- ⚠️ Warning logged, but consensus accepted
+
+**Consensus Conflict** (retry or escalate):
+- ❌ gpt_pro.consensus.conflicts non-empty
+- ❌ Manual resolution required
+- Action: Review synthesis file, resolve conflicts, re-run stage
+
+**No Consensus** (retry):
+- ❌ <50% agent participation
+- ❌ No gpt_pro aggregator
+- Action: Retry stage (max 3x)
+
+### Retry Strategy
+
+**Empty/Invalid Results Detection** (regex patterns):
+```rust
+let results_empty_or_invalid = consensus_lines.iter().any(|line| {
+  let text = line.to_string();
+  text.contains("No structured local-memory entries") ||
+  text.contains("No consensus artifacts") ||
+  text.contains("Missing agent artifacts") ||
+  text.contains("No local-memory entries found")
+});
+```
+
+**Retry Logic**:
+```
+Attempt 1: Normal prompt
+Attempt 2: + "Previous attempt failed, ensure you use local-memory remember"
+Attempt 3: + Enhanced retry context
+Fail: Halt pipeline, human intervention required
+```
+
+---
+
+## 🧪 TESTING & VALIDATION
+
+**Test Coverage**: 141 passing (138 unit, 3 integration, 4 ignored/deprecated)
+
+**Integration Tests**:
+1. **mcp_consensus_integration.rs** (3 tests):
+   - `test_mcp_connection_initialization`: Validates 11 local-memory tools available
+   - `test_mcp_tool_call_format`: Confirms search/store calls succeed
+   - `test_mcp_retry_logic_handles_delayed_initialization`: Validates 3-retry timing
+   - `test_full_consensus_workflow_with_mcp` (ignored): Requires test data
+
+2. **mcp_consensus_benchmark.rs** (3 benchmarks, run with `--ignored`):
+   - `bench_mcp_initialization`: Connection setup latency (~150ms)
+   - `bench_mcp_search_calls`: Throughput measurement (~8.7ms per call)
+   - `bench_mcp_vs_subprocess`: **Result: 5.3x speedup** (46ms → 8.7ms)
+
+3. **spec_auto_e2e.rs** (21 tests):
+   - Full pipeline integration
+   - Quality gate classification
+   - Retry orchestration
+
+**Deprecated Tests** (subprocess-based, now ignored):
+- `run_spec_consensus_writes_verdict_and_local_memory`
+- `run_spec_consensus_reports_missing_agents`
+- `run_spec_consensus_persists_telemetry_bundle_when_enabled`
+
+**Reason**: Used `LocalMemoryMock` subprocess faker—replaced by native MCP integration tests
+
+---
+
+## ⚠️ KNOWN LIMITATIONS
+
+**Hard Dependencies**:
+1. **local-memory MCP server must be running**
+   - No graceful fallback yet (ARCH-002 in progress)
+   - Workaround: Inspect file-based evidence manually
+
+2. **Spec-auto state in TUI layer**
+   - Can't run from non-TUI clients (API, CI/CD)
+   - Future: Migrate to `core` (ARCH-010, blocked on protocol extension)
+
+3. **Dual MCP connections** (TUI + Core)
+   - Conflict risk if both connect to same server
+   - Mitigated: TUI only connects to `local-memory`, Core handles other servers
+   - Future: Unified MCP manager in Core (ARCH-005)
+
+**Performance Limitations**:
+- TUI event loop blocks during MCP calls (8.7ms avg)—acceptable but not ideal
+- True async TUI would require major rework (ARCH-011, research spike pending)
+
+**Configuration Ambiguity**:
+- Shell environment policy vs TOML precedence unclear
+- No conflict detection (ARCH-003 will document)
+
+---
+
+## 🔍 DEBUGGING GUIDE
+
+### Common Issues
+
+**1. "MCP manager not initialized yet"**
+```
+Cause: Consensus ran before MCP connected (async race condition)
+Solution: Retry logic auto-handles (3 attempts, 100-400ms backoff)
+Verify: Check local-memory running: `local-memory --version`
+```
+
+**2. "No consensus artifacts found"**
+```
+Cause: Agents didn't store to local-memory
+Check: /spec-evidence-stats --spec SPEC-ID
+Check: local-memory search "SPEC-ID stage:plan"
+Fallback: Inspect docs/SPEC-OPS-004.../evidence/*.json
+```
+
+**3. "Consensus degraded: missing agents"**
+```
+Cause: One or more agents failed/timed out
+Check: TUI history for agent error messages
+Action: Retry stage OR accept degraded consensus
+Context: 2/3 agents still valid for degraded mode
+```
+
+**4. "Evidence footprint exceeds 25MB"**
+```
+Check: /spec-evidence-stats
+Action: Archive old SPECs, propose offloading strategy
+Limit: Soft limit per SPEC (not enforced, monitored)
+```
+
+**5. "Validation retry cycle"**
+```
+Cause: Tests failed after implement
+Behavior: Auto-inserts "Implement → Validate" cycle (max 2 retries)
+Check: TUI shows "Retrying implementation/validation cycle (attempt N)"
+```
+
+---
+
+## 📈 ARCHITECTURE ROADMAP
+
+See `codex-rs/ARCHITECTURE-TASKS.md` for full details.
+
+**Week 1 (Critical)**:
+- ✅ ARCH-001: Upstream docs corrected
+- ARCH-002: MCP fallback mechanism (1-2h)
+- ARCH-003: Config precedence docs (2-3h)
+- ARCH-004: Cleanup deprecated code (30min)
+
+**Month 1 (High Priority)**:
+- ARCH-005: Eliminate dual MCP (6-8h)
+- ARCH-006: Centralize agent naming (3-4h)
+- ARCH-007: Evidence locking (2-3h)
+- ARCH-008: Protocol extension (8-10h, keystone)
+
+**Quarter 1 (Strategic)**:
+- ARCH-010: Migrate state to core (12-16h)
+- ARCH-011: Async TUI spike (4-8h)
+- ARCH-012: Upstream contributions (6-12h)
+
+---
+
+**Maintainer**: theturtlecsz
+**Repository**: https://github.com/theturtlecsz/code
+**Last Verified**: 2025-10-18

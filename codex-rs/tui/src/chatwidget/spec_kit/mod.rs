@@ -16,7 +16,8 @@ pub mod evidence;
 pub mod file_modifier;
 pub mod guardrail;
 pub mod handler;
-pub mod local_memory_client;
+// FORK-SPECIFIC (just-every/code): local_memory_client.rs deleted 2025-10-18
+// Replaced by native MCP integration in consensus.rs
 pub mod quality;
 pub mod routing;
 pub mod schemas;

@@ -12,6 +12,61 @@ use crate::slash_command::{HalMode, SlashCommand};
 use crate::spec_prompts::SpecStage;
 use crate::spec_status::{SpecStatusArgs, collect_report, degraded_warning, render_dashboard};
 use codex_core::protocol::InputItem;
+use std::sync::Arc;
+
+// FORK-SPECIFIC (just-every/code): MCP retry configuration
+const MCP_RETRY_ATTEMPTS: u32 = 3;
+const MCP_RETRY_DELAY_MS: u64 = 100;
+
+/// Helper to run consensus check with retry logic for MCP initialization
+/// FORK-SPECIFIC (just-every/code): Handles MCP connection timing and transient failures
+async fn run_consensus_with_retry(
+    mcp_manager: Arc<tokio::sync::Mutex<Option<Arc<codex_core::mcp_connection_manager::McpConnectionManager>>>>,
+    cwd: std::path::PathBuf,
+    spec_id: String,
+    stage: SpecStage,
+    telemetry_enabled: bool,
+) -> super::error::Result<(Vec<ratatui::text::Line<'static>>, bool)> {
+    let mut last_error = None;
+
+    for attempt in 0..MCP_RETRY_ATTEMPTS {
+        let manager_guard = mcp_manager.lock().await;
+        let Some(manager) = manager_guard.as_ref() else {
+            last_error = Some("MCP manager not initialized yet".to_string());
+            drop(manager_guard);
+
+            if attempt < MCP_RETRY_ATTEMPTS - 1 {
+                let delay = MCP_RETRY_DELAY_MS * (2_u64.pow(attempt));
+                tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
+                continue;
+            }
+            break;
+        };
+
+        match super::consensus::run_spec_consensus(
+            &cwd,
+            &spec_id,
+            stage,
+            telemetry_enabled,
+            manager,
+        ).await {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                last_error = Some(e.to_string());
+                drop(manager_guard);
+
+                if attempt < MCP_RETRY_ATTEMPTS - 1 {
+                    let delay = MCP_RETRY_DELAY_MS * (2_u64.pow(attempt));
+                    tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
+                }
+            }
+        }
+    }
+
+    Err(super::error::SpecKitError::from_string(
+        last_error.unwrap_or_else(|| "MCP consensus check failed after retries".to_string())
+    ))
+}
 
 /// Handle /speckit.status command (native dashboard)
 pub fn handle_spec_status(widget: &mut ChatWidget, raw_args: String) {
@@ -365,7 +420,21 @@ pub fn on_spec_auto_task_complete(widget: &mut ChatWidget, task_id: &str) {
                 }
             }
 
-            match widget.run_spec_consensus(&spec_id, stage) {
+            // FORK-SPECIFIC (just-every/code): Use async MCP consensus with retry
+            let consensus_result = match tokio::runtime::Handle::try_current() {
+                Ok(handle) => {
+                    handle.block_on(run_consensus_with_retry(
+                        widget.mcp_manager.clone(),
+                        widget.config.cwd.clone(),
+                        spec_id.clone(),
+                        stage,
+                        widget.spec_kit_telemetry_enabled(),
+                    ))
+                }
+                Err(_) => Err(super::error::SpecKitError::from_string("Tokio runtime not available".to_string())),
+            };
+
+            match consensus_result {
                 Ok((consensus_lines, ok)) => {
                     let cell = crate::history_cell::PlainHistoryCell::new(
                         consensus_lines,
@@ -623,6 +692,7 @@ pub fn on_spec_auto_agents_complete(widget: &mut ChatWidget) {
 }
 
 /// Check consensus and advance to next stage
+// FORK-SPECIFIC (just-every/code): Made async-aware for native MCP
 fn check_consensus_and_advance_spec_auto(widget: &mut ChatWidget) {
     let Some(state) = widget.spec_auto_state.as_ref() else {
         return;
@@ -646,8 +716,21 @@ fn check_consensus_and_advance_spec_auto(widget: &mut ChatWidget) {
         HistoryCellType::Notice,
     ));
 
-    // Run consensus check
-    match widget.run_spec_consensus(&spec_id, current_stage) {
+    // FORK-SPECIFIC (just-every/code): Run consensus check via async MCP with retry logic
+    let consensus_result = match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            handle.block_on(run_consensus_with_retry(
+                widget.mcp_manager.clone(),
+                widget.config.cwd.clone(),
+                spec_id.clone(),
+                current_stage,
+                widget.spec_kit_telemetry_enabled(),
+            ))
+        }
+        Err(_) => Err(super::error::SpecKitError::from_string("Tokio runtime not available".to_string())),
+    };
+
+    match consensus_result {
         Ok((consensus_lines, consensus_ok)) => {
             // FORK-SPECIFIC: Detect empty/invalid results and retry (just-every/code)
             let results_empty_or_invalid = consensus_lines.iter().any(|line| {
@@ -813,7 +896,21 @@ pub fn handle_spec_consensus_impl(widget: &mut ChatWidget, raw_args: String) {
         return;
     };
 
-    match widget.run_spec_consensus(spec_id, stage) {
+    // FORK-SPECIFIC (just-every/code): Use async MCP consensus with retry
+    let consensus_result = match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            handle.block_on(run_consensus_with_retry(
+                widget.mcp_manager.clone(),
+                widget.config.cwd.clone(),
+                spec_id.to_string(),
+                stage,
+                widget.spec_kit_telemetry_enabled(),
+            ))
+        }
+        Err(_) => Err(super::error::SpecKitError::from_string("Tokio runtime not available".to_string())),
+    };
+
+    match consensus_result {
         Ok((lines, ok)) => {
             let cell = crate::history_cell::PlainHistoryCell::new(
                 lines,

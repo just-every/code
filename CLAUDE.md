@@ -1,6 +1,20 @@
 # CLAUDE.md — How Claude Code Works In This Repo
 
-This playbook gives Claude Code everything it needs to operate safely inside **just-every/code**. Read it before touching the tree and keep it open while you work.
+## Repository Context
+
+**This Repository**: https://github.com/theturtlecsz/code (FORK)
+**Upstream**: https://github.com/just-every/code (community fork of OpenAI Codex)
+**NOT RELATED TO**: Anthropic's Claude Code (different product)
+
+**Fork-Specific Additions**:
+- Spec-kit automation framework (multi-agent PRD workflows)
+- Native MCP integration for consensus synthesis (5.3x faster than subprocess)
+- Quality gates framework
+- Evidence repository and telemetry collection
+
+---
+
+This playbook gives Claude Code everything it needs to operate safely inside this **theturtlecsz/code fork** (based on **just-every/code** upstream). Read it before touching the tree and keep it open while you work.
 
 ## 0. Prerequisites & Known Limitations (October 2025)
 - **Foundation docs now exist:** `product-requirements.md` and `PLANNING.md` were added in response to guardrail audits. If either goes missing, stop and recreate or escalate.
@@ -10,14 +24,15 @@ This playbook gives Claude Code everything it needs to operate safely inside **j
 - **Evidence footprint:** keep evidence under the 25 MB per-SPEC soft limit; use `/spec-evidence-stats` after large runs.
 
 ## 1. Load These References Every Session
-- `memory/constitution.md` – non‑negotiable project charter and guardrail canon.
+- `MEMORY-POLICY.md` – **mandatory** memory system policy (local-memory only)
+- `memory/constitution.md` – non‑negotiable project charter and guardrail canon
 - `product-requirements.md` – canonical product scope. If missing, pause and ask the user for direction.
 - `PLANNING.md` – high-level architecture, goals, constraints. Same rule: request it if absent.
 - `SPEC.md` – single source of truth for task tracking; only one `In Progress` row at a time.
 - `docs/SPEC-<AREA>-<slug>/` – per-feature specs, plans, tasks. Treat `specs/**` as archival only.
-- `AGENTS.md` (this document’s partner) – Spec-Kit automation guardrails.
+- `AGENTS.md` (this document's partner) – Spec-Kit automation guardrails.
 
-Always check local-memory before answering, then write back key outcomes (importance ≥7) so it stays authoritative. If you consult the Byterover layer, mirror the insight to local-memory immediately and call out the source with language like “According to Byterover memory layer…”.
+Always check local-memory before answering, then write back key outcomes (importance ≥7) so it stays authoritative. Local-memory is the **only** knowledge persistence system—see `MEMORY-POLICY.md`.
 
 ## 2. Operating Modes & Slash Commands
 
@@ -193,7 +208,7 @@ If any slash command or CLI is unavailable, degrade gracefully and record which 
 - `/tasks` – race agents, synthesize combined plan, note similarities/differences.
 - `/implement` – agents explore separately; Claude helps synthesize strongest diff. Run validation (`cargo fmt`, `clippy`, tests, doc checks) **before** returning.
 - `/validate` & `/audit` – ensure consensus metadata records `model`, `model_release`, `reasoning_mode`. Degraded verdicts escalate per `docs/spec-kit/model-strategy.md`.
-- Ignore Byterover “memory conflict” notices—they are a known false positive.
+- **Memory System**: Use local-memory MCP exclusively. Byterover is deprecated and should not be used.
 
 > **Current limitation:** automated consensus capture is not yet wired. Treat these expectations as manual checklists until the consensus runner is implemented.
 
@@ -223,9 +238,14 @@ If any slash command or CLI is unavailable, degrade gracefully and record which 
 - Required reference documents (`product-requirements.md`, `PLANNING.md`, relevant spec files) are absent.
 
 ## 9. Memory Workflow Checklist
-1. **Before** solving: query local-memory for relevant notes. If nothing shows, fall back to Byterover, then echo findings back into local-memory.
+
+**POLICY**: Use **local-memory MCP exclusively**. See `MEMORY-POLICY.md` for details.
+
+1. **Before** solving: query local-memory for relevant notes. Local-memory is the single source of truth—do not use other memory systems.
 2. **During** work: keep local-memory updates (importance ≥7) aligned with new decisions, tests, or telemetry.
 3. **After** completing a step: store outcomes, including evidence paths and validation results.
+
+**Deprecated**: byterover-mcp is no longer used (migration complete 2025-10-18).
 
 ## 10. Evidence & Validation Ritual
 - Guardrail runs must have a clean tree unless specifically allowed (`SPEC_OPS_ALLOW_DIRTY=1`).

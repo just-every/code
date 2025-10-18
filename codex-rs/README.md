@@ -1,21 +1,41 @@
 # Codex CLI (Rust Implementation)
 
+## Fork Lineage
+
+**This Repository**: https://github.com/theturtlecsz/code
+**Upstream**: https://github.com/just-every/code
+**Origin**: OpenAI Codex (community-maintained fork)
+
+**NOT RELATED TO**: Anthropic's Claude Code (different product entirely)
+
+**Fork-Specific Features**:
+- **Spec-Kit Automation**: Multi-agent PRD workflows (Plan→Tasks→Implement→Validate→Audit→Unlock)
+- **Consensus Synthesis**: Multi-model result aggregation via local-memory MCP
+- **Quality Gates**: Automated requirement validation framework
+- **Native MCP Integration**: 5.3x faster consensus checks vs subprocess baseline
+
+---
+
 We provide Codex CLI as a standalone, native executable to ensure a zero-dependency install.
 
-## Installing Codex
+## Installing This Fork
 
-Today, the easiest way to install Codex is via `npm`, though we plan to publish Codex to other package managers soon.
-
+**Build from source**:
 ```shell
-npm i -g @openai/codex@native
-codex
+cd codex-rs
+cargo build --release -p codex-cli
+./target/release/code
 ```
 
-You can also download a platform-specific release directly from our [GitHub Releases](https://github.com/openai/codex/releases).
+**Note**: This fork is not published to npm. The original `@openai/codex@native` package is unrelated.
 
-## What's new in the Rust CLI
+## Upstream Installation
 
-While we are [working to close the gap between the TypeScript and Rust implementations of Codex CLI](https://github.com/openai/codex/issues/1262), note that the Rust CLI has a number of features that the TypeScript CLI does not!
+For the upstream `just-every/code` project, see their repository for installation instructions.
+
+## What's New in This Fork
+
+This fork extends the Rust CLI with a **spec-kit automation framework** for multi-agent product requirements workflows. See `CLAUDE.md` and `REVIEW.md` for architecture details.
 
 ### Config
 

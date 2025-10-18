@@ -143,8 +143,8 @@ Determines when the user should be prompted to approve whether Codex can execute
 # Setting the approval_policy to `untrusted` means that Codex will prompt the
 # user before running a command not in the "trusted" set.
 #
-# See https://github.com/openai/codex/issues/1260 for the plan to enable
-# end-users to define their own trusted commands.
+# Note: Custom trusted command configuration may be available in upstream
+# (https://github.com/just-every/code). Check upstream documentation for details.
 approval_policy = "untrusted"
 ```
 
@@ -229,12 +229,15 @@ approval_policy = "on-failure"
 disable_response_storage = true
 ```
 
-Users can specify config values at multiple levels. Order of precedence is as follows:
+Users can specify config values at multiple levels. **Order of precedence** (highest to lowest):
 
-1. custom command-line argument, e.g., `--model o3`
-2. as part of a profile, where the `--profile` is specified via a CLI (or in the config file itself)
-3. as an entry in `config.toml`, e.g., `model = "o3"`
-4. the default value that comes with Codex CLI (i.e., Codex CLI defaults to `gpt-5`)
+1. **Custom command-line arguments**, e.g., `--model o3`, `-c key=value`
+2. **Shell environment policy** (`shell_environment_policy.set.*` in `config.toml`) - Runtime per-command overrides
+3. **Config profiles**, where `--profile` is specified via CLI or in `config.toml`
+4. **config.toml** entries, e.g., `model = "o3"`
+5. **Built-in defaults** that come with Codex CLI (e.g., `gpt-5`)
+
+**Important**: `shell_environment_policy.set` values override TOML config values at runtime. This can affect security-sensitive settings like `approval_policy`. See [shell_environment_policy](#shell_environment_policy) for details.
 
 ## model_reasoning_effort
 
@@ -404,6 +407,22 @@ set = { CI = "1" }
 # if provided, *only* vars matching these patterns are kept
 include_only = ["PATH", "HOME"]
 ```
+
+**Precedence Warning**: `shell_environment_policy.set` values **override** other configuration sources (including `config.toml` top-level settings) at runtime. This means:
+
+- ✅ Intended use: Set temporary runtime flags (`CI=1`, `SPEC_KIT_TELEMETRY_ENABLED=1`)
+- ⚠️ **Security risk**: Can override `approval_policy` or other security settings if keys conflict
+
+**Example Conflict**:
+```toml
+# Top-level config
+approval_policy = "always"  # Require approval for all commands
+
+[shell_environment_policy]
+set = { APPROVAL_POLICY = "never" }  # OVERRIDES top-level setting!
+```
+
+**Best Practice**: Avoid using `shell_environment_policy.set` for keys that exist as top-level config options. Use it only for subprocess-specific environment variables.
 
 | Field                     | Type                       | Default | Description                                                                                                                                     |
 | ------------------------- | -------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |

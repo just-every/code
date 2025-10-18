@@ -74,6 +74,9 @@ pub use chatwidget::spec_kit::{
     QualityGateType, QualityIssue, Resolution, Resolvability, SpecAutoState,
 };
 
+// FORK-SPECIFIC (just-every/code): Re-export consensus for MCP integration testing
+pub use chatwidget::spec_kit::consensus::run_spec_consensus;
+
 // Re-export supporting types for E2E testing (T87)
 pub use spec_prompts::SpecStage;
 pub use slash_command::HalMode;

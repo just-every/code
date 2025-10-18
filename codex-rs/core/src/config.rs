@@ -1728,6 +1728,9 @@ impl Config {
             cfg.experimental_client_tools = Some(client_tools);
         }
 
+        // ARCH-003: Validate shell environment policy BEFORE any cfg fields are consumed
+        validate_shell_policy_conflicts(&cfg)?;
+
         let (active_profile_name, config_profile) =
             match config_profile_key.as_ref().or(cfg.profile.as_ref()) {
                 Some(key) => {
@@ -2156,6 +2159,55 @@ fn legacy_codex_home_dir() -> Option<PathBuf> {
 
 fn path_exists(path: &Path) -> bool {
     std::fs::metadata(path).is_ok()
+}
+
+/// ARCH-003: Validate shell environment policy doesn't create security conflicts
+///
+/// Checks if shell_environment_policy.set contains keys that could override
+/// security-sensitive config values (like approval_policy, sandbox_mode).
+/// Returns warnings but allows execution to continue (non-fatal).
+fn validate_shell_policy_conflicts(cfg: &ConfigToml) -> std::io::Result<()> {
+    let Some(shell_policy_set) = &cfg.shell_environment_policy.set else {
+        return Ok(());
+    };
+
+    let mut warnings = Vec::new();
+
+    // Check for common config key patterns in shell policy overrides
+    let security_sensitive_patterns = [
+        ("APPROVAL", "approval_policy"),
+        ("SANDBOX", "sandbox_mode"),
+        ("MODEL_PROVIDER", "model_provider"),
+    ];
+
+    for (env_pattern, config_key) in &security_sensitive_patterns {
+        for (env_key, env_val) in shell_policy_set {
+            if env_key.to_uppercase().contains(env_pattern) {
+                // Check if corresponding config is also set
+                let has_toml_config = match *config_key {
+                    "approval_policy" => cfg.approval_policy.is_some(),
+                    "sandbox_mode" => cfg.sandbox_mode.is_some(),
+                    "model_provider" => cfg.model_provider.is_some(),
+                    _ => false,
+                };
+
+                if has_toml_config {
+                    warnings.push(format!(
+                        "Shell environment policy sets '{}={}', but {} is also configured in config.toml. \
+                         Shell policy takes precedence at runtime.",
+                        env_key, env_val, config_key
+                    ));
+                }
+            }
+        }
+    }
+
+    // Log warnings but don't fail
+    for warning in warnings {
+        tracing::warn!("Config precedence conflict: {}", warning);
+    }
+
+    Ok(())
 }
 
 /// Resolve the filesystem path used for *reading* Codex state that may live in

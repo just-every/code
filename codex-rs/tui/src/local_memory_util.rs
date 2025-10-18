@@ -1,3 +1,15 @@
+//! Local-memory utility types and subprocess helpers
+//!
+//! DEPRECATION STATUS (2025-10-18):
+//! - ✅ Types (LocalMemorySearchResult, etc.): KEEP - used by MCP response parsing
+//! - ⚠️ Functions (search_by_stage, run_local_memory_search): DEPRECATED - subprocess calls
+//!
+//! REMAINING SUBPROCESS CALLS:
+//! - spec_prompts.rs:411 (gather_local_memory_context) - Used for agent prompt context
+//! - handler.rs:1386 (GPT-5 validation checking) - Used for quality gate results
+//!
+//! TODO: Migrate remaining calls to native MCP (ARCH-004 extension or new task)
+
 use std::{env, process::Command};
 
 use serde::Deserialize;
@@ -29,6 +41,9 @@ pub struct LocalMemoryRecord {
     pub content: String,
 }
 
+/// DEPRECATED: Use native MCP instead (see consensus.rs::fetch_memory_entries)
+/// Still used by spec_prompts.rs and handler.rs - migration pending
+#[deprecated(since = "2025-10-18", note = "Use MCP manager instead of subprocess")]
 pub fn search_by_stage(
     spec_id: &str,
     stage: &str,
@@ -39,6 +54,8 @@ pub fn search_by_stage(
     Ok(response.data.map(|data| data.results).unwrap_or_default())
 }
 
+/// DEPRECATED: Use native MCP instead
+#[deprecated(since = "2025-10-18", note = "Use MCP manager instead of subprocess")]
 pub fn run_local_memory_search(
     query: &str,
     spec_id: &str,
