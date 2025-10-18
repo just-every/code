@@ -92,4 +92,32 @@ if [[ -d "${consensus_base}" ]]; then
     print_section "Consensus size by SPEC" printf '%b' "${size_output}"
   fi
   print_section "Consensus artifact counts" printf '%b' "${count_output}"
+
+  # MAINT-4: Warn if any SPEC exceeds 25 MB soft limit
+  echo "=== Policy Compliance (25 MB soft limit) ==="
+  warned=0
+  while IFS= read -r spec; do
+    [[ -z "${spec}" ]] && continue
+    base_name=$(basename "${spec}")
+
+    # Calculate total size (consensus + commands)
+    consensus_size=$(du -sb "${consensus_base}/${base_name}" 2>/dev/null | awk '{print $1}' || echo "0")
+    commands_size=$(du -sb "${command_base}/${base_name}" 2>/dev/null | awk '{print $1}' || echo "0")
+    total_bytes=$((consensus_size + commands_size))
+    total_mb=$(awk "BEGIN {printf \"%.1f\", ${total_bytes} / 1048576}")
+
+    # Warn if exceeds 25 MB (use awk for comparison)
+    exceeds=$(awk "BEGIN {print (${total_mb} > 25) ? 1 : 0}")
+    if [[ ${exceeds} -eq 1 ]]; then
+      echo "⚠️  ${base_name}: ${total_mb} MB (exceeds 25 MB limit)"
+      echo "    Action: Review for archival (see docs/spec-kit/evidence-policy.md)"
+      echo "    Compress: scripts/spec_ops_004/evidence_archive.sh"
+      warned=$((warned + 1))
+    fi
+  done <<<"$(list_targets "${consensus_base}")"
+
+  if [[ ${warned} -eq 0 ]]; then
+    echo "✅ All SPECs within 25 MB limit"
+  fi
+  echo
 fi
