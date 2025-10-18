@@ -1,0 +1,46 @@
+# Tarpaulin configuration for test coverage measurement
+#
+# FORK-SPECIFIC (just-every/code): Spec-kit test infrastructure (MAINT-3)
+#
+# Usage: cargo tarpaulin (uses this config)
+# Policy: docs/spec-kit/testing-policy.md
+# Target: 40% coverage by Q1 2026 (current baseline: 1.7%)
+
+[config]
+# Only measure spec-kit coverage (fork-specific code)
+run-types = ["Lib", "Tests"]
+
+# Include patterns (spec-kit only)
+include-pattern = "tui/src/chatwidget/spec_kit/.*\\.rs"
+
+# Exclude test files and generated code
+exclude-files = [
+    "tui/src/chatwidget/spec_kit/*/tests/*",
+    "tui/tests/*",
+]
+
+# Output formats
+out = ["Html", "Stdout"]
+output-dir = "target/tarpaulin"
+
+# Coverage thresholds (aspirational)
+# Phase 1: Infrastructure only (no threshold)
+# Phase 2: 15% (Dec 2025)
+# Phase 3: 25% (Jan 2026)
+# Phase 4: 40% (Mar 2026)
+# fail-under = 40.0  # Uncomment when Phase 4 complete
+
+# Timeout per test (some integration tests are slow)
+timeout = 120
+
+# Follow symbolic links
+follow-symlinks = true
+
+# Count all code lines (not just touched by tests)
+count = true
+
+# Verbose output
+verbose = true
+
+# Skip clean between runs (faster iteration)
+skip-clean = false

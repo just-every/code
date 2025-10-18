@@ -1,0 +1,27 @@
+{
+  "stage": "spec-implement",
+  "prompt_version": "20251002-implement-a",
+  "agent": "gpt_codex",
+  "model": "gpt-5-codex",
+  "model_release": "2025-09-29",
+  "reasoning_mode": "high",
+  "diff_proposals": [
+    {
+      "path": "codex-rs/tui/src/chatwidget.rs",
+      "change": "diff --git a/codex-rs/tui/src/chatwidget.rs b/codex-rs/tui/src/chatwidget.rs\n@@\n-    // === FORK-SPECIFIC: spec-kit automation state ===\n-    // Upstream: Does not have /spec-auto pipeline\n-    // Preserve: This field and all SpecAutoState/SpecAutoPhase code during rebases\n+    // === FORK-SPECIFIC: spec-kit automation ===\n+    // Upstream: Does not have /spec-auto pipeline\n+    // Preserve: Spec-auto state machine during rebases\n@@\n+// === FORK-SPECIFIC: spec-kit automation structures ===\n+// Upstream: Does not have spec-auto pipeline data structures\n+// Preserve: Phase enums, guardrail helpers, and schema validators during rebases\n #[derive(Debug, Clone, PartialEq, Eq)]\n enum SpecAutoPhase {\n@@\n impl SpecAutoState {\n@@\n }\n+\n+// === END FORK-SPECIFIC: spec-kit automation structures ===\n \n // ChatWidget methods for spec-kit automation\n",
+      "rationale": "Mark all spec-auto data structures and helpers with a single guard block so rebases can preserve fork-only automation without hunting for scattered sections.",
+      "confidence": 0.5
+    },
+    {
+      "path": "codex-rs/tui/src/slash_command.rs",
+      "change": "diff --git a/codex-rs/tui/src/slash_command.rs b/codex-rs/tui/src/slash_command.rs\n@@\n-    // === FORK-SPECIFIC: spec-kit slash commands ===\n-    // Upstream: Does not have spec-kit automation\n-    // Preserve: All spec-* commands during rebases\n-    // Migration: T30 will move these to Project Commands (config.toml)\n+    // === FORK-SPECIFIC: spec-kit automation commands ===\n+    // Upstream: Does not have spec-kit automation\n+    // Preserve: All spec-* commands during rebases\n+    // Migration: T30 will move these to Project Commands (config.toml)\n@@\n-    // === END FORK-SPECIFIC: spec-kit commands ===\n+    // === END FORK-SPECIFIC: spec-kit automation commands ===\n@@\n+// === FORK-SPECIFIC: spec-kit /spec-auto invocation parsing ===\n+// Upstream: Does not parse spec-auto commands\n+// Preserve: Invocation struct, parser, and error types during rebases\n #[derive(Debug, Clone)]\n pub struct SpecAutoInvocation {\n@@\n fn parse_stage_name(value: &str) -> Option<SpecStage> {\n@@\n }\n+\n+// === END FORK-SPECIFIC: spec-kit /spec-auto invocation parsing ===\n \n #[cfg(test)]\n mod tests {\n",
+      "rationale": "Align slash-command annotations with the fork guide and bracket the spec-auto parser so future upstream merges keep the fork-only command wiring intact.",
+      "confidence": 0.5
+    }
+  ],
+  "test_commands": [],
+  "tool_calls": [],
+  "risks": [
+    "Comment markers could drift from FORK_DEVIATIONS.md if that guide is updated later without mirroring the exact wording."
+  ]
+}
