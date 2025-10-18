@@ -1208,6 +1208,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-spec-kit"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "codex-core",
+ "fs2",
+ "mcp-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.16",
+ "tokio",
+ "tokio-test",
+ "tracing",
+]
+
+[[package]]
 name = "codex-tui"
 version = "0.0.0"
 dependencies = [

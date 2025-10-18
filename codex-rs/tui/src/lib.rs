@@ -74,6 +74,12 @@ pub use chatwidget::spec_kit::{
     QualityGateType, QualityIssue, Resolution, Resolvability, SpecAutoState,
 };
 
+// MAINT-3 Phase 2: Re-export testing utilities
+#[cfg(any(test, feature = "test-utils"))]
+pub use chatwidget::spec_kit::context::test_mock::MockSpecKitContext;
+pub use chatwidget::spec_kit::state::SpecAutoPhase;
+pub use spec_prompts::SpecAgent;
+
 // FORK-SPECIFIC (just-every/code): Re-export consensus for MCP integration testing
 pub use chatwidget::spec_kit::consensus::run_spec_consensus;
 

@@ -27,6 +27,10 @@ pub mod state;
 // Re-export context types
 pub use context::SpecKitContext;
 
+// MAINT-3 Phase 2: Re-export test utilities
+#[cfg(any(test, feature = "test-utils"))]
+pub use context::test_mock::MockSpecKitContext;
+
 // Re-export error types
 pub use error::{Result, SpecKitError};
 

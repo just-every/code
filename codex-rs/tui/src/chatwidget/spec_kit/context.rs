@@ -105,12 +105,14 @@ pub trait SpecKitContext {
     fn show_quality_gate_modal(&mut self, checkpoint: QualityCheckpoint, questions: Vec<EscalatedQuestion>);
 }
 
-#[cfg(test)]
-mod tests {
+// MAINT-3 Phase 2: Mock context for testing (available in test builds)
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_mock {
     use super::*;
     use std::path::PathBuf;
 
     /// Mock context for testing spec-kit operations in isolation
+    #[derive(Default)]
     pub struct MockSpecKitContext {
         pub cwd: PathBuf,
         pub agents: Vec<AgentConfig>,
