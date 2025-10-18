@@ -473,9 +473,16 @@ impl EvidenceRepository {
 ## Medium Priority (Month 1) - Architecture Evolution
 
 ### ARCH-008: Protocol Extension for MCP & Workflow [P2, 8-10 hours]
-**Status**: `[ ]`
+**Status**: `[✗]` **SKIP** (Unnecessary - see ARCH-INSPECTION-FINDINGS.md)
 
-**Goal**: Enable #5 (dual MCP fix) and #10 (state migration) by extending protocol
+**Original Goal**: Enable #5 (dual MCP fix) and #10 (state migration) by extending protocol
+
+**Deep Inspection Finding** (2025-10-18):
+- ARCH-005 doesn't need protocol changes (just remove TUI MCP spawn)
+- ARCH-010 has no use case (no non-TUI clients exist)
+- This task builds foundation for solving non-existent problems
+
+**Recommendation**: SKIP - architectural perfectionism without pragmatic value
 
 **Files to Modify**:
 1. `protocol/src/protocol.rs`: Add new Op/EventMsg variants
@@ -548,12 +555,17 @@ pub struct WorkflowState {
 
 ---
 
-### ARCH-009: Centralize Agent Coordination in Core [P2, 4-6 hours]
-**Status**: `[ ]`
+### ARCH-009: Extract Retry Constants [REFOCUSED, 30 min]
+**Status**: `[ ]` **REVISED** (Original diagnosis was false - see ARCH-INSPECTION-FINDINGS.md)
 
-**Problem**: Agent retry logic split between `spec_kit/handler.rs` and `core/client.rs`—unclear ownership
+**Original Problem** (INCORRECT): "Agent retry logic split between spec-kit and core"
+**Deep Inspection**: Those are DIFFERENT retry layers (both needed):
+- Core (client.rs): HTTP timeout (30min max per request)
+- Spec-kit (handler.rs): Stage retry (3x on orchestration failure)
 
-**Goal**: Single source of truth for agent lifecycle management
+**REAL Problem Found**: `MAX_AGENT_RETRIES` defined 3 times in handler.rs
+- Lines 647, 708, 744 - Simple DRY violation
+- Extract to module-level const
 
 **Files to Modify**:
 - `core/src/agent_tool.rs`: Add retry configuration
@@ -607,13 +619,19 @@ async fn execute_agent_with_retry(
 ## Long-Term (Quarter 1) - Strategic
 
 ### ARCH-010: Migrate Spec-Auto State to Core [P2, 12-16 hours, HIGH COMPLEXITY]
-**Status**: `[ ]`
+**Status**: `[✗]` **SKIP** (No use case - see ARCH-INSPECTION-FINDINGS.md)
 
-**Problem**: `ChatWidget::spec_auto_state` couples workflow to presentation—blocks non-TUI clients
+**Original Problem**: "ChatWidget::spec_auto_state couples workflow to presentation—blocks non-TUI clients"
 
-**Goal**: Backend-managed workflow state accessible via protocol
+**Deep Inspection Finding** (2025-10-18):
+- Non-TUI clients: NONE exist (`codex exec` doesn't use spec-kit)
+- Planned clients: NONE documented (checked PLANNING.md, product-requirements.md)
+- Spec-kit is TUI-exclusive by design (interactive multi-stage workflow)
 
-**Dependencies**: **BLOCKS ON ARCH-008** (protocol extension must land first)
+**Verdict**: Solving problem that doesn't exist - YAGNI violation
+**Recommendation**: SKIP until actual non-TUI client requirement emerges
+
+**Dependencies**: **BLOCKS ON ARCH-008** (also being skipped)
 
 **Files to Modify**:
 1. `protocol/src/protocol.rs`: Add `WorkflowState` types (done in ARCH-008)
@@ -886,12 +904,55 @@ Quarter 1 (Strategic):
 
 ---
 
-# Next Steps
+# DEEP INSPECTION UPDATE (2025-10-18)
 
-1. **Immediate** (today): Execute ARCH-001 (upstream doc fix) - 30 minutes
-2. **This Week**: Complete P0 tasks (ARCH-002, ARCH-003, ARCH-004) - 4-6 hours
-3. **This Month**: Start ARCH-008 (protocol extension) - unblocks critical path
-4. **After Protocol Lands**: Execute ARCH-005 (dual MCP fix) - improves architecture
-5. **Continuous**: Monitor upstream `just-every/code` for changes requiring rebase
+After systematic code-level validation, **3 tasks identified as false issues or unnecessary**:
+
+## Tasks to SKIP (Save 26-34h)
+- **ARCH-008**: Protocol extension - No use case (enables ARCH-005/010 which are unnecessary/simple)
+- **ARCH-010**: State migration - No non-TUI clients exist (YAGNI violation)
+- **ARCH-009** (original): Agent coordination - Misdiagnosed (orthogonal layers, not duplication)
+
+## Tasks REVISED
+- **ARCH-009-REVISED**: Extract retry constants only (30min, not 4-6h)
+- **ARCH-005**: Downgrade P1 → P2 (resource waste, not failure - simple fix without protocol)
+
+## Tasks VALIDATED
+- **ARCH-011**: Async TUI spike (validate 8.7ms blocking impact)
+- **ARCH-012**: Upstream contributions (community value)
+- **ARCH-013/014**: Correctly deferred
+
+**See**: `ARCH-INSPECTION-FINDINGS.md` for detailed analysis
+
+---
+
+# Revised Effort Summary (Post-Inspection)
+
+| Priority | Original | Revised | Status |
+|----------|----------|---------|--------|
+| **Completed** | 6 tasks, 7.5h | Same | ✅ DONE |
+| **Worth Doing** | 7 tasks, 86-125h | 4 tasks, 11-22h | Validated |
+| **Skip** | 0 tasks | 3 tasks | 26-34h saved |
+| **TOTAL** | 13 tasks, 93.5-131.5h | 10 tasks, 18.5-44h | **62% reduction** |
+
+---
+
+# Next Session Roadmap
+
+**High Value** (11-22h):
+1. ARCH-009-REVISED: Extract retry constants (30min)
+2. ARCH-011: Async TUI spike (4-8h, likely conclude blocking OK)
+3. ARCH-012: Upstream contributions (6-12h)
+
+**Optional** (2-3h):
+4. ARCH-005: Simplify dual MCP (downgraded, cleanup only)
+
+**Skip** (saves 26-34h):
+- ARCH-008, ARCH-010, ARCH-009 (original)
+
+**See**: `SESSION-HANDOFF.md` for complete status
+
+---
 
 **Tracking**: Update task status in this file as work progresses.
+**Last Updated**: 2025-10-18 (post deep-inspection)
