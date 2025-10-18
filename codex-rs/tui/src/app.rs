@@ -99,6 +99,10 @@ pub(crate) struct App<'a> {
     /// Latest available release version (if detected) so new widgets can surface it.
     latest_upgrade_version: Option<String>,
 
+    /// FORK-SPECIFIC (just-every/code): Shared MCP manager for local-memory
+    /// All ChatWidgets share this single instance to prevent process multiplication
+    mcp_manager: Arc<tokio::sync::Mutex<Option<Arc<codex_core::mcp_connection_manager::McpConnectionManager>>>>,
+
     file_search: FileSearchManager,
 
     /// True when a redraw has been scheduled but not yet executed (debounce window).
@@ -173,7 +177,7 @@ pub(crate) struct App<'a> {
 
 /// Aggregate parameters needed to create a `ChatWidget`, as creation may be
 /// deferred until after the Git warning screen is dismissed.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct ChatWidgetArgs {
     pub(crate) config: Config,
     initial_prompt: Option<String>,
@@ -184,6 +188,25 @@ pub(crate) struct ChatWidgetArgs {
     enable_perf: bool,
     resume_picker: bool,
     latest_upgrade_version: Option<String>,
+    mcp_manager: Arc<tokio::sync::Mutex<Option<Arc<codex_core::mcp_connection_manager::McpConnectionManager>>>>,
+}
+
+// Custom Debug impl that skips non-debuggable MCP manager
+impl std::fmt::Debug for ChatWidgetArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChatWidgetArgs")
+            .field("config", &self.config)
+            .field("initial_prompt", &self.initial_prompt)
+            .field("initial_images", &self.initial_images)
+            .field("enhanced_keys_supported", &self.enhanced_keys_supported)
+            .field("terminal_info", &self.terminal_info)
+            .field("show_order_overlay", &self.show_order_overlay)
+            .field("enable_perf", &self.enable_perf)
+            .field("resume_picker", &self.resume_picker)
+            .field("latest_upgrade_version", &self.latest_upgrade_version)
+            .field("mcp_manager", &"<opaque>")
+            .finish()
+    }
 }
 
 impl App<'_> {
@@ -305,6 +328,51 @@ impl App<'_> {
             });
         }
 
+        // FORK-SPECIFIC (just-every/code): Initialize shared MCP manager for local-memory
+        // Spawn once at App level instead of per-widget to prevent process multiplication
+        let mcp_manager = Arc::new(tokio::sync::Mutex::new(None));
+        {
+            let mcp_manager_slot = mcp_manager.clone();
+            let app_event_tx_for_mcp = app_event_tx.clone();
+
+            tokio::spawn(async move {
+                use std::collections::{HashMap, HashSet};
+                use codex_core::config_types::McpServerConfig;
+                use codex_core::mcp_connection_manager::McpConnectionManager;
+
+                let mcp_config = HashMap::from([(
+                    "local-memory".to_string(),
+                    McpServerConfig {
+                        command: "local-memory".to_string(),
+                        args: vec![],
+                        env: None,
+                        startup_timeout_ms: Some(5000), // 5 second timeout
+                    }
+                )]);
+
+                match McpConnectionManager::new(mcp_config, HashSet::new()).await {
+                    Ok((manager, errors)) => {
+                        if !errors.is_empty() {
+                            tracing::warn!("MCP local-memory connection had errors: {:?}", errors);
+                            app_event_tx_for_mcp.send_background_event(format!(
+                                "⚠ MCP local-memory initialized with warnings: {:?}",
+                                errors
+                            ));
+                        }
+                        *mcp_manager_slot.lock().await = Some(Arc::new(manager));
+                        tracing::info!("MCP local-memory connection initialized successfully");
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to initialize MCP local-memory connection: {}", e);
+                        app_event_tx_for_mcp.send_background_event(format!(
+                            "❌ MCP local-memory initialization failed: {}\n  Consensus checks will fail until local-memory MCP server is available.",
+                            e
+                        ));
+                    }
+                }
+            });
+        }
+
         let login_status = get_login_status(&config);
         let should_show_onboarding =
             should_show_onboarding(login_status, &config, show_trust_screen);
@@ -320,6 +388,7 @@ impl App<'_> {
                 enable_perf,
                 resume_picker,
                 latest_upgrade_version: latest_upgrade_version.clone(),
+                mcp_manager: mcp_manager.clone(),
             };
             AppState::Onboarding {
                 screen: OnboardingScreen::new(OnboardingScreenArgs {
@@ -342,6 +411,7 @@ impl App<'_> {
                 terminal_info.clone(),
                 show_order_overlay,
                 latest_upgrade_version.clone(),
+                mcp_manager.clone(),
             );
             chat_widget.enable_perf(enable_perf);
             if resume_picker {
@@ -367,6 +437,7 @@ impl App<'_> {
             app_state,
             config,
             latest_upgrade_version,
+            mcp_manager,
             file_search,
             pending_redraw,
             redraw_inflight,
@@ -1752,6 +1823,7 @@ impl App<'_> {
                                 self.terminal_info.clone(),
                                 self.show_order_overlay,
                                 self.latest_upgrade_version.clone(),
+                                self.mcp_manager.clone(),
                             );
                             new_widget.enable_perf(self.timing_enabled);
                             self.app_state = AppState::Chat {
@@ -1996,6 +2068,7 @@ impl App<'_> {
                             self.terminal_info.clone(),
                             self.show_order_overlay,
                             self.latest_upgrade_version.clone(),
+                            self.mcp_manager.clone(),
                         );
                         new_widget.enable_perf(self.timing_enabled);
                         self.app_state = AppState::Chat {
@@ -2383,6 +2456,7 @@ impl App<'_> {
                     enable_perf,
                     resume_picker,
                     latest_upgrade_version,
+                    mcp_manager,
                 }) => {
                     let mut w = ChatWidget::new(
                         config,
@@ -2393,6 +2467,7 @@ impl App<'_> {
                         terminal_info,
                         show_order_overlay,
                         latest_upgrade_version,
+                        mcp_manager,
                     );
                     w.enable_perf(enable_perf);
                     if resume_picker {
@@ -2506,6 +2581,7 @@ impl App<'_> {
                             self.latest_upgrade_version.clone(),
                             auth_manager,
                             false,
+                            self.mcp_manager.clone(),
                         );
                         if let Some(state) = ghost_state.take() {
                             new_widget.adopt_ghost_state(state);
@@ -2534,6 +2610,7 @@ impl App<'_> {
                             self.latest_upgrade_version.clone(),
                             auth_manager,
                             false,
+                            self.mcp_manager.clone(),
                         );
                         if let Some(state) = ghost_state.take() {
                             new_widget.adopt_ghost_state(state);

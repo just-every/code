@@ -335,6 +335,8 @@ impl App {
             self.show_order_overlay,
             self.latest_upgrade_version.clone(),
             auth_manager,
+            false,
+            self.mcp_manager.clone(),
         );
         // Trim transcript up to the selected user message and re-render it.
         self.trim_transcript_for_backtrack(drop_count);

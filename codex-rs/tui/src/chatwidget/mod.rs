@@ -2486,6 +2486,7 @@ impl ChatWidget<'_> {
         terminal_info: crate::tui::TerminalInfo,
         show_order_overlay: bool,
         latest_upgrade_version: Option<String>,
+        mcp_manager: Arc<tokio::sync::Mutex<Option<Arc<codex_core::mcp_connection_manager::McpConnectionManager>>>>,
     ) -> Self {
         let (codex_op_tx, codex_op_rx) = unbounded_channel::<Op>();
 
@@ -2572,10 +2573,6 @@ impl ChatWidget<'_> {
         // Removed the legacy startup tip for /resume.
 
         // Initialize image protocol for rendering screenshots
-
-        // FORK-SPECIFIC (just-every/code): Clone app_event_tx before widget construction
-        // for later use in MCP initialization
-        let app_event_tx_for_mcp = app_event_tx.clone();
 
         let mut new_widget = Self {
             app_event_tx: app_event_tx.clone(),
@@ -2725,8 +2722,8 @@ impl ChatWidget<'_> {
             system_cell_by_id: HashMap::new(),
             standard_terminal_mode: !config.tui.alternate_screen,
             spec_auto_state: None,
-            // FORK-SPECIFIC (just-every/code): Initialize MCP manager placeholder
-            mcp_manager: Arc::new(tokio::sync::Mutex::new(None)),
+            // FORK-SPECIFIC (just-every/code): Use shared MCP manager from App
+            mcp_manager,
         };
         if let Ok(Some(active_id)) = auth_accounts::get_active_account_id(&config.codex_home) {
             if let Ok(records) = account_usage::list_rate_limit_snapshots(&config.codex_home) {
@@ -2769,49 +2766,6 @@ impl ChatWidget<'_> {
         }
         w.maybe_start_auto_upgrade_task();
 
-        // FORK-SPECIFIC (just-every/code): Initialize MCP manager for local-memory
-        // Spawn async task to connect to local-memory MCP server
-        {
-            let mcp_manager_slot = w.mcp_manager.clone();
-
-            tokio::spawn(async move {
-                use std::collections::{HashMap, HashSet};
-                use codex_core::config_types::McpServerConfig;
-                use codex_core::mcp_connection_manager::McpConnectionManager;
-
-                let mcp_config = HashMap::from([(
-                    "local-memory".to_string(),
-                    McpServerConfig {
-                        command: "local-memory".to_string(),
-                        args: vec![],
-                        env: None,
-                        startup_timeout_ms: Some(5000), // 5 second timeout
-                    }
-                )]);
-
-                match McpConnectionManager::new(mcp_config, HashSet::new()).await {
-                    Ok((manager, errors)) => {
-                        if !errors.is_empty() {
-                            tracing::warn!("MCP local-memory connection had errors: {:?}", errors);
-                            app_event_tx_for_mcp.send_background_event(format!(
-                                "⚠ MCP local-memory initialized with warnings: {:?}",
-                                errors
-                            ));
-                        }
-                        *mcp_manager_slot.lock().await = Some(Arc::new(manager));
-                        tracing::info!("MCP local-memory connection initialized successfully");
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to initialize MCP local-memory connection: {}", e);
-                        app_event_tx_for_mcp.send_background_event(format!(
-                            "❌ MCP local-memory initialization failed: {}\n  Consensus checks will fail until local-memory MCP server is available.",
-                            e
-                        ));
-                    }
-                }
-            });
-        }
-
         w
     }
 
@@ -2827,6 +2781,7 @@ impl ChatWidget<'_> {
         latest_upgrade_version: Option<String>,
         auth_manager: Arc<AuthManager>,
         show_welcome: bool,
+        mcp_manager: Arc<tokio::sync::Mutex<Option<Arc<codex_core::mcp_connection_manager::McpConnectionManager>>>>,
     ) -> Self {
         let (codex_op_tx, mut codex_op_rx) = unbounded_channel::<Op>();
 
@@ -2859,10 +2814,6 @@ impl ChatWidget<'_> {
 
         // Basic widget state mirrors `new`
         let history_cells: Vec<Box<dyn HistoryCell>> = Vec::new();
-
-        // FORK-SPECIFIC (just-every/code): Clone app_event_tx before widget construction
-        // for later use in MCP initialization
-        let app_event_tx_for_mcp = app_event_tx.clone();
 
         let mut w = Self {
             app_event_tx: app_event_tx.clone(),
@@ -3007,8 +2958,8 @@ impl ChatWidget<'_> {
             synthetic_system_req: None,
             system_cell_by_id: HashMap::new(),
             spec_auto_state: None,
-            // FORK-SPECIFIC (just-every/code): Initialize MCP manager placeholder
-            mcp_manager: Arc::new(tokio::sync::Mutex::new(None)),
+            // FORK-SPECIFIC (just-every/code): Use shared MCP manager from App
+            mcp_manager,
         };
         if let Ok(Some(active_id)) = auth_accounts::get_active_account_id(&config.codex_home) {
             if let Ok(records) = account_usage::list_rate_limit_snapshots(&config.codex_home) {
@@ -3023,49 +2974,6 @@ impl ChatWidget<'_> {
             w.history_push_top_next_req(history_cell::new_animated_welcome());
         }
         w.maybe_start_auto_upgrade_task();
-
-        // FORK-SPECIFIC (just-every/code): Initialize MCP manager for local-memory
-        // Spawn async task to connect to local-memory MCP server
-        {
-            let mcp_manager_slot = w.mcp_manager.clone();
-
-            tokio::spawn(async move {
-                use std::collections::{HashMap, HashSet};
-                use codex_core::config_types::McpServerConfig;
-                use codex_core::mcp_connection_manager::McpConnectionManager;
-
-                let mcp_config = HashMap::from([(
-                    "local-memory".to_string(),
-                    McpServerConfig {
-                        command: "local-memory".to_string(),
-                        args: vec![],
-                        env: None,
-                        startup_timeout_ms: Some(5000), // 5 second timeout
-                    }
-                )]);
-
-                match McpConnectionManager::new(mcp_config, HashSet::new()).await {
-                    Ok((manager, errors)) => {
-                        if !errors.is_empty() {
-                            tracing::warn!("MCP local-memory connection had errors: {:?}", errors);
-                            app_event_tx_for_mcp.send_background_event(format!(
-                                "⚠ MCP local-memory initialized with warnings: {:?}",
-                                errors
-                            ));
-                        }
-                        *mcp_manager_slot.lock().await = Some(Arc::new(manager));
-                        tracing::info!("MCP local-memory connection initialized successfully");
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to initialize MCP local-memory connection: {}", e);
-                        app_event_tx_for_mcp.send_background_event(format!(
-                            "❌ MCP local-memory initialization failed: {}\n  Consensus checks will fail until local-memory MCP server is available.",
-                            e
-                        ));
-                    }
-                }
-            });
-        }
 
         w
     }
@@ -16496,6 +16404,7 @@ mod tests {
             term,
             false,
             None,
+            Arc::new(tokio::sync::Mutex::new(None)), // Test: no MCP manager needed
         )
     }
 

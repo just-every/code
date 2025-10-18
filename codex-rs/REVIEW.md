@@ -504,7 +504,8 @@ digraph CodexArchitecture {
     style=filled;
     color=lightblue;
 
-    ChatWidget [label="ChatWidget\n(21k LOC)\n[+2 fork fields]"];
+    App [label="App\n(ARCH-005)\nOwns shared MCP", style=bold];
+    ChatWidget [label="ChatWidget\n(21k LOC)\n[refs App MCP]"];
     BottomPane [label="BottomPane\n(User Input)"];
     HistoryRender [label="History Renderer\n(Ratatui)"];
     SlashRouter [label="Slash Command\nRouter\n[+6 fork commands]"];
@@ -516,11 +517,13 @@ digraph CodexArchitecture {
     style=filled;
     color=lightyellow;
 
-    SpecHandler [label="handler.rs\n(68k LOC)\nState Machine"];
-    Consensus [label="consensus.rs\n(33k LOC)\nMulti-Agent Synthesis"];
-    Quality [label="quality.rs\n(30k LOC)\nQuality Gates"];
-    Guardrail [label="guardrail.rs\n(26k LOC)\nValidation"];
-    McpMgrTui [label="MCP Manager\n(local-memory ONLY)", style=bold];
+    SpecHandler [label="handler.rs\nState Machine\n+ Retry Logic"];
+    Consensus [label="consensus.rs\nMulti-Agent Synthesis\n+ MCP Native"];
+    Quality [label="quality.rs\nQuality Gates"];
+    Guardrail [label="guardrail.rs\nValidation"];
+    Evidence [label="evidence.rs\nFile Locking\n(ARCH-007)"];
+    AgentEnum [label="SpecAgent Enum\n5 variants:\nGemini|Claude|Code|\nGptCodex|GptPro\n(ARCH-006)"];
+    McpMgrApp [label="App MCP Manager\n(local-memory ONLY)\nSHARED by all widgets", style=bold, color=green];
   }
 
   // ========== External Services ==========
@@ -536,6 +539,8 @@ digraph CodexArchitecture {
   }
 
   // ========== Core Data Flow (UPSTREAM) ==========
+  App -> ChatWidget [label="new() w/ MCP ref\n(ARCH-005)", color=green, style=bold];
+  App -> McpMgrApp [label="Spawns once\n(ARCH-005)", color=green, style=bold];
   BottomPane -> ChatWidget [label="User Input"];
   ChatWidget -> ConvMgr [label="Op (SubmitPrompt)"];
   ConvMgr -> Codex [label="submit()"];
@@ -554,16 +559,26 @@ digraph CodexArchitecture {
   ChatWidget -> SlashRouter [label="/speckit.*", color=orange];
   SlashRouter -> SpecHandler [label="Dispatch", color=orange];
   SpecHandler -> Guardrail [label="1. Validate", color=orange];
-  SpecHandler -> Codex [label="2. Submit Multi-Agent\n(3-4 parallel)", color=orange];
+  SpecHandler -> Codex [label="2. Submit Multi-Agent\n(3-5 parallel)", color=orange];
   SpecHandler -> Consensus [label="3. Check Consensus", color=orange];
-  Consensus -> McpMgrTui [label="fetch_memory_entries()\n5.3x faster", color=orange, style=bold];
-  McpMgrTui -> LocalMem [label="search/store_memory\n(native MCP)", color=orange, style=bold];
-  LocalMem -> McpMgrTui [label="Artifacts (JSON)", style=dashed, color=orange];
+  Consensus -> McpMgrApp [label="fetch_memory_entries()\n5.3x faster (ARCH-001)", color=orange, style=bold];
+  McpMgrApp -> LocalMem [label="search/store_memory\n(native MCP)", color=orange, style=bold];
+  LocalMem -> McpMgrApp [label="Artifacts (JSON)", style=dashed, color=orange];
   Consensus -> Quality [label="4. Quality Gates\n(optional)", color=orange];
-  SpecHandler -> SpecHandler [label="5. Retry or Advance\n(max 3x)", color=orange];
+  Consensus -> Evidence [label="write_with_lock()\n(ARCH-007)", color=orange];
+  SpecHandler -> SpecHandler [label="5. Retry or Advance\n(3x MCP + 3x agent)", color=orange];
+  SpecHandler -> AgentEnum [label="Type-safe names\n(ARCH-006)", color=orange, style=dashed];
 
-  // ========== Dual MCP Problem (FORK-INTRODUCED) ==========
-  McpMgrCore -> LocalMem [label="CONFLICT RISK\n(if both connect)", color=red, style=dashed];
+  // ========== MCP Architecture Notes ==========
+  // ARCH-005 Resolution: App-level MCP spawn eliminates process multiplication
+  //  - Before: N widgets × 1 local-memory process each = N processes
+  //  - After: 1 App × 1 local-memory process = 1 process (shared via Arc)
+  //  - Forked/backtracked sessions reuse App's MCP manager
+  //
+  // ARCH-001: Native MCP calls replace subprocess (5.3x performance improvement)
+  //  - MCP retry: 3 attempts, 100ms→200ms→400ms exponential backoff
+  //  - Agent retry: 3 attempts per stage (SPEC_AUTO_AGENT_RETRY_ATTEMPTS)
+  //  - Fallback: File-based evidence if MCP unavailable
 
   // ========== Browser Integration (UPSTREAM) ==========
   ToolOrch -> ChromeCDP [label="CDP Commands", style=dashed];
@@ -572,8 +587,9 @@ digraph CodexArchitecture {
   // ========== Configuration (UPSTREAM + FORK) ==========
   Config -> ConvMgr [label="Initialize"];
   Config -> McpMgrCore [label="MCP Servers"];
+  Config -> McpMgrApp [label="local-memory", color=green, style=bold];
   Config -> Sandbox [label="Policies"];
-  Config -> ChatWidget [label="ShellEnvPolicy\n(dual config surface)", color=red];
+  Config -> ChatWidget [label="ShellEnvPolicy\n(precedence documented\nARCH-003)", color=green];
 }
 ```
 

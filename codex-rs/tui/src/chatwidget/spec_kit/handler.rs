@@ -18,6 +18,9 @@ use std::sync::Arc;
 const MCP_RETRY_ATTEMPTS: u32 = 3;
 const MCP_RETRY_DELAY_MS: u64 = 100;
 
+// FORK-SPECIFIC (just-every/code): Spec-auto agent retry configuration
+const SPEC_AUTO_AGENT_RETRY_ATTEMPTS: u32 = 3;
+
 /// Helper to run consensus check with retry logic for MCP initialization
 /// FORK-SPECIFIC (just-every/code): Handles MCP connection timing and transient failures
 async fn run_consensus_with_retry(
@@ -644,16 +647,14 @@ pub fn on_spec_auto_agents_complete(widget: &mut ChatWidget) {
                 (state.agent_retry_count, stage)
             };
 
-            const MAX_AGENT_RETRIES: u32 = 3;
-
-            if retry_count < MAX_AGENT_RETRIES {
+            if retry_count < SPEC_AUTO_AGENT_RETRY_ATTEMPTS {
                 // Retry the stage
                 widget.history_push(crate::history_cell::PlainHistoryCell::new(
                     vec![
                         ratatui::text::Line::from(format!(
                             "⚠ Agent failures detected. Retrying {}/{} ...",
                             retry_count + 1,
-                            MAX_AGENT_RETRIES
+                            SPEC_AUTO_AGENT_RETRY_ATTEMPTS
                         )),
                     ],
                     crate::history_cell::HistoryCellType::Notice,
@@ -665,7 +666,7 @@ pub fn on_spec_auto_agents_complete(widget: &mut ChatWidget) {
                     state.agent_retry_context = Some(format!(
                         "Previous attempt failed (retry {}/{}). Be more thorough and check for edge cases.",
                         retry_count + 1,
-                        MAX_AGENT_RETRIES
+                        SPEC_AUTO_AGENT_RETRY_ATTEMPTS
                     ));
                 }
 
@@ -684,7 +685,7 @@ pub fn on_spec_auto_agents_complete(widget: &mut ChatWidget) {
 
                 halt_spec_auto_with_error(
                     widget,
-                    format!("Agent execution failed after {} retries. Missing/failed: {:?}", MAX_AGENT_RETRIES, missing),
+                    format!("Agent execution failed after {} retries. Missing/failed: {:?}", SPEC_AUTO_AGENT_RETRY_ATTEMPTS, missing),
                 );
             }
         }
@@ -705,7 +706,6 @@ fn check_consensus_and_advance_spec_auto(widget: &mut ChatWidget) {
 
     let spec_id = state.spec_id.clone();
     let retry_count = state.agent_retry_count;  // FORK-SPECIFIC: Track retries
-    const MAX_AGENT_RETRIES: u32 = 3;  // FORK-SPECIFIC: Max retry attempts
 
     // Show checking status
     widget.history_push(crate::history_cell::PlainHistoryCell::new(
@@ -741,9 +741,7 @@ fn check_consensus_and_advance_spec_auto(widget: &mut ChatWidget) {
                 text.contains("No local-memory entries found")
             });
 
-            const MAX_AGENT_RETRIES: u32 = 3;
-
-            if (results_empty_or_invalid || !consensus_ok) && retry_count < MAX_AGENT_RETRIES {
+            if (results_empty_or_invalid || !consensus_ok) && retry_count < SPEC_AUTO_AGENT_RETRY_ATTEMPTS {
                 widget.history_push(crate::history_cell::PlainHistoryCell::new(
                     consensus_lines.clone(),
                     HistoryCellType::Notice,
@@ -754,7 +752,7 @@ fn check_consensus_and_advance_spec_auto(widget: &mut ChatWidget) {
                         ratatui::text::Line::from(format!(
                             "⚠ Empty/invalid agent results. Retrying {}/{} ...",
                             retry_count + 1,
-                            MAX_AGENT_RETRIES
+                            SPEC_AUTO_AGENT_RETRY_ATTEMPTS
                         )),
                     ],
                     crate::history_cell::HistoryCellType::Notice,
@@ -766,7 +764,7 @@ fn check_consensus_and_advance_spec_auto(widget: &mut ChatWidget) {
                     state.agent_retry_context = Some(format!(
                         "Previous attempt returned invalid/empty results (retry {}/{}). Store ALL analysis in local-memory with remember command.",
                         retry_count + 1,
-                        MAX_AGENT_RETRIES
+                        SPEC_AUTO_AGENT_RETRY_ATTEMPTS
                     ));
                     // Reset to Guardrail phase to re-run the stage
                     state.phase = SpecAutoPhase::Guardrail;
@@ -820,14 +818,14 @@ fn check_consensus_and_advance_spec_auto(widget: &mut ChatWidget) {
         }
         Err(err) => {
             // FORK-SPECIFIC: Retry on consensus errors (just-every/code)
-            if retry_count < MAX_AGENT_RETRIES {
+            if retry_count < SPEC_AUTO_AGENT_RETRY_ATTEMPTS {
                 widget.history_push(crate::history_cell::PlainHistoryCell::new(
                     vec![
                         ratatui::text::Line::from(format!(
                             "⚠ Consensus error: {}. Retrying {}/{} ...",
                             err,
                             retry_count + 1,
-                            MAX_AGENT_RETRIES
+                            SPEC_AUTO_AGENT_RETRY_ATTEMPTS
                         )),
                     ],
                     crate::history_cell::HistoryCellType::Notice,
@@ -838,7 +836,7 @@ fn check_consensus_and_advance_spec_auto(widget: &mut ChatWidget) {
                     state.agent_retry_context = Some(format!(
                         "Previous attempt had consensus error (retry {}/{}). Ensure proper local-memory storage.",
                         retry_count + 1,
-                        MAX_AGENT_RETRIES
+                        SPEC_AUTO_AGENT_RETRY_ATTEMPTS
                     ));
                     state.phase = SpecAutoPhase::Guardrail;
                 }

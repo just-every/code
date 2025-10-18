@@ -26,6 +26,7 @@ pub struct StagePrompts {
     pub version: Option<String>,
     pub gemini: Option<AgentPrompt>,
     pub claude: Option<AgentPrompt>,
+    pub code: Option<AgentPrompt>,
     #[serde(rename = "gpt_codex")]
     pub gpt_codex: Option<AgentPrompt>,
     #[serde(rename = "gpt_pro")]
@@ -39,6 +40,7 @@ pub struct StagePrompts {
 pub enum SpecAgent {
     Gemini,
     Claude,
+    Code,       // Claude Code (CLI assistant)
     GptCodex,
     GptPro,
 }
@@ -50,6 +52,7 @@ impl SpecAgent {
         match self {
             SpecAgent::Gemini => "gemini",
             SpecAgent::Claude => "claude",
+            SpecAgent::Code => "code",
             SpecAgent::GptCodex => "gpt_codex",
             SpecAgent::GptPro => "gpt_pro",
         }
@@ -61,6 +64,7 @@ impl SpecAgent {
         match normalized.as_str() {
             "gemini" | "gemini_flash" | "gemini_2.0" => Some(Self::Gemini),
             "claude" | "claude_sonnet" | "claude_4" => Some(Self::Claude),
+            "code" | "claude_code" => Some(Self::Code),
             "gpt_codex" | "gptcodex" | "gpt5_codex" | "gpt_5_codex" => Some(Self::GptCodex),
             "gpt_pro" | "gptpro" | "gpt5" | "gpt_5" | "gpt5pro" => Some(Self::GptPro),
             _ => None,
@@ -72,14 +76,15 @@ impl SpecAgent {
         match self {
             SpecAgent::Gemini => "Gemini",
             SpecAgent::Claude => "Claude",
+            SpecAgent::Code => "Claude Code",
             SpecAgent::GptCodex => "GPT-5 Codex",
             SpecAgent::GptPro => "GPT-5 Pro",
         }
     }
 
     /// All expected agents for consensus checking
-    pub fn all() -> [Self; 4] {
-        [Self::Gemini, Self::Claude, Self::GptCodex, Self::GptPro]
+    pub fn all() -> [Self; 5] {
+        [Self::Gemini, Self::Claude, Self::Code, Self::GptCodex, Self::GptPro]
     }
 }
 
@@ -115,6 +120,7 @@ pub fn agent_prompt(stage: &str, agent: SpecAgent) -> Option<AgentPrompt> {
     let prompt = match agent {
         SpecAgent::Gemini => stage.gemini.clone(),
         SpecAgent::Claude => stage.claude.clone(),
+        SpecAgent::Code => stage.code.clone(),
         SpecAgent::GptCodex => stage.gpt_codex.clone(),
         SpecAgent::GptPro => stage.gpt_pro.clone(),
     }?;
@@ -147,6 +153,7 @@ fn agent_env_prefix(agent: SpecAgent) -> &'static str {
     match agent {
         SpecAgent::Gemini => "GEMINI",
         SpecAgent::Claude => "CLAUDE",
+        SpecAgent::Code => "CODE",
         SpecAgent::GptCodex => "GPT_CODEX",
         SpecAgent::GptPro => "GPT_PRO",
     }
@@ -181,6 +188,7 @@ fn model_metadata(stage: SpecStage, agent: SpecAgent) -> Vec<(String, String)> {
         (_, SpecAgent::Gemini) => ("gemini-2.5-pro", "2025-05-14", "thinking"),
         (SpecStage::Unlock, SpecAgent::Claude) => ("claude-4.5-sonnet", "2025-09-29", "balanced"),
         (_, SpecAgent::Claude) => ("claude-4.5-sonnet", "2025-09-29", "balanced"),
+        (_, SpecAgent::Code) => ("claude-sonnet-4-5", "2025-10-22", "extended"),
         (SpecStage::Implement, SpecAgent::GptCodex) => ("gpt-5-codex", "2025-09-29", "auto"),
         (_, SpecAgent::GptCodex) => ("gpt-5-codex", "2025-09-29", "auto"),
         (SpecStage::Implement, SpecAgent::GptPro) => ("gpt-5", "2025-08-06", "high"),
