@@ -146,10 +146,12 @@ pub(in super::super) fn parse_consensus_stage(stage: &str) -> Option<SpecStage> 
 }
 
 /// Get expected agent roster for a spec stage
-pub(in super::super) fn expected_agents_for_stage(stage: SpecStage) -> Vec<&'static str> {
+// ARCH-006: Use SpecAgent enum instead of strings
+pub(in super::super) fn expected_agents_for_stage(stage: SpecStage) -> Vec<crate::spec_prompts::SpecAgent> {
+    use crate::spec_prompts::SpecAgent;
     match stage {
-        SpecStage::Implement => vec!["gemini", "claude", "gpt_codex", "gpt_pro"],
-        _ => vec!["gemini", "claude", "gpt_pro"],
+        SpecStage::Implement => vec![SpecAgent::Gemini, SpecAgent::Claude, SpecAgent::GptCodex, SpecAgent::GptPro],
+        _ => vec![SpecAgent::Gemini, SpecAgent::Claude, SpecAgent::GptPro],
     }
 }
 
@@ -592,29 +594,38 @@ pub async fn run_spec_consensus(
     let mut required_fields_ok = false;
 
     for artifact in &artifacts {
-        let agent_lower = artifact.agent.to_ascii_lowercase();
-        present_agents.insert(agent_lower.clone());
-        if artifact.agent.eq_ignore_ascii_case("gpt_pro") {
-            let consensus_node = artifact
-                .content
-                .get("consensus")
-                .cloned()
-                .unwrap_or(Value::Null);
-            agreements = extract_string_list(consensus_node.get("agreements"));
-            conflicts = extract_string_list(consensus_node.get("conflicts"));
-            required_fields_ok = validate_required_fields(stage, &artifact.content);
-            aggregator_summary = Some(artifact.content.clone());
-            aggregator_version = artifact.version.clone();
-            aggregator_agent = Some(artifact.agent.clone());
+        // ARCH-006: Use SpecAgent enum for type safety
+        let agent_enum = crate::spec_prompts::SpecAgent::from_string(&artifact.agent);
+        if let Some(agent) = agent_enum {
+            present_agents.insert(agent.canonical_name().to_string());
+
+            if matches!(agent, crate::spec_prompts::SpecAgent::GptPro) {
+                let consensus_node = artifact
+                    .content
+                    .get("consensus")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                agreements = extract_string_list(consensus_node.get("agreements"));
+                conflicts = extract_string_list(consensus_node.get("conflicts"));
+                required_fields_ok = validate_required_fields(stage, &artifact.content);
+                aggregator_summary = Some(artifact.content.clone());
+                aggregator_version = artifact.version.clone();
+                aggregator_agent = Some(artifact.agent.clone());
+            }
+        } else {
+            // Unknown agent name - keep old behavior (insert as-is)
+            present_agents.insert(artifact.agent.to_ascii_lowercase());
         }
     }
 
-    let expected_agents = expected_agents_for_stage(stage)
-        .into_iter()
-        .map(|agent| agent.to_ascii_lowercase())
-        .collect::<Vec<_>>();
+    // ARCH-006: Use SpecAgent enum for expected agents
+    let expected_agents = expected_agents_for_stage(stage);
+    let expected_agent_names: Vec<String> = expected_agents
+        .iter()
+        .map(|agent| agent.canonical_name().to_string())
+        .collect();
 
-    let mut missing_agents: Vec<String> = expected_agents
+    let mut missing_agents: Vec<String> = expected_agent_names
         .into_iter()
         .filter(|agent| !present_agents.contains(agent))
         .collect();

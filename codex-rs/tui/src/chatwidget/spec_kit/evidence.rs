@@ -99,6 +99,47 @@ impl FilesystemEvidence {
         }
     }
 
+    /// ARCH-007: Write file with exclusive lock to prevent concurrent corruption
+    ///
+    /// Acquires per-spec lock before writing to prevent races between
+    /// guardrail scripts and spec-kit consensus checks.
+    fn write_with_lock(&self, spec_id: &str, target_path: &PathBuf, content: &str) -> Result<()> {
+        use fs2::FileExt;
+        use std::fs::OpenOptions;
+        use std::io::Write;
+
+        let lock_dir = self.cwd.join(&self.base_path).join(".locks");
+        std::fs::create_dir_all(&lock_dir).map_err(|e| SpecKitError::DirectoryCreate {
+            path: lock_dir.clone(),
+            source: e,
+        })?;
+
+        let lock_file_path = lock_dir.join(format!("{}.lock", spec_id));
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&lock_file_path)
+            .map_err(|e| SpecKitError::FileWrite {
+                path: lock_file_path.clone(),
+                source: e,
+            })?;
+
+        // Acquire exclusive lock (blocks if another writer active)
+        lock_file.lock_exclusive().map_err(|e| SpecKitError::FileWrite {
+            path: lock_file_path.clone(),
+            source: e,
+        })?;
+
+        // Write with lock held
+        let result = std::fs::write(target_path, content).map_err(|e| SpecKitError::FileWrite {
+            path: target_path.clone(),
+            source: e,
+        });
+
+        // Lock auto-released when lock_file drops (RAII)
+        result
+    }
+
     /// Get category subdirectory name
     fn category_dir(&self, category: EvidenceCategory) -> &'static str {
         match category {
@@ -276,10 +317,8 @@ impl EvidenceRepository for FilesystemEvidence {
         let json = serde_json::to_string_pretty(verdict)
             .map_err(|e| SpecKitError::JsonSerialize { source: e })?;
 
-        std::fs::write(&path, json).map_err(|e| SpecKitError::FileWrite {
-            path: path.clone(),
-            source: e,
-        })?;
+        // ARCH-007: Use locking to prevent concurrent write corruption
+        self.write_with_lock(spec_id, &path, &json)?;
 
         Ok(path)
     }
@@ -306,10 +345,8 @@ impl EvidenceRepository for FilesystemEvidence {
         let json = serde_json::to_string_pretty(telemetry)
             .map_err(|e| SpecKitError::JsonSerialize { source: e })?;
 
-        std::fs::write(&path, json).map_err(|e| SpecKitError::FileWrite {
-            path: path.clone(),
-            source: e,
-        })?;
+        // ARCH-007: Use locking to prevent concurrent write corruption
+        self.write_with_lock(spec_id, &path, &json)?;
 
         Ok(path)
     }
@@ -336,10 +373,8 @@ impl EvidenceRepository for FilesystemEvidence {
         let json = serde_json::to_string_pretty(synthesis)
             .map_err(|e| SpecKitError::JsonSerialize { source: e })?;
 
-        std::fs::write(&path, json).map_err(|e| SpecKitError::FileWrite {
-            path: path.clone(),
-            source: e,
-        })?;
+        // ARCH-007: Use locking to prevent concurrent write corruption
+        self.write_with_lock(spec_id, &path, &json)?;
 
         Ok(path)
     }
@@ -412,10 +447,8 @@ impl EvidenceRepository for FilesystemEvidence {
         let json = serde_json::to_string_pretty(telemetry)
             .map_err(|e| SpecKitError::JsonSerialize { source: e })?;
 
-        std::fs::write(&path, json).map_err(|e| SpecKitError::FileWrite {
-            path: path.clone(),
-            source: e,
-        })?;
+        // ARCH-007: Use locking to prevent concurrent write corruption
+        self.write_with_lock(spec_id, &path, &json)?;
 
         Ok(path)
     }

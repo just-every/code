@@ -43,6 +43,46 @@ pub enum SpecAgent {
     GptPro,
 }
 
+// ARCH-006: Centralize agent name normalization
+impl SpecAgent {
+    /// Canonical name for storage/comparison (lowercase with underscores)
+    pub fn canonical_name(&self) -> &'static str {
+        match self {
+            SpecAgent::Gemini => "gemini",
+            SpecAgent::Claude => "claude",
+            SpecAgent::GptCodex => "gpt_codex",
+            SpecAgent::GptPro => "gpt_pro",
+        }
+    }
+
+    /// Parse from various string representations (case-insensitive)
+    pub fn from_string(s: &str) -> Option<Self> {
+        let normalized = s.to_ascii_lowercase().replace("-", "_").replace(" ", "_");
+        match normalized.as_str() {
+            "gemini" | "gemini_flash" | "gemini_2.0" => Some(Self::Gemini),
+            "claude" | "claude_sonnet" | "claude_4" => Some(Self::Claude),
+            "gpt_codex" | "gptcodex" | "gpt5_codex" | "gpt_5_codex" => Some(Self::GptCodex),
+            "gpt_pro" | "gptpro" | "gpt5" | "gpt_5" | "gpt5pro" => Some(Self::GptPro),
+            _ => None,
+        }
+    }
+
+    /// Display name for UI rendering
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            SpecAgent::Gemini => "Gemini",
+            SpecAgent::Claude => "Claude",
+            SpecAgent::GptCodex => "GPT-5 Codex",
+            SpecAgent::GptPro => "GPT-5 Pro",
+        }
+    }
+
+    /// All expected agents for consensus checking
+    pub fn all() -> [Self; 4] {
+        [Self::Gemini, Self::Claude, Self::GptCodex, Self::GptPro]
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PromptRegistry {
     stages: HashMap<String, StagePrompts>,
