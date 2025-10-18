@@ -154,7 +154,10 @@ pub fn parse_quality_issue_from_agent(
     let issues_array = agent_result
         .get("issues")
         .and_then(|v| v.as_array())
-        .ok_or_else(|| SpecKitError::from_string("Missing 'issues' array in agent result"))?;
+        .ok_or_else(|| SpecKitError::from_string(format!(
+            "Missing 'issues' array in {} response. Expected JSON schema: {{\"issues\": [...]}}",
+            agent_name
+        )))?;
 
     let mut parsed_issues = Vec::new();
 

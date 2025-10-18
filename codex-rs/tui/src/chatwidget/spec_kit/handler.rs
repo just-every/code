@@ -1569,8 +1569,7 @@ fn build_quality_gate_prompt(
     gate: super::state::QualityGateType,
     checkpoint: super::state::QualityCheckpoint,
 ) -> String {
-    // Load prompt template from prompts.json
-    // For now, simplified version
+    // FORK-SPECIFIC: Add JSON schema and examples (just-every/code)
 
     let gate_name = match gate {
         super::state::QualityGateType::Clarify => "quality-gate-clarify",
@@ -1578,11 +1577,54 @@ fn build_quality_gate_prompt(
         super::state::QualityGateType::Analyze => "quality-gate-analyze",
     };
 
+    // Add schema and examples
+    let schema_json = super::schemas::quality_gate_response_schema();
+    let schema_str = serde_json::to_string_pretty(&schema_json["schema"])
+        .unwrap_or_else(|_| "{}".to_string());
+
+    // Few-shot example
+    let example = r#"{
+  "issues": [
+    {
+      "id": "Q1",
+      "question": "Authentication method not specified in requirements",
+      "answer": "Add OAuth2 authentication section specifying provider and scopes",
+      "confidence": "high",
+      "magnitude": "important",
+      "resolvability": "auto-fix",
+      "context": "Security requirements section is missing auth details",
+      "suggested_fix": "Add OAuth2 section with provider and scopes",
+      "reasoning": "Authentication is critical for security and must be specified before implementation"
+    }
+  ]
+}"#;
+
     format!(
-        "Quality Gate: {} at checkpoint {}\n\nAnalyze SPEC {} for issues.\n\nSee prompts.json[\"{}\"] for full instructions.",
+        r#"Quality Gate: {} at checkpoint {}
+
+Analyze SPEC {} for issues.
+
+CRITICAL: Return ONLY valid JSON matching this exact schema:
+{}
+
+Example correct output:
+{}
+
+Instructions:
+- Find all ambiguities, inconsistencies, or missing requirements
+- Each issue needs: id, question, answer, confidence, magnitude, resolvability
+- confidence: "high" (certain), "medium" (likely), "low" (unsure)
+- magnitude: "critical" (blocks progress), "important" (significant), "minor" (nice-to-have)
+- resolvability: "auto-fix" (safe to apply), "suggest-fix" (needs review), "need-human" (judgment required)
+- Store this analysis in local-memory using remember command
+- If no issues found, return: {{"issues": []}}
+
+See prompts.json["{}"] for detailed context."#,
         gate.command_name(),
         checkpoint.name(),
         spec_id,
+        schema_str,
+        example,
         gate_name
     )
 }

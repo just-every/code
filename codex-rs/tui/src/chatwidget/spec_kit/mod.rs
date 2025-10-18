@@ -22,6 +22,7 @@ pub mod mcp_registry;
 pub mod metrics;
 pub mod quality;
 pub mod routing;
+pub mod schemas;
 pub mod state;
 
 // Re-export context types
