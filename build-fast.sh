@@ -8,11 +8,11 @@ usage() {
 Usage: ./build-fast.sh [env flags]
 
 Environment flags:
-  PROFILE=dev-fast|dev|release-prod   Build profile (default: dev-fast)
+  PROFILE=dev-fast|dev|release|perf   Build profile (default: dev-fast)
   TRACE_BUILD=1                       Print toolchain/env and artifact SHA
   KEEP_ENV=0                          Sanitize env for reproducible builds (default skips)
-  DETERMINISTIC=1                     Add -C debuginfo=0; promotes to release-prod unless DETERMINISTIC_FORCE_RELEASE=0
-  DETERMINISTIC_FORCE_RELEASE=0|1     Keep dev-fast (0) or switch to release-prod (1, default)
+  DETERMINISTIC=1                     Add -C debuginfo=0; promotes to release unless DETERMINISTIC_FORCE_RELEASE=0
+  DETERMINISTIC_FORCE_RELEASE=0|1     Keep dev-fast (0) or switch to release (1, default)
   DETERMINISTIC_NO_UUID=1             macOS only: strip LC_UUID on final executables
 
 Examples:
@@ -139,7 +139,7 @@ if [ "${DETERMINISTIC:-}" = "1" ]; then
     echo "Deterministic build: enabled"
     DET_FORCE_REL="${DETERMINISTIC_FORCE_RELEASE:-1}"
     if [ "$PROFILE" = "dev-fast" ] && [ "$DET_FORCE_REL" = "1" ]; then
-        PROFILE="release-prod"
+        PROFILE="release"  # MAINT-6: Use release (release-prod removed)
         echo "Deterministic build: switching profile to ${PROFILE}"
     elif [ "$PROFILE" = "dev-fast" ]; then
         echo "Deterministic build: keeping profile ${PROFILE} (DETERMINISTIC_FORCE_RELEASE=0)"
@@ -229,7 +229,7 @@ if [ "${DEBUG_SYMBOLS:-}" = "1" ]; then
   fi
 
   export CARGO_PROFILE_RELEASE_STRIP="none"
-  export CARGO_PROFILE_RELEASE_PROD_STRIP="none"
+  # MAINT-6: CARGO_PROFILE_RELEASE_PROD_STRIP removed (profile deleted)
 fi
 
 echo "Building code binary (${PROFILE} mode)..."

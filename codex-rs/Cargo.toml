@@ -227,8 +227,5 @@ debug = 2
 strip = "none"
 split-debuginfo = "packed"
 
-[profile.release-prod]
-inherits = "release"
-lto = "fat"
-strip = "symbols"
-codegen-units = 1
+# MAINT-6: Removed duplicate [profile.release-prod] - identical to [profile.release]
+# If production builds need different settings in future, add back with clear distinction

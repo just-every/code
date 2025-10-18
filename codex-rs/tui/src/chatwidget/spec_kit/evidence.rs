@@ -12,6 +12,20 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+// MAINT-7: Centralized evidence path constants
+/// Default evidence base directory
+pub const DEFAULT_EVIDENCE_BASE: &str = "docs/SPEC-OPS-004-integrated-coder-hooks/evidence";
+
+/// Helper: Build consensus directory path
+pub fn consensus_dir(cwd: &Path) -> PathBuf {
+    cwd.join(DEFAULT_EVIDENCE_BASE).join("consensus")
+}
+
+/// Helper: Build commands directory path
+pub fn commands_dir(cwd: &Path) -> PathBuf {
+    cwd.join(DEFAULT_EVIDENCE_BASE).join("commands")
+}
+
 /// Evidence storage operations abstraction
 ///
 /// This trait allows swapping between filesystem, in-memory, or other
@@ -97,8 +111,7 @@ impl FilesystemEvidence {
     pub fn new(cwd: PathBuf, base_path: Option<String>) -> Self {
         Self {
             cwd,
-            base_path: base_path
-                .unwrap_or_else(|| "docs/SPEC-OPS-004-integrated-coder-hooks/evidence".to_string()),
+            base_path: base_path.unwrap_or_else(|| DEFAULT_EVIDENCE_BASE.to_string()),
         }
     }
 

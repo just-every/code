@@ -470,9 +470,8 @@ pub(crate) fn load_latest_consensus_synthesis(
     spec_id: &str,
     stage: SpecStage,
 ) -> Result<Option<ConsensusSynthesisSummary>> {
-    let base = cwd
-        .join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus")
-        .join(spec_id);
+    // MAINT-7: Use centralized path helper
+    let base = super::evidence::consensus_dir(cwd).join(spec_id);
     if !base.exists() {
         return Ok(None);
     }
@@ -566,7 +565,8 @@ pub async fn run_spec_consensus(
     telemetry_enabled: bool,
     mcp_manager: &codex_core::mcp_connection_manager::McpConnectionManager,
 ) -> Result<(Vec<ratatui::text::Line<'static>>, bool)> {
-    let evidence_root = cwd.join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus");
+    // MAINT-7: Use centralized path helper
+    let evidence_root = super::evidence::consensus_dir(cwd);
 
     let (artifacts, mut warnings) = collect_consensus_artifacts(&evidence_root, spec_id, stage, mcp_manager).await?;
     if artifacts.is_empty() {
@@ -841,9 +841,8 @@ pub(crate) fn persist_consensus_verdict(
     stage: SpecStage,
     verdict: &ConsensusVerdict,
 ) -> Result<PathBuf> {
-    let consensus_dir = cwd
-        .join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus")
-        .join(spec_id);
+    // MAINT-7: Use centralized path helper
+    let consensus_dir = super::evidence::consensus_dir(cwd).join(spec_id);
     fs::create_dir_all(&consensus_dir)
         .map_err(|e| format!("Failed to create consensus directory: {e}"))?;
 
@@ -872,9 +871,8 @@ pub(crate) fn persist_consensus_telemetry_bundle(
     slug: &str,
     consensus_status: &str,
 ) -> Result<ConsensusTelemetryPaths> {
-    let base = cwd
-        .join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus")
-        .join(spec_id);
+    // MAINT-7: Use centralized path helper
+    let base = super::evidence::consensus_dir(cwd).join(spec_id);
     fs::create_dir_all(&base).map_err(|e| {
         format!(
             "failed to create consensus evidence directory {}: {}",

@@ -341,9 +341,8 @@ pub fn read_latest_spec_ops_telemetry(
     spec_id: &str,
     stage: SpecStage,
 ) -> Result<(PathBuf, Value)> {
-    let evidence_dir = cwd
-        .join("docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands")
-        .join(spec_id);
+    // MAINT-7: Use centralized path helper
+    let evidence_dir = super::evidence::commands_dir(cwd).join(spec_id);
     let prefix = super::state::spec_ops_stage_prefix(stage);
     let entries = std::fs::read_dir(&evidence_dir).map_err(|e| SpecKitError::DirectoryRead {
         path: evidence_dir.clone(),
