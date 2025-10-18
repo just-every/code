@@ -1,5 +1,7 @@
 //! Quality gate resolution logic (T85)
 //!
+//! FORK-SPECIFIC (just-every/code): Spec-kit multi-agent automation framework
+//!
 //! Implements agent-driven auto-resolution with intelligent escalation
 
 use super::error::{Result, SpecKitError};

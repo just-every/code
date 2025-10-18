@@ -1,5 +1,7 @@
 //! Guardrail validation infrastructure for spec-kit automation
 //!
+//! FORK-SPECIFIC (just-every/code): Spec-kit multi-agent automation framework
+//!
 //! This module handles guardrail script validation, telemetry parsing,
 //! schema compliance checking, and outcome evaluation.
 

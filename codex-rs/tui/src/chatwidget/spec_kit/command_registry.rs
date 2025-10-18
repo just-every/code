@@ -1,5 +1,7 @@
 //! Command registry for spec-kit slash commands
 //!
+//! FORK-SPECIFIC (just-every/code): Spec-kit multi-agent automation framework
+//!
 //! This module implements a dynamic command registry to eliminate conflicts
 //! in upstream SlashCommand enum. All spec-kit commands register here instead
 //! of being enum variants.

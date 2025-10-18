@@ -1,4 +1,6 @@
 //! /speckit.plan command implementation
+//!
+//! FORK-SPECIFIC (just-every/code): Spec-kit multi-agent automation framework
 
 use super::super::command_registry::SpecKitCommand;
 use super::super::super::ChatWidget;

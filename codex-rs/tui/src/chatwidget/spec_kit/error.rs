@@ -1,5 +1,7 @@
 //! Error types for spec-kit operations
 //!
+//! FORK-SPECIFIC (just-every/code): Spec-kit multi-agent automation framework
+//!
 //! This module provides structured error handling to replace String-based errors
 //! throughout the spec-kit framework.
 

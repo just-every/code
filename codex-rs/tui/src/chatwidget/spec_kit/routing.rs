@@ -1,5 +1,7 @@
 //! Spec-Kit command routing
 //!
+//! FORK-SPECIFIC (just-every/code): Spec-kit multi-agent automation framework
+//!
 //! This module handles routing slash commands to the spec-kit command registry,
 //! isolating all routing logic from app.rs to minimize rebase conflicts.
 

@@ -1,5 +1,7 @@
 //! Spec-Kit command implementations
 //!
+//! FORK-SPECIFIC (just-every/code): Spec-kit multi-agent automation framework
+//!
 //! Each command implements the SpecKitCommand trait and delegates to
 //! existing handlers in ../handler.rs
 

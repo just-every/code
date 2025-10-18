@@ -489,9 +489,43 @@ git push origin main
 
 ---
 
-## 15. Next Steps
+## 15. FORK-SPECIFIC Marker Audit (MAINT-5)
+
+**Status**: Complete (2025-10-18)
+
+**Marker Locations** (80 total markers in 33 files):
+
+**Spec-Kit Core** (22 files):
+- `tui/src/chatwidget/spec_kit/*.rs` (15 modules)
+- `tui/src/chatwidget/spec_kit/commands/*.rs` (6 command files + mod.rs)
+
+**TUI Integration** (4 files):
+- `tui/src/chatwidget/mod.rs` - SpecKitContext impl, spec_auto_state field
+- `tui/src/chatwidget/exec_tools.rs` - Guardrail completion handler
+- `tui/src/app.rs` - MCP manager spawn (ARCH-005)
+- `tui/src/app_event.rs`, `tui/src/bottom_pane/mod.rs` - Quality gate events
+
+**Core Engine** (2 files):
+- `core/src/client.rs` - agent_total_timeout_ms (AR-1)
+- `core/src/model_provider_info.rs` - Agent configuration
+
+**Tests** (2 files):
+- `tui/tests/mcp_consensus_integration.rs`
+- `tui/tests/mcp_consensus_benchmark.rs`
+
+**Other** (3 files):
+- `tui/src/spec_prompts.rs`, `tui/src/slash_command.rs`, `tui/src/lib.rs`
+
+**Marker Format**: `// FORK-SPECIFIC (just-every/code): <brief reason>`
+
+**Verification**: `grep -r "FORK-SPECIFIC" codex-rs --include="*.rs" | wc -l` returns 80
+
+---
+
+## 16. Next Steps
 
 **Immediate**:
+- [x] FORK-SPECIFIC markers audited (MAINT-5 complete)
 - [ ] Verify upstream remote configured
 - [ ] Schedule next sync (monthly: 2025-11-15 or quarterly: 2026-01-15)
 - [ ] Document last sync date in SPEC.md

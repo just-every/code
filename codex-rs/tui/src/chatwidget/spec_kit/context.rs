@@ -1,5 +1,7 @@
 //! Context trait for spec-kit operations
 //!
+//! FORK-SPECIFIC (just-every/code): Spec-kit multi-agent automation framework
+//!
 //! This trait decouples spec-kit from ChatWidget, enabling independent testing
 //! and reuse.
 

@@ -1,5 +1,7 @@
 //! File modification engine for quality gate auto-resolutions
 //!
+//! FORK-SPECIFIC (just-every/code): Spec-kit multi-agent automation framework
+//!
 //! Provides safe, auditable file modifications with backup and validation
 
 use super::error::{Result, SpecKitError};

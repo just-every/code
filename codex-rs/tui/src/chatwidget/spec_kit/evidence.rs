@@ -1,7 +1,10 @@
 //! Evidence repository abstraction for spec-kit
 //!
+//! FORK-SPECIFIC (just-every/code): Spec-kit multi-agent automation framework
+//!
 //! This module breaks the hard-coded filesystem coupling and enables
-//! testing with mock implementations.
+//! testing with mock implementations. File locking (ARCH-007) prevents
+//! concurrent write corruption.
 
 use super::error::{Result, SpecKitError};
 use crate::spec_prompts::SpecStage;

@@ -1,5 +1,7 @@
 //! Configuration validation for spec-kit operations (T83)
 //!
+//! FORK-SPECIFIC (just-every/code): Spec-kit multi-agent automation framework
+//!
 //! Validates config.toml settings before spec-kit pipeline execution:
 //! - Agent configurations (enabled agents, commands)
 //! - Subagent command definitions
