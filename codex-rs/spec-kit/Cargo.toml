@@ -1,0 +1,33 @@
+[package]
+edition = "2024"
+name = "codex-spec-kit"
+version = { workspace = true }
+
+[lib]
+name = "codex_spec_kit"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Core dependencies
+anyhow = "1"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+fs2 = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2.0"
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+tracing = "0.1"
+
+# MCP integration
+mcp-types = { path = "../mcp-types" }
+
+# Internal deps (will need codex-core for McpConnectionManager)
+codex-core = { path = "../core" }
+
+[dev-dependencies]
+tempfile = "3"
+tokio-test = "0.4"

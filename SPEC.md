@@ -93,7 +93,11 @@
 
 **All P0/P1/P2 tasks complete** ✅ (9/10 done, ~6 hours total)
 
-**P3 Task (Deferred)**: MAINT-10 (spec-kit extraction to separate crate, 2-4 weeks) - Low priority, only if reusability need emerges.
+| Order | Task ID | Title | Status | Owners | PRD | Branch | PR | Last Validation | Evidence | Notes |
+|-------|---------|-------|--------|--------|-----|--------|----|-----------------|----------|-------|
+| 10 | MAINT-10 | Extract spec-kit to separate crate | **IN PROGRESS** | Code | REVIEW.md | | | 2025-10-18 | spec-kit/ crate (foundation), MAINT-10-EXTRACTION-PLAN.md | FOUNDATION COMPLETE (Phase 1 of 6): Created new codex-spec-kit crate with Cargo.toml, src/lib.rs, error.rs (SpecKitError migrated), types.rs (SpecStage/SpecAgent migrated), api.rs (async-first SpecKitEngine + SpecKitContext trait). Designed async API surface (no Handle::block_on). Added to workspace members. Created MAINT-10-EXTRACTION-PLAN.md (migration phases 2-6: core modules, handlers, commands, TUI adapter, CLI proof-of-concept). Remaining: 13-19 days (move 15 modules + 6 commands, 8,744 LOC). Decision: Foundation complete, full migration deferred to future session (2-4w effort). Ready to resume Phase 2 when needed. Effort: 1 hour (foundation only). |
+
+**P3 Task Status**: Foundation complete, full migration deferred (resume when reusability need emerges).
 
 ### Completed Tasks
 
