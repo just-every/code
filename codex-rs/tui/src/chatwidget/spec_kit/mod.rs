@@ -19,6 +19,7 @@ pub mod handler;
 // FORK-SPECIFIC (just-every/code): local_memory_client.rs deleted 2025-10-18
 // Replaced by native MCP integration in consensus.rs
 pub mod quality;
+pub mod quality_gate_handler; // MAINT-2: Extracted from handler.rs (925 LOC)
 pub mod routing;
 pub mod schemas;
 pub mod state;
