@@ -401,9 +401,6 @@ pub fn on_spec_auto_task_complete(widget: &mut ChatWidget, task_id: &str) {
 
             // After guardrail success and consensus check OK, auto-submit multi-agent prompt
             auto_submit_spec_stage_prompt(widget, stage, &spec_id);
-
-            // T90: Record successful stage completion
-            super::metrics::METRICS.record_stage_success(stage, start.elapsed());
         }
         Err(err) => {
             widget.history_push(crate::history_cell::new_error_event(format!(
@@ -412,9 +409,6 @@ pub fn on_spec_auto_task_complete(widget: &mut ChatWidget, task_id: &str) {
                 err
             )));
             widget.spec_auto_state = None;
-
-            // T90: Record stage failure
-            super::metrics::METRICS.record_stage_failure(stage, start.elapsed());
         }
     }
 }
@@ -1644,11 +1638,6 @@ fn finalize_quality_gates(widget: &mut ChatWidget) {
 
     // Step 1: Persist telemetry for each checkpoint
     let repo = super::evidence::FilesystemEvidence::new(cwd.clone(), None);
-
-    // T90: Record quality gate metrics
-    for (checkpoint, auto_count, esc_count) in &checkpoint_outcomes {
-        super::metrics::METRICS.record_quality_gate_outcome(*auto_count, 0, *esc_count);
-    }
 
     for (checkpoint, _auto_count, _esc_count) in &checkpoint_outcomes {
         // Build telemetry JSON

@@ -6,7 +6,6 @@
 //! Uses free functions instead of methods to avoid Rust borrow checker issues
 //! when accessing ChatWidget fields.
 
-pub mod agent_lifecycle;
 pub mod command_registry;
 pub mod commands;
 pub mod config_validator;
@@ -18,8 +17,6 @@ pub mod file_modifier;
 pub mod guardrail;
 pub mod handler;
 pub mod local_memory_client;
-pub mod mcp_registry;
-pub mod metrics;
 pub mod quality;
 pub mod routing;
 pub mod schemas;

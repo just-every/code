@@ -65,7 +65,7 @@ pub struct GuardrailWait {
 }
 
 /// State for /speckit.auto pipeline automation
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SpecAutoState {
     pub spec_id: String,
     pub goal: String,
@@ -84,10 +84,6 @@ pub struct SpecAutoState {
     pub quality_auto_resolved: Vec<(QualityIssue, String)>,  // All auto-resolutions
     pub quality_escalated: Vec<(QualityIssue, String)>,  // All human-answered questions
     pub quality_checkpoint_outcomes: Vec<(QualityCheckpoint, usize, usize)>,  // (checkpoint, auto, escalated)
-
-    // === Agent Lifecycle (T88) ===
-    #[allow(dead_code)]  // Will be used when agent spawning is integrated
-    pub agent_lifecycle: Option<super::agent_lifecycle::AgentLifecycleManager>,
 
     // FORK-SPECIFIC: Agent retry state (just-every/code)
     // Tracks retry attempts when agents fail, timeout, or return invalid results
@@ -146,8 +142,6 @@ impl SpecAutoState {
             quality_auto_resolved: Vec::new(),
             quality_escalated: Vec::new(),
             quality_checkpoint_outcomes: Vec::new(),
-            // T88: Agent lifecycle manager (automatic cleanup via Drop)
-            agent_lifecycle: None,
             // FORK-SPECIFIC: Agent retry tracking
             agent_retry_count: 0,
             agent_retry_context: None,
