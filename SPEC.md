@@ -84,7 +84,12 @@
 
 **All P0/P1 tasks complete** ✅ (5/5 done, ~4.75 hours total)
 
-**P2/P3 Tasks (Deferred)**: MAINT-6 (duplicate profile), MAINT-7 (path centralization), MAINT-8 (SPEC Next Steps), MAINT-9 (arbiter docs), MAINT-10 (spec-kit extraction) - See architecture review backlog for details.
+| Order | Task ID | Title | Status | Owners | PRD | Branch | PR | Last Validation | Evidence | Notes |
+|-------|---------|-------|--------|--------|-----|--------|----|-----------------|----------|-------|
+| 6 | MAINT-8 | Update SPEC.md Next Steps | **DONE** | Code | SPEC.md:186-220 | | | 2025-10-18 | SPEC.md lines 204-227 | COMPLETE: Removed stale T60-related next steps. Replaced with current status (all P0/P1 complete), Q1 2026 test coverage roadmap (Phase 2-4: Dec→Mar, +215 tests), deferred P2/P3 tasks, upstream sync schedule (2026-01-15 quarterly). Eliminates self-contradiction (T60 marked done but listed as "Immediate"). Effort: 10 min. |
+| 7 | MAINT-9 | Document arbiter trigger conditions | **DONE** | Code | SPEC.md:24, SPEC_AUTO_FLOW.md | | | 2025-10-18 | CONFLICT_RESOLUTION.md (300 lines) | COMPLETE: Documented honest assessment of conflict resolution. Finding: **Arbiter not implemented** despite SPEC claim. Current: gpt_pro aggregator identifies conflicts, pipeline continues with `status: "conflict"`. Quality gate GPT-5 validation serves partial arbiter role (validates 2/3 majority, not full consensus conflicts). Evidence: 0% deadlocks observed (26 completed tasks, zero halts). Created CONFLICT_RESOLUTION.md documenting: current flow (gpt_pro as aggregator), conflict detection logic, quality gate comparison, arbiter design (SPEC_AUTO_FLOW.md), implementation priority (deferred, not blocking), honest SPEC vs reality assessment. Recommendation: Arbiter unnecessary (0% deadlock rate, gpt_pro sufficient). Effort: 30 min. |
+
+**P2/P3 Tasks (Deferred)**: MAINT-6 (duplicate profile), MAINT-7 (path centralization), MAINT-10 (spec-kit extraction) - Low priority, not blocking.
 
 ### Completed Tasks
 
@@ -203,21 +208,27 @@ docs/SPEC-OPS-004-integrated-coder-hooks/evidence/
 
 ## Next Steps
 
-**Immediate (T60)**:
-1. Execute template validation test plan
-2. Compare baseline vs template results
-3. Document decision (pass/fail)
-4. If pass: Proceed to /clarify, /analyze, /checklist
-5. If fail: Revert templates, document why
+**All P0/P1 Work Complete** ✅ (as of 2025-10-18)
+- Phase 3: Production ready (13 /speckit.* commands operational)
+- Documentation: Current (v1.3, all policies documented)
+- Maintenance: P0/P1 complete (MAINT-1 through MAINT-5)
+- Testing infrastructure: Phase 1 complete (MockMcpManager, fixtures, tarpaulin)
 
-**Completed:**
-- ✅ Update product-requirements.md (v1.2, 2025-10-16)
-- ✅ Update PLANNING.md (v1.2, 2025-10-16)
-- ✅ T49 testing framework modernized
-- ✅ T60 template validation complete
-- ✅ T61-64 test artifacts removed
+**Upcoming Work** (Q1 2026 per testing-policy.md):
+- **December 2025**: Test Coverage Phase 2 (+125 tests, handler/consensus/quality modules)
+- **January 2026**: Test Coverage Phase 3 (+60 tests, evidence/guardrail/state modules)
+- **February 2026**: Test Coverage Phase 4 (+30 tests, edge cases and integration)
+- **Target**: 40% coverage by 2026-03-31
 
-**All Backlog Items Complete** ✅
+**Deferred** (P2/P3, low priority):
+- MAINT-6: Remove duplicate build profile
+- MAINT-7: Centralize evidence path construction
+- MAINT-9: Document arbiter trigger conditions (see CONFLICT_RESOLUTION.md when created)
+- MAINT-10: Extract spec-kit to separate crate (only if reusability need emerges)
+
+**Upstream Sync**:
+- Next quarterly sync: 2026-01-15 (per UPSTREAM-SYNC.md)
+- Ready: 80 FORK-SPECIFIC markers, 98.8% isolation, conflict resolution strategy documented
 
 ---
 
