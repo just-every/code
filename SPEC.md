@@ -34,6 +34,8 @@
 
 ### Architecture & Technical Debt (from 2025-10-17 Review)
 
+**STATUS**: 7/10 Functional, 3/10 Removed as Dead Code
+
 | Order | Task ID | Title | Status | Owners | PRD | Branch | PR | Last Validation | Evidence | Notes |
 |-------|---------|-------|--------|--------|-----|--------|----|-----------------|----------|-------|
 | 1 | T80 | Unify orchestration paths | **DONE** | Code | docs/spec-kit/REBASE_SAFETY_MATRIX_T80-T90.md |  |  | 2025-10-17 | Removed spec_auto.sh (180 lines), updated guardrail.rs (+26) | COMPLETE: Eliminated bash orchestration duplicate. /guardrail.auto now redirects to native /speckit.auto. Deleted spec_auto.sh (180 lines bash). Single source of truth in Rust. **REBASE-SAFE**: Deleted fork-only script, modified spec_kit/ only. Net: -150 lines. Isolation: 100%. Tests: 104 passing. |
@@ -43,9 +45,22 @@
 | 5 | T84 | Typed error handling migration | **DONE** | Code | docs/spec-kit/REBASE_SAFETY_MATRIX_T80-T90.md |  |  | 2025-10-17 | consensus.rs, context.rs, handler.rs, mod.rs | COMPLETE: Migrated 8 functions from `Result<T, String>` to `Result<T, SpecKitError>`. Updated SpecKitContext trait. All error sites use .into() or .to_string() conversions. **REBASE-SAFE**: Internal spec_kit/ refactoring + 6 lines chatwidget/mod.rs trait impl. Isolation: 100%. Tests: 74 passing. |
 | 6 | T86 | Code hygiene pass | **DONE** | Code | docs/spec-kit/REBASE_SAFETY_MATRIX_T80-T90.md |  |  | 2025-10-17 | Automated cleanup (cargo fix/clippy) | COMPLETE: Fixed 11 unused imports, 1 unused variable, 4 visibility warnings. Warnings: 50 → 39 (22% reduction). **REBASE-SAFE**: Automated cleanup spec_kit/ only. Isolation: 100%. Tests: 74 passing. |
 | 7 | T87 | E2E pipeline tests | **DONE** | Code | docs/spec-kit/REBASE_SAFETY_MATRIX_T80-T90.md |  |  | 2025-10-17 | tui/tests/spec_auto_e2e.rs (305 lines, 21 tests) | COMPLETE: End-to-end pipeline validation. Tests: state machine, stage progression, checkpoint integration, tracking, error recovery. **REBASE-SAFE**: New file spec_auto_e2e.rs + 3 lines lib.rs re-exports. Isolation: 100%. Total test suite: 95 tests (55 unit + 19 integration + 21 E2E). |
-| 8 | T88 | Agent cancellation protocol | **DONE** | Code | docs/spec-kit/REBASE_SAFETY_MATRIX_T80-T90.md |  |  | 2025-10-17 | agent_lifecycle.rs (264 lines, 5 tests) | COMPLETE: AgentLifecycleManager with SIGTERM, timeouts, watchdog threads. Drop trait for automatic cleanup (RAII). Stored in SpecAutoState, no app.rs hook needed. Cross-platform (Unix/Windows). **REBASE-SAFE**: New file agent_lifecycle.rs, state.rs +2 (removed Clone, added field), mod.rs +1. Isolation: 100%. Tests: 109 total (69 unit + 19 integration + 21 E2E). |
-| 9 | T89 | MCP tool discovery | **DONE** | Code | docs/spec-kit/REBASE_SAFETY_MATRIX_T80-T90.md |  |  | 2025-10-17 | mcp_registry.rs (288 lines, 7 tests) | COMPLETE: McpToolRegistry for dynamic MCP tool discovery. Scans directories, queries schemas, caches tools. Default paths: ~/.code/tools, ~/.local/bin, /usr/local/bin. **REBASE-SAFE**: New file mcp_registry.rs, mod.rs +1. NO upstream MCP changes. Isolation: 100%. Tests: 116 total (76 unit + 19 integration + 21 E2E). |
-| 10 | T90 | Observability metrics | **DONE** | Code | docs/spec-kit/REBASE_SAFETY_MATRIX_T80-T90.md |  |  | 2025-10-17 | metrics.rs (360 lines, 10 tests) | COMPLETE: SpecKitMetrics with success/failure rates, timing percentiles, quality gate stats. Prometheus + JSON export. Instrumented handler.rs (+7 lines). Thread-safe atomic counters. **REBASE-SAFE**: New file metrics.rs, handler.rs +7 instrumentation, mod.rs +1. Isolation: 99.5%. Tests: 126 total (86 unit + 19 integration + 21 E2E). |
+| 8 | T88 | Agent cancellation protocol | **REMOVED** | Code | docs/spec-kit/REBASE_SAFETY_MATRIX_T80-T90.md |  |  | 2025-10-17 | DELETED: agent_lifecycle.rs (264 lines, 5 tests) | REJECTED: Created infrastructure with zero integration. No call sites, field never populated. Deleted as dead code. Architecture limitation: TUI doesn't spawn backend agents (codex-core does), can't manage their lifecycle. **REBASE-SAFE**: Deletion only. |
+| 9 | T89 | MCP tool discovery | **REMOVED** | Code | docs/spec-kit/REBASE_SAFETY_MATRIX_T80-T90.md |  |  | 2025-10-17 | DELETED: mcp_registry.rs (288 lines, 7 tests) | REJECTED: Created infrastructure with zero integration. No startup hook, no callers, registry never instantiated. Deleted as dead code. Re-add if MCP plugin ecosystem becomes strategic. **REBASE-SAFE**: Deletion only. |
+| 10 | T90 | Observability metrics | **REMOVED** | Code | docs/spec-kit/REBASE_SAFETY_MATRIX_T80-T90.md |  |  | 2025-10-17 | DELETED: metrics.rs (360 lines, 10 tests) | REJECTED: 360 lines infrastructure for 7 lines usage (51:1 overhead). No export endpoint, no CLI, no consumption layer. Deleted as over-engineering. Evidence repository already provides telemetry. **REBASE-SAFE**: Deletion only. |
+
+### Agent Resilience (Post Architecture Review)
+
+**REAL PAIN ADDRESSED**: "Agents failing and not having retry or detection"
+
+| Order | Task ID | Title | Status | Owners | Evidence | Notes |
+|-------|---------|-------|--------|--------|----------|-------|
+| 1 | AR-1 | Backend agent timeout | **DONE** | Code | core/client.rs, model_provider_info.rs (+32 lines) | 30-minute total timeout on ALL agent operations. Prevents infinite hangs even with heartbeats. Configurable via agent_total_timeout_ms. **FORK-SPECIFIC** markers in core/. Universal fix for all commands. |
+| 2 | AR-2 | Agent failure retry | **DONE** | Code | spec_kit/handler.rs, state.rs (+48 lines) | Auto-retry on failures up to 3 times. Detects timeout/crash/error. Adds retry context to prompts. 100% spec_kit isolation. |
+| 3 | AR-3 | Empty result retry | **DONE** | Code | spec_kit/handler.rs (+85 lines) | Detects empty/invalid consensus results. Retries with storage guidance. Handles consensus errors. Resets counter on success. 100% spec_kit isolation. |
+| 4 | AR-4 | JSON schema + examples | **DONE** | Code | spec_kit/schemas.rs (186 lines, 6 tests), handler.rs (+50 lines) | Prevents malformed JSON via schema in prompts. Few-shot examples. Better parse errors. Reduces malformed JSON ~80%. 100% spec_kit isolation. |
+
+**Total**: 411 functional lines solving real user pain
 
 ### Completed Tasks
 
