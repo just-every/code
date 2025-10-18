@@ -499,7 +499,23 @@ pub fn auto_submit_spec_stage_prompt(widget: &mut ChatWidget, stage: SpecStage, 
         arg.push_str(goal.trim());
     }
 
-    match crate::spec_prompts::build_stage_prompt(stage, &arg) {
+    // FORK-SPECIFIC (just-every/code): Pass MCP manager for native context gathering (ARCH-004)
+    let mcp_manager_ref = match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            handle.block_on(async {
+                widget.mcp_manager.lock().await.as_ref().cloned()
+            })
+        }
+        Err(_) => None,
+    };
+
+    let prompt_result = if let Some(manager) = mcp_manager_ref.as_ref() {
+        crate::spec_prompts::build_stage_prompt_with_mcp(stage, &arg, Some(manager.as_ref()))
+    } else {
+        crate::spec_prompts::build_stage_prompt(stage, &arg)
+    };
+
+    match prompt_result {
         Ok(prompt) => {
             let mut lines: Vec<ratatui::text::Line<'static>> = Vec::new();
             lines.push(ratatui::text::Line::from(format!(
@@ -1379,17 +1395,46 @@ pub fn on_gpt5_validations_complete(widget: &mut ChatWidget) {
     let spec_id = state.spec_id.clone();
     let cwd = widget.config.cwd.clone();
 
-    // Query local-memory for GPT-5 validation result
+    // FORK-SPECIFIC (just-every/code): Query local-memory for GPT-5 validation (native MCP, ARCH-004)
     // Agent stores result with stage="gpt5-validation"
-    let validation_results = match crate::local_memory_util::search_by_stage(
-        &spec_id,
-        "gpt5-validation",
-        10,
-    ) {
-        Ok(results) if !results.is_empty() => results,
-        _ => {
-            // GPT-5 hasn't completed yet or failed
-            return;
+    let validation_results: Vec<crate::local_memory_util::LocalMemorySearchResult> = {
+        use serde_json::json;
+
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                // Await async lock, then clone Arc
+                let manager_arc = handle.block_on(async {
+                    widget.mcp_manager.lock().await.as_ref().cloned()
+                });
+
+                match manager_arc {
+                    Some(manager) => {
+                        let args = json!({
+                            "query": format!("{} gpt5-validation", spec_id),
+                            "limit": 10,
+                            "tags": [format!("spec:{}", spec_id), "stage:gpt5-validation"],
+                            "search_type": "hybrid"
+                        });
+
+                        let mcp_result = handle.block_on(async {
+                            manager.call_tool(
+                                "local-memory",
+                                "search",
+                                Some(args),
+                                Some(std::time::Duration::from_secs(10))
+                            ).await
+                        });
+
+                        // Parse MCP results or return early
+                        match mcp_result.ok().and_then(|r| crate::spec_prompts::parse_mcp_results_to_local_memory(&r).ok()) {
+                            Some(results) if !results.is_empty() => results,
+                            _ => return,  // GPT-5 not complete or parse failed
+                        }
+                    }
+                    None => return,  // MCP not initialized
+                }
+            }
+            Err(_) => return,  // No tokio runtime
         }
     };
 
