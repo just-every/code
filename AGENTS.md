@@ -1,7 +1,8 @@
 # Spec-Kit Automation Agents - codex-rs
 
 **Project**: codex-rs (theturtlecsz/code)
-**Last Updated**: 2025-10-18
+**Last Updated**: 2025-10-18 (Post-ARCH improvements)
+**Architecture Status**: Production Ready (Phase 3 Complete)
 
 ---
 
@@ -36,10 +37,10 @@
 - ❌ Any other memory MCP servers
 
 **Rationale**:
-1. Native MCP integration validated (5.3x faster than subprocess)
+1. Native MCP integration validated (5.3x faster than subprocess, ARCH-002)
 2. Spec-kit consensus framework requires local-memory
 3. Single source of truth eliminates conflicts
-4. 141 passing tests validate reliability
+4. 178 passing tests validate reliability (135 unit + 19 integration + 21 E2E + 3 MCP)
 
 **Detailed Policy**: See `codex-rs/MEMORY-POLICY.md`
 
@@ -51,14 +52,18 @@
 
 These are **AI models**, not agent tools. They work in parallel to provide multi-perspective analysis.
 
-| Agent | Model | Role | Used In |
-|-------|-------|------|---------|
-| **gemini** | Gemini Flash 2.0 | Research, broad analysis, exploratory implementation | All stages |
-| **claude** | Claude Sonnet 4 | Detailed reasoning, edge cases, implementation | All stages |
-| **gpt_codex** | GPT-5 Codex | Code generation specialist | Implement stage only |
-| **gpt_pro** | GPT-5 | **Synthesis & aggregation** (authoritative, provides consensus) | All stages |
+| Agent | Model | Role | Used In | Type-Safe |
+|-------|-------|------|---------|-----------|
+| **gemini** | gemini-2.0-flash-thinking-exp | Research, broad analysis, exploratory implementation | All stages | `SpecAgent::Gemini` |
+| **claude** | claude-sonnet-4-5 | Detailed reasoning, edge cases, implementation | All stages | `SpecAgent::Claude` |
+| **code** | claude-sonnet-4-5 (Claude Code CLI) | General-purpose, orchestration | All stages | `SpecAgent::Code` |
+| **gpt_codex** | gpt-5-codex | Code generation specialist | Implement stage only | `SpecAgent::GptCodex` |
+| **gpt_pro** | gpt-5 | **Synthesis & aggregation** (authoritative consensus) | Dev stages | `SpecAgent::GptPro` |
 
-**Key Distinction**: `gpt_pro` is the **aggregator**—it synthesizes other agents' outputs and provides the authoritative consensus with `agreements` and `conflicts` arrays.
+**Key Distinctions**:
+- `gpt_pro` is the **aggregator**—synthesizes other agents' outputs with `agreements[]` and `conflicts[]`
+- `code` agent added in ARCH-009 (type-safe enum migration)
+- All agents normalized via `SpecAgent::from_string()` (ARCH-006)
 
 ---
 
@@ -220,7 +225,7 @@ state.agent_retry_context = Some(format!(
 ## 🏗️ TECHNICAL ARCHITECTURE
 
 ### Consensus Implementation
-**File**: `codex-rs/tui/src/chatwidget/spec_kit/consensus.rs` (33,417 LOC)
+**File**: `codex-rs/tui/src/chatwidget/spec_kit/consensus.rs` (992 LOC)
 
 **Key Functions**:
 ```rust
@@ -249,7 +254,7 @@ fn parse_mcp_search_results(result: &CallToolResult) -> Result<Vec<...>>
 - Timeout: 30s for search, 10s for store
 
 ### State Machine
-**File**: `codex-rs/tui/src/chatwidget/spec_kit/state.rs` (14,831 LOC)
+**File**: `codex-rs/tui/src/chatwidget/spec_kit/state.rs` (414 LOC)
 
 ```rust
 pub enum SpecAutoPhase {
@@ -271,7 +276,7 @@ Guardrail → ExecutingAgents → CheckingConsensus → [Next Stage or Retry]
 ```
 
 ### Evidence Repository
-**File**: `codex-rs/tui/src/chatwidget/spec_kit/evidence.rs` (20,266 LOC)
+**File**: `codex-rs/tui/src/chatwidget/spec_kit/evidence.rs` (499 LOC)
 
 **Filesystem Structure**:
 ```
@@ -305,10 +310,17 @@ docs/SPEC-OPS-004-integrated-coder-hooks/evidence/
 
 **Core Documentation** (codex-rs workspace):
 - `CLAUDE.md`: Operational playbook (how to work in this repo)
-- `MEMORY-POLICY.md`: Memory system policy (local-memory only, 145 lines)
-- `REVIEW.md`: Architecture analysis (1,017 lines)
-- `ARCHITECTURE-TASKS.md`: Improvement tasks (857 lines, 13 tasks)
+- `MEMORY-POLICY.md`: Memory system policy (local-memory only)
+- `REVIEW.md`: Architecture analysis (comprehensive, 2025-10-18)
+- `ARCHITECTURE-TASKS.md`: Improvement tasks (13 tasks, 7 complete)
+- `SPEC.md`: Task tracker (single source of truth)
 - This file: Spec-kit agent reference
+
+**Policy Documents** (created 2025-10-18):
+- `docs/spec-kit/evidence-policy.md`: Evidence growth management (25 MB soft limit, retention, archival)
+- `docs/spec-kit/testing-policy.md`: Test coverage roadmap (1.7%→40% by Q1 2026)
+- `docs/UPSTREAM-SYNC.md`: Upstream merge strategy (monthly/quarterly, conflict resolution)
+- `docs/architecture/async-sync-boundaries.md`: Async/sync design (Ratatui+Tokio architecture)
 
 **Spec-Kit Implementation Docs**:
 - `docs/spec-kit/prompts.json`: Agent prompt templates (embedded at compile time)
@@ -316,11 +328,13 @@ docs/SPEC-OPS-004-integrated-coder-hooks/evidence/
 - `docs/spec-kit/spec-auto-automation.md`: Pipeline details
 - `docs/spec-kit/evidence-baseline.md`: Telemetry expectations
 
-**Source Code Reference**:
-- Handler: `tui/src/chatwidget/spec_kit/handler.rs` (67,860 LOC)
-- Consensus: `tui/src/chatwidget/spec_kit/consensus.rs` (33,417 LOC)
-- Quality: `tui/src/chatwidget/spec_kit/quality.rs` (30,196 LOC)
-- Guardrail: `tui/src/chatwidget/spec_kit/guardrail.rs` (26,002 LOC)
+**Spec-Kit Module Breakdown** (7,883 LOC total):
+- Handler: `tui/src/chatwidget/spec_kit/handler.rs` (2,038 LOC - orchestration)
+- Consensus: `tui/src/chatwidget/spec_kit/consensus.rs` (992 LOC - MCP native)
+- Quality: `tui/src/chatwidget/spec_kit/quality.rs` (807 LOC - gates)
+- Guardrail: `tui/src/chatwidget/spec_kit/guardrail.rs` (589 LOC - validation)
+- Evidence: `tui/src/chatwidget/spec_kit/evidence.rs` (499 LOC - persistence)
+- + 9 more modules (state, schemas, error, context, etc.)
 
 ---
 
@@ -444,57 +458,56 @@ Fail: Halt pipeline, human intervention required
 
 ## 🧪 TESTING & VALIDATION
 
-**Test Coverage**: 141 passing (138 unit, 3 integration, 4 ignored/deprecated)
+**Test Coverage**: 178 passing (135 unit, 19 integration, 21 E2E, 3 MCP)
 
 **Integration Tests**:
-1. **mcp_consensus_integration.rs** (3 tests):
-   - `test_mcp_connection_initialization`: Validates 11 local-memory tools available
-   - `test_mcp_tool_call_format`: Confirms search/store calls succeed
-   - `test_mcp_retry_logic_handles_delayed_initialization`: Validates 3-retry timing
-   - `test_full_consensus_workflow_with_mcp` (ignored): Requires test data
+1. **quality_gates_integration.rs** (19 tests):
+   - Checkpoint execution, agent JSON parsing
+   - Unanimous auto-resolution (High confidence)
+   - 2/3 majority validation flow with GPT-5
+   - No-consensus escalation, edge cases
 
-2. **mcp_consensus_benchmark.rs** (3 benchmarks, run with `--ignored`):
-   - `bench_mcp_initialization`: Connection setup latency (~150ms)
-   - `bench_mcp_search_calls`: Throughput measurement (~8.7ms per call)
-   - `bench_mcp_vs_subprocess`: **Result: 5.3x speedup** (46ms → 8.7ms)
+2. **spec_auto_e2e.rs** (21 tests):
+   - Full pipeline state machine
+   - Stage progression and advancement
+   - Checkpoint integration
+   - Error recovery and retry logic
 
-3. **spec_auto_e2e.rs** (21 tests):
-   - Full pipeline integration
-   - Quality gate classification
-   - Retry orchestration
+3. **mcp_consensus_integration.rs** (3 tests):
+   - MCP connection initialization (validates 11 local-memory tools)
+   - Tool call format validation (search/store succeed)
+   - Retry logic for delayed initialization
 
-**Deprecated Tests** (subprocess-based, now ignored):
-- `run_spec_consensus_writes_verdict_and_local_memory`
-- `run_spec_consensus_reports_missing_agents`
-- `run_spec_consensus_persists_telemetry_bundle_when_enabled`
-
-**Reason**: Used `LocalMemoryMock` subprocess faker—replaced by native MCP integration tests
+**Benchmark Tests** (run with `--ignored`):
+- **mcp_consensus_benchmark.rs**: Validates 5.3x speedup (46ms → 8.7ms)
 
 ---
 
-## ⚠️ KNOWN LIMITATIONS
+## ⚠️ KNOWN LIMITATIONS & FUTURE WORK
 
-**Hard Dependencies**:
-1. **local-memory MCP server must be running**
-   - No graceful fallback yet (ARCH-002 in progress)
-   - Workaround: Inspect file-based evidence manually
+**Architectural Constraints**:
+1. **Spec-kit embedded in TUI**
+   - 7,883 LOC in `tui/src/chatwidget/spec_kit/` (should be separate crate)
+   - Makes CLI/API usage impossible
+   - Future: Extract to `codex-spec-kit` crate (2-4 week effort, deferred)
 
-2. **Spec-auto state in TUI layer**
-   - Can't run from non-TUI clients (API, CI/CD)
-   - Future: Migrate to `core` (ARCH-010, blocked on protocol extension)
+2. **Async/Sync Boundary**
+   - TUI event loop blocks during MCP calls (8.7ms typical, 700ms cold-start)
+   - Ratatui is sync, Tokio is async, bridged via `Handle::block_on()`
+   - Acceptable for infrequent user-initiated commands
+   - See `docs/architecture/async-sync-boundaries.md`
 
-3. **Dual MCP connections** (TUI + Core)
-   - Conflict risk if both connect to same server
-   - Mitigated: TUI only connects to `local-memory`, Core handles other servers
-   - Future: Unified MCP manager in Core (ARCH-005)
+3. **Test Coverage Gap**
+   - Current: 1.7% (178 tests / 7,883 LOC)
+   - Target: 40% by Q1 2026
+   - See `docs/spec-kit/testing-policy.md`
 
-**Performance Limitations**:
-- TUI event loop blocks during MCP calls (8.7ms avg)—acceptable but not ideal
-- True async TUI would require major rework (ARCH-011, research spike pending)
-
-**Configuration Ambiguity**:
-- Shell environment policy vs TOML precedence unclear
-- No conflict detection (ARCH-003 will document)
+**Resolved via ARCH Improvements** (Oct 2025):
+- ✅ MCP fallback (ARCH-002): File-based evidence if MCP unavailable
+- ✅ MCP process multiplication (ARCH-005): App-level shared manager
+- ✅ Config precedence (ARCH-003): Documented 5-layer hierarchy
+- ✅ Agent enum safety (ARCH-006): Type-safe `SpecAgent` enum
+- ✅ Evidence corruption (ARCH-007): File locking via fs2
 
 ---
 
@@ -541,26 +554,29 @@ Check: TUI shows "Retrying implementation/validation cycle (attempt N)"
 
 ---
 
-## 📈 ARCHITECTURE ROADMAP
+## 📈 ARCHITECTURE STATUS
 
-See `codex-rs/ARCHITECTURE-TASKS.md` for full details.
+See `codex-rs/ARCHITECTURE-TASKS.md` and `codex-rs/REVIEW.md` for full details.
 
-**Week 1 (Critical)**:
-- ✅ ARCH-001: Upstream docs corrected
-- ARCH-002: MCP fallback mechanism (1-2h)
-- ARCH-003: Config precedence docs (2-3h)
-- ARCH-004: Cleanup deprecated code (30min)
+**Completed** (Oct 17-18, 2025):
+- ✅ ARCH-001: Fixed upstream docs (just-every/code fork)
+- ✅ ARCH-002: MCP fallback + native integration (5.3x faster)
+- ✅ ARCH-003: Config precedence documented
+- ✅ ARCH-004: Removed deprecated subprocess code
+- ✅ ARCH-005: Fixed MCP process multiplication (App-level manager)
+- ✅ ARCH-006: Type-safe agent enums (`SpecAgent`)
+- ✅ ARCH-007: Evidence file locking (prevents corruption)
+- ✅ ARCH-009-REVISED: Extracted retry constants
+- ✅ AR-1 through AR-4: Agent resilience (timeout, retry, empty detection, schemas)
 
-**Month 1 (High Priority)**:
-- ARCH-005: Eliminate dual MCP (6-8h)
-- ARCH-006: Centralize agent naming (3-4h)
-- ARCH-007: Evidence locking (2-3h)
-- ARCH-008: Protocol extension (8-10h, keystone)
+**Skipped** (validated as unnecessary):
+- ❌ ARCH-008: Protocol extension (YAGNI)
+- ❌ ARCH-010: State migration (no non-TUI clients exist)
 
-**Quarter 1 (Strategic)**:
-- ARCH-010: Migrate state to core (12-16h)
-- ARCH-011: Async TUI spike (4-8h)
-- ARCH-012: Upstream contributions (6-12h)
+**Future Considerations** (not prioritized):
+- ARCH-011: Async TUI research spike (low ROI for 8.7ms blocking)
+- ARCH-012: Upstream contributions (if valuable fixes emerge)
+- Spec-kit extraction to separate crate (if reusability need arises)
 
 ---
 

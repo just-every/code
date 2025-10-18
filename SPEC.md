@@ -1,7 +1,7 @@
 # Spec-Kit Multi-Agent Framework - Task Tracker
 
-**Last Updated**: 2025-10-15
-**Branch**: feat/spec-auto-telemetry (78 commits)
+**Last Updated**: 2025-10-18
+**Branch**: main
 **Status**: ✅ **PHASE 3 COMPLETE** - Production ready
 
 ---
@@ -62,6 +62,12 @@
 
 **Total**: 411 functional lines solving real user pain
 
+### Documentation Reconciliation (2025-10-18 Architecture Review)
+
+**Context**: REVIEW.md architecture analysis identified documentation drift. All critical documentation gaps resolved.
+
+**STATUS**: ✅ **ALL TASKS COMPLETE** (8/8 done, ~4 hours total)
+
 ### Completed Tasks
 
 | Order | Task ID | Title | Status | Owners | PRD | Branch | PR | Last Validation | Evidence | Notes |
@@ -86,6 +92,15 @@
 | 15 | T85 | Intelligent Quality Gates | **DONE** | Code |  |  |  | 2025-10-16 | quality.rs (830 lines), file_modifier.rs (550 lines), quality_gate_modal.rs (304 lines) | COMPLETE: Autonomous quality assurance integrated into /speckit.auto. 3 checkpoints (pre-planning, post-plan, post-tasks) with clarify/checklist/analyze gates. Agent agreement → confidence metric. 55% auto-resolution (unanimous), GPT-5 validation for 2/3 majority via OAuth2 (+10-15%). Auto-modifies spec.md/plan.md/tasks.md with backup. Modal UI for escalations. Git commit at completion. 18 unit tests. Time: 15 hours. Async GPT-5 via agent system (OAuth2). |
 | 16 | T79 | Complete SpecKitContext abstraction | **DONE** | Code |  |  |  | 2025-10-16 | context.rs (extended) | COMPLETE: Extended SpecKitContext with collect_guardrail_outcome() and run_spec_consensus() methods. Handlers now fully abstracted from ChatWidget. MockSpecKitContext can fake guardrail/consensus for testing. 2 new tests (10 total). Time: 30 min. Addresses REVIEW.md service abstraction concern via existing trait. Alternative to separate service traits (rejected as unnecessary). |
 | 17 | T78 | Integration & E2E Testing | **DONE** | Code |  |  |  | 2025-10-17 | tui/tests/quality_gates_integration.rs (634 lines, 19 tests) | COMPLETE: Comprehensive integration tests for quality gates system. Tests cover: checkpoint execution, agent JSON parsing, unanimous auto-resolution (High confidence), 2/3 majority validation flow, no-consensus escalation, critical magnitude handling, resolvability types, edge cases. All 19 tests passing. Module visibility updated (pub mod spec_kit, lib.rs re-exports). Test suite: 55 spec_kit unit tests + 19 integration tests = 74 total quality gate tests. Time: ~4 hours. |
+| 18 | DOC-1 | Fix repository references | **DONE** | Code | REVIEW.md | | | 2025-10-18 | product-requirements.md v1.3, PLANNING.md v1.3 | COMPLETE: Updated repository references to theturtlecsz/code fork with just-every/code upstream. Added "NOT RELATED TO: Anthropic's Claude Code" disclaimers. Fixed incorrect anthropics/claude-code references. Files: product-requirements.md:180,262; PLANNING.md:6-8,104. Effort: 15 min. |
+| 19 | DOC-2 | Remove Byterover references | **DONE** | Code | MEMORY-POLICY.md | | | 2025-10-18 | PLANNING.md sections 2.6, 3 | COMPLETE: Removed Byterover MCP as "fallback" or "migration ongoing". Replaced with local-memory as sole knowledge system with MEMORY-POLICY.md references. Added deprecation note (2025-10-18). Files: PLANNING.md:95,116. Effort: 10 min. |
+| 20 | DOC-3 | Document ARCH improvements | **DONE** | Code | ARCHITECTURE-TASKS.md | | | 2025-10-18 | PLANNING.md section 2.7 (new) | COMPLETE: Added "Recent Architecture Improvements (October 2025)" section documenting ARCH-001 through ARCH-009, AR-1 through AR-4, performance gains (5.3x MCP speedup), and documentation created. Files: PLANNING.md:100-132. Effort: 25 min. |
+| 21 | DOC-4 | Document evidence growth strategy | **DONE** | Code | REVIEW.md | | | 2025-10-18 | docs/spec-kit/evidence-policy.md (185 lines) | COMPLETE: Created evidence repository growth policy. Documents: 25 MB soft limit per SPEC, retention (unlock+30d), archival strategy (compress/offload), cleanup procedures, monitoring via `/spec-evidence-stats`. Addresses REVIEW.md unbounded growth concern. Effort: 30 min. |
+| 22 | DOC-5 | Document test coverage policy | **DONE** | Code | REVIEW.md | | | 2025-10-18 | docs/spec-kit/testing-policy.md (220 lines) | COMPLETE: Created test coverage policy. Current: 1.7% (178 tests/7,883 LOC). Target: 40% by Q1 2026. Priority modules: handler.rs (0.7%→30%), consensus.rs (1.2%→50%), quality.rs (2.2%→60%). Strategy: MockSpecKitContext, EvidenceRepository trait. 4-phase implementation plan (Nov 2025 → Mar 2026). Effort: 35 min. |
+| 23 | DOC-6 | Document upstream sync strategy | **DONE** | Code | REVIEW.md | | | 2025-10-18 | docs/UPSTREAM-SYNC.md (250 lines) | COMPLETE: Created upstream sync strategy doc. Frequency: Monthly/quarterly. Process: `git fetch upstream && git merge --no-ff --no-commit upstream/main`. Conflict resolution matrix, isolation metrics (98.8%), pre/post-merge validation checklist. Addresses upstream sync friction. Effort: 45 min. |
+| 24 | DOC-7 | Document async/sync boundaries | **DONE** | Code | REVIEW.md | | | 2025-10-18 | docs/architecture/async-sync-boundaries.md (300 lines) | COMPLETE: Documented Ratatui (sync) + Tokio (async) architecture. Explains Handle::block_on() bridge pattern, blocking hotspots (8.7ms typical, 700ms cold-start), performance characteristics, mitigations. Developer guidelines for safe async/sync usage. Addresses REVIEW.md async impedance concern. Effort: 45 min. |
+| 25 | DOC-8 | Update CLAUDE.md command reference | **DONE** | Code | CLAUDE.md | | | 2025-10-18 | CLAUDE.md sections 5,6,7,10 | COMPLETE: Fixed outdated multi-agent expectations (removed "Qwen", updated to automated consensus), fixed branch name (master→main), fixed upstream sync instructions, removed kavedarr package references, updated evidence policy references. Ensures command examples match current reality (Tier 0-4 strategy, all 13 /speckit.* commands). Effort: 40 min. |
+| 26 | DOC-9 | Update AGENTS.md with current state | **DONE** | Code | AGENTS.md | | | 2025-10-18 | AGENTS.md (570 lines updated) | COMPLETE: Fixed LOC counts (were 10-30x inflated), updated ARCH status (all complete, not in-progress), corrected test count (178 not 141), added SpecAgent enum column, documented resolved limitations (ARCH-002/005/006/007 complete), added policy doc references (evidence-policy.md, testing-policy.md, async-sync-boundaries.md, UPSTREAM-SYNC.md). Ensures Codex/Gemini agents have accurate project context. Effort: 45 min. |
 
 ---
 

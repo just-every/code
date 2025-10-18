@@ -1,12 +1,13 @@
 # Spec-Kit Multi-Agent Framework - Architecture & Planning
 
-> Status: v1.2 (2025-10-16). Phase 3 complete, refactoring complete, global templates deployed. Complements `product-requirements.md` and fulfils the constitution's mandatory context references.
+> Status: v1.3 (2025-10-18). Repository references corrected, ARCH improvements documented, byterover deprecated. Complements `product-requirements.md` and fulfils the constitution's mandatory context references.
 
 ## 1. Monorepo Overview
-- **Repository:** just-every/code (branch: main)
+- **This Repository:** https://github.com/theturtlecsz/code (FORK of just-every/code)
+- **Upstream:** https://github.com/just-every/code (community OpenAI Codex successor)
+- **NOT RELATED TO:** Anthropic's Claude Code (different product)
 - **Primary language:** Rust (Codex CLI fork with spec-kit extensions)
 - **Secondary tooling:** Bash guardrail scripts, MCP (Model Context Protocol) servers, Python utilities
-- **Upstream:** anthropics/claude-code (fork maintained with FORK_DEVIATIONS.md rebase strategy)
 - **Key directories:**
   - `codex-rs/` – Rust workspace containing Codex CLI/TUI, native spec-kit commands, MCP clients
   - `templates/` – GitHub-inspired spec/PRD/plan/tasks templates (validated 55% faster)
@@ -90,16 +91,51 @@
 - Parallel spawning supported
 
 ### 2.6 External Services
-- **Local-memory MCP:** Canonical knowledge base for Spec Kit (conversation history, decisions, evidence)
-- **Byterover MCP:** Fallback knowledge retrieval (migration to local-memory ongoing)
+- **Local-memory MCP:** Canonical knowledge base for Spec Kit (conversation history, decisions, evidence). **ONLY** memory system used (see MEMORY-POLICY.md)
 - **HAL HTTP MCP:** Validates API endpoints; requires `HAL_SECRET_KAVEDARR_API_KEY` (used in example Kavedarr project)
 - **Git-status MCP:** Repository state monitoring
+
+**Note:** Byterover MCP deprecated 2025-10-18. Local-memory is sole knowledge persistence system.
+
+### 2.7 Recent Architecture Improvements (October 2025)
+
+**ARCH-001 through ARCH-004 (P0: Critical):**
+- **ARCH-001**: Fixed upstream documentation references (just-every/code, NOT Anthropic)
+- **ARCH-002**: Native MCP integration with auto-fallback (5.3x faster: 46ms→8.7ms)
+- **ARCH-003**: Documented 5-layer config precedence (CLI > Shell > Profile > TOML > Defaults)
+- **ARCH-004**: Removed deprecated subprocess code (local_memory_client.rs)
+
+**ARCH-005 through ARCH-007 (P1: Important):**
+- **ARCH-005**: Fixed MCP process multiplication (App-level shared manager eliminates N×process bug)
+- **ARCH-006**: Type-safe agent enums (SpecAgent with canonical_name(), from_string())
+- **ARCH-007**: Evidence file locking via fs2 (prevents concurrent write corruption)
+
+**ARCH-009-REVISED:**
+- Extracted retry constants (SPEC_AUTO_AGENT_RETRY_ATTEMPTS=3)
+
+**Agent Resilience System (AR-1 through AR-4):**
+- AR-1: 30-minute total timeout on all agent operations
+- AR-2: Auto-retry on failures (3 attempts with context injection)
+- AR-3: Empty/invalid result detection with retry guidance
+- AR-4: JSON schema enforcement (reduces malformed output ~80%)
+
+**Performance Gains:**
+- MCP consensus checks: 5.3x faster (validated via benchmark)
+- Multi-agent coordination: Comprehensive retry/timeout coverage
+- Evidence integrity: File locking prevents corruption
+
+**Documentation Created:**
+- MEMORY-POLICY.md (local-memory only, effective 2025-10-18)
+- ARCHITECTURE-TASKS.md (13 improvement tasks, 7 complete)
+- REVIEW.md (comprehensive architecture analysis)
+
+See `codex-rs/ARCHITECTURE-TASKS.md` and `codex-rs/REVIEW.md` for full details.
 
 ## 3. Technology Stack & Dependencies
 
 **Core Infrastructure:**
 - **Rust Toolchain:** Stable 1.80+ (configured via `rust-toolchain.toml`)
-- **Codex CLI:** anthropics/claude-code fork (rebase strategy in FORK_DEVIATIONS.md)
+- **Codex CLI:** just-every/code upstream, theturtlecsz/code fork (rebase strategy in FORK_DEVIATIONS.md)
 - **Package Management:** Cargo workspaces (`codex-rs/Cargo.toml`)
 - **Shell Environment:** Bash 5+, `env_run.sh` ensures `.env` secrets respected
 
@@ -111,8 +147,7 @@
 - **Code (Claude Code)** – General-purpose (all tiers)
 
 **MCP Servers:**
-- **local-memory** – Primary knowledge base (conversation history, decisions)
-- **byterover-mcp** – Fallback knowledge retrieval
+- **local-memory** – Canonical knowledge base (conversation history, decisions). **ONLY** memory system (see MEMORY-POLICY.md)
 - **git-status** – Repository state monitoring
 - **hal** – API endpoint validation (project-specific, optional)
 

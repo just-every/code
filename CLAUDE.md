@@ -69,7 +69,7 @@ Always check local-memory before answering, then write back key outcomes (import
 - `/guardrail.validate SPEC-ID` – Test harness execution. (note: legacy `/spec-ops-validate` still works)
 - `/guardrail.audit SPEC-ID` – Compliance scanning. (note: legacy `/spec-ops-audit` still works)
 - `/guardrail.unlock SPEC-ID` – Final validation. (note: legacy `/spec-ops-unlock` still works)
-- `/guardrail.auto SPEC-ID [--from STAGE]` – Full pipeline wrapper. Wraps `scripts/spec_ops_004/spec_auto.sh` (plan→unlock). Enforce clean tree unless `SPEC_OPS_ALLOW_DIRTY=1`. (note: legacy `/spec-ops-auto` still works)
+- `/guardrail.auto SPEC-ID [--from STAGE]` – Full pipeline wrapper (plan→unlock). Enforces clean tree unless `SPEC_OPS_ALLOW_DIRTY=1`. (note: legacy `/spec-ops-auto` still works)
 
 ### Utility Commands
 
@@ -204,27 +204,26 @@ If any slash command or CLI is unavailable, degrade gracefully and record which 
 - On merge: Status → `Done`, fill `PR`, add dated note referencing evidence (tests or files).
 
 ## 5. Multi-Agent Expectations
-- `/plan` – consensus across GPT-5 Codex, Claude Code, Gemini, Qwen. Document degradations and resolutions explicitly.
-- `/tasks` – race agents, synthesize combined plan, note similarities/differences.
-- `/implement` – agents explore separately; Claude helps synthesize strongest diff. Run validation (`cargo fmt`, `clippy`, tests, doc checks) **before** returning.
-- `/validate` & `/audit` – ensure consensus metadata records `model`, `model_release`, `reasoning_mode`. Degraded verdicts escalate per `docs/spec-kit/model-strategy.md`.
-- **Memory System**: Use local-memory MCP exclusively. Byterover is deprecated and should not be used.
-
-> **Current limitation:** automated consensus capture is not yet wired. Treat these expectations as manual checklists until the consensus runner is implemented.
+- **Consensus is fully automated** via native MCP integration (ARCH-002, 5.3x faster). All 13 `/speckit.*` commands operational.
+- **Agent roster**: Tier 2 uses gemini/claude/code (or gpt_pro for dev stages), Tier 3 adds gpt_codex, Tier 4 dynamically selects 3-5 agents.
+- **Degradation handling**: If agent fails, retry up to 3 times (AR-2). If still fails, continue with remaining agents (2/3 consensus still valid).
+- **Consensus metadata**: Automatically records `agent`, `version`, `content` in local-memory. Synthesis includes `consensus_ok`, `degraded`, `missing_agents`, `conflicts[]`.
+- **Memory System**: Use local-memory MCP exclusively. Byterover deprecated 2025-10-18.
+- **Validation**: `/implement` runs `cargo fmt`, `cargo clippy`, build checks, tests before returning.
 
 ## 6. Tooling, Hooks, and Tests
 - One-time: `bash scripts/setup-hooks.sh` to point Git at `.githooks`.
 - Pre-commit (auto): `cargo fmt --all`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace --no-run` (skip with `PRECOMMIT_FAST_TEST=0`), `scripts/doc-structure-validate.sh --mode=templates`.
-- Pre-push (mirrors CI): `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo build -p kavedarr-core -p kavedarr-infrastructure -p kavedarr-downloaders -p kavedarr-api --all-features` (+ optional targeted test-compiles, skip with `PREPUSH_FAST=0`).
+- Pre-push (mirrors CI): `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo build --workspace --all-features` (+ optional targeted test-compiles, skip with `PREPUSH_FAST=0`).
 - Always invoke guardrail scripts through `scripts/spec_ops_004/*` using `scripts/env_run.sh` when `.env` exists.
 - No secrets, ever. If HAL secrets are required (`HAL_SECRET_KAVEDARR_API_KEY`), ask the user to supply them.
 
-**Workspace reminder:** run Rust commands from `codex-rs/` (for example `cd codex-rs && cargo test -p codex-tui spec_auto`). Update `SPEC_OPS_CARGO_MANIFEST` in guardrail helpers if workspace layout changes.
+**Workspace reminder:** run Rust commands from `codex-rs/` (example: `cd codex-rs && cargo test -p codex-tui spec_kit`). Update `SPEC_OPS_CARGO_MANIFEST` in guardrail helpers if workspace layout changes.
 
 ## 7. Branch & Git Discipline
-- Default branch name is **master**. Never reference `main`.
-- Sync with `git fetch origin master` then `git merge --no-ff --no-commit origin/master` (no rebases).
-- Do all work on short-lived feature branches; never commit directly to master.
+- Default branch name is **main**.
+- Upstream sync: `git fetch upstream` then `git merge --no-ff --no-commit upstream/main` (see docs/UPSTREAM-SYNC.md).
+- Do all work on short-lived feature branches; never commit directly to main.
 - Stick to conventional commits: `feat(scope): …`, `fix(scope): …`, `test(scope): …`, `docs(scope): …`.
 - Present diffs before applying (unified diff). Ask for approval if touching the constitution or shipping a large patch.
 - One atomic commit per task unless a mechanical refactor is needed (split `refactor:` then feature commit).
@@ -249,9 +248,9 @@ If any slash command or CLI is unavailable, degrade gracefully and record which 
 
 ## 10. Evidence & Validation Ritual
 - Guardrail runs must have a clean tree unless specifically allowed (`SPEC_OPS_ALLOW_DIRTY=1`).
-- Capture both success and failure artifacts; `/spec-auto` should be self-healing but document retries.
+- Capture both success and failure artifacts; `/speckit.auto` includes automatic retry (AR-2, AR-3) but document degradations.
 - After `/implement`, run the full validation harness (fmt, clippy, build/tests, doc validators). Attach logs or cite evidence files in local-memory and user reports.
-- Keep `docs/spec-kit/spec-auto-automation.md` and `docs/spec-kit/evidence-baseline.md` updated when coverage changes.
+- Evidence growth policy: 25 MB soft limit per SPEC, monitor with `/spec-evidence-stats`. See `docs/spec-kit/evidence-policy.md` for retention/archival.
 
 ## 11. Escalate Early
 - Claude should explicitly state blockers, degraded guardrails, or missing telemetry.

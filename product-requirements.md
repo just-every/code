@@ -177,7 +177,7 @@
 ## 7. Technology Stack
 
 **Core:**
-- Rust (Codex CLI fork - anthropics/claude-code upstream)
+- Rust (Codex CLI fork - theturtlecsz/code, upstream: just-every/code)
 - Bash (guardrail scripts)
 - Python (telemetry utilities)
 
@@ -258,5 +258,6 @@
 - Corrected to describe spec-kit automation framework
 - Kavedarr is an example use case, not the product itself
 
-**Status:** v1.2 (2025-10-16) — Phase 3 complete + refactoring complete + global templates
-**Owner:** @just-every/automation
+**Status:** v1.3 (2025-10-18) — Repository references corrected, byterover deprecated
+**Repository:** https://github.com/theturtlecsz/code
+**Owner:** theturtlecsz
