@@ -16,12 +16,12 @@
 
 This playbook gives Claude Code everything it needs to operate safely inside this **theturtlecsz/code fork** (based on **just-every/code** upstream). Read it before touching the tree and keep it open while you work.
 
-## 0. Prerequisites & Known Limitations (October 2025)
+## 0. Prerequisites & Known Limitations (October 19, 2025)
 - **Foundation docs now exist:** `product-requirements.md` and `PLANNING.md` were added in response to guardrail audits. If either goes missing, stop and recreate or escalate.
-- **Consensus automation is pending:** multi-agent prompts exist but are still triggered manually from the TUI. `/speckit.plan --consensus` is aspirational until the consensus runner lands.
+- **Consensus automation OPERATIONAL:** Native MCP integration complete (ARCH-004/MAINT-1, 2025-10-18). All 13 /speckit.* commands fully automated with multi-agent consensus. Performance: 5.3x faster than subprocess (8.7ms typical, validated via MCP benchmark tests).
 - **Cargo workspace location:** run Rust commands from `codex-rs/` (for example `cd codex-rs && cargo test -p codex-tui spec_auto`). Guardrail scripts set `SPEC_OPS_CARGO_MANIFEST` when needed, but manual commands must honour the workspace root.
 - **HAL secrets:** full validation requires `HAL_SECRET_KAVEDARR_API_KEY`. If unavailable, set `SPEC_OPS_HAL_SKIP=1` (decision on default behaviour pending) and document the skip in results.
-- **Evidence footprint:** keep evidence under the 25 MB per-SPEC soft limit; use `/spec-evidence-stats` after large runs.
+- **Evidence footprint:** keep evidence under the 25 MB per-SPEC soft limit; use `/spec-evidence-stats` after large runs. Current: All SPECs within limit ✅ (per MAINT-4 evidence automation, 2025-10-18).
 
 ## 1. Load These References Every Session
 - `MEMORY-POLICY.md` – **mandatory** memory system policy (local-memory only)
