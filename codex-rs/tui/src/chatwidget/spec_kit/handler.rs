@@ -4,6 +4,7 @@
 //! Using free functions instead of methods to avoid Rust borrow checker issues.
 
 use super::super::ChatWidget; // Parent module (friend access to private fields)
+use super::context::SpecKitContext; // MAINT-3 Phase 2: Trait for testable functions
 use super::evidence::EvidenceRepository;
 use super::state::{GuardrailWait, SpecAutoPhase};
 use crate::app_event::BackgroundPlacement;
@@ -103,9 +104,9 @@ pub fn handle_spec_status(widget: &mut ChatWidget, raw_args: String) {
 }
 
 /// Halt /speckit.auto pipeline with error message
-pub fn halt_spec_auto_with_error(widget: &mut ChatWidget, reason: String) {
+pub fn halt_spec_auto_with_error(widget: &mut impl SpecKitContext, reason: String) {
     let resume_hint = widget
-        .spec_auto_state
+        .spec_auto_state()
         .as_ref()
         .and_then(|state| {
             state.current_stage().map(|stage| {
@@ -129,7 +130,7 @@ pub fn halt_spec_auto_with_error(widget: &mut ChatWidget, reason: String) {
         HistoryCellType::Error,
     ));
 
-    widget.spec_auto_state = None;
+    *widget.spec_auto_state_mut() = None;
 }
 
 /// Handle /spec-consensus command (inspect consensus artifacts)

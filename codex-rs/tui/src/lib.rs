@@ -76,16 +76,32 @@ pub use chatwidget::spec_kit::{
 
 // MAINT-3 Phase 2: Re-export testing utilities
 #[cfg(any(test, feature = "test-utils"))]
-pub use chatwidget::spec_kit::context::test_mock::MockSpecKitContext;
+pub use chatwidget::spec_kit::context::{SpecKitContext, test_mock::MockSpecKitContext};
+#[cfg(any(test, feature = "test-utils"))]
+pub use chatwidget::spec_kit::{halt_spec_auto_with_error, advance_spec_auto};
 pub use chatwidget::spec_kit::state::SpecAutoPhase;
 pub use spec_prompts::SpecAgent;
+
+// MAINT-3.2 Phase 2: Re-export P2 module testing utilities
+#[cfg(any(test, feature = "test-utils"))]
+pub use chatwidget::spec_kit::state::{
+    guardrail_for_stage, spec_ops_stage_prefix, expected_guardrail_command,
+    validate_guardrail_evidence, get_nested, require_string_field, require_object,
+};
+#[cfg(any(test, feature = "test-utils"))]
+pub use chatwidget::spec_kit::schemas::{
+    quality_gate_response_schema, spec_analysis_schema,
+    schema_for_gate_type, provider_supports_schemas,
+};
+#[cfg(any(test, feature = "test-utils"))]
+pub use chatwidget::spec_kit::error::{SpecKitError, Result as SpecKitResult};
 
 // FORK-SPECIFIC (just-every/code): Re-export consensus for MCP integration testing
 pub use chatwidget::spec_kit::consensus::run_spec_consensus;
 
 // Re-export supporting types for E2E testing (T87)
 pub use spec_prompts::SpecStage;
-pub use slash_command::HalMode;
+pub use slash_command::{HalMode, SlashCommand};
 mod terminal_info;
 // mod text_block; // Orphaned after trait-based HistoryCell migration
 mod text_formatting;

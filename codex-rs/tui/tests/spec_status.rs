@@ -90,7 +90,10 @@ fn render_dashboard_includes_warning_section_when_needed() {
 
 fn load_fixture(name: &str) -> TempDir {
     let tmp = TempDir::new().expect("create temp repo");
-    let src_root = Path::new("codex-rs/tui/tests/fixtures/spec_status").join(name);
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let src_root = Path::new(manifest_dir)
+        .join("tests/fixtures/spec_status")
+        .join(name);
     copy_recursively(&src_root, tmp.path()).expect("copy fixture");
     tmp
 }

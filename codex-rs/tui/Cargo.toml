@@ -22,6 +22,8 @@ vt100-tests = []
 debug-logs = []
 # Disable legacy tests by default; enable with `--features legacy_tests` if needed.
 legacy_tests = []
+# Enable test utilities (MockSpecKitContext, test helpers) for integration tests
+test-utils = []
 
 [lints]
 workspace = true

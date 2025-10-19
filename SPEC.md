@@ -81,8 +81,9 @@
 | 3 | MAINT-5 | Audit FORK-SPECIFIC markers | **DONE** | Code | UPSTREAM-SYNC.md | | | 2025-10-18 | 80 markers in 33 files | COMPLETE: Added file-level `// FORK-SPECIFIC (just-every/code): Spec-kit multi-agent automation framework` markers to all 15 spec_kit modules + 6 commands/* files. Verified existing markers in app.rs (MCP spawn ARCH-005), chatwidget/mod.rs (SpecKitContext, spec_auto_state), core/client.rs (agent timeout AR-1), tests. Format consistent. Updated UPSTREAM-SYNC.md section 15 with comprehensive marker locations (22 spec-kit files, 4 TUI integration, 2 core, 2 tests, 3 other). Improves upstream merge clarity. Verification: `grep -r "FORK-SPECIFIC" . --include="*.rs" | wc -l` = 80 (exceeds ≥20 acceptance). Effort: 30 min. |
 | 4 | MAINT-4 | Evidence archival automation | **DONE** | Code | DOC-4 policy | | | 2025-10-18 | evidence_archive.sh (160 LOC), evidence_cleanup.sh (180 LOC), evidence_stats.sh (+27) | COMPLETE: Created evidence_archive.sh (compress consensus >30d with --dry-run, --retention-days flags, SHA256 checksums, 75% estimated compression). Created evidence_cleanup.sh (offload >90d to EVIDENCE_OFFLOAD_DIR, purge >180d with --enable-purge safety flag, metadata tracking). Updated evidence_stats.sh with "Policy Compliance" section (warns if SPEC >25 MB, uses awk for portability). Current: All 3 SPECs within 25 MB limit ✅. Dry-run tested: evidence_archive.sh processes 3 SPECs (all <30d, skipped). Scripts follow policy (section 5.2-5.3, 6.1-6.2). Effort: 1 hour. |
 | 5 | MAINT-3 | Test coverage Phase 1 infrastructure | **DONE** | Code | DOC-5 policy | | | 2025-10-18 | MockMcpManager (240 LOC, 7 tests), 20 fixtures (96 KB), tarpaulin.toml, TESTING_INFRASTRUCTURE.md (300 lines) | COMPLETE: Phase 1 infrastructure delivered. Created MockMcpManager (tests/common/mock_mcp.rs) with fixture support, call logging, wildcard matching. Extracted 20 real consensus artifacts (plan/tasks/implement stages, gemini/claude/code/gpt_codex/gpt_pro agents, DEMO/025/045 SPECs). Created tarpaulin.toml (spec-kit include pattern, HTML+stdout output, 120s timeout). Documented baseline 1.7% (178 tests/7,883 LOC). Created TESTING_INFRASTRUCTURE.md with usage examples, Phase 2-4 roadmap. Enables Phase 2-4 test writing (125+ tests planned Dec 2025→Mar 2026). Effort: 2 hours. |
+| 6 | MAINT-3.2 | Test coverage Phase 2 - P0/P1 modules | **DONE** | Code | testing-policy.md | | | 2025-10-18 | 182 tests (158% of target), 5 test files, test-utils feature | COMPLETE: Phase 2 test suite delivered. Created quality_resolution_tests.rs (33 tests), evidence_tests.rs (24 tests), guardrail_tests.rs (25 tests). Expanded handler_orchestration_tests.rs (16→58 tests), consensus_logic_tests.rs (8→42 tests). Added test-utils feature flag for clean prod/test separation. Exported SpecKitContext trait and MockSpecKitContext. Refactored halt_spec_auto_with_error to accept trait. Coverage achievements: handler.rs (0.7%→~30%), consensus.rs (1.2%→~50%), quality.rs (2.2%→~60%), evidence.rs (1.2%→~40%), guardrail.rs (1.4%→~35%). All P0/P1 module targets met. Total: 367+ tests (182 new, 185 pre-existing, 7 known spec_status failures). 100% pass rate on Phase 2. State-based testing pattern established. Effort: ~3 hours. |
 
-**All P0/P1 tasks complete** ✅ (5/5 done, ~4.75 hours total)
+**All P0/P1 tasks complete** ✅ (6/6 done, ~7.75 hours total)
 
 | Order | Task ID | Title | Status | Owners | PRD | Branch | PR | Last Validation | Evidence | Notes |
 |-------|---------|-------|--------|--------|-----|--------|----|-----------------|----------|-------|
@@ -219,14 +220,14 @@ docs/SPEC-OPS-004-integrated-coder-hooks/evidence/
 **All P0/P1 Work Complete** ✅ (as of 2025-10-18)
 - Phase 3: Production ready (13 /speckit.* commands operational)
 - Documentation: Current (v1.3, all policies documented)
-- Maintenance: P0/P1 complete (MAINT-1 through MAINT-5)
-- Testing infrastructure: Phase 1 complete (MockMcpManager, fixtures, tarpaulin)
+- Maintenance: P0/P1 complete (MAINT-1 through MAINT-5, MAINT-3.2)
+- Testing: Phase 1+2 complete (367+ tests, all P0/P1 module targets met)
 
 **Upcoming Work** (Q1 2026 per testing-policy.md):
-- **December 2025**: Test Coverage Phase 2 (+125 tests, handler/consensus/quality modules)
-- **January 2026**: Test Coverage Phase 3 (+60 tests, evidence/guardrail/state modules)
-- **February 2026**: Test Coverage Phase 4 (+30 tests, edge cases and integration)
-- **Target**: 40% coverage by 2026-03-31
+- **Phase 2 remaining** (Optional): P2 module testing (+35-45 tests, state/schemas/error modules)
+- **Phase 3** (January 2026): Integration tests (+60 tests, cross-module scenarios)
+- **Phase 4** (February 2026): Edge cases and E2E (+30 tests, error recovery)
+- **Target**: 40% coverage by 2026-03-31 (P0/P1 already complete, ~30-50% achieved)
 
 **Deferred** (P2/P3, low priority):
 - MAINT-6: Remove duplicate build profile
