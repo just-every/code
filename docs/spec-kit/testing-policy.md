@@ -37,7 +37,7 @@
 | **Integration Tests** (Phase 2 P2) | 74 | `state_tests.rs`, `schemas_tests.rs`, `error_tests.rs` | State management, JSON schemas, error handling |
 | **E2E Tests** | 21 | `tui/tests/spec_auto_e2e.rs` | State machine, stage progression, checkpoint integration |
 | **MCP Tests** | 3 | `tui/tests/mcp_consensus_*.rs` | Native MCP consensus, benchmarks (5.3x speedup validation) |
-| **Pre-existing** | ~7 | `spec_status.rs` (7 failing) | Status dashboard (known fixture issues) |
+| **Pre-existing** | 7 | `spec_status.rs` (all passing) | Status dashboard (fixture timestamps updated 2025-10-19) |
 | **Total** | **441** | - | **+263 from baseline (178 → 441)** |
 
 **Note**: Phase 2 complete (2025-10-19). Added 256 integration tests across 8 test files (182 P0/P1 + 74 P2).
