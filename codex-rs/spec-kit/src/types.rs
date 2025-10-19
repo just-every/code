@@ -112,3 +112,33 @@ impl SpecAgent {
         ]
     }
 }
+
+/// HAL (Hardware Abstraction Layer) telemetry mode
+///
+/// Controls whether HAL validation is run in mock or live mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum HalMode {
+    /// Mock mode - skip HAL validation
+    Mock,
+    /// Live mode - run actual HAL validation
+    Live,
+}
+
+impl HalMode {
+    /// Parse from string (case-insensitive)
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "mock" | "skip" => Some(Self::Mock),
+            "live" | "real" => Some(Self::Live),
+            _ => None,
+        }
+    }
+
+    /// Display name
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Mock => "mock",
+            Self::Live => "live",
+        }
+    }
+}

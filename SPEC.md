@@ -98,9 +98,9 @@
 
 | Order | Task ID | Title | Status | Owners | PRD | Branch | PR | Last Validation | Evidence | Notes |
 |-------|---------|-------|--------|--------|-----|--------|----|-----------------|----------|-------|
-| 10 | MAINT-10 | Extract spec-kit to separate crate | **IN PROGRESS** | Code | REVIEW.md | | | 2025-10-18 | spec-kit/ crate (foundation), MAINT-10-EXTRACTION-PLAN.md | FOUNDATION COMPLETE (Phase 1 of 6): Created new codex-spec-kit crate with Cargo.toml, src/lib.rs, error.rs (SpecKitError migrated), types.rs (SpecStage/SpecAgent migrated), api.rs (async-first SpecKitEngine + SpecKitContext trait). Designed async API surface (no Handle::block_on). Added to workspace members. Created MAINT-10-EXTRACTION-PLAN.md (migration phases 2-6: core modules, handlers, commands, TUI adapter, CLI proof-of-concept). Remaining: 13-19 days (move 15 modules + 6 commands, 8,744 LOC). Decision: Foundation complete, full migration deferred to future session (2-4w effort). Ready to resume Phase 2 when needed. Effort: 1 hour (foundation only). |
+| 10 | MAINT-10 | Extract spec-kit to separate crate | **DEFERRED** | Code | REVIEW.md, MAINT-10-EXECUTION-PLAN.md | | | 2025-10-19 | spec-kit/ crate (foundation), comprehensive execution plan | **DEFERRED INDEFINITELY** (2025-10-19 ultra-analysis). Foundation delivered: Phase 1 complete (spec-kit crate with Cargo.toml, error.rs, types.rs including HalMode, api.rs async API skeleton). Remaining: Phases 2-6 (15 modules, 8,744 LOC, 20-30 hours). **Deferral rationale**: (1) **No strategic value** - Zero CLI/API/library consumers exist or planned, violates YAGNI principle; (2) **High risk** - 604 tests @ 100% pass rate at stake during migration; (3) **Wrong timing** - Upstream sync 2026-01-15 makes extraction add merge complexity; (4) **Premature optimization** - Extracting before need = speculative architecture. **Resume criteria**: (a) CLI tool requirement emerges, (b) API server integration needed, (c) External library consumers identified, (d) Post upstream-sync for cleaner timing. **Current state acceptable**: Spec-kit works perfectly in TUI (13 /speckit.* commands operational, 604 tests, 42-48% coverage). Created MAINT-10-EXECUTION-PLAN.md (comprehensive 6-phase migration guide for future execution). Effort: 1 hour foundation + 2 hours ultra-analysis. **Decision**: Defer indefinitely, focus on production use and feature development. |
 
-**P3 Task Status**: Foundation complete, full migration deferred (resume when reusability need emerges).
+**P3 Task Status**: Foundation complete (10%), full extraction deferred indefinitely pending strategic need.
 
 ### Completed Tasks
 
@@ -243,6 +243,13 @@ docs/SPEC-OPS-004-integrated-coder-hooks/evidence/
 - ✅ spec_status fix (100% pass rate)
 - ✅ Phase 3 integration tests (3 months ahead of Jan 2026 schedule)
 - ✅ Phase 4 edge cases + proptest (4 months ahead of Feb 2026 schedule)
+
+**Deferred Tasks**:
+- ⏸️ **MAINT-10**: Extract spec-kit to separate crate (deferred indefinitely per 2025-10-19 ultra-analysis)
+  - **Rationale**: YAGNI principle - no CLI/API/library consumers exist or planned
+  - **Risk**: 20-30 hour effort, HIGH risk to 604-test suite, adds upstream merge complexity
+  - **Resume criteria**: CLI tool, API server, or library consumer requirement emerges
+  - **Current state**: Acceptable (spec-kit works perfectly in TUI, Phase 1 foundation exists for future)
 
 **Upstream Sync**:
 - Next quarterly sync: 2026-01-15 (per UPSTREAM-SYNC.md)
