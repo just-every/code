@@ -753,74 +753,48 @@ pub(super) fn execute_quality_checkpoint(
     // Build prompts for each gate in the checkpoint
     let gates = checkpoint.gates();
 
-    // Read prompts.json to get agent-specific prompts
-    let prompts_json_path = cwd.join("docs/spec-kit/prompts.json");
-    let prompts_data: serde_json::Value = match std::fs::read_to_string(&prompts_json_path)
-        .ok()
-        .and_then(|content| serde_json::from_str(&content).ok())
-    {
-        Some(data) => data,
-        None => {
-            widget.history_push(crate::history_cell::new_error_event(
-                "Failed to load prompts.json for quality gates".to_string(),
-            ));
-            return;
-        }
+    // Build orchestrator prompt to spawn quality gate agents
+    let gate_names: Vec<String> = gates.iter().map(|g| g.command_name().to_string()).collect();
+
+    let orchestrator_prompt = format!(
+        r#"Execute Quality Checkpoint: {} for SPEC {}
+
+Read prompts from docs/spec-kit/prompts.json and spawn agents via agent_run.
+
+CRITICAL INSTRUCTIONS:
+1. Read prompts.json and extract prompts for: {}
+2. For each gate, use agent_run to spawn 3 agents in parallel:
+   - models: ["gemini", "claude", "code"]
+   - read_only: true
+3. Give each agent its role-specific prompt from prompts.json
+4. Each agent must store JSON result in local-memory with tags:
+   - ["quality-gate", "{}", "agent:<agent_name>"]
+   - domain: "spec-kit"
+   - importance: 8
+5. Use agent_wait to wait for all agents to complete
+6. Report completion: "Quality gate agents complete - stored in local-memory"
+
+Do NOT process the results yourself - just spawn agents and wait for completion.
+The TUI will retrieve results from local-memory and handle auto-resolution.
+
+Gates to execute: {}
+"#,
+        checkpoint.name(),
+        spec_id,
+        gate_names.join(", "),
+        spec_id,
+        gate_names.join(", ")
+    );
+
+    // Submit orchestrator prompt (like regular stages do)
+    let user_msg = super::super::message::UserMessage {
+        display_text: format!("Quality Checkpoint: {}", checkpoint.name()),
+        ordered_items: vec![codex_core::protocol::InputItem::Text {
+            text: orchestrator_prompt
+        }],
     };
 
-    // For each gate, submit agent-specific prompts to gemini, claude, and code
-    for gate in gates {
-        let gate_key = match gate {
-            super::state::QualityGateType::Clarify => "quality-gate-clarify",
-            super::state::QualityGateType::Checklist => "quality-gate-checklist",
-            super::state::QualityGateType::Analyze => "quality-gate-analyze",
-        };
-
-        // Get gate-specific prompts for all agents
-        let gate_prompts = match prompts_data.get(gate_key) {
-            Some(gp) => gp,
-            None => {
-                widget.history_push(crate::history_cell::new_error_event(format!(
-                    "Missing {} prompts in prompts.json",
-                    gate_key
-                )));
-                continue;
-            }
-        };
-
-        // Submit prompts for each agent (gemini, claude, code)
-        for agent_name in &["gemini", "claude", "code"] {
-            if let Some(agent_config) = gate_prompts.get(agent_name) {
-                let role = agent_config["role"].as_str().unwrap_or("Analyzer");
-                let prompt_template = agent_config["prompt"].as_str().unwrap_or("");
-
-                // Substitute variables: ${SPEC_ID}, ${ARTIFACTS}, ${MODEL_ID}
-                let base_prompt = prompt_template
-                    .replace("${SPEC_ID}", &spec_id)
-                    .replace("${MODEL_ID}", agent_name)
-                    .replace("${ARTIFACTS}", "spec.md, PRD.md");
-
-                // Add local-memory storage instruction
-                let prompt_with_storage = format!(
-                    "{}\n\nCRITICAL: After generating JSON, store it in local-memory:\n\
-                     mcp__local-memory__store_memory(\n\
-                       content: <your JSON output>,\n\
-                       tags: [\"quality-gate\", \"{}\", \"agent:{}\"],\n\
-                       domain: \"spec-kit\",\n\
-                       importance: 8\n\
-                     )",
-                    base_prompt,
-                    spec_id,
-                    agent_name
-                );
-
-                widget.submit_prompt_with_display(
-                    format!("Quality Gate: {} - {} ({})", checkpoint.name(), role, agent_name),
-                    prompt_with_storage,
-                );
-            }
-        }
-    }
+    widget.submit_user_message(user_msg);
 
     // Transition to quality gate executing phase
     if let Some(state) = widget.spec_auto_state.as_mut() {
