@@ -56,9 +56,21 @@ pub fn try_dispatch_spec_kit_command(
         .to_string();
 
     // Handle prompt-expanding vs direct execution
-    if let Some(expanded) = spec_cmd.expand_prompt(&args) {
-        // Prompt-expanding command: submit expanded prompt to agent
-        widget.submit_prompt_with_display(command_text.to_string(), expanded);
+    if spec_cmd.expand_prompt(&args).is_some() {
+        // Prompt-expanding command: need to re-format with config to get orchestrator instructions
+        // Use command_name directly - config.toml entries match (e.g., "speckit.new")
+        let config_name = command_name;
+
+        // Format with actual config to get orchestrator instructions
+        let formatted = codex_core::slash_commands::format_subagent_command(
+            config_name,
+            &args,
+            Some(&widget.config.agents),
+            Some(&widget.config.subagent_commands),
+        );
+
+        // Submit with proper config-based prompt
+        widget.submit_prompt_with_display(command_text.to_string(), formatted.prompt);
     } else {
         // Direct execution: persist to history then execute
         let _ = app_event_tx.send(AppEvent::CodexOp(Op::AddToHistory {
