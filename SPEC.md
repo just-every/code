@@ -109,6 +109,7 @@
 | Order | Task ID | Title | Status | Owners | PRD | Branch | PR | Last Validation | Evidence | Notes |
 |-------|---------|-------|--------|--------|-----|--------|----|-----------------|----------|-------|
 | 1 | SPEC-KIT-066 | Migrate spec-kit to native Codex tools | **Backlog** | Code | docs/SPEC-KIT-066-native-tool-migration/PRD.md | | | 2025-10-20 | Routing bug fixed, orchestrator migration pending | **DISCOVERED**: Real-world testing (2025-10-20) revealed: (1) **Routing bug** - SpecKitCommand registry wasn't passing config to format_subagent_command (None, None instead of actual config) → commands showed metadata but didn't execute → **FIXED** in routing.rs (now passes widget.config); (2) **Orchestrator issue** - Config instructions reference Python/bash scripts that orchestrator doesn't execute → creates plans instead of using tools → **NEEDS MIGRATION** to native Glob/Read/Write/Edit tools. Scope: Audit all [[subagents.commands]] in ~/.code/config.toml (9 entries), migrate from bash/python to native tools where possible, keep guardrail bash scripts (legitimate complexity). Priority: P1 HIGH (blocks real feature development). Next session: Research inventory, implement native replacements, test end-to-end. Effort: 5-9 hours. |
+| 2 | SPEC-KIT-067 | Add search command to find text in conversation history | **Backlog** | Code | docs/SPEC-KIT-067-add-search-command-to-find-text-in-conversation-history/PRD.md | | | 2025-10-20 | | | Created via /speckit.new |
 
 ### Completed Tasks
 
