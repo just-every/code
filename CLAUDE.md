@@ -32,7 +32,17 @@ This playbook gives Claude Code everything it needs to operate safely inside thi
 - `docs/SPEC-<AREA>-<slug>/` – per-feature specs, plans, tasks. Treat `specs/**` as archival only.
 - `AGENTS.md` (this document's partner) – Spec-Kit automation guardrails.
 
-Always check local-memory before answering, then write back key outcomes (importance ≥7) so it stays authoritative. Local-memory is the **only** knowledge persistence system—see `MEMORY-POLICY.md`.
+**MANDATORY LOCAL-MEMORY WORKFLOW**:
+1. **Session Start**: Query local-memory for project context, recent decisions, architecture state
+2. **Before Tasks**: Search local-memory for relevant prior work, patterns, solutions
+3. **During Work**: Store key decisions, architecture changes, bug discoveries (importance ≥7)
+4. **After Milestones**: Store outcomes, file locations, validation results, lessons learned
+
+**Why Critical**: Local-memory builds living project handbook - captures architecture evolution, decision rationale, debugging solutions. Without it, knowledge is lost between sessions.
+
+**Tool Names**: `mcp__local-memory__search`, `mcp__local-memory__store_memory`, `mcp__local-memory__analysis`
+
+See `MEMORY-POLICY.md` for complete policy. Local-memory is the **only** knowledge persistence system.
 
 ## 2. Operating Modes & Slash Commands
 
@@ -240,9 +250,74 @@ If any slash command or CLI is unavailable, degrade gracefully and record which 
 
 **POLICY**: Use **local-memory MCP exclusively**. See `MEMORY-POLICY.md` for details.
 
-1. **Before** solving: query local-memory for relevant notes. Local-memory is the single source of truth—do not use other memory systems.
-2. **During** work: keep local-memory updates (importance ≥7) aligned with new decisions, tests, or telemetry.
-3. **After** completing a step: store outcomes, including evidence paths and validation results.
+### Session Workflow (MANDATORY)
+
+**1. Session Start** (REQUIRED):
+```
+Use mcp__local-memory__search:
+- query: "project architecture recent changes"
+- limit: 10
+- search_type: "semantic"
+```
+This retrieves recent architecture decisions, bug fixes, patterns.
+
+**2. Before Major Tasks** (REQUIRED):
+```
+Use mcp__local-memory__search:
+- query: "test coverage phase 3 integration"
+- tags: ["testing", "spec-kit"]
+- limit: 5
+```
+Search for relevant prior work to avoid repeating research.
+
+**3. During Work** (Store importance ≥7):
+```
+Use mcp__local-memory__store_memory:
+- content: "Routing bug fixed: SpecKitCommand wasn't passing config..."
+- domain: "spec-kit"
+- tags: ["bug-fix", "routing", "2025-10-20"]
+- importance: 9
+```
+
+**What to Store**:
+- 🐛 Bug discoveries and fixes
+- 🏗️ Architecture decisions and rationale
+- 📊 Test coverage milestones
+- 🔧 Code patterns and utilities
+- ⚠️ Known limitations and workarounds
+- ✅ Task completion with evidence paths
+
+**4. After Milestones** (REQUIRED):
+```
+Use mcp__local-memory__store_memory:
+- content: "Phase 3 complete: 60 integration tests, 555 total, 100% pass rate. Files: workflow_integration_tests.rs..."
+- domain: "testing"
+- tags: ["milestone", "phase-3", "2025-10-19"]
+- importance: 8
+```
+
+**5. Session End** (REQUIRED):
+```
+Use mcp__local-memory__store_memory:
+- content: "Session 2025-10-20: Fixed routing bug (routing.rs), discovered orchestrator doesn't execute tools. Created SPEC-066 for native migration. Next: Update config.toml orchestrator instructions."
+- domain: "session-summary"
+- tags: ["2025-10-20", "routing-fix", "spec-066"]
+- importance: 9
+```
+
+### Why This Matters
+
+**Without local-memory**:
+- ❌ Knowledge lost between sessions
+- ❌ Repeat same research
+- ❌ Forget bug fixes and workarounds
+- ❌ No project handbook
+
+**With local-memory**:
+- ✅ Instant context retrieval
+- ✅ Architecture evolution tracked
+- ✅ Bug patterns recognized
+- ✅ Living documentation
 
 **Deprecated**: byterover-mcp is no longer used (migration complete 2025-10-18).
 
