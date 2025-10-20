@@ -18,9 +18,9 @@ pub fn on_quality_gate_agents_complete(widget: &mut ChatWidget) {
     };
 
     // Only proceed if in QualityGateExecuting phase
-    let (checkpoint, results, gates) = match &state.phase {
-        SpecAutoPhase::QualityGateExecuting { checkpoint, results, gates, .. } => {
-            (*checkpoint, results.clone(), gates.clone())
+    let (checkpoint, gates) = match &state.phase {
+        SpecAutoPhase::QualityGateExecuting { checkpoint, gates, .. } => {
+            (*checkpoint, gates.clone())
         }
         _ => return,
     };
@@ -28,10 +28,92 @@ pub fn on_quality_gate_agents_complete(widget: &mut ChatWidget) {
     let spec_id = state.spec_id.clone();
     let cwd = widget.config.cwd.clone();
 
-    // Step 1: Parse agent results into QualityIssue objects
+    widget.history_push(crate::history_cell::PlainHistoryCell::new(
+        vec![
+            ratatui::text::Line::from(format!("Quality Gate: {} - retrieving agent responses from local-memory...", checkpoint.name())),
+        ],
+        crate::history_cell::HistoryCellType::Notice,
+    ));
+
+    // Step 1: Retrieve agent results from local-memory
+    let agent_results: Vec<(String, serde_json::Value)> = {
+        use serde_json::json;
+
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                let manager_arc = handle.block_on(async {
+                    widget.mcp_manager.lock().await.as_ref().cloned()
+                });
+
+                match manager_arc {
+                    Some(manager) => {
+                        let args = json!({
+                            "query": format!("{} quality-gate", spec_id),
+                            "limit": 10,
+                            "tags": [format!("quality-gate"), spec_id.clone()],
+                            "search_type": "hybrid"
+                        });
+
+                        let mcp_result = handle.block_on(async {
+                            manager.call_tool(
+                                "local-memory",
+                                "search",
+                                Some(args),
+                                Some(std::time::Duration::from_secs(10))
+                            ).await
+                        });
+
+                        match mcp_result.ok().and_then(|r| crate::spec_prompts::parse_mcp_results_to_local_memory(&r).ok()) {
+                            Some(results) if !results.is_empty() => {
+                                results.into_iter().filter_map(|mem| {
+                                    // Parse JSON content
+                                    let json_value: serde_json::Value = serde_json::from_str(&mem.memory.content).ok()?;
+
+                                    // Extract agent name from JSON (all quality gate responses have "agent" field)
+                                    let agent = json_value.get("agent")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("unknown")
+                                        .to_string();
+
+                                    Some((agent, json_value))
+                                }).collect()
+                            }
+                            _ => {
+                                widget.history_push(crate::history_cell::new_error_event(
+                                    "No quality gate results found in local-memory".to_string()
+                                ));
+                                return;
+                            }
+                        }
+                    }
+                    None => {
+                        widget.history_push(crate::history_cell::new_error_event(
+                            "MCP manager not available".to_string()
+                        ));
+                        return;
+                    }
+                }
+            }
+            Err(_) => {
+                widget.history_push(crate::history_cell::new_error_event(
+                    "No tokio runtime available".to_string()
+                ));
+                return;
+            }
+        }
+    };
+
+    if agent_results.is_empty() {
+        widget.history_push(crate::history_cell::new_error_event(
+            "Failed to retrieve quality gate results from local-memory".to_string()
+        ));
+        return;
+    }
+
+    // Step 2: Parse agent results into QualityIssue objects
     let mut all_agent_issues = Vec::new();
 
-    for (agent_id, agent_result) in &results {
+    for (agent_id, agent_result) in &agent_results {
         for gate in &gates {
             match super::quality::parse_quality_issue_from_agent(agent_id, agent_result, *gate) {
                 Ok(issues) => all_agent_issues.push(issues),
@@ -713,14 +795,28 @@ pub(super) fn execute_quality_checkpoint(
                 let prompt_template = agent_config["prompt"].as_str().unwrap_or("");
 
                 // Substitute variables: ${SPEC_ID}, ${ARTIFACTS}, ${MODEL_ID}
-                let prompt = prompt_template
+                let base_prompt = prompt_template
                     .replace("${SPEC_ID}", &spec_id)
-                    .replace("${MODEL_ID}", agent_name)  // Placeholder
-                    .replace("${ARTIFACTS}", "spec.md, PRD.md");  // TODO: Actual artifacts
+                    .replace("${MODEL_ID}", agent_name)
+                    .replace("${ARTIFACTS}", "spec.md, PRD.md");
+
+                // Add local-memory storage instruction
+                let prompt_with_storage = format!(
+                    "{}\n\nCRITICAL: After generating JSON, store it in local-memory:\n\
+                     mcp__local-memory__store_memory(\n\
+                       content: <your JSON output>,\n\
+                       tags: [\"quality-gate\", \"{}\", \"agent:{}\"],\n\
+                       domain: \"spec-kit\",\n\
+                       importance: 8\n\
+                     )",
+                    base_prompt,
+                    spec_id,
+                    agent_name
+                );
 
                 widget.submit_prompt_with_display(
                     format!("Quality Gate: {} - {} ({})", checkpoint.name(), role, agent_name),
-                    prompt,
+                    prompt_with_storage,
                 );
             }
         }
