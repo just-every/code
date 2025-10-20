@@ -82,10 +82,10 @@ impl SpecKitCommand for SpecKitNewCommand {
         // Routed to subagent orchestrators
         // Use format_subagent_command and submit
         let formatted = codex_core::slash_commands::format_subagent_command(
-            "new",
+            "speckit.new",
             &args,
-            None,
-            None,
+            Some(&widget.config.agents),
+            Some(&widget.config.subagent_commands),
         );
         widget.submit_prompt_with_display(args, formatted.prompt);
     }
@@ -115,10 +115,10 @@ impl SpecKitCommand for SpecKitSpecifyCommand {
     fn execute(&self, widget: &mut ChatWidget, args: String) {
         // Routed to subagent orchestrators
         let formatted = codex_core::slash_commands::format_subagent_command(
-            "specify",
+            "speckit.specify",
             &args,
-            None,
-            None,
+            Some(&widget.config.agents),
+            Some(&widget.config.subagent_commands),
         );
         widget.submit_prompt_with_display(args, formatted.prompt);
     }

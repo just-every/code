@@ -67,36 +67,41 @@ pub fn on_quality_gate_agents_complete(widget: &mut ChatWidget) {
         return;
     }
 
-    // Step 3: Classify issues by confidence
-    let mut unanimous_issues = Vec::new();     // 3/3 agreement - auto-resolve
-    let mut majority_issues = Vec::new();      // 2/3 agreement - needs GPT-5
-    let mut no_consensus_issues = Vec::new();  // 0-1/3 agreement - escalate
+    // Step 3: Classify issues using should_auto_resolve() decision matrix
+    // Checks confidence + magnitude + resolvability (quality.rs:75-92)
+    let mut auto_resolvable = Vec::new();      // should_auto_resolve() = true
+    let mut needs_validation = Vec::new();      // Medium confidence, not auto-resolvable
+    let mut escalate_to_human = Vec::new();    // Low confidence or manual-only
 
     for issue in merged_issues {
-        match issue.confidence {
-            super::state::Confidence::High => unanimous_issues.push(issue),
-            super::state::Confidence::Medium => majority_issues.push(issue),
-            super::state::Confidence::Low => no_consensus_issues.push(issue),
+        if super::quality::should_auto_resolve(&issue) {
+            auto_resolvable.push(issue);
+        } else if matches!(issue.confidence, super::state::Confidence::Medium) {
+            // Medium confidence but didn't pass auto-resolve → needs GPT-5
+            needs_validation.push(issue);
+        } else {
+            // Low confidence or requires human judgment
+            escalate_to_human.push(issue);
         }
     }
 
     widget.history_push(crate::history_cell::PlainHistoryCell::new(
         vec![
             ratatui::text::Line::from(format!(
-                "Quality Gate: {} - {} unanimous, {} need GPT-5 validation, {} escalated",
+                "Quality Gate: {} - {} auto-resolvable, {} need GPT-5 validation, {} escalated",
                 checkpoint.name(),
-                unanimous_issues.len(),
-                majority_issues.len(),
-                no_consensus_issues.len()
+                auto_resolvable.len(),
+                needs_validation.len(),
+                escalate_to_human.len()
             )),
         ],
         crate::history_cell::HistoryCellType::Notice,
     ));
 
-    // Step 4: Auto-resolve unanimous issues
+    // Step 4: Auto-resolve auto-resolvable issues
     let mut auto_resolved_list = Vec::new();
 
-    for issue in unanimous_issues {
+    for issue in auto_resolvable {
         let (_, majority_answer, _) = super::quality::classify_issue_agreement(&issue.agent_answers);
         let answer = majority_answer.unwrap_or_else(|| "unknown".to_string());
 
@@ -137,17 +142,17 @@ pub fn on_quality_gate_agents_complete(widget: &mut ChatWidget) {
         state.quality_auto_resolved.extend(auto_resolved_list.clone());
     }
 
-    // Step 5: Handle majority issues - submit to GPT-5 for validation
-    if !majority_issues.is_empty() {
+    // Step 5: Handle medium-confidence issues - submit to GPT-5 for validation
+    if !needs_validation.is_empty() {
         widget.history_push(crate::history_cell::PlainHistoryCell::new(
             vec![
-                ratatui::text::Line::from(format!("Submitting {} majority answers to GPT-5 for validation...", majority_issues.len())),
+                ratatui::text::Line::from(format!("Submitting {} medium-confidence issues to GPT-5 for validation...", needs_validation.len())),
             ],
             crate::history_cell::HistoryCellType::Notice,
         ));
 
         // Submit GPT-5 validation prompts via agent system
-        submit_gpt5_validations(widget, &majority_issues, &spec_id, &cwd);
+        submit_gpt5_validations(widget, &needs_validation, &spec_id, &cwd);
 
         // Transition to validating phase - wait for GPT-5 responses
         if let Some(state) = widget.spec_auto_state.as_mut() {
@@ -156,7 +161,7 @@ pub fn on_quality_gate_agents_complete(widget: &mut ChatWidget) {
             state.phase = SpecAutoPhase::QualityGateValidating {
                 checkpoint,
                 auto_resolved: auto_resolved_issues,
-                pending_validations: majority_issues.into_iter().map(|issue| {
+                pending_validations: needs_validation.into_iter().map(|issue| {
                     let (_, majority, _) = super::quality::classify_issue_agreement(&issue.agent_answers);
                     (issue, majority.unwrap_or_default())
                 }).collect(),
@@ -167,9 +172,9 @@ pub fn on_quality_gate_agents_complete(widget: &mut ChatWidget) {
         return; // Wait for GPT-5 responses
     }
 
-    // No majority issues - handle no consensus escalations
+    // No validation issues - handle low-confidence/manual escalations
     let mut all_escalations = Vec::new();
-    for issue in no_consensus_issues {
+    for issue in escalate_to_human {
         all_escalations.push((issue, None));
     }
 
@@ -667,20 +672,28 @@ pub(super) fn execute_quality_checkpoint(
 
     // Submit prompts to agents (gemini, claude, code)
     for gate in gates {
-        let prompt = build_quality_gate_prompt(&spec_id, *gate, checkpoint);
-
-        // Format as subagent command and submit
-        let _formatted = codex_core::slash_commands::format_subagent_command(
-            gate.command_name(),
-            &spec_id,
-            None,
-            None,
+        // Build quality gate task description
+        let quality_gate_task = format!(
+            "Quality checkpoint {} for SPEC {}: Analyze using {} and return JSON with quality issues",
+            checkpoint.name(),
+            spec_id,
+            gate.command_name()
         );
 
-        // Override with quality gate prompt
+        // Format subagent command with quality gate task
+        // The task parameter fills the <task> section in agent_run prompt
+        let formatted = codex_core::slash_commands::format_subagent_command(
+            gate.command_name(),
+            &quality_gate_task,
+            Some(&widget.config.agents),
+            Some(&widget.config.subagent_commands),
+        );
+
+        // Submit the properly formatted subagent command
+        // This includes proper <task> tags for agent_run protocol
         widget.submit_prompt_with_display(
             format!("Quality Gate: {} - {}", checkpoint.name(), gate.command_name()),
-            prompt,
+            formatted.prompt,
         );
     }
 
