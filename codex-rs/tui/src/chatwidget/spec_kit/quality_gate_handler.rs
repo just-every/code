@@ -659,6 +659,7 @@ pub(super) fn execute_quality_checkpoint(
     };
 
     let spec_id = state.spec_id.clone();
+    let cwd = widget.config.cwd.clone();
 
     widget.history_push(crate::history_cell::PlainHistoryCell::new(
         vec![
@@ -670,31 +671,59 @@ pub(super) fn execute_quality_checkpoint(
     // Build prompts for each gate in the checkpoint
     let gates = checkpoint.gates();
 
-    // Submit prompts to agents (gemini, claude, code)
+    // Read prompts.json to get agent-specific prompts
+    let prompts_json_path = cwd.join("docs/spec-kit/prompts.json");
+    let prompts_data: serde_json::Value = match std::fs::read_to_string(&prompts_json_path)
+        .ok()
+        .and_then(|content| serde_json::from_str(&content).ok())
+    {
+        Some(data) => data,
+        None => {
+            widget.history_push(crate::history_cell::new_error_event(
+                "Failed to load prompts.json for quality gates".to_string(),
+            ));
+            return;
+        }
+    };
+
+    // For each gate, submit agent-specific prompts to gemini, claude, and code
     for gate in gates {
-        // Build quality gate task description
-        let quality_gate_task = format!(
-            "Quality checkpoint {} for SPEC {}: Analyze using {} and return JSON with quality issues",
-            checkpoint.name(),
-            spec_id,
-            gate.command_name()
-        );
+        let gate_key = match gate {
+            super::state::QualityGateType::Clarify => "quality-gate-clarify",
+            super::state::QualityGateType::Checklist => "quality-gate-checklist",
+            super::state::QualityGateType::Analyze => "quality-gate-analyze",
+        };
 
-        // Format subagent command with quality gate task
-        // The task parameter fills the <task> section in agent_run prompt
-        let formatted = codex_core::slash_commands::format_subagent_command(
-            gate.command_name(),
-            &quality_gate_task,
-            Some(&widget.config.agents),
-            Some(&widget.config.subagent_commands),
-        );
+        // Get gate-specific prompts for all agents
+        let gate_prompts = match prompts_data.get(gate_key) {
+            Some(gp) => gp,
+            None => {
+                widget.history_push(crate::history_cell::new_error_event(format!(
+                    "Missing {} prompts in prompts.json",
+                    gate_key
+                )));
+                continue;
+            }
+        };
 
-        // Submit the properly formatted subagent command
-        // This includes proper <task> tags for agent_run protocol
-        widget.submit_prompt_with_display(
-            format!("Quality Gate: {} - {}", checkpoint.name(), gate.command_name()),
-            formatted.prompt,
-        );
+        // Submit prompts for each agent (gemini, claude, code)
+        for agent_name in &["gemini", "claude", "code"] {
+            if let Some(agent_config) = gate_prompts.get(agent_name) {
+                let role = agent_config["role"].as_str().unwrap_or("Analyzer");
+                let prompt_template = agent_config["prompt"].as_str().unwrap_or("");
+
+                // Substitute variables: ${SPEC_ID}, ${ARTIFACTS}, ${MODEL_ID}
+                let prompt = prompt_template
+                    .replace("${SPEC_ID}", &spec_id)
+                    .replace("${MODEL_ID}", agent_name)  // Placeholder
+                    .replace("${ARTIFACTS}", "spec.md, PRD.md");  // TODO: Actual artifacts
+
+                widget.submit_prompt_with_display(
+                    format!("Quality Gate: {} - {} ({})", checkpoint.name(), role, agent_name),
+                    prompt,
+                );
+            }
+        }
     }
 
     // Transition to quality gate executing phase
