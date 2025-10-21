@@ -13,7 +13,20 @@ use crate::spec_prompts::SpecStage;
 
 /// Handle quality gate agents completing
 pub fn on_quality_gate_agents_complete(widget: &mut ChatWidget) {
+    widget.history_push(crate::history_cell::PlainHistoryCell::new(
+        vec![
+            ratatui::text::Line::from("DEBUG: on_quality_gate_agents_complete() CALLED"),
+        ],
+        crate::history_cell::HistoryCellType::Notice,
+    ));
+
     let Some(state) = widget.spec_auto_state.as_ref() else {
+        widget.history_push(crate::history_cell::PlainHistoryCell::new(
+            vec![
+                ratatui::text::Line::from("DEBUG: No spec_auto_state - returning early"),
+            ],
+            crate::history_cell::HistoryCellType::Notice,
+        ));
         return;
     };
 
@@ -22,7 +35,15 @@ pub fn on_quality_gate_agents_complete(widget: &mut ChatWidget) {
         SpecAutoPhase::QualityGateExecuting { checkpoint, gates, .. } => {
             (*checkpoint, gates.clone())
         }
-        _ => return,
+        _ => {
+            widget.history_push(crate::history_cell::PlainHistoryCell::new(
+                vec![
+                    ratatui::text::Line::from(format!("DEBUG: Wrong phase - {:?}", state.phase)),
+                ],
+                crate::history_cell::HistoryCellType::Notice,
+            ));
+            return;
+        }
     };
 
     let spec_id = state.spec_id.clone();
