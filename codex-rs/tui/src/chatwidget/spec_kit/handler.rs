@@ -619,12 +619,14 @@ pub fn on_spec_auto_agents_complete(widget: &mut ChatWidget) {
     // Handle different phase types
     match phase_type {
         "quality_gate" => {
-            // Check if all quality gate agents completed
-            let all_complete = expected_agents
-                .iter()
-                .all(|exp| completed_names.contains(&exp.to_lowercase()));
+            // Quality gates use orchestrator pattern:
+            // - Orchestrator spawns 3 sub-agents (gemini, claude, code)
+            // - Sub-agents not tracked in active_agents
+            // - When orchestrator completes, immediately trigger handler
+            // - Handler retrieves sub-agent results from local-memory
 
-            if all_complete {
+            // If ANY agent completed (the orchestrator), trigger handler
+            if !completed_names.is_empty() {
                 on_quality_gate_agents_complete(widget);
             }
         }
