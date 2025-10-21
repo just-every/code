@@ -59,7 +59,7 @@ pub struct StagePrompts {
 pub enum SpecAgent {
     Gemini,
     Claude,
-    Code,       // Claude Code (CLI assistant)
+    Code, // Claude Code (CLI assistant)
     GptCodex,
     GptPro,
 }
@@ -103,7 +103,13 @@ impl SpecAgent {
 
     /// All expected agents for consensus checking
     pub fn all() -> [Self; 5] {
-        [Self::Gemini, Self::Claude, Self::Code, Self::GptCodex, Self::GptPro]
+        [
+            Self::Gemini,
+            Self::Claude,
+            Self::Code,
+            Self::GptCodex,
+            Self::GptPro,
+        ]
     }
 }
 
@@ -411,7 +417,9 @@ pub fn build_stage_prompt_with_mcp(
             bundle.push('\n');
         }
         Ok(_) => {
-            bundle.push_str("## Local-memory context\n- No stage-specific local-memory entries found yet.\n\n");
+            bundle.push_str(
+                "## Local-memory context\n- No stage-specific local-memory entries found yet.\n\n",
+            );
         }
         Err(err) => {
             bundle.push_str(&format!(
@@ -512,7 +520,7 @@ fn gather_local_memory_context(
                         "local-memory",
                         "search",
                         Some(args),
-                        Some(std::time::Duration::from_secs(10))
+                        Some(std::time::Duration::from_secs(10)),
                     )
                     .await
                     .ok()
@@ -561,7 +569,10 @@ pub fn parse_mcp_results_to_local_memory(
             let text = &text_content.text;
             if let Ok(json_results) = serde_json::from_str::<Vec<serde_json::Value>>(text) {
                 for json_result in json_results {
-                    if let Ok(parsed) = serde_json::from_value::<local_memory_util::LocalMemorySearchResult>(json_result) {
+                    if let Ok(parsed) = serde_json::from_value::<
+                        local_memory_util::LocalMemorySearchResult,
+                    >(json_result)
+                    {
                         all_results.push(parsed);
                     }
                 }

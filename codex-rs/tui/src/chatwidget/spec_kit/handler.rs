@@ -43,7 +43,9 @@ where
 /// Helper to run consensus check with retry logic for MCP initialization
 /// FORK-SPECIFIC (just-every/code): Handles MCP connection timing and transient failures
 async fn run_consensus_with_retry(
-    mcp_manager: Arc<tokio::sync::Mutex<Option<Arc<codex_core::mcp_connection_manager::McpConnectionManager>>>>,
+    mcp_manager: Arc<
+        tokio::sync::Mutex<Option<Arc<codex_core::mcp_connection_manager::McpConnectionManager>>>,
+    >,
     cwd: std::path::PathBuf,
     spec_id: String,
     stage: SpecStage,
@@ -71,7 +73,9 @@ async fn run_consensus_with_retry(
             stage,
             telemetry_enabled,
             manager,
-        ).await {
+        )
+        .await
+        {
             Ok(result) => return Ok(result),
             Err(e) => {
                 last_error = Some(e.to_string());
@@ -86,7 +90,7 @@ async fn run_consensus_with_retry(
     }
 
     Err(super::error::SpecKitError::from_string(
-        last_error.unwrap_or_else(|| "MCP consensus check failed after retries".to_string())
+        last_error.unwrap_or_else(|| "MCP consensus check failed after retries".to_string()),
     ))
 }
 
@@ -198,7 +202,10 @@ pub fn handle_spec_auto(
 
     // Validate configuration before starting pipeline (T83)
     if let Err(err) = super::config_validator::SpecKitConfigValidator::validate(&widget.config) {
-        widget.history_push(crate::history_cell::new_error_event(format!("Configuration validation failed: {}", err)));
+        widget.history_push(crate::history_cell::new_error_event(format!(
+            "Configuration validation failed: {}",
+            err
+        )));
         return;
     }
 
@@ -248,7 +255,9 @@ pub fn advance_spec_auto(widget: &mut ChatWidget) {
 
                 // Check if we should run a quality checkpoint before this stage
                 if state.quality_gates_enabled {
-                    if let Some(checkpoint) = determine_quality_checkpoint(stage, &state.completed_checkpoints) {
+                    if let Some(checkpoint) =
+                        determine_quality_checkpoint(stage, &state.completed_checkpoints)
+                    {
                         // Execute quality checkpoint instead of proceeding to guardrail
                         execute_quality_checkpoint(widget, checkpoint);
                         return;
@@ -297,7 +306,8 @@ pub fn advance_spec_auto(widget: &mut ChatWidget) {
             NextAction::PipelineComplete => {
                 // Finalize quality gates if enabled
                 if let Some(state) = widget.spec_auto_state.as_ref() {
-                    if state.quality_gates_enabled && !state.quality_checkpoint_outcomes.is_empty() {
+                    if state.quality_gates_enabled && !state.quality_checkpoint_outcomes.is_empty()
+                    {
                         finalize_quality_gates(widget);
                     }
                 }
@@ -334,7 +344,7 @@ pub fn on_spec_auto_task_started(widget: &mut ChatWidget, task_id: &str) {
 
 /// Handle spec-auto task completion (guardrail finished)
 pub fn on_spec_auto_task_complete(widget: &mut ChatWidget, task_id: &str) {
-    let start = std::time::Instant::now();  // T90: Metrics instrumentation
+    let start = std::time::Instant::now(); // T90: Metrics instrumentation
 
     let (spec_id, stage) = {
         let Some(state) = widget.spec_auto_state.as_mut() else {
@@ -444,16 +454,16 @@ pub fn on_spec_auto_task_complete(widget: &mut ChatWidget, task_id: &str) {
 
             // FORK-SPECIFIC (just-every/code): Use async MCP consensus with retry
             let consensus_result = match tokio::runtime::Handle::try_current() {
-                Ok(handle) => {
-                    handle.block_on(run_consensus_with_retry(
-                        widget.mcp_manager.clone(),
-                        widget.config.cwd.clone(),
-                        spec_id.clone(),
-                        stage,
-                        widget.spec_kit_telemetry_enabled(),
-                    ))
-                }
-                Err(_) => Err(super::error::SpecKitError::from_string("Tokio runtime not available".to_string())),
+                Ok(handle) => handle.block_on(run_consensus_with_retry(
+                    widget.mcp_manager.clone(),
+                    widget.config.cwd.clone(),
+                    spec_id.clone(),
+                    stage,
+                    widget.spec_kit_telemetry_enabled(),
+                )),
+                Err(_) => Err(super::error::SpecKitError::from_string(
+                    "Tokio runtime not available".to_string(),
+                )),
             };
 
             match consensus_result {
@@ -548,17 +558,22 @@ pub fn auto_submit_spec_stage_prompt(widget: &mut ChatWidget, stage: SpecStage, 
             ));
 
             // Update state to ExecutingAgents phase BEFORE submitting
-            let expected_agents: Vec<String> = widget
-                .config
-                .agents
-                .iter()
-                .filter(|a| a.enabled)
-                .map(|a| a.name.clone())
+            let stage_expected: Vec<String> = expected_agents_for_stage(stage)
+                .into_iter()
+                .filter_map(|agent| {
+                    let canonical = agent.canonical_name().to_string();
+                    widget
+                        .config
+                        .agents
+                        .iter()
+                        .find(|cfg| cfg.enabled && cfg.name.eq_ignore_ascii_case(&canonical))
+                        .map(|_| canonical)
+                })
                 .collect();
 
             if let Some(state) = widget.spec_auto_state.as_mut() {
                 state.phase = SpecAutoPhase::ExecutingAgents {
-                    expected_agents,
+                    expected_agents: stage_expected,
                     completed_agents: std::collections::HashSet::new(),
                 };
             }
@@ -640,13 +655,11 @@ pub fn on_spec_auto_agents_complete(widget: &mut ChatWidget) {
             // - Handler retrieves sub-agent results from local-memory
 
             widget.history_push(crate::history_cell::PlainHistoryCell::new(
-                vec![
-                    ratatui::text::Line::from(format!(
-                        "DEBUG: Quality gate agent completion check - {} agents completed: {:?}",
-                        completed_names.len(),
-                        completed_names
-                    )),
-                ],
+                vec![ratatui::text::Line::from(format!(
+                    "DEBUG: Quality gate agent completion check - {} agents completed: {:?}",
+                    completed_names.len(),
+                    completed_names
+                ))],
                 crate::history_cell::HistoryCellType::Notice,
             ));
 
@@ -686,21 +699,23 @@ pub fn on_spec_auto_agents_complete(widget: &mut ChatWidget) {
         if has_failures {
             // FORK-SPECIFIC: Retry logic for failed agents (just-every/code)
             let (retry_count, current_stage) = {
-                let Some(state) = widget.spec_auto_state.as_ref() else { return };
-                let Some(stage) = state.current_stage() else { return };
+                let Some(state) = widget.spec_auto_state.as_ref() else {
+                    return;
+                };
+                let Some(stage) = state.current_stage() else {
+                    return;
+                };
                 (state.agent_retry_count, stage)
             };
 
             if retry_count < SPEC_AUTO_AGENT_RETRY_ATTEMPTS {
                 // Retry the stage
                 widget.history_push(crate::history_cell::PlainHistoryCell::new(
-                    vec![
-                        ratatui::text::Line::from(format!(
-                            "⚠ Agent failures detected. Retrying {}/{} ...",
-                            retry_count + 1,
-                            SPEC_AUTO_AGENT_RETRY_ATTEMPTS
-                        )),
-                    ],
+                    vec![ratatui::text::Line::from(format!(
+                        "⚠ Agent failures detected. Retrying {}/{} ...",
+                        retry_count + 1,
+                        SPEC_AUTO_AGENT_RETRY_ATTEMPTS
+                    ))],
                     crate::history_cell::HistoryCellType::Notice,
                 ));
 
@@ -715,7 +730,9 @@ pub fn on_spec_auto_agents_complete(widget: &mut ChatWidget) {
                 }
 
                 // Re-execute the stage with retry context
-                let Some(state) = widget.spec_auto_state.as_ref() else { return };
+                let Some(state) = widget.spec_auto_state.as_ref() else {
+                    return;
+                };
                 let spec_id = state.spec_id.clone();
                 auto_submit_spec_stage_prompt(widget, current_stage, &spec_id);
                 return;
@@ -729,7 +746,10 @@ pub fn on_spec_auto_agents_complete(widget: &mut ChatWidget) {
 
                 halt_spec_auto_with_error(
                     widget,
-                    format!("Agent execution failed after {} retries. Missing/failed: {:?}", SPEC_AUTO_AGENT_RETRY_ATTEMPTS, missing),
+                    format!(
+                        "Agent execution failed after {} retries. Missing/failed: {:?}",
+                        SPEC_AUTO_AGENT_RETRY_ATTEMPTS, missing
+                    ),
                 );
             }
         }
@@ -749,7 +769,7 @@ fn check_consensus_and_advance_spec_auto(widget: &mut ChatWidget) {
     };
 
     let spec_id = state.spec_id.clone();
-    let retry_count = state.agent_retry_count;  // FORK-SPECIFIC: Track retries
+    let retry_count = state.agent_retry_count; // FORK-SPECIFIC: Track retries
 
     // Show checking status
     widget.history_push(crate::history_cell::PlainHistoryCell::new(
@@ -761,44 +781,39 @@ fn check_consensus_and_advance_spec_auto(widget: &mut ChatWidget) {
     ));
 
     // FORK-SPECIFIC (just-every/code): Run consensus check via async MCP with retry logic
-    let consensus_result = match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
-            handle.block_on(run_consensus_with_retry(
-                widget.mcp_manager.clone(),
-                widget.config.cwd.clone(),
-                spec_id.clone(),
-                current_stage,
-                widget.spec_kit_telemetry_enabled(),
-            ))
-        }
-        Err(_) => Err(super::error::SpecKitError::from_string("Tokio runtime not available".to_string())),
-    };
+    let consensus_result = block_on_sync(|| {
+        let mcp = widget.mcp_manager.clone();
+        let cwd = widget.config.cwd.clone();
+        let spec = spec_id.clone();
+        let telemetry_enabled = widget.spec_kit_telemetry_enabled();
+        async move { run_consensus_with_retry(mcp, cwd, spec, current_stage, telemetry_enabled).await }
+    });
 
     match consensus_result {
         Ok((consensus_lines, consensus_ok)) => {
             // FORK-SPECIFIC: Detect empty/invalid results and retry (just-every/code)
             let results_empty_or_invalid = consensus_lines.iter().any(|line| {
                 let text = line.to_string();
-                text.contains("No structured local-memory entries") ||
-                text.contains("No consensus artifacts") ||
-                text.contains("Missing agent artifacts") ||
-                text.contains("No local-memory entries found")
+                text.contains("No structured local-memory entries")
+                    || text.contains("No consensus artifacts")
+                    || text.contains("Missing agent artifacts")
+                    || text.contains("No local-memory entries found")
             });
 
-            if (results_empty_or_invalid || !consensus_ok) && retry_count < SPEC_AUTO_AGENT_RETRY_ATTEMPTS {
+            if (results_empty_or_invalid || !consensus_ok)
+                && retry_count < SPEC_AUTO_AGENT_RETRY_ATTEMPTS
+            {
                 widget.history_push(crate::history_cell::PlainHistoryCell::new(
                     consensus_lines.clone(),
                     HistoryCellType::Notice,
                 ));
 
                 widget.history_push(crate::history_cell::PlainHistoryCell::new(
-                    vec![
-                        ratatui::text::Line::from(format!(
-                            "⚠ Empty/invalid agent results. Retrying {}/{} ...",
-                            retry_count + 1,
-                            SPEC_AUTO_AGENT_RETRY_ATTEMPTS
-                        )),
-                    ],
+                    vec![ratatui::text::Line::from(format!(
+                        "⚠ Empty/invalid agent results. Retrying {}/{} ...",
+                        retry_count + 1,
+                        SPEC_AUTO_AGENT_RETRY_ATTEMPTS
+                    ))],
                     crate::history_cell::HistoryCellType::Notice,
                 ));
 
@@ -864,14 +879,12 @@ fn check_consensus_and_advance_spec_auto(widget: &mut ChatWidget) {
             // FORK-SPECIFIC: Retry on consensus errors (just-every/code)
             if retry_count < SPEC_AUTO_AGENT_RETRY_ATTEMPTS {
                 widget.history_push(crate::history_cell::PlainHistoryCell::new(
-                    vec![
-                        ratatui::text::Line::from(format!(
-                            "⚠ Consensus error: {}. Retrying {}/{} ...",
-                            err,
-                            retry_count + 1,
-                            SPEC_AUTO_AGENT_RETRY_ATTEMPTS
-                        )),
-                    ],
+                    vec![ratatui::text::Line::from(format!(
+                        "⚠ Consensus error: {}. Retrying {}/{} ...",
+                        err,
+                        retry_count + 1,
+                        SPEC_AUTO_AGENT_RETRY_ATTEMPTS
+                    ))],
                     crate::history_cell::HistoryCellType::Notice,
                 ));
 
@@ -904,7 +917,7 @@ fn check_consensus_and_advance_spec_auto(widget: &mut ChatWidget) {
 
 // Additional handler functions will be added here in subsequent commits
 
-use super::consensus::parse_consensus_stage;
+use super::consensus::{expected_agents_for_stage, parse_consensus_stage};
 
 /// Handle /spec-consensus command implementation
 pub fn handle_spec_consensus_impl(widget: &mut ChatWidget, raw_args: String) {
@@ -939,18 +952,13 @@ pub fn handle_spec_consensus_impl(widget: &mut ChatWidget, raw_args: String) {
     };
 
     // FORK-SPECIFIC (just-every/code): Use async MCP consensus with retry
-    let consensus_result = match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
-            handle.block_on(run_consensus_with_retry(
-                widget.mcp_manager.clone(),
-                widget.config.cwd.clone(),
-                spec_id.to_string(),
-                stage,
-                widget.spec_kit_telemetry_enabled(),
-            ))
-        }
-        Err(_) => Err(super::error::SpecKitError::from_string("Tokio runtime not available".to_string())),
-    };
+    let consensus_result = block_on_sync(|| {
+        let mcp = widget.mcp_manager.clone();
+        let cwd = widget.config.cwd.clone();
+        let spec = spec_id.to_string();
+        let telemetry_enabled = widget.spec_kit_telemetry_enabled();
+        async move { run_consensus_with_retry(mcp, cwd, spec, stage, telemetry_enabled).await }
+    });
 
     match consensus_result {
         Ok((lines, ok)) => {
@@ -975,15 +983,11 @@ pub fn handle_spec_consensus_impl(widget: &mut ChatWidget, raw_args: String) {
 // Re-exported from mod.rs for backward compatibility
 
 pub use super::quality_gate_handler::{
-    on_quality_gate_agents_complete,
-    on_quality_gate_answers,
-    on_gpt5_validations_complete,
+    on_gpt5_validations_complete, on_quality_gate_agents_complete, on_quality_gate_answers,
     on_quality_gate_cancelled,
 };
 
 // Internal quality gate helpers (called from advance_spec_auto)
 use super::quality_gate_handler::{
-    determine_quality_checkpoint,
-    execute_quality_checkpoint,
-    finalize_quality_gates,
+    determine_quality_checkpoint, execute_quality_checkpoint, finalize_quality_gates,
 };
