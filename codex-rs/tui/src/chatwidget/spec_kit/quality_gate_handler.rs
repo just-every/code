@@ -759,23 +759,24 @@ pub(super) fn execute_quality_checkpoint(
     let orchestrator_prompt = format!(
         r#"Execute Quality Checkpoint: {} for SPEC {}
 
-Read prompts from docs/spec-kit/prompts.json and spawn agents via agent_run.
-
 CRITICAL INSTRUCTIONS:
-1. Read prompts.json and extract prompts for: {}
+1. Read docs/spec-kit/prompts.json and extract prompts for: {}
 2. For each gate, use agent_run to spawn 3 agents in parallel:
    - models: ["gemini", "claude", "code"]
    - read_only: true
 3. Give each agent its role-specific prompt from prompts.json
-4. Each agent must store JSON result in local-memory with tags:
-   - ["quality-gate", "{}", "agent:<agent_name>"]
-   - domain: "spec-kit"
-   - importance: 8
-5. Use agent_wait to wait for all agents to complete
-6. Report completion: "Quality gate agents complete - stored in local-memory"
+4. Use agent_wait to wait for all agents to complete
+5. For each completed agent:
+   - Read their result.txt file (contains JSON analysis)
+   - Store in local-memory using mcp__local-memory__store_memory:
+     * content: <agent's JSON output>
+     * tags: ["quality-gate", "{}", "agent:<agent_name>"]
+     * domain: "spec-kit"
+     * importance: 8
+6. Report: "Quality gate complete - 3/3 agents stored in local-memory"
 
-Do NOT process the results yourself - just spawn agents and wait for completion.
-The TUI will retrieve results from local-memory and handle auto-resolution.
+YOU (orchestrator) handle local-memory storage, not the agents.
+Read each agent's result.txt and store it.
 
 Gates to execute: {}
 "#,
