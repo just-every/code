@@ -752,35 +752,13 @@ pub fn on_quality_gate_cancelled(
 
 /// Determine which quality checkpoint should run before the given stage
 pub(super) fn determine_quality_checkpoint(
-    stage: SpecStage,
-    completed: &std::collections::HashSet<super::state::QualityCheckpoint>,
+    _stage: SpecStage,
+    _completed: &std::collections::HashSet<super::state::QualityCheckpoint>,
 ) -> Option<super::state::QualityCheckpoint> {
-    use super::state::QualityCheckpoint;
-
-    match stage {
-        SpecStage::Plan => {
-            if !completed.contains(&QualityCheckpoint::PrePlanning) {
-                Some(QualityCheckpoint::PrePlanning)
-            } else {
-                None
-            }
-        }
-        SpecStage::Tasks => {
-            if !completed.contains(&QualityCheckpoint::PostPlan) {
-                Some(QualityCheckpoint::PostPlan)
-            } else {
-                None
-            }
-        }
-        SpecStage::Implement => {
-            if !completed.contains(&QualityCheckpoint::PostTasks) {
-                Some(QualityCheckpoint::PostTasks)
-            } else {
-                None
-            }
-        }
-        _ => None,  // No checkpoints for Validate, Audit, Unlock
-    }
+    // DISABLED: Quality gates cause async runtime panics
+    // TODO: Fix async retrieval, then re-enable
+    // See commit 1cd029605 for last working version (before async issues)
+    None
 }
 
 /// Execute quality checkpoint by starting quality gate agents
