@@ -46,6 +46,17 @@ pub fn on_quality_gate_agents_complete(widget: &mut ChatWidget) {
         }
     };
 
+    // Guard: Don't process same checkpoint twice (prevents recursion)
+    if state.completed_checkpoints.contains(&checkpoint) {
+        widget.history_push(crate::history_cell::PlainHistoryCell::new(
+            vec![
+                ratatui::text::Line::from(format!("DEBUG: Checkpoint {} already completed - skipping", checkpoint.name())),
+            ],
+            crate::history_cell::HistoryCellType::Notice,
+        ));
+        return;
+    }
+
     let spec_id = state.spec_id.clone();
     let cwd = widget.config.cwd.clone();
 

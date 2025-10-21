@@ -4064,10 +4064,12 @@ impl ChatWidget<'_> {
         let key = self.next_internal_key();
         let _ = self.history_insert_with_key_global_tagged(Box::new(cell), key, "epilogue");
 
-        // SPEC-KIT QUALITY GATE: Trigger handler after cell is added if in QualityGateExecuting
+        // SPEC-KIT QUALITY GATE: Trigger handler if in QualityGateExecuting
+        // Guard in handler prevents recursion (checks completed_checkpoints)
         if let Some(state) = &self.spec_auto_state {
-            if matches!(state.phase, spec_kit::state::SpecAutoPhase::QualityGateExecuting { .. }) {
-                // Trigger handler - orchestrator has stored results by now
+            if matches!(state.phase, spec_kit::state::SpecAutoPhase::QualityGateExecuting { checkpoint, .. }
+                if !state.completed_checkpoints.contains(&checkpoint))
+            {
                 spec_kit::handler::on_quality_gate_agents_complete(self);
             }
         }
