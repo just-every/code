@@ -22,6 +22,24 @@ const MCP_RETRY_DELAY_MS: u64 = 100;
 // FORK-SPECIFIC (just-every/code): Spec-auto agent retry configuration
 const SPEC_AUTO_AGENT_RETRY_ATTEMPTS: u32 = 3;
 
+fn block_on_sync<F, Fut, T>(factory: F) -> T
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        let handle_clone = handle.clone();
+        tokio::task::block_in_place(move || handle_clone.block_on(factory()))
+    } else {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build runtime")
+            .block_on(factory())
+    }
+}
+
 /// Helper to run consensus check with retry logic for MCP initialization
 /// FORK-SPECIFIC (just-every/code): Handles MCP connection timing and transient failures
 async fn run_consensus_with_retry(
@@ -501,17 +519,13 @@ pub fn auto_submit_spec_stage_prompt(widget: &mut ChatWidget, stage: SpecStage, 
     }
 
     // FORK-SPECIFIC (just-every/code): Pass MCP manager for native context gathering (ARCH-004)
-    let mcp_manager_ref = match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
-            handle.block_on(async {
-                widget.mcp_manager.lock().await.as_ref().cloned()
-            })
-        }
-        Err(_) => None,
-    };
+    let mcp_manager_ref = block_on_sync(|| {
+        let manager = widget.mcp_manager.clone();
+        async move { manager.lock().await.as_ref().cloned() }
+    });
 
-    let prompt_result = if let Some(manager) = mcp_manager_ref.as_ref() {
-        crate::spec_prompts::build_stage_prompt_with_mcp(stage, &arg, Some(manager.as_ref()))
+    let prompt_result = if let Some(manager) = mcp_manager_ref.clone() {
+        crate::spec_prompts::build_stage_prompt_with_mcp(stage, &arg, Some(manager))
     } else {
         crate::spec_prompts::build_stage_prompt(stage, &arg)
     };

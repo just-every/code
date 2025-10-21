@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use once_cell::sync::OnceCell;
 use serde::Deserialize;
@@ -12,6 +13,24 @@ const PROMPTS_JSON: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../docs/spec-kit/prompts.json"
 ));
+
+fn block_on_sync<F, Fut, T>(factory: F) -> T
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        let handle_clone = handle.clone();
+        tokio::task::block_in_place(move || handle_clone.block_on(factory()))
+    } else {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build runtime")
+            .block_on(factory())
+    }
+}
 
 #[derive(Debug, Deserialize, Clone, Default, PartialEq, Eq)]
 pub struct AgentPrompt {
@@ -286,7 +305,7 @@ pub fn build_stage_prompt(stage: SpecStage, raw_args: &str) -> Result<String, Pr
 pub fn build_stage_prompt_with_mcp(
     stage: SpecStage,
     raw_args: &str,
-    mcp_manager: Option<&codex_core::mcp_connection_manager::McpConnectionManager>,
+    mcp_manager: Option<Arc<codex_core::mcp_connection_manager::McpConnectionManager>>,
 ) -> Result<String, PromptBuildError> {
     let trimmed = raw_args.trim();
     if trimmed.is_empty() {
@@ -467,39 +486,40 @@ pub fn build_stage_prompt_with_mcp(
 fn gather_local_memory_context(
     spec_id: &str,
     stage: SpecStage,
-    mcp_manager: Option<&codex_core::mcp_connection_manager::McpConnectionManager>,
+    mcp_manager: Option<Arc<codex_core::mcp_connection_manager::McpConnectionManager>>,
 ) -> Result<Vec<String>, String> {
     use serde_json::json;
 
     // Use native MCP if available (ARCH-002 pattern)
-    let results = if let Some(manager) = mcp_manager {
-        // Async MCP call via block_on (same pattern as consensus.rs)
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                let query = format!("{} {}", spec_id, stage.command_name());
+    let results = if let Some(manager_arc) = mcp_manager {
+        let spec_id_owned = spec_id.to_string();
+        let stage_name = stage.command_name().to_string();
+        block_on_sync(move || {
+            let manager = manager_arc.clone();
+            let spec_id = spec_id_owned.clone();
+            let stage_name = stage_name.clone();
+            async move {
+                let query = format!("{} {}", spec_id, stage_name);
                 let args = json!({
                     "query": query,
                     "limit": 8,
-                    "tags": [format!("spec:{}", spec_id), format!("stage:{}", stage.command_name())],
+                    "tags": [format!("spec:{}", spec_id), format!("stage:{}", stage_name)],
                     "search_type": "hybrid"
                 });
 
-                handle.block_on(async {
-                    manager.call_tool(
+                manager
+                    .call_tool(
                         "local-memory",
                         "search",
                         Some(args),
                         Some(std::time::Duration::from_secs(10))
-                    ).await
-                }).ok()
+                    )
+                    .await
+                    .ok()
                     .and_then(|result| parse_mcp_results_to_local_memory(&result).ok())
                     .unwrap_or_default()
             }
-            Err(_) => {
-                // No tokio runtime (shouldn't happen in TUI context)
-                return Err("No tokio runtime available".to_string());
-            }
-        }
+        })
     } else {
         // Fallback: Return empty (graceful degradation when mcp_manager not passed)
         Vec::new()
