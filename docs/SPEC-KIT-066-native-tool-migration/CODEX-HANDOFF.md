@@ -6,9 +6,14 @@
 
 ## Context
 
-Working on SPEC-066 Phase 4 validation. Quality gate orchestrator fixes complete but blocked by separate issue.
+Working on SPEC-066 Phase 4 validation. Quality gate orchestrator work caused **multiple crashes** and is now disabled.
 
-**Primary blocker**: Guardrail policy prefilter subprocess hangs indefinitely.
+**Critical stability issues**:
+- **Stack overflow**: Infinite recursion from history_push trigger (2+ core dumps)
+- **Runtime panic**: "Cannot start runtime from within runtime" from async MCP calls
+- **Solution**: Quality gates DISABLED to prevent crashes
+
+**Current blocker**: Guardrail policy prefilter subprocess hangs (separate from crashes).
 
 ---
 

@@ -511,26 +511,61 @@ grep -A20 "\\[agents\\]" ~/.code/config.toml | grep gpt-5
 
 ---
 
+## Critical Stability Issues (CRASHES)
+
+### Stack Overflow (Infinite Recursion)
+**When**: Commits 03d1b51cf - 1cd029605
+**Symptom**: `thread 'main' has overflowed its stack` → core dump
+**Root cause**: history_push trigger called handler → handler calls history_push → infinite loop
+**Impact**: Binary crashes immediately when entering QualityGateExecuting phase
+**Attempted fixes**:
+- Processing flag guard (failed - flag set too late)
+- completed_checkpoints check (failed - only set at end)
+- Flag-first approach (failed - still had one history_push before flag)
+**Result**: ALL trigger approaches caused crashes
+
+### Runtime Panic (Async Conflict)
+**When**: Commit 1cd029605 (after stack overflow fixed)
+**Symptom**: `Cannot start a runtime from within a runtime` → panic abort
+**Location**: quality_gate_handler.rs:74 (tokio::Handle::block_on call)
+**Root cause**: Handler runs in sync context but needs async MCP call
+**Impact**: Binary panics when handler tries to retrieve from local-memory
+**No viable fix**: Cannot use block_on when already in async runtime
+**Result**: Quality gates MUST be disabled to prevent crashes
+
+### Process Hangs (Guardrail Subprocess)
+**When**: Every /speckit.auto attempt
+**Symptom**: `code exec --model gpt-5-codex` hangs indefinitely (no crash, just hangs)
+**Impact**: Pipeline never proceeds, requires manual kill
+**Not related to our changes**: Exec mode worked before session, likely config/model issue
+**Current**: BLOCKING all /speckit.auto testing
+
+---
+
 ## Session Outcome
 
-**Token Usage**: ~287k / 1M (29% used)
-**Commits**: 36 (many experimental, incomplete)
+**Token Usage**: ~294k / 1M (29% used)
+**Commits**: 37 (many experimental, incomplete)
 **SPECs Completed**: 0 (SPEC-066 Phase 4 blocked, SPEC-067 blocked)
-**Issues Found**: 5 major (2 blocking)
-**Issues Fixed**: 0 (all workarounds or disabled)
+**Issues Found**: 5 major (2 blocking, 2 **causing crashes**)
+**Issues Fixed**: 0 (all disabled or workarounds)
+**Crashes Encountered**: 2 types (stack overflow, runtime panic)
+**Core Dumps Generated**: 2+
 
 **Value delivered**:
 - Deep understanding of quality gate architecture
 - Comprehensive documentation of failure modes
+- **Identified crash-causing code paths**
 - Clean problem statement for SPEC-068
 - Orchestrator pattern validated (agents spawn and store correctly)
 
 **Technical debt created**:
-- 36 commits with incomplete features
-- Quality gates half-implemented
+- 37 commits with incomplete features
+- Quality gates half-implemented, **disabled to prevent crashes**
 - Debug logging artifacts
-- Recursion protection code (unused since disabled)
-- Processing flag (unused since disabled)
+- Recursion protection code (prevents crashes but gates disabled anyway)
+- Processing flag (prevents crashes but gates disabled anyway)
+- **Multiple core dumps in repo** (added to .gitignore)
 
 ---
 
