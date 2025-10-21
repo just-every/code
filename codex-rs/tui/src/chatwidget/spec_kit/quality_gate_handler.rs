@@ -759,26 +759,49 @@ pub(super) fn execute_quality_checkpoint(
     let orchestrator_prompt = format!(
         r#"Execute Quality Checkpoint: {} for SPEC {}
 
-CRITICAL INSTRUCTIONS:
-1. Read docs/spec-kit/prompts.json and extract prompts for: {}
-2. For each gate, use agent_run to spawn 3 agents in parallel:
-   - models: ["gemini", "claude", "code"]
-   - read_only: true
-3. Give each agent its role-specific prompt from prompts.json
-4. Use agent_wait to wait for all agents to complete
-5. For each completed agent:
-   - Read their result.txt file (contains JSON analysis)
-   - Store in local-memory using mcp__local-memory__store_memory:
-     * content: <agent's JSON output>
-     * tags: ["quality-gate", "{}", "agent:<agent_name>"]
-     * domain: "spec-kit"
-     * importance: 8
-6. Report: "Quality gate complete - 3/3 agents stored in local-memory"
+CRITICAL: Spawn 3 SEPARATE agent_run calls (one per agent with role-specific prompt).
 
-YOU (orchestrator) handle local-memory storage, not the agents.
-Read each agent's result.txt and store it.
+STEP 1: Read docs/spec-kit/prompts.json
+Extract prompts for gates: {}
 
-Gates to execute: {}
+STEP 2: For EACH gate, spawn 3 SEPARATE agents:
+
+For Gemini:
+  agent_run(
+    models: ["gemini"],
+    read_only: true,
+    task: <gemini's role-specific prompt from prompts.json>
+  )
+
+For Claude:
+  agent_run(
+    models: ["claude"],
+    read_only: true,
+    task: <claude's role-specific prompt from prompts.json>
+  )
+
+For Code:
+  agent_run(
+    models: ["code"],
+    read_only: true,
+    task: <code's role-specific prompt from prompts.json>
+  )
+
+STEP 3: Collect all 3 agent_ids, use agent_wait for each
+
+STEP 4: For each completed agent:
+  - Read .code/agents/{{agent_id}}/result.txt
+  - Store using mcp__local-memory__store_memory:
+    content: <JSON from result.txt>,
+    tags: ["quality-gate", "{}", "agent:<gemini|claude|code>"],
+    domain: "spec-kit",
+    importance: 8
+
+STEP 5: Report "Quality gate complete - 3/3 agents stored in local-memory"
+
+CRITICAL: 3 SEPARATE agent_run calls, NOT one batch. Each agent gets its own prompt.
+
+Gates: {}
 "#,
         checkpoint.name(),
         spec_id,
