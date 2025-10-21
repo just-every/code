@@ -57,8 +57,19 @@ pub fn on_quality_gate_agents_complete(widget: &mut ChatWidget) {
         return;
     }
 
+    // Guard: Don't re-enter if already processing this checkpoint (prevents recursion)
+    if state.quality_gate_processing == Some(checkpoint) {
+        return; // Silent return - already processing
+    }
+
     let spec_id = state.spec_id.clone();
     let cwd = widget.config.cwd.clone();
+
+    // Mark as processing IMMEDIATELY (before any history_push calls)
+    // Do this after extracting spec_id to avoid borrow conflicts
+    if let Some(state) = widget.spec_auto_state.as_mut() {
+        state.quality_gate_processing = Some(checkpoint);
+    }
 
     widget.history_push(crate::history_cell::PlainHistoryCell::new(
         vec![
@@ -114,6 +125,10 @@ pub fn on_quality_gate_agents_complete(widget: &mut ChatWidget) {
                                 widget.history_push(crate::history_cell::new_error_event(
                                     "No quality gate results found in local-memory".to_string()
                                 ));
+                                // Clear processing flag on error
+                                if let Some(state) = widget.spec_auto_state.as_mut() {
+                                    state.quality_gate_processing = None;
+                                }
                                 return;
                             }
                         }
@@ -122,6 +137,10 @@ pub fn on_quality_gate_agents_complete(widget: &mut ChatWidget) {
                         widget.history_push(crate::history_cell::new_error_event(
                             "MCP manager not available".to_string()
                         ));
+                        // Clear processing flag on error
+                        if let Some(state) = widget.spec_auto_state.as_mut() {
+                            state.quality_gate_processing = None;
+                        }
                         return;
                     }
                 }
@@ -130,6 +149,10 @@ pub fn on_quality_gate_agents_complete(widget: &mut ChatWidget) {
                 widget.history_push(crate::history_cell::new_error_event(
                     "No tokio runtime available".to_string()
                 ));
+                // Clear processing flag on error
+                if let Some(state) = widget.spec_auto_state.as_mut() {
+                    state.quality_gate_processing = None;
+                }
                 return;
             }
         }
@@ -139,6 +162,10 @@ pub fn on_quality_gate_agents_complete(widget: &mut ChatWidget) {
         widget.history_push(crate::history_cell::new_error_event(
             "Failed to retrieve quality gate results from local-memory".to_string()
         ));
+        // Clear processing flag on error
+        if let Some(state) = widget.spec_auto_state.as_mut() {
+            state.quality_gate_processing = None;
+        }
         return;
     }
 
@@ -175,6 +202,7 @@ pub fn on_quality_gate_agents_complete(widget: &mut ChatWidget) {
         // No issues found - continue to next stage
         if let Some(state) = widget.spec_auto_state.as_mut() {
             state.completed_checkpoints.insert(checkpoint);
+            state.quality_gate_processing = None; // Clear processing flag
             state.phase = SpecAutoPhase::Guardrail;
         }
         super::handler::advance_spec_auto(widget);
@@ -272,6 +300,7 @@ pub fn on_quality_gate_agents_complete(widget: &mut ChatWidget) {
         if let Some(state) = widget.spec_auto_state.as_mut() {
             let auto_resolved_issues: Vec<_> = auto_resolved_list.iter().map(|(issue, _)| issue.clone()).collect();
 
+            state.quality_gate_processing = None; // Clear processing flag when transitioning
             state.phase = SpecAutoPhase::QualityGateValidating {
                 checkpoint,
                 auto_resolved: auto_resolved_issues,
@@ -329,6 +358,7 @@ pub fn on_quality_gate_agents_complete(widget: &mut ChatWidget) {
         widget.bottom_pane.show_quality_gate_modal(checkpoint, escalated_questions.clone());
 
         if let Some(state) = widget.spec_auto_state.as_mut() {
+            state.quality_gate_processing = None; // Clear processing flag when transitioning to modal
             state.phase = SpecAutoPhase::QualityGateAwaitingHuman {
                 checkpoint,
                 escalated_issues,
@@ -347,6 +377,7 @@ pub fn on_quality_gate_agents_complete(widget: &mut ChatWidget) {
 
         if let Some(state) = widget.spec_auto_state.as_mut() {
             state.completed_checkpoints.insert(checkpoint);
+            state.quality_gate_processing = None; // Clear processing flag
             state.quality_checkpoint_outcomes.push((checkpoint, auto_resolved_list.len(), 0));
             state.phase = SpecAutoPhase::Guardrail;
         }
@@ -670,6 +701,7 @@ pub fn on_gpt5_validations_complete(widget: &mut ChatWidget) {
 
         if let Some(state) = widget.spec_auto_state.as_mut() {
             state.completed_checkpoints.insert(checkpoint);
+            state.quality_gate_processing = None; // Clear processing flag
             state.quality_checkpoint_outcomes.push((
                 checkpoint,
                 auto_resolved.len() + validated_auto_resolved.len(),
@@ -709,6 +741,7 @@ pub fn on_gpt5_validations_complete(widget: &mut ChatWidget) {
         widget.bottom_pane.show_quality_gate_modal(checkpoint, escalated_questions.clone());
 
         if let Some(state) = widget.spec_auto_state.as_mut() {
+            state.quality_gate_processing = None; // Clear processing flag when transitioning to modal
             state.phase = SpecAutoPhase::QualityGateAwaitingHuman {
                 checkpoint,
                 escalated_issues: validation_rejected.into_iter().map(|(issue, _)| issue).collect(),

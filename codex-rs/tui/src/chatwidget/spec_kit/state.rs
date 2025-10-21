@@ -80,6 +80,7 @@ pub struct SpecAutoState {
     // === Quality Gate State (T85) ===
     pub quality_gates_enabled: bool,
     pub completed_checkpoints: HashSet<QualityCheckpoint>,
+    pub quality_gate_processing: Option<QualityCheckpoint>,  // Currently processing (prevents recursion)
     pub quality_modifications: Vec<String>,  // Track files modified by quality gates
     pub quality_auto_resolved: Vec<(QualityIssue, String)>,  // All auto-resolutions
     pub quality_escalated: Vec<(QualityIssue, String)>,  // All human-answered questions
@@ -138,6 +139,7 @@ impl SpecAutoState {
             hal_mode,
             quality_gates_enabled,
             completed_checkpoints: HashSet::new(),
+            quality_gate_processing: None,
             quality_modifications: Vec::new(),
             quality_auto_resolved: Vec::new(),
             quality_escalated: Vec::new(),

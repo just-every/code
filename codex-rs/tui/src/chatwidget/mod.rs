@@ -4064,13 +4064,17 @@ impl ChatWidget<'_> {
         let key = self.next_internal_key();
         let _ = self.history_insert_with_key_global_tagged(Box::new(cell), key, "epilogue");
 
-        // SPEC-KIT QUALITY GATE: Trigger handler if in QualityGateExecuting
-        // Guard in handler prevents recursion (checks completed_checkpoints)
+        // SPEC-KIT QUALITY GATE: Trigger handler if in QualityGateExecuting AND not already processing
         if let Some(state) = &self.spec_auto_state {
-            if matches!(state.phase, spec_kit::state::SpecAutoPhase::QualityGateExecuting { checkpoint, .. }
-                if !state.completed_checkpoints.contains(&checkpoint))
-            {
-                spec_kit::handler::on_quality_gate_agents_complete(self);
+            if let spec_kit::state::SpecAutoPhase::QualityGateExecuting { checkpoint, .. } = state.phase {
+                // Only trigger if:
+                // 1. Checkpoint not completed
+                // 2. Not currently processing (prevents recursion)
+                if !state.completed_checkpoints.contains(&checkpoint)
+                    && state.quality_gate_processing.is_none()
+                {
+                    spec_kit::handler::on_quality_gate_agents_complete(self);
+                }
             }
         }
     }
