@@ -6769,6 +6769,22 @@ impl ChatWidget<'_> {
                             || !self.tools_state.running_custom_tools.is_empty()
                             || !self.tools_state.running_web_search.is_empty();
                         let any_streaming = self.stream.is_write_cycle_active();
+
+                        // DEBUG: Log trigger conditions for spec-auto
+                        if self.spec_auto_state.is_some() {
+                            self.history_push(crate::history_cell::PlainHistoryCell::new(
+                                vec![
+                                    ratatui::text::Line::from(format!(
+                                        "DEBUG TRIGGER: all_terminal={}, tools_running={}, streaming={}",
+                                        all_agents_terminal,
+                                        any_tools_running,
+                                        any_streaming
+                                    )),
+                                ],
+                                crate::history_cell::HistoryCellType::Notice,
+                            ));
+                        }
+
                         if !(any_tools_running || any_streaming) {
                             self.bottom_pane.set_task_running(false);
                             self.bottom_pane.update_status_text(String::new());
