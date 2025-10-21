@@ -4060,8 +4060,17 @@ impl ChatWidget<'_> {
                 "Background events must use push_background_* helpers"
             );
         }
+
         let key = self.next_internal_key();
         let _ = self.history_insert_with_key_global_tagged(Box::new(cell), key, "epilogue");
+
+        // SPEC-KIT QUALITY GATE: Trigger handler after cell is added if in QualityGateExecuting
+        if let Some(state) = &self.spec_auto_state {
+            if matches!(state.phase, spec_kit::state::SpecAutoPhase::QualityGateExecuting { .. }) {
+                // Trigger handler - orchestrator has stored results by now
+                spec_kit::handler::on_quality_gate_agents_complete(self);
+            }
+        }
     }
     /// Insert a background event near the top of the current request so it appears
     /// before imminent provider output (e.g. Exec begin).
