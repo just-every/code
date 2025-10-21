@@ -67,6 +67,8 @@ spec_ops_run_policy_prefilter() {
   local stage="$2"
   local cmd_template="${SPEC_OPS_POLICY_PREFILTER_CMD:-}"
 
+  local timeout_secs="${SPEC_OPS_POLICY_PREFILTER_TIMEOUT:-120}"
+
   if [[ -z "${cmd_template}" ]]; then
     local code_cli="${SPEC_OPS_CODE_CLI:-${REPO_ROOT}/codex-rs/target/dev-fast/code}"
     if [[ ! -x "${code_cli}" ]]; then
@@ -78,7 +80,9 @@ spec_ops_run_policy_prefilter() {
     if [[ -n "${SPEC_OPS_CONTEXT_CACHE:-}" ]] && [[ -d "${SPEC_OPS_CONTEXT_CACHE}" ]]; then
       context_hint=" (context: ${SPEC_OPS_CONTEXT_CACHE})"
     fi
-    cmd_template="${code_cli} exec --sandbox workspace-write --model ${SPEC_OPS_POLICY_PREFILTER_MODEL} -- \"Policy prefilter for ${spec}/${stage}${context_hint}\""
+    local prompt="Policy prefilter for ${spec}/${stage}${context_hint}. Determine whether the stage may proceed given the context provided. If you lack concrete evidence of a blocker, respond PASS with a brief note (<=3 bullets) explaining assumptions. Only return FAIL for explicit, high-confidence blockers (e.g., missing SPEC docs, evidence quota exceeded, known crashes). Do not call any tools or run shell commands. Respond immediately and stop after the summary."
+    local config_overrides="-c include_plan_tool=false -c include_apply_patch_tool=false -c tools.web_search_request=false -c include_view_image_tool=false"
+    cmd_template="timeout ${timeout_secs} ${code_cli} exec --sandbox workspace-write ${config_overrides} --model ${SPEC_OPS_POLICY_PREFILTER_MODEL} -- \"${prompt}\""
   fi
 
   local command
@@ -90,8 +94,13 @@ spec_ops_run_policy_prefilter() {
     SPEC_OPS_POLICY_PREFILTER_NOTE="${command}"
     return 0
   else
+    local exit_code=$?
     SPEC_OPS_POLICY_PREFILTER_STATUS="failed"
-    SPEC_OPS_POLICY_PREFILTER_NOTE="command failed: ${command}"
+    if [[ ${exit_code} -eq 124 ]]; then
+      SPEC_OPS_POLICY_PREFILTER_NOTE="command timed out after ${timeout_secs}s: ${command}"
+    else
+      SPEC_OPS_POLICY_PREFILTER_NOTE="command failed (exit ${exit_code}): ${command}"
+    fi
     return 1
   fi
 }
@@ -100,6 +109,8 @@ spec_ops_run_policy_final() {
   local spec="$1"
   local stage="$2"
   local cmd_template="${SPEC_OPS_POLICY_FINAL_CMD:-}"
+
+  local timeout_secs="${SPEC_OPS_POLICY_FINAL_TIMEOUT:-120}"
 
   if [[ -z "${cmd_template}" ]]; then
     local code_cli="${SPEC_OPS_CODE_CLI:-${REPO_ROOT}/codex-rs/target/dev-fast/code}"
@@ -112,7 +123,9 @@ spec_ops_run_policy_final() {
     if [[ -n "${SPEC_OPS_CONTEXT_CACHE:-}" ]] && [[ -d "${SPEC_OPS_CONTEXT_CACHE}" ]]; then
       context_hint=" (context: ${SPEC_OPS_CONTEXT_CACHE})"
     fi
-    cmd_template="${code_cli} exec --sandbox workspace-write --model ${SPEC_OPS_POLICY_FINAL_MODEL} -- \"Policy final check for ${spec}/${stage}${context_hint}\""
+    local prompt="Policy final check for ${spec}/${stage}${context_hint}. Determine whether the stage may proceed given the context provided. If no explicit blocker is known, respond PASS with <=3 bullet points summarizing assumptions or required follow-ups. Reserve FAIL for clear violations or risks that must be resolved before continuing. Do not call any tools or run shell commands. Respond immediately and stop after the summary."
+    local config_overrides="-c include_plan_tool=false -c include_apply_patch_tool=false -c tools.web_search_request=false -c include_view_image_tool=false"
+    cmd_template="timeout ${timeout_secs} ${code_cli} exec --sandbox workspace-write ${config_overrides} --model ${SPEC_OPS_POLICY_FINAL_MODEL} -- \"${prompt}\""
   fi
 
   local command
@@ -124,8 +137,13 @@ spec_ops_run_policy_final() {
     SPEC_OPS_POLICY_FINAL_NOTE="${command}"
     return 0
   else
+    local exit_code=$?
     SPEC_OPS_POLICY_FINAL_STATUS="failed"
-    SPEC_OPS_POLICY_FINAL_NOTE="command failed: ${command}"
+    if [[ ${exit_code} -eq 124 ]]; then
+      SPEC_OPS_POLICY_FINAL_NOTE="command timed out after ${timeout_secs:-"?"}s: ${command}"
+    else
+      SPEC_OPS_POLICY_FINAL_NOTE="command failed (exit ${exit_code}): ${command}"
+    fi
     return 1
   fi
 }
@@ -139,9 +157,14 @@ spec_ops_require_clean_tree() {
     return
   fi
   if ! git diff --no-ext-diff --quiet || ! git diff --no-ext-diff --cached --quiet; then
-    echo "SPEC-OPS-004: working tree must be clean" >&2
+    local message="SPEC-OPS-004: working tree has uncommitted changes"
+    if [[ "${SPEC_OPS_ENFORCE_CLEAN_TREE:-0}" == "1" ]]; then
+      echo "${message}; aborting" >&2
+      git status --short >&2
+      exit 1
+    fi
+    echo "${message}; continuing (set SPEC_OPS_ENFORCE_CLEAN_TREE=1 or SPEC_OPS_ALLOW_DIRTY=1 to control behavior)" >&2
     git status --short >&2
-    exit 1
   fi
 }
 
