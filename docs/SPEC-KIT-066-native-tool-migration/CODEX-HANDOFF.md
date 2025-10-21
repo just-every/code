@@ -184,20 +184,37 @@ git checkout 803399c41
 ## Copy-Paste Start Prompt
 
 ```
-Investigate guardrail subprocess hang blocking SPEC-066 Phase 4.
+Investigate /speckit.auto crashes and subprocess hang
 
-ISSUE: code exec --model gpt-5-codex hangs during policy prefilter
+CRITICAL: Binary crashed 2+ times this session (stack overflow, runtime panic)
+Quality gates DISABLED to prevent crashes. Do NOT re-enable.
 
-STEPS:
-1. Check model configuration (gpt-5-codex in ~/.code/config.toml)
-2. Test exec mode directly with timeout
-3. Try workaround: SPEC_OPS_POLICY_PREFILTER_CMD="echo skip"
-4. If fixed: Run /speckit.auto SPEC-KIT-067 end-to-end
-5. Close SPEC-066 if successful
+CRASH HISTORY:
+- Stack overflow from history_push trigger (commits 03d1b51cf-1cd029605)
+- Runtime panic from async MCP calls (commit 1cd029605)
+- 2+ core dumps generated
+- ALL quality gate trigger approaches failed
 
-CONTEXT: Read docs/SPEC-KIT-066-native-tool-migration/REVIEW.md
+CURRENT STATE:
+- Quality gates: DISABLED (crashes prevented)
+- Binary: Stable when gates disabled
+- Blocker: Guardrail subprocess hangs on gpt-5-codex
 
-GOAL: ONE successful /speckit.auto run to validate native tools work
+INVESTIGATION (SAFE - guardrail only):
+1. Check model config: grep "gpt-5" ~/.code/config.toml
+2. Test exec: timeout 30 ./codex-rs/target/dev-fast/code exec --model gpt-5-codex -- "test"
+3. Workaround: SPEC_OPS_POLICY_PREFILTER_CMD="echo skip" /speckit.auto SPEC-KIT-067
+4. If works: Complete /speckit.auto, close SPEC-066
+
+DO NOT (causes crashes):
+- Re-enable quality gates
+- Modify quality_gate_handler.rs
+- Add history_push triggers
+- Use block_on in handlers
+
+READ FIRST: docs/SPEC-KIT-066-native-tool-migration/REVIEW.md (crash details)
+
+GOAL: ONE /speckit.auto completion WITHOUT touching quality gate code
 ```
 
 ---
