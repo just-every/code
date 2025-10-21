@@ -13,63 +13,50 @@ use crate::spec_prompts::SpecStage;
 
 /// Handle quality gate agents completing
 pub fn on_quality_gate_agents_complete(widget: &mut ChatWidget) {
+    // RECURSION GUARD: Check processing flag FIRST, before any history_push
+    let (checkpoint, should_process) = {
+        let Some(state) = widget.spec_auto_state.as_ref() else {
+            return; // No state - silent return
+        };
+
+        match &state.phase {
+            SpecAutoPhase::QualityGateExecuting { checkpoint, .. } => {
+                // Check all guard conditions WITHOUT any history_push calls
+                let already_completed = state.completed_checkpoints.contains(checkpoint);
+                let already_processing = state.quality_gate_processing == Some(*checkpoint);
+
+                if already_completed || already_processing {
+                    return; // Silent return - no recursion
+                }
+
+                (*checkpoint, true)
+            }
+            _ => return, // Wrong phase - silent return
+        }
+    };
+
+    // Set processing flag IMMEDIATELY (before ANY output)
+    if let Some(state) = widget.spec_auto_state.as_mut() {
+        state.quality_gate_processing = Some(checkpoint);
+    }
+
+    // NOW safe to do history_push - flag is set, won't re-trigger
     widget.history_push(crate::history_cell::PlainHistoryCell::new(
         vec![
-            ratatui::text::Line::from("DEBUG: on_quality_gate_agents_complete() CALLED"),
+            ratatui::text::Line::from("DEBUG: on_quality_gate_agents_complete() PROCESSING"),
         ],
         crate::history_cell::HistoryCellType::Notice,
     ));
 
-    let Some(state) = widget.spec_auto_state.as_ref() else {
-        widget.history_push(crate::history_cell::PlainHistoryCell::new(
-            vec![
-                ratatui::text::Line::from("DEBUG: No spec_auto_state - returning early"),
-            ],
-            crate::history_cell::HistoryCellType::Notice,
-        ));
-        return;
+    // Extract data after flag is set
+    let (spec_id, cwd, gates) = {
+        let state = widget.spec_auto_state.as_ref().unwrap();
+        let gates = match &state.phase {
+            SpecAutoPhase::QualityGateExecuting { gates, .. } => gates.clone(),
+            _ => return,
+        };
+        (state.spec_id.clone(), widget.config.cwd.clone(), gates)
     };
-
-    // Only proceed if in QualityGateExecuting phase
-    let (checkpoint, gates) = match &state.phase {
-        SpecAutoPhase::QualityGateExecuting { checkpoint, gates, .. } => {
-            (*checkpoint, gates.clone())
-        }
-        _ => {
-            widget.history_push(crate::history_cell::PlainHistoryCell::new(
-                vec![
-                    ratatui::text::Line::from(format!("DEBUG: Wrong phase - {:?}", state.phase)),
-                ],
-                crate::history_cell::HistoryCellType::Notice,
-            ));
-            return;
-        }
-    };
-
-    // Guard: Don't process same checkpoint twice (prevents recursion)
-    if state.completed_checkpoints.contains(&checkpoint) {
-        widget.history_push(crate::history_cell::PlainHistoryCell::new(
-            vec![
-                ratatui::text::Line::from(format!("DEBUG: Checkpoint {} already completed - skipping", checkpoint.name())),
-            ],
-            crate::history_cell::HistoryCellType::Notice,
-        ));
-        return;
-    }
-
-    // Guard: Don't re-enter if already processing this checkpoint (prevents recursion)
-    if state.quality_gate_processing == Some(checkpoint) {
-        return; // Silent return - already processing
-    }
-
-    let spec_id = state.spec_id.clone();
-    let cwd = widget.config.cwd.clone();
-
-    // Mark as processing IMMEDIATELY (before any history_push calls)
-    // Do this after extracting spec_id to avoid borrow conflicts
-    if let Some(state) = widget.spec_auto_state.as_mut() {
-        state.quality_gate_processing = Some(checkpoint);
-    }
 
     widget.history_push(crate::history_cell::PlainHistoryCell::new(
         vec![
