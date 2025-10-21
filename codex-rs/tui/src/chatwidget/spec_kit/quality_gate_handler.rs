@@ -808,6 +808,7 @@ Gates to execute: {}
             results: std::collections::HashMap::new(),
         };
     }
+
 }
 
 /// Build quality gate prompt for a specific gate

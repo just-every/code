@@ -625,6 +625,17 @@ pub fn on_spec_auto_agents_complete(widget: &mut ChatWidget) {
             // - When orchestrator completes, immediately trigger handler
             // - Handler retrieves sub-agent results from local-memory
 
+            widget.history_push(crate::history_cell::PlainHistoryCell::new(
+                vec![
+                    ratatui::text::Line::from(format!(
+                        "DEBUG: Quality gate agent completion check - {} agents completed: {:?}",
+                        completed_names.len(),
+                        completed_names
+                    )),
+                ],
+                crate::history_cell::HistoryCellType::Notice,
+            ));
+
             // If ANY agent completed (the orchestrator), trigger handler
             if !completed_names.is_empty() {
                 on_quality_gate_agents_complete(widget);
