@@ -35,18 +35,10 @@ pub trait EvidenceRepository: Send + Sync {
     fn evidence_dir(&self, spec_id: &str, category: EvidenceCategory) -> PathBuf;
 
     /// Read the latest telemetry file matching a stage prefix
-    fn read_latest_telemetry(
-        &self,
-        spec_id: &str,
-        stage: SpecStage,
-    ) -> Result<(PathBuf, Value)>;
+    fn read_latest_telemetry(&self, spec_id: &str, stage: SpecStage) -> Result<(PathBuf, Value)>;
 
     /// Read latest consensus synthesis for a stage
-    fn read_latest_consensus(
-        &self,
-        spec_id: &str,
-        stage: SpecStage,
-    ) -> Result<Option<Value>>;
+    fn read_latest_consensus(&self, spec_id: &str, stage: SpecStage) -> Result<Option<Value>>;
 
     /// Write consensus verdict to filesystem
     fn write_consensus_verdict(
@@ -141,10 +133,12 @@ impl FilesystemEvidence {
             })?;
 
         // Acquire exclusive lock (blocks if another writer active)
-        lock_file.lock_exclusive().map_err(|e| SpecKitError::FileWrite {
-            path: lock_file_path.clone(),
-            source: e,
-        })?;
+        lock_file
+            .lock_exclusive()
+            .map_err(|e| SpecKitError::FileWrite {
+                path: lock_file_path.clone(),
+                source: e,
+            })?;
 
         // Write with lock held
         let result = std::fs::write(target_path, content).map_err(|e| SpecKitError::FileWrite {
@@ -182,12 +176,11 @@ impl EvidenceRepository for FilesystemEvidence {
         let evidence_dir = self.evidence_dir(spec_id, EvidenceCategory::Commands);
         let prefix = self.stage_prefix(stage);
 
-        let entries = std::fs::read_dir(&evidence_dir).map_err(|e| {
-            SpecKitError::DirectoryRead {
+        let entries =
+            std::fs::read_dir(&evidence_dir).map_err(|e| SpecKitError::DirectoryRead {
                 path: evidence_dir.clone(),
                 source: e,
-            }
-        })?;
+            })?;
 
         let mut latest: Option<(PathBuf, SystemTime)> = None;
         for entry_res in entries {
@@ -230,18 +223,15 @@ impl EvidenceRepository for FilesystemEvidence {
             directory: evidence_dir.clone(),
         })?;
 
-        let mut file =
-            std::fs::File::open(&path).map_err(|e| SpecKitError::FileRead {
-                path: path.clone(),
-                source: e,
-            })?;
+        let mut file = std::fs::File::open(&path).map_err(|e| SpecKitError::FileRead {
+            path: path.clone(),
+            source: e,
+        })?;
 
         let mut buf = String::new();
-        std::io::Read::read_to_string(&mut file, &mut buf).map_err(|e| {
-            SpecKitError::FileRead {
-                path: path.clone(),
-                source: e,
-            }
+        std::io::Read::read_to_string(&mut file, &mut buf).map_err(|e| SpecKitError::FileRead {
+            path: path.clone(),
+            source: e,
         })?;
 
         let value: Value = serde_json::from_str(&buf).map_err(|e| SpecKitError::JsonParse {
@@ -252,11 +242,7 @@ impl EvidenceRepository for FilesystemEvidence {
         Ok((path, value))
     }
 
-    fn read_latest_consensus(
-        &self,
-        spec_id: &str,
-        stage: SpecStage,
-    ) -> Result<Option<Value>> {
+    fn read_latest_consensus(&self, spec_id: &str, stage: SpecStage) -> Result<Option<Value>> {
         let consensus_dir = self.evidence_dir(spec_id, EvidenceCategory::Consensus);
         let prefix = self.stage_prefix(stage);
 
@@ -302,12 +288,11 @@ impl EvidenceRepository for FilesystemEvidence {
             source: e,
         })?;
 
-        let value: Value = serde_json::from_str(&contents).map_err(|e| {
-            SpecKitError::JsonParse {
+        let value: Value =
+            serde_json::from_str(&contents).map_err(|e| SpecKitError::JsonParse {
                 path: path.clone(),
                 source: e,
-            }
-        })?;
+            })?;
 
         Ok(Some(value))
     }
@@ -320,11 +305,9 @@ impl EvidenceRepository for FilesystemEvidence {
     ) -> Result<PathBuf> {
         let consensus_dir = self.evidence_dir(spec_id, EvidenceCategory::Consensus);
 
-        std::fs::create_dir_all(&consensus_dir).map_err(|e| {
-            SpecKitError::DirectoryCreate {
-                path: consensus_dir.clone(),
-                source: e,
-            }
+        std::fs::create_dir_all(&consensus_dir).map_err(|e| SpecKitError::DirectoryCreate {
+            path: consensus_dir.clone(),
+            source: e,
         })?;
 
         let filename = format!("{}_{}_verdict.json", spec_id, stage.command_name());
@@ -345,18 +328,23 @@ impl EvidenceRepository for FilesystemEvidence {
         stage: SpecStage,
         telemetry: &Value,
     ) -> Result<PathBuf> {
-        let consensus_dir = self.evidence_dir(spec_id, EvidenceCategory::Consensus);
+        // FORK-SPECIFIC (just-every/code): SPEC-KIT-069 telemetry path fix
+        // Lifecycle telemetry should go to commands/ not consensus/
+        let commands_dir = self.evidence_dir(spec_id, EvidenceCategory::Commands);
 
-        std::fs::create_dir_all(&consensus_dir).map_err(|e| {
-            SpecKitError::DirectoryCreate {
-                path: consensus_dir.clone(),
-                source: e,
-            }
+        std::fs::create_dir_all(&commands_dir).map_err(|e| SpecKitError::DirectoryCreate {
+            path: commands_dir.clone(),
+            source: e,
         })?;
 
         let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-        let filename = format!("{}_{}_telemetry_{}.json", spec_id, stage.command_name(), timestamp);
-        let path = consensus_dir.join(filename);
+        let filename = format!(
+            "{}_{}_telemetry_{}.json",
+            spec_id,
+            stage.command_name(),
+            timestamp
+        );
+        let path = commands_dir.join(filename);
 
         let json = serde_json::to_string_pretty(telemetry)
             .map_err(|e| SpecKitError::JsonSerialize { source: e })?;
@@ -375,15 +363,18 @@ impl EvidenceRepository for FilesystemEvidence {
     ) -> Result<PathBuf> {
         let consensus_dir = self.evidence_dir(spec_id, EvidenceCategory::Consensus);
 
-        std::fs::create_dir_all(&consensus_dir).map_err(|e| {
-            SpecKitError::DirectoryCreate {
-                path: consensus_dir.clone(),
-                source: e,
-            }
+        std::fs::create_dir_all(&consensus_dir).map_err(|e| SpecKitError::DirectoryCreate {
+            path: consensus_dir.clone(),
+            source: e,
         })?;
 
         let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-        let filename = format!("{}_{}_synthesis_{}.json", spec_id, stage.command_name(), timestamp);
+        let filename = format!(
+            "{}_{}_synthesis_{}.json",
+            spec_id,
+            stage.command_name(),
+            timestamp
+        );
         let path = consensus_dir.join(filename);
 
         let json = serde_json::to_string_pretty(synthesis)
@@ -423,15 +414,13 @@ impl EvidenceRepository for FilesystemEvidence {
         std::fs::read_dir(&dir)
             .ok()
             .and_then(|entries| {
-                entries
-                    .filter_map(|e| e.ok())
-                    .find(|entry| {
-                        entry
-                            .file_name()
-                            .to_str()
-                            .map(|n| n.starts_with(prefix))
-                            .unwrap_or(false)
-                    })
+                entries.filter_map(|e| e.ok()).find(|entry| {
+                    entry
+                        .file_name()
+                        .to_str()
+                        .map(|n| n.starts_with(prefix))
+                        .unwrap_or(false)
+                })
             })
             .is_some()
     }
@@ -444,11 +433,9 @@ impl EvidenceRepository for FilesystemEvidence {
     ) -> Result<PathBuf> {
         let evidence_dir = self.evidence_dir(spec_id, EvidenceCategory::Consensus);
 
-        std::fs::create_dir_all(&evidence_dir).map_err(|e| {
-            SpecKitError::DirectoryCreate {
-                path: evidence_dir.clone(),
-                source: e,
-            }
+        std::fs::create_dir_all(&evidence_dir).map_err(|e| SpecKitError::DirectoryCreate {
+            path: evidence_dir.clone(),
+            source: e,
         })?;
 
         let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
@@ -516,24 +503,21 @@ mod tests {
             let key = format!("{}_{}", spec_id, stage.command_name());
             let telemetry = self.telemetry.lock().unwrap();
 
-            let value = telemetry
-                .get(&key)
-                .cloned()
-                .ok_or_else(|| SpecKitError::NoTelemetryFound {
-                    spec_id: spec_id.to_string(),
-                    stage: stage.command_name().to_string(),
-                    pattern: format!("{}*", stage.command_name()),
-                    directory: PathBuf::from("/mock"),
-                })?;
+            let value =
+                telemetry
+                    .get(&key)
+                    .cloned()
+                    .ok_or_else(|| SpecKitError::NoTelemetryFound {
+                        spec_id: spec_id.to_string(),
+                        stage: stage.command_name().to_string(),
+                        pattern: format!("{}*", stage.command_name()),
+                        directory: PathBuf::from("/mock"),
+                    })?;
 
             Ok((PathBuf::from(format!("/mock/{}.json", key)), value))
         }
 
-        fn read_latest_consensus(
-            &self,
-            spec_id: &str,
-            stage: SpecStage,
-        ) -> Result<Option<Value>> {
+        fn read_latest_consensus(&self, spec_id: &str, stage: SpecStage) -> Result<Option<Value>> {
             let key = format!("{}_{}", spec_id, stage.command_name());
             let consensus = self.consensus.lock().unwrap();
             Ok(consensus.get(&key).cloned())
@@ -546,7 +530,10 @@ mod tests {
             verdict: &Value,
         ) -> Result<PathBuf> {
             let key = format!("{}_{}", spec_id, stage.command_name());
-            self.consensus.lock().unwrap().insert(key.clone(), verdict.clone());
+            self.consensus
+                .lock()
+                .unwrap()
+                .insert(key.clone(), verdict.clone());
             Ok(PathBuf::from(format!("/mock/{}_verdict.json", key)))
         }
 
@@ -557,7 +544,10 @@ mod tests {
             telemetry: &Value,
         ) -> Result<PathBuf> {
             let key = format!("{}_{}", spec_id, stage.command_name());
-            self.telemetry.lock().unwrap().insert(key.clone(), telemetry.clone());
+            self.telemetry
+                .lock()
+                .unwrap()
+                .insert(key.clone(), telemetry.clone());
             Ok(PathBuf::from(format!("/mock/{}_telemetry.json", key)))
         }
 
@@ -568,7 +558,10 @@ mod tests {
             synthesis: &Value,
         ) -> Result<PathBuf> {
             let key = format!("{}_{}", spec_id, stage.command_name());
-            self.consensus.lock().unwrap().insert(key.clone(), synthesis.clone());
+            self.consensus
+                .lock()
+                .unwrap()
+                .insert(key.clone(), synthesis.clone());
             Ok(PathBuf::from(format!("/mock/{}_synthesis.json", key)))
         }
 
@@ -576,7 +569,12 @@ mod tests {
             Ok(Vec::new())
         }
 
-        fn has_evidence(&self, spec_id: &str, stage: SpecStage, category: EvidenceCategory) -> bool {
+        fn has_evidence(
+            &self,
+            spec_id: &str,
+            stage: SpecStage,
+            category: EvidenceCategory,
+        ) -> bool {
             let key = format!("{}_{}", spec_id, stage.command_name());
             match category {
                 EvidenceCategory::Commands => self.telemetry.lock().unwrap().contains_key(&key),
@@ -591,7 +589,10 @@ mod tests {
             telemetry: &Value,
         ) -> Result<PathBuf> {
             let key = format!("{}_{}", spec_id, checkpoint.name());
-            self.consensus.lock().unwrap().insert(key.clone(), telemetry.clone());
+            self.consensus
+                .lock()
+                .unwrap()
+                .insert(key.clone(), telemetry.clone());
             Ok(PathBuf::from(format!("/mock/quality-gate-{}.json", key)))
         }
     }
@@ -603,19 +604,26 @@ mod tests {
         let commands_dir = repo.evidence_dir("SPEC-KIT-065", EvidenceCategory::Commands);
         assert_eq!(
             commands_dir,
-            PathBuf::from("/project/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-065")
+            PathBuf::from(
+                "/project/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/commands/SPEC-KIT-065"
+            )
         );
 
         let consensus_dir = repo.evidence_dir("SPEC-KIT-065", EvidenceCategory::Consensus);
         assert_eq!(
             consensus_dir,
-            PathBuf::from("/project/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-065")
+            PathBuf::from(
+                "/project/docs/SPEC-OPS-004-integrated-coder-hooks/evidence/consensus/SPEC-KIT-065"
+            )
         );
     }
 
     #[test]
     fn test_filesystem_evidence_custom_base() {
-        let repo = FilesystemEvidence::new(PathBuf::from("/project"), Some("custom/evidence".to_string()));
+        let repo = FilesystemEvidence::new(
+            PathBuf::from("/project"),
+            Some("custom/evidence".to_string()),
+        );
 
         let dir = repo.evidence_dir("SPEC-TEST", EvidenceCategory::Commands);
         assert_eq!(
@@ -635,7 +643,11 @@ mod tests {
 
         // Read it back
         let result = mock.read_latest_telemetry("SPEC-TEST", SpecStage::Plan);
-        assert!(result.is_ok(), "Failed to read telemetry: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Failed to read telemetry: {:?}",
+            result.err()
+        );
 
         let (path, value) = result.unwrap();
         assert_eq!(value, test_value);

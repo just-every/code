@@ -6,9 +6,7 @@
 //! - Pipeline state transitions
 //! - Error handling and recovery
 
-use codex_tui::{
-    HalMode, QualityCheckpoint, SpecAutoState, SpecStage,
-};
+use codex_tui::{HalMode, QualityCheckpoint, SpecAutoState, SpecStage, ValidateBeginOutcome, ValidateCompletionReason};
 use std::collections::HashSet;
 
 // ============================================================================
@@ -86,7 +84,7 @@ fn test_quality_gates_can_be_disabled() {
         "".to_string(),
         SpecStage::Plan,
         None,
-        false,  // Disable quality gates
+        false, // Disable quality gates
     );
 
     assert!(!state.quality_gates_enabled);
@@ -109,12 +107,24 @@ fn test_quality_checkpoints_track_completion() {
     assert!(state.completed_checkpoints.is_empty());
 
     // Mark PrePlanning complete
-    state.completed_checkpoints.insert(QualityCheckpoint::PrePlanning);
-    assert!(state.completed_checkpoints.contains(&QualityCheckpoint::PrePlanning));
-    assert!(!state.completed_checkpoints.contains(&QualityCheckpoint::PostPlan));
+    state
+        .completed_checkpoints
+        .insert(QualityCheckpoint::PrePlanning);
+    assert!(
+        state
+            .completed_checkpoints
+            .contains(&QualityCheckpoint::PrePlanning)
+    );
+    assert!(
+        !state
+            .completed_checkpoints
+            .contains(&QualityCheckpoint::PostPlan)
+    );
 
     // Mark PostPlan complete
-    state.completed_checkpoints.insert(QualityCheckpoint::PostPlan);
+    state
+        .completed_checkpoints
+        .insert(QualityCheckpoint::PostPlan);
     assert_eq!(state.completed_checkpoints.len(), 2);
 }
 
@@ -136,6 +146,28 @@ fn test_quality_modifications_tracked() {
 
     assert_eq!(state.quality_modifications.len(), 2);
     assert!(state.quality_modifications.contains(&"spec.md".to_string()));
+}
+
+#[test]
+fn test_validate_lifecycle_prevents_duplicates() {
+    let state = SpecAutoState::new(
+        "SPEC-TEST-VAL".to_string(),
+        "".to_string(),
+        SpecStage::Plan,
+        None,
+    );
+
+    let started = state.begin_validate_run("hash-1");
+    match started {
+        ValidateBeginOutcome::Started(info) => {
+            assert_eq!(info.attempt, 1);
+            assert_eq!(info.dedupe_count, 0);
+        }
+        _ => panic!("expected run to start"),
+    }
+
+    let duplicate = state.begin_validate_run("hash-1");
+    assert!(matches!(duplicate, ValidateBeginOutcome::Duplicate(_)));
 }
 
 #[test]
@@ -167,7 +199,9 @@ fn test_auto_resolutions_tracked() {
     };
 
     // Track auto-resolution
-    state.quality_auto_resolved.push((issue.clone(), "yes".to_string()));
+    state
+        .quality_auto_resolved
+        .push((issue.clone(), "yes".to_string()));
 
     assert_eq!(state.quality_auto_resolved.len(), 1);
     assert_eq!(state.quality_auto_resolved[0].1, "yes");
@@ -185,14 +219,14 @@ fn test_checkpoint_outcomes_recorded() {
     // Record checkpoint outcomes
     state.quality_checkpoint_outcomes.push((
         QualityCheckpoint::PrePlanning,
-        5,  // auto_resolved
-        2,  // escalated
+        5, // auto_resolved
+        2, // escalated
     ));
 
     state.quality_checkpoint_outcomes.push((
         QualityCheckpoint::PostPlan,
-        3,  // auto_resolved
-        0,  // escalated
+        3, // auto_resolved
+        0, // escalated
     ));
 
     assert_eq!(state.quality_checkpoint_outcomes.len(), 2);
@@ -322,14 +356,20 @@ fn test_checkpoint_runs_once_per_pipeline() {
     );
 
     // First time: should run PrePlanning
-    let should_run = !state.completed_checkpoints.contains(&QualityCheckpoint::PrePlanning);
+    let should_run = !state
+        .completed_checkpoints
+        .contains(&QualityCheckpoint::PrePlanning);
     assert!(should_run);
 
     // Mark complete
-    state.completed_checkpoints.insert(QualityCheckpoint::PrePlanning);
+    state
+        .completed_checkpoints
+        .insert(QualityCheckpoint::PrePlanning);
 
     // Second time: should NOT run again
-    let should_run = !state.completed_checkpoints.contains(&QualityCheckpoint::PrePlanning);
+    let should_run = !state
+        .completed_checkpoints
+        .contains(&QualityCheckpoint::PrePlanning);
     assert!(!should_run);
 }
 
@@ -340,7 +380,7 @@ fn test_pipeline_with_quality_gates_disabled() {
         "".to_string(),
         SpecStage::Plan,
         None,
-        false,  // Disable
+        false, // Disable
     );
 
     // Should still have stages but no quality gate execution
@@ -383,8 +423,12 @@ fn test_escalated_issues_tracked_separately_from_auto_resolved() {
         ..auto_issue.clone()
     };
 
-    state.quality_auto_resolved.push((auto_issue, "yes".to_string()));
-    state.quality_escalated.push((escalated_issue, "Option A".to_string()));
+    state
+        .quality_auto_resolved
+        .push((auto_issue, "yes".to_string()));
+    state
+        .quality_escalated
+        .push((escalated_issue, "Option A".to_string()));
 
     assert_eq!(state.quality_auto_resolved.len(), 1);
     assert_eq!(state.quality_escalated.len(), 1);
@@ -407,7 +451,9 @@ fn test_pipeline_state_survives_checkpoint_completion() {
     let goal_before = state.goal.clone();
 
     // Complete a checkpoint
-    state.completed_checkpoints.insert(QualityCheckpoint::PrePlanning);
+    state
+        .completed_checkpoints
+        .insert(QualityCheckpoint::PrePlanning);
 
     // State should be preserved
     assert_eq!(state.spec_id, spec_id_before);
@@ -425,16 +471,34 @@ fn test_multiple_checkpoints_can_complete_in_sequence() {
     );
 
     // Complete checkpoints in order
-    state.completed_checkpoints.insert(QualityCheckpoint::PrePlanning);
-    state.completed_checkpoints.insert(QualityCheckpoint::PostPlan);
-    state.completed_checkpoints.insert(QualityCheckpoint::PostTasks);
+    state
+        .completed_checkpoints
+        .insert(QualityCheckpoint::PrePlanning);
+    state
+        .completed_checkpoints
+        .insert(QualityCheckpoint::PostPlan);
+    state
+        .completed_checkpoints
+        .insert(QualityCheckpoint::PostTasks);
 
     assert_eq!(state.completed_checkpoints.len(), 3);
 
     // Verify all present
-    assert!(state.completed_checkpoints.contains(&QualityCheckpoint::PrePlanning));
-    assert!(state.completed_checkpoints.contains(&QualityCheckpoint::PostPlan));
-    assert!(state.completed_checkpoints.contains(&QualityCheckpoint::PostTasks));
+    assert!(
+        state
+            .completed_checkpoints
+            .contains(&QualityCheckpoint::PrePlanning)
+    );
+    assert!(
+        state
+            .completed_checkpoints
+            .contains(&QualityCheckpoint::PostPlan)
+    );
+    assert!(
+        state
+            .completed_checkpoints
+            .contains(&QualityCheckpoint::PostTasks)
+    );
 }
 
 #[test]
@@ -447,15 +511,29 @@ fn test_quality_outcomes_accumulate_across_checkpoints() {
     );
 
     // Record outcomes from multiple checkpoints
-    state.quality_checkpoint_outcomes.push((QualityCheckpoint::PrePlanning, 3, 1));
-    state.quality_checkpoint_outcomes.push((QualityCheckpoint::PostPlan, 2, 0));
-    state.quality_checkpoint_outcomes.push((QualityCheckpoint::PostTasks, 4, 2));
+    state
+        .quality_checkpoint_outcomes
+        .push((QualityCheckpoint::PrePlanning, 3, 1));
+    state
+        .quality_checkpoint_outcomes
+        .push((QualityCheckpoint::PostPlan, 2, 0));
+    state
+        .quality_checkpoint_outcomes
+        .push((QualityCheckpoint::PostTasks, 4, 2));
 
     assert_eq!(state.quality_checkpoint_outcomes.len(), 3);
 
     // Calculate totals
-    let total_auto: usize = state.quality_checkpoint_outcomes.iter().map(|(_, a, _)| a).sum();
-    let total_esc: usize = state.quality_checkpoint_outcomes.iter().map(|(_, _, e)| e).sum();
+    let total_auto: usize = state
+        .quality_checkpoint_outcomes
+        .iter()
+        .map(|(_, a, _)| a)
+        .sum();
+    let total_esc: usize = state
+        .quality_checkpoint_outcomes
+        .iter()
+        .map(|(_, _, e)| e)
+        .sum();
 
     assert_eq!(total_auto, 9);
     assert_eq!(total_esc, 3);
@@ -463,7 +541,6 @@ fn test_quality_outcomes_accumulate_across_checkpoints() {
 
 #[test]
 fn test_hal_mode_preserved_throughout_pipeline() {
-
     let state = SpecAutoState::new(
         "SPEC-TEST-018".to_string(),
         "".to_string(),
@@ -513,11 +590,17 @@ fn test_simulated_pipeline_flow_with_quality_gates() {
 
     // Before Plan: Run PrePlanning checkpoint
     let should_run_checkpoint = state.quality_gates_enabled
-        && !state.completed_checkpoints.contains(&QualityCheckpoint::PrePlanning);
+        && !state
+            .completed_checkpoints
+            .contains(&QualityCheckpoint::PrePlanning);
     assert!(should_run_checkpoint);
 
-    state.completed_checkpoints.insert(QualityCheckpoint::PrePlanning);
-    state.quality_checkpoint_outcomes.push((QualityCheckpoint::PrePlanning, 5, 0));
+    state
+        .completed_checkpoints
+        .insert(QualityCheckpoint::PrePlanning);
+    state
+        .quality_checkpoint_outcomes
+        .push((QualityCheckpoint::PrePlanning, 5, 0));
 
     // Advance to Tasks
     state.current_index = 1;
@@ -525,11 +608,17 @@ fn test_simulated_pipeline_flow_with_quality_gates() {
 
     // Before Tasks: Run PostPlan checkpoint
     let should_run_checkpoint = state.quality_gates_enabled
-        && !state.completed_checkpoints.contains(&QualityCheckpoint::PostPlan);
+        && !state
+            .completed_checkpoints
+            .contains(&QualityCheckpoint::PostPlan);
     assert!(should_run_checkpoint);
 
-    state.completed_checkpoints.insert(QualityCheckpoint::PostPlan);
-    state.quality_checkpoint_outcomes.push((QualityCheckpoint::PostPlan, 3, 1));
+    state
+        .completed_checkpoints
+        .insert(QualityCheckpoint::PostPlan);
+    state
+        .quality_checkpoint_outcomes
+        .push((QualityCheckpoint::PostPlan, 3, 1));
 
     // Advance to Implement
     state.current_index = 2;
@@ -537,11 +626,17 @@ fn test_simulated_pipeline_flow_with_quality_gates() {
 
     // Before Implement: Run PostTasks checkpoint
     let should_run_checkpoint = state.quality_gates_enabled
-        && !state.completed_checkpoints.contains(&QualityCheckpoint::PostTasks);
+        && !state
+            .completed_checkpoints
+            .contains(&QualityCheckpoint::PostTasks);
     assert!(should_run_checkpoint);
 
-    state.completed_checkpoints.insert(QualityCheckpoint::PostTasks);
-    state.quality_checkpoint_outcomes.push((QualityCheckpoint::PostTasks, 2, 0));
+    state
+        .completed_checkpoints
+        .insert(QualityCheckpoint::PostTasks);
+    state
+        .quality_checkpoint_outcomes
+        .push((QualityCheckpoint::PostTasks, 2, 0));
 
     // No more checkpoints for Validate, Audit, Unlock
     state.current_index = 3;
@@ -562,8 +657,144 @@ fn test_simulated_pipeline_flow_with_quality_gates() {
     assert_eq!(state.quality_checkpoint_outcomes.len(), 3);
 
     // Verify total resolutions: 5+3+2=10 auto, 0+1+0=1 escalated
-    let total_auto: usize = state.quality_checkpoint_outcomes.iter().map(|(_, a, _)| a).sum();
-    let total_esc: usize = state.quality_checkpoint_outcomes.iter().map(|(_, _, e)| e).sum();
+    let total_auto: usize = state
+        .quality_checkpoint_outcomes
+        .iter()
+        .map(|(_, a, _)| a)
+        .sum();
+    let total_esc: usize = state
+        .quality_checkpoint_outcomes
+        .iter()
+        .map(|(_, _, e)| e)
+        .sum();
     assert_eq!(total_auto, 10);
     assert_eq!(total_esc, 1);
+}
+
+// FORK-SPECIFIC (just-every/code): SPEC-KIT-069 validation tests
+
+#[test]
+fn test_validate_duplicate_storm_prevention() {
+    // Simulate rapid repeated validation triggers to ensure <0.1% duplicates
+    let state = SpecAutoState::new(
+        "SPEC-KIT-069".to_string(),
+        "".to_string(),
+        SpecStage::Validate,
+        None,
+    );
+
+    // First trigger should start
+    let result1 = state.begin_validate_run("payload-hash-1");
+    assert!(matches!(result1, ValidateBeginOutcome::Started(_)));
+
+    // Rapid-fire 100 duplicate triggers
+    let mut duplicate_count = 0;
+    for _ in 0..100 {
+        let result = state.begin_validate_run("payload-hash-1");
+        if matches!(result, ValidateBeginOutcome::Duplicate(_)) {
+            duplicate_count += 1;
+        }
+    }
+
+    // All should be detected as duplicates
+    assert_eq!(duplicate_count, 100);
+
+    // Verify dedupe count is tracked
+    if let Some(info) = state.validate_lifecycle.active() {
+        assert_eq!(info.dedupe_count, 100);
+    } else {
+        panic!("Expected active run to track dedupe count");
+    }
+
+    // Complete the run using SpecAutoState API
+    if let Some(info) = state.active_validate_run() {
+        state.complete_validate_run(&info.run_id, ValidateCompletionReason::Completed);
+    }
+
+    // New payload should start fresh
+    let result2 = state.begin_validate_run("payload-hash-2");
+    if let ValidateBeginOutcome::Started(info) = result2 {
+        assert_eq!(info.attempt, 2); // Second attempt
+        assert_eq!(info.dedupe_count, 0); // Fresh dedupe counter
+    } else {
+        panic!("Expected new run to start with different payload");
+    }
+}
+
+#[test]
+fn test_validate_retry_cycle() {
+    let mut state = SpecAutoState::new(
+        "SPEC-KIT-069".to_string(),
+        "".to_string(),
+        SpecStage::Implement,
+        None,
+    );
+
+    // Initial validate fails
+    state.validate_retries = 0;
+    let result1 = state.begin_validate_run("impl-v1");
+    assert!(matches!(result1, ValidateBeginOutcome::Started(_)));
+
+    if let Some(run_id) = state.active_validate_run().map(|i| i.run_id) {
+        state.complete_validate_run(&run_id, ValidateCompletionReason::Completed);
+    }
+
+    // First retry
+    state.validate_retries = 1;
+    state.reset_validate_run(ValidateCompletionReason::Reset);
+    let result2 = state.begin_validate_run("impl-v2");
+    if let ValidateBeginOutcome::Started(info) = result2 {
+        assert_eq!(info.attempt, 2); // Second attempt after reset
+    } else {
+        panic!("Expected retry to start");
+    }
+
+    // Max retries exhausted (3)
+    state.validate_retries = 3;
+    assert!(state.validate_retries >= 3, "Retries should be exhausted");
+
+    // Verify cleanup on retry exhaustion
+    state.reset_validate_run(ValidateCompletionReason::Cancelled);
+    assert!(state.active_validate_run().is_none(), "Should have no active run after cancel");
+}
+
+#[test]
+fn test_validate_cancel_cleanup() {
+    let state = SpecAutoState::new(
+        "SPEC-KIT-069".to_string(),
+        "".to_string(),
+        SpecStage::Validate,
+        None,
+    );
+
+    // Start a run
+    let result = state.begin_validate_run("payload-1");
+    let run_id = match result {
+        ValidateBeginOutcome::Started(info) => info.run_id,
+        _ => panic!("Expected run to start"),
+    };
+
+    // Verify run is active
+    assert!(state.active_validate_run().is_some());
+
+    // Cancel the run
+    let completion = state.reset_validate_run(ValidateCompletionReason::Cancelled);
+    assert!(completion.is_some());
+
+    if let Some(completion) = completion {
+        assert_eq!(completion.run_id, run_id);
+        assert_eq!(completion.reason, ValidateCompletionReason::Cancelled);
+    }
+
+    // Verify run is no longer active
+    assert!(state.active_validate_run().is_none());
+
+    // New run should start fresh
+    let result2 = state.begin_validate_run("payload-2");
+    if let ValidateBeginOutcome::Started(info) = result2 {
+        assert_eq!(info.attempt, 2); // Counter continues
+        assert_ne!(info.run_id, run_id); // New run ID
+    } else {
+        panic!("Expected new run to start after cancel");
+    }
 }

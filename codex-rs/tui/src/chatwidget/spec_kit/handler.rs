@@ -5,14 +5,21 @@
 
 use super::super::ChatWidget; // Parent module (friend access to private fields)
 use super::context::SpecKitContext; // MAINT-3 Phase 2: Trait for testable functions
-use super::evidence::EvidenceRepository;
-use super::state::{GuardrailWait, SpecAutoPhase};
+use super::evidence::{EvidenceRepository, FilesystemEvidence};
+use super::state::{
+    GuardrailWait, SpecAutoPhase, ValidateBeginOutcome, ValidateCompletionReason,
+    ValidateLifecycleEvent, ValidateMode, ValidateRunInfo,
+};
 use crate::app_event::BackgroundPlacement;
 use crate::history_cell::HistoryCellType;
 use crate::slash_command::{HalMode, SlashCommand};
 use crate::spec_prompts::SpecStage;
 use crate::spec_status::{SpecStatusArgs, collect_report, degraded_warning, render_dashboard};
+use chrono::Utc;
 use codex_core::protocol::InputItem;
+use codex_core::slash_commands::format_subagent_command;
+use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 // FORK-SPECIFIC (just-every/code): MCP retry configuration
@@ -21,6 +28,133 @@ const MCP_RETRY_DELAY_MS: u64 = 100;
 
 // FORK-SPECIFIC (just-every/code): Spec-auto agent retry configuration
 const SPEC_AUTO_AGENT_RETRY_ATTEMPTS: u32 = 3;
+
+pub(crate) fn compute_validate_payload_hash(
+    mode: ValidateMode,
+    stage: SpecStage,
+    spec_id: &str,
+    payload: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(mode.as_str().as_bytes());
+    hasher.update(b"|");
+    hasher.update(stage.command_name().as_bytes());
+    hasher.update(b"|");
+    hasher.update(spec_id.as_bytes());
+    hasher.update(b"|");
+    hasher.update(payload.trim().as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+pub(crate) fn record_validate_lifecycle_event(
+    widget: &mut ChatWidget,
+    spec_id: &str,
+    run_id: &str,
+    attempt: u32,
+    dedupe_count: u32,
+    payload_hash: &str,
+    mode: ValidateMode,
+    event: ValidateLifecycleEvent,
+) {
+    if !widget.spec_kit_telemetry_enabled() {
+        return;
+    }
+
+    let telemetry = json!({
+        "spec_id": spec_id,
+        "stage": "validate",
+        "event": event.as_str(),
+        "mode": mode.as_str(),
+        "stage_run_id": run_id,
+        "attempt": attempt,
+        "dedupe_count": dedupe_count,
+        "payload_hash": payload_hash,
+        "timestamp": Utc::now().to_rfc3339(),
+    });
+
+    let repo = FilesystemEvidence::new(widget.config.cwd.clone(), None);
+    let _ = repo.write_telemetry_bundle(spec_id, SpecStage::Validate, &telemetry);
+
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        let manager = widget.mcp_manager.clone();
+        let content = match serde_json::to_string(&telemetry) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let spec_id_owned = spec_id.to_string();
+        handle.spawn(async move {
+            let guard = manager.lock().await;
+            if let Some(mgr) = guard.as_ref() {
+                let args = json!({
+                    "content": content,
+                    "domain": "spec-kit",
+                    "importance": 8,
+                    "tags": [
+                        format!("spec:{}", spec_id_owned),
+                        "stage:validate",
+                        "artifact:agent_lifecycle"
+                    ]
+                });
+                let _ = mgr
+                    .call_tool(
+                        "local-memory",
+                        "store_memory",
+                        Some(args),
+                        Some(std::time::Duration::from_secs(10)),
+                    )
+                    .await;
+            }
+        });
+    }
+}
+
+/// Clean up spec_auto_state and emit Cancelled lifecycle event if validate is active
+/// FORK-SPECIFIC (just-every/code): FR3 cancellation cleanup for SPEC-KIT-069
+pub(crate) fn cleanup_spec_auto_with_cancel(widget: &mut ChatWidget, reason: &str) {
+    // Extract lifecycle info before borrowing mutably
+    let lifecycle_info = widget.spec_auto_state.as_ref().and_then(|state| {
+        state.validate_lifecycle.active().map(|info| {
+            (
+                state.spec_id.clone(),
+                info.run_id,
+                info.attempt,
+                info.dedupe_count,
+                info.mode,
+            )
+        })
+    });
+
+    // Emit Cancelled lifecycle event if there was an active run
+    if let Some((spec_id, run_id, attempt, dedupe_count, mode)) = lifecycle_info {
+        record_validate_lifecycle_event(
+            widget,
+            &spec_id,
+            &run_id,
+            attempt,
+            dedupe_count,
+            "", // Empty payload hash for cancelled runs
+            mode,
+            ValidateLifecycleEvent::Cancelled,
+        );
+
+        // Clean up the validate lifecycle state
+        if let Some(state) = widget.spec_auto_state.as_ref() {
+            let _ = state.validate_lifecycle.reset_active(ValidateCompletionReason::Cancelled);
+        }
+    }
+
+    // Clear the spec_auto_state
+    widget.spec_auto_state = None;
+
+    // Log cancellation reason for debugging
+    widget.history_push(crate::history_cell::PlainHistoryCell::new(
+        vec![ratatui::text::Line::from(format!(
+            "Spec-auto pipeline cancelled: {}",
+            reason
+        ))],
+        HistoryCellType::Error,
+    ));
+}
 
 fn block_on_sync<F, Fut, T>(factory: F) -> T
 where
@@ -127,6 +261,18 @@ pub fn handle_spec_status(widget: &mut ChatWidget, raw_args: String) {
 
 /// Halt /speckit.auto pipeline with error message
 pub fn halt_spec_auto_with_error(widget: &mut impl SpecKitContext, reason: String) {
+    // FORK-SPECIFIC (just-every/code): FR3 cancellation cleanup for SPEC-KIT-069
+    // Clean up active validate lifecycle state if present
+    if let Some(state) = widget.spec_auto_state().as_ref() {
+        if state.validate_lifecycle.active().is_some() {
+            // Clean up the validate lifecycle state (mark as cancelled)
+            let _ = state.validate_lifecycle.reset_active(ValidateCompletionReason::Cancelled);
+            // Note: Telemetry emission is handled separately by cleanup_spec_auto_with_cancel
+            // when called directly with ChatWidget. When called through trait, telemetry
+            // is skipped since trait doesn't expose MCP manager access.
+        }
+    }
+
     let resume_hint = widget
         .spec_auto_state()
         .as_ref()
@@ -209,12 +355,10 @@ pub fn handle_spec_auto(
         return;
     }
 
-    widget.spec_auto_state = Some(super::state::SpecAutoState::new(
-        spec_id,
-        goal,
-        resume_from,
-        hal_mode,
-    ));
+    let lifecycle = widget.ensure_validate_lifecycle(&spec_id);
+    let mut state = super::state::SpecAutoState::new(spec_id, goal, resume_from, hal_mode);
+    state.set_validate_lifecycle(lifecycle);
+    widget.spec_auto_state = Some(state);
     advance_spec_auto(widget);
 }
 
@@ -316,6 +460,7 @@ pub fn advance_spec_auto(widget: &mut ChatWidget) {
                     vec![ratatui::text::Line::from("/spec-auto pipeline complete")],
                     HistoryCellType::Notice,
                 ));
+                // Successful completion - clear state without cancellation event
                 widget.spec_auto_state = None;
                 return;
             }
@@ -344,7 +489,7 @@ pub fn on_spec_auto_task_started(widget: &mut ChatWidget, task_id: &str) {
 
 /// Handle spec-auto task completion (guardrail finished)
 pub fn on_spec_auto_task_complete(widget: &mut ChatWidget, task_id: &str) {
-    let start = std::time::Instant::now(); // T90: Metrics instrumentation
+    let _start = std::time::Instant::now(); // T90: Metrics instrumentation
 
     let (spec_id, stage) = {
         let Some(state) = widget.spec_auto_state.as_mut() else {
@@ -402,13 +547,17 @@ pub fn on_spec_auto_task_complete(widget: &mut ChatWidget, task_id: &str) {
 
             if !outcome.success {
                 if stage == SpecStage::Validate {
-                    let (exhausted, retry_message) = {
+                    let (exhausted, retry_message, completion) = {
                         let Some(state) = widget.spec_auto_state.as_mut() else {
                             return;
                         };
                         const SPEC_AUTO_MAX_VALIDATE_RETRIES: u32 = 2;
-                        if state.validate_retries >= SPEC_AUTO_MAX_VALIDATE_RETRIES {
-                            (true, None)
+
+                        let completion = state.reset_validate_run(ValidateCompletionReason::Failed);
+
+                        let exhausted = if state.validate_retries >= SPEC_AUTO_MAX_VALIDATE_RETRIES
+                        {
+                            true
                         } else {
                             state.validate_retries += 1;
                             let insert_at = state.current_index + 1;
@@ -416,24 +565,39 @@ pub fn on_spec_auto_task_complete(widget: &mut ChatWidget, task_id: &str) {
                                 insert_at..insert_at,
                                 vec![SpecStage::Implement, SpecStage::Validate],
                             );
-                            (
-                                false,
-                                Some(format!(
-                                    "Retrying implementation/validation cycle (attempt {}).",
-                                    state.validate_retries + 1
-                                )),
-                            )
-                        }
+                            false
+                        };
+
+                        let retry_message = if exhausted {
+                            None
+                        } else {
+                            Some(format!(
+                                "Retrying implementation/validation cycle (attempt {}).",
+                                state.validate_retries + 1
+                            ))
+                        };
+
+                        (exhausted, retry_message, completion)
                     };
 
+                    if let Some(completion) = completion {
+                        record_validate_lifecycle_event(
+                            widget,
+                            &spec_id,
+                            &completion.run_id,
+                            completion.attempt,
+                            completion.dedupe_count,
+                            completion.payload_hash.as_str(),
+                            completion.mode,
+                            ValidateLifecycleEvent::Failed,
+                        );
+                    }
+
                     if exhausted {
-                        widget.history_push(crate::history_cell::PlainHistoryCell::new(
-                            vec![ratatui::text::Line::from(
-                                "Validation failed repeatedly; stopping /spec-auto pipeline.",
-                            )],
-                            HistoryCellType::Error,
-                        ));
-                        widget.spec_auto_state = None;
+                        cleanup_spec_auto_with_cancel(
+                            widget,
+                            "Validation failed repeatedly after maximum retry attempts"
+                        );
                         return;
                     }
 
@@ -444,10 +608,10 @@ pub fn on_spec_auto_task_complete(widget: &mut ChatWidget, task_id: &str) {
                         ));
                     }
                 } else {
-                    widget.history_push(crate::history_cell::new_error_event(
-                        "Guardrail step failed; aborting /spec-auto pipeline.".to_string(),
-                    ));
-                    widget.spec_auto_state = None;
+                    cleanup_spec_auto_with_cancel(
+                        widget,
+                        "Guardrail step failed"
+                    );
                     return;
                 }
             }
@@ -478,24 +642,18 @@ pub fn on_spec_auto_task_complete(widget: &mut ChatWidget, task_id: &str) {
                     );
                     widget.history_push(cell);
                     if !ok {
-                        widget.history_push(crate::history_cell::PlainHistoryCell::new(
-                            vec![ratatui::text::Line::from(format!(
-                                "/spec-auto paused: resolve consensus for {} before continuing.",
-                                stage.display_name()
-                            ))],
-                            HistoryCellType::Error,
-                        ));
-                        widget.spec_auto_state = None;
+                        cleanup_spec_auto_with_cancel(
+                            widget,
+                            &format!("Consensus not reached for {}, manual resolution required", stage.display_name())
+                        );
                         return;
                     }
                 }
                 Err(err) => {
-                    widget.history_push(crate::history_cell::new_error_event(format!(
-                        "Consensus check failed for {}: {}",
-                        stage.display_name(),
-                        err
-                    )));
-                    widget.spec_auto_state = None;
+                    cleanup_spec_auto_with_cancel(
+                        widget,
+                        &format!("Consensus check failed for {}: {}", stage.display_name(), err)
+                    );
                     return;
                 }
             }
@@ -504,12 +662,10 @@ pub fn on_spec_auto_task_complete(widget: &mut ChatWidget, task_id: &str) {
             auto_submit_spec_stage_prompt(widget, stage, &spec_id);
         }
         Err(err) => {
-            widget.history_push(crate::history_cell::new_error_event(format!(
-                "Unable to read telemetry for {}: {}",
-                stage.display_name(),
-                err
-            )));
-            widget.spec_auto_state = None;
+            cleanup_spec_auto_with_cancel(
+                widget,
+                &format!("Unable to read telemetry for {}: {}", stage.display_name(), err)
+            );
         }
     }
 }
@@ -542,6 +698,67 @@ pub fn auto_submit_spec_stage_prompt(widget: &mut ChatWidget, stage: SpecStage, 
 
     match prompt_result {
         Ok(prompt) => {
+            let mut validate_context: Option<(ValidateRunInfo, String)> = None;
+
+            if stage == SpecStage::Validate {
+                let payload_hash = compute_validate_payload_hash(
+                    ValidateMode::Auto,
+                    stage,
+                    spec_id,
+                    prompt.as_str(),
+                );
+
+                let Some(state_ref) = widget.spec_auto_state.as_ref() else {
+                    widget.history_push(crate::history_cell::new_error_event(
+                        "No spec-auto state available for validate dispatch.".to_string(),
+                    ));
+                    return;
+                };
+
+                match state_ref.begin_validate_run(&payload_hash) {
+                    ValidateBeginOutcome::Started(info) => {
+                        record_validate_lifecycle_event(
+                            widget,
+                            spec_id,
+                            &info.run_id,
+                            info.attempt,
+                            info.dedupe_count,
+                            &payload_hash,
+                            info.mode,
+                            ValidateLifecycleEvent::Queued,
+                        );
+                        validate_context = Some((info, payload_hash));
+                    }
+                    ValidateBeginOutcome::Duplicate(info)
+                    | ValidateBeginOutcome::Conflict(info) => {
+                        record_validate_lifecycle_event(
+                            widget,
+                            spec_id,
+                            &info.run_id,
+                            info.attempt,
+                            info.dedupe_count,
+                            &payload_hash,
+                            info.mode,
+                            ValidateLifecycleEvent::Deduped,
+                        );
+
+                        widget.history_push(crate::history_cell::PlainHistoryCell::new(
+                            vec![
+                                ratatui::text::Line::from(format!(
+                                    "⚠ Validate run already active (run_id: {}, attempt: {})",
+                                    info.run_id, info.attempt
+                                )),
+                                ratatui::text::Line::from(
+                                    "Skipping duplicate auto dispatch; awaiting current run.",
+                                ),
+                            ],
+                            HistoryCellType::Notice,
+                        ));
+                        return;
+                    }
+                }
+            }
+
             let mut lines: Vec<ratatui::text::Line<'static>> = Vec::new();
             lines.push(ratatui::text::Line::from(format!(
                 "Auto-executing multi-agent {} for {}",
@@ -557,7 +774,6 @@ pub fn auto_submit_spec_stage_prompt(widget: &mut ChatWidget, stage: SpecStage, 
                 HistoryCellType::Notice,
             ));
 
-            // Update state to ExecutingAgents phase BEFORE submitting
             let stage_expected: Vec<String> = expected_agents_for_stage(stage)
                 .into_iter()
                 .filter_map(|agent| {
@@ -576,9 +792,26 @@ pub fn auto_submit_spec_stage_prompt(widget: &mut ChatWidget, stage: SpecStage, 
                     expected_agents: stage_expected,
                     completed_agents: std::collections::HashSet::new(),
                 };
+
+                if stage == SpecStage::Validate {
+                    if let Some((info, payload_hash)) = validate_context.as_mut() {
+                        if let Some(updated) = state.mark_validate_dispatched(&info.run_id) {
+                            *info = updated.clone();
+                            record_validate_lifecycle_event(
+                                widget,
+                                spec_id,
+                                &updated.run_id,
+                                updated.attempt,
+                                updated.dedupe_count,
+                                payload_hash.as_str(),
+                                updated.mode,
+                                ValidateLifecycleEvent::Dispatched,
+                            );
+                        }
+                    }
+                }
             }
 
-            // Create and submit user message
             let user_msg = super::super::message::UserMessage {
                 display_text: format!("[spec-auto] {} stage for {}", stage.display_name(), spec_id),
                 ordered_items: vec![InputItem::Text { text: prompt }],
@@ -593,6 +826,38 @@ pub fn auto_submit_spec_stage_prompt(widget: &mut ChatWidget, stage: SpecStage, 
             );
         }
     }
+}
+
+pub(crate) fn schedule_degraded_follow_up(
+    widget: &mut ChatWidget,
+    stage: SpecStage,
+    spec_id: &str,
+) {
+    if let Some(state) = widget.spec_auto_state.as_mut() {
+        if !state.degraded_followups.insert(stage) {
+            return;
+        }
+    }
+
+    let formatted = format_subagent_command(
+        "speckit.checklist",
+        spec_id,
+        Some(&widget.config.agents),
+        Some(&widget.config.subagent_commands),
+    );
+
+    let user_msg = super::super::message::UserMessage {
+        display_text: format!(
+            "[spec-auto] Follow-up checklist for {} ({})",
+            spec_id,
+            stage.display_name()
+        ),
+        ordered_items: vec![InputItem::Text {
+            text: formatted.prompt,
+        }],
+    };
+
+    widget.submit_user_message(user_msg);
 }
 
 /// Handle all agents completing their tasks
@@ -648,29 +913,18 @@ pub fn on_spec_auto_agents_complete(widget: &mut ChatWidget) {
     // Handle different phase types
     match phase_type {
         "quality_gate" => {
-            // Quality gates use orchestrator pattern:
-            // - Orchestrator spawns 3 sub-agents (gemini, claude, code)
-            // - Sub-agents not tracked in active_agents
-            // - When orchestrator completes, immediately trigger handler
-            // - Handler retrieves sub-agent results from local-memory
-
-            widget.history_push(crate::history_cell::PlainHistoryCell::new(
-                vec![ratatui::text::Line::from(format!(
-                    "DEBUG: Quality gate agent completion check - {} agents completed: {:?}",
-                    completed_names.len(),
-                    completed_names
-                ))],
-                crate::history_cell::HistoryCellType::Notice,
-            ));
-
-            // If ANY agent completed (the orchestrator), trigger handler
             if !completed_names.is_empty() {
                 on_quality_gate_agents_complete(widget);
             }
         }
         "gpt5_validation" => {
-            // GPT-5 validation completing - check local-memory
-            on_gpt5_validations_complete(widget);
+            if let Some(state) = widget.spec_auto_state.as_ref() {
+                if let SpecAutoPhase::QualityGateValidating { checkpoint, .. } = state.phase {
+                    widget
+                        .quality_gate_broker
+                        .fetch_validation_payload(state.spec_id.clone(), checkpoint);
+                }
+            }
         }
         "regular" => {
             // Regular stage agents
@@ -771,6 +1025,44 @@ fn check_consensus_and_advance_spec_auto(widget: &mut ChatWidget) {
     let spec_id = state.spec_id.clone();
     let retry_count = state.agent_retry_count; // FORK-SPECIFIC: Track retries
 
+    let mut active_validate_info: Option<ValidateRunInfo> = None;
+    if current_stage == SpecStage::Validate {
+        if let Some(info) = state.active_validate_run() {
+            match state.mark_validate_checking(&info.run_id) {
+                Some(updated) => {
+                    active_validate_info = Some(updated.clone());
+                    record_validate_lifecycle_event(
+                        widget,
+                        &spec_id,
+                        &updated.run_id,
+                        updated.attempt,
+                        updated.dedupe_count,
+                        updated.payload_hash.as_str(),
+                        updated.mode,
+                        ValidateLifecycleEvent::CheckingConsensus,
+                    );
+                }
+                None => {
+                    widget.history_push(crate::history_cell::PlainHistoryCell::new(
+                        vec![ratatui::text::Line::from(
+                            "⚠ Received validate completion without active run; ignoring.",
+                        )],
+                        HistoryCellType::Notice,
+                    ));
+                    return;
+                }
+            }
+        } else {
+            widget.history_push(crate::history_cell::PlainHistoryCell::new(
+                vec![ratatui::text::Line::from(
+                    "⚠ Validate consensus callback arrived after lifecycle reset; skipping.",
+                )],
+                HistoryCellType::Notice,
+            ));
+            return;
+        }
+    }
+
     // Show checking status
     widget.history_push(crate::history_cell::PlainHistoryCell::new(
         vec![ratatui::text::Line::from(format!(
@@ -817,6 +1109,25 @@ fn check_consensus_and_advance_spec_auto(widget: &mut ChatWidget) {
                     crate::history_cell::HistoryCellType::Notice,
                 ));
 
+                if current_stage == SpecStage::Validate {
+                    if let Some(state_ref) = widget.spec_auto_state.as_ref() {
+                        if let Some(completion) =
+                            state_ref.reset_validate_run(ValidateCompletionReason::Reset)
+                        {
+                            record_validate_lifecycle_event(
+                                widget,
+                                &spec_id,
+                                &completion.run_id,
+                                completion.attempt,
+                                completion.dedupe_count,
+                                completion.payload_hash.as_str(),
+                                completion.mode,
+                                ValidateLifecycleEvent::Reset,
+                            );
+                        }
+                    }
+                }
+
                 // Increment retry and re-execute
                 if let Some(state) = widget.spec_auto_state.as_mut() {
                     state.agent_retry_count += 1;
@@ -853,6 +1164,28 @@ fn check_consensus_and_advance_spec_auto(widget: &mut ChatWidget) {
                     HistoryCellType::Notice,
                 ));
 
+                if current_stage == SpecStage::Validate {
+                    if let Some(state_ref) = widget.spec_auto_state.as_ref() {
+                        if let Some(info) = active_validate_info.as_ref() {
+                            if let Some(completion) = state_ref.complete_validate_run(
+                                &info.run_id,
+                                ValidateCompletionReason::Completed,
+                            ) {
+                                record_validate_lifecycle_event(
+                                    widget,
+                                    &spec_id,
+                                    &completion.run_id,
+                                    completion.attempt,
+                                    completion.dedupe_count,
+                                    completion.payload_hash.as_str(),
+                                    completion.mode,
+                                    ValidateLifecycleEvent::Completed,
+                                );
+                            }
+                        }
+                    }
+                }
+
                 // FORK-SPECIFIC: Reset retry counter on success
                 if let Some(state) = widget.spec_auto_state.as_mut() {
                     state.agent_retry_count = 0;
@@ -864,6 +1197,24 @@ fn check_consensus_and_advance_spec_auto(widget: &mut ChatWidget) {
                 // Trigger next stage
                 advance_spec_auto(widget);
             } else {
+                if current_stage == SpecStage::Validate {
+                    if let Some(state_ref) = widget.spec_auto_state.as_ref() {
+                        if let Some(completion) =
+                            state_ref.reset_validate_run(ValidateCompletionReason::Failed)
+                        {
+                            record_validate_lifecycle_event(
+                                widget,
+                                &spec_id,
+                                &completion.run_id,
+                                completion.attempt,
+                                completion.dedupe_count,
+                                completion.payload_hash.as_str(),
+                                completion.mode,
+                                ValidateLifecycleEvent::Failed,
+                            );
+                        }
+                    }
+                }
                 // Consensus failed after retries
                 halt_spec_auto_with_error(
                     widget,
@@ -888,6 +1239,25 @@ fn check_consensus_and_advance_spec_auto(widget: &mut ChatWidget) {
                     crate::history_cell::HistoryCellType::Notice,
                 ));
 
+                if current_stage == SpecStage::Validate {
+                    if let Some(state_ref) = widget.spec_auto_state.as_ref() {
+                        if let Some(completion) =
+                            state_ref.reset_validate_run(ValidateCompletionReason::Reset)
+                        {
+                            record_validate_lifecycle_event(
+                                widget,
+                                &spec_id,
+                                &completion.run_id,
+                                completion.attempt,
+                                completion.dedupe_count,
+                                completion.payload_hash.as_str(),
+                                completion.mode,
+                                ValidateLifecycleEvent::Reset,
+                            );
+                        }
+                    }
+                }
+
                 if let Some(state) = widget.spec_auto_state.as_mut() {
                     state.agent_retry_count += 1;
                     state.agent_retry_context = Some(format!(
@@ -900,6 +1270,25 @@ fn check_consensus_and_advance_spec_auto(widget: &mut ChatWidget) {
 
                 advance_spec_auto(widget);
                 return;
+            }
+
+            if current_stage == SpecStage::Validate {
+                if let Some(state_ref) = widget.spec_auto_state.as_ref() {
+                    if let Some(completion) =
+                        state_ref.reset_validate_run(ValidateCompletionReason::Failed)
+                    {
+                        record_validate_lifecycle_event(
+                            widget,
+                            &spec_id,
+                            &completion.run_id,
+                            completion.attempt,
+                            completion.dedupe_count,
+                            completion.payload_hash.as_str(),
+                            completion.mode,
+                            ValidateLifecycleEvent::Failed,
+                        );
+                    }
+                }
             }
 
             halt_spec_auto_with_error(
@@ -983,8 +1372,8 @@ pub fn handle_spec_consensus_impl(widget: &mut ChatWidget, raw_args: String) {
 // Re-exported from mod.rs for backward compatibility
 
 pub use super::quality_gate_handler::{
-    on_gpt5_validations_complete, on_quality_gate_agents_complete, on_quality_gate_answers,
-    on_quality_gate_cancelled,
+    on_quality_gate_agents_complete, on_quality_gate_answers, on_quality_gate_broker_result,
+    on_quality_gate_cancelled, on_quality_gate_validation_result,
 };
 
 // Internal quality gate helpers (called from advance_spec_auto)
