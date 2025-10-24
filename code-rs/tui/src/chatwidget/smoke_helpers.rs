@@ -457,7 +457,11 @@ impl ChatWidgetHarness {
             chat.auto_state.countdown_id = chat.auto_state.countdown_id.wrapping_add(1);
             chat.auto_state.seconds_remaining = countdown.unwrap_or(0);
             if chat.auto_state.awaiting_submission && !chat.auto_state.paused_for_manual_edit {
-                chat.auto_start_countdown(chat.auto_state.countdown_id, countdown);
+                if let Some(seconds) = countdown {
+                    chat.auto_spawn_countdown(chat.auto_state.countdown_id, seconds);
+                } else {
+                    let _ = chat.auto_handle_countdown(chat.auto_state.countdown_id, 0);
+                }
                 if countdown == Some(0) {
                     chat.auto_state.awaiting_submission = false;
                     chat.auto_state.waiting_for_response = true;
