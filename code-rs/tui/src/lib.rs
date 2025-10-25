@@ -219,22 +219,24 @@ pub async fn run_main(
 ) -> std::io::Result<ExitSummary> {
     cli.finalize_defaults();
 
-    let (sandbox_mode, approval_policy) = if cli.full_auto {
-        (
-            Some(SandboxMode::WorkspaceWrite),
-            Some(AskForApproval::OnRequest),
-        )
+    let resolved_sandbox_mode = if cli.full_auto {
+        Some(SandboxMode::WorkspaceWrite)
     } else if cli.dangerously_bypass_approvals_and_sandbox {
-        (
-            Some(SandboxMode::DangerFullAccess),
-            Some(AskForApproval::Never),
-        )
+        Some(SandboxMode::DangerFullAccess)
     } else {
-        (
-            cli.sandbox_mode.map(Into::<SandboxMode>::into),
-            cli.approval_policy.map(Into::into),
-        )
+        cli.sandbox_mode.map(Into::<SandboxMode>::into)
     };
+
+    let (sandbox_mode, approval_policy) = (
+        resolved_sandbox_mode,
+        if cli.full_auto {
+            Some(AskForApproval::OnRequest)
+        } else if cli.dangerously_bypass_approvals_and_sandbox {
+            Some(AskForApproval::Never)
+        } else {
+            cli.approval_policy.map(Into::into)
+        },
+    );
 
     // When using `--oss`, let the bootstrapper pick the model (defaulting to
     // gpt-oss:20b) and ensure it is present locally. Also, force the built‑in
