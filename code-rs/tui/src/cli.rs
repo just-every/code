@@ -36,11 +36,11 @@ pub struct Cli {
 
     /// Select the sandbox policy to use when executing model-generated shell
     /// commands.
-    #[arg(long = "sandbox", short = 's')]
+    #[arg(long = "sandbox", short = 's', overrides_with = "sandbox_mode")]
     pub sandbox_mode: Option<code_common::SandboxModeCliArg>,
 
     /// Configure when the model requires human approval before executing a command.
-    #[arg(long = "ask-for-approval", short = 'a')]
+    #[arg(long = "ask-for-approval", short = 'a', overrides_with = "approval_policy")]
     pub approval_policy: Option<ApprovalModeCliArg>,
 
     /// Convenience alias for low-friction sandboxed automatic execution (-a on-failure, --sandbox workspace-write).
