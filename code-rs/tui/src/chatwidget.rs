@@ -104,6 +104,7 @@ use code_auto_drive_core::{
     AutoTurnAgentsTiming,
     AutoTurnCliAction,
     AutoTurnReviewState,
+    ReviewCommitDescriptor,
     AutoResolveState,
     AutoResolvePhase,
     AUTO_RESTART_MAX_ATTEMPTS,
@@ -120,6 +121,7 @@ use self::rate_limit_refresh::start_rate_limit_refresh;
 use self::history_render::{
     CachedLayout, HistoryRenderState, RenderRequest, RenderRequestKind, RenderSettings, VisibleCell,
 };
+use crate::auto_review::{self, AutoReviewOutcome, BaseCommitSnapshot, PreparedCommitReview};
 use code_core::parse_command::ParsedCommand;
 use code_core::TextFormat;
 use code_core::protocol::AgentMessageDeltaEvent;
@@ -151,6 +153,7 @@ use code_core::protocol::SessionConfiguredEvent;
 use code_core::protocol::Op;
 use code_core::protocol::ReviewOutputEvent;
 use code_core::protocol::{ReviewContextMetadata, ReviewRequest};
+use code_core::{cleanup_review_worktree, ReviewWorktreeCleanupToken};
 use code_core::protocol::PatchApplyBeginEvent;
 use code_core::protocol::PatchApplyEndEvent;
 use code_core::protocol::TaskCompleteEvent;
@@ -179,6 +182,7 @@ use crate::exec_command::strip_bash_lc_and_escape;
 #[cfg(feature = "code-fork")]
 use crate::tui_event_extensions::handle_browser_screenshot;
 use crate::chatwidget::message::UserMessage;
+use tokio::spawn;
 
 pub(crate) const DOUBLE_ESC_HINT: &str = "undo timeline";
 const AUTO_ESC_EXIT_HINT: &str = "Press Esc again to exit Auto Drive";
@@ -693,21 +697,6 @@ pub(crate) struct GhostState {
     queued_user_messages: VecDeque<UserMessage>,
 }
 
-#[cfg(any(test, feature = "test-helpers"))]
-#[allow(dead_code)]
-struct AutoReviewCommitScope {
-    commit: String,
-    file_count: usize,
-}
-
-#[cfg(any(test, feature = "test-helpers"))]
-#[allow(dead_code)]
-enum AutoReviewOutcome {
-    Skip,
-    Workspace,
-    Commit(AutoReviewCommitScope),
-}
-
 #[cfg(test)]
 pub(super) type CaptureAutoTurnCommitStub = Box<
     dyn Fn(&'static str, Option<String>) -> Result<GhostCommit, GitToolingError> + Send + Sync,
@@ -809,6 +798,9 @@ pub(crate) struct ChatWidget<'a> {
     // New: coordinator-provided hints for the next Auto turn
     pending_turn_descriptor: Option<TurnDescriptor>,
     pending_auto_turn_config: Option<TurnConfig>,
+    pending_review_commit: Option<ReviewCommitDescriptor>,
+    auto_review_cleanup: Option<ReviewWorktreeCleanupToken>,
+    auto_review_pending: bool,
     overall_task_status: String,
     active_plan_title: Option<String>,
     /// Runtime timing per-agent (by id) to improve visibility in the HUD
@@ -3983,6 +3975,9 @@ impl ChatWidget<'_> {
             auto_resolve_state: None,
             pending_turn_descriptor: None,
             pending_auto_turn_config: None,
+            pending_review_commit: None,
+            auto_review_cleanup: None,
+            auto_review_pending: false,
             overall_task_status: "preparing".to_string(),
             active_plan_title: None,
             agent_runtime: HashMap::new(),
@@ -4295,6 +4290,9 @@ impl ChatWidget<'_> {
             auto_resolve_state: None,
             pending_turn_descriptor: None,
             pending_auto_turn_config: None,
+            pending_review_commit: None,
+            auto_review_cleanup: None,
+            auto_review_pending: false,
             overall_task_status: "preparing".to_string(),
             active_plan_title: None,
             agent_runtime: HashMap::new(),
@@ -9765,6 +9763,10 @@ impl ChatWidget<'_> {
                 self.mark_needs_redraw();
                 self.flush_history_snapshot_if_needed(true);
 
+                if self.should_schedule_auto_commit_review() {
+                    self.spawn_auto_commit_review();
+                }
+
             }
             EventMsg::AgentReasoningRawContentDelta(AgentReasoningRawContentDeltaEvent {
                 delta,
@@ -12202,6 +12204,7 @@ impl ChatWidget<'_> {
         let cross = self.auto_state.cross_check_enabled;
         let qa = self.auto_state.qa_automation_enabled;
         let mode = self.auto_state.continue_mode;
+        let review_auto_resolve = self.config.tui.review_auto_resolve;
         let view = AutoDriveSettingsView::new(
             self.app_event_tx.clone(),
             review,
@@ -12209,6 +12212,7 @@ impl ChatWidget<'_> {
             cross,
             qa,
             mode,
+            review_auto_resolve,
         );
         AutoDriveSettingsContent::new(view)
     }
@@ -13169,6 +13173,7 @@ fi\n\
         self.auto_state.set_phase(AutoRunPhase::AwaitingGoalEntry);
         self.auto_state.goal = None;
         self.auto_pending_goal_request = false;
+
         self.auto_goal_bootstrap_done = false;
         let seed_intro = self.auto_state.take_intro_pending();
         if seed_intro {
@@ -13264,6 +13269,9 @@ fi\n\
             continue_mode,
             reduced_motion,
         );
+        self.auto_review_pending = false;
+        self.auto_review_cleanup = None;
+        self.pending_review_commit = None;
         self.config.auto_drive.cross_check_enabled = cross_check_enabled;
         self.config.auto_drive.qa_automation_enabled = qa_automation_enabled;
         let coordinator_events = {
@@ -13279,6 +13287,8 @@ fi\n\
                         agents_timing,
                         agents,
                         transcript,
+                        turn_descriptor,
+                        review_commit,
                     } => {
                         app_event_tx.send(AppEvent::AutoCoordinatorDecision {
                             status,
@@ -13289,6 +13299,8 @@ fi\n\
                             agents_timing,
                             agents,
                             transcript,
+                            turn_descriptor,
+                            review_commit,
                         });
                     }
                     AutoCoordinatorEvent::Thinking { delta, summary_index } => {
@@ -13422,6 +13434,7 @@ fi\n\
         cross_check_enabled: bool,
         qa_automation_enabled: bool,
         continue_mode: AutoContinueMode,
+        review_auto_resolve: bool,
     ) {
         let mut changed = false;
         if self.auto_state.review_enabled != review_enabled {
@@ -13444,6 +13457,15 @@ fi\n\
             let effects = self.auto_state.update_continue_mode(continue_mode);
             self.auto_apply_controller_effects(effects);
             changed = true;
+        }
+        if self.config.tui.review_auto_resolve != review_auto_resolve {
+            self.config.tui.review_auto_resolve = review_auto_resolve;
+            changed = true;
+            if let Ok(home) = code_core::config::find_code_home() {
+                if let Err(err) = code_core::config::set_tui_review_auto_resolve(&home, review_auto_resolve) {
+                    tracing::warn!("Failed to persist review auto resolve setting: {err}");
+                }
+            }
         }
 
         if !changed {
@@ -13614,7 +13636,6 @@ fi\n\
             handle.cancel();
         }
 
-        self.pending_turn_descriptor = None;
         self.pending_auto_turn_config = None;
 
         let effects = self
@@ -13633,6 +13654,8 @@ fi\n\
         agents_timing: Option<AutoTurnAgentsTiming>,
         agents: Vec<AutoTurnAgentsAction>,
         transcript: Vec<code_protocol::models::ResponseItem>,
+        turn_descriptor: Option<TurnDescriptor>,
+        review_commit: Option<ReviewCommitDescriptor>,
     ) {
         if !self.auto_state.is_active() {
             return;
@@ -13676,7 +13699,6 @@ fi\n\
             self.auto_state.current_display_is_summary;
             self.auto_state.on_resume_from_manual();
 
-        self.pending_turn_descriptor = None;
         self.pending_auto_turn_config = None;
 
         if let Some(current) = progress_current
@@ -13692,6 +13714,20 @@ fi\n\
 
         let mut promoted_agents: Vec<String> = Vec::new();
         let continue_status = matches!(status, AutoCoordinatorStatus::Continue);
+
+        if let Some(descriptor) = turn_descriptor.clone() {
+            self.pending_turn_descriptor = Some(descriptor);
+        } else if !continue_status {
+            self.pending_turn_descriptor = None;
+        }
+
+        match review_commit.clone() {
+            Some(commit) => self.pending_review_commit = Some(commit),
+            None if !continue_status => {
+                self.pending_review_commit = None;
+            }
+            _ => {}
+        }
 
         let resolved_agents: Vec<AutoTurnAgentsAction> = agents
             .into_iter()
@@ -13846,6 +13882,160 @@ Have we met every part of this goal and is there no further work to do?"#
 
         self.auto_rebuild_live_ring();
         self.request_redraw();
+    }
+
+    fn should_schedule_auto_commit_review(&self) -> bool {
+        if self.auto_review_pending {
+            return false;
+        }
+        if !self.auto_state.is_active() {
+            return false;
+        }
+        if !self.auto_state.qa_automation_enabled {
+            return false;
+        }
+        if !self.auto_state.review_enabled {
+            return false;
+        }
+        if self
+            .pending_review_commit
+            .as_ref()
+            .and_then(|desc| desc.sha.as_ref())
+            .is_none()
+        {
+            return false;
+        }
+        matches!(
+            self.pending_review_commit
+                .as_ref()
+                .map(|desc| desc.source.as_str()),
+            Some("commit")
+        )
+    }
+
+    fn spawn_auto_commit_review(&mut self) {
+        let repo_root = self.config.cwd.clone();
+        let base_snapshot = self
+            .auto_turn_review_state
+            .as_ref()
+            .and_then(|state| state.base_commit.as_ref())
+            .map(|commit| BaseCommitSnapshot {
+                id: commit.id().to_string(),
+                parent: commit.parent().map(|p| p.to_string()),
+            });
+        let name_hint = self
+            .pending_review_commit
+            .as_ref()
+            .and_then(|desc| desc.sha.clone())
+            .or_else(|| self.auto_state.goal.clone());
+        let app_event_tx = self.app_event_tx.clone();
+        self.auto_review_pending = true;
+
+        spawn(async move {
+            let outcome = auto_review::prepare_commit_review(
+                &repo_root,
+                base_snapshot,
+                name_hint.as_deref(),
+            )
+            .await;
+            app_event_tx.send(AppEvent::AutoReviewCommitReady { outcome });
+        });
+    }
+
+    pub(crate) fn handle_auto_review_commit_ready(&mut self, outcome: AutoReviewOutcome) {
+        self.auto_review_pending = false;
+        match outcome {
+            AutoReviewOutcome::Skip { reason } => {
+                self.pending_review_commit = None;
+                self.push_background_tail(format!("Auto Drive review skipped: {reason}"));
+                self.cleanup_active_review_worktree();
+            }
+            AutoReviewOutcome::Error(err) => {
+                self.pending_review_commit = None;
+                self.push_background_tail(format!("Auto Drive review prep failed: {err}"));
+                tracing::warn!("auto_review_prep_failed" = %err);
+                self.cleanup_active_review_worktree();
+            }
+            AutoReviewOutcome::Commit(prepared) => {
+                self.launch_commit_review(prepared);
+            }
+        }
+        self.request_redraw();
+    }
+
+    fn launch_commit_review(&mut self, prepared: PreparedCommitReview) {
+        let file_label = if prepared.file_count == 1 {
+            "1 file".to_string()
+        } else {
+            format!("{} files", prepared.file_count)
+        };
+        let mut prompt = format!(
+            "Review commit {} generated during the latest Auto Drive turn. Highlight bugs, regressions, risky patterns, and missing tests before merge.",
+            prepared.commit_sha
+        );
+        let mut hint = format!(
+            "auto turn changes — {} ({})",
+            prepared.short_sha,
+            file_label
+        );
+        if let Some(subject) = prepared.subject.as_ref().filter(|s| !s.is_empty()) {
+            hint = format!("{hint} — {subject}");
+        }
+
+        if let Some(descriptor) = self.pending_turn_descriptor.as_ref() {
+            if let Some(strategy) = descriptor.review_strategy.as_ref() {
+                if let Some(custom_prompt) = strategy
+                    .custom_prompt
+                    .as_ref()
+                    .and_then(|text| {
+                        let trimmed = text.trim();
+                        (!trimmed.is_empty()).then_some(trimmed)
+                    })
+                {
+                    prompt = custom_prompt.to_string();
+                }
+
+                if let Some(scope_hint) = strategy
+                    .scope_hint
+                    .as_ref()
+                    .and_then(|text| {
+                        let trimmed = text.trim();
+                        (!trimmed.is_empty()).then_some(trimmed)
+                    })
+                {
+                    hint = scope_hint.to_string();
+                }
+            }
+        }
+
+        let metadata = ReviewContextMetadata {
+            scope: Some("commit".to_string()),
+            commit: Some(prepared.commit_sha.clone()),
+            base_branch: prepared.base_branch.clone(),
+            current_branch: prepared.current_branch.clone(),
+            worktree_path: Some(prepared.worktree_path.display().to_string()),
+        };
+
+        let preparation = format!("Preparing code review for commit {}", prepared.short_sha);
+        self.auto_state.on_begin_review(false);
+        self.auto_review_cleanup = Some(prepared.cleanup);
+        self.begin_review(prompt, hint, Some(preparation), Some(metadata));
+        self.pending_review_commit = None;
+        self.auto_turn_review_state = None;
+        self.auto_card_add_action(
+            format!("Auto Drive prepared commit review for {}", prepared.short_sha),
+            AutoDriveActionKind::Info,
+        );
+    }
+
+    fn cleanup_active_review_worktree(&mut self) {
+        if let Some(token) = self.auto_review_cleanup.take() {
+            spawn(async move {
+                if let Err(err) = cleanup_review_worktree(token).await {
+                    tracing::warn!("failed to cleanup review worktree: {err}");
+                }
+            });
+        }
     }
 
     fn schedule_auto_cli_prompt(&mut self, prompt_text: String) {
@@ -14126,102 +14316,6 @@ Have we met every part of this goal and is there no further work to do?"#
         self.auto_on_reasoning_delta(&delta, summary_index);
     }
 
-    #[cfg(any(test, feature = "test-helpers"))]
-    #[allow(dead_code)]
-    fn auto_handle_post_turn_review(
-        &mut self,
-        cfg: TurnConfig,
-        descriptor: Option<&TurnDescriptor>,
-    ) {
-        if !self.auto_state.review_enabled {
-            self.auto_turn_review_state = None;
-            return;
-        }
-        if cfg.read_only {
-            self.auto_turn_review_state = None;
-            return;
-        }
-
-        match self.auto_prepare_commit_scope() {
-            AutoReviewOutcome::Skip => {
-                self.auto_turn_review_state = None;
-                if self.auto_state.awaiting_review() {
-                    self.maybe_resume_auto_after_review();
-                }
-            }
-            AutoReviewOutcome::Workspace => {
-                self.auto_turn_review_state = None;
-                self.auto_start_post_turn_review(None, descriptor);
-            }
-            AutoReviewOutcome::Commit(scope) => {
-                self.auto_turn_review_state = None;
-                self.auto_start_post_turn_review(Some(scope), descriptor);
-            }
-        }
-    }
-
-    #[cfg(any(test, feature = "test-helpers"))]
-    #[allow(dead_code)]
-    fn auto_prepare_commit_scope(&mut self) -> AutoReviewOutcome {
-        let Some(state) = self.auto_turn_review_state.take() else {
-            return AutoReviewOutcome::Workspace;
-        };
-
-        let Some(base_commit) = state.base_commit else {
-            return AutoReviewOutcome::Workspace;
-        };
-
-        let final_commit = match self.capture_auto_turn_commit("auto turn change snapshot", Some(&base_commit)) {
-            Ok(commit) => commit,
-            Err(err) => {
-                tracing::warn!("failed to capture auto turn change snapshot: {err}");
-                return AutoReviewOutcome::Workspace;
-            }
-        };
-
-        let diff_paths = match self.git_diff_name_only_between(base_commit.id(), final_commit.id()) {
-            Ok(paths) => paths,
-            Err(err) => {
-                tracing::warn!("failed to diff auto turn snapshots: {err}");
-                return AutoReviewOutcome::Workspace;
-            }
-        };
-
-        if diff_paths.is_empty() {
-            self.push_background_tail("Auto review skipped: no file changes detected this turn.".to_string());
-            return AutoReviewOutcome::Skip;
-        }
-
-        AutoReviewOutcome::Commit(AutoReviewCommitScope {
-            commit: final_commit.id().to_string(),
-            file_count: diff_paths.len(),
-        })
-    }
-
-    #[cfg(any(test, feature = "test-helpers"))]
-    #[allow(dead_code)]
-    fn auto_turn_has_diff(&self) -> bool {
-        if self.worktree_has_uncommitted_changes().unwrap_or(false) {
-            return true;
-        }
-
-        if let Some(base_commit) = self
-            .auto_turn_review_state
-            .as_ref()
-            .and_then(|state| state.base_commit.as_ref())
-        {
-            if let Some(head) = self.current_head_commit_sha() {
-                if let Ok(paths) = self.git_diff_name_only_between(base_commit.id(), &head) {
-                    if !paths.is_empty() {
-                        return true;
-                    }
-                }
-            }
-        }
-
-        false
-    }
-
     fn prepare_auto_turn_review_state(&mut self) {
         if !self.auto_state.is_active() || !self.auto_state.review_enabled {
             self.auto_turn_review_state = None;
@@ -14267,31 +14361,6 @@ Have we met every part of this goal and is there no further work to do?"#
             options = options.parent(parent_commit.id());
         }
         create_ghost_commit(&options)
-    }
-
-    #[cfg(any(test, feature = "test-helpers"))]
-    #[allow(dead_code)]
-    fn git_diff_name_only_between(
-        &self,
-        base_commit: &str,
-        head_commit: &str,
-    ) -> Result<Vec<String>, String> {
-        #[cfg(test)]
-        if let Some(stub) = GIT_DIFF_NAME_ONLY_BETWEEN_STUB.lock().unwrap().as_ref() {
-            return stub(base_commit.to_string(), head_commit.to_string());
-        }
-        self.run_git_command(
-            ["diff", "--name-only", base_commit, head_commit],
-            |stdout| {
-                let changes = stdout
-                    .lines()
-                    .map(str::trim)
-                    .filter(|line| !line.is_empty())
-                    .map(|line| line.to_string())
-                    .collect();
-                Ok(changes)
-            },
-        )
     }
 
     fn auto_submit_prompt(&mut self) {
@@ -14579,6 +14648,9 @@ Have we met every part of this goal and is there no further work to do?"#
         self.next_cli_text_format = None;
         self.auto_pending_goal_request = false;
         self.auto_goal_bootstrap_done = false;
+        self.cleanup_active_review_worktree();
+        self.auto_review_pending = false;
+        self.pending_review_commit = None;
         let effects = self
             .auto_state
             .stop_run(Instant::now(), message);
@@ -14623,122 +14695,6 @@ Have we met every part of this goal and is there no further work to do?"#
         if !self.auto_state.should_bypass_coordinator_next_submit() {
             self.auto_send_conversation();
         }
-    }
-
-    #[cfg(any(test, feature = "test-helpers"))]
-    #[allow(dead_code)]
-    fn auto_start_post_turn_review(
-        &mut self,
-        scope: Option<AutoReviewCommitScope>,
-        descriptor: Option<&TurnDescriptor>,
-    ) {
-        if !self.auto_state.review_enabled {
-            return;
-        }
-        let strategy = descriptor.and_then(|d| d.review_strategy.as_ref());
-        let (mut prompt, mut hint, mut auto_metadata, mut review_metadata, preparation) = match scope {
-            Some(scope) => {
-                let commit_id = scope.commit;
-                let commit_for_prompt = commit_id.clone();
-                let short_sha: String = commit_for_prompt.chars().take(8).collect();
-                let file_label = if scope.file_count == 1 {
-                    "1 file".to_string()
-                } else {
-                    format!("{} files", scope.file_count)
-                };
-                let prompt = format!(
-                    "Review commit {} generated during the latest Auto Drive turn. Highlight bugs, regressions, risky patterns, and missing tests before merge.",
-                    commit_for_prompt
-                );
-                let hint = format!("auto turn changes — {} ({})", short_sha, file_label);
-                let preparation = format!("Preparing code review for commit {}", short_sha);
-                let review_metadata = Some(ReviewContextMetadata {
-                    scope: Some("commit".to_string()),
-                    commit: Some(commit_id),
-                    ..Default::default()
-                });
-                let auto_metadata = Some(ReviewContextMetadata {
-                    scope: Some("workspace".to_string()),
-                    ..Default::default()
-                });
-                (prompt, hint, auto_metadata, review_metadata, preparation)
-            }
-            None => {
-                let prompt = "Review the current workspace changes and highlight bugs, regressions, risky patterns, and missing tests before merge.".to_string();
-                let hint = "current workspace changes".to_string();
-                let review_metadata = Some(ReviewContextMetadata {
-                    scope: Some("workspace".to_string()),
-                    ..Default::default()
-                });
-                let preparation = "Preparing code review request...".to_string();
-                (
-                    prompt,
-                    hint,
-                    review_metadata.clone(),
-                    review_metadata,
-                    preparation,
-                )
-            }
-        };
-
-        if let Some(strategy) = strategy {
-            if let Some(custom_prompt) = strategy
-                .custom_prompt
-                .as_ref()
-                .and_then(|text| {
-                    let trimmed = text.trim();
-                    (!trimmed.is_empty()).then_some(trimmed)
-                })
-            {
-                prompt = custom_prompt.to_string();
-            }
-
-            if let Some(scope_hint) = strategy
-                .scope_hint
-                .as_ref()
-                .and_then(|text| {
-                    let trimmed = text.trim();
-                    (!trimmed.is_empty()).then_some(trimmed)
-                })
-            {
-                hint = scope_hint.to_string();
-
-                let apply_scope = |meta: &mut ReviewContextMetadata| {
-                    meta.scope = Some(scope_hint.to_string());
-                };
-
-                match review_metadata.as_mut() {
-                    Some(meta) => apply_scope(meta),
-                    None => {
-                        review_metadata = Some(ReviewContextMetadata {
-                            scope: Some(scope_hint.to_string()),
-                            ..Default::default()
-                        });
-                    }
-                }
-
-                match auto_metadata.as_mut() {
-                    Some(meta) => apply_scope(meta),
-                    None => {
-                        auto_metadata = Some(ReviewContextMetadata {
-                            scope: Some(scope_hint.to_string()),
-                            ..Default::default()
-                        });
-                    }
-                }
-            }
-        }
-
-        if self.config.tui.review_auto_resolve {
-            self.auto_resolve_state = Some(AutoResolveState::new(
-                prompt.clone(),
-                hint.clone(),
-                auto_metadata.clone(),
-            ));
-        } else {
-            self.auto_resolve_state = None;
-        }
-        self.begin_review(prompt, hint, Some(preparation), review_metadata);
     }
 
     fn auto_rebuild_live_ring(&mut self) {
@@ -22781,19 +22737,21 @@ mod tests {
 
         {
             let chat = harness.chat();
-            chat.auto_handle_decision(
-                AutoCoordinatorStatus::Continue,
-                None,
-                None,
-                Some("Finish migrations".to_string()),
-                Some(AutoTurnCliAction {
-                    prompt: "echo ready".to_string(),
-                    context: None,
-                }),
-                None,
-                Vec::new(),
-                Vec::new(),
-            );
+        chat.auto_handle_decision(
+            AutoCoordinatorStatus::Continue,
+            None,
+            None,
+            Some("Finish migrations".to_string()),
+            Some(AutoTurnCliAction {
+                prompt: "echo ready".to_string(),
+                context: None,
+            }),
+            None,
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+        );
         }
 
         let chat = harness.chat();
@@ -23346,6 +23304,8 @@ mod tests {
                 models: None,
             }],
             Vec::new(),
+            None,
+            None,
         );
 
         assert_eq!(
@@ -24518,6 +24478,7 @@ impl ChatWidget<'_> {
         if self.is_review_flow_active() || self.auto_resolve_should_block_auto_resume() {
             return;
         }
+        self.cleanup_active_review_worktree();
         self.auto_state.on_complete_review();
         if !self.auto_state.should_bypass_coordinator_next_submit() {
             self.auto_send_conversation();

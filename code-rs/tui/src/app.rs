@@ -1774,6 +1774,7 @@ impl App<'_> {
                     cross_check_enabled,
                     qa_automation_enabled,
                     continue_mode,
+                    review_auto_resolve,
                 } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.apply_auto_drive_settings(
@@ -1782,6 +1783,7 @@ impl App<'_> {
                             cross_check_enabled,
                             qa_automation_enabled,
                             continue_mode,
+                            review_auto_resolve,
                         );
                     }
                 }
@@ -1790,6 +1792,11 @@ impl App<'_> {
                         if let Some(launch) = widget.launch_agent_install(name, selected_index) {
                             self.app_event_tx.send(AppEvent::OpenTerminal(launch));
                         }
+                    }
+                }
+                AppEvent::AutoReviewCommitReady { outcome } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.handle_auto_review_commit_ready(outcome);
                     }
                 }
                 AppEvent::AgentsOverviewSelectionChanged { index } => {
@@ -1811,6 +1818,8 @@ impl App<'_> {
                     agents_timing,
                     agents,
                     transcript,
+                    turn_descriptor,
+                    review_commit,
                 } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.auto_handle_decision(
@@ -1822,6 +1831,8 @@ impl App<'_> {
                             agents_timing,
                             agents,
                             transcript,
+                            turn_descriptor,
+                            review_commit,
                         );
                     }
                 }

@@ -101,6 +101,8 @@ pub enum AutoCoordinatorEvent {
         agents_timing: Option<AutoTurnAgentsTiming>,
         agents: Vec<AutoTurnAgentsAction>,
         transcript: Vec<ResponseItem>,
+        turn_descriptor: Option<TurnDescriptor>,
+        review_commit: Option<ReviewCommitDescriptor>,
     },
     Thinking {
         delta: String,
@@ -151,10 +153,24 @@ struct PendingDecision {
     agents_timing: Option<AutoTurnAgentsTiming>,
     agents: Vec<AutoTurnAgentsAction>,
     transcript: Vec<ResponseItem>,
+    turn_descriptor: Option<TurnDescriptor>,
+    review_commit: Option<ReviewCommitDescriptor>,
 }
 
 impl PendingDecision {
     fn into_event(self) -> AutoCoordinatorEvent {
+        let (turn_descriptor, review_commit) = if matches!(self.status, AutoCoordinatorStatus::Success) {
+            match self.turn_descriptor.clone() {
+                Some(descriptor) if descriptor.diagnostics_enabled => (
+                    Some(descriptor),
+                    self.review_commit.clone(),
+                ),
+                _ => (None, None),
+            }
+        } else {
+            (None, None)
+        };
+
         AutoCoordinatorEvent::Decision {
             status: self.status,
             progress_past: self.progress_past,
@@ -164,6 +180,8 @@ impl PendingDecision {
             agents_timing: self.agents_timing,
             agents: self.agents,
             transcript: self.transcript,
+            turn_descriptor,
+            review_commit,
         }
     }
 }
@@ -262,7 +280,16 @@ pub struct TurnDescriptor {
     #[serde(default)]
     pub review_strategy: Option<ReviewStrategy>,
     #[serde(default)]
+    pub diagnostics_enabled: bool,
+    #[serde(default)]
     pub text_format_override: Option<code_core::TextFormat>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReviewCommitDescriptor {
+    pub source: String,
+    #[serde(default)]
+    pub sha: Option<String>,
 }
 
 impl Default for TurnDescriptor {
@@ -273,6 +300,7 @@ impl Default for TurnDescriptor {
             complexity: None,
             agent_preferences: None,
             review_strategy: None,
+            diagnostics_enabled: false,
             text_format_override: None,
         }
     }
@@ -294,6 +322,7 @@ mod tests {
         assert!(descriptor.complexity.is_none());
         assert!(descriptor.agent_preferences.is_none());
         assert!(descriptor.review_strategy.is_none());
+        assert!(!descriptor.diagnostics_enabled);
     }
 
     #[test]
@@ -598,6 +627,10 @@ struct CoordinatorDecisionNew {
     agents: Option<AgentsField>,
     #[serde(default)]
     goal: Option<String>,
+    #[serde(default)]
+    turn_descriptor: Option<TurnDescriptor>,
+    #[serde(default)]
+    review_commit: Option<ReviewCommitDescriptor>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -689,6 +722,8 @@ struct ParsedCoordinatorDecision {
     agents: Vec<AgentAction>,
     goal: Option<String>,
     response_items: Vec<ResponseItem>,
+    turn_descriptor: Option<TurnDescriptor>,
+    review_commit: Option<ReviewCommitDescriptor>,
 }
 
 #[derive(Debug, Clone)]
@@ -870,6 +905,8 @@ fn run_auto_loop(
                     mut agents_timing,
                     mut agents,
                     mut response_items,
+                    turn_descriptor,
+                    review_commit,
                 }) => {
                     retry_conversation.take();
                     if !include_agents {
@@ -898,6 +935,8 @@ fn run_auto_loop(
                             agents_timing,
                             agents: agents.iter().map(agent_action_to_event).collect(),
                             transcript: std::mem::take(&mut response_items),
+                            turn_descriptor: None,
+                            review_commit: None,
                         };
                         event_tx.send(event);
                         continue;
@@ -912,6 +951,8 @@ fn run_auto_loop(
                         agents_timing,
                         agents: agents.iter().map(agent_action_to_event).collect(),
                         transcript: response_items,
+                        turn_descriptor,
+                        review_commit,
                     };
 
                     let should_stop = matches!(decision_event.status, AutoCoordinatorStatus::Failed);
@@ -962,6 +1003,8 @@ fn run_auto_loop(
                         agents_timing: None,
                         agents: Vec::new(),
                         transcript: Vec::new(),
+                        turn_descriptor: None,
+                        review_commit: None,
                     };
                     event_tx.send(event);
                     stopped = true;
@@ -2048,6 +2091,8 @@ fn convert_decision_new(
         cli,
         agents: agent_payloads,
         goal,
+        turn_descriptor,
+        review_commit,
     } = decision;
 
     let progress_past = clean_optional(progress.past);
@@ -2116,6 +2161,8 @@ fn convert_decision_new(
         agents: agent_actions,
         goal,
         response_items: Vec::new(),
+        turn_descriptor,
+        review_commit,
     })
 }
 
@@ -2161,6 +2208,8 @@ fn convert_decision_legacy(
         agents: Vec::new(),
         goal,
         response_items: Vec::new(),
+        turn_descriptor: None,
+        review_commit: None,
     })
 }
 

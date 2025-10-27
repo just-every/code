@@ -2,6 +2,7 @@ use base64::Engine;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fs as stdfs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use tokio::fs::OpenOptions;
 use tokio::process::Command;
@@ -89,6 +90,8 @@ pub fn generate_branch_name_from_task(task: Option<&str>) -> String {
 
 pub const LOCAL_DEFAULT_REMOTE: &str = "local-default";
 const BRANCH_METADATA_DIR: &str = "_branch-meta";
+const REVIEW_WORKTREES_DIR: &str = "reviews";
+const REVIEW_WORKTREE_PREFIX: &str = "review";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BranchMetadata {
@@ -100,6 +103,22 @@ pub struct BranchMetadata {
     pub remote_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remote_url: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReviewWorktreeCleanupToken {
+    git_root: PathBuf,
+    worktree_path: PathBuf,
+}
+
+impl ReviewWorktreeCleanupToken {
+    pub fn git_root(&self) -> &Path {
+        &self.git_root
+    }
+
+    pub fn worktree_path(&self) -> &Path {
+        &self.worktree_path
+    }
 }
 
 /// Resolve the git repository root (top-level) for the given cwd.
@@ -193,6 +212,69 @@ pub async fn setup_worktree(git_root: &Path, branch_id: &str) -> Result<(PathBuf
     // Record created worktree for this process; best-effort.
     record_worktree_in_session(git_root, &worktree_path).await;
     Ok((worktree_path, effective_branch))
+}
+
+pub async fn setup_review_worktree(
+    git_root: &Path,
+    revision: &str,
+    name_hint: Option<&str>,
+) -> Result<(PathBuf, ReviewWorktreeCleanupToken), String> {
+    let repo_name = git_root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("repo");
+
+    let mut base_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    base_dir = base_dir
+        .join(".code")
+        .join("working")
+        .join(repo_name)
+        .join(REVIEW_WORKTREES_DIR);
+    tokio::fs::create_dir_all(&base_dir)
+        .await
+        .map_err(|e| format!("Failed to create review worktree directory: {}", e))?;
+
+    let slug = name_hint
+        .map(sanitize_ref_component)
+        .filter(|candidate| !candidate.is_empty());
+    let timestamp = Utc::now().format("%Y%m%d-%H%M%S");
+    let base_name = match slug {
+        Some(ref slug) => format!("{REVIEW_WORKTREE_PREFIX}-{slug}-{timestamp}"),
+        None => format!("{REVIEW_WORKTREE_PREFIX}-{timestamp}"),
+    };
+
+    let mut worktree_name = base_name.clone();
+    let mut worktree_path = base_dir.join(&worktree_name);
+    let mut suffix = 1usize;
+    while worktree_path.exists() {
+        worktree_name = format!("{base_name}-{suffix}");
+        worktree_path = base_dir.join(&worktree_name);
+        suffix += 1;
+    }
+
+    let worktree_str = worktree_path
+        .to_str()
+        .ok_or_else(|| format!("Review worktree path not valid UTF-8: {}", worktree_path.display()))?
+        .to_string();
+
+    let output = Command::new("git")
+        .current_dir(git_root)
+        .args(["worktree", "add", "--detach", &worktree_str, revision])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to create review worktree: {}", e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!("Failed to create review worktree: {stderr}"));
+    }
+
+    record_worktree_in_session(git_root, &worktree_path).await;
+    let token = ReviewWorktreeCleanupToken {
+        git_root: git_root.to_path_buf(),
+        worktree_path: worktree_path.clone(),
+    };
+
+    Ok((worktree_path, token))
 }
 
 /// Append the created worktree to a per-process session file so the TUI can
@@ -497,6 +579,50 @@ pub async fn copy_uncommitted_to_worktree(src_root: &Path, worktree_path: &Path)
         }
     }
     Ok(count)
+}
+
+pub async fn cleanup_review_worktree(token: ReviewWorktreeCleanupToken) -> Result<(), String> {
+    cleanup_review_worktree_at(token.git_root(), token.worktree_path()).await
+}
+
+pub async fn cleanup_review_worktree_at(
+    git_root: &Path,
+    worktree_path: &Path,
+) -> Result<(), String> {
+    let worktree_str = worktree_path
+        .to_str()
+        .ok_or_else(|| format!("Review worktree path not valid UTF-8: {}", worktree_path.display()))?
+        .to_string();
+
+    let output = Command::new("git")
+        .current_dir(git_root)
+        .args(["worktree", "remove", "--force", &worktree_str])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to remove review worktree: {}", e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let trimmed = stderr.trim();
+        if !trimmed.is_empty()
+            && !trimmed.contains("not found")
+            && !trimmed.contains("No such file or directory")
+            && !trimmed.contains("not a worktree")
+        {
+            return Err(format!("Failed to remove review worktree: {trimmed}"));
+        }
+    }
+
+    match tokio::fs::remove_dir_all(worktree_path).await {
+        Ok(_) => {}
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => return Err(format!("Failed to delete review worktree directory: {err}")),
+    }
+
+    if let Some(parent) = worktree_path.parent() {
+        let _ = tokio::fs::remove_dir(parent).await;
+    }
+
+    Ok(())
 }
 
 /// Determine repository default branch. Prefers `origin/HEAD` symbolic ref, then local `main`/`master`.
