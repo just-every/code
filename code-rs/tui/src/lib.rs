@@ -55,6 +55,7 @@ mod get_git_diff;
 mod glitch_animation;
 mod auto_drive_strings;
 mod auto_drive_style;
+mod auto_review;
 mod header_wave;
 mod history_cell;
 mod history;

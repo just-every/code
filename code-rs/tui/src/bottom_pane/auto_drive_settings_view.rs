@@ -20,6 +20,7 @@ pub(crate) struct AutoDriveSettingsView {
     agents_enabled: bool,
     cross_check_enabled: bool,
     qa_automation_enabled: bool,
+    review_auto_resolve: bool,
     diagnostics_enabled: bool,
     continue_mode: AutoContinueMode,
     closing: bool,
@@ -35,6 +36,7 @@ impl AutoDriveSettingsView {
         cross_check_enabled: bool,
         qa_automation_enabled: bool,
         continue_mode: AutoContinueMode,
+        review_auto_resolve: bool,
     ) -> Self {
         let diagnostics_enabled = qa_automation_enabled
             && (review_enabled || cross_check_enabled);
@@ -45,6 +47,7 @@ impl AutoDriveSettingsView {
             agents_enabled,
             cross_check_enabled,
             qa_automation_enabled,
+            review_auto_resolve,
             diagnostics_enabled,
             continue_mode,
             closing: false,
@@ -52,7 +55,7 @@ impl AutoDriveSettingsView {
     }
 
     fn option_count() -> usize {
-        3
+        4
     }
 
     fn send_update(&self) {
@@ -62,6 +65,7 @@ impl AutoDriveSettingsView {
             cross_check_enabled: self.cross_check_enabled,
             qa_automation_enabled: self.qa_automation_enabled,
             continue_mode: self.continue_mode,
+            review_auto_resolve: self.review_auto_resolve,
         });
     }
 
@@ -93,7 +97,11 @@ impl AutoDriveSettingsView {
                 self.set_diagnostics(next);
                 self.send_update();
             }
-            2 => self.cycle_continue_mode(true),
+            2 => {
+                self.review_auto_resolve = !self.review_auto_resolve;
+                self.send_update();
+            }
+            3 => self.cycle_continue_mode(true),
             _ => {}
         }
     }
@@ -135,6 +143,10 @@ impl AutoDriveSettingsView {
                 self.diagnostics_enabled,
             ),
             2 => (
+                "Review auto-resolve (automatically rerun fixes after review)",
+                self.review_auto_resolve,
+            ),
+            3 => (
                 "Auto-continue delay",
                 matches!(self.continue_mode, AutoContinueMode::Manual),
             ),
@@ -151,14 +163,14 @@ impl AutoDriveSettingsView {
 
         let mut spans = vec![Span::styled(prefix, label_style)];
         match index {
-            0 | 1 => {
+            0 | 1 | 2 => {
                 let checkbox = if enabled { "[x]" } else { "[ ]" };
                 spans.push(Span::styled(
                     format!("{checkbox} {label}"),
                     label_style,
                 ));
             }
-            2 => {
+            3 => {
                 spans.push(Span::styled(label.to_string(), label_style));
                 spans.push(Span::raw("  "));
                 spans.push(Span::styled(
@@ -179,6 +191,7 @@ impl AutoDriveSettingsView {
         lines.push(self.option_label(0));
         lines.push(self.option_label(1));
         lines.push(self.option_label(2));
+        lines.push(self.option_label(3));
         lines.push(Line::default());
 
         let footer_style = Style::default().fg(colors::text_dim());
@@ -230,13 +243,13 @@ impl AutoDriveSettingsView {
                 self.app_event_tx.send(AppEvent::RequestRedraw);
             }
             KeyCode::Left => {
-                if self.selected_index == 2 {
+                if self.selected_index == 3 {
                     self.cycle_continue_mode(false);
                     self.app_event_tx.send(AppEvent::RequestRedraw);
                 }
             }
             KeyCode::Right => {
-                if self.selected_index == 2 {
+                if self.selected_index == 3 {
                     self.cycle_continue_mode(true);
                     self.app_event_tx.send(AppEvent::RequestRedraw);
                 }
@@ -306,7 +319,7 @@ impl<'a> BottomPaneView<'a> for AutoDriveSettingsView {
     }
 
     fn desired_height(&self, _width: u16) -> u16 {
-        9
+        10
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {

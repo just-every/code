@@ -724,7 +724,7 @@ impl Default for Tui {
             spinner: SpinnerSelection::default(),
             notifications: Notifications::default(),
             alternate_screen: true,
-            review_auto_resolve: false,
+            review_auto_resolve: true,
         }
     }
 }

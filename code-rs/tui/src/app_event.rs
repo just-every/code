@@ -19,6 +19,7 @@ use code_git_tooling::{GhostCommit, GitToolingError};
 use code_cloud_tasks_client::{ApplyOutcome, CloudTaskError, CreatedTask, TaskSummary};
 
 use crate::app::ChatWidgetArgs;
+use crate::auto_review::AutoReviewOutcome;
 use crate::chrome_launch::ChromeLaunchOption;
 use crate::slash_command::SlashCommand;
 use code_protocol::models::ResponseItem;
@@ -83,6 +84,8 @@ pub(crate) use code_auto_drive_core::{
     AutoTurnAgentsAction,
     AutoTurnAgentsTiming,
     AutoTurnCliAction,
+    ReviewCommitDescriptor,
+    TurnDescriptor,
 };
 
 #[allow(clippy::large_enum_variant)]
@@ -141,6 +144,8 @@ pub(crate) enum AppEvent {
         agents_timing: Option<AutoTurnAgentsTiming>,
         agents: Vec<AutoTurnAgentsAction>,
         transcript: Vec<ResponseItem>,
+        turn_descriptor: Option<TurnDescriptor>,
+        review_commit: Option<ReviewCommitDescriptor>,
     },
     AutoCoordinatorUserReply {
         user_response: Option<String>,
@@ -167,7 +172,11 @@ pub(crate) enum AppEvent {
         cross_check_enabled: bool,
         qa_automation_enabled: bool,
         continue_mode: AutoContinueMode,
+        review_auto_resolve: bool,
     },
+
+    /// Commit review preparation finished; launch or skip accordingly.
+    AutoReviewCommitReady { outcome: AutoReviewOutcome },
 
     /// Dispatch a recognized slash command from the UI (composer) to the app
     /// layer so it can be handled centrally. Includes the full command text.

@@ -18,6 +18,7 @@ pub use auto_coordinator::{
     AutoTurnAgentsAction,
     AutoTurnAgentsTiming,
     AutoTurnCliAction,
+    ReviewCommitDescriptor,
     TurnComplexity,
     TurnConfig,
     TurnDescriptor,
