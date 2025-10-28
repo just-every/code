@@ -14,6 +14,7 @@ use mcp_types::InitializeRequestParams;
 use mcp_types::InitializeResult;
 use mcp_types::ListToolsRequestParams;
 use mcp_types::ListToolsResult;
+use mcp_types::MCP_SCHEMA_VERSION;
 use rmcp::model::CallToolRequestParam;
 use rmcp::model::InitializeRequestParam;
 use rmcp::model::PaginatedRequestParam;
@@ -151,18 +152,28 @@ impl RmcpClient {
         let service = match timeout {
             Some(duration) => time::timeout(duration, service_future)
                 .await
-                .map_err(|_| anyhow!("timed out handshaking with MCP server after {duration:?}"))?
-                .map_err(|err| anyhow!("handshaking with MCP server failed: {err}"))?,
+                .map_err(|_| anyhow!("timed out handshaking with MCP server after {duration:?}. Expected MCP protocol version: {MCP_SCHEMA_VERSION}"))?
+                .map_err(|err| anyhow!("handshaking with MCP server failed: {err}. Expected MCP protocol version: {MCP_SCHEMA_VERSION}"))?,
             None => service_future
                 .await
-                .map_err(|err| anyhow!("handshaking with MCP server failed: {err}"))?,
+                .map_err(|err| anyhow!("handshaking with MCP server failed: {err}. Expected MCP protocol version: {MCP_SCHEMA_VERSION}"))?,
         };
 
         let initialize_result_rmcp = service
             .peer()
             .peer_info()
             .ok_or_else(|| anyhow!("handshake succeeded but server info was missing"))?;
-        let initialize_result = convert_to_mcp(initialize_result_rmcp)?;
+        let initialize_result: InitializeResult = convert_to_mcp(initialize_result_rmcp)?;
+
+        // Check if the protocol version matches the expected version
+        if initialize_result.protocol_version != MCP_SCHEMA_VERSION {
+            return Err(anyhow!(
+                "MCP protocol version mismatch: server returned '{}', but client expects '{}'. \
+                 Please ensure both the MCP server and client are using compatible versions.",
+                initialize_result.protocol_version,
+                MCP_SCHEMA_VERSION
+            ));
+        }
 
         {
             let mut guard = self.state.lock().await;
@@ -215,5 +226,20 @@ impl RmcpClient {
         if let Ok(service) = self.service().await {
             service.cancellation_token().cancel();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mcp_schema_version_is_available() {
+        // This test verifies that MCP_SCHEMA_VERSION is accessible and has a valid format
+        assert!(!MCP_SCHEMA_VERSION.is_empty());
+        assert!(MCP_SCHEMA_VERSION.contains('-'));
+        // Expected format: YYYY-MM-DD (e.g., "2025-06-18")
+        let parts: Vec<&str> = MCP_SCHEMA_VERSION.split('-').collect();
+        assert_eq!(parts.len(), 3, "MCP_SCHEMA_VERSION should be in YYYY-MM-DD format");
     }
 }
