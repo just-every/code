@@ -88,6 +88,7 @@ pub struct ToolsConfig {
     pub include_view_image_tool: bool,
     pub web_search_allowed_domains: Option<Vec<String>>,
     pub agent_model_allowed_values: Vec<String>,
+    pub skill_tool: bool,
 }
 
 #[allow(dead_code)]
@@ -143,6 +144,7 @@ impl ToolsConfig {
             include_view_image_tool,
             web_search_allowed_domains: None,
             agent_model_allowed_values: Vec::new(),
+            skill_tool: false,
         }
     }
 
@@ -169,6 +171,10 @@ impl ToolsConfig {
 
     pub fn agent_models(&self) -> &[String] {
         &self.agent_model_allowed_values
+    }
+
+    pub fn enable_skill_tool(&mut self, enabled: bool) {
+        self.skill_tool = enabled;
     }
 }
 
@@ -679,6 +685,10 @@ pub fn get_openai_tools(
         tools.push(PLAN_TOOL.clone());
     }
 
+    if config.skill_tool {
+        tools.push(create_skill_tool());
+    }
+
     tools.push(create_browser_tool(browser_enabled));
 
     // Add agent management tool for launching and monitoring asynchronous agents
@@ -772,6 +782,43 @@ pub fn create_kill_tool() -> OpenAiTool {
             properties,
             required: Some(vec!["call_id".to_string()]),
             additional_properties: Some(false.into()),
+        },
+    })
+}
+
+pub fn create_skill_tool() -> OpenAiTool {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "skill".to_string(),
+        JsonSchema::String {
+            description: Some("Identifier of the skill to invoke.".to_string()),
+            allowed_values: None,
+        },
+    );
+    properties.insert(
+        "action".to_string(),
+        JsonSchema::String {
+            description: Some("Skill action to run (e.g., browser, agents, bash).".to_string()),
+            allowed_values: None,
+        },
+    );
+    properties.insert(
+        "arguments".to_string(),
+        JsonSchema::Object {
+            properties: BTreeMap::new(),
+            required: None,
+            additional_properties: Some(true.into()),
+        },
+    );
+
+    OpenAiTool::Function(ResponsesApiTool {
+        name: "skill".to_string(),
+        description: "Invoke a Claude Skill with a specific action. Execution is stubbed in this build.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["skill".to_string(), "action".to_string()]),
+            additional_properties: Some(true.into()),
         },
     })
 }

@@ -79,6 +79,9 @@ pub struct Prompt {
     pub log_tag: Option<String>,
     /// Optional override for session/conversation identifiers used for caching.
     pub session_id_override: Option<Uuid>,
+
+    /// Enabled skills to advertise to the provider for this turn.
+    pub skills: Vec<SkillRuntimeSpec>,
 }
 
 impl Default for Prompt {
@@ -98,6 +101,7 @@ impl Default for Prompt {
             output_schema: None,
             log_tag: None,
             session_id_override: None,
+            skills: Vec::new(),
         }
     }
 }
@@ -426,6 +430,24 @@ pub(crate) struct ResponsesApiRequest<'a> {
     pub(crate) include: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) prompt_cache_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) container: Option<SkillContainer<'a>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillRuntimeSpec {
+    #[serde(rename = "type")]
+    pub skill_type: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed_tools: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct SkillContainer<'a> {
+    pub(crate) skills: &'a [SkillRuntimeSpec],
 }
 
 pub(crate) fn create_reasoning_param_for_request(
@@ -537,6 +559,7 @@ mod tests {
             include: vec![],
             prompt_cache_key: None,
             text: Some(Text { verbosity: OpenAiTextVerbosity::Low, format: None }),
+            container: None,
         };
 
         let v = serde_json::to_value(&req).expect("json");
@@ -580,6 +603,7 @@ mod tests {
                     schema: Some(schema.clone()),
                 }),
             }),
+            container: None,
         };
 
         let v = serde_json::to_value(&req).expect("json");
@@ -616,6 +640,7 @@ mod tests {
             include: vec![],
             prompt_cache_key: None,
             text: None,
+            container: None,
         };
 
         let v = serde_json::to_value(&req).expect("json");
