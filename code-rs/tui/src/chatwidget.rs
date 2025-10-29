@@ -5,7 +5,7 @@ use std::collections::hash_map::Entry;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
@@ -40,6 +40,10 @@ use code_core::config_types::TextVerbosity;
 use code_core::plan_tool::{PlanItemArg, StepStatus, UpdatePlanArgs};
 use code_core::model_family::derive_default_model_family;
 use code_core::model_family::find_family_for_model;
+use code_core::skills::{LocalDirectorySkillLoader, SkillRegistry, SkillRegistryError, SkillSource, SkillLoader};
+use crate::bottom_pane::{SkillsSettingsView, SkillDisplay};
+use crate::chatwidget::settings_overlay::SkillsSettingsContent;
+use dirs::home_dir;
 use code_core::account_usage::{
     self,
     RateLimitWarningScope,
@@ -531,8 +535,12 @@ use code_core::config::find_code_home;
 use code_core::config::resolve_code_path_for_read;
 use code_core::config::set_github_actionlint_on_patch;
 use code_core::config::set_github_check_on_push;
-use code_core::config::set_validation_group_enabled;
-use code_core::config::set_validation_tool_enabled;
+use code_core::config::{
+    set_skill_enabled,
+    set_skills_enabled,
+    set_validation_group_enabled,
+    set_validation_tool_enabled,
+};
 use code_file_search::FileMatch;
 use code_cloud_tasks_client::{ApplyOutcome, CloudTaskError, CreatedTask, TaskSummary};
 use code_protocol::models::ContentItem;
@@ -779,6 +787,7 @@ pub(crate) struct ChatWidget<'a> {
     history_snapshot_dirty: bool,
     history_snapshot_last_flush: Option<Instant>,
     config: Config,
+    skill_registry: Arc<SkillRegistry>,
     history_debug_events: Option<RefCell<Vec<String>>>,
     latest_upgrade_version: Option<String>,
     initial_user_message: Option<UserMessage>,
@@ -4020,6 +4029,7 @@ impl ChatWidget<'_> {
             active_exec_cell: None,
             history_cells,
             config: config.clone(),
+            skill_registry: Arc::new(SkillRegistry::new()),
             history_debug_events: if history_cell_logging_enabled() {
                 Some(RefCell::new(Vec::new()))
             } else {
@@ -4259,6 +4269,7 @@ impl ChatWidget<'_> {
             w.seed_test_mode_greeting();
         }
         w.maybe_start_auto_upgrade_task();
+        w.load_local_skills();
         w
     }
 
@@ -4327,6 +4338,7 @@ impl ChatWidget<'_> {
             active_exec_cell: None,
             history_cells,
             config: config.clone(),
+            skill_registry: Arc::new(SkillRegistry::new()),
             history_debug_events: if history_cell_logging_enabled() {
                 Some(RefCell::new(Vec::new()))
             } else {
@@ -4540,6 +4552,7 @@ impl ChatWidget<'_> {
             w.seed_test_mode_greeting();
         }
         w.maybe_start_auto_upgrade_task();
+        w.load_local_skills();
         w
     }
 
@@ -12456,6 +12469,72 @@ impl ChatWidget<'_> {
         GithubSettingsContent::new(view)
     }
 
+    fn build_skills_settings_content(&self) -> SkillsSettingsContent {
+        let global_enabled = self.config.skills.enabled;
+        let per_skill = &self.config.skills.per_skill;
+        let entries = self.skill_registry.list();
+        let skills: Vec<SkillDisplay> = entries
+            .into_iter()
+            .map(|entry| {
+                let manifest = entry.manifest;
+                let allowed_tools = manifest
+                    .allowed_tools
+                    .iter()
+                    .map(|tool| tool.label().to_string())
+                    .collect();
+                let description = manifest
+                    .description
+                    .trim()
+                    .to_string();
+                let description = if description.is_empty() {
+                    None
+                } else {
+                    Some(description)
+                };
+                let source_label = match entry.source {
+                    SkillSource::Anthropic { identifier, .. } => format!("Anthropic ({identifier})"),
+                    SkillSource::LocalUser { root } => format!("User ({})", root.display()),
+                    SkillSource::Project { root } => format!("Project ({})", root.display()),
+                };
+                let id = manifest.id.as_str().to_string();
+                let enabled = per_skill
+                    .get(manifest.id.as_str())
+                    .copied()
+                    .unwrap_or(global_enabled);
+                SkillDisplay {
+                    id,
+                    description,
+                    source_label,
+                    allowed_tools,
+                    enabled,
+                }
+            })
+            .collect();
+
+        let user_paths = self
+            .config
+            .skills
+            .user_paths
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+        let project_paths = self
+            .config
+            .skills
+            .project_paths
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+        let view = SkillsSettingsView::new(
+            global_enabled,
+            skills,
+            user_paths,
+            project_paths,
+            self.app_event_tx.clone(),
+        );
+        SkillsSettingsContent::new(view)
+    }
+
     fn build_auto_drive_settings_content(&mut self) -> AutoDriveSettingsContent {
         let review = self.auto_state.review_enabled;
         let agents = self.auto_state.subagents_enabled;
@@ -17452,6 +17531,7 @@ Have we met every part of this goal and is there no further work to do?"#
         overlay.set_auto_drive_content(self.build_auto_drive_settings_content());
         overlay.set_validation_content(self.build_validation_settings_content());
         overlay.set_github_content(self.build_github_settings_content());
+        overlay.set_skills_content(self.build_skills_settings_content());
         overlay.set_limits_content(self.build_limits_settings_content());
         overlay.set_chrome_content(self.build_chrome_settings_content(None));
         let overview_rows = self.build_settings_overview_rows();
@@ -17730,6 +17810,7 @@ Have we met every part of this goal and is there no further work to do?"#
                     SettingsSection::AutoDrive => self.settings_summary_auto_drive(),
                     SettingsSection::Validation => self.settings_summary_validation(),
                     SettingsSection::Github => self.settings_summary_github(),
+                    SettingsSection::Skills => self.settings_summary_skills(),
                     SettingsSection::Limits => self.settings_summary_limits(),
                     SettingsSection::Chrome => self.settings_summary_chrome(),
                     SettingsSection::Mcp => self.settings_summary_mcp(),
@@ -17830,6 +17911,17 @@ Have we met every part of this goal and is there no further work to do?"#
             "Workflows on push: {}",
             if self.config.github.check_workflows_on_push { "On" } else { "Off" }
         ))
+    }
+
+    fn settings_summary_skills(&self) -> Option<String> {
+        let total = self.skill_registry.list().len();
+        let overrides = self.config.skills.per_skill.len();
+        let mut parts = vec![format!("Global: {}", Self::on_off_label(self.config.skills.enabled))];
+        parts.push(format!("Catalog: {}", total));
+        if overrides > 0 {
+            parts.push(format!("Overrides: {}", overrides));
+        }
+        Some(parts.join(" · "))
     }
 
     fn settings_summary_limits(&self) -> Option<String> {
@@ -17975,7 +18067,8 @@ Have we met every part of this goal and is there no further work to do?"#
             | SettingsSection::Github
             | SettingsSection::AutoDrive
             | SettingsSection::Mcp
-            | SettingsSection::Notifications => false,
+            | SettingsSection::Notifications
+            | SettingsSection::Skills => false,
             SettingsSection::Agents => {
                 self.show_agents_overview_ui();
                 false
@@ -31383,6 +31476,83 @@ impl ChatWidget<'_> {
         self.refresh_settings_overview_rows();
     }
 
+    fn display_name_for_skill(&self, skill_id: &str) -> Option<String> {
+        self
+            .skill_registry
+            .list()
+            .into_iter()
+            .find(|entry| entry.manifest.id.as_str() == skill_id)
+            .map(|entry| entry.manifest.name)
+    }
+
+    pub(crate) fn set_skills_enabled(&mut self, enabled: bool) {
+        if self.config.skills.enabled == enabled {
+            return;
+        }
+
+        self.config.skills.enabled = enabled;
+
+        if let Err(err) = self.code_op_tx.send(Op::UpdateSkillsEnabled { enabled }) {
+            tracing::warn!("failed to send skills enabled update: {err}");
+        }
+
+        let status = if enabled { "Enabled" } else { "Disabled" };
+        match find_code_home() {
+            Ok(home) => match set_skills_enabled(&home, enabled) {
+                Ok(()) => self.push_background_tail(format!("✅ {status} Claude skills")),
+                Err(err) => self.push_background_tail(format!(
+                    "⚠️ {status} Claude skills (persist failed: {err})"
+                )),
+            },
+            Err(err) => {
+                self.push_background_tail(format!(
+                    "⚠️ {status} Claude skills (persist failed: {err})"
+                ));
+            }
+        }
+
+        self.refresh_settings_overview_rows();
+        self.refresh_skills_settings_view();
+        self.request_redraw();
+    }
+
+    pub(crate) fn set_skill_toggle(&mut self, skill_id: &str, enabled: bool) {
+        self.config
+            .skills
+            .per_skill
+            .insert(skill_id.to_string(), enabled);
+
+        if let Err(err) = self
+            .code_op_tx
+            .send(Op::UpdateSkillToggle { skill_id: skill_id.to_string(), enable: enabled })
+        {
+            tracing::warn!("failed to send skill toggle update: {err}");
+        }
+
+        let label = self
+            .display_name_for_skill(skill_id)
+            .unwrap_or_else(|| skill_id.to_string());
+        let status = if enabled { "Enabled" } else { "Disabled" };
+
+        match find_code_home() {
+            Ok(home) => match set_skill_enabled(&home, skill_id, enabled) {
+                Ok(()) => self.push_background_tail(format!("✅ {status} skill {label}")),
+                Err(err) => self.push_background_tail(format!(
+                    "⚠️ {status} skill {label} (persist failed: {err})"
+                )),
+            },
+            Err(err) => {
+                self.push_background_tail(format!(
+                    "⚠️ {status} skill {label} (persist failed: {err})"
+                ));
+            }
+        }
+
+        self.refresh_settings_overview_rows();
+        self.refresh_skills_settings_view();
+        self.request_redraw();
+    }
+
     pub(crate) fn set_tui_notifications(&mut self, enabled: bool) {
         let new_state = Notifications::Enabled(enabled);
         self.config.tui.notifications = new_state.clone();
@@ -31417,6 +31587,84 @@ impl ChatWidget<'_> {
         }
 
         self.refresh_settings_overview_rows();
+    }
+
+    fn refresh_skills_settings_view(&mut self) {
+        let content = self.build_skills_settings_content();
+        if let Some(overlay) = self.settings.overlay.as_mut() {
+            overlay.set_skills_content(content);
+            self.request_redraw();
+        }
+    }
+
+    fn load_local_skills(&mut self) {
+        let mut loader_specs: Vec<(PathBuf, SkillSource)> = Vec::new();
+        let mut seen: HashSet<PathBuf> = HashSet::new();
+        let home = home_dir();
+
+        let user_paths: Vec<PathBuf> = if self.config.skills.user_paths.is_empty() {
+            home.as_ref()
+                .map(|home| vec![home.join(".claude/skills")])
+                .unwrap_or_default()
+        } else {
+            self.config.skills.user_paths.clone()
+        };
+
+        for path in user_paths {
+            let resolved = if path.is_absolute() {
+                path
+            } else if let Some(home) = home.as_ref() {
+                home.join(&path)
+            } else {
+                self.config.cwd.join(&path)
+            };
+
+            if seen.insert(Self::normalize_path_for_seen(&resolved)) {
+                loader_specs.push((resolved.clone(), SkillSource::LocalUser { root: resolved }));
+            }
+        }
+
+        let project_paths: Vec<PathBuf> = if self.config.skills.project_paths.is_empty() {
+            vec![self.config.cwd.join(".claude/skills")]
+        } else {
+            self.config.skills.project_paths.clone()
+        };
+
+        for path in project_paths {
+            let resolved = if path.is_absolute() {
+                path
+            } else {
+                self.config.cwd.join(&path)
+            };
+            if seen.insert(Self::normalize_path_for_seen(&resolved)) {
+                loader_specs.push((resolved.clone(), SkillSource::Project { root: resolved }));
+            }
+        }
+
+        for (root, source) in loader_specs {
+            let loader = LocalDirectorySkillLoader::new(root.clone(), source);
+            match loader.load() {
+                Ok(entries) => {
+                    for entry in entries {
+                        if let Err(err) = self.skill_registry.add_skill(entry) {
+                            if !matches!(err, SkillRegistryError::AlreadyExists(_)) {
+                                warn!("failed to add skill from {}: {err}", root.display());
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    warn!("failed to load skills from {}: {err}", root.display());
+                }
+            }
+        }
+
+        self.refresh_settings_overview_rows();
+        self.refresh_skills_settings_view();
+    }
+
+    fn normalize_path_for_seen(path: &Path) -> PathBuf {
+        path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
     }
 
     fn emit_turn_complete_notification(&self, last_agent_message: Option<String>) {

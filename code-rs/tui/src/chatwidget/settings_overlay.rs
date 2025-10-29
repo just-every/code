@@ -19,6 +19,7 @@ use crate::bottom_pane::{
     ModelSelectionView,
     NotificationsSettingsView,
     SettingsSection,
+    SkillsSettingsView,
     ThemeSelectionView,
     UpdateSettingsView,
     ValidationSettingsView,
@@ -286,6 +287,31 @@ impl GithubSettingsContent {
 }
 
 impl SettingsContent for GithubSettingsContent {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        self.view.render(area, buf);
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) -> bool {
+        self.view.handle_key_event_direct(key);
+        true
+    }
+
+    fn is_complete(&self) -> bool {
+        self.view.is_view_complete()
+    }
+}
+
+pub(crate) struct SkillsSettingsContent {
+    view: SkillsSettingsView,
+}
+
+impl SkillsSettingsContent {
+    pub(crate) fn new(view: SkillsSettingsView) -> Self {
+        Self { view }
+    }
+}
+
+impl SettingsContent for SkillsSettingsContent {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         self.view.render(area, buf);
     }
@@ -1034,6 +1060,7 @@ pub(crate) struct SettingsOverlayView {
     agents_content: Option<AgentsSettingsContent>,
     validation_content: Option<ValidationSettingsContent>,
     github_content: Option<GithubSettingsContent>,
+    skills_content: Option<SkillsSettingsContent>,
     auto_drive_content: Option<AutoDriveSettingsContent>,
     limits_content: Option<LimitsSettingsContent>,
     chrome_content: Option<ChromeSettingsContent>,
@@ -1055,6 +1082,7 @@ impl SettingsOverlayView {
             agents_content: None,
             validation_content: None,
             github_content: None,
+            skills_content: None,
             auto_drive_content: None,
             limits_content: None,
             chrome_content: None,
@@ -1144,6 +1172,10 @@ impl SettingsOverlayView {
 
     pub(crate) fn set_github_content(&mut self, content: GithubSettingsContent) {
         self.github_content = Some(content);
+    }
+
+    pub(crate) fn set_skills_content(&mut self, content: SkillsSettingsContent) {
+        self.skills_content = Some(content);
     }
 
     pub(crate) fn set_auto_drive_content(&mut self, content: AutoDriveSettingsContent) {
@@ -1614,6 +1646,7 @@ impl SettingsOverlayView {
             SettingsSection::AutoDrive => "Auto Drive Settings",
             SettingsSection::Validation => "Validation Settings",
             SettingsSection::Github => "GitHub Settings",
+            SettingsSection::Skills => "Claude Skills",
             SettingsSection::Limits => "Rate Limits",
             SettingsSection::Chrome => "Chrome Launch Options",
             SettingsSection::Notifications => "Notifications",
@@ -1942,6 +1975,13 @@ impl SettingsOverlayView {
                 }
                 self.render_placeholder(area, buf, SettingsSection::Github.placeholder());
             }
+            SettingsSection::Skills => {
+                if let Some(content) = self.skills_content.as_ref() {
+                    content.render(area, buf);
+                    return;
+                }
+                self.render_placeholder(area, buf, SettingsSection::Skills.placeholder());
+            }
             SettingsSection::Limits => {
                 if let Some(content) = self.limits_content.as_ref() {
                     content.render(area, buf);
@@ -2014,6 +2054,10 @@ impl SettingsOverlayView {
                 .github_content
                 .as_mut()
                 .map(|content| content as &mut dyn SettingsContent),
+            SettingsSection::Skills => self
+                .skills_content
+                .as_mut()
+                .map(|content| content as &mut dyn SettingsContent),
             SettingsSection::Limits => self
                 .limits_content
                 .as_mut()
@@ -2057,6 +2101,11 @@ impl SettingsOverlayView {
             }
             SettingsSection::Chrome => {
                 if let Some(content) = self.chrome_content.as_mut() {
+                    content.on_close();
+                }
+            }
+            SettingsSection::Skills => {
+                if let Some(content) = self.skills_content.as_mut() {
                     content.on_close();
                 }
             }

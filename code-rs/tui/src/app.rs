@@ -2277,6 +2277,16 @@ impl App<'_> {
                         widget.toggle_validation_group(group, enable);
                     }
                 }
+                AppEvent::UpdateSkillsEnabled { enabled } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.set_skills_enabled(enabled);
+                    }
+                }
+                AppEvent::UpdateSkillToggle { skill_id, enable } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.set_skill_toggle(&skill_id, enable);
+                    }
+                }
                 AppEvent::SetTerminalTitle { title } => {
                     self.terminal_title_override = title;
                     self.apply_terminal_title();
