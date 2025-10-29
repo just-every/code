@@ -6,6 +6,7 @@ use serde::Serialize;
 use uuid::Uuid;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -14,6 +15,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use crate::agent_defaults::{agent_model_spec, default_params_for};
 use crate::config_types::AgentConfig;
@@ -65,9 +67,14 @@ lazy_static::lazy_static! {
     pub static ref AGENT_MANAGER: Arc<RwLock<AgentManager>> = Arc::new(RwLock::new(AgentManager::new()));
 }
 
+const MAX_TRACKED_COMPLETED_AGENTS: usize = 200;
+const MAX_COMPLETED_AGENT_AGE_HOURS: i64 = 6;
+const MAX_AGENT_PROGRESS_ENTRIES: usize = 200;
+
 pub struct AgentManager {
     agents: HashMap<String, Agent>,
     handles: HashMap<String, JoinHandle<()>>,
+    cancel_tokens: HashMap<String, CancellationToken>,
     event_sender: Option<mpsc::UnboundedSender<AgentStatusUpdatePayload>>,
 }
 
@@ -83,6 +90,7 @@ impl AgentManager {
         Self {
             agents: HashMap::new(),
             handles: HashMap::new(),
+            cancel_tokens: HashMap::new(),
             event_sender: None,
         }
     }
@@ -91,65 +99,125 @@ impl AgentManager {
         self.event_sender = Some(sender);
     }
 
-    async fn send_agent_status_update(&self) {
-        if let Some(ref sender) = self.event_sender {
-            let now = Utc::now();
-            let agents: Vec<AgentInfo> = self
-                .agents
-                .values()
-                .map(|agent| {
-                    // Just show the model name - status provides the useful info
-                    let name = agent
-                        .name
-                        .as_ref()
-                        .map(|value| value.clone())
-                        .unwrap_or_else(|| agent.model.clone());
-                    let start = agent.started_at.unwrap_or(agent.created_at);
-                    let end = agent.completed_at.unwrap_or(now);
-                    let elapsed_ms = match end.signed_duration_since(start).num_milliseconds() {
-                        value if value >= 0 => Some(value as u64),
-                        _ => None,
-                    };
+    pub(crate) fn build_status_payload(&self) -> AgentStatusUpdatePayload {
+        let now = Utc::now();
 
-                    AgentInfo {
-                        id: agent.id.clone(),
-                        name,
-                        status: format!("{:?}", agent.status).to_lowercase(),
-                        batch_id: agent.batch_id.clone(),
-                        model: Some(agent.model.clone()),
-                        last_progress: agent.progress.last().cloned(),
-                        result: agent.result.clone(),
-                        error: agent.error.clone(),
-                        elapsed_ms,
-                        token_count: None,
+        let max_age = Duration::hours(MAX_COMPLETED_AGENT_AGE_HOURS);
+
+        let mut active: Vec<(DateTime<Utc>, String)> = Vec::new();
+        let mut terminal: Vec<(DateTime<Utc>, String)> = Vec::new();
+
+        for agent in self.agents.values() {
+            match agent.status {
+                AgentStatus::Pending | AgentStatus::Running => {
+                    active.push((agent.created_at, agent.id.clone()));
+                }
+                AgentStatus::Completed | AgentStatus::Failed | AgentStatus::Cancelled => {
+                    let completed_at = agent
+                        .completed_at
+                        .or(agent.started_at)
+                        .unwrap_or(agent.created_at);
+                    if now.signed_duration_since(completed_at) <= max_age {
+                        terminal.push((completed_at, agent.id.clone()));
                     }
-                })
-                .collect();
+                }
+            }
+        }
 
-            // Get context and task from the first agent (they're all the same)
-            let (context, task) = self
-                .agents
-                .values()
-                .next()
-                .map(|agent| {
-                    let context = agent
-                        .context
-                        .as_ref()
-                        .and_then(|value| if value.trim().is_empty() {
-                            None
-                        } else {
-                            Some(value.clone())
-                        });
-                    let task = if agent.prompt.trim().is_empty() {
-                        None
-                    } else {
-                        Some(agent.prompt.clone())
-                    };
-                    (context, task)
-                })
-                .unwrap_or((None, None));
-            let payload = AgentStatusUpdatePayload { agents, context, task };
+        active.sort_by_key(|(created_at, _)| *created_at);
+        terminal.sort_by_key(|(completed_at, _)| *completed_at);
+        terminal.reverse();
+        if terminal.len() > MAX_TRACKED_COMPLETED_AGENTS {
+            terminal.truncate(MAX_TRACKED_COMPLETED_AGENTS);
+        }
+        terminal.reverse();
+
+        let mut ordered_ids: Vec<String> = Vec::with_capacity(active.len() + terminal.len());
+        ordered_ids.extend(active.into_iter().map(|(_, id)| id));
+        ordered_ids.extend(terminal.into_iter().map(|(_, id)| id));
+
+        let first_agent_id = ordered_ids.first().cloned();
+
+        let agents: Vec<AgentInfo> = ordered_ids
+            .into_iter()
+            .filter_map(|id| self.agents.get(&id).map(|agent| agent_info_snapshot(agent, now)))
+            .collect();
+
+        let (context, task) = first_agent_id
+            .and_then(|id| self.agents.get(&id))
+            .map(|agent| {
+                let context = agent
+                    .context
+                    .as_ref()
+                    .and_then(|value| if value.trim().is_empty() { None } else { Some(value.clone()) });
+                let task = if agent.prompt.trim().is_empty() {
+                    None
+                } else {
+                    Some(agent.prompt.clone())
+                };
+                (context, task)
+            })
+            .unwrap_or((None, None));
+
+        AgentStatusUpdatePayload { agents, context, task }
+    }
+
+    async fn send_agent_status_update(&mut self) {
+        self.prune_finished_agents();
+        if let Some(ref sender) = self.event_sender {
+            let payload = self.build_status_payload();
             let _ = sender.send(payload);
+        }
+    }
+
+    fn prune_finished_agents(&mut self) {
+        let max_age = Duration::hours(MAX_COMPLETED_AGENT_AGE_HOURS);
+        let now = Utc::now();
+
+        let mut terminal: Vec<(String, DateTime<Utc>)> = self
+            .agents
+            .iter()
+            .filter_map(|(id, agent)| match agent.status {
+                AgentStatus::Completed | AgentStatus::Failed | AgentStatus::Cancelled => {
+                    let completed_at = agent
+                        .completed_at
+                        .or(agent.started_at)
+                        .unwrap_or(agent.created_at);
+                    Some((id.clone(), completed_at))
+                }
+                _ => None,
+            })
+            .collect();
+
+        if terminal.is_empty() {
+            return;
+        }
+
+        terminal.sort_by_key(|(_, completed_at)| *completed_at);
+
+        let mut to_remove: HashSet<String> = HashSet::new();
+        for (id, completed_at) in terminal.iter() {
+            if now.signed_duration_since(*completed_at) > max_age {
+                to_remove.insert(id.clone());
+            }
+        }
+
+        let survivors: Vec<(String, DateTime<Utc>)> = terminal
+            .into_iter()
+            .filter(|(id, _)| !to_remove.contains(id))
+            .collect();
+
+        if survivors.len() > MAX_TRACKED_COMPLETED_AGENTS {
+            let excess = survivors.len() - MAX_TRACKED_COMPLETED_AGENTS;
+            for (id, _) in survivors.iter().take(excess) {
+                to_remove.insert(id.clone());
+            }
+        }
+
+        for id in to_remove {
+            self.agents.remove(&id);
+            self.handles.remove(&id);
+            self.cancel_tokens.remove(&id);
         }
     }
 
@@ -242,13 +310,16 @@ impl AgentManager {
 
         self.agents.insert(agent_id.clone(), agent.clone());
 
+        let cancel_token = CancellationToken::new();
+        self.cancel_tokens.insert(agent_id.clone(), cancel_token.clone());
+
         // Send initial status update
         self.send_agent_status_update().await;
 
         // Spawn async agent
         let agent_id_clone = agent_id.clone();
         let handle = tokio::spawn(async move {
-            execute_agent(agent_id_clone, config).await;
+            execute_agent(agent_id_clone, config, cancel_token).await;
         });
 
         self.handles.insert(agent_id.clone(), handle);
@@ -258,10 +329,6 @@ impl AgentManager {
 
     pub fn get_agent(&self, agent_id: &str) -> Option<Agent> {
         self.agents.get(agent_id).cloned()
-    }
-
-    pub fn get_all_agents(&self) -> impl Iterator<Item = &Agent> {
-        self.agents.values()
     }
 
     pub fn list_agents(
@@ -307,12 +374,16 @@ impl AgentManager {
     }
 
     pub async fn cancel_agent(&mut self, agent_id: &str) -> bool {
+        if let Some(token) = self.cancel_tokens.remove(agent_id) {
+            token.cancel();
+        }
         if let Some(handle) = self.handles.remove(agent_id) {
             handle.abort();
             if let Some(agent) = self.agents.get_mut(agent_id) {
                 agent.status = AgentStatus::Cancelled;
                 agent.completed_at = Some(Utc::now());
             }
+            self.prune_finished_agents();
             true
         } else {
             false
@@ -337,6 +408,7 @@ impl AgentManager {
     }
 
     pub async fn update_agent_status(&mut self, agent_id: &str, status: AgentStatus) {
+        let mut should_send = false;
         if let Some(agent) = self.agents.get_mut(agent_id) {
             agent.status = status;
             if agent.status == AgentStatus::Running && agent.started_at.is_none() {
@@ -348,34 +420,56 @@ impl AgentManager {
             ) {
                 agent.completed_at = Some(Utc::now());
             }
+            should_send = true;
+        }
+        if should_send {
             // Send status update event
             self.send_agent_status_update().await;
         }
     }
 
     pub async fn update_agent_result(&mut self, agent_id: &str, result: Result<String, String>) {
+        let mut should_send = false;
         if let Some(agent) = self.agents.get_mut(agent_id) {
-            match result {
-                Ok(output) => {
-                    agent.result = Some(output);
-                    agent.status = AgentStatus::Completed;
+            if agent.status == AgentStatus::Cancelled {
+                agent.completed_at = Some(Utc::now());
+                should_send = true;
+            } else {
+                match result {
+                    Ok(output) => {
+                        agent.result = Some(output);
+                        agent.status = AgentStatus::Completed;
+                    }
+                    Err(error) => {
+                        agent.error = Some(error);
+                        agent.status = AgentStatus::Failed;
+                    }
                 }
-                Err(error) => {
-                    agent.error = Some(error);
-                    agent.status = AgentStatus::Failed;
-                }
+                agent.completed_at = Some(Utc::now());
+                should_send = true;
             }
-            agent.completed_at = Some(Utc::now());
+        }
+        self.handles.remove(agent_id);
+        self.cancel_tokens.remove(agent_id);
+        if should_send {
             // Send status update event
             self.send_agent_status_update().await;
         }
     }
 
     pub async fn add_progress(&mut self, agent_id: &str, message: String) {
+        let mut should_send = false;
         if let Some(agent) = self.agents.get_mut(agent_id) {
             agent
                 .progress
                 .push(format!("{}: {}", Utc::now().format("%H:%M:%S"), message));
+            if agent.progress.len() > MAX_AGENT_PROGRESS_ENTRIES {
+                let excess = agent.progress.len() - MAX_AGENT_PROGRESS_ENTRIES;
+                agent.progress.drain(0..excess);
+            }
+            should_send = true;
+        }
+        if should_send {
             // Send updated agent status with the latest progress
             self.send_agent_status_update().await;
         }
@@ -391,6 +485,33 @@ impl AgentManager {
             agent.worktree_path = Some(worktree_path);
             agent.branch_name = Some(branch_name);
         }
+    }
+}
+
+fn agent_info_snapshot(agent: &Agent, now: DateTime<Utc>) -> AgentInfo {
+    let name = agent
+        .name
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| agent.model.clone());
+    let start = agent.started_at.unwrap_or(agent.created_at);
+    let end = agent.completed_at.unwrap_or(now);
+    let elapsed_ms = match end.signed_duration_since(start).num_milliseconds() {
+        value if value >= 0 => Some(value as u64),
+        _ => None,
+    };
+
+    AgentInfo {
+        id: agent.id.clone(),
+        name,
+        status: format!("{:?}", agent.status).to_lowercase(),
+        batch_id: agent.batch_id.clone(),
+        model: Some(agent.model.clone()),
+        last_progress: agent.progress.last().cloned(),
+        result: agent.result.clone(),
+        error: agent.error.clone(),
+        elapsed_ms,
+        token_count: None,
     }
 }
 
@@ -449,7 +570,7 @@ fn generate_branch_id(model: &str, agent: &str) -> String {
 
 use crate::git_worktree::setup_worktree;
 
-async fn execute_agent(agent_id: String, config: Option<AgentConfig>) {
+async fn execute_agent(agent_id: String, config: Option<AgentConfig>, cancel_token: CancellationToken) {
     let mut manager = AGENT_MANAGER.write().await;
 
     // Get agent details
@@ -558,6 +679,7 @@ async fn execute_agent(agent_id: String, config: Option<AgentConfig>) {
                                         Some(worktree_path),
                                         config.clone(),
                                         spec.slug,
+                                        cancel_token.clone(),
                                     )
                                     .await
                                 }
@@ -568,6 +690,7 @@ async fn execute_agent(agent_id: String, config: Option<AgentConfig>) {
                                     Some(worktree_path),
                                     config.clone(),
                                     model.as_str(),
+                                    cancel_token.clone(),
                                 )
                                 .await
                             }
@@ -578,6 +701,7 @@ async fn execute_agent(agent_id: String, config: Option<AgentConfig>) {
                                 false,
                                 Some(worktree_path),
                                 config.clone(),
+                                cancel_token.clone(),
                             )
                             .await
                         }
@@ -603,13 +727,37 @@ async fn execute_agent(agent_id: String, config: Option<AgentConfig>) {
                 if !spec.is_enabled() {
                     Err(gating_error_message(spec))
                 } else {
-                    execute_cloud_built_in_streaming(&agent_id, &full_prompt, None, config, spec.slug).await
+                    execute_cloud_built_in_streaming(
+                        &agent_id,
+                        &full_prompt,
+                        None,
+                        config,
+                        spec.slug,
+                        cancel_token.clone(),
+                    )
+                    .await
                 }
             } else {
-                execute_cloud_built_in_streaming(&agent_id, &full_prompt, None, config, model.as_str()).await
+                execute_cloud_built_in_streaming(
+                    &agent_id,
+                    &full_prompt,
+                    None,
+                    config,
+                    model.as_str(),
+                    cancel_token.clone(),
+                )
+                .await
             }
         } else {
-            execute_model_with_permissions(&model, &full_prompt, true, None, config).await
+            execute_model_with_permissions(
+                &model,
+                &full_prompt,
+                true,
+                None,
+                config,
+                cancel_token.clone(),
+            )
+            .await
         }
     };
 
@@ -624,6 +772,7 @@ async fn execute_model_with_permissions(
     read_only: bool,
     working_dir: Option<PathBuf>,
     config: Option<AgentConfig>,
+    _cancel_token: CancellationToken,
 ) -> Result<String, String> {
     // Helper: cross‑platform check whether an executable is available in PATH
     // and is directly spawnable by std::process::Command (no shell wrappers).
@@ -1017,6 +1166,7 @@ async fn execute_cloud_built_in_streaming(
     working_dir: Option<std::path::PathBuf>,
     _config: Option<AgentConfig>,
     model_slug: &str,
+    cancel_token: CancellationToken,
 ) -> Result<String, String> {
     // Program and argv
     let program = std::env::current_exe()
@@ -1044,16 +1194,34 @@ async fn execute_cloud_built_in_streaming(
     .await
     .map_err(|e| format!("Failed to spawn cloud submit: {}", e))?;
 
-    // Stream stderr to HUD
-    let stderr_task = if let Some(stderr) = child.stderr.take() {
+    let cancel_for_stderr = cancel_token.clone();
+    let mut stderr_task = if let Some(stderr) = child.stderr.take() {
         let agent = agent_id.to_string();
         Some(tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let msg = line.trim();
-                if msg.is_empty() { continue; }
-                let mut mgr = AGENT_MANAGER.write().await;
-                mgr.add_progress(&agent, msg.to_string()).await;
+            loop {
+                tokio::select! {
+                    _ = cancel_for_stderr.cancelled() => {
+                        break;
+                    }
+                    line = lines.next_line() => {
+                        match line {
+                            Ok(Some(line)) => {
+                                let msg = line.trim();
+                                if msg.is_empty() {
+                                    continue;
+                                }
+                                let mut mgr = AGENT_MANAGER.write().await;
+                                mgr.add_progress(&agent, msg.to_string()).await;
+                            }
+                            Ok(None) => break,
+                            Err(err) => {
+                                tracing::warn!("failed to read agent stderr: {}", err);
+                                break;
+                            }
+                        }
+                    }
+                }
             }
         }))
     } else { None };
@@ -1061,15 +1229,52 @@ async fn execute_cloud_built_in_streaming(
     // Collect stdout fully (final result)
     let mut stdout_buf = String::new();
     if let Some(stdout) = child.stdout.take() {
+        let cancel_for_stdout = cancel_token.clone();
         let mut lines = BufReader::new(stdout).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            stdout_buf.push_str(&line);
-            stdout_buf.push('\n');
+        loop {
+            tokio::select! {
+                _ = cancel_for_stdout.cancelled() => {
+                    break;
+                }
+                line = lines.next_line() => {
+                    match line {
+                        Ok(Some(line)) => {
+                            stdout_buf.push_str(&line);
+                            stdout_buf.push('\n');
+                        }
+                        Ok(None) => break,
+                        Err(err) => {
+                            tracing::warn!("failed to read agent stdout: {}", err);
+                            break;
+                        }
+                    }
+                }
+            }
         }
     }
 
-    let status = child.wait().await.map_err(|e| format!("Failed to wait: {}", e))?;
-    if let Some(t) = stderr_task { let _ = t.await; }
+    let cancelled = cancel_token.cancelled();
+    tokio::pin!(cancelled);
+    let status = tokio::select! {
+        status = child.wait() => status,
+        _ = &mut cancelled => {
+            if let Err(err) = child.start_kill() {
+                tracing::warn!("failed to kill cancelled agent child: {}", err);
+            }
+            match child.wait().await {
+                Ok(_) => {}
+                Err(wait_err) => {
+                    tracing::warn!("failed to reap cancelled agent child: {}", wait_err);
+                }
+            }
+            if let Some(task) = stderr_task.take() {
+                let _ = task.await;
+            }
+            return Err("Agent cancelled".to_string());
+        }
+    }
+    .map_err(|e| format!("Failed to wait: {}", e))?;
+    if let Some(task) = stderr_task.take() { let _ = task.await; }
     if !status.success() {
         return Err(format!("cloud submit exited with status {}", status));
     }
