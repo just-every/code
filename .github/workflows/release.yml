@@ -33,20 +33,7 @@ jobs:
   preflight-tests:
     name: Preflight Tests (Linux fast E2E)
     runs-on: ubuntu-24.04
-    env:
-      CARGO_TARGET_DIR: /home/runner/.cargo-target
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Read Rust toolchain channel
-        id: rust_toolchain
-        shell: bash
-        run: |
-          set -euo pipefail
-          TOOLCHAIN=$(python3 -c "import pathlib, tomllib; print(tomllib.loads(pathlib.Path('code-rs/rust-toolchain.toml').read_text())['toolchain']['channel'])")
+          TOOLCHAIN=$(python3 scripts/toml_utils.py)
           echo "channel=$TOOLCHAIN" >> "$GITHUB_OUTPUT"
           echo "RUST_TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
 
@@ -199,7 +186,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TOOLCHAIN=$(python3 -c "import pathlib, tomllib; print(tomllib.loads(pathlib.Path('code-rs/rust-toolchain.toml').read_text())['toolchain']['channel'])")
+          TOOLCHAIN=$(python3 scripts/toml_utils.py)
           echo "channel=$TOOLCHAIN" >> "$GITHUB_OUTPUT"
           echo "RUST_TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
 

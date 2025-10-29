@@ -1757,6 +1757,7 @@ fn agents_toggle_claude_opus_persists_via_slash_command() {
     let env = EnvGuard::new(&["HOME", "CODE_HOME", "CODEX_HOME"]);
     let home_dir = TempDir::new().expect("temp home");
     let code_home = TempDir::new().expect("code home");
+    std::fs::write(code_home.path().join("config.toml"), "").expect("write config");
     env.set_path("HOME", home_dir.path());
     env.set_path("CODE_HOME", code_home.path());
     env.remove("CODEX_HOME");
