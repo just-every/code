@@ -1,0 +1,1 @@
+fix(exec): abort PTY readers after forced termination (#5946)

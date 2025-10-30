@@ -1,10 +1,10 @@
 ## Summary
-- allow Windows AltGr combos (Control+Alt) to insert printable characters without swallowing them, while keeping Ctrl+Alt shortcuts intact
-- add Windows-only unit tests around `TextArea` and an integration-style ComposerInput test to cover `/`, `@`, and Ctrl+Alt+H
-- document the fix via regression tests so future Windows keyboard regressions are caught early
+- abort PTY reader tasks after forced termination so long-running commands (e.g., `dotnet build`) stop hanging on EOF
+- join stdout/stderr readers with a short timeout during normal shutdown to guard against pipes left open by orphaned grandchildren
+- add an integration regression test that spawns a noisy python loop, calls `kill_all()`, and asserts the exec request completes promptly
 
 ## Testing
 - ./build-fast.sh
-- cargo test -p code-tui --test windows_altgr -- --ignored *(fails: local cargo registry copy of `cc` 1.2.41 is missing generated modules; clear/update the registry and rerun on Windows)*
+- cargo test -p code-core --test dotnet_build_hang *(fails: upstream `cc` 1.2.41 crate is missing generated modules; clear/update the registry and rerun)*
 
-Closes #5922.
+Closes #5946.
