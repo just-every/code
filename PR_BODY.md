@@ -1,9 +1,10 @@
-## Overview
-- AutoRunPhase now carries struct payloads; controller exposes helpers (`is_active`, `is_paused_manual`, `resume_after_submit`, `awaiting_coordinator_submit`, `awaiting_review`, `in_transient_recovery`).
-- ChatWidget hot paths (manual pause, coordinator routing, ESC handling, review exit) rely on helpers/`matches!` instead of raw booleans.
+## Summary
+- promote `/exit` to a first-class slash command (aliasing `/quit`) and keep dispatch wiring intact
+- normalize the parser so `/exit` preserves its spelling, while `/quit` remains supported
+- add parser and ChatWidget harness coverage and document the new command in `docs/slash-commands.md`
 
-## Tests
-- `./build-fast.sh`
+## Testing
+- ./build-fast.sh
+- cargo test -p code-tui slash_exit_and_quit_dispatch_exit_command *(fails: local cargo registry copy of `cc` 1.2.41 is missing generated modules; clear/update the crate and rerun)*
 
-## Follow-ups
-- See `docs/auto-drive-phase-migration-TODO.md` for remaining legacy-flag removals and snapshot coverage.
+Closes #5932.

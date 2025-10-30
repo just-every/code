@@ -88,7 +88,8 @@ pub enum SlashCommand {
     Solve,
     Code,
     Logout,
-    Quit,
+    #[strum(serialize = "exit", serialize = "quit")]
+    Exit,
     #[cfg(debug_assertions)]
     TestApproval,
 }
@@ -111,7 +112,7 @@ impl SlashCommand {
             SlashCommand::Undo => "restore the workspace to the last Code snapshot",
             SlashCommand::Review => "review your changes for potential issues",
             SlashCommand::Cloud => "browse, apply, and create cloud tasks",
-            SlashCommand::Quit => "exit Code",
+            SlashCommand::Exit => "exit Code",
             SlashCommand::Diff => "show git diff (including untracked files)",
             SlashCommand::Mention => "mention a file",
             SlashCommand::Cmd => "run a project command",
@@ -237,12 +238,12 @@ pub fn process_slash_command_message(message: &str) -> ProcessedCommand {
         }
 
         let command_text = if args_raw.is_empty() {
-            format!("/{}", SlashCommand::Quit.command())
+            format!("/{}", canonical_command)
         } else {
-            format!("/{} {}", SlashCommand::Quit.command(), args_raw)
+            format!("/{} {}", canonical_command, args_raw)
         };
 
-        return ProcessedCommand::RegularCommand(SlashCommand::Quit, command_text);
+        return ProcessedCommand::RegularCommand(SlashCommand::Exit, command_text);
     }
 
     if !has_slash {
@@ -303,4 +304,40 @@ pub enum ProcessedCommand {
     NotCommand(String),
     /// Error processing the command
     Error(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{process_slash_command_message, ProcessedCommand, SlashCommand};
+
+    #[test]
+    fn slash_exit_and_quit_dispatch_exit_command() {
+        match process_slash_command_message("/exit") {
+            ProcessedCommand::RegularCommand(SlashCommand::Exit, command_text) => {
+                assert_eq!(command_text, "/exit");
+            }
+            other => panic!("expected /exit to dispatch SlashCommand::Exit, got {other:?}"),
+        }
+
+        match process_slash_command_message("/quit") {
+            ProcessedCommand::RegularCommand(SlashCommand::Exit, command_text) => {
+                assert_eq!(command_text, "/quit");
+            }
+            other => panic!("expected /quit to map to SlashCommand::Exit, got {other:?}"),
+        }
+
+        match process_slash_command_message("exit") {
+            ProcessedCommand::RegularCommand(SlashCommand::Exit, command_text) => {
+                assert_eq!(command_text, "/exit");
+            }
+            other => panic!("expected bare exit to dispatch SlashCommand::Exit, got {other:?}"),
+        }
+
+        match process_slash_command_message("exit later") {
+            ProcessedCommand::NotCommand(original) => {
+                assert_eq!(original, "exit later");
+            }
+            other => panic!("expected \"exit later\" to be treated as message, got {other:?}"),
+        }
+    }
 }
