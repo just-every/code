@@ -19,18 +19,32 @@ fn populate_env<I>(vars: I, policy: &ShellEnvironmentPolicy) -> HashMap<String, 
 where
     I: IntoIterator<Item = (String, String)>,
 {
+    let collected: Vec<(String, String)> = vars.into_iter().collect();
+
+    let mut preserved_vars: Vec<(String, String)> = Vec::new();
+    for key in ["PATH", "NVM_DIR"] {
+        if let Some((actual_key, value)) = collected
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(key))
+        {
+            preserved_vars.push((actual_key.clone(), value.clone()));
+        }
+    }
+
     // Step 1 – determine the starting set of variables based on the
     // `inherit` strategy.
     let mut env_map: HashMap<String, String> = match policy.inherit {
-        ShellEnvironmentPolicyInherit::All => vars.into_iter().collect(),
+        ShellEnvironmentPolicyInherit::All => collected.iter().cloned().collect(),
         ShellEnvironmentPolicyInherit::None => HashMap::new(),
         ShellEnvironmentPolicyInherit::Core => {
             const CORE_VARS: &[&str] = &[
                 "HOME", "LOGNAME", "PATH", "SHELL", "USER", "USERNAME", "TMPDIR", "TEMP", "TMP",
             ];
             let allow: HashSet<&str> = CORE_VARS.iter().copied().collect();
-            vars.into_iter()
+            collected
+                .iter()
                 .filter(|(k, _)| allow.contains(k.as_str()))
+                .cloned()
                 .collect()
         }
     };
@@ -63,6 +77,10 @@ where
     // Step 5 – If include_only is non-empty, keep *only* the matching vars.
     if !policy.include_only.is_empty() {
         env_map.retain(|k, _| matches_any(k, &policy.include_only));
+    }
+
+    for (key, value) in preserved_vars {
+        env_map.entry(key).or_insert(value);
     }
 
     env_map
@@ -170,6 +188,26 @@ mod tests {
             "PATH".to_string() => "/usr/bin".to_string(),
         };
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_path_preserved_after_include_only_filters() {
+        let vars = make_vars(&[
+            ("PATH", "/usr/local/bin"),
+            ("NVM_DIR", "/home/user/.nvm"),
+            ("FOO", "bar"),
+        ]);
+
+        let policy = ShellEnvironmentPolicy {
+            ignore_default_excludes: true,
+            include_only: vec![EnvironmentVariablePattern::new_case_insensitive("FOO")],
+            ..Default::default()
+        };
+
+        let result = populate_env(vars, &policy);
+
+        assert_eq!(result.get("PATH"), Some(&"/usr/local/bin".to_string()));
+        assert_eq!(result.get("NVM_DIR"), Some(&"/home/user/.nvm".to_string()));
     }
 
     #[test]

@@ -12,6 +12,7 @@ mcp-types = { workspace = true }
 rmcp = { version = "0.7.0", default-features = false, features = [
     "base64",
     "client",
+    "auth",
     "macros",
     "schemars",
     "server",
@@ -41,3 +42,4 @@ tracing = { version = "0.1.41", features = ["log"] }
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"
+hyper = { version = "0.14", features = ["server", "tcp", "http1"] }
