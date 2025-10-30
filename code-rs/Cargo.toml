@@ -250,6 +250,8 @@ strip = "symbols"
 codegen-units = 1
 
 [patch.crates-io]
+cc = { git = "https://github.com/alexcrichton/cc-rs", rev = "d740f9b1f5d65b09ccac41cac2e40caa8958e348" }
+rmcp = { path = "third_party/rmcp-0.8.3" }
 # ratatui = { path = "../../ratatui" }
 ratatui = { git = "https://github.com/nornagon/ratatui", branch = "nornagon-v0.29.0-patch" }
 
