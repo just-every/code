@@ -6,6 +6,7 @@ import { fileURLToPath } from "url";
 import { platform as nodePlatform, arch as nodeArch } from "os";
 import { execSync } from "child_process";
 import { get as httpsGet } from "https";
+import { runPostinstall } from "../postinstall.js";
 
 // __dirname equivalent in ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -270,12 +271,26 @@ const tryBootstrapBinary = async () => {
 };
 
 // If missing, attempt to bootstrap into place (helps when Bun blocks postinstall)
-if (!existsSync(binaryPath) && !existsSync(legacyBinaryPath)) {
-  const ok = await tryBootstrapBinary();
-  if (!ok) {
-    // retry legacy name in case archive provided coder-*
-    if (existsSync(legacyBinaryPath) && !existsSync(binaryPath)) {
-      binaryPath = legacyBinaryPath;
+let binaryReady = existsSync(binaryPath) || existsSync(legacyBinaryPath);
+if (!binaryReady) {
+  let runtimePostinstallError = null;
+  try {
+    await runPostinstall({ invokedByRuntime: true, skipGlobalAlias: true });
+  } catch (err) {
+    runtimePostinstallError = err;
+  }
+
+  binaryReady = existsSync(binaryPath) || existsSync(legacyBinaryPath);
+  if (!binaryReady) {
+    const ok = await tryBootstrapBinary();
+    if (!ok) {
+      if (runtimePostinstallError && !lastBootstrapError) {
+        lastBootstrapError = runtimePostinstallError;
+      }
+      // retry legacy name in case archive provided coder-*
+      if (existsSync(legacyBinaryPath) && !existsSync(binaryPath)) {
+        binaryPath = legacyBinaryPath;
+      }
     }
   }
 }

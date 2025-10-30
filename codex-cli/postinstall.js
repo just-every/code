@@ -2,7 +2,7 @@
 // Non-functional change to trigger release workflow
 
 import { existsSync, mkdirSync, createWriteStream, chmodSync, readFileSync, readSync, writeFileSync, unlinkSync, statSync, openSync, closeSync, copyFileSync, fsyncSync, renameSync, realpathSync } from 'fs';
-import { join, dirname } from 'path';
+import { join, dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { get } from 'https';
 import { platform, arch, tmpdir } from 'os';
@@ -288,13 +288,21 @@ function validateDownloadedBinary(p) {
   }
 }
 
-async function main() {
+export async function runPostinstall(options = {}) {
+  const { skipGlobalAlias = false, invokedByRuntime = false } = options;
+  if (process.env.CODE_POSTINSTALL_DRY_RUN === '1') {
+    return { skipped: true };
+  }
+
+  if (invokedByRuntime) {
+    process.env.CODE_RUNTIME_POSTINSTALL = process.env.CODE_RUNTIME_POSTINSTALL || '1';
+  }
   // Detect potential PATH conflict with an existing `code` command (e.g., VS Code)
   // Only relevant for global installs; skip for npx/local installs to keep postinstall fast.
   const ua = process.env.npm_config_user_agent || '';
   const isNpx = ua.includes('npx');
   const isGlobal = process.env.npm_config_global === 'true';
-  if (isGlobal && !isNpx) {
+  if (!skipGlobalAlias && isGlobal && !isNpx) {
     try {
       const whichCmd = process.platform === 'win32' ? 'where code' : 'command -v code || which code || true';
       const resolved = execSync(whichCmd, { stdio: ['ignore', 'pipe', 'ignore'], shell: process.platform !== 'win32' }).toString().split(/\r?\n/).filter(Boolean)[0];
@@ -760,7 +768,19 @@ async function main() {
   }
 }
 
-main().catch(error => {
-  console.error('Installation failed:', error);
-  process.exit(1);
-});
+function isExecutedDirectly() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return resolve(entry) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
+
+if (isExecutedDirectly()) {
+  runPostinstall().catch(error => {
+    console.error('Installation failed:', error);
+    process.exit(1);
+  });
+}
