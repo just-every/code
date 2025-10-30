@@ -1,9 +1,10 @@
-## Overview
-- AutoRunPhase now carries struct payloads; controller exposes helpers (`is_active`, `is_paused_manual`, `resume_after_submit`, `awaiting_coordinator_submit`, `awaiting_review`, `in_transient_recovery`).
-- ChatWidget hot paths (manual pause, coordinator routing, ESC handling, review exit) rely on helpers/`matches!` instead of raw booleans.
+## Summary
+- abort PTY reader tasks after forced termination so long-running commands (e.g., `dotnet build`) stop hanging on EOF
+- join stdout/stderr readers with a short timeout during normal shutdown to guard against pipes left open by orphaned grandchildren
+- add an integration regression test that spawns a noisy python loop, calls `kill_all()`, and asserts the exec request completes promptly
 
-## Tests
-- `./build-fast.sh`
+## Testing
+- ./build-fast.sh
+- cargo test -p code-core --test dotnet_build_hang *(fails: upstream `cc` 1.2.41 crate is missing generated modules; clear/update the registry and rerun)*
 
-## Follow-ups
-- See `docs/auto-drive-phase-migration-TODO.md` for remaining legacy-flag removals and snapshot coverage.
+Closes #5946.

@@ -15,6 +15,9 @@ use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
 use tokio::io::BufReader;
 use tokio::process::Child;
+use tokio::task::JoinHandle;
+use tokio::time::Duration as TokioDuration;
+use tokio::time::sleep;
 
 use crate::codex::Session;
 use crate::error::CodexErr;
@@ -367,6 +370,7 @@ async fn consume_truncated_output(
         Some(agg_tx.clone()),
     ));
 
+    let mut forced_termination = false;
     let (exit_status, timed_out) = match timeout {
         Some(timeout) => {
             tokio::select! {
@@ -378,6 +382,7 @@ async fn consume_truncated_output(
                         }
                         Err(_) => {
                             // timeout
+                            forced_termination = true;
                             #[cfg(unix)]
                             {
                                 if let Some(pid) = killer.as_mut().id() {
@@ -392,6 +397,7 @@ async fn consume_truncated_output(
                     }
                 }
                 _ = tokio::signal::ctrl_c() => {
+                    forced_termination = true;
                     killer.as_mut().start_kill()?;
                     (synthetic_exit_status(EXIT_CODE_SIGNAL_BASE + SIGKILL_CODE), false)
                 }
@@ -405,6 +411,7 @@ async fn consume_truncated_output(
                     (exit_status, false)
                 }
                 _ = tokio::signal::ctrl_c() => {
+                    forced_termination = true;
                     killer.as_mut().start_kill()?;
                     (synthetic_exit_status(EXIT_CODE_SIGNAL_BASE + SIGKILL_CODE), false)
                 }
@@ -416,26 +423,24 @@ async fn consume_truncated_output(
     // avoid re-sending a kill signal during Drop.
     killer.disarm();
 
-    // If we timed out, abort the readers after a short grace to prevent hanging when pipes
-    // remain open due to orphaned grandchildren.
-    let (stdout, stderr) = if timed_out {
-        // Abort reader tasks to avoid hanging if pipes remain open.
-        stdout_handle.abort();
-        stderr_handle.abort();
-        (
-            StreamOutput {
-                text: Vec::new(),
-                truncated_after_lines: None,
-                truncated_before_bytes: None,
-            },
-            StreamOutput {
-                text: Vec::new(),
-                truncated_after_lines: None,
-                truncated_before_bytes: None,
-            },
-        )
+    let join_timeout = TokioDuration::from_millis(250);
+    let force_abort = forced_termination || timed_out;
+    let stdout = if force_abort {
+        abort_reader(stdout_handle).await
     } else {
-        (stdout_handle.await??, stderr_handle.await??)
+        match join_reader_with_timeout(stdout_handle, join_timeout).await? {
+            Some(output) => output,
+            None => empty_stream_output(),
+        }
+    };
+
+    let stderr = if force_abort {
+        abort_reader(stderr_handle).await
+    } else {
+        match join_reader_with_timeout(stderr_handle, join_timeout).await? {
+            Some(output) => output,
+            None => empty_stream_output(),
+        }
     };
 
     drop(agg_tx);
@@ -542,6 +547,42 @@ async fn read_capped<R: AsyncRead + Unpin + Send + 'static>(
         truncated_after_lines: truncated.then_some(truncated_lines.max(1)),
         truncated_before_bytes: (truncated_bytes > 0).then_some(truncated_bytes),
     })
+}
+
+fn empty_stream_output() -> StreamOutput<Vec<u8>> {
+    StreamOutput {
+        text: Vec::new(),
+        truncated_after_lines: None,
+        truncated_before_bytes: None,
+    }
+}
+
+async fn abort_reader(
+    handle: JoinHandle<io::Result<StreamOutput<Vec<u8>>>>,
+) -> StreamOutput<Vec<u8>> {
+    handle.abort();
+    let _ = handle.await;
+    empty_stream_output()
+}
+
+async fn join_reader_with_timeout(
+    handle: JoinHandle<io::Result<StreamOutput<Vec<u8>>>>,
+    timeout: TokioDuration,
+) -> io::Result<Option<StreamOutput<Vec<u8>>>> {
+    let mut handle = Box::pin(handle);
+    let sleeper = sleep(timeout);
+    tokio::pin!(sleeper);
+    tokio::select! {
+        res = handle.as_mut() => {
+            let output = res.map_err(|join_err| io::Error::other(join_err))??;
+            Ok(Some(output))
+        }
+        _ = &mut sleeper => {
+            handle.as_ref().abort();
+            let _ = handle.await;
+            Ok(None)
+        }
+    }
 }
 
 #[cfg(unix)]
