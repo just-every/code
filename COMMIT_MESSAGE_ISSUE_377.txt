@@ -1,0 +1,5 @@
+fix(core/chat): surface DNS/network guidance on stream errors (#377)
+
+- detect reqwest connect/timeout failures while starting model streams and wrap them with actionable hints
+- add DNS-specific guidance so users can spot resolver misconfigurations (e.g., empty /etc/resolv.conf)
+- cover hint detection with lightweight unit tests
