@@ -310,6 +310,9 @@ fn load_auth(
                 None => Ok(None),
             };
         }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(None);
+        }
         // Though if auth.json exists but is malformed, do not fall back to the
         // env var because the user may be expecting to use AuthMode::ChatGPT.
         Err(e) => {
@@ -384,6 +387,11 @@ pub fn try_read_auth_json(auth_file: &Path) -> std::io::Result<AuthDotJson> {
 }
 
 pub fn write_auth_json(auth_file: &Path, auth_dot_json: &AuthDotJson) -> std::io::Result<()> {
+    if let Some(parent) = auth_file.parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
     let json_data = serde_json::to_string_pretty(auth_dot_json)?;
     let mut options = OpenOptions::new();
     options.truncate(true).write(true).create(true);
@@ -543,6 +551,28 @@ mod tests {
     }
 
     #[test]
+    fn write_auth_json_creates_missing_parent_directory() {
+        let temp = tempdir().unwrap();
+        let auth_path = temp
+            .path()
+            .join("nested")
+            .join("dir")
+            .join("auth.json");
+
+        let auth_dot_json = AuthDotJson {
+            openai_api_key: Some("sk-test".to_string()),
+            tokens: None,
+            last_refresh: None,
+        };
+
+        write_auth_json(&auth_path, &auth_dot_json).expect("write should create parent dirs");
+        assert!(auth_path.exists());
+
+        let read_back = try_read_auth_json(&auth_path).expect("auth json should parse");
+        assert_eq!(read_back.openai_api_key.as_deref(), Some("sk-test"));
+    }
+
+    #[test]
     fn login_with_api_key_overwrites_existing_auth_json() {
         let dir = tempdir().unwrap();
         let auth_path = dir.path().join("auth.json");
@@ -566,6 +596,18 @@ mod tests {
         let auth = super::try_read_auth_json(&auth_path).expect("auth.json should parse");
         assert_eq!(auth.openai_api_key.as_deref(), Some("sk-new"));
         assert!(auth.tokens.is_none(), "tokens should be cleared");
+    }
+
+    #[test]
+    fn login_with_api_key_creates_code_home_directory() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("missing").join("code_home");
+
+        super::login_with_api_key(&missing, "sk-new")
+            .expect("login_with_api_key should create directory");
+
+        let auth = super::try_read_auth_json(&get_auth_file(&missing)).expect("auth json exists");
+        assert_eq!(auth.openai_api_key.as_deref(), Some("sk-new"));
     }
 
     #[tokio::test]
@@ -716,6 +758,16 @@ mod tests {
         assert_eq!(auth.api_key, Some("sk-test-key".to_string()));
 
         assert!(auth.get_token_data().await.is_err());
+    }
+
+    #[test]
+    fn load_auth_returns_none_when_auth_json_missing() {
+        let dir = tempdir().unwrap();
+
+        let result = super::load_auth(dir.path(), false, AuthMode::ChatGPT, "code_cli_rs")
+            .expect("missing auth.json should not error");
+
+        assert!(result.is_none(), "missing auth.json should return None");
     }
 
     #[test]
