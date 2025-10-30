@@ -1,9 +1,10 @@
-## Overview
-- AutoRunPhase now carries struct payloads; controller exposes helpers (`is_active`, `is_paused_manual`, `resume_after_submit`, `awaiting_coordinator_submit`, `awaiting_review`, `in_transient_recovery`).
-- ChatWidget hot paths (manual pause, coordinator routing, ESC handling, review exit) rely on helpers/`matches!` instead of raw booleans.
+## Summary
+- preserve `PATH` (and `NVM_DIR` when present) across shell environment filtering so workspace commands like `npm` remain available
+- continue to respect `use_profile` so commands run through the user's login shell when configured
+- add unit coverage for the environment builder and an integration-style npm smoke test (skips automatically if npm is unavailable)
 
-## Tests
-- `./build-fast.sh`
+## Testing
+- ./build-fast.sh
+- cargo test -p code-core --test npm_command *(fails: local cargo registry copy of `cc` 1.2.41 is missing generated modules; clear/update the registry and rerun)*
 
-## Follow-ups
-- See `docs/auto-drive-phase-migration-TODO.md` for remaining legacy-flag removals and snapshot coverage.
+Closes #5925.
