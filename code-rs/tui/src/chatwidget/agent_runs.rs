@@ -927,6 +927,15 @@ pub(super) fn handle_status_update(chat: &mut ChatWidget<'_>, event: &AgentStatu
         return;
     }
 
+    let mut active_agent_ids: HashSet<String> = HashSet::with_capacity(event.agents.len());
+    let mut active_batch_ids: HashSet<String> = HashSet::new();
+    for agent in &event.agents {
+        active_agent_ids.insert(agent.id.clone());
+        if let Some(batch_id) = agent.batch_id.clone() {
+            active_batch_ids.insert(batch_id);
+        }
+    }
+
     let mut grouped: Vec<(String, Vec<AgentInfo>)> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
 
@@ -961,6 +970,9 @@ pub(super) fn handle_status_update(chat: &mut ChatWidget<'_>, event: &AgentStatu
     for (batch_id, agents) in grouped {
         process_status_update_for_batch(chat, &batch_id, &agents, event);
     }
+
+    prune_finished_runs(chat, &active_agent_ids, &active_batch_ids);
+    chat.prune_agents_terminal_state(&active_agent_ids, &active_batch_ids);
 }
 
 fn process_status_update_for_batch(
@@ -1315,6 +1327,65 @@ fn update_mappings(
     }
 
     key
+}
+
+pub(super) fn prune_finished_runs(
+    chat: &mut ChatWidget<'_>,
+    active_agent_ids: &HashSet<String>,
+    active_batch_ids: &HashSet<String>,
+) {
+    let mut active_keys: HashSet<String> = HashSet::new();
+
+    chat
+        .tools_state
+        .agent_run_by_agent
+        .retain(|agent_id, key| {
+            if active_agent_ids.contains(agent_id) {
+                active_keys.insert(key.clone());
+                true
+            } else {
+                false
+            }
+        });
+
+    chat
+        .tools_state
+        .agent_run_by_batch
+        .retain(|batch_id, key| {
+            if active_batch_ids.contains(batch_id) {
+                active_keys.insert(key.clone());
+                true
+            } else {
+                false
+            }
+        });
+
+    chat
+        .tools_state
+        .agent_run_by_call
+        .retain(|_, key| active_keys.contains(key));
+    chat
+        .tools_state
+        .agent_run_by_order
+        .retain(|_, key| active_keys.contains(key));
+
+    chat.tools_state.agent_runs.retain(|key, tracker| {
+        if !active_keys.contains(key) {
+            return false;
+        }
+        tracker.agent_ids.retain(|agent_id| active_agent_ids.contains(agent_id));
+        !tracker.agent_ids.is_empty()
+    });
+
+    if chat
+        .tools_state
+        .agent_last_key
+        .as_ref()
+        .map(|key| !active_keys.contains(key))
+        .unwrap_or(false)
+    {
+        chat.tools_state.agent_last_key = None;
+    }
 }
 
 #[derive(Default)]
