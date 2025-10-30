@@ -1,0 +1,1 @@
+fix(exec): keep PATH for npm workspace commands (#5925)
