@@ -809,9 +809,8 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.41"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac9fe6cdbb24b6ade63616c0a0688e45bb56732262c158df3c0c4bea4ca47cb7"
+version = "1.2.38"
+source = "git+https://github.com/alexcrichton/cc-rs?rev=d740f9b1f5d65b09ccac41cac2e40caa8958e348#d740f9b1f5d65b09ccac41cac2e40caa8958e348"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -2849,9 +2848,8 @@ dependencies = [
 
 [[package]]
 name = "find-msvc-tools"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52051878f80a721bb68ebfbc930e07b65ba72f2da88968ea5c06fd6ca3d3a127"
+version = "0.1.2"
+source = "git+https://github.com/alexcrichton/cc-rs?rev=d740f9b1f5d65b09ccac41cac2e40caa8958e348#d740f9b1f5d65b09ccac41cac2e40caa8958e348"
 
 [[package]]
 name = "fixed_decimal"
