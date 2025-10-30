@@ -645,6 +645,22 @@ fn smoke_approval_flow() {
 }
 
 #[test]
+fn slash_exit_dispatches_exit_command() {
+    let mut harness = ChatWidgetHarness::new();
+
+    harness.with_chat(|chat| chat.submit_text_message("/exit".to_string()));
+
+    let events = harness.drain_events();
+    let exit_dispatched = events.iter().any(|event| {
+        let debug = format!("{event:?}");
+        debug.contains("DispatchCommand")
+            && debug.contains("Exit")
+            && debug.contains("/exit")
+    });
+    assert!(exit_dispatched, "expected /exit to dispatch SlashCommand::Exit");
+}
+
+#[test]
 fn smoke_custom_tool_call() {
     let mut harness = ChatWidgetHarness::new();
     harness.handle_event(Event {

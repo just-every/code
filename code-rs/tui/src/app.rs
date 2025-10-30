@@ -1994,7 +1994,7 @@ impl App<'_> {
                                 self.app_event_tx.send(AppEvent::CodexOp(Op::Compact));
                             }
                         }
-                        SlashCommand::Quit => { break 'main; }
+                        SlashCommand::Exit => { break 'main; }
                         SlashCommand::Login => {
                             if let AppState::Chat { widget } = &mut self.app_state {
                                 widget.handle_login_command();

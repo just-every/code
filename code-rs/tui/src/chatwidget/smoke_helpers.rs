@@ -202,7 +202,7 @@ impl ChatWidgetHarness {
         self.flush_into_widget();
     }
 
-    pub(crate) fn drain_events(&self) -> Vec<AppEvent> {
+    pub fn drain_events(&self) -> Vec<AppEvent> {
         let mut out = Vec::new();
         while let Ok(ev) = self.events.try_recv() {
             out.push(ev);
