@@ -1,5 +1,8 @@
 use std::collections::HashMap;
+use std::error::Error as StdError;
 use std::ffi::OsString;
+use std::fmt;
+use std::future::Future;
 use std::io;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -24,6 +27,7 @@ use rmcp::service::{self};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::child_process::TokioChildProcess;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+use reqwest::Error as ReqwestError;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
 use tokio::process::Command;
@@ -41,7 +45,11 @@ use crate::utils::run_with_timeout;
 
 enum PendingTransport {
     ChildProcess(TokioChildProcess),
-    StreamableHttp(StreamableHttpClientTransport<reqwest::Client>),
+    StreamableHttp {
+        transport: StreamableHttpClientTransport<reqwest::Client>,
+        url: String,
+        bearer_token: Option<String>,
+    },
 }
 
 enum ClientState {
@@ -51,6 +59,23 @@ enum ClientState {
     Ready {
         service: Arc<RunningService<RoleClient, LoggingClientHandler>>,
     },
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum Phase {
+    Initialize,
+    ListTools,
+    CallTool,
+}
+
+impl Phase {
+    fn as_str(self) -> &'static str {
+        match self {
+            Phase::Initialize => "initialize",
+            Phase::ListTools => "list_tools",
+            Phase::CallTool => "call_tool",
+        }
+    }
 }
 
 /// MCP client implemented on top of the official `rmcp` SDK.
@@ -105,16 +130,15 @@ impl RmcpClient {
     }
 
     pub fn new_streamable_http_client(url: String, bearer_token: Option<String>) -> Result<Self> {
-        let mut config = StreamableHttpClientTransportConfig::with_uri(url);
-        if let Some(token) = bearer_token {
-            config = config.auth_header(format!("Bearer {token}"));
-        }
-
-        let transport = StreamableHttpClientTransport::from_config(config);
+        let transport = build_streamable_http_transport(&url, bearer_token.as_deref());
 
         Ok(Self {
             state: Mutex::new(ClientState::Connecting {
-                transport: Some(PendingTransport::StreamableHttp(transport)),
+                transport: Some(PendingTransport::StreamableHttp {
+                    transport,
+                    url,
+                    bearer_token,
+                }),
             }),
         })
     }
@@ -126,52 +150,66 @@ impl RmcpClient {
         params: InitializeRequestParams,
         timeout: Option<Duration>,
     ) -> Result<InitializeResult> {
-        let transport = {
+        let pending_transport = {
             let mut guard = self.state.lock().await;
             match &mut *guard {
                 ClientState::Connecting { transport } => transport
                     .take()
                     .ok_or_else(|| anyhow!("client already initializing"))?,
-                ClientState::Ready { .. } => {
-                    return Err(anyhow!("client already initialized"));
+                ClientState::Ready { .. } => return Err(anyhow!("client already initialized")),
+            }
+        };
+
+        let service = match pending_transport {
+            PendingTransport::ChildProcess(transport) => {
+                let client_info = convert_to_rmcp::<_, InitializeRequestParam>(params.clone())?;
+                let client_handler = LoggingClientHandler::new(client_info);
+                let service_future = service::serve_client(client_handler.clone(), transport).boxed();
+                await_handshake(service_future, timeout)
+                    .await
+                    .map_err(|err| annotate_phase_error(Phase::Initialize, err))?
+            }
+            PendingTransport::StreamableHttp {
+                mut transport,
+                url,
+                bearer_token,
+            } => {
+                let mut attempt = 0;
+                loop {
+                    let client_info = convert_to_rmcp::<_, InitializeRequestParam>(params.clone())?;
+                    let client_handler = LoggingClientHandler::new(client_info);
+                    let service_future = service::serve_client(client_handler.clone(), transport).boxed();
+                    match await_handshake(service_future, timeout).await {
+                        Ok(service) => break service,
+                        Err(err) => {
+                            let err = annotate_phase_error(Phase::Initialize, err);
+                            if should_retry_initialize(&err, attempt) {
+                                attempt += 1;
+                                time::sleep(Duration::from_millis(250)).await;
+                                transport = build_streamable_http_transport(&url, bearer_token.as_deref());
+                                continue;
+                            }
+                            return Err(err);
+                        }
+                    }
                 }
             }
-        };
-
-        let client_info = convert_to_rmcp::<_, InitializeRequestParam>(params.clone())?;
-        let client_handler = LoggingClientHandler::new(client_info);
-        let service_future = match transport {
-            PendingTransport::ChildProcess(transport) => {
-                service::serve_client(client_handler.clone(), transport).boxed()
-            }
-            PendingTransport::StreamableHttp(transport) => {
-                service::serve_client(client_handler, transport).boxed()
-            }
-        };
-
-        let service = match timeout {
-            Some(duration) => match time::timeout(duration, service_future).await {
-                Ok(Ok(service)) => service,
-                Ok(Err(err)) => return Err(handshake_failed_error(err)),
-                Err(_) => return Err(handshake_timeout_error(duration)),
-            },
-            None => match service_future.await {
-                Ok(service) => service,
-                Err(err) => return Err(handshake_failed_error(err)),
-            },
         };
 
         let initialize_result_rmcp = service
             .peer()
             .peer_info()
-            .ok_or_else(|| anyhow!("handshake succeeded but server info was missing"))?;
+            .ok_or_else(|| annotate_phase_error(Phase::Initialize, anyhow!("handshake succeeded but server info was missing")))?;
         let initialize_result: InitializeResult = convert_to_mcp(initialize_result_rmcp)?;
 
         if initialize_result.protocol_version != MCP_SCHEMA_VERSION {
             let reported_version = initialize_result.protocol_version.clone();
-            return Err(anyhow!(
-                "MCP server reported protocol version {reported_version}, but this client expects {}. Update either side so both speak the same schema.",
-                MCP_SCHEMA_VERSION
+            return Err(annotate_phase_error(
+                Phase::Initialize,
+                anyhow!(
+                    "MCP server reported protocol version {reported_version}, but this client expects {}. Update either side so both speak the same schema.",
+                    MCP_SCHEMA_VERSION
+                ),
             ));
         }
 
@@ -196,7 +234,9 @@ impl RmcpClient {
             .transpose()?;
 
         let fut = service.list_tools(rmcp_params);
-        let result = run_with_timeout(fut, timeout, "tools/list").await?;
+        let result = run_with_timeout(fut, timeout, "tools/list")
+            .await
+            .map_err(|err| annotate_phase_error(Phase::ListTools, err))?;
         convert_to_mcp(result)
     }
 
@@ -210,7 +250,9 @@ impl RmcpClient {
         let params = CallToolRequestParams { arguments, name };
         let rmcp_params: CallToolRequestParam = convert_to_rmcp(params)?;
         let fut = service.call_tool(rmcp_params);
-        let rmcp_result = run_with_timeout(fut, timeout, "tools/call").await?;
+        let rmcp_result = run_with_timeout(fut, timeout, "tools/call")
+            .await
+            .map_err(|err| annotate_phase_error(Phase::CallTool, err))?;
         convert_call_tool_result(rmcp_result)
     }
 
@@ -229,6 +271,70 @@ impl RmcpClient {
     }
 }
 
+async fn await_handshake<F, E>(
+    future: F,
+    timeout: Option<Duration>,
+) -> Result<RunningService<RoleClient, LoggingClientHandler>>
+where
+    F: Future<
+        Output = Result<
+            RunningService<RoleClient, LoggingClientHandler>,
+            E,
+        >,
+    >,
+    E: Into<anyhow::Error>,
+{
+    if let Some(duration) = timeout {
+        match time::timeout(duration, future).await {
+            Ok(Ok(service)) => Ok(service),
+            Ok(Err(err)) => Err(handshake_failed_error(err)),
+            Err(_) => Err(handshake_timeout_error(duration)),
+        }
+    } else {
+        future.await.map_err(handshake_failed_error)
+    }
+}
+
+fn annotate_phase_error(phase: Phase, err: anyhow::Error) -> anyhow::Error {
+    err.context(format!("phase={}", phase.as_str()))
+}
+
+fn should_retry_initialize(err: &anyhow::Error, attempt: usize) -> bool {
+    if attempt != 0 {
+        return false;
+    }
+
+    for source in err.chain() {
+        if let Some(reqwest_err) = source.downcast_ref::<ReqwestError>() {
+            if reqwest_err.is_timeout() || reqwest_err.is_connect() {
+                return true;
+            }
+        }
+
+        if let Some(io_err) = source.downcast_ref::<io::Error>() {
+            if matches!(
+                io_err.kind(),
+                io::ErrorKind::TimedOut | io::ErrorKind::ConnectionRefused
+            ) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn build_streamable_http_transport(
+    url: &str,
+    bearer_token: Option<&str>,
+) -> StreamableHttpClientTransport<reqwest::Client> {
+    let mut config = StreamableHttpClientTransportConfig::with_uri(url.to_string());
+    if let Some(token) = bearer_token {
+        config = config.auth_header(format!("Bearer {token}"));
+    }
+    StreamableHttpClientTransport::from_config(config)
+}
+
 fn handshake_failed_error(err: impl Into<anyhow::Error>) -> anyhow::Error {
     let err = err.into();
     anyhow!(
@@ -237,14 +343,28 @@ fn handshake_failed_error(err: impl Into<anyhow::Error>) -> anyhow::Error {
 }
 
 fn handshake_timeout_error(duration: Duration) -> anyhow::Error {
-    anyhow!(
-        "timed out handshaking with MCP server after {duration:?} (expected MCP schema version {MCP_SCHEMA_VERSION})"
-    )
+    anyhow!(HandshakeTimeoutError(duration))
 }
+
+#[derive(Debug)]
+struct HandshakeTimeoutError(Duration);
+
+impl fmt::Display for HandshakeTimeoutError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "timed out awaiting MCP handshake after {:?}",
+            self.0
+        )
+    }
+}
+
+impl StdError for HandshakeTimeoutError {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::anyhow;
 
     #[test]
     fn mcp_schema_version_is_well_formed() {
@@ -256,5 +376,24 @@ mod tests {
             "MCP_SCHEMA_VERSION should be in YYYY-MM-DD format"
         );
         assert!(parts.iter().all(|segment| !segment.trim().is_empty()));
+    }
+
+    #[test]
+    fn annotate_phase_error_adds_phase_label() {
+        let err = annotate_phase_error(Phase::ListTools, anyhow!("boom"));
+        let message = err.to_string();
+        assert_eq!(message, "phase=list_tools");
+        let sources: Vec<String> = err.chain().map(|source| source.to_string()).collect();
+        assert!(sources.iter().any(|s| s.contains("boom")), "sources: {sources:?}");
+    }
+
+    #[test]
+    fn should_retry_initialize_detects_transient_errors() {
+        let timeout_err = anyhow!(io::Error::new(io::ErrorKind::TimedOut, "timed out"));
+        assert!(should_retry_initialize(&timeout_err, 0));
+        assert!(!should_retry_initialize(&timeout_err, 1));
+
+        let mismatch_err = anyhow!("protocol mismatch");
+        assert!(!should_retry_initialize(&mismatch_err, 0));
     }
 }
