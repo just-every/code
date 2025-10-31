@@ -7,6 +7,7 @@ pub(crate) enum SettingsSection {
     AutoDrive,
     Validation,
     Github,
+    Skills,
     Limits,
     Chrome,
     Mcp,
@@ -14,7 +15,7 @@ pub(crate) enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub(crate) const ALL: [SettingsSection; 11] = [
+    pub(crate) const ALL: [SettingsSection; 12] = [
         SettingsSection::Model,
         SettingsSection::Theme,
         SettingsSection::Updates,
@@ -22,6 +23,7 @@ impl SettingsSection {
         SettingsSection::AutoDrive,
         SettingsSection::Validation,
         SettingsSection::Github,
+        SettingsSection::Skills,
         SettingsSection::Chrome,
         SettingsSection::Mcp,
         SettingsSection::Notifications,
@@ -37,6 +39,7 @@ impl SettingsSection {
             SettingsSection::AutoDrive => "Auto Drive",
             SettingsSection::Validation => "Validation",
             SettingsSection::Github => "GitHub",
+            SettingsSection::Skills => "Skills",
             SettingsSection::Limits => "Limits",
             SettingsSection::Chrome => "Chrome",
             SettingsSection::Mcp => "MCP",
@@ -53,6 +56,7 @@ impl SettingsSection {
             SettingsSection::AutoDrive => "Manage Auto Drive defaults for review and cadence.",
             SettingsSection::Validation => "Toggle validation groups and tool availability.",
             SettingsSection::Github => "Monitor GitHub workflows after pushes.",
+            SettingsSection::Skills => "Enable Claude skills, manage discovery paths, and see docs/skills.md for authoring guidance.",
             SettingsSection::Limits => "Inspect API usage, rate limits, and reset windows.",
             SettingsSection::Chrome => "Connect to Chrome or switch browser integrations.",
             SettingsSection::Mcp => "Enable and manage local MCP servers for tooling.",
@@ -69,6 +73,7 @@ impl SettingsSection {
             SettingsSection::AutoDrive => "Auto Drive controls coming soon.",
             SettingsSection::Validation => "Validation harness controls coming soon.",
             SettingsSection::Github => "GitHub workflow watcher controls coming soon.",
+            SettingsSection::Skills => "Toggle skills discovered under ~/.claude/skills or project .claude/skills. See docs/skills.md for manifest details.",
             SettingsSection::Limits => "Limits usage visualization coming soon.",
             SettingsSection::Chrome => "Chrome integration settings coming soon.",
             SettingsSection::Mcp => "MCP server management coming soon.",
@@ -85,6 +90,7 @@ impl SettingsSection {
             "auto" | "autodrive" | "drive" => Some(SettingsSection::AutoDrive),
             "validation" | "validate" => Some(SettingsSection::Validation),
             "github" | "gh" => Some(SettingsSection::Github),
+            "skill" | "skills" => Some(SettingsSection::Skills),
             "limit" | "limits" | "usage" => Some(SettingsSection::Limits),
             "chrome" | "browser" => Some(SettingsSection::Chrome),
             "mcp" => Some(SettingsSection::Mcp),

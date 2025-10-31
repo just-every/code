@@ -30,7 +30,7 @@ use crate::chat_completions::stream_chat_completions;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
-use crate::client_common::ResponsesApiRequest;
+use crate::client_common::{ResponsesApiRequest, SkillContainer};
 use crate::client_common::create_reasoning_param_for_request;
 use crate::config::Config;
 use crate::config_types::ReasoningEffort as ReasoningEffortConfig;
@@ -406,6 +406,12 @@ impl ModelClient {
             (_, None, None) => None,
         };
 
+        let container = if prompt.skills.is_empty() {
+            None
+        } else {
+            Some(SkillContainer { skills: &prompt.skills })
+        };
+
         // In general, we want to explicitly send `store: false` when using the Responses API,
         // but in practice, the Azure Responses API rejects `store: false`:
         //
@@ -439,6 +445,7 @@ impl ModelClient {
             include,
             // Use a stable per-process cache key (session id). With store=false this is inert.
             prompt_cache_key: Some(session_id_str.clone()),
+            container,
         };
 
         let mut payload_json = serde_json::to_value(&payload)?;

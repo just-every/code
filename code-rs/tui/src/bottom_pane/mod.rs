@@ -51,6 +51,7 @@ pub mod form_text_field;
 mod theme_selection_view;
 mod verbosity_selection_view;
 pub(crate) mod validation_settings_view;
+mod skills_settings_view;
 mod update_settings_view;
 mod undo_timeline_view;
 mod notifications_settings_view;
@@ -85,6 +86,7 @@ pub(crate) use login_accounts_view::{
 pub(crate) use update_settings_view::{UpdateSettingsView, UpdateSharedState};
 pub(crate) use notifications_settings_view::{NotificationsMode, NotificationsSettingsView};
 pub(crate) use validation_settings_view::ValidationSettingsView;
+pub(crate) use skills_settings_view::{SkillDisplay, SkillsSettingsView};
 use approval_modal_view::ApprovalModalView;
 #[cfg(feature = "code-fork")]
 use approval_ui::ApprovalUi;

@@ -809,9 +809,8 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.41"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac9fe6cdbb24b6ade63616c0a0688e45bb56732262c158df3c0c4bea4ca47cb7"
+version = "1.2.43"
+source = "git+https://github.com/rust-lang/cc-rs?rev=8a45e2b2e99daf9abe45ae404984dc6a65356ded#8a45e2b2e99daf9abe45ae404984dc6a65356ded"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -1615,6 +1614,7 @@ dependencies = [
  "color-eyre",
  "crossterm",
  "diffy",
+ "dirs",
  "fs2",
  "futures",
  "image 0.25.8",
@@ -2850,8 +2850,7 @@ dependencies = [
 [[package]]
 name = "find-msvc-tools"
 version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52051878f80a721bb68ebfbc930e07b65ba72f2da88968ea5c06fd6ca3d3a127"
+source = "git+https://github.com/rust-lang/cc-rs?rev=8a45e2b2e99daf9abe45ae404984dc6a65356ded#8a45e2b2e99daf9abe45ae404984dc6a65356ded"
 
 [[package]]
 name = "fixed_decimal"

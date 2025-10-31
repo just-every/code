@@ -136,6 +136,7 @@ pub(super) async fn perform_compaction(
         output_schema: None,
         log_tag: Some("codex/compact".to_string()),
         session_id_override: None,
+        skills: sess.enabled_skill_specs(),
     };
 
     let max_retries = turn_context.client.get_provider().stream_max_retries();
@@ -252,6 +253,7 @@ async fn run_compact_task_inner_inline(
         output_schema: None,
         log_tag: Some("codex/compact".to_string()),
         session_id_override: None,
+        skills: sess.enabled_skill_specs(),
     };
 
     let max_retries = turn_context.client.get_provider().stream_max_retries();

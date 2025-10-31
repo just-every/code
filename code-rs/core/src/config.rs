@@ -13,6 +13,7 @@ use crate::config_types::CachedTerminalBackground;
 use crate::config_types::ClientTools;
 use crate::config_types::History;
 use crate::config_types::GithubConfig;
+use crate::config_types::SkillsConfig;
 use crate::config_types::ValidationConfig;
 use crate::config_types::ThemeName;
 use crate::config_types::ThemeColors;
@@ -297,6 +298,9 @@ pub struct Config {
 
     /// Validation harness configuration.
     pub validation: ValidationConfig,
+
+    /// Claude skills configuration and overrides.
+    pub skills: SkillsConfig,
 
     /// Resolved subagent command configurations (including custom ones).
     /// If a command with name `plan|solve|code` exists here, it overrides
@@ -1135,6 +1139,100 @@ pub fn set_validation_tool_enabled(
     Ok(())
 }
 
+/// Persist `[skills].enabled = <enabled>`.
+pub fn set_skills_enabled(code_home: &Path, enabled: bool) -> anyhow::Result<()> {
+    let config_path = code_home.join(CONFIG_TOML_FILE);
+    let read_path = resolve_code_path_for_read(code_home, Path::new(CONFIG_TOML_FILE));
+    let mut doc = match std::fs::read_to_string(&read_path) {
+        Ok(s) => s.parse::<DocumentMut>()?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentMut::new(),
+        Err(e) => return Err(e.into()),
+    };
+
+    doc["skills"]["enabled"] = toml_edit::value(enabled);
+
+    std::fs::create_dir_all(code_home)?;
+    let tmp = NamedTempFile::new_in(code_home)?;
+    std::fs::write(tmp.path(), doc.to_string())?;
+    tmp.persist(config_path)?;
+    Ok(())
+}
+
+/// Persist per-skill overrides under `[skills.per_skill."<skill>"]`.
+pub fn set_skill_enabled(
+    code_home: &Path,
+    skill: &str,
+    enabled: bool,
+) -> anyhow::Result<()> {
+    let config_path = code_home.join(CONFIG_TOML_FILE);
+    let read_path = resolve_code_path_for_read(code_home, Path::new(CONFIG_TOML_FILE));
+    let mut doc = match std::fs::read_to_string(&read_path) {
+        Ok(s) => s.parse::<DocumentMut>()?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentMut::new(),
+        Err(e) => return Err(e.into()),
+    };
+
+    doc["skills"]["per_skill"][skill] = toml_edit::value(enabled);
+
+    std::fs::create_dir_all(code_home)?;
+    let tmp = NamedTempFile::new_in(code_home)?;
+    std::fs::write(tmp.path(), doc.to_string())?;
+    tmp.persist(config_path)?;
+    Ok(())
+}
+
+/// Persist path lists under `[skills.user_paths]` or `[skills.project_paths]`.
+pub fn set_skills_paths(
+    code_home: &Path,
+    key: &str,
+    paths: &[PathBuf],
+) -> anyhow::Result<()> {
+    let config_path = code_home.join(CONFIG_TOML_FILE);
+    let read_path = resolve_code_path_for_read(code_home, Path::new(CONFIG_TOML_FILE));
+    let mut doc = match std::fs::read_to_string(&read_path) {
+        Ok(s) => s.parse::<DocumentMut>()?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentMut::new(),
+        Err(e) => return Err(e.into()),
+    };
+
+    let mut array = TomlArray::default();
+    for path in paths {
+        array.push(path.to_string_lossy().to_string());
+    }
+
+    doc["skills"][key] = toml_edit::Item::Value(toml_edit::Value::Array(array));
+
+    std::fs::create_dir_all(code_home)?;
+    let tmp = NamedTempFile::new_in(code_home)?;
+    std::fs::write(tmp.path(), doc.to_string())?;
+    tmp.persist(config_path)?;
+    Ok(())
+}
+
+/// Persist `[skills.anthropic_skills] = [..]`.
+pub fn set_skills_anthropic_list(code_home: &Path, skills: &[String]) -> anyhow::Result<()> {
+    let config_path = code_home.join(CONFIG_TOML_FILE);
+    let read_path = resolve_code_path_for_read(code_home, Path::new(CONFIG_TOML_FILE));
+    let mut doc = match std::fs::read_to_string(&read_path) {
+        Ok(s) => s.parse::<DocumentMut>()?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentMut::new(),
+        Err(e) => return Err(e.into()),
+    };
+
+    let mut array = TomlArray::default();
+    for skill in skills {
+        array.push(skill.clone());
+    }
+
+    doc["skills"]["anthropic_skills"] = toml_edit::Item::Value(toml_edit::Value::Array(array));
+
+    std::fs::create_dir_all(code_home)?;
+    let tmp = NamedTempFile::new_in(code_home)?;
+    std::fs::write(tmp.path(), doc.to_string())?;
+    tmp.persist(config_path)?;
+    Ok(())
+}
+
 /// Persist per-project access mode under `[projects."<path>"]` with
 /// `approval_policy` and `sandbox_mode`.
 pub fn set_project_access_mode(
@@ -1777,6 +1875,10 @@ pub struct ConfigToml {
     /// Validation harness configuration.
     pub validation: Option<ValidationConfig>,
 
+    /// Claude skills configuration.
+    #[serde(default)]
+    pub skills: Option<SkillsConfig>,
+
     /// Configuration for subagent commands (built-ins and custom).
     #[serde(default)]
     pub subagents: Option<crate::config_types::SubagentsToml>,
@@ -2357,6 +2459,7 @@ impl Config {
             using_chatgpt_auth,
             github: cfg.github.unwrap_or_default(),
             validation: cfg.validation.unwrap_or_default(),
+            skills: cfg.skills.unwrap_or_default(),
             subagent_commands: cfg
                 .subagents
                 .map(|s| s.commands)

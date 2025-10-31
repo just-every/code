@@ -180,6 +180,17 @@ pub enum Op {
         enable: bool,
     },
 
+    /// Update the global skills enablement flag for this session.
+    UpdateSkillsEnabled {
+        enabled: bool,
+    },
+
+    /// Update the enablement override for a specific skill id.
+    UpdateSkillToggle {
+        skill_id: String,
+        enable: bool,
+    },
+
     /// Append an entry to the persistent cross-session message history.
     ///
     /// Note the entry is not guaranteed to be logged if the user has

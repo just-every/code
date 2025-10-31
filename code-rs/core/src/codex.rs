@@ -2,8 +2,7 @@
 #![allow(clippy::unwrap_used)]
 
 use std::borrow::Cow;
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::collections::VecDeque;
 use std::path::Component;
 use std::path::Path;
@@ -60,11 +59,14 @@ use code_protocol::mcp_protocol::AuthMode;
 use crate::account_usage;
 use crate::auth_accounts;
 use crate::agent_defaults::{default_agent_configs, enabled_agent_model_specs};
+use crate::client_common::SkillRuntimeSpec;
 use code_protocol::models::WebSearchAction;
 use code_protocol::protocol::RolloutItem;
 use shlex::split as shlex_split;
 use shlex::try_join as shlex_try_join;
 use chrono::Utc;
+use crate::skills::{AllowedTool, LocalDirectorySkillLoader, SkillEntry, SkillId, SkillLoader, SkillManifest, SkillRegistry, SkillRegistryError, SkillSource};
+use dirs::home_dir;
 
 pub mod compact;
 use self::compact::build_compacted_history;
@@ -933,6 +935,103 @@ where
     let _ = tokio::task::spawn_blocking(task);
 }
 
+fn load_skill_registry_for_config(config: &Config) -> Arc<SkillRegistry> {
+    let registry = Arc::new(SkillRegistry::new());
+    let registry_ref = Arc::clone(&registry);
+    let mut seen = HashSet::new();
+
+    let mut load_path = |path: PathBuf, source: SkillSource| {
+        let key = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if !seen.insert(key) {
+            return;
+        }
+
+        let loader = LocalDirectorySkillLoader::new(path.clone(), source);
+        match loader.load() {
+            Ok(entries) => {
+                for entry in entries {
+                    if let Err(err) = registry_ref.add_skill(entry) {
+                        if !matches!(err, SkillRegistryError::AlreadyExists(_)) {
+                            warn!("failed to register skill from {}: {err}", path.display());
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                warn!("failed to load skills from {}: {err}", path.display());
+            }
+        }
+    };
+
+    let home = home_dir();
+
+    if config.skills.user_paths.is_empty() {
+        if let Some(home) = home.as_ref() {
+            let default = home.join(".claude/skills");
+            load_path(default, SkillSource::LocalUser { root: PathBuf::new() });
+        }
+    } else {
+        for user_path in &config.skills.user_paths {
+            let resolved = if user_path.is_absolute() {
+                user_path.clone()
+            } else if let Some(home) = home.as_ref() {
+                home.join(user_path)
+            } else {
+                config.cwd.join(user_path)
+            };
+            load_path(resolved, SkillSource::LocalUser { root: PathBuf::new() });
+        }
+    }
+
+    if config.skills.project_paths.is_empty() {
+        let default = config.cwd.join(".claude/skills");
+        load_path(default, SkillSource::Project { root: PathBuf::new() });
+    } else {
+        for project_path in &config.skills.project_paths {
+            let resolved = if project_path.is_absolute() {
+                project_path.clone()
+            } else {
+                config.cwd.join(project_path)
+            };
+            load_path(resolved, SkillSource::Project { root: PathBuf::new() });
+        }
+    }
+
+    for identifier in &config.skills.anthropic_skills {
+        match SkillId::new(identifier.clone()) {
+            Ok(skill_id) => {
+                let manifest = SkillManifest {
+                    id: skill_id.clone(),
+                    name: identifier.clone(),
+                    description: "Anthropic catalog skill".to_string(),
+                    allowed_tools: Vec::new(),
+                    metadata: BTreeMap::new(),
+                    body: String::new(),
+                    manifest_path: PathBuf::new(),
+                    root: PathBuf::new(),
+                };
+                let entry = SkillEntry {
+                    manifest,
+                    source: SkillSource::Anthropic {
+                        identifier: identifier.clone(),
+                        version: None,
+                    },
+                };
+                if let Err(err) = registry_ref.add_skill(entry) {
+                    if !matches!(err, SkillRegistryError::AlreadyExists(_)) {
+                        warn!("failed to register Anthropic skill '{}': {err}", identifier);
+                    }
+                }
+            }
+            Err(err) => {
+                warn!("invalid Anthropic skill identifier '{}': {err}", identifier);
+            }
+        }
+    }
+
+    registry
+}
+
 #[derive(Debug)]
 struct BackgroundExecState {
     notify: std::sync::Arc<tokio::sync::Notify>,
@@ -999,6 +1098,8 @@ pub(crate) struct Session {
     hook_guard: AtomicBool,
     github: Arc<RwLock<crate::config_types::GithubConfig>>,
     validation: Arc<RwLock<crate::config_types::ValidationConfig>>,
+    skills: Arc<RwLock<crate::config_types::SkillsConfig>>,
+    skill_registry: Arc<SkillRegistry>,
     self_handle: Weak<Session>,
     active_review: Mutex<Option<ReviewRequest>>,
     next_turn_text_format: Mutex<Option<TextFormat>>,
@@ -1158,6 +1259,79 @@ impl Session {
                 ValidationGroup::Stylistic => cfg.groups.stylistic = enable,
             }
         }
+    }
+
+    pub(crate) fn update_skills_enabled(&self, enable: bool) {
+        if let Ok(mut cfg) = self.skills.write() {
+            cfg.enabled = enable;
+        }
+    }
+
+    pub(crate) fn update_skill_toggle(&self, skill_id: &str, enable: bool) {
+        if let Ok(mut cfg) = self.skills.write() {
+            cfg.per_skill.insert(skill_id.to_string(), enable);
+        }
+    }
+
+    pub(crate) fn enabled_skill_specs(&self) -> Vec<SkillRuntimeSpec> {
+        self.enabled_skill_entries()
+            .into_iter()
+            .map(|entry| {
+                let allowed: Vec<String> = entry
+                    .manifest
+                    .allowed_tools
+                    .iter()
+                    .map(|tool| match tool {
+                        AllowedTool::Browser => "browser".to_string(),
+                        AllowedTool::Agents => "agents".to_string(),
+                        AllowedTool::Bash => "bash".to_string(),
+                        AllowedTool::Custom(value) => value.to_ascii_lowercase(),
+                    })
+                    .collect();
+                let mut allowed = allowed;
+                allowed.sort();
+                allowed.dedup();
+
+                let (skill_type, name, version) = match entry.source {
+                    SkillSource::Anthropic { ref identifier, ref version } => (
+                        "anthropic".to_string(),
+                        identifier.clone(),
+                        version.clone(),
+                    ),
+                    SkillSource::LocalUser { .. } | SkillSource::Project { .. } => (
+                        "custom".to_string(),
+                        entry.manifest.id.as_str().to_string(),
+                        None,
+                    ),
+                };
+
+                SkillRuntimeSpec {
+                    skill_type,
+                    name,
+                    version,
+                    allowed_tools: if allowed.is_empty() { None } else { Some(allowed) },
+                }
+            })
+            .collect()
+    }
+
+    fn enabled_skill_entries(&self) -> Vec<SkillEntry> {
+        let cfg = self.skills.read().unwrap().clone();
+        self.skill_registry
+            .list()
+            .into_iter()
+            .filter(|entry| {
+                let id = entry.manifest.id.as_str();
+                cfg.per_skill.get(id).copied().unwrap_or(cfg.enabled)
+            })
+            .collect()
+    }
+
+    fn skill_entry(&self, skill_id: &str) -> Option<SkillEntry> {
+        self.skill_registry
+            .list()
+            .into_iter()
+            .find(|entry| entry.manifest.id.as_str() == skill_id)
     }
 
     fn resolve_path(&self, path: Option<String>) -> PathBuf {
@@ -3503,6 +3677,7 @@ async fn submission_loop(
                     }
                 }
                 let default_shell = shell::default_user_shell().await;
+                let skill_registry = load_skill_registry_for_config(&config);
                 let mut tools_config = ToolsConfig::new(
                     &config.model_family,
                     approval_policy,
@@ -3534,6 +3709,17 @@ async fn submission_loop(
                 agent_models.sort_by(|a, b| a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase()));
                 agent_models.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
                 tools_config.set_agent_models(agent_models);
+
+                let has_enabled_skills = {
+                    let cfg = &config.skills;
+                    skill_registry.list().into_iter().any(|entry| {
+                        let id = entry.manifest.id.as_str();
+                        cfg.per_skill.get(id).copied().unwrap_or(cfg.enabled)
+                    })
+                };
+                if has_enabled_skills {
+                    tools_config.enable_skill_tool(true);
+                }
 
                 let mut new_session = Arc::new(Session {
                     id: session_id,
@@ -3567,6 +3753,8 @@ async fn submission_loop(
                     hook_guard: AtomicBool::new(false),
                     github: Arc::new(RwLock::new(config.github.clone())),
                     validation: Arc::new(RwLock::new(config.validation.clone())),
+                    skills: Arc::new(RwLock::new(config.skills.clone())),
+                    skill_registry: Arc::clone(&skill_registry),
                     self_handle: Weak::new(),
                     active_review: Mutex::new(None),
                     next_turn_text_format: Mutex::new(None),
@@ -3796,6 +3984,20 @@ async fn submission_loop(
             Op::UpdateValidationGroup { group, enable } => {
                 if let Some(sess) = sess.as_ref() {
                     sess.update_validation_group(group, enable);
+                } else {
+                    send_no_session_event(sub.id).await;
+                }
+            }
+            Op::UpdateSkillsEnabled { enabled } => {
+                if let Some(sess) = sess.as_ref() {
+                    sess.update_skills_enabled(enabled);
+                } else {
+                    send_no_session_event(sub.id).await;
+                }
+            }
+            Op::UpdateSkillToggle { skill_id, enable } => {
+                if let Some(sess) = sess.as_ref() {
+                    sess.update_skill_toggle(&skill_id, enable);
                 } else {
                     send_no_session_event(sub.id).await;
                 }
@@ -4577,6 +4779,7 @@ async fn run_turn(
             output_schema: None,
             log_tag: Some("codex/turn".to_string()),
             session_id_override: None,
+            skills: sess.enabled_skill_specs(),
         };
 
         // Start a new scratchpad for this HTTP attempt
@@ -5382,6 +5585,7 @@ async fn handle_function_call(
         "agent" => handle_agent_tool(sess, &ctx, arguments).await,
         // unified browser tool
         "browser" => handle_browser_tool(sess, &ctx, arguments).await,
+        "skill" => handle_skill_tool(sess, &ctx, arguments).await,
         "web_fetch" => handle_web_fetch(sess, &ctx, arguments).await,
         "wait" => handle_wait(sess, &ctx, arguments).await,
         "kill" => handle_kill(sess, &ctx, arguments).await,
@@ -10021,6 +10225,132 @@ where
     sess.send_event(end_event).await;
 
     result
+}
+
+async fn handle_skill_tool(sess: &Session, ctx: &ToolCallCtx, arguments: String) -> ResponseInputItem {
+    #[derive(serde::Deserialize)]
+    struct SkillCallPayload {
+        skill: String,
+        action: String,
+        #[serde(default)]
+        arguments: serde_json::Value,
+    }
+
+    let call_id = ctx.call_id.clone();
+    let payload: SkillCallPayload = match serde_json::from_str(&arguments) {
+        Ok(payload) => payload,
+        Err(err) => {
+            return ResponseInputItem::FunctionCallOutput {
+                call_id,
+                output: FunctionCallOutputPayload {
+                    content: format!("Invalid skill arguments: {err}"),
+                    success: Some(false),
+                },
+            };
+        }
+    };
+
+    let entry = match sess.skill_entry(&payload.skill) {
+        Some(entry) => entry,
+        None => {
+            return ResponseInputItem::FunctionCallOutput {
+                call_id,
+                output: FunctionCallOutputPayload {
+                    content: format!("Unknown skill '{}'.", payload.skill),
+                    success: Some(false),
+                },
+            };
+        }
+    };
+
+    let enabled = {
+        let cfg_guard = sess.skills.read().unwrap();
+        cfg_guard
+            .per_skill
+            .get(entry.manifest.id.as_str())
+            .copied()
+            .unwrap_or(cfg_guard.enabled)
+    };
+
+    if !enabled {
+        return ResponseInputItem::FunctionCallOutput {
+            call_id,
+            output: FunctionCallOutputPayload {
+                content: format!("Skill '{}' is disabled.", payload.skill),
+                success: Some(false),
+            },
+        };
+    }
+
+    let allowed = if entry.manifest.allowed_tools.is_empty() {
+        true
+    } else {
+        let action_lower = payload.action.to_ascii_lowercase();
+        entry.manifest.allowed_tools.iter().any(|tool| match tool {
+            AllowedTool::Browser => action_lower == "browser",
+            AllowedTool::Agents => action_lower == "agents",
+            AllowedTool::Bash => action_lower == "bash",
+            AllowedTool::Custom(value) => action_lower == value.to_ascii_lowercase(),
+        })
+    };
+
+    if !allowed {
+        let allowed_list: Vec<String> = if entry.manifest.allowed_tools.is_empty() {
+            Vec::new()
+        } else {
+            entry
+                .manifest
+                .allowed_tools
+                .iter()
+                .map(|tool| match tool {
+                    AllowedTool::Browser => "browser".to_string(),
+                    AllowedTool::Agents => "agents".to_string(),
+                    AllowedTool::Bash => "bash".to_string(),
+                    AllowedTool::Custom(value) => value.to_string(),
+                })
+                .collect()
+        };
+
+        let hint = if allowed_list.is_empty() {
+            "this skill does not expose any actions in this build".to_string()
+        } else {
+            format!("allowed actions: {}", allowed_list.join(", "))
+        };
+
+        return ResponseInputItem::FunctionCallOutput {
+            call_id,
+            output: FunctionCallOutputPayload {
+                content: format!(
+                    "Action '{}' is not permitted for skill '{}'; {}.",
+                    payload.action, payload.skill, hint
+                ),
+                success: Some(false),
+            },
+        };
+    }
+
+    let forwarded_args = if payload.arguments.is_null() {
+        "{}".to_string()
+    } else {
+        serde_json::to_string(&payload.arguments).unwrap_or_else(|_| "{}".to_string())
+    };
+
+    match payload.action.to_ascii_lowercase().as_str() {
+        "browser" => handle_browser_tool(sess, ctx, forwarded_args).await,
+        "agents" | "agent" => handle_agent_tool(sess, ctx, forwarded_args).await,
+        _ => ResponseInputItem::FunctionCallOutput {
+            call_id,
+            output: FunctionCallOutputPayload {
+                content: format!(
+                    "Skill '{}' action '{}' is not implemented yet. Arguments were: {}",
+                    payload.skill,
+                    payload.action,
+                    serde_json::to_string(&payload.arguments).unwrap_or_else(|_| "{}".to_string())
+                ),
+                success: Some(false),
+            },
+        },
+    }
 }
 
 async fn handle_browser_tool(sess: &Session, ctx: &ToolCallCtx, arguments: String) -> ResponseInputItem {

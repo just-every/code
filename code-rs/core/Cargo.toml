@@ -48,7 +48,7 @@ schemars = "0.8.22"
 serde = { workspace = true, features = ["derive"] }
 serde_bytes = "0.11"
 serde_json = { workspace = true }
-serde_yaml = "0.9"
+serde_yaml = { workspace = true }
 sha1 = { workspace = true }
 shlex = { workspace = true }
 similar = { workspace = true }
@@ -66,6 +66,7 @@ tokio = { workspace = true, features = [
     "macros",
     "process",
     "rt-multi-thread",
+    "sync",
     "signal",
 ] }
 tokio-util = { workspace = true }
@@ -107,6 +108,7 @@ maplit = { workspace = true }
 once_cell = { workspace = true }
 serial_test = "3.2.0"
 pretty_assertions = { workspace = true }
+tempfile = { workspace = true }
 tokio-test = { workspace = true }
 wiremock = { workspace = true }
 

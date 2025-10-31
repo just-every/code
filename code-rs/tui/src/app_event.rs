@@ -214,6 +214,10 @@ pub(crate) enum AppEvent {
     UpdateValidationTool { name: String, enable: bool },
     /// Enable/disable an entire validation group
     UpdateValidationGroup { group: ValidationGroup, enable: bool },
+    /// Update the global skills enable flag
+    UpdateSkillsEnabled { enabled: bool },
+    /// Override enablement for a specific skill id
+    UpdateSkillToggle { skill_id: String, enable: bool },
     /// Start installing a validation tool through the terminal overlay
     RequestValidationToolInstall { name: String, command: String },
 
