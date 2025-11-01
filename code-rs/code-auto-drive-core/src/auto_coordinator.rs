@@ -46,6 +46,7 @@ const RATE_LIMIT_JITTER_MAX: Duration = Duration::from_secs(30);
 const MAX_RETRY_ELAPSED: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const MAX_DECISION_RECOVERY_ATTEMPTS: u32 = 3;
 const MESSAGE_LIMIT_FALLBACK: usize = 120;
+const DEBUG_JSON_MAX_CHARS: usize = 1200;
 
 #[derive(Debug, thiserror::Error)]
 #[error("auto coordinator cancelled")]
@@ -772,6 +773,22 @@ struct AgentAction {
     models: Option<Vec<String>>,
 }
 
+struct DecisionFailure {
+    error: anyhow::Error,
+    schema_label: &'static str,
+    output_text: Option<String>,
+}
+
+impl DecisionFailure {
+    fn new(error: anyhow::Error, schema_label: &'static str, output_text: Option<String>) -> Self {
+        Self {
+            error,
+            schema_label,
+            output_text,
+        }
+    }
+}
+
 pub fn start_auto_coordinator(
     event_tx: AutoCoordinatorEventSender,
     goal_text: String,
@@ -1012,12 +1029,18 @@ fn run_auto_loop(
                     stopped = should_stop;
                     continue;
                 }
-                Err(err) => {
-                    if err.downcast_ref::<AutoCoordinatorCancelled>().is_some() {
+                Err(failure) => {
+                    let DecisionFailure {
+                        error,
+                        schema_label,
+                        output_text,
+                    } = failure;
+                    let raw_output = output_text.clone();
+                    if error.downcast_ref::<AutoCoordinatorCancelled>().is_some() {
                         stopped = true;
                         continue;
                     }
-                    if let Some(recoverable) = classify_recoverable_decision_error(&err) {
+                    if let Some(recoverable) = classify_recoverable_decision_error(&error) {
                         consecutive_decision_failures =
                             consecutive_decision_failures.saturating_add(1);
                         if consecutive_decision_failures <= MAX_DECISION_RECOVERY_ATTEMPTS {
@@ -1026,30 +1049,51 @@ fn run_auto_loop(
                                 "auto coordinator decision validation failed (attempt {}/{}): {:#}",
                                 attempt,
                                 MAX_DECISION_RECOVERY_ATTEMPTS,
-                                err
+                                error
                             );
-                            let message = format!(
-                                "Coordinator response invalid (attempt {attempt}/{MAX_DECISION_RECOVERY_ATTEMPTS}): {}. Retrying…",
+                            let raw_excerpt = raw_output
+                                .as_deref()
+                                .map(summarize_json_for_debug);
+                            let mut message = format!(
+                                "Coordinator response invalid (attempt {attempt}/{MAX_DECISION_RECOVERY_ATTEMPTS}): {}. Retrying…\nSchema: {schema_label}",
                                 recoverable.summary
                             );
+                            if let Some(excerpt) = raw_excerpt.as_ref() {
+                                message.push_str("\nLast JSON:\n");
+                                message.push_str(&indent_lines(excerpt, "    "));
+                            }
                             let _ = event_tx.send(AutoCoordinatorEvent::Thinking {
                                 delta: message,
                                 summary_index: None,
                             });
+                            if let Some(conv) = retry_conversation.as_mut() {
+                                let mut developer_note = format!(
+                                    "Previous coordinator response failed validation (attempt {attempt}/{MAX_DECISION_RECOVERY_ATTEMPTS}).\nError: {error}\nSchema: {schema_label}"
+                                );
+                                if let Some(guidance) = recoverable.guidance.as_ref() {
+                                    developer_note.push_str("\nGuidance: ");
+                                    developer_note.push_str(guidance);
+                                }
+                                if let Some(excerpt) = raw_excerpt {
+                                    developer_note.push_str("\nLast JSON:\n");
+                                    developer_note.push_str(&indent_lines(&excerpt, "    "));
+                                }
+                                conv.push(make_message("developer", developer_note));
+                            }
                             pending_conversation = retry_conversation.take();
                             continue;
                         }
                         warn!(
                             "auto coordinator validation retry limit exceeded after {} attempts: {:#}",
                             MAX_DECISION_RECOVERY_ATTEMPTS,
-                            err
+                            error
                         );
                     }
                     consecutive_decision_failures = 0;
                     let event = AutoCoordinatorEvent::Decision {
                         status: AutoCoordinatorStatus::Failed,
                         progress_past: None,
-                        progress_current: Some(format!("Coordinator error: {err}")),
+                        progress_current: Some(format!("Coordinator error: {error}")),
                         goal: None,
                         cli: None,
                         agents_timing: None,
@@ -1089,10 +1133,26 @@ fn run_auto_loop(
                             cli_command,
                         });
                     }
-                    Err(err) => {
-                        tracing::warn!("failed to handle coordinator user prompt: {err:#}");
+                    Err(failure) => {
+                        let DecisionFailure {
+                            error,
+                            schema_label,
+                            output_text,
+                        } = failure;
+                        tracing::warn!(
+                            "failed to handle coordinator user prompt (schema={}): {:#}",
+                            schema_label,
+                            error
+                        );
+                        if let Some(raw) = output_text.as_ref() {
+                            tracing::debug!(
+                                "user-turn raw response (schema={}): {}",
+                                schema_label,
+                                raw
+                            );
+                        }
                         event_tx.send(AutoCoordinatorEvent::UserReply {
-                            user_response: Some(format!("Coordinator error: {err}")),
+                            user_response: Some(format!("Coordinator error: {error}")),
                             cli_command: None,
                         });
                     }
@@ -1439,7 +1499,7 @@ fn request_coordinator_decision(
     auto_instructions: Option<&str>,
     event_tx: &AutoCoordinatorEventSender,
     cancel_token: &CancellationToken,
-) -> Result<ParsedCoordinatorDecision> {
+) -> Result<ParsedCoordinatorDecision, DecisionFailure> {
     let RequestStreamResult {
         output_text,
         response_items,
@@ -1455,11 +1515,17 @@ fn request_coordinator_decision(
         auto_instructions,
         event_tx,
         cancel_token,
-    )?;
+    )
+    .map_err(|err| DecisionFailure::new(err, "coordinator_decision", None))?;
     if output_text.trim().is_empty() && response_items.is_empty() {
-        return Err(anyhow!("coordinator stream ended without producing output (possible transient error)"));
+        return Err(DecisionFailure::new(
+            anyhow!("coordinator stream ended without producing output (possible transient error)"),
+            "coordinator_decision",
+            Some(output_text),
+        ));
     }
-    let (mut decision, value) = parse_decision(&output_text)?;
+    let (mut decision, value) = parse_decision(&output_text)
+        .map_err(|err| DecisionFailure::new(err, "coordinator_decision", Some(output_text.clone())))?;
     debug!("[Auto coordinator] model decision: {:?}", value);
     decision.response_items = response_items;
     decision.token_usage = token_usage;
@@ -1524,6 +1590,24 @@ fn request_decision(
     }
 }
 
+fn summarize_json_for_debug(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let mut chars = trimmed.chars();
+    if trimmed.chars().count() <= DEBUG_JSON_MAX_CHARS {
+        return trimmed.to_string();
+    }
+    let mut summary: String = chars.by_ref().take(DEBUG_JSON_MAX_CHARS).collect();
+    summary.push('…');
+    summary
+}
+
+fn indent_lines(text: &str, prefix: &str) -> String {
+    text.lines()
+        .map(|line| format!("{prefix}{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn request_user_turn_decision(
     runtime: &tokio::runtime::Runtime,
     client: &ModelClient,
@@ -1534,7 +1618,7 @@ fn request_user_turn_decision(
     auto_instructions: Option<&str>,
     event_tx: &AutoCoordinatorEventSender,
     cancel_token: &CancellationToken,
-) -> Result<(Option<String>, Option<String>)> {
+) -> Result<(Option<String>, Option<String>), DecisionFailure> {
     let result = request_decision(
         runtime,
         client,
@@ -1545,8 +1629,10 @@ fn request_user_turn_decision(
         auto_instructions,
         event_tx,
         cancel_token,
-    )?;
-    let (user_response, cli_command) = parse_user_turn_reply(&result.output_text)?;
+    )
+    .map_err(|err| DecisionFailure::new(err, "auto_coordinator_user_turn", None))?;
+    let (user_response, cli_command) = parse_user_turn_reply(&result.output_text)
+        .map_err(|err| DecisionFailure::new(err, "auto_coordinator_user_turn", Some(result.output_text.clone())))?;
     Ok((user_response, cli_command))
 }
 

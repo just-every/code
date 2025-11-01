@@ -8010,14 +8010,18 @@ impl ChatWidget<'_> {
         let manual_edit_pending = self.auto_state.is_paused_manual()
             && self.auto_state.resume_after_submit();
         let manual_override_active = self.auto_state.is_paused_manual();
+        let bypass_active = self.auto_state.should_bypass_coordinator_next_submit();
+        let coordinator_routing_allowed = if bypass_active {
+            manual_edit_pending || manual_override_active
+        } else {
+            true
+        };
 
         let should_route_through_coordinator = !message.suppress_persistence
             && !original_text.trim().starts_with('/')
             && self.auto_state.is_active()
             && self.config.auto_drive.coordinator_routing
-            && (!self.auto_state.should_bypass_coordinator_next_submit()
-                || manual_edit_pending
-                || manual_override_active);
+            && coordinator_routing_allowed;
 
         if should_route_through_coordinator
         {
@@ -8034,9 +8038,9 @@ impl ChatWidget<'_> {
         }
 
         if !message.suppress_persistence
-            && (!self.auto_state.should_bypass_coordinator_next_submit()
-                || manual_edit_pending
-                || manual_override_active)
+            && self.auto_state.is_active()
+            && self.config.auto_drive.coordinator_routing
+            && coordinator_routing_allowed
         {
             if let Some(mut routed) = self.try_coordinator_route(&original_text) {
                 self.finalize_sent_user_message(message);
