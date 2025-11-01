@@ -9,7 +9,7 @@ use std::sync::RwLock;
 
 lazy_static! {
     static ref CURRENT_THEME: RwLock<Theme> = RwLock::new(Theme::default());
-    static ref CURRENT_THEME_NAME: RwLock<ThemeName> = RwLock::new(ThemeName::LightPhoton);
+    static ref CURRENT_THEME_NAME: RwLock<ThemeName> = RwLock::new(ThemeName::default());
     static ref CUSTOM_THEME_LABEL: RwLock<Option<String>> = RwLock::new(None);
     static ref CUSTOM_THEME_COLORS: RwLock<Option<code_core::config_types::ThemeColors>> = RwLock::new(None);
     static ref CUSTOM_THEME_IS_DARK: RwLock<Option<bool>> = RwLock::new(None);
@@ -54,7 +54,7 @@ pub struct Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        get_predefined_theme(ThemeName::LightPhoton)
+        get_predefined_theme(ThemeName::default())
     }
 }
 
