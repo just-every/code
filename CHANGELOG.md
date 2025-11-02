@@ -7,6 +7,17 @@
 
 - (none)
 
+## [0.4.7] - 2025-10-30
+
+- TUI/Auto Drive: Keep router answers visible in the transcript so automation context stays complete. (cf17fc1)
+- TUI/Auto Drive: Persist diagnostics follow-up prompts when resuming runs to avoid lost context. (d1e634d)
+
+## [0.4.6] - 2025-10-30
+
+- Build: keep release notes version in sync during `build-fast` to stop false release failures. (862851d)
+- Build: drop the release notes gate so `build-fast` runs cleanly in CI. (b0bfd1f)
+- CLI: publish the v0.4.6 package metadata for all platform bundles. (ceccd4b)
+
 ## [0.4.4] - 2025-10-29
 
 - TUI: Interrupts in-flight runs when `/new` starts a fresh chat so responses never bleed between sessions. (0421f643)

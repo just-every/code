@@ -187,11 +187,14 @@ fi
 
 # Resolve repository paths relative to this script so absolute invocation works
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-if [ "${CHECK_RELEASE_NOTES_VERSION_RUN:-0}" = "0" ]; then
-  export CHECK_RELEASE_NOTES_VERSION_RUN=1
-  "${SCRIPT_DIR}/scripts/check-release-notes-version.sh"
+if [ -n "${CODE_CALLER_CWD:-}" ]; then
+  if ! CALLER_CWD="$(cd "${CODE_CALLER_CWD}" >/dev/null 2>&1 && pwd)"; then
+    echo "Error: CODE_CALLER_CWD is not a valid directory: ${CODE_CALLER_CWD}" >&2
+    exit 1
+  fi
+else
+  CALLER_CWD="$(pwd)"
 fi
-CALLER_CWD="$(pwd)"
 
 if [[ "${SCRIPT_DIR}" == */.code/working/*/branches/* ]]; then
   WORKTREE_PARENT="${SCRIPT_DIR%/branches/*}"

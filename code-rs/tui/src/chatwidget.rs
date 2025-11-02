@@ -8041,14 +8041,20 @@ impl ChatWidget<'_> {
             if let Some(mut routed) = self.try_coordinator_route(&original_text) {
                 self.finalize_sent_user_message(message);
                 self.consume_pending_prompt_for_ui_only_turn();
-                let _ = self.rebuild_auto_history();
 
                 if let Some(notice_text) = routed.user_response.take() {
+                    if let Some(item) =
+                        Self::auto_drive_make_assistant_message(notice_text.clone())
+                    {
+                        self.auto_history.append_raw(std::slice::from_ref(&item));
+                    }
                     let mut lines = Vec::with_capacity(2);
                     lines.push("AUTO DRIVE RESPONSE".to_string());
                     lines.push(notice_text);
                     self.history_push_plain_paragraphs(PlainMessageKind::Notice, lines);
                 }
+
+                let _ = self.rebuild_auto_history();
 
                 if let Some(cli_command) = routed.cli_command {
                     let mut synthetic: UserMessage = cli_command.into();
@@ -19485,7 +19491,11 @@ Have we met every part of this goal and is there no further work to do?"#
                         "The primary goal has not been met. Please continue working on this.\nPrimary Goal: {goal}\nExplanation: {explanation}",
                         explanation = check.explanation
                     );
-                    let conversation = self.rebuild_auto_history();
+                    let mut conversation = self.rebuild_auto_history();
+                    if let Some(user_item) = Self::auto_drive_make_user_message(follow_up.clone()) {
+                        conversation.push(user_item.clone());
+                        self.auto_history.append_raw(std::slice::from_ref(&user_item));
+                    }
                     self.auto_state.pending_stop_message = None;
                     let dispatched = self.auto_send_user_prompt_to_coordinator(follow_up, conversation);
                     self.auto_state.pending_stop_message = None;
