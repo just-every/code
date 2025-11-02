@@ -19501,13 +19501,11 @@ Have we met every part of this goal and is there no further work to do?"#
                         self.auto_history.append_raw(std::slice::from_ref(&user_item));
                     }
                     self.auto_state.pending_stop_message = None;
-                    let dispatched = self.auto_send_user_prompt_to_coordinator(follow_up, conversation);
-                    self.auto_state.pending_stop_message = None;
-                    if !dispatched {
-                        self.auto_stop(Some(
-                            "Coordinator stopped unexpectedly while scheduling diagnostics follow-up.".to_string(),
-                        ));
-                    }
+                    // Re-run the conversation through the normal decision pipeline so the
+                    // coordinator produces a full finish_status/progress/cli turn rather than
+                    // falling back to the user-response schema.
+                    self.auto_state.set_phase(AutoRunPhase::Active);
+                    self.auto_send_conversation_force();
                     self.stop_spinner();
                     return;
                 }
