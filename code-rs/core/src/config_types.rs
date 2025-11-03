@@ -3,7 +3,7 @@
 // Note this file should generally be restricted to simple struct/enum
 // definitions that do not contain business logic.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::time::Duration;
 use schemars::JsonSchema;
@@ -441,6 +441,32 @@ pub struct AgentConfig {
 
 fn default_true() -> bool {
     true
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq)]
+pub struct SkillsConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub user_paths: Vec<PathBuf>,
+    #[serde(default)]
+    pub project_paths: Vec<PathBuf>,
+    #[serde(default)]
+    pub per_skill: BTreeMap<String, bool>,
+    #[serde(default)]
+    pub anthropic_skills: Vec<String>,
+}
+
+impl Default for SkillsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            user_paths: Vec::new(),
+            project_paths: Vec::new(),
+            per_skill: BTreeMap::new(),
+            anthropic_skills: Vec::new(),
+        }
+    }
 }
 
 /// GitHub integration settings.
