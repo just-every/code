@@ -2432,7 +2432,7 @@ fn agent_action_to_event(action: &AgentAction) -> AutoTurnAgentsAction {
     }
 }
 
-pub(super) fn extract_first_json_object(input: &str) -> Option<String> {
+pub(crate) fn extract_first_json_object(input: &str) -> Option<String> {
     let mut depth = 0usize;
     let mut in_str = false;
     let mut escape = false;
