@@ -10124,6 +10124,16 @@ async fn handle_browser_open(sess: &Session, ctx: &ToolCallCtx, arguments: Strin
                         .and_then(|v| v.as_str())
                         .unwrap_or("about:blank");
 
+                    if url.trim().to_ascii_lowercase().starts_with("devtools://") {
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id: call_id_clone.clone(),
+                            output: FunctionCallOutputPayload {
+                                content: "Developer tools are disabled for this browser session. Use the browser.console tool to inspect logs instead.".to_string(),
+                                success: Some(false),
+                            },
+                        };
+                    }
+
                     // Use the global browser manager (create if needed)
                     let browser_manager = {
                         let existing_global = code_browser::global::get_browser_manager().await;
@@ -10588,6 +10598,20 @@ async fn handle_browser_key(sess: &Session, ctx: &ToolCallCtx, arguments: String
                 match args {
                     Ok(json) => {
                         let key = json.get("key").and_then(|v| v.as_str()).unwrap_or("");
+
+                        let normalized = key
+                            .split_whitespace()
+                            .collect::<String>()
+                            .to_ascii_lowercase();
+                        if matches!(normalized.as_str(), "f12" | "ctrl+shift+i" | "control+shift+i") {
+                            return ResponseInputItem::FunctionCallOutput {
+                                call_id: call_id_clone.clone(),
+                                output: FunctionCallOutputPayload {
+                                    content: "Developer tools are disabled for this browser session. Use the browser.console tool to inspect logs instead.".to_string(),
+                                    success: Some(false),
+                                },
+                            };
+                        }
 
                         match browser_manager.press_key(key).await {
                             Ok(_) => {
