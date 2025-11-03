@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.4.8] - 2025-11-03
+
+- Auto Drive: Surface coordinator schema details when retries fail so validation issues are actionable. (cbc31dad)
+- TUI/Auto Drive: Resume the decision pipeline after diagnostics follow-ups so runs wrap up correctly. (1714bbd8)
+
 ## [0.4.7] - 2025-10-30
 
 - TUI/Auto Drive: Keep router answers visible in the transcript so automation context stays complete. (cf17fc1)
