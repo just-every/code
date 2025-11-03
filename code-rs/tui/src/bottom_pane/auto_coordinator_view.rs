@@ -697,14 +697,15 @@ impl AutoCoordinatorView {
 
         let border_style = Style::default().fg(colors::text_dim());
         let title = " Next Prompt ";
-        let mut top_line = String::from("+");
-        if title.len() + 2 <= inner_width {
+        let title_width = title.chars().count();
+        let mut top_line = String::from("╭");
+        if title_width + 2 <= inner_width {
             top_line.push_str(title);
-            top_line.push_str(&"-".repeat(inner_width - title.len()));
+            top_line.push_str(&"╌".repeat(inner_width.saturating_sub(title_width)));
         } else {
-            top_line.push_str(&"-".repeat(inner_width));
+            top_line.push_str(&"╌".repeat(inner_width));
         }
-        top_line.push('+');
+        top_line.push('╮');
         Self::write_text_line(buf, area.x, area.y, &top_line, border_style);
 
         let mut used = 1u16;
@@ -715,7 +716,7 @@ impl AutoCoordinatorView {
             }
 
             let left_cell = &mut buf[(area.x, current_y)];
-            left_cell.set_symbol("|");
+            left_cell.set_symbol("│");
             left_cell.set_style(border_style);
 
             for (idx, ch) in text.chars().enumerate() {
@@ -727,7 +728,7 @@ impl AutoCoordinatorView {
             }
 
             let right_cell = &mut buf[(area.x + area.width - 1, current_y)];
-            right_cell.set_symbol("|");
+            right_cell.set_symbol("│");
             right_cell.set_style(border_style);
 
             current_y += 1;
@@ -738,7 +739,7 @@ impl AutoCoordinatorView {
             current_y = area.y + area.height - 1;
         }
 
-        let bottom_line = format!("+{}+", "-".repeat(inner_width));
+        let bottom_line = format!("╰{}╯", "╌".repeat(inner_width));
         Self::write_text_line(buf, area.x, current_y, &bottom_line, border_style);
         used = used.saturating_add(1);
 
