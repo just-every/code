@@ -1,10 +1,11 @@
-## @just-every/code v0.4.7
+## @just-every/code v0.4.8
 
-This release polishes Auto Drive transcripts to keep automation context intact.
+This release sharpens Auto Drive recovery and keeps coordinator runs flowing smoothly.
 
 ### Changes
-- TUI/Auto Drive: Keep router answers visible in the transcript so automation context stays complete.
-- TUI/Auto Drive: Persist diagnostics follow-up prompts when resuming runs to avoid lost context.
+
+- Auto Drive: Surface coordinator schema details when retries fail so validation issues are actionable.
+- TUI/Auto Drive: Resume the decision pipeline after diagnostics follow-ups so runs wrap up correctly.
 
 ### Install
 ```
@@ -12,4 +13,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.4.6...v0.4.7
+Compare: https://github.com/just-every/code/compare/v0.4.7...v0.4.8
