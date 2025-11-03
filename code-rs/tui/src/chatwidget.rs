@@ -16,6 +16,7 @@ use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime};
 use std::process::Command;
+use base64::prelude::{Engine as _, BASE64_STANDARD};
 
 use ratatui::style::Modifier;
 use ratatui::style::Style;
@@ -475,6 +476,7 @@ use crate::history_cell::PatchEventType;
 use crate::history_cell::PlainHistoryCell;
 use crate::history_cell::PlanUpdateCell;
 use crate::history_cell::DiffCell;
+use crate::history_cell::BrowserSessionCell;
 use crate::history_cell::{AutoDriveActionKind, AutoDriveStatus};
 use crate::history::state::PatchEventType as HistoryPatchEventType;
 use crate::history::state::{
@@ -4607,6 +4609,74 @@ impl ChatWidget<'_> {
         })
     }
 
+    fn auto_drive_browser_screenshot_items(
+        cell: &BrowserSessionCell,
+    ) -> Option<Vec<code_protocol::models::ContentItem>> {
+        use code_protocol::models::ContentItem;
+
+        let record = cell.screenshot_history().last()?;
+        let bytes = match std::fs::read(&record.path) {
+            Ok(bytes) if !bytes.is_empty() => bytes,
+            Ok(_) => return None,
+            Err(err) => {
+                tracing::warn!(
+                    "Failed to read browser screenshot for Auto Drive export: {} ({err})",
+                    record.path.display()
+                );
+                return None;
+            }
+        };
+
+        let mime = record
+            .path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| {
+                let ext_lower = ext.to_ascii_lowercase();
+                match ext_lower.as_str() {
+                    "png" => "image/png",
+                    "jpg" | "jpeg" => "image/jpeg",
+                    "gif" => "image/gif",
+                    "bmp" => "image/bmp",
+                    "webp" => "image/webp",
+                    "svg" => "image/svg+xml",
+                    "ico" => "image/x-icon",
+                    "tif" | "tiff" => "image/tiff",
+                    _ => "application/octet-stream",
+                }
+            })
+            .unwrap_or("application/octet-stream")
+            .to_string();
+        let encoded = BASE64_STANDARD.encode(bytes);
+
+        let timestamp_ms = record.timestamp.as_millis();
+        let raw_url = record.url.as_deref().unwrap_or("browser");
+        let sanitized = raw_url.replace('\n', " ").replace('\r', " ");
+        let trimmed = sanitized.trim();
+        let mut url_meta = if trimmed.is_empty() {
+            "browser".to_string()
+        } else {
+            trimmed.to_string()
+        };
+        if url_meta.len() > 240 {
+            let mut truncated: String = url_meta.chars().take(240).collect();
+            truncated.push_str("...");
+            url_meta = truncated;
+        }
+
+        let metadata = format!("browser-screenshot:{}:{}", timestamp_ms, url_meta);
+
+        let mut items = Vec::with_capacity(2);
+        items.push(ContentItem::InputText {
+            text: format!("[EPHEMERAL:{}]", metadata),
+        });
+        items.push(ContentItem::InputImage {
+            image_url: format!("data:{mime};base64,{encoded}"),
+        });
+
+        Some(items)
+    }
+
     fn auto_drive_make_assistant_message(
         text: String,
     ) -> Option<code_protocol::models::ResponseItem> {
@@ -4791,7 +4861,18 @@ impl ChatWidget<'_> {
                 continue;
             };
 
-            let item = if is_reasoning {
+            let mut extra_content = None;
+            if !is_reasoning && matches!(role, AutoDriveRole::User) {
+                if let Some(browser_cell) = cell
+                    .as_ref()
+                    .as_any()
+                    .downcast_ref::<BrowserSessionCell>()
+                {
+                    extra_content = Self::auto_drive_browser_screenshot_items(browser_cell);
+                }
+            }
+
+            let mut item = if is_reasoning {
                 code_protocol::models::ResponseItem::Message {
                     id: Some("auto-drive-reasoning".to_string()),
                     role: "user".to_string(),
@@ -4809,6 +4890,12 @@ impl ChatWidget<'_> {
                     },
                 }
             };
+
+            if let Some(extra) = extra_content {
+                if let code_protocol::models::ResponseItem::Message { content, .. } = &mut item {
+                    content.extend(extra);
+                }
+            }
 
             items.push((idx, item));
         }
