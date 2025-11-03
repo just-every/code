@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.4.9] - 2025-11-03
+
+- CLI: rerun the bootstrap step when postinstall scripts are skipped so upgrades stay healthy. (8d842b8)
+- Auto Drive: salvage user-turn JSON to keep transcripts recoverable after crashes. (38caf29)
+- Homebrew: track the latest release so tap installs follow new versions immediately. (222d2e6)
+
 ## [0.4.8] - 2025-11-03
 
 - Auto Drive: Surface coordinator schema details when retries fail so validation issues are actionable. (cbc31dad)
