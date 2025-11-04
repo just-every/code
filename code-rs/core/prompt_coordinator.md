@@ -23,14 +23,6 @@ The CLI already understands the codebase and has far more tactical control than 
 - Pick `timing`: `parallel` (CLI proceeds) or `blocking` (CLI waits for results).
 - Set `write` to `true` for prototypes or fixes, `false` for research/review tasks.
 - Provide outcome-focused prompts and the full context they need (agents do not see chat history).
-- Available models (choose based on task):
-  - `claude-sonnet-4.5`: Default for most coding tasks (along with code-gpt-5) — excels at implementation, tool use, debugging, and testing.
-  - `claude-opus-4.1`: Prefer claude-sonnet-4.5 for most tasks, but a good fallback for complex reasoning when other attempts have failed.
-  - `code-gpt-5`: Default for most coding tasks (along with claude-sonnet-4.5); excels at implementation, refactors, multi-file edits and code review.
-  - `code-gpt-5-codex`: Legacy Codex-compatible target; keep around for accounts that still expose the Codex-only model tier.
-  - `gemini-2.5-pro`: Use when you require huge context or multimodal grounding (repo-scale inputs, or search grounding); good for alternative architecture opinions.
-  - `gemini-2.5-flash`: Use for fast, high-volume scaffolding, creating minimal repros/tests, or budget-sensitive operations.
-  - `qwen-3-coder`: Fast and reasonably effective. Good for providing an alternative opinion when initial attempts fail.
 - Try to distribute work evenly across models and particularly source a large range of opinions from many agents during planning
 - Use at least 2 agents to attempt major coding tasks
 

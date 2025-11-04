@@ -1822,7 +1822,6 @@ fn build_user_turn_prompt(
     auto_instructions: Option<&str>,
 ) -> Prompt {
     let mut prompt = Prompt::default();
-    prompt.include_additional_instructions = false;
     prompt.store = true;
     prompt.session_id_override = Some(Uuid::new_v4());
     if let Some(instructions) = auto_instructions {
