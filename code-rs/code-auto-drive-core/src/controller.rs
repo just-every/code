@@ -276,6 +276,8 @@ pub struct AutoDriveController {
     pub current_status_title: Option<String>,
     pub current_cli_prompt: Option<String>,
     pub current_cli_context: Option<String>,
+    pub hide_cli_context_in_ui: bool,
+    pub suppress_next_cli_display: bool,
     pub current_display_line: Option<String>,
     pub current_display_is_summary: bool,
     pub current_reasoning_title: Option<String>,
@@ -483,6 +485,8 @@ impl AutoDriveController {
         self.current_status_title = None;
         self.current_cli_prompt = None;
         self.current_cli_context = None;
+        self.hide_cli_context_in_ui = false;
+        self.suppress_next_cli_display = false;
         self.current_display_line = None;
         self.current_display_is_summary = false;
         self.current_reasoning_title = None;
@@ -559,6 +563,8 @@ impl AutoDriveController {
         let truncated_reason = Self::truncate_error(&reason);
         self.current_cli_prompt = None;
         self.current_cli_context = None;
+        self.hide_cli_context_in_ui = false;
+        self.suppress_next_cli_display = false;
         self.pending_agent_actions.clear();
         self.pending_agent_timing = None;
         let delay = Self::auto_restart_delay(pending_attempt);

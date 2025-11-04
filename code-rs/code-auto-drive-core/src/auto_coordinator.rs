@@ -77,6 +77,7 @@ impl AutoCoordinatorEventSender {
 pub struct AutoTurnCliAction {
     pub prompt: String,
     pub context: Option<String>,
+    pub suppress_ui_context: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -657,8 +658,8 @@ mod tests {
     }
 
     #[test]
-    fn compaction_fallback_runs_before_tokens_exist() {
-        assert!(should_compact(
+    fn compaction_skip_fallback_when_context_known() {
+        assert!(!should_compact(
             "gpt-5",
             0,
             4_000,
@@ -786,6 +787,7 @@ struct ParsedCoordinatorDecision {
 struct CliAction {
     prompt: String,
     context: Option<String>,
+    suppress_ui_context: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -945,7 +947,8 @@ fn run_auto_loop(
             let transcript_item = make_message("assistant", seed.response_json.clone());
             let cli_action = AutoTurnCliAction {
                 prompt: seed.cli_prompt.clone(),
-                context: None,
+                context: Some(seed.goal_message.clone()),
+                suppress_ui_context: true,
             };
             let event = AutoCoordinatorEvent::Decision {
                 status: AutoCoordinatorStatus::Continue,
@@ -1270,6 +1273,7 @@ fn build_developer_message(
 struct InitialPlanningSeed {
     response_json: String,
     cli_prompt: String,
+    goal_message: String,
     status_title: String,
     status_sent_to_user: String,
     agents_timing: Option<AutoTurnAgentsTiming>,
@@ -1292,6 +1296,7 @@ fn build_initial_planning_seed(goal_text: &str, include_agents: bool) -> Option<
             "{{\"finish_status\":\"continue\",\"status_title\":\"Planning\",\"status_sent_to_user\":\"Started initial planning phase.\",\"prompt_sent_to_cli\":\"{cli_prompt}\"}}"
         ),
         cli_prompt: cli_prompt.to_string(),
+        goal_message: format!("Goal: {}", goal),
         status_title: "Planning path".to_string(),
         status_sent_to_user: "Planning best path to reach the goal.".to_string(),
         agents_timing: if include_agents {
@@ -2366,6 +2371,7 @@ fn convert_decision_new(
         (AutoCoordinatorStatus::Continue, Some(prompt)) => Some(CliAction {
             prompt: clean_required(&prompt, "prompt_sent_to_cli")?,
             context: None,
+            suppress_ui_context: false,
         }),
         (AutoCoordinatorStatus::Continue, None) => {
             return Err(anyhow!(
@@ -2453,6 +2459,7 @@ fn convert_decision_legacy(
         (AutoCoordinatorStatus::Continue, Some(prompt)) => Some(CliAction {
             prompt: clean_required(&prompt, "cli_prompt")?,
             context: context.clone(),
+            suppress_ui_context: false,
         }),
         (AutoCoordinatorStatus::Continue, None) => {
             return Err(anyhow!("legacy model response missing cli_prompt for continue"));
@@ -2460,6 +2467,7 @@ fn convert_decision_legacy(
         (_, Some(prompt)) => Some(CliAction {
             prompt: clean_required(&prompt, "cli_prompt")?,
             context: context.clone(),
+            suppress_ui_context: false,
         }),
         (_, None) => None,
     };
@@ -2536,6 +2544,7 @@ fn cli_action_to_event(action: &CliAction) -> AutoTurnCliAction {
     AutoTurnCliAction {
         prompt: action.prompt.clone(),
         context: action.context.clone(),
+        suppress_ui_context: action.suppress_ui_context,
     }
 }
 
@@ -2716,21 +2725,27 @@ pub fn should_compact(
         .unwrap_or_else(|| derive_default_model_family(model_slug));
 
     if let Some(model_info) = get_model_info(&family) {
-        let context_window = model_info
+        let token_limit = model_info
             .auto_compact_token_limit
             .and_then(|limit| (limit > 0).then(|| limit as u64))
             .unwrap_or(model_info.context_window);
-        if context_window > 0 {
-            let threshold = (context_window as f64 * 0.8) as u64;
+        if token_limit > 0 {
+            let threshold = (token_limit as f64 * 0.8) as u64;
             let projected_total = transcript_tokens.saturating_add(estimated_next);
             if projected_total >= threshold {
                 return true;
             }
 
-            if has_recorded_turns {
-                return false;
-            }
+            // When we have an explicit token budget for the model, rely on it and
+            // skip the fallback message-count heuristic. This avoids runaway
+            // compaction loops when restarting Auto Drive with a large but still
+            // token-safe transcript.
+            return false;
         }
+    }
+
+    if has_recorded_turns {
+        return false;
     }
 
     fallback_message_limit(message_count)

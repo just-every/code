@@ -14056,6 +14056,7 @@ fi\n\
             self.auto_state.current_status_title = None;
             self.auto_state.current_cli_prompt = None;
             self.auto_state.current_cli_context = None;
+            self.auto_state.hide_cli_context_in_ui = false;
             self.auto_state.last_broadcast_summary = None;
             self.auto_state.current_summary_index = None;
             self.auto_state.current_display_line = None;
@@ -14094,6 +14095,7 @@ fi\n\
             self.auto_state.current_status_title = None;
             self.auto_state.current_cli_prompt = None;
             self.auto_state.current_cli_context = None;
+            self.auto_state.hide_cli_context_in_ui = false;
             self.auto_state.last_broadcast_summary = None;
             self.auto_state.current_summary_index = None;
             self.auto_state.current_display_line = None;
@@ -14219,12 +14221,24 @@ fi\n\
         self.auto_state.current_status_title = status_title.clone();
         self.auto_state.last_decision_status_sent_to_user = status_sent_to_user.clone();
         self.auto_state.last_decision_status_title = status_title.clone();
-        let cli_context = cli
+        let planning_turn = cli
             .as_ref()
-            .and_then(|action| Self::normalize_status_field(action.context.clone()));
+            .map(|action| action.suppress_ui_context)
+            .unwrap_or(false);
+        let cli_context_raw = cli
+            .as_ref()
+            .and_then(|action| action.context.clone());
+        let cli_context = Self::normalize_status_field(cli_context_raw);
         let cli_prompt = cli.as_ref().map(|action| action.prompt.clone());
 
         self.auto_state.current_cli_context = cli_context.clone();
+        self.auto_state.hide_cli_context_in_ui = planning_turn;
+        self.auto_state.suppress_next_cli_display = planning_turn;
+        if let Some(ref prompt_text) = cli_prompt {
+            self.auto_state.current_cli_prompt = Some(prompt_text.clone());
+        } else {
+            self.auto_state.current_cli_prompt = None;
+        }
 
         let summary_text = Self::compose_status_summary(&status_title, &status_sent_to_user);
         self.auto_state.last_decision_summary = Some(summary_text.clone());
@@ -14306,7 +14320,18 @@ fi\n\
                     self.auto_stop(Some("Coordinator response omitted a prompt.".to_string()));
                     return;
                 };
-                self.schedule_auto_cli_prompt(prompt_text);
+                if planning_turn {
+                    self.push_background_tail("Auto Drive: Planning started".to_string());
+                    if let Some(full_prompt) = self.build_auto_turn_message(&prompt_text) {
+                        self.auto_dispatch_cli_prompt(full_prompt);
+                    } else {
+                        self.auto_stop(Some(
+                            "Coordinator produced an empty planning prompt.".to_string(),
+                        ));
+                    }
+                } else {
+                    self.schedule_auto_cli_prompt(prompt_text);
+                }
             }
             AutoCoordinatorStatus::Success => {
                 let normalized = summary_text.trim();
@@ -14441,6 +14466,7 @@ Have we met every part of this goal and is there no further work to do?"#
         prompt_text: String,
         countdown_override: Option<u8>,
     ) {
+        self.auto_state.suppress_next_cli_display = false;
         let effects = self
             .auto_state
             .schedule_cli_prompt(prompt_text, countdown_override);
@@ -14956,6 +14982,7 @@ Have we met every part of this goal and is there no further work to do?"#
         }
 
         self.auto_state.current_cli_context = None;
+        self.auto_state.hide_cli_context_in_ui = false;
         self.auto_state.current_cli_prompt = Some(String::new());
         self.auto_pending_goal_request = true;
         self.auto_goal_bootstrap_done = false;
@@ -15012,12 +15039,15 @@ Have we met every part of this goal and is there no further work to do?"#
         message.suppress_persistence = true;
         if self.auto_state.pending_stop_message.is_some() {
             message.display_text.clear();
+        } else if self.auto_state.suppress_next_cli_display {
+            message.display_text.clear();
         }
         self.submit_user_message(message);
         self.auto_state.pending_agent_actions.clear();
         self.auto_state.pending_agent_timing = None;
         self.auto_rebuild_live_ring();
         self.request_redraw();
+        self.auto_state.suppress_next_cli_display = false;
     }
 
     fn auto_pause_for_manual_edit(&mut self, force: bool) {
@@ -15504,11 +15534,14 @@ Have we met every part of this goal and is there no further work to do?"#
             .current_cli_prompt
             .clone()
             .filter(|p| !p.trim().is_empty());
-        let cli_context = self
-            .auto_state
-            .current_cli_context
-            .clone()
-            .filter(|value| !value.trim().is_empty());
+        let cli_context = if self.auto_state.hide_cli_context_in_ui {
+            None
+        } else {
+            self.auto_state
+                .current_cli_context
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+        };
 
         let bootstrap_pending = self.auto_pending_goal_request;
         let continue_cta_active = self.auto_should_show_continue_cta();
@@ -23540,6 +23573,7 @@ mod tests {
                 Some(AutoTurnCliAction {
                     prompt: "echo ready".to_string(),
                     context: None,
+                    suppress_ui_context: false,
                 }),
                 None,
                 Vec::new(),
@@ -23574,6 +23608,7 @@ mod tests {
                 Some(AutoTurnCliAction {
                     prompt: "echo start".to_string(),
                     context: None,
+                    suppress_ui_context: false,
                 }),
                 None,
                 Vec::new(),
@@ -23610,6 +23645,7 @@ mod tests {
                 Some(AutoTurnCliAction {
                     prompt: "echo work".to_string(),
                     context: None,
+                    suppress_ui_context: false,
                 }),
                 None,
                 Vec::new(),
@@ -24087,6 +24123,7 @@ mod tests {
             Some(AutoTurnCliAction {
                 prompt: "Run cargo test".to_string(),
                 context: Some("use --all-features".to_string()),
+                suppress_ui_context: false,
             }),
             Some(AutoTurnAgentsTiming::Parallel),
             vec![AutoTurnAgentsAction {
