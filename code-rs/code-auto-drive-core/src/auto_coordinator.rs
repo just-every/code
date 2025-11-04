@@ -916,11 +916,32 @@ fn run_auto_loop(
         schema_features.include_goal_field = true;
     }
     let include_agents = schema_features.include_agents;
+    let mut pending_conversation = Some(initial_conversation);
+    if !derive_goal_from_history {
+        if let Some(seed) = build_initial_planning_seed(&goal_text, include_agents) {
+            let transcript_item = make_message("assistant", seed.response_json.clone());
+            let cli_action = AutoTurnCliAction {
+                prompt: seed.cli_prompt.clone(),
+                context: Some(seed.cli_context.clone()),
+            };
+            let event = AutoCoordinatorEvent::Decision {
+                status: AutoCoordinatorStatus::Continue,
+                progress_past: None,
+                progress_current: Some("Planning path to goal.".to_string()),
+                goal: Some(goal_text.clone()),
+                cli: Some(cli_action),
+                agents_timing: seed.agents_timing,
+                agents: Vec::new(),
+                transcript: vec![transcript_item],
+            };
+            event_tx.send(event);
+            pending_conversation = None;
+        }
+    }
     let mut schema = build_schema(&active_agent_names, schema_features);
     let platform = std::env::consts::OS;
     debug!("[Auto coordinator] starting: goal={goal_text} platform={platform}");
 
-    let mut pending_conversation = Some(initial_conversation);
     let mut stopped = false;
     let mut requests_completed: u64 = 0;
     let mut consecutive_decision_failures: u32 = 0;
@@ -1213,6 +1234,39 @@ Environment:
         format!("**Primary Goal**\n{}", goal_text)
     };
     (intro, primary_goal)
+}
+
+struct InitialPlanningSeed {
+    response_json: String,
+    cli_prompt: String,
+    cli_context: String,
+    agents_timing: Option<AutoTurnAgentsTiming>,
+}
+
+fn build_initial_planning_seed(goal_text: &str, include_agents: bool) -> Option<InitialPlanningSeed> {
+    let goal = goal_text.trim();
+    if goal.is_empty() {
+        return None;
+    }
+
+    let cli_prompt = if include_agents {
+        "Give me a concrete plan for how to best achieve the goal. Launch agents in parallel explore mulitple approaches. Use your tools to research while they are running."
+    } else {
+        "Give me a concrete plan for how to best achieve the goal. Use your tools to research the best approach."
+    };
+
+    Some(InitialPlanningSeed {
+        response_json: format!(
+            "{{\"finish_status\":\"continue\",\"progress\":{{\"current\":\"Planning path to goal.\"}},\"cli\":{{\"context\":\"Goal:\\n {goal}\",\"prompt\":\"{cli_prompt}\"}}}}"
+        ),
+        cli_prompt: cli_prompt.to_string(),
+        cli_context: format!("Goal:\n {goal}"),
+        agents_timing: if include_agents {
+            Some(AutoTurnAgentsTiming::Parallel)
+        } else {
+            None
+        },
+    })
 }
 
 fn format_environment_details(sandbox: &str) -> String {
