@@ -1406,7 +1406,7 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
             ),
             (
                 "qwen-3-coder",
-                "Fast and reasonably effective. Good for providing an alternative opinion when initial attempts fail.",
+                "Fast and reasonably effective. Good for providing an alternative opinion as it has quite different training data to other models.",
             ),
         ];
 
