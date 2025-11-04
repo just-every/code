@@ -14,6 +14,8 @@ use std::sync::RwLock;
 use std::sync::Weak;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 
 use async_channel::Receiver;
 use async_channel::Sender;
@@ -29,6 +31,9 @@ use code_protocol::config_types::ReasoningSummary as ProtoReasoningSummary;
 use code_protocol::protocol::AskForApproval as ProtoAskForApproval;
 use code_protocol::protocol::ReviewDecision as ProtoReviewDecision;
 use code_protocol::protocol::SandboxPolicy as ProtoSandboxPolicy;
+use code_protocol::protocol::BROWSER_SNAPSHOT_OPEN_TAG;
+use code_protocol::protocol::ENVIRONMENT_CONTEXT_DELTA_OPEN_TAG;
+use code_protocol::protocol::ENVIRONMENT_CONTEXT_OPEN_TAG;
 use crate::config_types::ReasoningEffort as ReasoningEffortConfig;
 use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use crate::config_types::ClientTools;
@@ -39,7 +44,6 @@ use code_protocol::protocol::TurnAbortedEvent;
 use futures::prelude::*;
 use mcp_types::CallToolResult;
 use serde::Serialize;
-use serde_json;
 use serde_json::json;
 use tokio::sync::oneshot;
 use tokio::task::AbortHandle;
@@ -354,6 +358,14 @@ fn maybe_update_from_model_info<T: Copy + PartialEq>(
 }
 
 async fn build_turn_status_items(sess: &Session) -> Vec<ResponseItem> {
+    if sess.env_ctx_v2 {
+        build_turn_status_items_v2(sess).await
+    } else {
+        build_turn_status_items_legacy(sess).await
+    }
+}
+
+async fn build_turn_status_items_legacy(sess: &Session) -> Vec<ResponseItem> {
     let mut jar = EphemeralJar::new();
 
     // Collect environment context
@@ -524,6 +536,162 @@ async fn build_turn_status_items(sess: &Session) -> Vec<ResponseItem> {
 
     jar.into_items()
 }
+
+async fn build_turn_status_items_v2(sess: &Session) -> Vec<ResponseItem> {
+    let mut items = Vec::new();
+
+    let env_context = EnvironmentContext::new(
+        Some(sess.cwd.clone()),
+        Some(sess.approval_policy),
+        Some(sess.sandbox_policy.clone()),
+        Some(sess.user_shell.clone()),
+    );
+
+    if let Some(mut env_items) = sess.maybe_emit_env_ctx_messages(
+        &env_context,
+        get_git_branch(&sess.cwd),
+        Some(format!("{:?}", sess.client.get_reasoning_effort())),
+    ) {
+        items.append(&mut env_items);
+    }
+
+    if let Some(browser_manager) = code_browser::global::get_browser_manager().await {
+        if browser_manager.is_enabled().await {
+            let url = browser_manager
+                .get_current_url()
+                .await
+                .unwrap_or_else(|| "unknown".to_string());
+
+            let title = match browser_manager.get_or_create_page().await {
+                Ok(page) => page.get_title().await,
+                Err(_) => None,
+            };
+
+            let browser_type = browser_manager.get_browser_type().await.to_string();
+            let (viewport_width, viewport_height) = browser_manager.get_viewport_size().await;
+            let cursor_position = browser_manager.get_cursor_position().await.ok();
+
+            let mut metadata = HashMap::new();
+            metadata.insert("browser_type".to_string(), browser_type.clone());
+            if let Some((x, y)) = cursor_position {
+                metadata.insert("cursor_position".to_string(), format!("{:.0},{:.0}", x, y));
+            }
+
+            let viewport = if viewport_width > 0 && viewport_height > 0 {
+                Some(ViewportDimensions {
+                    width: viewport_width as u32,
+                    height: viewport_height as u32,
+                })
+            } else {
+                None
+            };
+
+            let mut screenshot_path = None;
+
+            match capture_browser_screenshot(sess).await {
+                Ok((path, _)) => {
+                    add_pending_screenshot(sess, path.clone(), url.clone());
+                    let current_hash = crate::image_comparison::compute_image_hash(&path).ok();
+                    let mut last_info = sess.last_screenshot_info.lock().unwrap();
+                    let include_screenshot = should_include_browser_screenshot(
+                        &mut last_info,
+                        &path,
+                        current_hash,
+                    );
+                    drop(last_info);
+                    if include_screenshot {
+                        screenshot_path = Some(path);
+                    }
+                }
+                Err(err_msg) => {
+                    trace!("env_ctx_v2: screenshot capture failed: {}", err_msg);
+                }
+            }
+
+            if let Some(path) = screenshot_path {
+                let captured_at = OffsetDateTime::now_utc()
+                    .format(&Rfc3339)
+                    .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string());
+
+                let mut snapshot = BrowserSnapshot::new(url.clone(), captured_at);
+                snapshot.title = title.clone();
+                snapshot.viewport = viewport;
+                if !metadata.is_empty() {
+                    snapshot.metadata = Some(metadata);
+                }
+
+                match snapshot.to_response_item() {
+                    Ok(item) => items.push(item),
+                    Err(err) => warn!("env_ctx_v2: failed to serialize browser_snapshot JSON: {err}"),
+                }
+
+                match std::fs::read(&path) {
+                    Ok(bytes) => {
+                        let mime = mime_guess::from_path(&path)
+                            .first()
+                            .map(|m| m.to_string())
+                            .unwrap_or_else(|| "image/png".to_string());
+                        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+                        items.push(ResponseItem::Message {
+                            id: None,
+                            role: "user".to_string(),
+                            content: vec![ContentItem::InputImage {
+                                image_url: format!("data:{mime};base64,{encoded}"),
+                            }],
+                        });
+                    }
+                    Err(err) => warn!(
+                        "env_ctx_v2: failed to read screenshot file {}: {err}",
+                        path.display()
+                    ),
+                }
+            }
+        }
+    }
+
+    items
+}
+
+fn should_include_browser_screenshot(
+    last_info: &mut Option<(PathBuf, Vec<u8>, Vec<u8>)>,
+    path: &PathBuf,
+    current_hash: Option<(Vec<u8>, Vec<u8>)>,
+) -> bool {
+    if let Some((cur_phash, cur_dhash)) = current_hash {
+        if let Some((_, last_phash, last_dhash)) = last_info.as_ref() {
+            if crate::image_comparison::are_hashes_similar(
+                last_phash,
+                last_dhash,
+                &cur_phash,
+                &cur_dhash,
+            ) {
+                return false;
+            }
+        }
+        *last_info = Some((path.clone(), cur_phash, cur_dhash));
+        true
+    } else {
+        *last_info = Some((path.clone(), Vec::new(), Vec::new()));
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn screenshot_dedup_tracks_changes() {
+        let mut last = None;
+        let path = PathBuf::from("/tmp/a.png");
+        let hash_one = (vec![0xAAu8; 32], vec![0x55u8; 32]);
+        let hash_two = (vec![0xABu8; 32], vec![0x56u8; 32]);
+
+        assert!(should_include_browser_screenshot(&mut last, &path, Some(hash_one.clone())));
+        assert!(!should_include_browser_screenshot(&mut last, &path, Some(hash_one.clone())));
+        assert!(should_include_browser_screenshot(&mut last, &path, Some(hash_two)));
+    }
+}
 use crate::agent_tool::AGENT_MANAGER;
 use crate::agent_tool::AgentStatus;
 use crate::agent_tool::AgentToolRequest;
@@ -539,7 +707,12 @@ use crate::apply_patch::get_writable_roots;
 use crate::apply_patch::{self, ApplyPatchResult};
 use crate::client::ModelClient;
 use crate::client_common::{Prompt, ResponseEvent, TextFormat, REVIEW_PROMPT};
-use crate::environment_context::EnvironmentContext;
+use crate::environment_context::{
+    BrowserSnapshot,
+    EnvironmentContext,
+    EnvironmentContextTracker,
+    ViewportDimensions,
+};
 use crate::user_instructions::UserInstructions;
 use crate::config::{persist_model_selection, Config};
 use crate::config_types::ProjectHookEvent;
@@ -876,6 +1049,7 @@ struct State {
     pending_manual_compacts: VecDeque<String>,
     wait_interrupt_epoch: u64,
     wait_interrupt_reason: Option<WaitInterruptReason>,
+    environment_context_tracker: EnvironmentContextTracker,
 }
 
 #[derive(Clone)]
@@ -1002,6 +1176,7 @@ pub(crate) struct Session {
     self_handle: Weak<Session>,
     active_review: Mutex<Option<ReviewRequest>>,
     next_turn_text_format: Mutex<Option<TextFormat>>,
+    env_ctx_v2: bool,
 }
 
 struct HookGuard<'a> {
@@ -1632,123 +1807,23 @@ impl Session {
     /// This is called when a new user message arrives to keep history manageable
     async fn cleanup_old_status_items(&self) {
         let mut state = self.state.lock().unwrap();
-
-        // Get current history items
         let current_items = state.history.contents();
-
-        // Track various message types and their positions
-        let mut real_user_messages = Vec::new(); // Non-status user messages
-        let mut status_messages = Vec::new(); // Messages with screenshots or status
-
-        for (idx, item) in current_items.iter().enumerate() {
-            match item {
-                ResponseItem::Message { role, content, .. } if role == "user" => {
-                    // Check message content
-                    let has_status = content.iter().any(|c| {
-                        if let ContentItem::InputText { text } = c {
-                            text.contains("== System Status ==")
-                                || text.contains("Current working directory:")
-                                || text.contains("Git branch:")
-                        } else {
-                            false
-                        }
-                    });
-
-                    let has_screenshot = content
-                        .iter()
-                        .any(|c| matches!(c, ContentItem::InputImage { .. }));
-
-                    let has_real_text = content.iter().any(|c| {
-                        if let ContentItem::InputText { text } = c {
-                            // Real user text doesn't contain system status markers
-                            !text.contains("== System Status ==")
-                                && !text.contains("Current working directory:")
-                                && !text.contains("Git branch:")
-                                && !text.trim().is_empty()
-                        } else {
-                            false
-                        }
-                    });
-
-                    if has_real_text && !has_status && !has_screenshot {
-                        // This is a real user message
-                        real_user_messages.push(idx);
-                    } else if has_status || has_screenshot {
-                        // This is a status/screenshot message
-                        status_messages.push(idx);
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        // Find screenshots to keep: last 2 that directly follow real user commands
-        let mut screenshots_to_keep = std::collections::HashSet::new();
-
-        // Work backwards through real user messages
-        for &user_idx in real_user_messages.iter().rev().take(2) {
-            // Find the first status message after this user message
-            for &status_idx in status_messages.iter() {
-                if status_idx > user_idx {
-                    // Check if this status message contains a screenshot
-                    if let Some(ResponseItem::Message { content, .. }) =
-                        current_items.get(status_idx)
-                    {
-                        let has_screenshot = content
-                            .iter()
-                            .any(|c| matches!(c, ContentItem::InputImage { .. }));
-                        if has_screenshot {
-                            screenshots_to_keep.insert(status_idx);
-                            break; // Only keep one screenshot per user message
-                        }
-                    }
-                }
-            }
-        }
-
-        // Build the filtered history
-        let mut items_to_keep = Vec::new();
-        let mut removed_screenshots = 0;
-        let mut removed_status = 0;
-
-        for (idx, item) in current_items.iter().enumerate() {
-            let should_keep = if status_messages.contains(&idx) {
-                // This is a status/screenshot message
-                if screenshots_to_keep.contains(&idx) {
-                    true // Keep this screenshot
-                } else {
-                    // Count what we're removing
-                    if let ResponseItem::Message { content, .. } = item {
-                        let has_screenshot = content
-                            .iter()
-                            .any(|c| matches!(c, ContentItem::InputImage { .. }));
-                        if has_screenshot {
-                            removed_screenshots += 1;
-                        } else {
-                            removed_status += 1;
-                        }
-                    }
-                    false // Remove this status/screenshot
-                }
-            } else {
-                true // Keep all non-status messages (real user messages, assistant messages, etc.)
-            };
-
-            if should_keep {
-                items_to_keep.push(item.clone());
-            }
-        }
-
-        // Replace the history with cleaned items
+        let (items_to_keep, stats) = prune_history_items(&current_items);
         state.history = ConversationHistory::new();
         state.history.record_items(&items_to_keep);
+        drop(state);
 
-        if removed_screenshots > 0 || removed_status > 0 {
+        if stats.any_removed() {
             info!(
-                "Cleaned up history: removed {} old screenshots and {} status messages, kept {} recent screenshots",
-                removed_screenshots,
-                removed_status,
-                screenshots_to_keep.len()
+                "Cleaned up history: removed {} old screenshots, {} status messages, {} env baselines, {} env deltas, {} browser snapshots; kept {} recent screenshots, {} env deltas, {} browser snapshots",
+                stats.removed_screenshots,
+                stats.removed_status,
+                stats.removed_env_baselines,
+                stats.removed_env_deltas,
+                stats.removed_browser_snapshots,
+                stats.kept_recent_screenshots,
+                stats.kept_env_deltas,
+                stats.kept_browser_snapshots
             );
         }
     }
@@ -2559,13 +2634,76 @@ impl Session {
         if let Some(user_instructions) = turn_context.user_instructions.as_deref() {
             items.push(UserInstructions::new(user_instructions.to_string()).into());
         }
-        items.push(ResponseItem::from(EnvironmentContext::new(
+
+        let env_context = EnvironmentContext::new(
             Some(turn_context.cwd.clone()),
             Some(turn_context.approval_policy),
             Some(turn_context.sandbox_policy.clone()),
             Some(self.user_shell.clone()),
-        )));
+        );
+
+        if let Some(mut env_ctx_items) = self.maybe_emit_env_ctx_messages(
+            &env_context,
+            get_git_branch(&turn_context.cwd),
+            Some(format!("{:?}", self.client.get_reasoning_effort())),
+        ) {
+            items.append(&mut env_ctx_items);
+        }
+
+        if !self.env_ctx_v2 {
+            // Legacy XML payload remains so behaviour is unchanged when the feature flag is off.
+            items.push(ResponseItem::from(env_context));
+        }
         items
+    }
+
+    fn maybe_emit_env_ctx_messages(
+        &self,
+        env_context: &EnvironmentContext,
+        git_branch: Option<String>,
+        reasoning_effort: Option<String>,
+    ) -> Option<Vec<ResponseItem>> {
+        if !self.env_ctx_v2 {
+            return None;
+        }
+
+        let result = {
+            let mut state = self.state.lock().unwrap();
+            state
+                .environment_context_tracker
+                .emit_response_items(env_context, git_branch.clone(), reasoning_effort.clone())
+        };
+
+        let (emission, items) = match result {
+            Ok(Some(pair)) => pair,
+            Ok(None) => return None,
+            Err(err) => {
+                warn!("env_ctx_v2: failed to serialize environment_context JSON: {err}");
+                return None;
+            }
+        };
+
+        let sequence = emission.sequence();
+
+        let bytes_sent: usize = items
+            .iter()
+            .flat_map(|item| match item {
+                ResponseItem::Message { content, .. } => content.iter(),
+                _ => [].iter(),
+            })
+            .map(|content| match content {
+                ContentItem::InputText { text } | ContentItem::OutputText { text } => text.len(),
+                _ => 0,
+            })
+            .sum();
+
+        trace!(
+            "env_ctx_v2: emitted environment_context message (seq={}, bytes={})",
+            sequence,
+            bytes_sent
+        );
+
+        Some(items)
     }
 
     pub(crate) fn reconstruct_history_from_rollout(
@@ -2749,6 +2887,193 @@ impl Session {
     }
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct CleanupStats {
+    removed_screenshots: usize,
+    removed_status: usize,
+    removed_env_baselines: usize,
+    removed_env_deltas: usize,
+    removed_browser_snapshots: usize,
+    kept_recent_screenshots: usize,
+    kept_env_deltas: usize,
+    kept_browser_snapshots: usize,
+}
+
+impl CleanupStats {
+    fn any_removed(&self) -> bool {
+        self.removed_screenshots > 0
+            || self.removed_status > 0
+            || self.removed_env_baselines > 0
+            || self.removed_env_deltas > 0
+            || self.removed_browser_snapshots > 0
+    }
+}
+
+fn prune_history_items(current_items: &[ResponseItem]) -> (Vec<ResponseItem>, CleanupStats) {
+    let mut real_user_messages = Vec::new();
+    let mut status_messages = Vec::new();
+    let mut env_baselines = Vec::new();
+    let mut env_deltas = Vec::new();
+    let mut browser_snapshot_messages = Vec::new();
+
+    const MAX_ENV_DELTAS: usize = 3;
+    const MAX_BROWSER_SNAPSHOTS: usize = 2;
+
+    for (idx, item) in current_items.iter().enumerate() {
+        if let ResponseItem::Message { role, content, .. } = item {
+            if role != "user" {
+                continue;
+            }
+
+            let has_status = content.iter().any(|c| {
+                if let ContentItem::InputText { text } = c {
+                    text.contains("== System Status ==")
+                        || text.contains("Current working directory:")
+                        || text.contains("Git branch:")
+                        || text.contains(ENVIRONMENT_CONTEXT_OPEN_TAG)
+                        || text.contains(ENVIRONMENT_CONTEXT_DELTA_OPEN_TAG)
+                        || text.contains(BROWSER_SNAPSHOT_OPEN_TAG)
+                } else {
+                    false
+                }
+            });
+
+            let has_screenshot = content
+                .iter()
+                .any(|c| matches!(c, ContentItem::InputImage { .. }));
+
+            let has_real_text = content.iter().any(|c| {
+                if let ContentItem::InputText { text } = c {
+                    !text.contains("== System Status ==")
+                        && !text.contains("Current working directory:")
+                        && !text.contains("Git branch:")
+                        && !text.trim().is_empty()
+                        && !text.contains(ENVIRONMENT_CONTEXT_OPEN_TAG)
+                        && !text.contains(ENVIRONMENT_CONTEXT_DELTA_OPEN_TAG)
+                        && !text.contains(BROWSER_SNAPSHOT_OPEN_TAG)
+                } else {
+                    false
+                }
+            });
+
+            let has_env_baseline = content.iter().any(|c| {
+                if let ContentItem::InputText { text } = c {
+                    text.contains(ENVIRONMENT_CONTEXT_OPEN_TAG)
+                        && !text.contains(ENVIRONMENT_CONTEXT_DELTA_OPEN_TAG)
+                } else {
+                    false
+                }
+            });
+
+            let has_env_delta = content.iter().any(|c| {
+                if let ContentItem::InputText { text } = c {
+                    text.contains(ENVIRONMENT_CONTEXT_DELTA_OPEN_TAG)
+                } else {
+                    false
+                }
+            });
+
+            let has_browser_snapshot = content.iter().any(|c| {
+                if let ContentItem::InputText { text } = c {
+                    text.contains(BROWSER_SNAPSHOT_OPEN_TAG)
+                } else {
+                    false
+                }
+            });
+
+            if has_real_text && !has_status && !has_screenshot {
+                real_user_messages.push(idx);
+            } else if has_status || has_screenshot {
+                status_messages.push(idx);
+            }
+
+            if has_env_baseline {
+                env_baselines.push(idx);
+            }
+            if has_env_delta {
+                env_deltas.push(idx);
+            }
+            if has_browser_snapshot {
+                browser_snapshot_messages.push(idx);
+            }
+        }
+    }
+
+    let mut screenshots_to_keep = std::collections::HashSet::new();
+    for &user_idx in real_user_messages.iter().rev().take(2) {
+        for &status_idx in status_messages.iter() {
+            if status_idx > user_idx {
+                if let Some(ResponseItem::Message { content, .. }) = current_items.get(status_idx)
+                {
+                    if content.iter().any(|c| matches!(c, ContentItem::InputImage { .. })) {
+                        screenshots_to_keep.insert(status_idx);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    let baseline_to_keep = env_baselines.last().copied();
+    let env_deltas_to_keep: std::collections::HashSet<usize> = env_deltas
+        .iter()
+        .rev()
+        .take(MAX_ENV_DELTAS)
+        .copied()
+        .collect();
+    let browser_snapshots_to_keep: std::collections::HashSet<usize> = browser_snapshot_messages
+        .iter()
+        .rev()
+        .take(MAX_BROWSER_SNAPSHOTS)
+        .copied()
+        .collect();
+
+    let mut items_to_keep = Vec::new();
+    let mut removed_screenshots = 0usize;
+    let mut removed_status = 0usize;
+
+    for (idx, item) in current_items.iter().enumerate() {
+        let keep = if status_messages.contains(&idx) {
+            screenshots_to_keep.contains(&idx)
+                || browser_snapshots_to_keep.contains(&idx)
+                || baseline_to_keep == Some(idx)
+                || env_deltas_to_keep.contains(&idx)
+        } else {
+            true
+        };
+
+        if keep {
+            items_to_keep.push(item.clone());
+        } else if let ResponseItem::Message { content, .. } = item {
+            if content
+                .iter()
+                .any(|c| matches!(c, ContentItem::InputImage { .. }))
+            {
+                removed_screenshots += 1;
+            } else {
+                removed_status += 1;
+            }
+        }
+    }
+
+    let stats = CleanupStats {
+        removed_screenshots,
+        removed_status,
+        removed_env_baselines: env_baselines
+            .len()
+            .saturating_sub(if baseline_to_keep.is_some() { 1 } else { 0 }),
+        removed_env_deltas: env_deltas.len().saturating_sub(env_deltas_to_keep.len()),
+        removed_browser_snapshots: browser_snapshot_messages
+            .len()
+            .saturating_sub(browser_snapshots_to_keep.len()),
+        kept_recent_screenshots: screenshots_to_keep.len(),
+        kept_env_deltas: env_deltas_to_keep.len(),
+        kept_browser_snapshots: browser_snapshots_to_keep.len(),
+    };
+
+    (items_to_keep, stats)
+}
+
 impl Drop for Session {
     fn drop(&mut self) {
         // Interrupt any running turn when the session is dropped.
@@ -2767,6 +3092,7 @@ impl State {
             background_seq_by_sub_id: self.background_seq_by_sub_id.clone(),
             dry_run_guard: self.dry_run_guard.clone(),
             next_internal_sub_id: self.next_internal_sub_id,
+            environment_context_tracker: self.environment_context_tracker.clone(),
             ..Default::default()
         }
     }
@@ -3570,6 +3896,7 @@ async fn submission_loop(
                     self_handle: Weak::new(),
                     active_review: Mutex::new(None),
                     next_turn_text_format: Mutex::new(None),
+                    env_ctx_v2: config.env_ctx_v2,
                 });
                 let weak_handle = Arc::downgrade(&new_session);
                 if let Some(inner) = Arc::get_mut(&mut new_session) {
@@ -11866,6 +12193,141 @@ mod command_guard_detection_tests {
         ];
 
         assert!(detect_python_write(&argv).is_none());
+    }
+}
+
+#[cfg(test)]
+mod cleanup_tests {
+    use super::*;
+    use code_protocol::protocol::{
+        BROWSER_SNAPSHOT_CLOSE_TAG,
+        BROWSER_SNAPSHOT_OPEN_TAG,
+        ENVIRONMENT_CONTEXT_CLOSE_TAG,
+        ENVIRONMENT_CONTEXT_DELTA_CLOSE_TAG,
+        ENVIRONMENT_CONTEXT_DELTA_OPEN_TAG,
+        ENVIRONMENT_CONTEXT_OPEN_TAG,
+    };
+
+    fn make_text_message(text: &str) -> ResponseItem {
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: text.to_string(),
+            }],
+        }
+    }
+
+    fn make_screenshot_message(tag: &str) -> ResponseItem {
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputImage {
+                image_url: tag.to_string(),
+            }],
+        }
+    }
+
+    #[test]
+    fn prune_history_retains_recent_env_items() {
+        let baseline1 = make_text_message(&format!(
+            "{}\n{{}}\n{}",
+            ENVIRONMENT_CONTEXT_OPEN_TAG, ENVIRONMENT_CONTEXT_CLOSE_TAG
+        ));
+        let delta1 = make_text_message(&format!(
+            "{}\n{{\"cwd\":\"/repo\"}}\n{}",
+            ENVIRONMENT_CONTEXT_DELTA_OPEN_TAG, ENVIRONMENT_CONTEXT_DELTA_CLOSE_TAG
+        ));
+        let snapshot1 = make_text_message(&format!(
+            "{}\n{{\"url\":\"https://first\"}}\n{}",
+            BROWSER_SNAPSHOT_OPEN_TAG, BROWSER_SNAPSHOT_CLOSE_TAG
+        ));
+        let screenshot1 = make_screenshot_message("data:image/png;base64,AAA");
+        let user_msg = make_text_message("Regular user message");
+        let baseline2 = make_text_message(&format!(
+            "{}\n{{\"cwd\":\"/repo2\"}}\n{}",
+            ENVIRONMENT_CONTEXT_OPEN_TAG, ENVIRONMENT_CONTEXT_CLOSE_TAG
+        ));
+        let delta2 = make_text_message(&format!(
+            "{}\n{{\"cwd\":\"/repo2\"}}\n{}",
+            ENVIRONMENT_CONTEXT_DELTA_OPEN_TAG, ENVIRONMENT_CONTEXT_DELTA_CLOSE_TAG
+        ));
+        let snapshot2 = make_text_message(&format!(
+            "{}\n{{\"url\":\"https://second\"}}\n{}",
+            BROWSER_SNAPSHOT_OPEN_TAG, BROWSER_SNAPSHOT_CLOSE_TAG
+        ));
+        let screenshot2 = make_screenshot_message("data:image/png;base64,BBB");
+        let delta3 = make_text_message(&format!(
+            "{}\n{{\"cwd\":\"/repo3\"}}\n{}",
+            ENVIRONMENT_CONTEXT_DELTA_OPEN_TAG, ENVIRONMENT_CONTEXT_DELTA_CLOSE_TAG
+        ));
+        let snapshot3 = make_text_message(&format!(
+            "{}\n{{\"url\":\"https://third\"}}\n{}",
+            BROWSER_SNAPSHOT_OPEN_TAG, BROWSER_SNAPSHOT_CLOSE_TAG
+        ));
+        let delta4 = make_text_message(&format!(
+            "{}\n{{\"cwd\":\"/repo4\"}}\n{}",
+            ENVIRONMENT_CONTEXT_DELTA_OPEN_TAG, ENVIRONMENT_CONTEXT_DELTA_CLOSE_TAG
+        ));
+        let screenshot3 = make_screenshot_message("data:image/png;base64,CCC");
+
+        let history = vec![
+            user_msg.clone(),
+            baseline1,
+            delta1.clone(),
+            snapshot1.clone(),
+            screenshot1,
+            baseline2.clone(),
+            delta2.clone(),
+            snapshot2.clone(),
+            screenshot2.clone(),
+            delta3.clone(),
+            snapshot3.clone(),
+            delta4.clone(),
+            screenshot3.clone(),
+        ];
+
+        let (pruned, stats) = prune_history_items(&history);
+
+        // Baseline 1 should be removed; only the latest baseline retained
+        assert!(pruned.contains(&baseline2));
+        assert!(!pruned.contains(&history[1]));
+
+        // Only the last three deltas should remain
+        assert!(pruned.contains(&delta2));
+        assert!(pruned.contains(&delta3));
+        assert!(pruned.contains(&delta4));
+        assert!(!pruned.contains(&delta1));
+
+        // Only the last two browser snapshots should remain
+        assert!(pruned.contains(&snapshot2));
+        assert!(pruned.contains(&snapshot3));
+        assert!(!pruned.contains(&snapshot1));
+
+        // Stats reflect removals and kept counts
+        assert_eq!(stats.removed_env_baselines, 1);
+        assert_eq!(stats.removed_env_deltas, 1);
+        assert_eq!(stats.removed_browser_snapshots, 1);
+        assert_eq!(stats.kept_env_deltas, 3);
+        assert_eq!(stats.kept_browser_snapshots, 2);
+        assert_eq!(stats.kept_recent_screenshots, 1);
+    }
+
+    #[test]
+    fn prune_history_no_env_items_is_identity() {
+        let user = make_text_message("hi");
+        let assistant = ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: "response".to_string(),
+            }],
+        };
+        let history = vec![user.clone(), assistant.clone()];
+
+        let (pruned, stats) = prune_history_items(&history);
+        assert_eq!(pruned, history);
+        assert!(!stats.any_removed());
     }
 }
 

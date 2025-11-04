@@ -2,6 +2,10 @@ use os_info::Type as OsType;
 use os_info::Version;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Value as JsonValue;
+use sha1::{Digest, Sha1};
+use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 use strum_macros::Display as DeriveDisplay;
 use which::which;
 
@@ -11,11 +15,14 @@ use crate::shell::Shell;
 use code_protocol::config_types::SandboxMode;
 use code_protocol::models::ContentItem;
 use code_protocol::models::ResponseItem;
+use code_protocol::protocol::BROWSER_SNAPSHOT_CLOSE_TAG;
+use code_protocol::protocol::BROWSER_SNAPSHOT_OPEN_TAG;
 use code_protocol::protocol::ENVIRONMENT_CONTEXT_CLOSE_TAG;
+use code_protocol::protocol::ENVIRONMENT_CONTEXT_DELTA_CLOSE_TAG;
+use code_protocol::protocol::ENVIRONMENT_CONTEXT_DELTA_OPEN_TAG;
 use code_protocol::protocol::ENVIRONMENT_CONTEXT_OPEN_TAG;
-use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, DeriveDisplay)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, DeriveDisplay)]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
 pub enum NetworkAccess {
@@ -35,9 +42,9 @@ pub(crate) struct EnvironmentContext {
     pub shell: Option<Shell>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) struct OperatingSystemInfo {
+pub struct OperatingSystemInfo {
     pub family: Option<String>,
     pub version: Option<String>,
     pub architecture: Option<String>,
@@ -271,6 +278,375 @@ impl From<EnvironmentContext> for ResponseItem {
     }
 }
 
+/// Canonical snapshot of the environment context that is safe to serialize as JSON.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EnvironmentContextSnapshot {
+    pub version: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval_policy: Option<AskForApproval>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox_mode: Option<SandboxMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network_access: Option<NetworkAccess>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub writable_roots: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operating_system: Option<OperatingSystemInfo>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub common_tools: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell: Option<Shell>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+}
+
+impl EnvironmentContextSnapshot {
+    pub const VERSION: u32 = 1;
+
+    pub(crate) fn from_context(ctx: &EnvironmentContext) -> Self {
+        Self {
+            version: Self::VERSION,
+            cwd: ctx.cwd.as_ref().map(|p| p.display().to_string()),
+            approval_policy: ctx.approval_policy.clone(),
+            sandbox_mode: ctx.sandbox_mode.clone(),
+            network_access: ctx.network_access.clone(),
+            writable_roots: ctx
+                .writable_roots
+                .as_ref()
+                .map(|roots| roots.iter().map(|p| p.display().to_string()).collect())
+                .unwrap_or_default(),
+            operating_system: ctx.operating_system.clone(),
+            common_tools: ctx.common_tools.clone().unwrap_or_default(),
+            shell: ctx.shell.clone(),
+            git_branch: None,
+            reasoning_effort: None,
+        }
+    }
+
+    /// Compute a stable fingerprint that ignores volatile fields such as OS info and shell.
+    pub fn fingerprint(&self) -> String {
+        let mut map = BTreeMap::new();
+        if let Some(cwd) = &self.cwd {
+            map.insert("cwd", cwd.clone());
+        }
+        if let Some(policy) = &self.approval_policy {
+            map.insert("approval_policy", format!("{policy}"));
+        }
+        if let Some(mode) = &self.sandbox_mode {
+            map.insert("sandbox_mode", format!("{mode}"));
+        }
+        if let Some(access) = &self.network_access {
+            map.insert("network_access", format!("{access}"));
+        }
+        if !self.writable_roots.is_empty() {
+            map.insert("writable_roots", self.writable_roots.join("|"));
+        }
+        if let Some(branch) = &self.git_branch {
+            map.insert("git_branch", branch.clone());
+        }
+        if let Some(reasoning) = &self.reasoning_effort {
+            map.insert("reasoning_effort", reasoning.clone());
+        }
+
+        let encoded = serde_json::to_vec(&map).expect("serializing fingerprint fields");
+        let mut sha = Sha1::new();
+        sha.update(encoded);
+        format!("{:x}", sha.finalize())
+    }
+
+    pub fn diff_from(&self, previous: &EnvironmentContextSnapshot) -> EnvironmentContextDelta {
+        let mut changes = BTreeMap::new();
+
+        if self.cwd != previous.cwd {
+            changes.insert("cwd".to_string(), option_string_to_json(&self.cwd));
+        }
+        if self.approval_policy != previous.approval_policy {
+            changes.insert(
+                "approval_policy".to_string(),
+                serde_json::to_value(&self.approval_policy).unwrap_or(JsonValue::Null),
+            );
+        }
+        if self.sandbox_mode != previous.sandbox_mode {
+            changes.insert(
+                "sandbox_mode".to_string(),
+                serde_json::to_value(&self.sandbox_mode).unwrap_or(JsonValue::Null),
+            );
+        }
+        if self.network_access != previous.network_access {
+            changes.insert(
+                "network_access".to_string(),
+                serde_json::to_value(&self.network_access).unwrap_or(JsonValue::Null),
+            );
+        }
+        if self.writable_roots != previous.writable_roots {
+            changes.insert(
+                "writable_roots".to_string(),
+                JsonValue::Array(self.writable_roots.iter().map(|s| JsonValue::String(s.clone())).collect()),
+            );
+        }
+        if self.operating_system != previous.operating_system {
+            changes.insert(
+                "operating_system".to_string(),
+                serde_json::to_value(&self.operating_system).unwrap_or(JsonValue::Null),
+            );
+        }
+        if self.common_tools != previous.common_tools {
+            changes.insert(
+                "common_tools".to_string(),
+                JsonValue::Array(self.common_tools.iter().map(|s| JsonValue::String(s.clone())).collect()),
+            );
+        }
+        if self.shell != previous.shell {
+            changes.insert(
+                "shell".to_string(),
+                serde_json::to_value(&self.shell).unwrap_or(JsonValue::Null),
+            );
+        }
+        if self.git_branch != previous.git_branch {
+            changes.insert(
+                "git_branch".to_string(),
+                option_string_to_json(&self.git_branch),
+            );
+        }
+        if self.reasoning_effort != previous.reasoning_effort {
+            changes.insert(
+                "reasoning_effort".to_string(),
+                option_string_to_json(&self.reasoning_effort),
+            );
+        }
+
+        EnvironmentContextDelta {
+            version: Self::VERSION,
+            base_fingerprint: previous.fingerprint(),
+            changes,
+        }
+    }
+
+    pub fn to_response_item(&self) -> serde_json::Result<ResponseItem> {
+        snapshot_to_response_item(self)
+    }
+
+    pub fn with_metadata(mut self, git_branch: Option<String>, reasoning_effort: Option<String>) -> Self {
+        self.git_branch = git_branch;
+        self.reasoning_effort = reasoning_effort;
+        self
+    }
+}
+
+impl From<&EnvironmentContext> for EnvironmentContextSnapshot {
+    fn from(ctx: &EnvironmentContext) -> Self {
+        EnvironmentContextSnapshot::from_context(ctx)
+    }
+}
+
+impl From<EnvironmentContext> for EnvironmentContextSnapshot {
+    fn from(ctx: EnvironmentContext) -> Self {
+        EnvironmentContextSnapshot::from_context(&ctx)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EnvironmentContextDelta {
+    pub version: u32,
+    pub base_fingerprint: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub changes: BTreeMap<String, JsonValue>,
+}
+
+impl EnvironmentContextDelta {
+    pub fn to_response_item(&self) -> serde_json::Result<ResponseItem> {
+        delta_to_response_item(self)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BrowserSnapshot {
+    pub version: u32,
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub captured_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport: Option<ViewportDimensions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<HashMap<String, String>>,
+}
+
+impl BrowserSnapshot {
+    pub const VERSION: u32 = 1;
+
+    pub fn new(url: String, captured_at: String) -> Self {
+        Self {
+            version: Self::VERSION,
+            url,
+            title: None,
+            captured_at,
+            viewport: None,
+            metadata: None,
+        }
+    }
+
+    pub fn to_response_item(&self) -> serde_json::Result<ResponseItem> {
+        browser_snapshot_to_response_item(self)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ViewportDimensions {
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct EnvironmentContextTracker {
+    next_sequence: u64,
+    last_snapshot: Option<EnvironmentContextSnapshot>,
+}
+
+impl EnvironmentContextTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn observe(
+        &mut self,
+        snapshot: EnvironmentContextSnapshot,
+    ) -> Option<EnvironmentContextEmission> {
+        match &self.last_snapshot {
+            None => {
+                self.next_sequence += 1;
+                self.last_snapshot = Some(snapshot.clone());
+                Some(EnvironmentContextEmission::Full {
+                    sequence: self.next_sequence,
+                    snapshot,
+                })
+            }
+            Some(previous) => {
+                if snapshot.fingerprint() == previous.fingerprint() {
+                    None
+                } else {
+                    self.next_sequence += 1;
+                    let delta = snapshot.diff_from(previous);
+                    self.last_snapshot = Some(snapshot.clone());
+                    Some(EnvironmentContextEmission::Delta {
+                        sequence: self.next_sequence,
+                        snapshot,
+                        delta,
+                    })
+                }
+            }
+        }
+    }
+
+    pub fn last_snapshot(&self) -> Option<&EnvironmentContextSnapshot> {
+        self.last_snapshot.as_ref()
+    }
+
+    pub(crate) fn emit_response_items(
+        &mut self,
+        env_context: &EnvironmentContext,
+        git_branch: Option<String>,
+        reasoning_effort: Option<String>,
+    ) -> serde_json::Result<Option<(EnvironmentContextEmission, Vec<ResponseItem>)>> {
+        let emission = match self.observe(
+            EnvironmentContextSnapshot::from_context(env_context)
+                .with_metadata(git_branch, reasoning_effort),
+        ) {
+            Some(emission) => emission,
+            None => return Ok(None),
+        };
+
+        let items = emission.clone().into_response_items()?;
+        Ok(Some((emission, items)))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum EnvironmentContextEmission {
+    Full {
+        sequence: u64,
+        snapshot: EnvironmentContextSnapshot,
+    },
+    Delta {
+        sequence: u64,
+        snapshot: EnvironmentContextSnapshot,
+        delta: EnvironmentContextDelta,
+    },
+}
+
+impl EnvironmentContextEmission {
+    pub fn sequence(&self) -> u64 {
+        match self {
+            EnvironmentContextEmission::Full { sequence, .. }
+            | EnvironmentContextEmission::Delta { sequence, .. } => *sequence,
+        }
+    }
+
+    pub fn into_response_items(self) -> serde_json::Result<Vec<ResponseItem>> {
+        match self {
+            EnvironmentContextEmission::Full { snapshot, .. } => {
+                Ok(vec![snapshot.to_response_item()?])
+            }
+            EnvironmentContextEmission::Delta { delta, .. } => {
+                Ok(vec![delta.to_response_item()?])
+            }
+        }
+    }
+}
+
+fn option_string_to_json(value: &Option<String>) -> JsonValue {
+    match value {
+        Some(v) => JsonValue::String(v.clone()),
+        None => JsonValue::Null,
+    }
+}
+
+fn snapshot_to_response_item(snapshot: &EnvironmentContextSnapshot) -> serde_json::Result<ResponseItem> {
+    let json = serde_json::to_string_pretty(snapshot)?;
+    Ok(ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: format!(
+                "{}\n{}\n{}",
+                ENVIRONMENT_CONTEXT_OPEN_TAG, json, ENVIRONMENT_CONTEXT_CLOSE_TAG
+            ),
+        }],
+    })
+}
+
+fn delta_to_response_item(delta: &EnvironmentContextDelta) -> serde_json::Result<ResponseItem> {
+    let json = serde_json::to_string_pretty(delta)?;
+    Ok(ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: format!(
+                "{}\n{}\n{}",
+                ENVIRONMENT_CONTEXT_DELTA_OPEN_TAG, json, ENVIRONMENT_CONTEXT_DELTA_CLOSE_TAG
+            ),
+        }],
+    })
+}
+
+fn browser_snapshot_to_response_item(snapshot: &BrowserSnapshot) -> serde_json::Result<ResponseItem> {
+    let json = serde_json::to_string_pretty(snapshot)?;
+    Ok(ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: format!(
+                "{}\n{}\n{}",
+                BROWSER_SNAPSHOT_OPEN_TAG, json, BROWSER_SNAPSHOT_CLOSE_TAG
+            ),
+        }],
+    })
+}
+
 fn detect_operating_system_info() -> Option<OperatingSystemInfo> {
     let info = os_info::get();
     let family = match info.os_type() {
@@ -440,6 +816,74 @@ mod tests {
         assert!(xml.contains("<tool>git</tool>"));
     }
 
+    fn message_text(item: &ResponseItem) -> &str {
+        match item {
+            ResponseItem::Message { content, .. } => match &content[0] {
+                ContentItem::InputText { text } => text,
+                other => panic!("unexpected content item: {other:?}"),
+            },
+            other => panic!("unexpected response item: {other:?}"),
+        }
+    }
+
+    fn parse_tagged_json(text: &str, open: &str, close: &str) -> serde_json::Value {
+        let trimmed = text.trim();
+        assert!(trimmed.starts_with(open), "expected prefix {open}");
+        assert!(trimmed.ends_with(close), "expected suffix {close}");
+        let inner = &trimmed[open.len()..trimmed.len() - close.len()];
+        serde_json::from_str(inner.trim()).expect("valid tagged json")
+    }
+
+    #[test]
+    fn tracker_emits_full_and_delta_messages() {
+        let mut tracker = EnvironmentContextTracker::new();
+        let mut ctx = EnvironmentContext::new(
+            Some(PathBuf::from("/repo")),
+            Some(AskForApproval::OnRequest),
+            Some(SandboxPolicy::DangerFullAccess),
+            None,
+        );
+
+        let first = tracker
+            .emit_response_items(&ctx, Some("main".into()), Some("Medium".into()))
+            .expect("serialize full")
+            .expect("full emission");
+        assert!(matches!(first.0, EnvironmentContextEmission::Full { .. }));
+        let full_text = message_text(&first.1[0]);
+        assert!(full_text.contains(ENVIRONMENT_CONTEXT_OPEN_TAG));
+        assert!(!full_text.contains("== System Status =="));
+        let full_json = parse_tagged_json(
+            full_text,
+            ENVIRONMENT_CONTEXT_OPEN_TAG,
+            ENVIRONMENT_CONTEXT_CLOSE_TAG,
+        );
+        assert_eq!(full_json["git_branch"], "main");
+
+        // Unchanged context should not emit again
+        let none = tracker
+            .emit_response_items(&ctx, Some("main".into()), Some("Medium".into()))
+            .expect("unchanged serialize");
+        assert!(none.is_none());
+
+        // Changing stable fields triggers a delta emission
+        ctx.cwd = Some(PathBuf::from("/repo-two"));
+        let delta = tracker
+            .emit_response_items(&ctx, Some("feature".into()), Some("High".into()))
+            .expect("serialize delta")
+            .expect("delta emission");
+        assert!(matches!(delta.0, EnvironmentContextEmission::Delta { .. }));
+        let delta_text = message_text(&delta.1[0]);
+        assert!(delta_text.contains(ENVIRONMENT_CONTEXT_DELTA_OPEN_TAG));
+        let delta_json = parse_tagged_json(
+            delta_text,
+            ENVIRONMENT_CONTEXT_DELTA_OPEN_TAG,
+            ENVIRONMENT_CONTEXT_DELTA_CLOSE_TAG,
+        );
+        assert_eq!(delta_json["changes"]["cwd"], "/repo-two");
+        assert_eq!(delta_json["changes"]["git_branch"], "feature");
+        assert_eq!(delta_json["changes"]["reasoning_effort"], "High");
+    }
+
     #[test]
     fn equals_except_shell_compares_approval_policy() {
         // Approval policy
@@ -516,5 +960,85 @@ mod tests {
         );
 
         assert!(context1.equals_except_shell(&context2));
+    }
+
+    #[test]
+    fn snapshot_fingerprint_ignores_volatile_fields() {
+        let mut ctx_a = EnvironmentContext::new(
+            Some(PathBuf::from("/repo")),
+            Some(AskForApproval::OnRequest),
+            Some(workspace_write_policy(vec!["/repo"], true)),
+            None,
+        );
+        ctx_a.operating_system = Some(OperatingSystemInfo {
+            family: Some("macos".into()),
+            version: Some("14.0".into()),
+            architecture: Some("arm64".into()),
+        });
+        ctx_a.common_tools = Some(vec!["git".into(), "rg".into()]);
+
+        let mut ctx_b = EnvironmentContext::new(
+            Some(PathBuf::from("/repo")),
+            Some(AskForApproval::OnRequest),
+            Some(workspace_write_policy(vec!["/repo"], true)),
+            None,
+        );
+        ctx_b.operating_system = Some(OperatingSystemInfo {
+            family: Some("ubuntu".into()),
+            version: Some("22.04".into()),
+            architecture: Some("x86_64".into()),
+        });
+        ctx_b.common_tools = Some(vec!["npm".into(), "node".into()]);
+
+        let snap_a = EnvironmentContextSnapshot::from(&ctx_a);
+        let snap_b = EnvironmentContextSnapshot::from(&ctx_b);
+
+        assert_eq!(snap_a.fingerprint(), snap_b.fingerprint());
+    }
+
+    #[test]
+    fn snapshot_diff_detects_changes() {
+        let ctx_a = EnvironmentContext::new(
+            Some(PathBuf::from("/repo")),
+            Some(AskForApproval::OnRequest),
+            Some(workspace_write_policy(vec!["/repo"], false)),
+            None,
+        );
+        let ctx_b = EnvironmentContext::new(
+            Some(PathBuf::from("/other")),
+            Some(AskForApproval::Never),
+            Some(workspace_write_policy(vec!["/repo"], true)),
+            None,
+        );
+
+        let snap_a = EnvironmentContextSnapshot::from(&ctx_a);
+        let snap_b = EnvironmentContextSnapshot::from(&ctx_b);
+        let delta = snap_b.diff_from(&snap_a);
+
+        assert!(delta.changes.contains_key("cwd"));
+        assert!(delta.changes.contains_key("approval_policy"));
+        assert!(delta.changes.contains_key("network_access"));
+        assert_eq!(delta.base_fingerprint, snap_a.fingerprint());
+    }
+
+    #[test]
+    fn tracker_emits_full_then_none_when_unchanged() {
+        let ctx = EnvironmentContext::new(
+            Some(PathBuf::from("/repo")),
+            Some(AskForApproval::OnRequest),
+            Some(workspace_write_policy(vec!["/repo"], false)),
+            None,
+        );
+        let snapshot = EnvironmentContextSnapshot::from(&ctx);
+
+        let mut tracker = EnvironmentContextTracker::new();
+
+        let first = tracker
+            .observe(snapshot.clone())
+            .expect("first snapshot should emit");
+        assert!(matches!(first, EnvironmentContextEmission::Full { .. }));
+
+        let second = tracker.observe(snapshot);
+        assert!(second.is_none(), "unchanged snapshot should not emit");
     }
 }

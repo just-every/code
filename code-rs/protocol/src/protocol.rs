@@ -35,6 +35,10 @@ pub const USER_INSTRUCTIONS_OPEN_TAG: &str = "<user_instructions>";
 pub const USER_INSTRUCTIONS_CLOSE_TAG: &str = "</user_instructions>";
 pub const ENVIRONMENT_CONTEXT_OPEN_TAG: &str = "<environment_context>";
 pub const ENVIRONMENT_CONTEXT_CLOSE_TAG: &str = "</environment_context>";
+pub const ENVIRONMENT_CONTEXT_DELTA_OPEN_TAG: &str = "<environment_context_delta>";
+pub const ENVIRONMENT_CONTEXT_DELTA_CLOSE_TAG: &str = "</environment_context_delta>";
+pub const BROWSER_SNAPSHOT_OPEN_TAG: &str = "<browser_snapshot>";
+pub const BROWSER_SNAPSHOT_CLOSE_TAG: &str = "</browser_snapshot>";
 pub const USER_MESSAGE_BEGIN: &str = "## My request for Codex:";
 
 /// Submission Queue Entry - requests from user

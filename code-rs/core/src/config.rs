@@ -283,6 +283,8 @@ pub struct Config {
     pub use_experimental_use_rmcp_client: bool,
     /// Enable the `view_image` tool that lets the agent attach local images.
     pub include_view_image_tool: bool,
+    /// Experimental: enable JSON-based environment context snapshots and deltas (phase gated).
+    pub env_ctx_v2: bool,
     /// The value for the `originator` header included with Responses API requests.
     pub responses_originator_header: String,
 
@@ -1782,6 +1784,8 @@ pub struct ConfigToml {
     pub subagents: Option<crate::config_types::SubagentsToml>,
     /// Experimental path to a rollout file to resume from.
     pub experimental_resume: Option<PathBuf>,
+    /// Experimental: enable JSON-based environment context snapshots and deltas.
+    pub env_ctx_v2: Option<bool>,
 }
 
 fn deserialize_option_bool_from_maybe_string<'de, D>(
@@ -1945,6 +1949,7 @@ pub struct ConfigOverrides {
     pub tools_web_search_request: Option<bool>,
     pub mcp_servers: Option<HashMap<String, McpServerConfig>>,
     pub experimental_client_tools: Option<ClientTools>,
+    pub env_ctx_v2: Option<bool>,
 }
 
 impl Config {
@@ -1979,6 +1984,7 @@ impl Config {
             tools_web_search_request: override_tools_web_search_request,
             mcp_servers,
             experimental_client_tools,
+            env_ctx_v2,
         } = overrides;
 
         if let Some(mcp_servers) = mcp_servers {
@@ -2142,6 +2148,10 @@ impl Config {
         let include_view_image_tool_flag = include_view_image_tool
             .or(cfg.tools.as_ref().and_then(|t| t.view_image))
             .unwrap_or(true);
+
+        let env_ctx_v2_flag = env_ctx_v2
+            .or(cfg.env_ctx_v2)
+            .unwrap_or(false);
 
         // Determine auth mode early so defaults like model selection can depend on it.
         let using_chatgpt_auth = Self::is_using_chatgpt_auth(&code_home);
@@ -2351,6 +2361,7 @@ impl Config {
                 .experimental_use_rmcp_client
                 .unwrap_or(false),
             include_view_image_tool: include_view_image_tool_flag,
+            env_ctx_v2: env_ctx_v2_flag,
             responses_originator_header,
             debug: debug.unwrap_or(false),
             // Already computed before moving code_home

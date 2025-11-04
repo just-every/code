@@ -2,7 +2,7 @@ use anyhow::Result;
 use code_core::custom_prompts::{default_prompts_dir, discover_prompts_in};
 use once_cell::sync::Lazy;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tempfile::TempDir;
 
@@ -50,6 +50,18 @@ fn prompt_names(prompts: &[code_protocol::custom_prompts::CustomPrompt]) -> Vec<
     prompts.iter().map(|p| p.name.clone()).collect()
 }
 
+fn normalize_path_for_assertion(path: &Path) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        path.to_path_buf()
+    }
+}
+
 #[tokio::test]
 async fn discovers_prompts_from_code_home() -> Result<()> {
     let _env_lock = ENV_MUTEX.lock().unwrap();
@@ -65,7 +77,10 @@ async fn discovers_prompts_from_code_home() -> Result<()> {
     env.remove("CODEX_HOME");
 
     let default_dir = default_prompts_dir().expect("expected prompts dir");
-    assert_eq!(default_dir, prompts_dir);
+    assert_eq!(
+        normalize_path_for_assertion(&default_dir),
+        normalize_path_for_assertion(&prompts_dir)
+    );
 
     let prompts = discover_prompts_in(&default_dir).await;
     let names = prompt_names(&prompts);
@@ -90,7 +105,10 @@ async fn discovers_prompts_from_legacy_codex_home() -> Result<()> {
     env.remove("CODEX_HOME");
 
     let default_dir = default_prompts_dir().expect("expected prompts dir");
-    assert_eq!(default_dir, legacy_prompts);
+    assert_eq!(
+        normalize_path_for_assertion(&default_dir),
+        normalize_path_for_assertion(&legacy_prompts)
+    );
 
     let prompts = discover_prompts_in(&default_dir).await;
     let names = prompt_names(&prompts);
@@ -119,7 +137,10 @@ async fn prefers_code_home_when_both_locations_exist() -> Result<()> {
     env.remove("CODEX_HOME");
 
     let default_dir = default_prompts_dir().expect("expected prompts dir");
-    assert_eq!(default_dir, code_prompts);
+    assert_eq!(
+        normalize_path_for_assertion(&default_dir),
+        normalize_path_for_assertion(&code_prompts)
+    );
 
     let prompts = discover_prompts_in(&default_dir).await;
     let names = prompt_names(&prompts);

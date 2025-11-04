@@ -486,7 +486,7 @@ mod tests {
 
     #[test]
     fn developer_message_uses_bootstrap_instructions_when_deriving_goal() {
-        let (_intro_bootstrap, primary_bootstrap) = build_developer_message(
+        let (_, _intro_bootstrap, primary_bootstrap) = build_developer_message(
             "Deriving goal from recent conversation",
             "Env",
             None,
@@ -494,7 +494,7 @@ mod tests {
         );
         assert!(primary_bootstrap.contains("You are preparing to start Auto Drive"));
 
-        let (_intro_normal, primary_normal) =
+        let (_, _intro_normal, primary_normal) =
             build_developer_message("Ship feature", "Env", None, false);
         assert!(primary_normal.contains("Ship feature"));
         assert!(!primary_normal.contains("You are preparing to start Auto Drive"));
@@ -570,10 +570,8 @@ mod tests {
     fn parse_decision_legacy_schema() {
         let raw = r#"{
             "finish_status": "continue",
-            "progress_past": "Drafted fix",
-            "progress_current": "Running unit tests",
-            "cli_prompt": "Run cargo test --package core",
-            "cli_context": "Focus on flaky suite"
+            "progress": {"past": "Drafted fix", "current": "Running unit tests"},
+            "prompt_sent_to_cli": "Run cargo test --package core"
         }"#;
 
         let (decision, _) = parse_decision(raw).expect("parse legacy decision");
@@ -589,7 +587,7 @@ mod tests {
 
         let cli = decision.cli.expect("cli action expected");
         assert_eq!(cli.prompt, "Run cargo test --package core");
-        assert_eq!(cli.context.as_deref(), Some("Focus on flaky suite"));
+        assert!(cli.context.is_none());
 
         assert!(decision.agents.is_empty());
         assert!(decision.agents_timing.is_none());

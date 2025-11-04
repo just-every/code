@@ -21,7 +21,7 @@ expression: "frames.join(\"\\n---FRAME---\\n\")"
    - Running commands
 
 
-  Auto Drive > Installed dependencies > Running cargo check...  ✶ Thinking (Xs)
+  Auto Drive > Running cargo check... · Installed dependencies  ✶ Thinking (Xs)
  +----------------------------------------------------------------------------+
  | What can I code for you today?                                             |
  +----------------------------------------------------------------------------+
@@ -34,7 +34,7 @@ expression: "frames.join(\"\\n---FRAME---\\n\")"
    - Running commands
 
 
-  Auto Drive > Installed dependencies > Running cargo check...  ✶ Running (Xs)
+  Auto Drive > Running cargo check... · Installed dependencies  ✶ Running (Xs)
  +----------------------------------------------------------------------------+
  | What can I code for you today?                                             |
  +----------------------------------------------------------------------------+
