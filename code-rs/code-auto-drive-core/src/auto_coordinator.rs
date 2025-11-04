@@ -1302,12 +1302,12 @@ fn build_initial_planning_seed(goal_text: &str, include_agents: bool) -> Option<
 
     Some(InitialPlanningSeed {
         response_json: format!(
-            "{{\"finish_status\":\"continue\",\"status_title\":\"Planning path\",\"status_sent_to_user\":\"Planning how to reach the goal before delegating to the CLI.\",\"prompt_sent_to_cli\":\"{cli_prompt}\"}}"
+            "{{\"finish_status\":\"continue\",\"status_title\":\"Planning\",\"status_sent_to_user\":\"Started initial planning phase.\",\"prompt_sent_to_cli\":\"{cli_prompt}\"}}"
         ),
         cli_prompt: cli_prompt.to_string(),
         goal_message: format!("Goal: {}", goal),
         status_title: "Planning path".to_string(),
-        status_sent_to_user: "Planning how to reach the goal before delegating to the CLI.".to_string(),
+        status_sent_to_user: "Planning best path to reach the goal.".to_string(),
         agents_timing: if include_agents {
             Some(AutoTurnAgentsTiming::Parallel)
         } else {
@@ -1479,7 +1479,7 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
             "type": ["string", "null"],
             "minLength": 2,
             "maxLength": 80,
-            "description": "2-5 words, present-tense, what the CLI is working on now."
+            "description": "1-4 words, present-tense, what you asked the CLI to work on now."
         }),
     );
     required.push(Value::String("status_title".to_string()));
@@ -1488,9 +1488,9 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
         "status_sent_to_user".to_string(),
         json!({
             "type": ["string", "null"],
-            "minLength": 5,
+            "minLength": 4,
             "maxLength": 600,
-            "description": "1-2 sentences sent to the user explaining what you are asking the CLI to work on now. Will be shown in the UI to keep the user updated on the progress."
+            "description": "1-2 sentences shown to the user explaining what you asked the CLI to work on now. Will be shown in the UI to keep the user updated on the progress."
         }),
     );
     required.push(Value::String("status_sent_to_user".to_string()));
@@ -1501,7 +1501,7 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
             "type": ["string", "null"],
             "minLength": 4,
             "maxLength": 600,
-            "description": "Instruction for the CLI. Provide when finish_status is 'continue'. Keep it high-level; the CLI has more context and tools than you do."
+            "description": "Instruction sent to the CLI to push it forward with the task. Write this like a human maintainer pushing the CLI forwards, without digging too deep into the technical side. Provide when finish_status is 'continue'. Keep it high-level; the CLI has more context and tools than you do. e.g. 'Execute the first two steps of the plan you provided in parellel using agents.' NEVER ask the CLI to show you files so you solve problems directly. ALWAYS allow the CLI to take control. You are the COORDINATOR not the WORKER."
         }),
     );
     required.push(Value::String("prompt_sent_to_cli".to_string()));
