@@ -945,7 +945,7 @@ fn run_auto_loop(
             let transcript_item = make_message("assistant", seed.response_json.clone());
             let cli_action = AutoTurnCliAction {
                 prompt: seed.cli_prompt.clone(),
-                context: Some(seed.goal_message.clone()),
+                context: None,
             };
             let event = AutoCoordinatorEvent::Decision {
                 status: AutoCoordinatorStatus::Continue,
@@ -1270,7 +1270,6 @@ fn build_developer_message(
 struct InitialPlanningSeed {
     response_json: String,
     cli_prompt: String,
-    goal_message: String,
     status_title: String,
     status_sent_to_user: String,
     agents_timing: Option<AutoTurnAgentsTiming>,
@@ -1293,7 +1292,6 @@ fn build_initial_planning_seed(goal_text: &str, include_agents: bool) -> Option<
             "{{\"finish_status\":\"continue\",\"status_title\":\"Planning\",\"status_sent_to_user\":\"Started initial planning phase.\",\"prompt_sent_to_cli\":\"{cli_prompt}\"}}"
         ),
         cli_prompt: cli_prompt.to_string(),
-        goal_message: format!("Goal: {}", goal),
         status_title: "Planning path".to_string(),
         status_sent_to_user: "Planning best path to reach the goal.".to_string(),
         agents_timing: if include_agents {
