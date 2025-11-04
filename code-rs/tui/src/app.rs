@@ -1832,8 +1832,8 @@ impl App<'_> {
                 },
                 AppEvent::AutoCoordinatorDecision {
                     status,
-                    progress_past,
-                    progress_current,
+                    status_title,
+                    status_sent_to_user,
                     goal,
                     cli,
                     agents_timing,
@@ -1843,8 +1843,8 @@ impl App<'_> {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.auto_handle_decision(
                             status,
-                            progress_past,
-                            progress_current,
+                            status_title,
+                            status_sent_to_user,
                             goal,
                             cli,
                             agents_timing,

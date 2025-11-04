@@ -106,8 +106,8 @@ pub enum AutoCoordinatorStatus {
 pub enum AutoCoordinatorEvent {
     Decision {
         status: AutoCoordinatorStatus,
-        progress_past: Option<String>,
-        progress_current: Option<String>,
+        status_title: Option<String>,
+        status_sent_to_user: Option<String>,
         goal: Option<String>,
         cli: Option<AutoTurnCliAction>,
         agents_timing: Option<AutoTurnAgentsTiming>,
@@ -164,8 +164,8 @@ pub enum AutoCoordinatorCommand {
 #[derive(Clone)]
 struct PendingDecision {
     status: AutoCoordinatorStatus,
-    progress_past: Option<String>,
-    progress_current: Option<String>,
+    status_title: Option<String>,
+    status_sent_to_user: Option<String>,
     goal: Option<String>,
     cli: Option<AutoTurnCliAction>,
     agents_timing: Option<AutoTurnAgentsTiming>,
@@ -177,8 +177,8 @@ impl PendingDecision {
     fn into_event(self) -> AutoCoordinatorEvent {
         AutoCoordinatorEvent::Decision {
             status: self.status,
-            progress_past: self.progress_past,
-            progress_current: self.progress_current,
+            status_title: self.status_title,
+            status_sent_to_user: self.status_sent_to_user,
             goal: self.goal,
             cli: self.cli,
             agents_timing: self.agents_timing,
@@ -317,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_includes_cli_and_agents() {
+    fn schema_includes_prompt_and_agents() {
         let active_agents = vec![
             "codex-plan".to_string(),
             "codex-research".to_string(),
@@ -328,19 +328,27 @@ mod tests {
             .and_then(|v| v.as_object())
             .expect("schema properties");
         assert!(!props.contains_key("goal"));
-        assert!(props.contains_key("cli"), "cli property missing");
+        assert!(props.contains_key("status_title"), "status_title property missing");
+        assert!(
+            props.contains_key("status_sent_to_user"),
+            "status_sent_to_user property missing"
+        );
+        assert!(
+            props.contains_key("prompt_sent_to_cli"),
+            "prompt_sent_to_cli property missing"
+        );
         assert!(props.contains_key("agents"), "agents property missing");
         assert!(!props.contains_key("code_review"));
         assert!(!props.contains_key("cross_check"));
+        assert!(!props.contains_key("progress"));
 
-        let cli_required = props
-            .get("cli")
-            .and_then(|v| v.as_object())
-            .and_then(|obj| obj.get("required"))
+        let schema_required = schema
+            .get("required")
             .and_then(|v| v.as_array())
-            .expect("cli required");
-        assert!(cli_required.contains(&json!("prompt")));
-        assert!(cli_required.contains(&json!("context")));
+            .expect("root required");
+        assert!(schema_required.contains(&json!("status_title")));
+        assert!(schema_required.contains(&json!("status_sent_to_user")));
+        assert!(schema_required.contains(&json!("prompt_sent_to_cli")));
 
         let agents_obj = props
             .get("agents")
@@ -496,8 +504,9 @@ mod tests {
     fn parse_decision_new_schema() {
         let raw = r#"{
             "finish_status": "continue",
-            "progress": {"past": "Ran smoke tests", "current": "Dispatching fix"},
-            "cli": {"prompt": "Apply the patch for the failing test", "context": "tests/failing.rs"},
+            "status_title": "Dispatching fix",
+            "status_sent_to_user": "Ran smoke tests while validating the fix.",
+            "prompt_sent_to_cli": "Apply the patch for the failing test",
             "agents": {
                 "timing": "blocking",
                 "list": [
@@ -508,12 +517,15 @@ mod tests {
 
         let (decision, _) = parse_decision(raw).expect("parse new schema decision");
         assert_eq!(decision.status, AutoCoordinatorStatus::Continue);
-        assert_eq!(decision.progress_past.as_deref(), Some("Ran smoke tests"));
-        assert_eq!(decision.progress_current.as_deref(), Some("Dispatching fix"));
+        assert_eq!(
+            decision.status_sent_to_user.as_deref(),
+            Some("Ran smoke tests while validating the fix.")
+        );
+        assert_eq!(decision.status_title.as_deref(), Some("Dispatching fix"));
 
         let cli = decision.cli.expect("cli action expected");
         assert_eq!(cli.prompt, "Apply the patch for the failing test");
-        assert_eq!(cli.context.as_deref(), Some("tests/failing.rs"));
+        assert!(cli.context.is_none());
 
         assert_eq!(
             decision.agents_timing,
@@ -534,8 +546,9 @@ mod tests {
     fn parse_decision_new_schema_array_backcompat() {
         let raw = r#"{
             "finish_status": "continue",
-            "progress": {"past": "Outlined fix", "current": "Running tests"},
-            "cli": {"prompt": "Run cargo test", "context": null},
+            "status_title": "Running tests",
+            "status_sent_to_user": "Outlined fix before execution.",
+            "prompt_sent_to_cli": "Run cargo test",
             "agents": [
                 {"prompt": "Investigate benchmark", "write": false}
             ]
@@ -546,6 +559,11 @@ mod tests {
         assert!(decision.cli.is_some());
         assert_eq!(decision.agents.len(), 1);
         assert!(decision.agents_timing.is_none());
+        assert_eq!(decision.status_title.as_deref(), Some("Running tests"));
+        assert_eq!(
+            decision.status_sent_to_user.as_deref(),
+            Some("Outlined fix before execution.")
+        );
     }
 
     #[test]
@@ -560,8 +578,14 @@ mod tests {
 
         let (decision, _) = parse_decision(raw).expect("parse legacy decision");
         assert_eq!(decision.status, AutoCoordinatorStatus::Continue);
-        assert_eq!(decision.progress_past.as_deref(), Some("Drafted fix"));
-        assert_eq!(decision.progress_current.as_deref(), Some("Running unit tests"));
+        assert_eq!(
+            decision.status_sent_to_user.as_deref(),
+            Some("Drafted fix")
+        );
+        assert_eq!(
+            decision.status_title.as_deref(),
+            Some("Running unit tests")
+        );
 
         let cli = decision.cli.expect("cli action expected");
         assert_eq!(cli.prompt, "Run cargo test --package core");
@@ -573,15 +597,17 @@ mod tests {
 
     #[test]
     fn classify_missing_cli_prompt_is_recoverable() {
-        let err = anyhow!("model response missing cli prompt for continue");
+        let err = anyhow!("model response missing prompt_sent_to_cli for continue");
         let info = classify_recoverable_decision_error(&err).expect("recoverable error");
-        assert!(info.summary.contains("missing CLI prompt"));
+        assert!(info
+            .summary
+            .contains("prompt_sent_to_cli"));
         assert!(
             info
                 .guidance
                 .as_ref()
                 .expect("guidance")
-                .contains("cli.prompt")
+                .contains("prompt_sent_to_cli")
         );
     }
 
@@ -657,9 +683,14 @@ mod tests {
 #[derive(Debug, Deserialize)]
 struct CoordinatorDecisionNew {
     finish_status: String,
-    progress: ProgressPayload,
     #[serde(default)]
-    cli: Option<CliPayload>,
+    status_title: Option<String>,
+    #[serde(default)]
+    status_sent_to_user: Option<String>,
+    #[serde(default)]
+    progress: Option<ProgressPayload>,
+    #[serde(default)]
+    prompt_sent_to_cli: Option<String>,
     #[serde(default)]
     agents: Option<AgentsField>,
     #[serde(default)]
@@ -672,13 +703,6 @@ struct ProgressPayload {
     past: Option<String>,
     #[serde(default)]
     current: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CliPayload {
-    prompt: String,
-    #[serde(default)]
-    context: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -748,8 +772,8 @@ struct CoordinatorDecisionLegacy {
 
 struct ParsedCoordinatorDecision {
     status: AutoCoordinatorStatus,
-    progress_past: Option<String>,
-    progress_current: Option<String>,
+    status_title: Option<String>,
+    status_sent_to_user: Option<String>,
     cli: Option<CliAction>,
     agents_timing: Option<AutoTurnAgentsTiming>,
     agents: Vec<AgentAction>,
@@ -905,7 +929,7 @@ fn run_auto_loop(
     };
     let environment_details = format_environment_details(sandbox_label);
     let coordinator_prompt = read_coordinator_prompt(config.as_ref());
-    let (base_developer_intro, mut primary_goal_message) = build_developer_message(
+    let (coordinator_prompt_message, base_developer_intro, mut primary_goal_message) = build_developer_message(
         &goal_text,
         &environment_details,
         coordinator_prompt.as_deref(),
@@ -916,18 +940,18 @@ fn run_auto_loop(
         schema_features.include_goal_field = true;
     }
     let include_agents = schema_features.include_agents;
-    let mut pending_conversation = Some(initial_conversation);
+    let mut pending_conversation = Some(filter_popular_commands(initial_conversation));
     if !derive_goal_from_history {
         if let Some(seed) = build_initial_planning_seed(&goal_text, include_agents) {
             let transcript_item = make_message("assistant", seed.response_json.clone());
             let cli_action = AutoTurnCliAction {
                 prompt: seed.cli_prompt.clone(),
-                context: Some(seed.cli_context.clone()),
+                context: Some(seed.goal_message.clone()),
             };
             let event = AutoCoordinatorEvent::Decision {
                 status: AutoCoordinatorStatus::Continue,
-                progress_past: None,
-                progress_current: Some("Planning path to goal.".to_string()),
+                status_title: Some(seed.status_title.clone()),
+                status_sent_to_user: Some(seed.status_sent_to_user.clone()),
                 goal: Some(goal_text.clone()),
                 cli: Some(cli_action),
                 agents_timing: seed.agents_timing,
@@ -960,7 +984,7 @@ fn run_auto_loop(
                 continue;
             }
 
-            let mut conv = conv;
+            let mut conv = filter_popular_commands(conv);
             if let Some(summary) = maybe_compact(
                 &runtime,
                 client.as_ref(),
@@ -979,6 +1003,7 @@ fn run_auto_loop(
                 client.as_ref(),
                 developer_intro,
                 &primary_goal_message,
+                coordinator_prompt_message.as_deref(),
                 &schema,
                 conv,
                 auto_instructions.as_deref(),
@@ -987,8 +1012,8 @@ fn run_auto_loop(
             ) {
                 Ok(ParsedCoordinatorDecision {
                     status,
-                    progress_past,
-                    progress_current,
+                    status_title,
+                    status_sent_to_user,
                     goal,
                     cli,
                     mut agents_timing,
@@ -1022,8 +1047,8 @@ fn run_auto_loop(
                     if matches!(status, AutoCoordinatorStatus::Continue) {
                         let event = AutoCoordinatorEvent::Decision {
                             status,
-                            progress_past,
-                            progress_current,
+                            status_title: status_title.clone(),
+                            status_sent_to_user: status_sent_to_user.clone(),
                             goal: goal.clone(),
                             cli: cli.as_ref().map(cli_action_to_event),
                             agents_timing,
@@ -1036,8 +1061,8 @@ fn run_auto_loop(
 
                     let decision_event = PendingDecision {
                         status,
-                        progress_past,
-                        progress_current,
+                        status_title,
+                        status_sent_to_user,
                         goal: goal.clone(),
                         cli: cli.as_ref().map(cli_action_to_event),
                         agents_timing,
@@ -1113,8 +1138,8 @@ fn run_auto_loop(
                     consecutive_decision_failures = 0;
                     let event = AutoCoordinatorEvent::Decision {
                         status: AutoCoordinatorStatus::Failed,
-                        progress_past: None,
-                        progress_current: Some(format!("Coordinator error: {error}")),
+                        status_title: Some("Coordinator error".to_string()),
+                        status_sent_to_user: Some(format!("Encountered an error: {error}")),
                         goal: None,
                         cli: None,
                         agents_timing: None,
@@ -1138,6 +1163,7 @@ fn run_auto_loop(
                     client.as_ref(),
                     developer_intro,
                     &primary_goal_message,
+                    coordinator_prompt_message.as_deref(),
                     &schema,
                     updated_conversation.clone(),
                     auto_instructions.as_deref(),
@@ -1182,7 +1208,7 @@ fn run_auto_loop(
             Ok(AutoCoordinatorCommand::UpdateConversation(conv)) => {
                 requests_completed = requests_completed.saturating_add(1);
                 consecutive_decision_failures = 0;
-                pending_conversation = Some(conv);
+                pending_conversation = Some(filter_popular_commands(conv));
             }
             Ok(AutoCoordinatorCommand::Stop) | Err(_) => {
                 stopped = true;
@@ -1191,6 +1217,25 @@ fn run_auto_loop(
     }
 
     Ok(())
+}
+
+fn filter_popular_commands(items: Vec<ResponseItem>) -> Vec<ResponseItem> {
+    items
+        .into_iter()
+        .filter(|item| !is_popular_commands_message(item))
+        .collect()
+}
+
+fn is_popular_commands_message(item: &ResponseItem) -> bool {
+    match item {
+        ResponseItem::Message { role, content, .. } if role.eq_ignore_ascii_case("user") => {
+            content.iter().any(|c| match c {
+                ContentItem::InputText { text } => text.contains("Popular commands:"),
+                _ => false,
+            })
+        }
+        _ => false,
+    }
 }
 fn read_coordinator_prompt(_config: &Config) -> Option<String> {
     match fs::read_to_string(COORDINATOR_PROMPT_PATH) {
@@ -1217,29 +1262,29 @@ fn build_developer_message(
     environment_details: &str,
     coordinator_prompt: Option<&str>,
     derive_goal_from_history: bool,
-) -> (String, String) {
+) -> (Option<String>, String, String) {
     let prompt_body = coordinator_prompt.unwrap_or("").trim();
-    let intro = if prompt_body.is_empty() {
-        format!("Environment:
-{}", environment_details)
+    let coordinator_message = if prompt_body.is_empty() {
+        None
     } else {
-        format!("{prompt_body}
-
-Environment:
-{environment_details}")
+        Some(prompt_body.to_string())
     };
+    let intro = format!("Environment:
+{environment_details}");
     let primary_goal = if derive_goal_from_history {
         "**Primary Goal**\nYou are preparing to start Auto Drive. Review the recent conversation history and identify the single primary coding goal the assistant should pursue next.".to_string()
     } else {
         format!("**Primary Goal**\n{}", goal_text)
     };
-    (intro, primary_goal)
+    (coordinator_message, intro, primary_goal)
 }
 
 struct InitialPlanningSeed {
     response_json: String,
     cli_prompt: String,
-    cli_context: String,
+    goal_message: String,
+    status_title: String,
+    status_sent_to_user: String,
     agents_timing: Option<AutoTurnAgentsTiming>,
 }
 
@@ -1257,10 +1302,12 @@ fn build_initial_planning_seed(goal_text: &str, include_agents: bool) -> Option<
 
     Some(InitialPlanningSeed {
         response_json: format!(
-            "{{\"finish_status\":\"continue\",\"progress\":{{\"current\":\"Planning path to goal.\"}},\"cli\":{{\"context\":\"Goal:\\n {goal}\",\"prompt\":\"{cli_prompt}\"}}}}"
+            "{{\"finish_status\":\"continue\",\"status_title\":\"Planning path\",\"status_sent_to_user\":\"Planning how to reach the goal before delegating to the CLI.\",\"prompt_sent_to_cli\":\"{cli_prompt}\"}}"
         ),
         cli_prompt: cli_prompt.to_string(),
-        cli_context: format!("Goal:\n {goal}"),
+        goal_message: format!("Goal: {}", goal),
+        status_title: "Planning path".to_string(),
+        status_sent_to_user: "Planning how to reach the goal before delegating to the CLI.".to_string(),
         agents_timing: if include_agents {
             Some(AutoTurnAgentsTiming::Parallel)
         } else {
@@ -1413,30 +1460,6 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
     );
     required.push(Value::String("finish_status".to_string()));
 
-    properties.insert(
-        "progress".to_string(),
-        json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "past": {
-                    "type": ["string", "null"],
-                    "minLength": 4,
-                    "maxLength": 50,
-                    "description": "2-5 words, past-tense, work performed so far."
-                },
-                "current": {
-                    "type": "string",
-                    "minLength": 4,
-                    "maxLength": 50,
-                    "description": "2-5 words, present-tense, what is being worked on now."
-                }
-            },
-            "required": ["past", "current"]
-        }),
-    );
-    required.push(Value::String("progress".to_string()));
-
     if features.include_goal_field {
         properties.insert(
             "goal".to_string(),
@@ -1451,28 +1474,37 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
     }
 
     properties.insert(
-        "cli".to_string(),
+        "status_title".to_string(),
         json!({
-            "type": ["object", "null"],
-            "additionalProperties": false,
-            "description": "The single atomic instruction for the CLI this turn. Set to null only when finish_status != 'continue'.",
-            "properties": {
-                "context": {
-                    "type": ["string", "null"],
-                    "maxLength": 1500,
-                    "description": "ONLY use if there is information the CLI does not have in its history. Specifically; messages sent to you by the user or context gathered before a compaction."
-                },
-                "prompt": {
-                    "type": "string",
-                    "minLength": 4,
-                    "maxLength": 600,
-                    "description": "Instruction for the CLI. 1–2 sentences. No step lists. Give the CLI autonomy while working. Simple prompts keep guidance high level. The CLI has much more context and tools than you do."
-                }
-            },
-            "required": ["prompt", "context"]
+            "type": ["string", "null"],
+            "minLength": 2,
+            "maxLength": 80,
+            "description": "2-5 words, present-tense, what the CLI is working on now."
         }),
     );
-    required.push(Value::String("cli".to_string()));
+    required.push(Value::String("status_title".to_string()));
+
+    properties.insert(
+        "status_sent_to_user".to_string(),
+        json!({
+            "type": ["string", "null"],
+            "minLength": 5,
+            "maxLength": 600,
+            "description": "1-2 sentences sent to the user explaining what you are asking the CLI to work on now. Will be shown in the UI to keep the user updated on the progress."
+        }),
+    );
+    required.push(Value::String("status_sent_to_user".to_string()));
+
+    properties.insert(
+        "prompt_sent_to_cli".to_string(),
+        json!({
+            "type": ["string", "null"],
+            "minLength": 4,
+            "maxLength": 600,
+            "description": "Instruction for the CLI. Provide when finish_status is 'continue'. Keep it high-level; the CLI has more context and tools than you do."
+        }),
+    );
+    required.push(Value::String("prompt_sent_to_cli".to_string()));
 
     if features.include_agents {
         properties.insert(
@@ -1548,6 +1580,7 @@ fn request_coordinator_decision(
     client: &ModelClient,
     developer_intro: &str,
     primary_goal: &str,
+    coordinator_prompt: Option<&str>,
     schema: &Value,
     conversation: Vec<ResponseItem>,
     auto_instructions: Option<&str>,
@@ -1564,6 +1597,7 @@ fn request_coordinator_decision(
         client,
         developer_intro,
         primary_goal,
+        coordinator_prompt,
         schema,
         &conversation,
         auto_instructions,
@@ -1592,6 +1626,7 @@ fn request_decision(
     client: &ModelClient,
     developer_intro: &str,
     primary_goal: &str,
+    coordinator_prompt: Option<&str>,
     schema: &Value,
     conversation: &[ResponseItem],
     auto_instructions: Option<&str>,
@@ -1603,6 +1638,7 @@ fn request_decision(
         client,
         developer_intro,
         primary_goal,
+        coordinator_prompt,
         schema,
         conversation,
         auto_instructions,
@@ -1625,6 +1661,7 @@ fn request_decision(
                     client,
                     developer_intro,
                     primary_goal,
+                    coordinator_prompt.as_deref(),
                     schema,
                     conversation,
                     auto_instructions,
@@ -1667,6 +1704,7 @@ fn request_user_turn_decision(
     client: &ModelClient,
     developer_intro: &str,
     primary_goal: &str,
+    coordinator_prompt: Option<&str>,
     schema: &Value,
     conversation: Vec<ResponseItem>,
     auto_instructions: Option<&str>,
@@ -1678,6 +1716,7 @@ fn request_user_turn_decision(
         client,
         developer_intro,
         primary_goal,
+        coordinator_prompt,
         schema,
         &conversation,
         auto_instructions,
@@ -1695,6 +1734,7 @@ fn request_decision_with_model(
     client: &ModelClient,
     developer_intro: &str,
     primary_goal: &str,
+    coordinator_prompt: Option<&str>,
     schema: &Value,
     conversation: &[ResponseItem],
     auto_instructions: Option<&str>,
@@ -1707,6 +1747,7 @@ fn request_decision_with_model(
     let schema = schema.clone();
     let conversation: Vec<ResponseItem> = conversation.to_vec();
     let auto_instructions = auto_instructions.map(|text| text.to_string());
+    let coordinator_prompt = coordinator_prompt.map(|text| text.to_string());
     let tx = event_tx.clone();
     let cancel = cancel_token.clone();
     let classify = |error: &anyhow::Error| classify_model_error(error);
@@ -1716,9 +1757,11 @@ fn request_decision_with_model(
         retry_with_backoff(
             || {
                 let instructions = auto_instructions.clone();
+                let coordinator_prompt = coordinator_prompt.clone();
                 let prompt = build_user_turn_prompt(
                     &developer_intro,
                     &primary_goal,
+                    coordinator_prompt.as_deref(),
                     &schema,
                     &conversation,
                     model_slug,
@@ -1870,6 +1913,7 @@ fn request_decision_with_model(
 fn build_user_turn_prompt(
     developer_intro: &str,
     primary_goal: &str,
+    coordinator_prompt: Option<&str>,
     schema: &Value,
     conversation: &Vec<ResponseItem>,
     model_slug: &str,
@@ -1880,6 +1924,14 @@ fn build_user_turn_prompt(
     prompt.session_id_override = Some(Uuid::new_v4());
     if let Some(instructions) = auto_instructions {
         let trimmed = instructions.trim();
+        if !trimmed.is_empty() {
+            prompt
+                .input
+                .push(make_message("developer", trimmed.to_string()));
+        }
+    }
+    if let Some(prompt_text) = coordinator_prompt {
+        let trimmed = prompt_text.trim();
         if !trimmed.is_empty() {
             prompt
                 .input
@@ -2150,11 +2202,15 @@ fn classify_recoverable_decision_error(err: &anyhow::Error) -> Option<Recoverabl
     let text = err.to_string();
     let lower = text.to_ascii_lowercase();
 
-    if lower.contains("missing cli prompt for continue") {
+    if lower.contains("missing prompt_sent_to_cli")
+        || lower.contains("missing cli prompt for continue")
+        || lower.contains("missing cli prompt for `finish_status")
+        || lower.contains("missing cli prompt")
+    {
         return Some(RecoverableDecisionError {
-            summary: "missing CLI prompt for `finish_status: \"continue\"`".to_string(),
+            summary: "missing `prompt_sent_to_cli` for `finish_status: \"continue\"`".to_string(),
             guidance: Some(
-                "Include a non-empty `cli.prompt` (and optional context) whenever `finish_status` is `\"continue\"`."
+                "Include a non-empty `prompt_sent_to_cli` string whenever `finish_status` is `\"continue\"`."
                     .to_string(),
             ),
         });
@@ -2290,25 +2346,43 @@ fn convert_decision_new(
 ) -> Result<ParsedCoordinatorDecision> {
     let CoordinatorDecisionNew {
         finish_status: _,
+        status_title,
+        status_sent_to_user,
         progress,
-        cli,
+        prompt_sent_to_cli,
         agents: agent_payloads,
         goal,
     } = decision;
 
-    let progress_past = clean_optional(progress.past);
-    let progress_current = clean_optional(progress.current);
+    let mut status_title = clean_optional(status_title);
+    let mut status_sent_to_user = clean_optional(status_sent_to_user);
+
+    if let Some(progress) = progress {
+        let legacy_past = clean_optional(progress.past);
+        let legacy_current = clean_optional(progress.current);
+        if status_title.is_none() {
+            status_title = legacy_current.clone();
+        }
+        if status_sent_to_user.is_none() {
+            status_sent_to_user = legacy_past.clone();
+        }
+    }
+
     let goal = clean_optional(goal);
 
-    let cli = match (status, cli) {
-        (AutoCoordinatorStatus::Continue, Some(payload)) => Some(CliAction {
-            prompt: clean_required(&payload.prompt, "cli.prompt")?,
-            context: clean_optional(payload.context),
+    let cli_prompt = clean_optional(prompt_sent_to_cli);
+
+    let cli = match (status, cli_prompt) {
+        (AutoCoordinatorStatus::Continue, Some(prompt)) => Some(CliAction {
+            prompt: clean_required(&prompt, "prompt_sent_to_cli")?,
+            context: None,
         }),
         (AutoCoordinatorStatus::Continue, None) => {
-            return Err(anyhow!("model response missing cli prompt for continue"));
+            return Err(anyhow!(
+                "model response missing prompt_sent_to_cli for continue"
+            ));
         }
-        (_, Some(_payload)) => None,
+        (_, Some(_prompt)) => None,
         (_, None) => None,
     };
 
@@ -2355,8 +2429,8 @@ fn convert_decision_new(
 
     Ok(ParsedCoordinatorDecision {
         status,
-        progress_past,
-        progress_current,
+        status_title,
+        status_sent_to_user,
         cli,
         agents_timing,
         agents: agent_actions,
@@ -2380,8 +2454,8 @@ fn convert_decision_legacy(
         goal,
     } = decision;
 
-    let progress_past = clean_optional(progress_past);
-    let progress_current = clean_optional(progress_current);
+    let status_title = clean_optional(progress_current);
+    let status_sent_to_user = clean_optional(progress_past);
     let context = clean_optional(cli_context);
     let goal = clean_optional(goal);
 
@@ -2402,8 +2476,8 @@ fn convert_decision_legacy(
 
     Ok(ParsedCoordinatorDecision {
         status,
-        progress_past,
-        progress_current,
+        status_title,
+        status_sent_to_user,
         cli,
         agents_timing: None,
         agents: Vec::new(),

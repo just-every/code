@@ -13737,8 +13737,8 @@ fi\n\
             turns_completed: 0,
             started_at: None,
             elapsed: None,
-            progress_past: None,
-            progress_current: None,
+            status_sent_to_user: None,
+            status_title: None,
             session_tokens: self.auto_session_tokens(),
             editing_prompt: false,
             intro_started_at: self.auto_state.intro_started_at,
@@ -13761,17 +13761,18 @@ fi\n\
 
         let last_run_summary = self.auto_state.last_run_summary.clone();
         let last_decision_summary = self.auto_state.last_decision_summary.clone();
-        let last_decision_progress_past = self.auto_state.last_decision_progress_past.clone();
-        let last_decision_progress_current =
-            self.auto_state.last_decision_progress_current.clone();
+        let last_decision_status_sent_to_user =
+            self.auto_state.last_decision_status_sent_to_user.clone();
+        let last_decision_status_title =
+            self.auto_state.last_decision_status_title.clone();
         let last_decision_display = self.auto_state.last_decision_display.clone();
         let last_decision_display_is_summary = self.auto_state.last_decision_display_is_summary;
 
         self.auto_state.reset();
         self.auto_state.last_run_summary = last_run_summary;
         self.auto_state.last_decision_summary = last_decision_summary;
-        self.auto_state.last_decision_progress_past = last_decision_progress_past;
-        self.auto_state.last_decision_progress_current = last_decision_progress_current;
+        self.auto_state.last_decision_status_sent_to_user = last_decision_status_sent_to_user;
+        self.auto_state.last_decision_status_title = last_decision_status_title;
         self.auto_state.last_decision_display = last_decision_display;
         self.auto_state.last_decision_display_is_summary = last_decision_display_is_summary;
         self.auto_state.set_phase(AutoRunPhase::Idle);
@@ -13814,8 +13815,8 @@ fi\n\
                 match event {
                     AutoCoordinatorEvent::Decision {
                         status,
-                        progress_past,
-                        progress_current,
+                        status_title,
+                        status_sent_to_user,
                         goal,
                         cli,
                         agents_timing,
@@ -13824,8 +13825,8 @@ fi\n\
                     } => {
                         app_event_tx.send(AppEvent::AutoCoordinatorDecision {
                             status,
-                            progress_past,
-                            progress_current,
+                            status_title,
+                            status_sent_to_user,
                             goal,
                             cli,
                             agents_timing,
@@ -14051,8 +14052,8 @@ fi\n\
             self.auto_state.on_prompt_submitted();
             self.auto_state.set_coordinator_waiting(true);
             self.auto_state.current_summary = None;
-            self.auto_state.current_progress_past = None;
-            self.auto_state.current_progress_current = None;
+            self.auto_state.current_status_sent_to_user = None;
+            self.auto_state.current_status_title = None;
             self.auto_state.current_cli_prompt = None;
             self.auto_state.current_cli_context = None;
             self.auto_state.last_broadcast_summary = None;
@@ -14089,8 +14090,8 @@ fi\n\
             self.auto_state.on_prompt_submitted();
             self.auto_state.set_coordinator_waiting(true);
             self.auto_state.current_summary = None;
-            self.auto_state.current_progress_past = None;
-            self.auto_state.current_progress_current = None;
+            self.auto_state.current_status_sent_to_user = None;
+            self.auto_state.current_status_title = None;
             self.auto_state.current_cli_prompt = None;
             self.auto_state.current_cli_context = None;
             self.auto_state.last_broadcast_summary = None;
@@ -14184,8 +14185,8 @@ fi\n\
     pub(crate) fn auto_handle_decision(
         &mut self,
         status: AutoCoordinatorStatus,
-        progress_past: Option<String>,
-        progress_current: Option<String>,
+        status_title: Option<String>,
+        status_sent_to_user: Option<String>,
         goal: Option<String>,
         cli: Option<AutoTurnCliAction>,
         agents_timing: Option<AutoTurnAgentsTiming>,
@@ -14205,8 +14206,8 @@ fi\n\
             self.auto_card_set_goal(Some(derived_goal));
         }
 
-        let progress_past = Self::normalize_progress_field(progress_past);
-        let progress_current = Self::normalize_progress_field(progress_current);
+        let status_title = Self::normalize_status_field(status_title);
+        let status_sent_to_user = Self::normalize_status_field(status_sent_to_user);
 
         self.auto_state.turns_completed = self.auto_state.turns_completed.saturating_add(1);
 
@@ -14214,18 +14215,18 @@ fi\n\
             self.auto_history.append_raw(&transcript);
         }
 
-        self.auto_state.current_progress_past = progress_past.clone();
-        self.auto_state.current_progress_current = progress_current.clone();
-        self.auto_state.last_decision_progress_past = progress_past.clone();
-        self.auto_state.last_decision_progress_current = progress_current.clone();
+        self.auto_state.current_status_sent_to_user = status_sent_to_user.clone();
+        self.auto_state.current_status_title = status_title.clone();
+        self.auto_state.last_decision_status_sent_to_user = status_sent_to_user.clone();
+        self.auto_state.last_decision_status_title = status_title.clone();
         let cli_context = cli
             .as_ref()
-            .and_then(|action| Self::normalize_progress_field(action.context.clone()));
+            .and_then(|action| Self::normalize_status_field(action.context.clone()));
         let cli_prompt = cli.as_ref().map(|action| action.prompt.clone());
 
         self.auto_state.current_cli_context = cli_context.clone();
 
-        let summary_text = Self::compose_progress_summary(&progress_current, &progress_past);
+        let summary_text = Self::compose_status_summary(&status_title, &status_sent_to_user);
         self.auto_state.last_decision_summary = Some(summary_text.clone());
         self.auto_state.set_coordinator_waiting(false);
         self.auto_on_reasoning_final(&summary_text);
@@ -14237,13 +14238,13 @@ fi\n\
         self.pending_turn_descriptor = None;
         self.pending_auto_turn_config = None;
 
-        if let Some(current) = progress_current
+        if let Some(current) = status_title
             .as_ref()
             .map(|value| value.trim())
             .filter(|value| !value.is_empty())
         {
             self.auto_card_add_action(
-                format!("Progress: {current}"),
+                format!("Status: {current}"),
                 AutoDriveActionKind::Info,
             );
         }
@@ -14699,8 +14700,8 @@ Have we met every part of this goal and is there no further work to do?"#
             self.auto_state.started_at = Some(started_at);
         }
         self.auto_state.transient_restart_attempts = restart_attempts;
-        self.auto_state.current_progress_current = None;
-        self.auto_state.current_progress_past = None;
+        self.auto_state.current_status_title = None;
+        self.auto_state.current_status_sent_to_user = None;
         self.auto_rebuild_live_ring();
         self.auto_update_terminal_hint();
         self.request_redraw();
@@ -14981,8 +14982,8 @@ Have we met every part of this goal and is there no further work to do?"#
         self.auto_state.seconds_remaining = 0;
         let post_submit_display = self.auto_state.last_decision_display.clone();
         self.auto_state.current_summary = None;
-        self.auto_state.current_progress_past = None;
-        self.auto_state.current_progress_current = None;
+        self.auto_state.current_status_sent_to_user = None;
+        self.auto_state.current_status_title = None;
         self.auto_state.last_broadcast_summary = None;
         self.auto_state.current_display_line = post_submit_display.clone();
         self.auto_state.current_display_is_summary =
@@ -15197,8 +15198,8 @@ Have we met every part of this goal and is there no further work to do?"#
         self.auto_state.on_resume_from_manual();
         self.auto_state.reset_countdown();
         self.auto_state.current_summary = Some(String::new());
-        self.auto_state.current_progress_past = None;
-        self.auto_state.current_progress_current = None;
+        self.auto_state.current_status_sent_to_user = None;
+        self.auto_state.current_status_title = None;
         self.auto_state.current_summary_index = None;
         self.auto_state.placeholder_phrase = None;
         self.auto_state.thinking_prefix_stripped = false;
@@ -15387,8 +15388,8 @@ Have we met every part of this goal and is there no further work to do?"#
                     turns_completed: summary.turns_completed,
                     started_at: None,
                     elapsed: Some(summary.duration),
-                    progress_past: None,
-                    progress_current: None,
+                    status_sent_to_user: None,
+                    status_title: None,
                     session_tokens: self.auto_session_tokens(),
                     editing_prompt: false,
                     intro_started_at: self.auto_state.intro_started_at,
@@ -15438,16 +15439,16 @@ Have we met every part of this goal and is there no further work to do?"#
         let headline = self.auto_format_status_headline(&status_text);
         let mut status_lines = vec![headline];
         if !self.auto_state.awaiting_review() {
-            self.auto_append_progress_lines(
+            self.auto_append_status_lines(
                 &mut status_lines,
-                self.auto_state.current_progress_current.as_ref(),
-                self.auto_state.current_progress_past.as_ref(),
+                self.auto_state.current_status_title.as_ref(),
+                self.auto_state.current_status_sent_to_user.as_ref(),
             );
             if self.auto_state.is_waiting_for_response() && !self.auto_state.is_coordinator_waiting() {
-                let appended = self.auto_append_progress_lines(
+                let appended = self.auto_append_status_lines(
                     &mut status_lines,
-                    self.auto_state.last_decision_progress_current.as_ref(),
-                    self.auto_state.last_decision_progress_past.as_ref(),
+                    self.auto_state.last_decision_status_title.as_ref(),
+                    self.auto_state.last_decision_status_sent_to_user.as_ref(),
                 );
                 if !appended {
                     if let Some(summary) = self.auto_state.last_decision_summary.as_ref() {
@@ -15477,23 +15478,23 @@ Have we met every part of this goal and is there no further work to do?"#
             || (self.auto_state.is_waiting_for_response() && !self.auto_state.is_coordinator_waiting())
             || cli_running;
 
-        // Keep the most recent coordinator progress visible across approval and
-        // CLI execution. The coordinator clears `current_progress_*` once it
+        // Keep the most recent coordinator status visible across approval and
+        // CLI execution. The coordinator clears the current status fields once it
         // starts streaming the next turn, so fall back to the last decision while
         // we are still acting on it.
-        let progress_current_for_view = if progress_hint_active {
+        let status_title_for_view = if progress_hint_active {
             self.auto_state
-                .current_progress_current
+                .current_status_title
                 .clone()
-                .or_else(|| self.auto_state.last_decision_progress_current.clone())
+                .or_else(|| self.auto_state.last_decision_status_title.clone())
         } else {
             None
         };
-        let progress_past_for_view = if progress_hint_active {
+        let status_sent_to_user_for_view = if progress_hint_active {
             self.auto_state
-                .current_progress_past
+                .current_status_sent_to_user
                 .clone()
-                .or_else(|| self.auto_state.last_decision_progress_past.clone())
+                .or_else(|| self.auto_state.last_decision_status_sent_to_user.clone())
         } else {
             None
         };
@@ -15607,8 +15608,8 @@ Have we met every part of this goal and is there no further work to do?"#
             turns_completed: self.auto_state.turns_completed,
             started_at: self.auto_state.started_at,
             elapsed: self.auto_state.elapsed_override,
-            progress_past: progress_past_for_view,
-            progress_current: progress_current_for_view,
+            status_sent_to_user: status_sent_to_user_for_view,
+            status_title: status_title_for_view,
             session_tokens: self.auto_session_tokens(),
             cli_context,
             show_composer,
@@ -15876,7 +15877,7 @@ Have we met every part of this goal and is there no further work to do?"#
         out
     }
 
-    fn normalize_progress_field(field: Option<String>) -> Option<String> {
+    fn normalize_status_field(field: Option<String>) -> Option<String> {
         field.and_then(|value| {
             let trimmed = value.trim();
             if trimmed.is_empty() {
@@ -15887,25 +15888,25 @@ Have we met every part of this goal and is there no further work to do?"#
         })
     }
 
-    fn compose_progress_summary(
-        progress_current: &Option<String>,
-        progress_past: &Option<String>,
+    fn compose_status_summary(
+        status_title: &Option<String>,
+        status_sent_to_user: &Option<String>,
     ) -> String {
         let mut parts: Vec<String> = Vec::new();
-        if let Some(current) = progress_current
+        if let Some(title) = status_title
             .as_ref()
             .map(|value| value.trim())
             .filter(|value| !value.is_empty())
         {
-            parts.push(current.to_string());
+            parts.push(title.to_string());
         }
-        if let Some(past) = progress_past
+        if let Some(sent) = status_sent_to_user
             .as_ref()
             .map(|value| value.trim())
             .filter(|value| !value.is_empty())
         {
-            if !parts.iter().any(|existing| existing.eq_ignore_ascii_case(past)) {
-                parts.push(past.to_string());
+            if !parts.iter().any(|existing| existing.eq_ignore_ascii_case(sent)) {
+                parts.push(sent.to_string());
             }
         }
 
@@ -15916,21 +15917,21 @@ Have we met every part of this goal and is there no further work to do?"#
         }
     }
 
-    fn auto_append_progress_lines(
+    fn auto_append_status_lines(
         &self,
         lines: &mut Vec<String>,
-        progress_current: Option<&String>,
-        progress_past: Option<&String>,
+        status_title: Option<&String>,
+        status_sent_to_user: Option<&String>,
     ) -> bool {
         let initial_len = lines.len();
-        Self::append_progress_line(lines, progress_current);
-        Self::append_progress_line(lines, progress_past);
+        Self::append_status_line(lines, status_title);
+        Self::append_status_line(lines, status_sent_to_user);
         lines.len() > initial_len
     }
 
-    fn append_progress_line(lines: &mut Vec<String>, progress: Option<&String>) {
-        if let Some(progress) = progress {
-            let trimmed = progress.trim();
+    fn append_status_line(lines: &mut Vec<String>, status: Option<&String>) {
+        if let Some(status) = status {
+            let trimmed = status.trim();
             if trimmed.is_empty() {
                 return;
             }
@@ -23590,7 +23591,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_card_shows_progress_current_in_state_detail() {
+    fn auto_card_shows_status_title_in_state_detail() {
         let mut harness = ChatWidgetHarness::new();
         {
             let chat = harness.chat();
@@ -23603,8 +23604,8 @@ mod tests {
             let chat = harness.chat();
             chat.auto_handle_decision(
                 AutoCoordinatorStatus::Continue,
-                Some("Past work".to_string()),
                 Some("Drafting fix".to_string()),
+                Some("Past work".to_string()),
                 None,
                 Some(AutoTurnCliAction {
                     prompt: "echo work".to_string(),
@@ -23623,7 +23624,7 @@ mod tests {
             .as_ref()
             .expect("auto drive tracker should be present");
         let actions = tracker.cell.action_texts();
-        assert!(actions.iter().any(|text| text == "Progress: Drafting fix"));
+        assert!(actions.iter().any(|text| text == "Status: Drafting fix"));
     }
 
     #[test]
@@ -24080,8 +24081,8 @@ mod tests {
 
         chat.auto_handle_decision(
             AutoCoordinatorStatus::Continue,
-            Some("Finished setup".to_string()),
             Some("Running unit tests".to_string()),
+            Some("Finished setup".to_string()),
             Some("Refine goal".to_string()),
             Some(AutoTurnCliAction {
                 prompt: "Run cargo test".to_string(),

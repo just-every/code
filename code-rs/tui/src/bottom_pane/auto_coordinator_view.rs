@@ -54,8 +54,8 @@ pub(crate) struct AutoActiveViewModel {
     pub turns_completed: usize,
     pub started_at: Option<Instant>,
     pub elapsed: Option<Duration>,
-    pub progress_past: Option<String>,
-    pub progress_current: Option<String>,
+    pub status_sent_to_user: Option<String>,
+    pub status_title: Option<String>,
     pub session_tokens: Option<u64>,
     pub intro_started_at: Option<Instant>,
     pub intro_reduced_motion: bool,
@@ -378,7 +378,7 @@ impl AutoCoordinatorView {
             return message.to_string();
         }
 
-        if let Some(current) = model.progress_current.as_ref() {
+        if let Some(current) = model.status_title.as_ref() {
             let trimmed = current.trim();
             if !trimmed.is_empty() {
                 return trimmed.to_string();
@@ -546,12 +546,12 @@ impl AutoCoordinatorView {
             || model.awaiting_submission
             || (model.waiting_for_response && !model.coordinator_waiting);
         if show_progress_hint && left_available > 0 {
-            let (progress_past, progress_current) = Self::progress_labels(model);
-            let progress_style = Style::default().fg(colors::text_dim());
+            let (status_sent_to_user, status_title) = Self::status_labels(model);
+            let status_style = Style::default().fg(colors::text_dim());
 
             let try_apply = |content: &str| -> Option<Line<'static>> {
                 let mut candidate_spans = base_spans.clone();
-                candidate_spans.push(Span::styled(content.to_string(), progress_style));
+                candidate_spans.push(Span::styled(content.to_string(), status_style));
                 let candidate_line = Line::from(candidate_spans.clone());
                 if candidate_line.width() <= left_available as usize {
                     Some(candidate_line)
@@ -560,21 +560,23 @@ impl AutoCoordinatorView {
                 }
             };
 
-            match (progress_past.as_ref(), progress_current.as_ref()) {
-                (Some(past), Some(current)) => {
-                    if let Some(line) = try_apply(&format!("{} > {}", past, current)) {
+            match (status_title.as_ref(), status_sent_to_user.as_ref()) {
+                (Some(title), Some(sent)) => {
+                    if let Some(line) = try_apply(&format!("{} · {}", title, sent)) {
                         left_line = line;
-                    } else if let Some(line) = try_apply(current) {
+                    } else if let Some(line) = try_apply(title) {
                         left_line = line;
-                    }
-                }
-                (None, Some(current)) => {
-                    if let Some(line) = try_apply(current) {
+                    } else if let Some(line) = try_apply(sent) {
                         left_line = line;
                     }
                 }
-                (Some(past), None) => {
-                    if let Some(line) = try_apply(past) {
+                (Some(title), None) => {
+                    if let Some(line) = try_apply(title) {
+                        left_line = line;
+                    }
+                }
+                (None, Some(sent)) => {
+                    if let Some(line) = try_apply(sent) {
                         left_line = line;
                     }
                 }
@@ -1284,7 +1286,7 @@ impl AutoCoordinatorView {
                 after_lines.push(ctrl_hint_line);
             }
 
-            if let Some(progress_text) = Self::compose_progress_line(model) {
+            if let Some(progress_text) = Self::compose_status_line(model) {
                 let line = Line::from(Span::styled(
                     progress_text,
                     Style::default().fg(colors::text()),
@@ -1516,9 +1518,9 @@ impl AutoCoordinatorView {
         }
     }
 
-    fn progress_labels(model: &AutoActiveViewModel) -> (Option<String>, Option<String>) {
-        let past = model
-            .progress_past
+    fn status_labels(model: &AutoActiveViewModel) -> (Option<String>, Option<String>) {
+        let sent_to_user = model
+            .status_sent_to_user
             .as_ref()
             .and_then(|value| {
                 let trimmed = value.trim();
@@ -1528,8 +1530,8 @@ impl AutoCoordinatorView {
                     Some(trimmed.to_string())
                 }
             });
-        let current = model
-            .progress_current
+        let title = model
+            .status_title
             .as_ref()
             .and_then(|value| {
                 let trimmed = value.trim();
@@ -1539,15 +1541,15 @@ impl AutoCoordinatorView {
                     Some(trimmed.to_string())
                 }
             });
-        (past, current)
+        (sent_to_user, title)
     }
 
-    fn compose_progress_line(model: &AutoActiveViewModel) -> Option<String> {
-        let (past, current) = Self::progress_labels(model);
-        match (past, current) {
-            (Some(past), Some(current)) => Some(format!("{} > {}", past, current)),
-            (None, Some(current)) => Some(current),
-            (Some(past), None) => Some(past),
+    fn compose_status_line(model: &AutoActiveViewModel) -> Option<String> {
+        let (sent_to_user, title) = Self::status_labels(model);
+        match (title, sent_to_user) {
+            (Some(title), Some(sent)) => Some(format!("{} · {}", title, sent)),
+            (Some(title), None) => Some(title),
+            (None, Some(sent)) => Some(sent),
             (None, None) => None,
         }
     }

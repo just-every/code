@@ -135,8 +135,8 @@ pub(crate) enum AppEvent {
 
     AutoCoordinatorDecision {
         status: AutoCoordinatorStatus,
-        progress_past: Option<String>,
-        progress_current: Option<String>,
+        status_title: Option<String>,
+        status_sent_to_user: Option<String>,
         goal: Option<String>,
         cli: Option<AutoTurnCliAction>,
         agents_timing: Option<AutoTurnAgentsTiming>,

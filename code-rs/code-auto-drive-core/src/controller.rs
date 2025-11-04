@@ -272,8 +272,8 @@ pub enum AutoControllerEffect {
 pub struct AutoDriveController {
     pub goal: Option<String>,
     pub current_summary: Option<String>,
-    pub current_progress_past: Option<String>,
-    pub current_progress_current: Option<String>,
+    pub current_status_sent_to_user: Option<String>,
+    pub current_status_title: Option<String>,
     pub current_cli_prompt: Option<String>,
     pub current_cli_context: Option<String>,
     pub current_display_line: Option<String>,
@@ -287,8 +287,8 @@ pub struct AutoDriveController {
     pub countdown_override: Option<u8>,
     pub last_broadcast_summary: Option<String>,
     pub last_decision_summary: Option<String>,
-    pub last_decision_progress_past: Option<String>,
-    pub last_decision_progress_current: Option<String>,
+    pub last_decision_status_sent_to_user: Option<String>,
+    pub last_decision_status_title: Option<String>,
     pub last_decision_display: Option<String>,
     pub last_decision_display_is_summary: bool,
     pub review_enabled: bool,
@@ -479,8 +479,8 @@ impl AutoDriveController {
         self.last_completion_explanation = None;
         self.goal = Some(goal.clone());
         self.current_summary = None;
-        self.current_progress_past = None;
-        self.current_progress_current = None;
+        self.current_status_sent_to_user = None;
+        self.current_status_title = None;
         self.current_cli_prompt = None;
         self.current_cli_context = None;
         self.current_display_line = None;
@@ -491,8 +491,8 @@ impl AutoDriveController {
         self.thinking_prefix_stripped = false;
         self.last_broadcast_summary = None;
         self.countdown_override = None;
-        self.last_decision_progress_past = None;
-        self.last_decision_progress_current = None;
+        self.last_decision_status_sent_to_user = None;
+        self.last_decision_status_title = None;
         self.reset_countdown();
         self.apply_phase(AutoRunPhase::AwaitingDiagnostics { coordinator_waiting: true });
 
@@ -613,8 +613,10 @@ impl AutoDriveController {
             "Waiting for connection… retrying in {human_delay} (attempt {pending_attempt}/{AUTO_RESTART_MAX_ATTEMPTS})"
         ));
         self.current_display_is_summary = true;
-        self.current_progress_current = Some(format!("Last error: {truncated_reason}"));
-        self.current_progress_past = None;
+        self.current_status_title = Some(format!("Retrying after error"));
+        self.current_status_sent_to_user = Some(format!(
+            "Encountered an error: {truncated_reason}. Waiting before retrying."
+        ));
         self.placeholder_phrase = Some("Waiting for connection…".to_string());
         self.thinking_prefix_stripped = false;
 

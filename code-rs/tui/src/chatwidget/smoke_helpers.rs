@@ -356,14 +356,14 @@ impl ChatWidgetHarness {
             chat.auto_state.set_coordinator_waiting(true);
             chat.auto_state.placeholder_phrase = Some(placeholder);
             chat.auto_state.current_display_line = None;
-            chat.auto_state.current_progress_current = None;
-            chat.auto_state.current_progress_past = None;
+            chat.auto_state.current_status_title = None;
+            chat.auto_state.current_status_sent_to_user = None;
             chat.auto_state.current_cli_prompt = None;
             chat.auto_state.on_complete_review();
             chat.auto_state.last_run_summary = None;
             chat.auto_state.last_decision_summary = None;
-            chat.auto_state.last_decision_progress_past = None;
-            chat.auto_state.last_decision_progress_current = None;
+            chat.auto_state.last_decision_status_sent_to_user = None;
+            chat.auto_state.last_decision_status_title = None;
             chat.auto_state.current_summary = None;
             chat.auto_state.current_summary_index = None;
             chat.auto_state.current_reasoning_title = None;
@@ -377,8 +377,8 @@ impl ChatWidgetHarness {
     pub fn auto_drive_set_waiting_for_response(
         &mut self,
         display: impl Into<String>,
-        progress_current: Option<String>,
-        progress_past: Option<String>,
+        status_title: Option<String>,
+        status_sent_to_user: Option<String>,
     ) {
         {
             let chat = self.chat();
@@ -388,10 +388,10 @@ impl ChatWidgetHarness {
             chat.auto_state.current_display_line = Some(display.into());
             chat.auto_state.current_display_is_summary = false;
             chat.auto_state.placeholder_phrase = None;
-            chat.auto_state.current_progress_current = progress_current.clone();
-            chat.auto_state.current_progress_past = progress_past.clone();
-            chat.auto_state.last_decision_progress_current = progress_current;
-            chat.auto_state.last_decision_progress_past = progress_past;
+            chat.auto_state.current_status_title = status_title.clone();
+            chat.auto_state.current_status_sent_to_user = status_sent_to_user.clone();
+            chat.auto_state.last_decision_status_title = status_title;
+            chat.auto_state.last_decision_status_sent_to_user = status_sent_to_user;
             chat.auto_state.last_decision_summary = None;
             chat.auto_rebuild_live_ring();
             chat.request_redraw();
@@ -429,8 +429,8 @@ impl ChatWidgetHarness {
             let chat = self.chat();
             chat.auto_state.on_prompt_submitted();
             chat.auto_state.set_coordinator_waiting(false);
-            chat.auto_state.current_progress_current = None;
-            chat.auto_state.current_progress_past = None;
+            chat.auto_state.current_status_title = None;
+            chat.auto_state.current_status_sent_to_user = None;
             chat.refresh_auto_drive_visuals();
             chat.request_redraw();
         }
