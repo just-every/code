@@ -17,6 +17,8 @@ const CLAUDE_SONNET_READ_ONLY: &[&str] = &["--allowedTools", CLAUDE_ALLOWED_TOOL
 const CLAUDE_SONNET_WRITE: &[&str] = &["--dangerously-skip-permissions"];
 const CLAUDE_OPUS_READ_ONLY: &[&str] = &["--allowedTools", CLAUDE_ALLOWED_TOOLS];
 const CLAUDE_OPUS_WRITE: &[&str] = &["--dangerously-skip-permissions"];
+const CLAUDE_HAIKU_READ_ONLY: &[&str] = &["--allowedTools", CLAUDE_ALLOWED_TOOLS];
+const CLAUDE_HAIKU_WRITE: &[&str] = &["--dangerously-skip-permissions"];
 const GEMINI_PRO_READ_ONLY: &[&str] = &[];
 const GEMINI_PRO_WRITE: &[&str] = &["-y"];
 const GEMINI_FLASH_READ_ONLY: &[&str] = &[];
@@ -34,6 +36,7 @@ pub const DEFAULT_AGENT_NAMES: &[&str] = &[
     "code-gpt-5",
     "claude-sonnet-4.5",
     "claude-opus-4.1",
+    "claude-haiku-4.5",
     "gemini-2.5-pro",
     "gemini-2.5-flash",
     "qwen-3-coder",
@@ -118,6 +121,17 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         model_args: &["--model", "opus"],
         enabled_by_default: true,
         aliases: &["claude-opus"],
+        gating_env: None,
+    },
+    AgentModelSpec {
+        slug: "claude-haiku-4.5",
+        family: "claude",
+        cli: "claude",
+        read_only_args: CLAUDE_HAIKU_READ_ONLY,
+        write_args: CLAUDE_HAIKU_WRITE,
+        model_args: &["--model", "haiku"],
+        enabled_by_default: true,
+        aliases: &["claude-haiku"],
         gating_env: None,
     },
     AgentModelSpec {

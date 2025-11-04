@@ -65,6 +65,10 @@ pub struct Prompt {
     /// Whether to prepend the default developer instructions block.
     pub include_additional_instructions: bool,
 
+    /// Additional developer messages to insert immediately after the default
+    /// fork instructions but before any environment or user context.
+    pub prepend_developer_messages: Vec<String>,
+
     /// Optional `text.format` for structured outputs (used by side-channel requests).
     pub text_format: Option<TextFormat>,
 
@@ -92,6 +96,7 @@ impl Default for Prompt {
             status_items: Vec::new(),
             base_instructions_override: None,
             include_additional_instructions: true,
+            prepend_developer_messages: Vec::new(),
             text_format: None,
             model_override: None,
             model_family_override: None,
@@ -157,6 +162,19 @@ impl Prompt {
                     text: ADDITIONAL_INSTRUCTIONS.to_string(),
                 }],
             });
+            for message in &self.prepend_developer_messages {
+                let trimmed = message.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                input_with_instructions.push(ResponseItem::Message {
+                    id: None,
+                    role: "developer".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: trimmed.to_string(),
+                    }],
+                });
+            }
             if let Some(ec) = self.get_formatted_environment_context() {
                 let has_environment_context = self.input.iter().any(|item| {
                     matches!(item, ResponseItem::Message { role, content, .. }
@@ -515,6 +533,53 @@ mod tests {
 
             let full = prompt.get_full_instructions(&model_family);
             assert_eq!(full, expected);
+        }
+    }
+
+    #[test]
+    fn prepend_developer_messages_precedes_environment_context() {
+        use std::path::PathBuf;
+
+        let mut prompt = Prompt::default();
+        prompt.environment_context = Some(EnvironmentContext::new(
+            Some(PathBuf::from("/workspace")),
+            None,
+            None,
+            None,
+        ));
+        let coordinator_text = "Coordinator guidance";
+        prompt
+            .prepend_developer_messages
+            .push(coordinator_text.to_string());
+
+        let formatted = prompt.get_formatted_input();
+        assert!(formatted.len() >= 3);
+
+        let second = &formatted[1];
+        match second {
+            ResponseItem::Message { role, content, .. } => {
+                assert_eq!(role, "developer");
+                match content.first() {
+                    Some(ContentItem::InputText { text }) => {
+                        assert_eq!(text, coordinator_text);
+                    }
+                    other => panic!("unexpected content: {other:?}"),
+                }
+            }
+            other => panic!("unexpected second item: {other:?}"),
+        }
+
+        let third = &formatted[2];
+        match third {
+            ResponseItem::Message { role, content, .. } => {
+                assert_eq!(role, "user");
+                let text = match content.first() {
+                    Some(ContentItem::InputText { text }) => text,
+                    other => panic!("unexpected environment content: {other:?}"),
+                };
+                assert!(text.contains("<environment_context>"));
+            }
+            other => panic!("unexpected third item: {other:?}"),
         }
     }
 

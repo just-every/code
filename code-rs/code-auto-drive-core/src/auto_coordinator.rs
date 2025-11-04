@@ -37,7 +37,6 @@ use crate::retry::{retry_with_backoff, RetryDecision, RetryError, RetryOptions};
 #[cfg(feature = "dev-faults")]
 use crate::faults::{fault_to_error, next_fault, FaultScope, InjectedFault};
 use code_common::elapsed::format_duration;
-use std::fs;
 use chrono::{DateTime, Local, Utc};
 use rand::Rng;
 
@@ -54,7 +53,7 @@ struct AutoCoordinatorCancelled;
 
 pub const MODEL_SLUG: &str = "gpt-5";
 const USER_TURN_SCHEMA_NAME: &str = "auto_coordinator_user_turn";
-const COORDINATOR_PROMPT_PATH: &str = "code-rs/core/prompt_coordinator.md";
+const COORDINATOR_PROMPT: &str = include_str!("../../core/prompt_coordinator.md");
 
 #[derive(Clone)]
 pub struct AutoCoordinatorEventSender {
@@ -1238,22 +1237,11 @@ fn is_popular_commands_message(item: &ResponseItem) -> bool {
     }
 }
 fn read_coordinator_prompt(_config: &Config) -> Option<String> {
-    match fs::read_to_string(COORDINATOR_PROMPT_PATH) {
-        Ok(text) => {
-            let trimmed = text.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        }
-        Err(err) => {
-            warn!(
-                "failed to read coordinator prompt from {}: {err:#}",
-                COORDINATOR_PROMPT_PATH
-            );
-            None
-        }
+    let trimmed = COORDINATOR_PROMPT.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }
 
@@ -1395,6 +1383,10 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
             (
                 "claude-opus-4.1",
                 "Prefer claude-sonnet-4.5 for most tasks, but a good fallback for complex reasoning when other attempts have failed.",
+            ),
+            (
+                "claude-haiku-4.5",
+                "Very fast model for simple tasks. Similar to gemini-2.5-flash in capability.",
             ),
             (
                 "code-gpt-5-codex",
@@ -1934,8 +1926,8 @@ fn build_user_turn_prompt(
         let trimmed = prompt_text.trim();
         if !trimmed.is_empty() {
             prompt
-                .input
-                .push(make_message("developer", trimmed.to_string()));
+                .prepend_developer_messages
+                .push(trimmed.to_string());
         }
     }
     prompt

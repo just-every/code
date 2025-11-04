@@ -4571,6 +4571,7 @@ async fn run_turn(
             status_items, // Include status items with this request
             base_instructions_override: tc.base_instructions.clone(),
             include_additional_instructions: true,
+            prepend_developer_messages: Vec::new(),
             text_format: tc.text_format_override.clone(),
             model_override: None,
             model_family_override: None,
