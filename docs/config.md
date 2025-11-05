@@ -775,6 +775,13 @@ To disable this behavior, configure `[history]` as follows:
 persistence = "none"  # "save-all" is the default value
 ```
 
+## Context timeline preview
+
+The structured environment context timeline (baseline + deltas + browser
+snapshots) is gated behind the `CTX_UI` environment flag. Set `CTX_UI=1`
+before launching Codex to exercise the preview flow. Outside of this
+developer flag the classic `== System Status ==` payload remains in place.
+
 ## file_opener
 
 Identifies the editor/URI scheme to use for hyperlinking citations in model output. If set, citations to files in the model output will be hyperlinked using the specified URI scheme so they can be ctrl/cmd-clicked from the terminal to open them.
@@ -853,6 +860,9 @@ notifications = true
 # You can optionally filter to specific notification types.
 # Available types are "agent-turn-complete" and "approval-requested".
 notifications = [ "agent-turn-complete", "approval-requested" ]
+
+# Enable desktop notifications for approval requests only
+notifications = [ "approval-requested" ]
 ```
 
 > [!NOTE]

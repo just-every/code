@@ -658,7 +658,6 @@ fn derive_config_from_params(
         tools_web_search_request: None,
         mcp_servers: None,
         experimental_client_tools: None,
-        env_ctx_v2: None,
     };
 
     let cli_overrides = cli_overrides

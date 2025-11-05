@@ -2,7 +2,7 @@ use crate::plan_tool::StepStatus;
 use crate::parse_command::ParsedCommand;
 use crate::protocol::{FileChange, RateLimitSnapshotEvent, TokenUsage};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
@@ -27,6 +27,7 @@ pub enum HistoryRecord {
     Patch(PatchRecord),
     BackgroundEvent(BackgroundEventRecord),
     Notice(NoticeRecord),
+    Context(ContextRecord),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -111,6 +112,7 @@ pub enum HistoryDomainRecord {
     Diff(DiffRecord),
     Explore(ExploreRecord),
     Notice(NoticeRecord),
+    Context(ContextRecord),
 }
 
 impl From<HistoryRecord> for HistoryDomainRecord {
@@ -135,6 +137,7 @@ impl From<HistoryRecord> for HistoryDomainRecord {
             HistoryRecord::Patch(state) => HistoryDomainRecord::Patch(state),
             HistoryRecord::BackgroundEvent(state) => HistoryDomainRecord::BackgroundEvent(state),
             HistoryRecord::Notice(state) => HistoryDomainRecord::Notice(state),
+            HistoryRecord::Context(state) => HistoryDomainRecord::Context(state),
         }
     }
 }
@@ -247,6 +250,12 @@ impl From<NoticeRecord> for HistoryDomainRecord {
     }
 }
 
+impl From<ContextRecord> for HistoryDomainRecord {
+    fn from(state: ContextRecord) -> Self {
+        HistoryDomainRecord::Context(state)
+    }
+}
+
 impl HistoryDomainRecord {
     fn into_history_record(self) -> HistoryRecord {
         match self {
@@ -325,6 +334,10 @@ impl HistoryDomainRecord {
             HistoryDomainRecord::Notice(mut state) => {
                 state.id = HistoryId::ZERO;
                 HistoryRecord::Notice(state)
+            }
+            HistoryDomainRecord::Context(mut state) => {
+                state.id = HistoryId::ZERO;
+                HistoryRecord::Context(state)
             }
         }
     }
@@ -976,6 +989,74 @@ pub struct NoticeRecord {
     pub id: HistoryId,
     pub title: Option<String>,
     pub body: Vec<MessageLine>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextDeltaField {
+    Cwd,
+    GitBranch,
+    ReasoningEffort,
+    BrowserSnapshot,
+}
+
+impl Default for ContextDeltaField {
+    fn default() -> Self {
+        ContextDeltaField::Cwd
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextDeltaRecord {
+    pub field: ContextDeltaField,
+    pub previous: Option<String>,
+    pub current: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextBrowserSnapshotRecord {
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub captured_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ContextRecord {
+    pub id: HistoryId,
+    pub cwd: Option<String>,
+    pub git_branch: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub browser_session_active: bool,
+    pub deltas: Vec<ContextDeltaRecord>,
+    pub browser_snapshot: Option<ContextBrowserSnapshotRecord>,
+    pub expanded: bool,
+}
+
+impl Default for ContextRecord {
+    fn default() -> Self {
+        Self {
+            id: HistoryId::ZERO,
+            cwd: None,
+            git_branch: None,
+            reasoning_effort: None,
+            browser_session_active: false,
+            deltas: Vec::new(),
+            browser_snapshot: None,
+            expanded: false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -2088,6 +2169,10 @@ impl WithId for HistoryRecord {
                 state.id = id;
                 HistoryRecord::Notice(state)
             }
+            HistoryRecord::Context(mut state) => {
+                state.id = id;
+                HistoryRecord::Context(state)
+            }
         }
     }
 }
@@ -2114,6 +2199,7 @@ impl HistoryRecord {
             HistoryRecord::Patch(state) => state.id,
             HistoryRecord::BackgroundEvent(state) => state.id,
             HistoryRecord::Notice(state) => state.id,
+            HistoryRecord::Context(state) => state.id,
         }
     }
 }
@@ -2182,6 +2268,7 @@ mod tests {
             HistoryRecord::Patch(state) => state.id = HistoryId::ZERO,
             HistoryRecord::BackgroundEvent(state) => state.id = HistoryId::ZERO,
             HistoryRecord::Notice(state) => state.id = HistoryId::ZERO,
+            HistoryRecord::Context(state) => state.id = HistoryId::ZERO,
         }
     }
 

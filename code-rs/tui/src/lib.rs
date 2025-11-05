@@ -378,7 +378,6 @@ pub async fn run_main(
         tools_web_search_request: Some(cli.web_search),
         mcp_servers: None,
         experimental_client_tools: None,
-        env_ctx_v2: None,
     };
 
     // Parse `-c` overrides from the CLI.

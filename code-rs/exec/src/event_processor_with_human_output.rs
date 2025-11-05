@@ -177,6 +177,12 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::BackgroundEvent(BackgroundEventEvent { message }) => {
                 ts_println!(self, "{}", message.style(self.dimmed));
             }
+            EventMsg::EnvironmentContextFull(_)
+            | EventMsg::EnvironmentContextDelta(_)
+            | EventMsg::BrowserSnapshot(_) => {
+                // Environment context events are consumed by the TUI; the CLI runner
+                // does not surface them alongside the human-readable transcript.
+            }
             EventMsg::TaskStarted => {
                 // Ignore.
             }

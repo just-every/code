@@ -32,6 +32,8 @@ use code_protocol::protocol::AskForApproval as ProtoAskForApproval;
 use code_protocol::protocol::ReviewDecision as ProtoReviewDecision;
 use code_protocol::protocol::SandboxPolicy as ProtoSandboxPolicy;
 use code_protocol::protocol::BROWSER_SNAPSHOT_OPEN_TAG;
+use code_protocol::protocol::ENVIRONMENT_CONTEXT_CLOSE_TAG;
+use code_protocol::protocol::ENVIRONMENT_CONTEXT_DELTA_CLOSE_TAG;
 use code_protocol::protocol::ENVIRONMENT_CONTEXT_DELTA_OPEN_TAG;
 use code_protocol::protocol::ENVIRONMENT_CONTEXT_OPEN_TAG;
 use crate::config_types::ReasoningEffort as ReasoningEffortConfig;
@@ -53,6 +55,7 @@ use tracing::info;
 use tracing::trace;
 use tracing::warn;
 use uuid::Uuid;
+use crate::EnvironmentContextEmission;
 use crate::AuthManager;
 use crate::CodexAuth;
 use crate::agent_tool::AgentStatusUpdatePayload;
@@ -620,9 +623,20 @@ async fn build_turn_status_items_v2(sess: &Session) -> Vec<ResponseItem> {
                     snapshot.metadata = Some(metadata);
                 }
 
-                match snapshot.to_response_item() {
+                let browser_stream_id = {
+                    let mut state = sess.state.lock().unwrap();
+                    state
+                        .context_stream_ids
+                        .browser_stream_id(sess.id)
+                };
+
+                match snapshot.to_response_item_with_id(Some(&browser_stream_id)) {
                     Ok(item) => items.push(item),
                     Err(err) => warn!("env_ctx_v2: failed to serialize browser_snapshot JSON: {err}"),
+                }
+
+                if *crate::flags::CTX_UI {
+                    sess.emit_browser_snapshot_event(&browser_stream_id, &snapshot);
                 }
 
                 match std::fs::read(&path) {
@@ -633,7 +647,7 @@ async fn build_turn_status_items_v2(sess: &Session) -> Vec<ResponseItem> {
                             .unwrap_or_else(|| "image/png".to_string());
                         let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
                         items.push(ResponseItem::Message {
-                            id: None,
+                            id: Some(browser_stream_id),
                             role: "user".to_string(),
                             content: vec![ContentItem::InputImage {
                                 image_url: format!("data:{mime};base64,{encoded}"),
@@ -679,6 +693,8 @@ fn should_include_browser_screenshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use code_protocol::models::ContentItem;
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn screenshot_dedup_tracks_changes() {
@@ -690,6 +706,85 @@ mod tests {
         assert!(should_include_browser_screenshot(&mut last, &path, Some(hash_one.clone())));
         assert!(!should_include_browser_screenshot(&mut last, &path, Some(hash_one.clone())));
         assert!(should_include_browser_screenshot(&mut last, &path, Some(hash_two)));
+    }
+
+    fn make_snapshot(cwd: &str) -> EnvironmentContextSnapshot {
+        EnvironmentContextSnapshot {
+            version: EnvironmentContextSnapshot::VERSION,
+            cwd: Some(cwd.to_string()),
+            approval_policy: None,
+            sandbox_mode: None,
+            network_access: None,
+            writable_roots: Vec::new(),
+            operating_system: None,
+            common_tools: Vec::new(),
+            shell: None,
+            git_branch: Some("main".to_string()),
+            reasoning_effort: None,
+        }
+    }
+
+    #[test]
+    fn timeline_rehydrate_round_trip() {
+        let baseline = make_snapshot("/repo");
+        let delta_snapshot = make_snapshot("/repo-updated");
+        let delta = delta_snapshot.diff_from(&baseline);
+
+        let baseline_item = baseline
+            .to_response_item()
+            .expect("serialize baseline snapshot");
+        let delta_item = delta
+            .to_response_item()
+            .expect("serialize delta snapshot");
+
+        let mut ctx = TimelineReplayContext::default();
+        process_rollout_env_item(&mut ctx, &baseline_item);
+        process_rollout_env_item(&mut ctx, &delta_item);
+
+        assert!(ctx.timeline.baseline().is_some());
+        assert_eq!(ctx.timeline.delta_count(), 1);
+        assert_eq!(ctx.next_sequence, 2);
+        assert!(ctx.last_snapshot.is_some());
+    }
+
+    #[test]
+    fn timeline_rehydrate_legacy_baseline() {
+        let legacy_item = ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "== System Status ==\n cwd: /legacy\n branch: main".to_string(),
+            }],
+        };
+
+        let mut ctx = TimelineReplayContext::default();
+        process_rollout_env_item(&mut ctx, &legacy_item);
+
+        assert!(ctx.timeline.is_empty());
+        assert!(ctx.legacy_baseline.is_some());
+    }
+
+    #[test]
+    fn timeline_rehydrate_delta_gap_triggers_reset() {
+        let baseline = make_snapshot("/repo");
+        let baseline_item = baseline
+            .to_response_item()
+            .expect("serialize baseline snapshot");
+
+        let mut ctx = TimelineReplayContext::default();
+        process_rollout_env_item(&mut ctx, &baseline_item);
+
+        let mut delta = make_snapshot("/other").diff_from(&baseline);
+        delta.base_fingerprint = "mismatch".to_string();
+        let delta_item = delta
+            .to_response_item()
+            .expect("serialize delta snapshot");
+
+        process_rollout_env_item(&mut ctx, &delta_item);
+
+        assert!(ctx.timeline.is_empty());
+        assert!(ctx.last_snapshot.is_none());
+        assert_eq!(ctx.next_sequence, 1);
     }
 }
 use crate::agent_tool::AGENT_MANAGER;
@@ -707,9 +802,12 @@ use crate::apply_patch::get_writable_roots;
 use crate::apply_patch::{self, ApplyPatchResult};
 use crate::client::ModelClient;
 use crate::client_common::{Prompt, ResponseEvent, TextFormat, REVIEW_PROMPT};
+use crate::context_timeline::ContextTimeline;
 use crate::environment_context::{
     BrowserSnapshot,
     EnvironmentContext,
+    EnvironmentContextDelta,
+    EnvironmentContextSnapshot,
     EnvironmentContextTracker,
     ViewportDimensions,
 };
@@ -766,6 +864,7 @@ use crate::protocol::BrowserScreenshotUpdateEvent;
 use crate::protocol::ErrorEvent;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
+use crate::protocol::{BrowserSnapshotEvent, EnvironmentContextDeltaEvent, EnvironmentContextFullEvent};
 use crate::protocol::ExecApprovalRequestEvent;
 use crate::protocol::ExecCommandBeginEvent;
 use crate::protocol::ExecCommandEndEvent;
@@ -1016,6 +1115,26 @@ enum WaitInterruptReason {
     SessionAborted,
 }
 
+#[derive(Clone, Default)]
+struct EnvironmentContextStreamRegistry {
+    env_stream_id: Option<String>,
+    browser_stream_id: Option<String>,
+}
+
+impl EnvironmentContextStreamRegistry {
+    fn env_stream_id(&mut self, session_id: Uuid) -> String {
+        self.env_stream_id
+            .get_or_insert_with(|| format!("env-context-{}", session_id))
+            .clone()
+    }
+
+    fn browser_stream_id(&mut self, session_id: Uuid) -> String {
+        self.browser_stream_id
+            .get_or_insert_with(|| format!("browser-context-{}", session_id))
+            .clone()
+    }
+}
+
 #[derive(Default)]
 struct State {
     approved_commands: HashSet<ApprovedCommandPattern>,
@@ -1049,7 +1168,11 @@ struct State {
     pending_manual_compacts: VecDeque<String>,
     wait_interrupt_epoch: u64,
     wait_interrupt_reason: Option<WaitInterruptReason>,
+    context_timeline: ContextTimeline,
     environment_context_tracker: EnvironmentContextTracker,
+    environment_context_seq: u64,
+    last_environment_snapshot: Option<EnvironmentContextSnapshot>,
+    context_stream_ids: EnvironmentContextStreamRegistry,
 }
 
 #[derive(Clone)]
@@ -1177,6 +1300,7 @@ pub(crate) struct Session {
     active_review: Mutex<Option<ReviewRequest>>,
     next_turn_text_format: Mutex<Option<TextFormat>>,
     env_ctx_v2: bool,
+    retention_config: crate::config_types::RetentionConfig,
 }
 
 struct HookGuard<'a> {
@@ -1808,7 +1932,35 @@ impl Session {
     async fn cleanup_old_status_items(&self) {
         let mut state = self.state.lock().unwrap();
         let current_items = state.history.contents();
-        let (items_to_keep, stats) = prune_history_items(&current_items);
+
+        let (items_to_keep, stats) = if self.env_ctx_v2 {
+            let policy = crate::retention::RetentionPolicy {
+                max_env_deltas: self.retention_config.max_env_deltas,
+                max_browser_snapshots: self.retention_config.max_browser_snapshots,
+                max_total_bytes: self.retention_config.max_total_bytes,
+                keep_latest_baseline: self.retention_config.keep_latest_baseline,
+            };
+
+            let (kept, retention_stats) = crate::retention::apply_retention_policy(&current_items, &policy);
+
+            crate::telemetry::global_telemetry().record_retention(&retention_stats);
+
+            let legacy_stats = CleanupStats {
+                removed_screenshots: retention_stats.removed_screenshots,
+                removed_status: retention_stats.removed_status,
+                removed_env_baselines: retention_stats.removed_env_baselines,
+                removed_env_deltas: retention_stats.removed_env_deltas,
+                removed_browser_snapshots: retention_stats.removed_browser_snapshots,
+                kept_recent_screenshots: retention_stats.kept_recent_screenshots,
+                kept_env_deltas: retention_stats.kept_env_deltas,
+                kept_browser_snapshots: retention_stats.kept_browser_snapshots,
+            };
+
+            (kept, legacy_stats)
+        } else {
+            prune_history_items(&current_items)
+        };
+
         state.history = ConversationHistory::new();
         state.history.record_items(&items_to_keep);
         drop(state);
@@ -2515,10 +2667,34 @@ impl Session {
             );
         }
 
+        // Helper closure to detect legacy XML environment context items
+        let is_legacy_env_context = |item: &ResponseItem| -> bool {
+            if let ResponseItem::Message { role, content, .. } = item {
+                if role == "user" {
+                    return content.iter().any(|c| {
+                        if let ContentItem::InputText { text } = c {
+                            text.contains("<environment_context>")
+                        } else {
+                            false
+                        }
+                    });
+                }
+            }
+            false
+        };
+
         // Filter out browser screenshots from historical messages
         // We identify them by the [EPHEMERAL:...] marker that precedes them
+        // When env_ctx_v2 is enabled, also suppress legacy XML environment context messages
         let filtered_history: Vec<ResponseItem> = history
             .into_iter()
+            .filter(|item| {
+                if self.env_ctx_v2 && *crate::flags::CTX_UI && is_legacy_env_context(item) {
+                    tracing::debug!("Suppressing legacy XML environment context item from history");
+                    return false;
+                }
+                true
+            })
             .map(|item| {
                 if let ResponseItem::Message { id, role, content } = item {
                     if role == "user" {
@@ -2564,8 +2740,25 @@ impl Session {
             })
             .collect();
 
-        // Concatenate filtered history with current turn's extras (which includes current ephemeral images)
-        let mut result = [filtered_history, extra].concat();
+        let filtered_extra = if self.env_ctx_v2 && *crate::flags::CTX_UI {
+            extra
+                .into_iter()
+                .filter(|item| {
+                    parse_env_snapshot_from_response(item).is_none()
+                        && parse_env_delta_from_response(item).is_none()
+                })
+                .collect::<Vec<_>>()
+        } else {
+            extra
+        };
+
+        // Concatenate timeline items (baseline + limited deltas) ahead of history
+        let mut result = Vec::new();
+        if let Some(mut timeline_items) = self.assemble_from_timeline() {
+            result.append(&mut timeline_items);
+        }
+        result.extend(filtered_history);
+        result.extend(filtered_extra);
 
         let current_auth_mode = self
             .client
@@ -2667,21 +2860,88 @@ impl Session {
             return None;
         }
 
-        let result = {
+        let (stream_id, result) = {
             let mut state = self.state.lock().unwrap();
-            state
-                .environment_context_tracker
-                .emit_response_items(env_context, git_branch.clone(), reasoning_effort.clone())
+            let stream = state.context_stream_ids.env_stream_id(self.id);
+            let result = match state.environment_context_tracker.emit_response_items(
+                env_context,
+                git_branch.clone(),
+                reasoning_effort.clone(),
+                Some(stream.as_str()),
+            ) {
+                Ok(Some((emission, items))) => {
+                    state.environment_context_seq = emission.sequence();
+                    state.last_environment_snapshot = Some(emission.snapshot().clone());
+
+                    match &emission {
+                        EnvironmentContextEmission::Full { snapshot, .. } => {
+                            if let Err(err) = state.context_timeline.add_baseline_once(snapshot.clone()) {
+                                tracing::trace!("env_ctx_v2: baseline already set in context timeline: {err}");
+                            }
+                            match state.context_timeline.record_snapshot(snapshot.clone()) {
+                                Ok(true) => {
+                                    crate::telemetry::global_telemetry().record_snapshot_commit();
+                                }
+                                Ok(false) => {
+                                    crate::telemetry::global_telemetry().record_dedup_drop();
+                                }
+                                Err(err) => {
+                                    tracing::trace!("env_ctx_v2: failed to record baseline snapshot: {err}");
+                                }
+                            }
+                        }
+                        EnvironmentContextEmission::Delta { sequence, delta, snapshot } => {
+                            if state.context_timeline.baseline().is_none() {
+                                if let Err(err) = state.context_timeline.add_baseline_once(snapshot.clone()) {
+                                    tracing::warn!("env_ctx_v2: failed to seed baseline before delta: {err}");
+                                }
+                            }
+                            if let Err(err) = state
+                                .context_timeline
+                                .apply_delta(*sequence, delta.clone())
+                            {
+                                tracing::warn!("env_ctx_v2: failed to apply delta to timeline: {err}");
+                                if matches!(err, crate::context_timeline::TimelineError::DeltaSequenceOutOfOrder { .. }) {
+                                    crate::telemetry::global_telemetry().record_delta_gap();
+                                }
+                            }
+                            match state.context_timeline.record_snapshot(snapshot.clone()) {
+                                Ok(true) => {
+                                    crate::telemetry::global_telemetry().record_snapshot_commit();
+                                }
+                                Ok(false) => {
+                                    crate::telemetry::global_telemetry().record_dedup_drop();
+                                }
+                                Err(err) => {
+                                    tracing::warn!("env_ctx_v2: failed to record snapshot: {err}");
+                                }
+                            }
+                        }
+                    }
+
+                    Ok(Some((emission, items)))
+                }
+                other => other,
+            };
+            (stream, result)
         };
 
-        let (emission, items) = match result {
+        let (emission, mut items) = match result {
             Ok(Some(pair)) => pair,
             Ok(None) => return None,
             Err(err) => {
                 warn!("env_ctx_v2: failed to serialize environment_context JSON: {err}");
+                if *crate::flags::CTX_UI {
+                    return Some(vec![ResponseItem::from(env_context.clone())]);
+                }
                 return None;
             }
         };
+
+        let suppress_legacy_status = self.env_ctx_v2 && *crate::flags::CTX_UI;
+        if suppress_legacy_status {
+            items.clear();
+        }
 
         let sequence = emission.sequence();
 
@@ -2703,7 +2963,110 @@ impl Session {
             bytes_sent
         );
 
+        if *crate::flags::CTX_UI {
+            self.emit_env_context_event(stream_id.as_str(), &emission);
+        }
+
         Some(items)
+    }
+
+    /// Assemble environment context items from the timeline for prompt input.
+    fn assemble_from_timeline(&self) -> Option<Vec<ResponseItem>> {
+        if !self.env_ctx_v2 {
+            return None;
+        }
+
+        let (timeline, stream_id, max_deltas) = {
+            let mut state = self.state.lock().unwrap();
+            if state.context_timeline.is_empty() {
+                return None;
+            }
+            let stream_id = state.context_stream_ids.env_stream_id(self.id);
+            (
+                state.context_timeline.clone(),
+                stream_id,
+                self.retention_config.max_env_deltas,
+            )
+        };
+
+        match timeline.assemble_prompt_items(max_deltas, Some(&stream_id)) {
+            Ok(items) if !items.is_empty() => Some(items),
+            Ok(_) => None,
+            Err(err) => {
+                warn!("env_ctx_v2: failed to assemble timeline prompt items: {err}");
+                None
+            }
+        }
+    }
+
+    fn emit_env_context_event(
+        &self,
+        stream_id: &str,
+        emission: &EnvironmentContextEmission,
+    ) {
+        use crate::protocol::OrderMeta;
+
+        let sequence = emission.sequence();
+        let order = OrderMeta {
+            request_ordinal: self.current_request_ordinal(),
+            output_index: None,
+            sequence_number: Some(sequence),
+        };
+
+        let msg = match emission {
+            EnvironmentContextEmission::Full { snapshot, .. } => {
+                let Ok(snapshot_json) = serde_json::to_value(snapshot) else {
+                    warn!("env_ctx_v2: failed to serialize environment context snapshot for event");
+                    return;
+                };
+                EventMsg::EnvironmentContextFull(EnvironmentContextFullEvent {
+                    snapshot: snapshot_json,
+                    sequence: Some(sequence),
+                })
+            }
+            EnvironmentContextEmission::Delta { delta, .. } => {
+                let Ok(delta_json) = serde_json::to_value(delta) else {
+                    warn!("env_ctx_v2: failed to serialize environment context delta for event");
+                    return;
+                };
+                EventMsg::EnvironmentContextDelta(EnvironmentContextDeltaEvent {
+                    delta: delta_json,
+                    sequence: Some(sequence),
+                    base_fingerprint: Some(delta.base_fingerprint.clone()),
+                })
+            }
+        };
+
+        let event = self.make_event_with_order(stream_id, msg, order, Some(sequence));
+        if let Err(err) = self.tx_event.try_send(event) {
+            warn!("env_ctx_v2: failed to send environment context event: {err}");
+        }
+    }
+
+    fn emit_browser_snapshot_event(&self, stream_id: &str, snapshot: &BrowserSnapshot) {
+        use crate::protocol::OrderMeta;
+
+        let Ok(snapshot_json) = serde_json::to_value(snapshot) else {
+            warn!("env_ctx_v2: failed to serialize browser snapshot for event");
+            return;
+        };
+
+        let order = OrderMeta {
+            request_ordinal: self.current_request_ordinal(),
+            output_index: None,
+            sequence_number: None,
+        };
+
+        let msg = EventMsg::BrowserSnapshot(BrowserSnapshotEvent {
+            snapshot: snapshot_json,
+            url: Some(snapshot.url.clone()),
+            captured_at: Some(snapshot.captured_at.clone()),
+        });
+
+        let event = self.make_event_with_order(stream_id, msg, order, None);
+        if let Err(err) = self.tx_event.try_send(event) {
+            warn!("env_ctx_v2: failed to send browser snapshot event: {err}");
+        }
     }
 
     pub(crate) fn reconstruct_history_from_rollout(
@@ -2712,10 +3075,13 @@ impl Session {
         rollout_items: &[RolloutItem],
     ) -> Vec<ResponseItem> {
         let mut history = self.build_initial_context(turn_context);
+        let mut replay_ctx = TimelineReplayContext::default();
+
         for item in rollout_items {
             match item {
                 RolloutItem::ResponseItem(response_item) => {
                     history.push(response_item.clone());
+                    process_rollout_env_item(&mut replay_ctx, response_item);
                 }
                 RolloutItem::Compacted(compacted) => {
                     let user_messages = collect_user_messages(&history);
@@ -2727,18 +3093,54 @@ impl Session {
                 }
                 RolloutItem::Event(recorded_event) => {
                     if let code_protocol::protocol::EventMsg::UserMessage(user_msg_event) = &recorded_event.msg {
-                        history.push(ResponseItem::Message {
+                        let response_item = ResponseItem::Message {
                             id: Some(recorded_event.id.clone()),
                             role: "user".to_string(),
                             content: vec![ContentItem::InputText {
                                 text: user_msg_event.message.clone(),
                             }],
-                        });
+                        };
+                        process_rollout_env_item(&mut replay_ctx, &response_item);
+                        history.push(response_item);
                     }
                 }
                 _ => {}
             }
         }
+
+        if replay_ctx.timeline.baseline().is_none() {
+            if let Some(snapshot) = replay_ctx.legacy_baseline.clone() {
+                if let Err(err) = replay_ctx.timeline.add_baseline_once(snapshot.clone()) {
+                    tracing::warn!("env_ctx_v2: failed to map legacy status to baseline: {err}");
+                }
+                match replay_ctx.timeline.record_snapshot(snapshot.clone()) {
+                    Ok(true) => crate::telemetry::global_telemetry().record_snapshot_commit(),
+                    Ok(false) => crate::telemetry::global_telemetry().record_dedup_drop(),
+                    Err(err) => tracing::warn!("env_ctx_v2: failed to record legacy baseline snapshot: {err}"),
+                }
+                replay_ctx.last_snapshot = Some(snapshot);
+            }
+        }
+
+        let restored_snapshot = replay_ctx.last_snapshot.clone();
+        let next_seq_value = replay_ctx.next_sequence;
+        {
+            let mut state = self.state.lock().unwrap();
+            state.context_timeline = replay_ctx.timeline.clone();
+            state.environment_context_seq = next_seq_value.saturating_sub(1);
+            state.context_stream_ids = EnvironmentContextStreamRegistry::default();
+
+            if let Some(snapshot) = restored_snapshot {
+                state.last_environment_snapshot = Some(snapshot.clone());
+                state
+                    .environment_context_tracker
+                    .restore(snapshot, next_seq_value);
+            } else {
+                state.last_environment_snapshot = None;
+                state.environment_context_tracker = EnvironmentContextTracker::new();
+            }
+        }
+
         history
     }
 
@@ -3092,7 +3494,11 @@ impl State {
             background_seq_by_sub_id: self.background_seq_by_sub_id.clone(),
             dry_run_guard: self.dry_run_guard.clone(),
             next_internal_sub_id: self.next_internal_sub_id,
+            context_timeline: self.context_timeline.clone(),
             environment_context_tracker: self.environment_context_tracker.clone(),
+            environment_context_seq: self.environment_context_seq,
+            last_environment_snapshot: self.last_environment_snapshot.clone(),
+            context_stream_ids: self.context_stream_ids.clone(),
             ..Default::default()
         }
     }
@@ -3897,6 +4303,7 @@ async fn submission_loop(
                     active_review: Mutex::new(None),
                     next_turn_text_format: Mutex::new(None),
                     env_ctx_v2: config.env_ctx_v2,
+                    retention_config: config.retention.clone(),
                 });
                 let weak_handle = Arc::downgrade(&new_session);
                 if let Some(inner) = Arc::get_mut(&mut new_session) {
@@ -12357,4 +12764,208 @@ fn debug_history(label: &str, items: &[ResponseItem]) {
         eprintln!("[compact_history] {} => [{}]", label, rendered);
     }
     info!(target = "code_core::compact_history", "{} => [{}]", label, rendered);
+}
+
+#[derive(Debug)]
+struct TimelineReplayContext {
+    timeline: ContextTimeline,
+    next_sequence: u64,
+    last_snapshot: Option<EnvironmentContextSnapshot>,
+    legacy_baseline: Option<EnvironmentContextSnapshot>,
+}
+
+impl Default for TimelineReplayContext {
+    fn default() -> Self {
+        Self {
+            timeline: ContextTimeline::new(),
+            next_sequence: 1,
+            last_snapshot: None,
+            legacy_baseline: None,
+        }
+    }
+}
+
+fn process_rollout_env_item(ctx: &mut TimelineReplayContext, item: &ResponseItem) {
+    if let Some(snapshot) = parse_env_snapshot_from_response(item) {
+        if ctx.timeline.baseline().is_none() {
+            if let Err(err) = ctx.timeline.add_baseline_once(snapshot.clone()) {
+                tracing::warn!("env_ctx_v2: failed to seed baseline during replay: {err}");
+            }
+        }
+
+        match ctx.timeline.record_snapshot(snapshot.clone()) {
+            Ok(true) => crate::telemetry::global_telemetry().record_snapshot_commit(),
+            Ok(false) => crate::telemetry::global_telemetry().record_dedup_drop(),
+            Err(err) => tracing::warn!("env_ctx_v2: failed to record snapshot during replay: {err}"),
+        }
+
+        ctx.last_snapshot = Some(snapshot);
+        return;
+    }
+
+    if let Some(delta) = parse_env_delta_from_response(item) {
+        if let Some(base_snapshot) = ctx.last_snapshot.clone() {
+            if delta.base_fingerprint != base_snapshot.fingerprint() {
+                tracing::warn!(
+                    "env_ctx_v2: delta base fingerprint mismatch during replay; requesting baseline resend"
+                );
+                crate::telemetry::global_telemetry().record_baseline_resend();
+                crate::telemetry::global_telemetry().record_delta_gap();
+                ctx.timeline = ContextTimeline::new();
+                ctx.last_snapshot = None;
+                ctx.legacy_baseline = None;
+                ctx.next_sequence = 1;
+                return;
+            }
+
+            let sequence = ctx.next_sequence;
+            match ctx.timeline.apply_delta(sequence, delta.clone()) {
+                Ok(_) => {
+                    ctx.next_sequence = ctx.next_sequence.saturating_add(1);
+                }
+                Err(err) => {
+                    tracing::warn!("env_ctx_v2: failed to apply delta during replay: {err}");
+                    crate::telemetry::global_telemetry().record_delta_gap();
+                    return;
+                }
+            }
+
+            let next_snapshot = base_snapshot.apply_delta(&delta);
+            match ctx.timeline.record_snapshot(next_snapshot.clone()) {
+                Ok(true) => crate::telemetry::global_telemetry().record_snapshot_commit(),
+                Ok(false) => crate::telemetry::global_telemetry().record_dedup_drop(),
+                Err(err) => tracing::warn!("env_ctx_v2: failed to record snapshot during replay: {err}"),
+            }
+
+            ctx.last_snapshot = Some(next_snapshot);
+        } else {
+            tracing::warn!(
+                "env_ctx_v2: encountered delta before baseline while replaying rollout"
+            );
+            crate::telemetry::global_telemetry().record_delta_gap();
+        }
+        return;
+    }
+
+    if ctx.legacy_baseline.is_none() && is_legacy_system_status(item) {
+        if let Some(snapshot) = parse_legacy_status_snapshot(item) {
+            ctx.legacy_baseline = Some(snapshot);
+        }
+    }
+}
+
+fn extract_tagged_json<'a>(text: &'a str, open: &str, close: &str) -> Option<&'a str> {
+    let start = text.find(open)? + open.len();
+    let end = text.rfind(close)?;
+    if end <= start {
+        return None;
+    }
+    Some(text[start..end].trim())
+}
+
+fn parse_env_snapshot_from_response(item: &ResponseItem) -> Option<EnvironmentContextSnapshot> {
+    if let ResponseItem::Message { role, content, .. } = item {
+        if role != "user" {
+            return None;
+        }
+        for piece in content {
+            if let ContentItem::InputText { text } = piece {
+                if let Some(json) = extract_tagged_json(
+                    text,
+                    ENVIRONMENT_CONTEXT_OPEN_TAG,
+                    ENVIRONMENT_CONTEXT_CLOSE_TAG,
+                ) {
+                    if let Ok(snapshot) = serde_json::from_str::<EnvironmentContextSnapshot>(json) {
+                        return Some(snapshot);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn parse_env_delta_from_response(item: &ResponseItem) -> Option<EnvironmentContextDelta> {
+    if let ResponseItem::Message { role, content, .. } = item {
+        if role != "user" {
+            return None;
+        }
+        for piece in content {
+            if let ContentItem::InputText { text } = piece {
+                if let Some(json) = extract_tagged_json(
+                    text,
+                    ENVIRONMENT_CONTEXT_DELTA_OPEN_TAG,
+                    ENVIRONMENT_CONTEXT_DELTA_CLOSE_TAG,
+                ) {
+                    if let Ok(delta) = serde_json::from_str::<EnvironmentContextDelta>(json) {
+                        return Some(delta);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn is_legacy_system_status(item: &ResponseItem) -> bool {
+    if let ResponseItem::Message { role, content, .. } = item {
+        if role != "user" {
+            return false;
+        }
+        return content.iter().any(|c| {
+            if let ContentItem::InputText { text } = c {
+                text.contains("== System Status ==")
+            } else {
+                false
+            }
+        });
+    }
+    false
+}
+
+fn parse_legacy_status_snapshot(item: &ResponseItem) -> Option<EnvironmentContextSnapshot> {
+    if let ResponseItem::Message { role, content, .. } = item {
+        if role != "user" {
+            return None;
+        }
+        for piece in content {
+            if let ContentItem::InputText { text } = piece {
+                if !text.contains("== System Status ==") {
+                    continue;
+                }
+
+                let mut cwd: Option<String> = None;
+                let mut branch: Option<String> = None;
+                for line in text.lines() {
+                    let trimmed = line.trim();
+                    if let Some(rest) = trimmed.strip_prefix("cwd:") {
+                        let value = rest.trim();
+                        if !value.is_empty() {
+                            cwd = Some(value.to_string());
+                        }
+                    } else if let Some(rest) = trimmed.strip_prefix("branch:") {
+                        let value = rest.trim();
+                        if !value.is_empty() && value != "unknown" {
+                            branch = Some(value.to_string());
+                        }
+                    }
+                }
+
+                return Some(EnvironmentContextSnapshot {
+                    version: EnvironmentContextSnapshot::VERSION,
+                    cwd,
+                    approval_policy: None,
+                    sandbox_mode: None,
+                    network_access: None,
+                    writable_roots: Vec::new(),
+                    operating_system: None,
+                    common_tools: Vec::new(),
+                    shell: None,
+                    git_branch: branch,
+                    reasoning_effort: None,
+                });
+            }
+        }
+    }
+    None
 }

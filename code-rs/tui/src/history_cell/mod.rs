@@ -11,6 +11,7 @@ use crate::text_formatting::format_json_compact;
 use crate::history::compat::{
     AssistantStreamState,
     BackgroundEventRecord,
+    ContextRecord,
     ExecAction,
     ExecRecord,
     ExecStatus,
@@ -73,6 +74,7 @@ use tracing::error;
 mod assistant;
 mod animated;
 mod background;
+mod context;
 mod card_style;
 mod exec;
 mod diff;
@@ -101,6 +103,7 @@ pub(crate) use assistant::{
 };
 pub(crate) use animated::AnimatedWelcomeCell;
 pub(crate) use background::BackgroundEventCell;
+pub(crate) use context::ContextCell;
 pub(crate) use exec::{
     display_lines_from_record as exec_display_lines_from_record,
     new_active_exec_command,
@@ -180,6 +183,7 @@ pub(crate) enum HistoryCellType {
     Notice,
     Diff,
     Image,
+    Context,
     AnimatedWelcome,
     Loading,
 }
@@ -394,6 +398,7 @@ pub(crate) trait HistoryCell {
             HistoryCellType::Notice => Some("★"),
             HistoryCellType::Diff => Some("↯"),
             HistoryCellType::Image => None,
+            HistoryCellType::Context => Some("◆"),
             HistoryCellType::AnimatedWelcome => None,
             HistoryCellType::Loading => None,
         }
@@ -6013,6 +6018,7 @@ pub(crate) fn cell_from_record(record: &crate::history::state::HistoryRecord, cf
         HistoryRecord::Patch(state) => Box::new(PatchSummaryCell::from_record(state.clone())),
         HistoryRecord::BackgroundEvent(state) => Box::new(background::BackgroundEventCell::new(state.clone())),
         HistoryRecord::Notice(state) => Box::new(PlainHistoryCell::from_notice_record(state.clone())),
+        HistoryRecord::Context(state) => Box::new(context::ContextCell::new(state.clone())),
     }
 }
 
@@ -6043,6 +6049,9 @@ pub(crate) fn record_from_cell(cell: &dyn HistoryCell) -> Option<HistoryRecord> 
         .downcast_ref::<background::BackgroundEventCell>()
     {
         return Some(HistoryRecord::BackgroundEvent(background.state().clone()));
+    }
+    if let Some(context) = cell.as_any().downcast_ref::<context::ContextCell>() {
+        return Some(HistoryRecord::Context(context.record().clone()));
     }
     if let Some(merged) = cell.as_any().downcast_ref::<MergedExecCell>() {
         return Some(HistoryRecord::MergedExec(merged.to_record()));

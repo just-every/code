@@ -834,6 +834,7 @@ pub struct StreamConfig {
     /// Explicit values above still take precedence if set.
     #[serde(default)]
     pub responsive: bool,
+
 }
 
 impl Default for StreamConfig {
@@ -1306,6 +1307,47 @@ pub struct ProjectCommandConfig {
     pub env: Option<HashMap<String, String>>,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+}
+
+/// Retention policy configuration for env_ctx_v2 timeline management.
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub struct RetentionConfig {
+    /// Maximum number of environment context deltas to retain (default: 3)
+    #[serde(default = "default_max_env_deltas")]
+    pub max_env_deltas: usize,
+    /// Maximum number of browser snapshots to retain (default: 2)
+    #[serde(default = "default_max_browser_snapshots")]
+    pub max_browser_snapshots: usize,
+    /// Maximum total bytes for all retained env_ctx items (default: 100KB)
+    #[serde(default = "default_max_total_bytes")]
+    pub max_total_bytes: usize,
+    /// Always keep the most recent environment baseline snapshot (default: true)
+    #[serde(default = "default_true_bool")]
+    pub keep_latest_baseline: bool,
+}
+
+fn default_max_env_deltas() -> usize {
+    3
+}
+
+fn default_max_browser_snapshots() -> usize {
+    2
+}
+
+fn default_max_total_bytes() -> usize {
+    100 * 1024
+}
+
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        Self {
+            max_env_deltas: default_max_env_deltas(),
+            max_browser_snapshots: default_max_browser_snapshots(),
+            max_total_bytes: default_max_total_bytes(),
+            keep_latest_baseline: true,
+        }
+    }
 }
 
 impl From<code_protocol::config_types::ReasoningEffort> for ReasoningEffort {

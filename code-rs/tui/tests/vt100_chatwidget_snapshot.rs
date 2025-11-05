@@ -13,7 +13,10 @@ use code_core::protocol::{
     AgentMessageEvent,
     AgentStatusUpdateEvent,
     BackgroundEventEvent,
+    BrowserSnapshotEvent,
     BrowserScreenshotUpdateEvent,
+    EnvironmentContextDeltaEvent,
+    EnvironmentContextFullEvent,
     CustomToolCallBeginEvent,
     CustomToolCallEndEvent,
     Event,
@@ -89,6 +92,12 @@ impl EnvGuard {
     fn set_path(&self, key: &'static str, path: &Path) {
         unsafe {
             std::env::set_var(key, path);
+        }
+    }
+
+    fn set(&self, key: &'static str, value: &str) {
+        unsafe {
+            std::env::set_var(key, value);
         }
     }
 
@@ -464,6 +473,264 @@ fn baseline_empty_chat() {
 
     let output = normalize_output(render_chat_widget_to_vt100(&mut harness, 80, 24));
     insta::assert_snapshot!("empty_chat", output);
+}
+
+#[test]
+fn context_cell_renders_baseline() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let guard = EnvGuard::new(&["CTX_UI"]);
+    guard.set("CTX_UI", "1");
+
+    let mut harness = ChatWidgetHarness::new();
+    harness.enable_context_ui();
+
+    let snapshot = json!({
+        "version": 1,
+        "cwd": "/workspace",
+        "git_branch": "feature/context-ui",
+        "reasoning_effort": "medium",
+    });
+
+    harness.handle_event(Event {
+        id: "env-stream".into(),
+        event_seq: 0,
+        msg: EventMsg::EnvironmentContextFull(EnvironmentContextFullEvent {
+            snapshot,
+            sequence: Some(1),
+        }),
+        order: Some(OrderMeta {
+            request_ordinal: 1,
+            output_index: Some(0),
+            sequence_number: Some(0),
+        }),
+    });
+
+    let output = normalize_output(render_chat_widget_to_vt100(&mut harness, 80, 18));
+    insta::assert_snapshot!("context_cell_baseline", output);
+}
+
+#[test]
+fn context_cell_updates_on_delta() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let guard = EnvGuard::new(&["CTX_UI"]);
+    guard.set("CTX_UI", "1");
+
+    let mut harness = ChatWidgetHarness::new();
+    harness.enable_context_ui();
+
+    let baseline = json!({
+        "version": 1,
+        "cwd": "/workspace",
+        "git_branch": "feature/context-ui",
+        "reasoning_effort": "medium",
+    });
+
+    harness.handle_event(Event {
+        id: "env-stream".into(),
+        event_seq: 0,
+        msg: EventMsg::EnvironmentContextFull(EnvironmentContextFullEvent {
+            snapshot: baseline,
+            sequence: Some(1),
+        }),
+        order: Some(OrderMeta {
+            request_ordinal: 1,
+            output_index: Some(0),
+            sequence_number: Some(0),
+        }),
+    });
+
+    let delta = json!({
+        "version": 1,
+        "base_fingerprint": "fp-ctx",
+        "changes": {
+            "git_branch": "main",
+            "reasoning_effort": null,
+        }
+    });
+
+    harness.handle_event(Event {
+        id: "env-stream".into(),
+        event_seq: 1,
+        msg: EventMsg::EnvironmentContextDelta(EnvironmentContextDeltaEvent {
+            delta,
+            sequence: Some(2),
+            base_fingerprint: Some("fp-ctx".into()),
+        }),
+        order: Some(OrderMeta {
+            request_ordinal: 1,
+            output_index: Some(0),
+            sequence_number: Some(1),
+        }),
+    });
+
+    let output = normalize_output(render_chat_widget_to_vt100(&mut harness, 80, 18));
+    insta::assert_snapshot!("context_cell_after_delta", output);
+}
+
+#[test]
+fn context_cell_expanded_lists_recent_deltas() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let guard = EnvGuard::new(&["CTX_UI"]);
+    guard.set("CTX_UI", "1");
+
+    let mut harness = ChatWidgetHarness::new();
+    harness.enable_context_ui();
+
+    let baseline = json!({
+        "version": 1,
+        "cwd": "/workspace",
+        "git_branch": "feature/context-ui",
+        "reasoning_effort": "medium",
+    });
+
+    harness.handle_event(Event {
+        id: "env-stream".into(),
+        event_seq: 0,
+        msg: EventMsg::EnvironmentContextFull(EnvironmentContextFullEvent {
+            snapshot: baseline,
+            sequence: Some(1),
+        }),
+        order: Some(OrderMeta {
+            request_ordinal: 1,
+            output_index: Some(0),
+            sequence_number: Some(0),
+        }),
+    });
+
+    let delta_one = json!({
+        "version": 1,
+        "base_fingerprint": "fp-ctx",
+        "changes": {
+            "cwd": "/workspace/subdir",
+            "git_branch": "main"
+        }
+    });
+
+    harness.handle_event(Event {
+        id: "env-stream".into(),
+        event_seq: 1,
+        msg: EventMsg::EnvironmentContextDelta(EnvironmentContextDeltaEvent {
+            delta: delta_one,
+            sequence: Some(2),
+            base_fingerprint: Some("fp-ctx".into()),
+        }),
+        order: Some(OrderMeta {
+            request_ordinal: 1,
+            output_index: Some(0),
+            sequence_number: Some(1),
+        }),
+    });
+
+    let delta_two = json!({
+        "version": 1,
+        "base_fingerprint": "fp-ctx",
+        "changes": {
+            "reasoning_effort": "high"
+        }
+    });
+
+    harness.handle_event(Event {
+        id: "env-stream".into(),
+        event_seq: 2,
+        msg: EventMsg::EnvironmentContextDelta(EnvironmentContextDeltaEvent {
+            delta: delta_two,
+            sequence: Some(3),
+            base_fingerprint: Some("fp-ctx".into()),
+        }),
+        order: Some(OrderMeta {
+            request_ordinal: 1,
+            output_index: Some(0),
+            sequence_number: Some(2),
+        }),
+    });
+
+    harness.toggle_context_expansion();
+
+    let output = normalize_output(render_chat_widget_to_vt100(&mut harness, 80, 18));
+    insta::assert_snapshot!("context_cell_expanded_deltas", output);
+}
+
+#[test]
+fn context_cell_shows_browser_badge() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let guard = EnvGuard::new(&["CTX_UI"]);
+    guard.set("CTX_UI", "1");
+
+    let mut harness = ChatWidgetHarness::new();
+    harness.enable_context_ui();
+
+    let baseline = json!({
+        "version": 1,
+        "cwd": "/workspace",
+    });
+
+    harness.handle_event(Event {
+        id: "env-stream".into(),
+        event_seq: 0,
+        msg: EventMsg::EnvironmentContextFull(EnvironmentContextFullEvent {
+            snapshot: baseline,
+            sequence: Some(1),
+        }),
+        order: Some(OrderMeta {
+            request_ordinal: 1,
+            output_index: Some(0),
+            sequence_number: Some(0),
+        }),
+    });
+
+    let snapshot = json!({
+        "url": "https://example.com",
+        "title": "Example Domain",
+        "captured_at": "2025-11-05T12:00:00Z",
+        "viewport": {
+            "width": 1280,
+            "height": 720
+        },
+        "metadata": {
+            "browser_type": "chromium",
+            "cursor_position": "120,340"
+        }
+    });
+
+    harness.handle_event(Event {
+        id: "env-stream".into(),
+        event_seq: 1,
+        msg: EventMsg::BrowserSnapshot(BrowserSnapshotEvent {
+            snapshot,
+            url: Some("https://example.com".into()),
+            captured_at: Some("2025-11-05T12:00:00Z".into()),
+        }),
+        order: Some(OrderMeta {
+            request_ordinal: 1,
+            output_index: Some(0),
+            sequence_number: Some(1),
+        }),
+    });
+
+    let output = normalize_output(render_chat_widget_to_vt100(&mut harness, 80, 18));
+    insta::assert_snapshot!("context_cell_browser_badge", output);
+}
+
+#[test]
+fn strict_stream_ids_warns_on_missing_id() {
+    let mut harness = ChatWidgetHarness::new();
+    harness.enable_context_ui();
+
+    harness.handle_event(Event {
+        id: String::new(),
+        event_seq: 0,
+        msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+            delta: "partial answer".into(),
+        }),
+        order: Some(OrderMeta {
+            request_ordinal: 1,
+            output_index: Some(0),
+            sequence_number: Some(0),
+        }),
+    });
+
+    let output = normalize_output(render_chat_widget_to_vt100(&mut harness, 80, 12));
+    insta::assert_snapshot!("strict_stream_ids_missing_id_warning", output);
 }
 
 #[test]

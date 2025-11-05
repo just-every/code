@@ -1,0 +1,21 @@
+---
+source: tui/tests/vt100_chatwidget_snapshot.rs
+expression: output
+---
+ +----------------------------------------------------------------------------+
+ |                                    Code                                    |
+ +----------------------------------------------------------------------------+
+
+   - Writing code
+   - Reading files
+   - Running commands
+
+
+ ✶ 📁 /workspace  1 change
+   🖼 Example Domain  1280×720  2025-11-05T12:00:00Z  browser_type=chromium,
+   cursor_position=120,340
+
+ +----------------------------------------------------------------------------+
+ | What can I code for you today?                                             |
+ +----------------------------------------------------------------------------+
+   Read Only  (Shift+Tab change)                       Ctrl+H help  •  API key

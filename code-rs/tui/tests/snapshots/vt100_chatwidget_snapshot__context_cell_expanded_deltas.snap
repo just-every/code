@@ -1,0 +1,21 @@
+---
+source: tui/tests/vt100_chatwidget_snapshot.rs
+expression: output
+---
+ +----------------------------------------------------------------------------+
+ |                                    Code                                    |
+ +----------------------------------------------------------------------------+
+   - Running commands
+
+
+ ✶ 📁 /workspace/subdir  3 changes
+    main  🧠 high
+   Recent changes:
+   • reasoning: medium → high  #3
+   • branch: feature/context-ui → main  #2
+   • cwd: /workspace → /workspace/subdir  #2
+
+ +----------------------------------------------------------------------------+
+ | What can I code for you today?                                             |
+ +----------------------------------------------------------------------------+
+   Read Only  (Shift+Tab change)                       Ctrl+H help  •  API key

@@ -266,12 +266,11 @@ impl CodexToolCallParam {
             include_view_image_tool: None,
             disable_response_storage: None,
             show_raw_agent_reasoning: None,
-        debug: None,
-        tools_web_search_request: None,
-        mcp_servers: None,
-        experimental_client_tools: None,
-        env_ctx_v2: None,
-    };
+            debug: None,
+            tools_web_search_request: None,
+            mcp_servers: None,
+            experimental_client_tools: None,
+        };
 
         let cli_overrides = cli_overrides
             .unwrap_or_default()

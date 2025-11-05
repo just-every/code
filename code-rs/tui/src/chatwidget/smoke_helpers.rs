@@ -220,6 +220,18 @@ impl ChatWidgetHarness {
         f(&mut self.chat)
     }
 
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn enable_context_ui(&mut self) {
+        let runtime = &*TEST_RUNTIME;
+        let _guard = runtime.enter();
+        self.chat.config.env_ctx_v2 = true;
+    }
+
+    pub fn toggle_context_expansion(&mut self) {
+        self.chat.toggle_context_expansion();
+        self.flush_into_widget();
+    }
+
     pub fn open_agents_settings_overlay(&mut self) {
         self.chat.ensure_settings_overlay_section(SettingsSection::Agents);
         self.chat.show_agents_overview_ui();

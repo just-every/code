@@ -427,13 +427,83 @@ impl EnvironmentContextSnapshot {
     }
 
     pub fn to_response_item(&self) -> serde_json::Result<ResponseItem> {
-        snapshot_to_response_item(self)
+        self.to_response_item_with_id(None)
+    }
+
+    pub fn to_response_item_with_id(
+        &self,
+        stream_id: Option<&str>,
+    ) -> serde_json::Result<ResponseItem> {
+        snapshot_to_response_item(self, stream_id)
     }
 
     pub fn with_metadata(mut self, git_branch: Option<String>, reasoning_effort: Option<String>) -> Self {
         self.git_branch = git_branch;
         self.reasoning_effort = reasoning_effort;
         self
+    }
+
+    /// Applies a delta to this snapshot, producing an updated snapshot.
+    pub fn apply_delta(&self, delta: &EnvironmentContextDelta) -> EnvironmentContextSnapshot {
+        let mut updated = self.clone();
+        for (key, value) in &delta.changes {
+            match key.as_str() {
+                "cwd" => {
+                    updated.cwd = value.as_str().map(|s| s.to_string());
+                }
+                "approval_policy" => {
+                    if let Ok(policy) = serde_json::from_value::<AskForApproval>(value.clone()) {
+                        updated.approval_policy = Some(policy);
+                    }
+                }
+                "sandbox_mode" => {
+                    if let Ok(mode) = serde_json::from_value::<SandboxMode>(value.clone()) {
+                        updated.sandbox_mode = Some(mode);
+                    }
+                }
+                "network_access" => {
+                    if let Ok(access) = serde_json::from_value::<NetworkAccess>(value.clone()) {
+                        updated.network_access = Some(access);
+                    }
+                }
+                "writable_roots" => {
+                    if let Ok(roots) = serde_json::from_value::<Vec<String>>(value.clone()) {
+                        updated.writable_roots = roots;
+                    }
+                }
+                "operating_system" => {
+                    if let Ok(os) = serde_json::from_value::<OperatingSystemInfo>(value.clone()) {
+                        updated.operating_system = Some(os);
+                    }
+                }
+                "common_tools" => {
+                    if let Ok(tools) = serde_json::from_value::<Vec<String>>(value.clone()) {
+                        updated.common_tools = tools;
+                    }
+                }
+                "shell" => {
+                    if let Ok(shell) = serde_json::from_value::<Shell>(value.clone()) {
+                        updated.shell = Some(shell);
+                    }
+                }
+                "git_branch" => {
+                    updated.git_branch = match value {
+                        JsonValue::Null => None,
+                        JsonValue::String(s) => Some(s.clone()),
+                        _ => updated.git_branch.clone(),
+                    };
+                }
+                "reasoning_effort" => {
+                    updated.reasoning_effort = match value {
+                        JsonValue::Null => None,
+                        JsonValue::String(s) => Some(s.clone()),
+                        _ => updated.reasoning_effort.clone(),
+                    };
+                }
+                _ => {}
+            }
+        }
+        updated
     }
 }
 
@@ -459,7 +529,14 @@ pub struct EnvironmentContextDelta {
 
 impl EnvironmentContextDelta {
     pub fn to_response_item(&self) -> serde_json::Result<ResponseItem> {
-        delta_to_response_item(self)
+        self.to_response_item_with_id(None)
+    }
+
+    pub fn to_response_item_with_id(
+        &self,
+        stream_id: Option<&str>,
+    ) -> serde_json::Result<ResponseItem> {
+        delta_to_response_item(self, stream_id)
     }
 }
 
@@ -491,7 +568,14 @@ impl BrowserSnapshot {
     }
 
     pub fn to_response_item(&self) -> serde_json::Result<ResponseItem> {
-        browser_snapshot_to_response_item(self)
+        self.to_response_item_with_id(None)
+    }
+
+    pub fn to_response_item_with_id(
+        &self,
+        stream_id: Option<&str>,
+    ) -> serde_json::Result<ResponseItem> {
+        browser_snapshot_to_response_item(self, stream_id)
     }
 }
 
@@ -551,6 +635,7 @@ impl EnvironmentContextTracker {
         env_context: &EnvironmentContext,
         git_branch: Option<String>,
         reasoning_effort: Option<String>,
+        stream_id: Option<&str>,
     ) -> serde_json::Result<Option<(EnvironmentContextEmission, Vec<ResponseItem>)>> {
         let emission = match self.observe(
             EnvironmentContextSnapshot::from_context(env_context)
@@ -560,8 +645,16 @@ impl EnvironmentContextTracker {
             None => return Ok(None),
         };
 
-        let items = emission.clone().into_response_items()?;
+        let items = emission
+            .clone()
+            .into_response_items_with_id(stream_id)?;
         Ok(Some((emission, items)))
+    }
+
+    /// Restores tracker state so the next emission continues at the provided sequence.
+    pub fn restore(&mut self, last_snapshot: EnvironmentContextSnapshot, next_sequence: u64) {
+        self.last_snapshot = Some(last_snapshot);
+        self.next_sequence = next_sequence.max(1);
     }
 }
 
@@ -587,13 +680,27 @@ impl EnvironmentContextEmission {
     }
 
     pub fn into_response_items(self) -> serde_json::Result<Vec<ResponseItem>> {
+        self.into_response_items_with_id(None)
+    }
+
+    pub fn into_response_items_with_id(
+        self,
+        stream_id: Option<&str>,
+    ) -> serde_json::Result<Vec<ResponseItem>> {
         match self {
-            EnvironmentContextEmission::Full { snapshot, .. } => {
-                Ok(vec![snapshot.to_response_item()?])
-            }
-            EnvironmentContextEmission::Delta { delta, .. } => {
-                Ok(vec![delta.to_response_item()?])
-            }
+            EnvironmentContextEmission::Full { snapshot, .. } => Ok(vec![
+                snapshot.to_response_item_with_id(stream_id)?,
+            ]),
+            EnvironmentContextEmission::Delta { delta, .. } => Ok(vec![
+                delta.to_response_item_with_id(stream_id)?,
+            ]),
+        }
+    }
+
+    pub fn snapshot(&self) -> &EnvironmentContextSnapshot {
+        match self {
+            EnvironmentContextEmission::Full { snapshot, .. }
+            | EnvironmentContextEmission::Delta { snapshot, .. } => snapshot,
         }
     }
 }
@@ -605,10 +712,13 @@ fn option_string_to_json(value: &Option<String>) -> JsonValue {
     }
 }
 
-fn snapshot_to_response_item(snapshot: &EnvironmentContextSnapshot) -> serde_json::Result<ResponseItem> {
+fn snapshot_to_response_item(
+    snapshot: &EnvironmentContextSnapshot,
+    stream_id: Option<&str>,
+) -> serde_json::Result<ResponseItem> {
     let json = serde_json::to_string_pretty(snapshot)?;
     Ok(ResponseItem::Message {
-        id: None,
+        id: stream_id.map(|id| id.to_string()),
         role: "user".to_string(),
         content: vec![ContentItem::InputText {
             text: format!(
@@ -619,10 +729,13 @@ fn snapshot_to_response_item(snapshot: &EnvironmentContextSnapshot) -> serde_jso
     })
 }
 
-fn delta_to_response_item(delta: &EnvironmentContextDelta) -> serde_json::Result<ResponseItem> {
+fn delta_to_response_item(
+    delta: &EnvironmentContextDelta,
+    stream_id: Option<&str>,
+) -> serde_json::Result<ResponseItem> {
     let json = serde_json::to_string_pretty(delta)?;
     Ok(ResponseItem::Message {
-        id: None,
+        id: stream_id.map(|id| id.to_string()),
         role: "user".to_string(),
         content: vec![ContentItem::InputText {
             text: format!(
@@ -633,10 +746,13 @@ fn delta_to_response_item(delta: &EnvironmentContextDelta) -> serde_json::Result
     })
 }
 
-fn browser_snapshot_to_response_item(snapshot: &BrowserSnapshot) -> serde_json::Result<ResponseItem> {
+fn browser_snapshot_to_response_item(
+    snapshot: &BrowserSnapshot,
+    stream_id: Option<&str>,
+) -> serde_json::Result<ResponseItem> {
     let json = serde_json::to_string_pretty(snapshot)?;
     Ok(ResponseItem::Message {
-        id: None,
+        id: stream_id.map(|id| id.to_string()),
         role: "user".to_string(),
         content: vec![ContentItem::InputText {
             text: format!(
@@ -845,11 +961,13 @@ mod tests {
         );
 
         let first = tracker
-            .emit_response_items(&ctx, Some("main".into()), Some("Medium".into()))
+            .emit_response_items(&ctx, Some("main".into()), Some("Medium".into()), Some("env-stream"))
             .expect("serialize full")
             .expect("full emission");
         assert!(matches!(first.0, EnvironmentContextEmission::Full { .. }));
+        assert_eq!(first.0.sequence(), 1);
         let full_text = message_text(&first.1[0]);
+        assert_eq!(message_id(&first.1[0]), Some("env-stream"));
         assert!(full_text.contains(ENVIRONMENT_CONTEXT_OPEN_TAG));
         assert!(!full_text.contains("== System Status =="));
         let full_json = parse_tagged_json(
@@ -861,18 +979,20 @@ mod tests {
 
         // Unchanged context should not emit again
         let none = tracker
-            .emit_response_items(&ctx, Some("main".into()), Some("Medium".into()))
+            .emit_response_items(&ctx, Some("main".into()), Some("Medium".into()), Some("env-stream"))
             .expect("unchanged serialize");
         assert!(none.is_none());
 
         // Changing stable fields triggers a delta emission
         ctx.cwd = Some(PathBuf::from("/repo-two"));
         let delta = tracker
-            .emit_response_items(&ctx, Some("feature".into()), Some("High".into()))
+            .emit_response_items(&ctx, Some("feature".into()), Some("High".into()), Some("env-stream"))
             .expect("serialize delta")
             .expect("delta emission");
         assert!(matches!(delta.0, EnvironmentContextEmission::Delta { .. }));
+        assert_eq!(delta.0.sequence(), 2);
         let delta_text = message_text(&delta.1[0]);
+        assert_eq!(message_id(&delta.1[0]), Some("env-stream"));
         assert!(delta_text.contains(ENVIRONMENT_CONTEXT_DELTA_OPEN_TAG));
         let delta_json = parse_tagged_json(
             delta_text,
@@ -882,6 +1002,13 @@ mod tests {
         assert_eq!(delta_json["changes"]["cwd"], "/repo-two");
         assert_eq!(delta_json["changes"]["git_branch"], "feature");
         assert_eq!(delta_json["changes"]["reasoning_effort"], "High");
+    }
+
+    fn message_id(item: &ResponseItem) -> Option<&str> {
+        match item {
+            ResponseItem::Message { id, .. } => id.as_deref(),
+            _ => None,
+        }
     }
 
     #[test]
@@ -936,6 +1063,31 @@ mod tests {
         );
 
         assert!(!context1.equals_except_shell(&context2));
+    }
+
+    #[test]
+    fn browser_snapshot_respects_stream_id() {
+        let mut snapshot = BrowserSnapshot::new(
+            "https://example.test".to_string(),
+            "2025-11-04T00:00:00Z".to_string(),
+        );
+        snapshot.title = Some("Example".to_string());
+
+        let message = snapshot
+            .to_response_item_with_id(Some("browser-stream"))
+            .expect("serialize snapshot");
+
+        assert_eq!(message_id(&message), Some("browser-stream"));
+        if let ResponseItem::Message { content, .. } = message {
+            if let ContentItem::InputText { text } = &content[0] {
+                assert!(text.contains(BROWSER_SNAPSHOT_OPEN_TAG));
+                assert!(text.contains("Example"));
+            } else {
+                panic!("expected text content");
+            }
+        } else {
+            panic!("expected message response item");
+        }
     }
 
     #[test]

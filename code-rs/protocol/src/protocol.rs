@@ -529,6 +529,15 @@ pub enum EventMsg {
     /// Signaled when the model begins a new reasoning summary section (e.g., a new titled block).
     AgentReasoningSectionBreak(AgentReasoningSectionBreakEvent),
 
+    /// Full environment context snapshot emitted to the model.
+    EnvironmentContextFull(EnvironmentContextFullEvent),
+
+    /// Environment context delta emitted to the model.
+    EnvironmentContextDelta(EnvironmentContextDeltaEvent),
+
+    /// Browser snapshot metadata emitted alongside environment context.
+    BrowserSnapshot(BrowserSnapshotEvent),
+
     /// Ack the client's configure message.
     SessionConfigured(SessionConfiguredEvent),
 
@@ -1388,6 +1397,39 @@ pub struct Chunk {
     pub orig_index: u32,
     pub deleted_lines: Vec<String>,
     pub inserted_lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct EnvironmentContextFullEvent {
+    /// JSON serialization of the environment context snapshot.
+    pub snapshot: serde_json::Value,
+    /// Sequence number associated with the snapshot emission.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct EnvironmentContextDeltaEvent {
+    /// JSON serialization of the environment context delta.
+    pub delta: serde_json::Value,
+    /// Sequence number associated with the delta emission.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<u64>,
+    /// Fingerprint of the baseline snapshot for this delta.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct BrowserSnapshotEvent {
+    /// JSON serialization of the browser snapshot metadata.
+    pub snapshot: serde_json::Value,
+    /// URL associated with the snapshot, if available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Timestamp when the snapshot was captured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub captured_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]

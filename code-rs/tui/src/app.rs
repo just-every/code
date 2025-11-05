@@ -1481,6 +1481,18 @@ impl App<'_> {
                             }
                         }
                         KeyEvent {
+                            code: KeyCode::Char('c'),
+                            modifiers,
+                            kind: KeyEventKind::Press,
+                            ..
+                        } if modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+                            && modifiers.contains(crossterm::event::KeyModifiers::SHIFT) =>
+                        {
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                widget.toggle_context_expansion();
+                            }
+                        }
+                        KeyEvent {
                             code: KeyCode::Char('t'),
                             modifiers: crossterm::event::KeyModifiers::CONTROL,
                             kind: KeyEventKind::Press | KeyEventKind::Repeat,

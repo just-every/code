@@ -138,6 +138,7 @@ use code_core::protocol::AgentStatusUpdateEvent;
 use code_core::protocol::ApplyPatchApprovalRequestEvent;
 use code_core::protocol::BackgroundEventEvent;
 use code_core::protocol::BrowserScreenshotUpdateEvent;
+use code_core::protocol::BrowserSnapshotEvent;
 use code_core::protocol::CustomToolCallBeginEvent;
 use code_core::protocol::CustomToolCallEndEvent;
 use code_core::protocol::ErrorEvent;
@@ -147,6 +148,8 @@ use code_core::protocol::ExecApprovalRequestEvent;
 use code_core::protocol::ExecCommandBeginEvent;
 use code_core::protocol::ExecCommandEndEvent;
 use code_core::protocol::ExecOutputStream;
+use code_core::protocol::EnvironmentContextDeltaEvent;
+use code_core::protocol::EnvironmentContextFullEvent;
 use code_core::protocol::InputItem;
 use code_core::protocol::SessionConfiguredEvent;
 // MCP tool call handlers moved into chatwidget::tools
@@ -181,12 +184,19 @@ use crate::exec_command::strip_bash_lc_and_escape;
 #[cfg(feature = "code-fork")]
 use crate::tui_event_extensions::handle_browser_screenshot;
 use crate::chatwidget::message::UserMessage;
+use crate::history::compat::{
+    ContextBrowserSnapshotRecord,
+    ContextDeltaField,
+    ContextDeltaRecord,
+    ContextRecord,
+};
 
 pub(crate) const DOUBLE_ESC_HINT: &str = "undo timeline";
 const AUTO_ESC_EXIT_HINT: &str = "Press Esc again to exit Auto Drive";
 const AUTO_COMPLETION_CELEBRATION_DURATION: Duration = Duration::from_secs(5);
 const HISTORY_ANIMATION_FRAME_INTERVAL: Duration = Duration::from_millis(120);
 const AUTO_BOOTSTRAP_GOAL_PLACEHOLDER: &str = "Deriving goal from recent conversation";
+const CONTEXT_DELTA_HISTORY: usize = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EscIntent {
@@ -778,6 +788,10 @@ pub(crate) struct ChatWidget<'a> {
     history_state: HistoryState,
     history_snapshot_dirty: bool,
     history_snapshot_last_flush: Option<Instant>,
+    context_cell_id: Option<HistoryId>,
+    context_summary: Option<ContextSummary>,
+    context_last_sequence: Option<u64>,
+    context_browser_sequence: Option<u64>,
     config: Config,
     history_debug_events: Option<RefCell<Vec<String>>>,
     latest_upgrade_version: Option<String>,
@@ -1000,6 +1014,17 @@ pub(crate) struct ChatWidget<'a> {
     resume_placeholder_visible: bool,
 }
 
+#[derive(Clone, Debug, Default)]
+struct ContextSummary {
+    cwd: Option<String>,
+    git_branch: Option<String>,
+    reasoning_effort: Option<String>,
+    browser_session_active: bool,
+    deltas: Vec<ContextDeltaRecord>,
+    browser_snapshot: Option<ContextBrowserSnapshotRecord>,
+    expanded: bool,
+}
+
 #[derive(Clone, Debug)]
 struct AutoCompactionOverlay {
     /// Snapshot of the conversation prefix (including the latest compact summary)
@@ -1026,7 +1051,6 @@ impl BackgroundOrderTicket {
             sequence_number: Some(seq),
         }
     }
-
 }
 
 #[derive(Clone)]
@@ -2389,6 +2413,14 @@ impl ChatWidget<'_> {
         }
     }
 
+    const fn context_order_key() -> OrderKey {
+        OrderKey {
+            req: 0,
+            out: -50,
+            seq: 0,
+        }
+    }
+
     /// Show the "Shift+Up/Down" input history hint the first time the user scrolls.
     pub(super) fn maybe_show_history_nav_hint_on_first_scroll(&mut self) {
         if self.scroll_history_hint_shown {
@@ -2802,6 +2834,7 @@ impl ChatWidget<'_> {
             HistoryCellType::Notice => "Notice".to_string(),
             HistoryCellType::Diff => "Diff".to_string(),
             HistoryCellType::Image => "Image".to_string(),
+            HistoryCellType::Context => "Context".to_string(),
             HistoryCellType::AnimatedWelcome => "AnimatedWelcome".to_string(),
             HistoryCellType::Loading => "Loading".to_string(),
         }
@@ -3671,6 +3704,378 @@ impl ChatWidget<'_> {
         self.maybe_hide_spinner();
     }
 
+    fn context_ui_enabled(&self) -> bool {
+        self.config.env_ctx_v2
+    }
+
+    fn set_context_summary(
+        &mut self,
+        mut summary: ContextSummary,
+        sequence: Option<u64>,
+        is_baseline: bool,
+    ) {
+        if let Some(seq) = sequence {
+            if let Some(prev_seq) = self.context_last_sequence {
+                if seq < prev_seq {
+                    return;
+                }
+            }
+            self.context_last_sequence = Some(seq);
+        }
+
+        let previous = self.context_summary.clone();
+
+        if let Some(prev) = previous.as_ref() {
+            summary.expanded = prev.expanded;
+        }
+
+        if is_baseline {
+            summary.deltas.clear();
+        } else if let Some(prev) = previous.as_ref() {
+            summary.deltas = prev.deltas.clone();
+            for delta in Self::compute_context_deltas(prev, &summary, sequence) {
+                Self::push_context_delta(&mut summary.deltas, delta);
+            }
+        }
+
+        if let Some(current_seq) = self.context_last_sequence {
+            if let Some(browser_seq) = self.context_browser_sequence {
+                if browser_seq < current_seq {
+                    summary.browser_session_active = false;
+                }
+            } else if summary.browser_snapshot.is_none() {
+                summary.browser_session_active = false;
+            }
+        }
+
+        self.context_summary = Some(summary.clone());
+        self.update_context_cell(summary);
+    }
+
+    fn strict_stream_ids_enabled(&self) -> bool {
+        self.config.env_ctx_v2 && (self.test_mode || cfg!(debug_assertions))
+    }
+
+    fn warn_missing_stream_id(&mut self, stream_kind: &str) {
+        tracing::warn!("missing stream id for {stream_kind}");
+        if cfg!(debug_assertions) || self.test_mode {
+            let warning = format!("Missing stream id for {stream_kind}");
+            self.push_background_tail(warning);
+        }
+    }
+
+    pub(crate) fn toggle_context_expansion(&mut self) {
+        if !self.context_ui_enabled() {
+            self.bottom_pane
+                .update_status_text("Context UI disabled".to_string());
+            return;
+        }
+
+        let Some(mut summary) = self.context_summary.clone() else {
+            self.bottom_pane
+                .update_status_text("No context available yet".to_string());
+            return;
+        };
+
+        summary.expanded = !summary.expanded;
+        let expanded = summary.expanded;
+        self.context_summary = Some(summary.clone());
+        self.update_context_cell(summary);
+        self.invalidate_height_cache();
+        self.request_redraw();
+
+        let status = if expanded {
+            "Context expanded"
+        } else {
+            "Context collapsed"
+        };
+        self.bottom_pane.update_status_text(status.to_string());
+
+        if self.standard_terminal_mode {
+            let mut lines = Vec::new();
+            lines.push(ratatui::text::Line::from(""));
+            lines.extend(self.export_transcript_lines_for_buffer());
+            self.app_event_tx
+                .send(crate::app_event::AppEvent::InsertHistory(lines));
+        }
+    }
+
+    fn update_context_cell(&mut self, summary: ContextSummary) {
+        let record = ContextRecord {
+            id: HistoryId::ZERO,
+            cwd: summary.cwd.clone(),
+            git_branch: summary.git_branch.clone(),
+            reasoning_effort: summary.reasoning_effort.clone(),
+            browser_session_active: summary.browser_session_active,
+            deltas: summary.deltas.clone(),
+            browser_snapshot: summary.browser_snapshot.clone(),
+            expanded: summary.expanded,
+        };
+
+        if let Some(id) = self.context_cell_id {
+            if let Some(index) = self.history_state.index_of(id) {
+                let mutation = self.history_state.apply_domain_event(HistoryDomainEvent::Replace {
+                    index,
+                    record: HistoryDomainRecord::Context(record.clone()),
+                });
+                if let Some(cell_idx) = self.cell_index_for_history_id(id) {
+                    if let Some(new_id) = self.apply_mutation_to_cell_index(cell_idx, mutation) {
+                        self.context_cell_id = Some(new_id);
+                    }
+                }
+                self.mark_history_dirty();
+                self.request_redraw();
+                return;
+            }
+        }
+
+        let insertion = self.history_state.apply_domain_event(HistoryDomainEvent::Insert {
+            index: 0,
+            record: HistoryDomainRecord::Context(record.clone()),
+        });
+
+        if let HistoryMutation::Inserted { id, record, .. } = insertion {
+            if let Some(mut cell) = self.build_cell_from_record(&record) {
+                self.assign_history_id(&mut cell, id);
+                let idx = self.history_insert_existing_record(
+                    cell,
+                    Self::context_order_key(),
+                    "context",
+                    id,
+                );
+                if idx < self.history_cell_ids.len() {
+                    self.history_cell_ids[idx] = Some(id);
+                } else {
+                    self.history_cell_ids.push(Some(id));
+                }
+                self.context_cell_id = Some(id);
+                self.mark_history_dirty();
+                self.request_redraw();
+            }
+        }
+    }
+
+    fn compute_context_deltas(
+        previous: &ContextSummary,
+        current: &ContextSummary,
+        sequence: Option<u64>,
+    ) -> Vec<ContextDeltaRecord> {
+        let mut deltas = Vec::new();
+
+        if previous.cwd != current.cwd {
+            deltas.push(ContextDeltaRecord {
+                field: ContextDeltaField::Cwd,
+                previous: previous.cwd.clone(),
+                current: current.cwd.clone(),
+                sequence,
+            });
+        }
+
+        if previous.git_branch != current.git_branch {
+            deltas.push(ContextDeltaRecord {
+                field: ContextDeltaField::GitBranch,
+                previous: previous.git_branch.clone(),
+                current: current.git_branch.clone(),
+                sequence,
+            });
+        }
+
+        if previous.reasoning_effort != current.reasoning_effort {
+            deltas.push(ContextDeltaRecord {
+                field: ContextDeltaField::ReasoningEffort,
+                previous: previous.reasoning_effort.clone(),
+                current: current.reasoning_effort.clone(),
+                sequence,
+            });
+        }
+
+        if previous.browser_snapshot != current.browser_snapshot {
+            let prev_label = previous
+                .browser_snapshot
+                .as_ref()
+                .and_then(Self::context_snapshot_label);
+            let next_label = current
+                .browser_snapshot
+                .as_ref()
+                .and_then(Self::context_snapshot_label);
+            deltas.push(ContextDeltaRecord {
+                field: ContextDeltaField::BrowserSnapshot,
+                previous: prev_label,
+                current: next_label,
+                sequence,
+            });
+        }
+
+        deltas
+    }
+
+    fn push_context_delta(deltas: &mut Vec<ContextDeltaRecord>, mut delta: ContextDeltaRecord) {
+        if delta.previous == delta.current {
+            return;
+        }
+
+        if let Some(last) = deltas.last() {
+            if last.field == delta.field && last.current == delta.current {
+                return;
+            }
+        }
+
+        if deltas.len() >= CONTEXT_DELTA_HISTORY {
+            let excess = deltas.len() + 1 - CONTEXT_DELTA_HISTORY;
+            deltas.drain(0..excess);
+        }
+
+        if delta.field == ContextDeltaField::BrowserSnapshot
+            && delta.current.is_none()
+            && delta.previous.is_some()
+        {
+            delta.current = Some("inactive".to_string());
+        }
+
+        deltas.push(delta);
+    }
+
+    fn context_snapshot_label(snapshot: &ContextBrowserSnapshotRecord) -> Option<String> {
+        if let Some(title) = snapshot.title.as_ref().filter(|s| !s.is_empty()) {
+            Some(title.clone())
+        } else {
+            snapshot.url.clone()
+        }
+    }
+
+    fn handle_environment_context_full_event(
+        &mut self,
+        payload: &EnvironmentContextFullEvent,
+    ) {
+        if !self.context_ui_enabled() {
+            return;
+        }
+
+        let mut summary = ContextSummary::default();
+        if let Some(obj) = payload.snapshot.as_object() {
+            if let Some(cwd) = obj.get("cwd").and_then(|v| v.as_str()) {
+                summary.cwd = Some(cwd.to_string());
+            }
+            if let Some(branch) = obj.get("git_branch").and_then(|v| v.as_str()) {
+                summary.git_branch = Some(branch.to_string());
+            }
+            if let Some(reason) = obj.get("reasoning_effort").and_then(|v| v.as_str()) {
+                summary.reasoning_effort = Some(reason.to_string());
+            }
+        }
+
+        summary.browser_session_active = false;
+        self.context_browser_sequence = None;
+        summary.deltas.clear();
+        summary.browser_snapshot = None;
+        self.set_context_summary(summary, payload.sequence, true);
+    }
+
+    fn handle_environment_context_delta_event(
+        &mut self,
+        payload: &EnvironmentContextDeltaEvent,
+    ) {
+        if !self.context_ui_enabled() {
+            return;
+        }
+
+        let mut summary = self.context_summary.clone().unwrap_or_default();
+        if let Some(obj) = payload.delta.as_object() {
+            if let Some(changes) = obj.get("changes").and_then(|v| v.as_object()) {
+                self.apply_context_changes(&mut summary, changes);
+            }
+        }
+
+        self.set_context_summary(summary, payload.sequence, false);
+    }
+
+    fn handle_browser_snapshot_event(&mut self, payload: &BrowserSnapshotEvent) {
+        if !self.context_ui_enabled() {
+            return;
+        }
+
+        let mut summary = self.context_summary.clone().unwrap_or_default();
+        summary.browser_session_active = true;
+        summary.browser_snapshot = Some(Self::browser_snapshot_from_event(payload));
+        self.context_browser_sequence = self.context_last_sequence;
+        self.set_context_summary(summary, None, false);
+    }
+
+    fn apply_context_changes(
+        &self,
+        summary: &mut ContextSummary,
+        changes: &serde_json::Map<String, serde_json::Value>,
+    ) {
+        if let Some(value) = changes.get("cwd") {
+            summary.cwd = Self::value_to_optional_string(value);
+        }
+        if let Some(value) = changes.get("git_branch") {
+            summary.git_branch = Self::value_to_optional_string(value);
+        }
+        if let Some(value) = changes.get("reasoning_effort") {
+            summary.reasoning_effort = Self::value_to_optional_string(value);
+        }
+    }
+
+    fn value_to_optional_string(value: &serde_json::Value) -> Option<String> {
+        match value {
+            serde_json::Value::Null => None,
+            serde_json::Value::String(s) => Some(s.clone()),
+            other => Some(other.to_string()),
+        }
+    }
+
+    fn browser_snapshot_from_event(payload: &BrowserSnapshotEvent) -> ContextBrowserSnapshotRecord {
+        use std::collections::BTreeMap;
+
+        let mut record = ContextBrowserSnapshotRecord::default();
+
+        if let Some(obj) = payload.snapshot.as_object() {
+            if let Some(version_url) = obj.get("url").and_then(|v| v.as_str()) {
+                record.url = Some(version_url.to_string());
+            }
+            if let Some(title) = obj.get("title").and_then(|v| v.as_str()) {
+                record.title = Some(title.to_string());
+            }
+            if let Some(captured) = obj.get("captured_at").and_then(|v| v.as_str()) {
+                record.captured_at = Some(captured.to_string());
+            }
+            if let Some(viewport) = obj.get("viewport").and_then(|v| v.as_object()) {
+                record.width = viewport
+                    .get("width")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32);
+                record.height = viewport
+                    .get("height")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32);
+            }
+            if let Some(meta) = obj.get("metadata").and_then(|v| v.as_object()) {
+                let mut map = BTreeMap::new();
+                for (key, value) in meta.iter() {
+                    if let Some(v) = value.as_str() {
+                        map.insert(key.clone(), v.to_string());
+                    } else {
+                        map.insert(key.clone(), value.to_string());
+                    }
+                }
+                if !map.is_empty() {
+                    record.metadata = map;
+                }
+            }
+        }
+
+        if record.url.is_none() {
+            record.url = payload.url.clone();
+        }
+
+        if record.captured_at.is_none() {
+            record.captured_at = payload.captured_at.clone();
+        }
+
+        record
+    }
+
     /// Get or create the global browser manager
     async fn get_browser_manager() -> Arc<BrowserManager> {
         code_browser::global::get_or_create_browser_manager().await
@@ -4123,6 +4528,10 @@ impl ChatWidget<'_> {
             history_state: HistoryState::new(),
             history_snapshot_dirty: false,
             history_snapshot_last_flush: None,
+            context_cell_id: None,
+            context_summary: None,
+            context_last_sequence: None,
+            context_browser_sequence: None,
             history_cell_ids: Vec::new(),
             height_manager: RefCell::new(HeightManager::new(
                 crate::height_manager::HeightManagerConfig::default(),
@@ -4443,6 +4852,10 @@ impl ChatWidget<'_> {
             history_state: HistoryState::new(),
             history_snapshot_dirty: false,
             history_snapshot_last_flush: None,
+            context_cell_id: None,
+            context_summary: None,
+            context_last_sequence: None,
+            context_browser_sequence: None,
             history_cell_ids: Vec::new(),
             height_manager: RefCell::new(HeightManager::new(
                 crate::height_manager::HeightManagerConfig::default(),
@@ -4577,6 +4990,7 @@ impl ChatWidget<'_> {
             | HistoryCellType::Diff
             | HistoryCellType::Plain
             | HistoryCellType::Image => Some(User),
+            HistoryCellType::Context => None,
             HistoryCellType::Tool { status } => match status {
                 crate::history_cell::ToolCellStatus::Running => None,
                 crate::history_cell::ToolCellStatus::Success
@@ -7246,6 +7660,15 @@ impl ChatWidget<'_> {
                     return true;
                 }
             }
+            HistoryRecord::Context(state) => {
+                if let Some(context) = cell
+                    .as_any_mut()
+                    .downcast_mut::<crate::history_cell::ContextCell>()
+                {
+                    context.update(state.clone());
+                    return true;
+                }
+            }
             _ => {}
         }
         false
@@ -7312,6 +7735,9 @@ impl ChatWidget<'_> {
             }
             HistoryRecord::Image(state) => Some(Box::new(
                 history_cell::ImageOutputCell::from_record(state.clone()),
+            )),
+            HistoryRecord::Context(state) => Some(Box::new(
+                history_cell::ContextCell::new(state.clone()),
             )),
             HistoryRecord::Notice(state) => Some(Box::new(
                 history_cell::PlainHistoryCell::from_notice_record(state.clone()),
@@ -9891,6 +10317,15 @@ impl ChatWidget<'_> {
 
         let Event { id, msg, .. } = event.clone();
         match msg {
+            EventMsg::EnvironmentContextFull(ev) => {
+                self.handle_environment_context_full_event(&ev);
+            }
+            EventMsg::EnvironmentContextDelta(ev) => {
+                self.handle_environment_context_delta_event(&ev);
+            }
+            EventMsg::BrowserSnapshot(ev) => {
+                self.handle_browser_snapshot_event(&ev);
+            }
             EventMsg::SessionConfigured(event) => {
                 // Remove stale "Connecting MCP servers…" status from the startup notice
                 // now that MCP initialization has completed in core.
@@ -10061,6 +10496,10 @@ impl ChatWidget<'_> {
                     self.stop_spinner();
                     return;
                 }
+                if self.strict_stream_ids_enabled() && id.trim().is_empty() {
+                    self.warn_missing_stream_id("assistant answer delta");
+                    return;
+                }
                 // Ignore late deltas for ids that have already finalized in this turn
                 if self
                     .stream_state
@@ -10157,6 +10596,10 @@ impl ChatWidget<'_> {
                 if self.stream_state.drop_streaming {
                     tracing::debug!("Ignoring Reasoning delta after interrupt");
                     self.stop_spinner();
+                    return;
+                }
+                if self.strict_stream_ids_enabled() && id.trim().is_empty() {
+                    self.warn_missing_stream_id("assistant reasoning delta");
                     return;
                 }
                 // Ignore late deltas for ids that have already finalized in this turn
@@ -10279,6 +10722,10 @@ impl ChatWidget<'_> {
                 if self.stream_state.drop_streaming {
                     tracing::debug!("Ignoring RawContent delta after interrupt");
                     self.stop_spinner();
+                    return;
+                }
+                if self.strict_stream_ids_enabled() && id.trim().is_empty() {
+                    self.warn_missing_stream_id("assistant raw reasoning delta");
                     return;
                 }
                 // Treat raw reasoning content the same as summarized reasoning
