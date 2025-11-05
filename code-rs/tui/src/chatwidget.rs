@@ -8918,8 +8918,11 @@ impl ChatWidget<'_> {
 
         if turn_active {
             tracing::info!(
-                "Queuing user input while turn is active (queued: {})",
-                self.queued_user_messages.len() + 1
+                "[queue] Enqueuing user input while turn is active (queue_size={}, task_running={}, stream_active={}, active_tasks={})",
+                self.queued_user_messages.len() + 1,
+                self.is_task_running(),
+                self.stream.is_write_cycle_active(),
+                self.active_task_ids.len()
             );
             let queued_clone = message.clone();
             self.queued_user_messages.push_back(queued_clone);
@@ -8943,6 +8946,12 @@ impl ChatWidget<'_> {
             return;
         }
 
+        tracing::info!(
+            "[queue] Turn idle, enqueuing and preparing to drain (auto_active={}, queue_size={})",
+            self.auto_state.is_active(),
+            self.queued_user_messages.len() + 1
+        );
+
         let queued_clone = message.clone();
         self.queued_user_messages.push_back(queued_clone);
         self.refresh_queued_user_messages();
@@ -8961,7 +8970,19 @@ impl ChatWidget<'_> {
 
         let _ = self.capture_ghost_snapshot(summary);
 
-        self.dispatch_queued_batch(batch);
+        if self.auto_state.is_active() {
+            tracing::info!(
+                "[queue] Draining via coordinator path for Auto Drive (batch_size={})",
+                batch.len()
+            );
+            self.dispatch_queued_batch_via_coordinator(batch);
+        } else {
+            tracing::info!(
+                "[queue] Draining via direct batch dispatch (batch_size={})",
+                batch.len()
+            );
+            self.dispatch_queued_batch(batch);
+        }
 
         // (debug watchdog removed)
     }
@@ -9109,6 +9130,10 @@ impl ChatWidget<'_> {
     fn dispatch_queued_user_message_now(&mut self, message: UserMessage) {
         let message = self.take_queued_user_message(&message).unwrap_or(message);
         let items = message.ordered_items.clone();
+        tracing::info!(
+            "[queue] Dispatching single queued message via coordinator (queue_remaining={})",
+            self.queued_user_messages.len()
+        );
         match self.code_op_tx.send(Op::QueueUserInput { items }) {
             Ok(()) => {
                 self.finalize_sent_user_message(message);
@@ -9117,6 +9142,38 @@ impl ChatWidget<'_> {
                 tracing::error!("failed to send QueueUserInput op: {err}");
                 self.queued_user_messages.push_front(message);
                 self.refresh_queued_user_messages();
+            }
+        }
+    }
+
+    fn dispatch_queued_batch_via_coordinator(&mut self, batch: Vec<UserMessage>) {
+        if batch.is_empty() {
+            return;
+        }
+
+        tracing::info!(
+            "[queue] Draining batch via coordinator path (batch_size={}, auto_active={})",
+            batch.len(),
+            self.auto_state.is_active()
+        );
+
+        for message in batch {
+            let Some(message) = self.take_queued_user_message(&message) else {
+                tracing::info!("[queue] Skipping queued user input removed before dispatch");
+                continue;
+            };
+
+            let items = message.ordered_items.clone();
+            match self.code_op_tx.send(Op::QueueUserInput { items }) {
+                Ok(()) => {
+                    self.finalize_sent_user_message(message);
+                }
+                Err(err) => {
+                    tracing::error!("[queue] Failed to send QueueUserInput op: {err}");
+                    self.queued_user_messages.push_front(message);
+                    self.refresh_queued_user_messages();
+                    break;
+                }
             }
         }
     }
@@ -14261,6 +14318,7 @@ fi\n\
             AutoCoordinatorEventSender::new(move |event| {
                 match event {
                     AutoCoordinatorEvent::Decision {
+                        seq,
                         status,
                         status_title,
                         status_sent_to_user,
@@ -14271,6 +14329,7 @@ fi\n\
                         transcript,
                     } => {
                         app_event_tx.send(AppEvent::AutoCoordinatorDecision {
+                            seq,
                             status,
                             status_title,
                             status_sent_to_user,
@@ -14297,17 +14356,24 @@ fi\n\
                         total_usage,
                         last_turn_usage,
                         turn_count,
+                        duplicate_items,
+                        replay_updates,
                     } => {
                         app_event_tx.send(AppEvent::AutoCoordinatorTokenMetrics {
                             total_usage,
                             last_turn_usage,
                             turn_count,
+                            duplicate_items,
+                            replay_updates,
                         });
                     }
                     AutoCoordinatorEvent::CompactedHistory { conversation } => {
                         app_event_tx.send(AppEvent::AutoCoordinatorCompactedHistory {
                             conversation,
                         });
+                    }
+                    AutoCoordinatorEvent::StopAck => {
+                        app_event_tx.send(AppEvent::AutoCoordinatorStopAck);
                     }
                 }
             })
@@ -14633,6 +14699,7 @@ fi\n\
 
     pub(crate) fn auto_handle_decision(
         &mut self,
+        seq: u64,
         status: AutoCoordinatorStatus,
         status_title: Option<String>,
         status_sent_to_user: Option<String>,
@@ -14643,6 +14710,9 @@ fi\n\
         transcript: Vec<code_protocol::models::ResponseItem>,
     ) {
         if !self.auto_state.is_active() {
+            if let Some(handle) = self.auto_handle.as_ref() {
+                let _ = handle.send(code_auto_drive_core::AutoCoordinatorCommand::AckDecision { seq });
+            }
             return;
         }
 
@@ -14662,6 +14732,10 @@ fi\n\
 
         if !transcript.is_empty() {
             self.auto_history.append_raw(&transcript);
+        }
+
+        if let Some(handle) = self.auto_handle.as_ref() {
+            let _ = handle.send(code_auto_drive_core::AutoCoordinatorCommand::AckDecision { seq });
         }
 
         self.auto_state.current_status_sent_to_user = status_sent_to_user.clone();
@@ -14777,7 +14851,7 @@ fi\n\
                         ));
                     }
                 } else {
-                    self.schedule_auto_cli_prompt(prompt_text);
+                    self.schedule_auto_cli_prompt(seq, prompt_text);
                 }
             }
             AutoCoordinatorStatus::Success => {
@@ -14819,7 +14893,7 @@ Have we met every part of this goal and is there no further work to do?"#
                     "Auto Drive Diagnostics: Validating progress".to_string(),
                     AutoDriveActionKind::Info,
                 );
-                self.schedule_auto_cli_prompt(prompt_text);
+                self.schedule_auto_cli_prompt(seq, prompt_text);
                 self.auto_submit_prompt();
                 return;
             }
@@ -14884,9 +14958,17 @@ Have we met every part of this goal and is there no further work to do?"#
         total_usage: TokenUsage,
         last_turn_usage: TokenUsage,
         turn_count: u32,
+        duplicate_items: u32,
+        replay_updates: u32,
     ) {
         self.auto_history
-            .apply_token_metrics(total_usage, last_turn_usage, turn_count);
+            .apply_token_metrics(
+                total_usage,
+                last_turn_usage,
+                turn_count,
+                duplicate_items,
+                replay_updates,
+            );
         self.request_redraw();
     }
 
@@ -14904,19 +14986,20 @@ Have we met every part of this goal and is there no further work to do?"#
         self.request_redraw();
     }
 
-    fn schedule_auto_cli_prompt(&mut self, prompt_text: String) {
-        self.schedule_auto_cli_prompt_with_override(prompt_text, None);
+    fn schedule_auto_cli_prompt(&mut self, decision_seq: u64, prompt_text: String) {
+        self.schedule_auto_cli_prompt_with_override(decision_seq, prompt_text, None);
     }
 
     fn schedule_auto_cli_prompt_with_override(
         &mut self,
+        decision_seq: u64,
         prompt_text: String,
         countdown_override: Option<u8>,
     ) {
         self.auto_state.suppress_next_cli_display = false;
         let effects = self
             .auto_state
-            .schedule_cli_prompt(prompt_text, countdown_override);
+            .schedule_cli_prompt(decision_seq, prompt_text, countdown_override);
         self.auto_apply_controller_effects(effects);
     }
 
@@ -14937,6 +15020,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 }
                 AutoControllerEffect::StartCountdown {
                     countdown_id,
+                    decision_seq,
                     seconds,
                 } => {
                     if seconds == 0 {
@@ -14945,7 +15029,7 @@ Have we met every part of this goal and is there no further work to do?"#
                             seconds_left: 0,
                         });
                     } else {
-                        self.auto_spawn_countdown(countdown_id, seconds);
+                        self.auto_spawn_countdown(countdown_id, decision_seq, seconds);
                     }
                 }
                 AutoControllerEffect::SubmitPrompt => {
@@ -15073,11 +15157,18 @@ Have we met every part of this goal and is there no further work to do?"#
         }
     }
 
-    fn auto_spawn_countdown(&self, countdown_id: u64, seconds: u8) {
+    fn auto_spawn_countdown(&self, countdown_id: u64, decision_seq: u64, seconds: u8) {
         let tx = self.app_event_tx.clone();
         let fallback_tx = tx.clone();
         if thread_spawner::spawn_lightweight("countdown", move || {
             let mut remaining = seconds;
+            tracing::debug!(
+                target: "auto_drive::coordinator",
+                countdown_id,
+                decision_seq,
+                seconds,
+                "spawned countdown"
+            );
             while remaining > 0 {
                 std::thread::sleep(std::time::Duration::from_secs(1));
                 remaining -= 1;
@@ -15099,9 +15190,10 @@ Have we met every part of this goal and is there no further work to do?"#
     }
 
     pub(crate) fn auto_handle_countdown(&mut self, countdown_id: u64, seconds_left: u8) {
+        let decision_seq = self.auto_state.countdown_decision_seq;
         let effects = self
             .auto_state
-            .handle_countdown_tick(countdown_id, seconds_left);
+            .handle_countdown_tick(countdown_id, decision_seq, seconds_left);
         if effects.is_empty() {
             return;
         }
@@ -15442,7 +15534,7 @@ Have we met every part of this goal and is there no further work to do?"#
         } else {
             None
         };
-        self.schedule_auto_cli_prompt_with_override(String::new(), override_seconds);
+        self.schedule_auto_cli_prompt_with_override(0, String::new(), override_seconds);
         true
     }
 
@@ -23930,7 +24022,7 @@ mod tests {
             chat.auto_state.continue_mode = AutoContinueMode::Immediate;
             chat.auto_state.goal = Some("Ship feature".to_string());
             chat.auto_state.set_phase(AutoRunPhase::Active);
-            chat.schedule_auto_cli_prompt("echo ready".to_string());
+            chat.schedule_auto_cli_prompt(0, "echo ready".to_string());
         });
 
         let (button_label, countdown_override, ctrl_switch_hint, manual_hint_present) =
@@ -24013,6 +24105,7 @@ mod tests {
         {
             let chat = harness.chat();
             chat.auto_handle_decision(
+                1,
                 AutoCoordinatorStatus::Continue,
                 None,
                 None,
@@ -24048,6 +24141,7 @@ mod tests {
         {
             let chat = harness.chat();
             chat.auto_handle_decision(
+                2,
                 AutoCoordinatorStatus::Continue,
                 None,
                 None,
@@ -24085,6 +24179,7 @@ mod tests {
         {
             let chat = harness.chat();
             chat.auto_handle_decision(
+                3,
                 AutoCoordinatorStatus::Continue,
                 Some("Drafting fix".to_string()),
                 Some("Past work".to_string()),
@@ -24563,6 +24658,7 @@ mod tests {
         chat.config.sandbox_policy = SandboxPolicy::DangerFullAccess;
 
         chat.auto_handle_decision(
+            4,
             AutoCoordinatorStatus::Continue,
             Some("Running unit tests".to_string()),
             Some("Finished setup".to_string()),

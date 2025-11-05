@@ -503,7 +503,11 @@ impl ChatWidgetHarness {
             chat.auto_state.seconds_remaining = countdown.unwrap_or(0);
             if chat.auto_state.awaiting_coordinator_submit() && !chat.auto_state.is_paused_manual() {
                 if let Some(seconds) = countdown {
-                    chat.auto_spawn_countdown(chat.auto_state.countdown_id, seconds);
+                    chat.auto_spawn_countdown(
+                        chat.auto_state.countdown_id,
+                        chat.auto_state.countdown_decision_seq,
+                        seconds,
+                    );
                 } else {
                     let _ = chat.auto_handle_countdown(chat.auto_state.countdown_id, 0);
                 }
