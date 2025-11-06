@@ -388,9 +388,7 @@ pub fn try_read_auth_json(auth_file: &Path) -> std::io::Result<AuthDotJson> {
 
 pub fn write_auth_json(auth_file: &Path, auth_dot_json: &AuthDotJson) -> std::io::Result<()> {
     if let Some(parent) = auth_file.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent)?;
-        }
+        std::fs::create_dir_all(parent)?;
     }
     let json_data = serde_json::to_string_pretty(auth_dot_json)?;
     let mut options = OpenOptions::new();
@@ -527,6 +525,8 @@ mod tests {
     use serde::Serialize;
     use serde_json::json;
     use tempfile::tempdir;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     const LAST_REFRESH: &str = "2025-08-06T20:41:36.232376Z";
 
@@ -608,6 +608,38 @@ mod tests {
 
         let auth = super::try_read_auth_json(&get_auth_file(&missing)).expect("auth json exists");
         assert_eq!(auth.openai_api_key.as_deref(), Some("sk-new"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn login_with_api_key_supports_backslash_paths() {
+        use std::path::PathBuf;
+
+        let dir = tempdir().unwrap();
+        let path = PathBuf::from(format!("{}\\nested\\code_home", dir.path().display()));
+
+        super::login_with_api_key(&path, "sk-windows")
+            .expect("login_with_api_key should succeed on Windows-style path");
+
+        let auth_path = get_auth_file(&path);
+        assert!(auth_path.exists(), "auth.json should be created for Windows path");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn login_with_api_key_handles_paths_with_spaces() {
+        let dir = tempdir().unwrap();
+        let path = dir
+            .path()
+            .join("Library")
+            .join("Application Support")
+            .join("Code Home");
+
+        super::login_with_api_key(&path, "sk-macos")
+            .expect("login_with_api_key should succeed for paths with spaces");
+
+        let auth = super::try_read_auth_json(&get_auth_file(&path)).expect("auth json exists");
+        assert_eq!(auth.openai_api_key.as_deref(), Some("sk-macos"));
     }
 
     #[tokio::test]
@@ -768,6 +800,66 @@ mod tests {
             .expect("missing auth.json should not error");
 
         assert!(result.is_none(), "missing auth.json should return None");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_auth_json_propagates_permission_denied_unix() {
+        let dir = tempdir().unwrap();
+        let read_only_dir = dir.path().join("readonly");
+        std::fs::create_dir(&read_only_dir).unwrap();
+        let mut perms = std::fs::metadata(&read_only_dir).unwrap().permissions();
+        perms.set_mode(0o500);
+        std::fs::set_permissions(&read_only_dir, perms).unwrap();
+
+        let auth_path = read_only_dir.join("nested").join("auth.json");
+        let result = write_auth_json(
+            &auth_path,
+            &AuthDotJson {
+                openai_api_key: Some("sk-unix".to_string()),
+                tokens: None,
+                last_refresh: None,
+            },
+        );
+
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn write_auth_json_fails_when_file_is_readonly() {
+        let dir = tempdir().unwrap();
+        let auth_path = dir.path().join("auth.json");
+
+        write_auth_json(
+            &auth_path,
+            &AuthDotJson {
+                openai_api_key: Some("sk-initial".to_string()),
+                tokens: None,
+                last_refresh: None,
+            },
+        )
+        .expect("initial write succeeds");
+
+        let mut perms = std::fs::metadata(&auth_path).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&auth_path, perms.clone()).unwrap();
+
+        let result = write_auth_json(
+            &auth_path,
+            &AuthDotJson {
+                openai_api_key: Some("sk-readonly".to_string()),
+                tokens: None,
+                last_refresh: None,
+            },
+        );
+
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+
+        perms.set_readonly(false);
+        std::fs::set_permissions(&auth_path, perms).unwrap();
     }
 
     #[test]
