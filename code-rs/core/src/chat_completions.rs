@@ -880,14 +880,21 @@ fn enrich_reqwest_error(err: reqwest::Error) -> CodexErr {
     CodexErr::Reqwest(err)
 }
 
-fn deepest_error_message(err: &reqwest::Error) -> String {
+fn deepest_error_message(err: &dyn StdError) -> String {
     let mut current: &dyn StdError = err;
     let mut last = current.to_string();
     while let Some(source) = current.source() {
-        last = source.to_string();
+        let candidate = source.to_string();
+        if !candidate.is_empty() {
+            last = candidate;
+        }
         current = source;
     }
-    last
+    if last.is_empty() {
+        err.to_string()
+    } else {
+        last
+    }
 }
 
 fn dns_resolution_hint(message: &str) -> Option<&'static str> {
@@ -898,6 +905,10 @@ fn dns_resolution_hint(message: &str) -> Option<&'static str> {
         || lower.contains("name or service not known")
         || lower.contains("no such host")
         || lower.contains("failed host lookup")
+        || lower.contains("nodename nor servname provided")
+        || lower.contains("getaddrinfo failed")
+        || lower.contains("could not resolve host")
+        || lower.contains("name resolution failed")
     {
         Some(
             "Check that your DNS configuration is working (for example verify /etc/resolv.conf or your system resolver settings) and then retry.",
@@ -910,18 +921,48 @@ fn dns_resolution_hint(message: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::dns_resolution_hint;
+    use super::deepest_error_message;
+    use std::error::Error as StdError;
 
     #[test]
     fn dns_hint_matches_common_messages() {
         assert!(dns_resolution_hint("dns error: failed to lookup address information").is_some());
         assert!(dns_resolution_hint("Temporary failure in name resolution").is_some());
         assert!(dns_resolution_hint("Name or service not known").is_some());
+        assert!(dns_resolution_hint("No such host is known").is_some());
+        assert!(dns_resolution_hint("nodename nor servname provided, or not known").is_some());
+        assert!(dns_resolution_hint("getaddrinfo failed: Name or service not known").is_some());
     }
 
     #[test]
     fn dns_hint_ignores_non_dns_errors() {
         assert!(dns_resolution_hint("connection refused").is_none());
         assert!(dns_resolution_hint("TLS handshake timeout").is_none());
+    }
+
+    #[test]
+    fn deepest_error_message_prefers_innermost_source() {
+        let err = anyhow::anyhow!("lowest cause")
+            .context("wrapper level 1")
+            .context("wrapper level 2");
+        let message = deepest_error_message(err.as_ref());
+        assert_eq!(message, "lowest cause");
+    }
+
+    #[test]
+    fn deepest_error_message_handles_empty_source_messages() {
+        #[derive(Debug)]
+        struct EmptySourceError;
+        impl std::fmt::Display for EmptySourceError {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "")
+            }
+        }
+        impl StdError for EmptySourceError {}
+
+        let err = anyhow::anyhow!("top level").context(EmptySourceError);
+        let message = deepest_error_message(err.as_ref());
+        assert_eq!(message, "top level");
     }
 }
 
