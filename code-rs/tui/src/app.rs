@@ -2353,9 +2353,14 @@ impl App<'_> {
                         widget.handle_review_command(args);
                     }
                 }
-                AppEvent::ToggleReviewAutoResolve => {
+                AppEvent::UpdateReviewAutoResolveEnabled(enabled) => {
                     if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.toggle_review_auto_resolve();
+                        widget.set_review_auto_resolve_enabled(enabled);
+                    }
+                }
+                AppEvent::UpdateReviewAutoResolveAttempts(attempts) => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.set_review_auto_resolve_attempts(attempts);
                     }
                 }
                 AppEvent::RunReviewWithScope {

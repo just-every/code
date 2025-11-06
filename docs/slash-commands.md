@@ -41,8 +41,9 @@ Notes
 - `/review [focus]`: without arguments, opens a review picker so you can audit
   the workspace, a specific commit, compare against another branch, or enter
   custom instructions. With a focus argument, skips the picker and uses your
-  text directly. Use the Review options dialog to toggle Auto Resolve if you
-  want Codex to rerun fixes and review checks automatically.
+  text directly. Configure Auto Resolve and max re-reviews from `/settings
+  validation` when you want Codex to rerun fixes and follow-up checks
+  automatically.
 - `/cloud`: browse Codex Cloud tasks, view details, apply patches, and create
   new tasks from the TUI.
 - `/cmd <name>`: run a project command defined for the current workspace.

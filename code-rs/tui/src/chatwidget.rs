@@ -13158,7 +13158,14 @@ impl ChatWidget<'_> {
             })
             .collect();
 
-        let view = ValidationSettingsView::new(groups, tool_rows, self.app_event_tx.clone());
+        let max_attempts = self.configured_auto_resolve_attempts();
+        let view = ValidationSettingsView::new(
+            groups,
+            tool_rows,
+            self.config.tui.review_auto_resolve,
+            max_attempts,
+            self.app_event_tx.clone(),
+        );
         ValidationSettingsContent::new(view)
     }
 
@@ -15812,11 +15819,17 @@ Have we met every part of this goal and is there no further work to do?"#
         }
 
         if self.config.tui.review_auto_resolve {
-            self.auto_resolve_state = Some(AutoResolveState::new(
-                prompt.clone(),
-                hint.clone(),
-                auto_metadata.clone(),
-            ));
+            let max_attempts = self.configured_auto_resolve_attempts();
+            if max_attempts > 0 {
+                self.auto_resolve_state = Some(AutoResolveState::new_with_limit(
+                    prompt.clone(),
+                    hint.clone(),
+                    auto_metadata.clone(),
+                    max_attempts,
+                ));
+            } else {
+                self.auto_resolve_state = None;
+            }
         } else {
             self.auto_resolve_state = None;
         }
@@ -18580,8 +18593,19 @@ Have we met every part of this goal and is there no further work to do?"#
 
     fn settings_summary_validation(&self) -> Option<String> {
         let groups = &self.config.validation.groups;
+        let attempts = self.configured_auto_resolve_attempts();
+        let auto_label = if !self.config.tui.review_auto_resolve {
+            "Auto Resolve: Off".to_string()
+        } else if attempts == 0 {
+            "Auto Resolve: On (0 re-reviews)".to_string()
+        } else if attempts == 1 {
+            "Auto Resolve: On (max 1 re-review)".to_string()
+        } else {
+            format!("Auto Resolve: On (max {} re-reviews)", attempts)
+        };
         Some(format!(
-            "Functional: {} · Stylistic: {}",
+            "{} · Functional: {} · Stylistic: {}",
+            auto_label,
             Self::on_off_label(groups.functional),
             Self::on_off_label(groups.stylistic)
         ))
@@ -23486,7 +23510,7 @@ mod tests {
     };
     use crate::bottom_pane::AutoCoordinatorViewModel;
     use crate::chatwidget::message::UserMessage;
-    use crate::chatwidget::smoke_helpers::ChatWidgetHarness;
+    use crate::chatwidget::smoke_helpers::{enter_test_runtime_guard, ChatWidgetHarness};
     use crate::history_cell::{self, ExploreAggregationCell, HistoryCellType};
     use code_auto_drive_core::{
         AutoContinueMode,
@@ -23497,6 +23521,7 @@ mod tests {
         AUTO_RESOLVE_MAX_REVIEW_ATTEMPTS,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use code_core::config_types::AutoResolveAttemptLimit;
     use code_core::history::state::{
         AssistantStreamDelta,
         AssistantStreamState,
@@ -24550,6 +24575,125 @@ mod tests {
         assert!(
             !chat.auto_state.is_waiting_for_response(),
             "skip should not resume coordinator when auto-resolve blocks"
+        );
+    }
+
+    #[test]
+    fn auto_resolve_not_started_when_limit_zero() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.config.tui.review_auto_resolve = true;
+        chat.config.auto_drive.auto_resolve_review_attempts =
+            AutoResolveAttemptLimit::try_new(0).unwrap();
+
+        chat.start_review_with_scope(
+            "Review workspace".to_string(),
+            "workspace".to_string(),
+            Some("Preparing code review request...".to_string()),
+            None,
+            true,
+        );
+
+        assert!(chat.auto_resolve_state.is_none(), "limit 0 should skip automation state");
+
+        let attempts_string_present = chat.history_cells.iter().any(|cell| {
+            cell.display_lines_trimmed().iter().any(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.contains("attempt 1 of 0"))
+            })
+        });
+        assert!(
+            !attempts_string_present,
+            "history should not mention impossible attempt counts"
+        );
+    }
+
+    #[test]
+    fn auto_resolve_limit_one_stops_after_single_retry() {
+        let _runtime_guard = enter_test_runtime_guard();
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.config.tui.review_auto_resolve = true;
+        chat.config.auto_drive.auto_resolve_review_attempts =
+            AutoResolveAttemptLimit::try_new(1).unwrap();
+
+        chat.start_review_with_scope(
+            "Review workspace".to_string(),
+            "workspace".to_string(),
+            Some("Preparing code review request...".to_string()),
+            None,
+            true,
+        );
+
+        assert_eq!(
+            chat.auto_resolve_state.as_ref().map(|state| state.max_attempts),
+            Some(1),
+            "auto-resolve state should honor configured limit"
+        );
+
+        chat.auto_resolve_handle_review_enter();
+
+        let review = ReviewOutputEvent {
+            findings: vec![ReviewFinding {
+                title: "issue".to_string(),
+                body: "details".to_string(),
+                confidence_score: 0.6,
+                priority: 1,
+                code_location: ReviewCodeLocation {
+                    absolute_file_path: PathBuf::from("src/lib.rs"),
+                    line_range: ReviewLineRange { start: 1, end: 1 },
+                },
+            }],
+            overall_correctness: "incorrect".to_string(),
+            overall_explanation: "needs follow up".to_string(),
+            overall_confidence_score: 0.6,
+        };
+
+        chat.auto_resolve_handle_review_exit(Some(review.clone()));
+        assert!(
+            matches!(
+                chat.auto_resolve_state.as_ref().map(|state| &state.phase),
+                Some(AutoResolvePhase::PendingFix { .. })
+            ),
+            "auto-resolve should request a fix after first findings"
+        );
+
+        chat.auto_resolve_on_task_complete(Some("fix applied".to_string()));
+        chat.auto_resolve_process_judge(
+            review,
+            r#"{"status":"review_again","rationale":"double-check"}"#.to_string(),
+        );
+
+        assert!(
+            chat.auto_resolve_state.is_none(),
+            "automation should halt after limit 1 review_again response"
+        );
+
+        let mut history_strings = Vec::new();
+        for cell in &chat.history_cells {
+            for line in cell.display_lines_trimmed() {
+                for span in &line.spans {
+                    history_strings.push(span.content.to_string());
+                }
+            }
+        }
+
+        let attempt_limit_notice_present = history_strings
+            .iter()
+            .any(|line| line.contains("attempt limit") && line.contains("reached"));
+        assert!(
+            attempt_limit_notice_present,
+            "user should be notified when the attempt limit stops automation"
+        );
+
+        assert!(
+            history_strings
+                .iter()
+                .all(|line| !line.contains("attempt 1 of 0")),
+            "no messaging should reference impossible attempt counts"
         );
     }
 
@@ -25663,6 +25807,13 @@ impl ChatWidget<'_> {
         self.auto_resolve_state.is_some()
     }
 
+    fn configured_auto_resolve_attempts(&self) -> u32 {
+        self.config
+            .auto_drive
+            .auto_resolve_review_attempts
+            .get()
+    }
+
     fn auto_resolve_clear(&mut self) {
         self.auto_resolve_state = None;
         self.maybe_resume_auto_after_review();
@@ -25802,10 +25953,14 @@ impl ChatWidget<'_> {
                         notice = Some("Auto-resolve: review reported no actionable findings. Exiting.".to_string());
                         should_clear = true;
                     } else if state.attempt > state.max_attempts {
-                        notice = Some(format!(
-                            "Auto-resolve: reached {attempts} review attempts; handing control back to you.",
-                            attempts = state.max_attempts
-                        ));
+                        let limit = state.max_attempts;
+                        notice = Some(match limit {
+                            0 => "Auto-resolve: attempt limit is set to 0, so automation stopped after the initial review.".to_string(),
+                            1 => "Auto-resolve: reached the review attempt limit (1 allowed review). Handing control back to you.".to_string(),
+                            _ => format!(
+                                "Auto-resolve: reached the review attempt limit ({limit} allowed reviews). Handing control back to you."
+                            ),
+                        });
                         should_clear = true;
                     } else {
                         state.phase = AutoResolvePhase::PendingFix {
@@ -25947,11 +26102,13 @@ impl ChatWidget<'_> {
             return;
         };
         let next_attempt = state_snapshot.attempt.saturating_add(1);
-        let bounded_attempt = next_attempt.min(state_snapshot.max_attempts);
         let max_attempts = state_snapshot.max_attempts;
-        let prep_label = format!(
-            "Preparing follow-up code review (attempt {bounded_attempt} of {max_attempts})"
-        );
+        let attempt_label = if max_attempts == 0 {
+            "attempt limit reached".to_string()
+        } else {
+            format!("attempt {next_attempt} of {max_attempts}")
+        };
+        let prep_label = format!("Preparing follow-up code review ({attempt_label})");
         let mut base_prompt = state_snapshot.prompt.trim_end().to_string();
         if let Some(idx) = base_prompt.find(AUTO_RESOLVE_REVIEW_FOLLOWUP) {
             base_prompt = base_prompt[..idx].trim_end().to_string();
@@ -26050,15 +26207,33 @@ impl ChatWidget<'_> {
                     .is_some_and(|state| state.attempt >= state.max_attempts);
 
                 if attempt_limit_reached {
-                    if rationale_text.is_empty() {
-                        self.auto_resolve_notice(
-                            "Auto-resolve: agent reported no remaining issues but hit the review attempt limit. Please inspect manually.".to_string(),
-                        );
+                    let limit = self
+                        .auto_resolve_state
+                        .as_ref()
+                        .map(|state| state.max_attempts)
+                        .unwrap_or(0);
+                    let message = if rationale_text.is_empty() {
+                        match limit {
+                            0 => "Auto-resolve: agent reported no remaining issues but automation is disabled (limit 0). Please inspect manually.".to_string(),
+                            1 => "Auto-resolve: agent reported no remaining issues but hit the single allowed review. Please inspect manually.".to_string(),
+                            _ => format!(
+                                "Auto-resolve: agent reported no remaining issues but hit the review attempt limit ({limit}). Please inspect manually."
+                            ),
+                        }
                     } else {
-                        self.auto_resolve_notice(format!(
-                            "Auto-resolve: no remaining issues. {rationale_text} Attempt limit reached; handing control back to you."
-                        ));
-                    }
+                        match limit {
+                            0 => format!(
+                                "Auto-resolve: no remaining issues. {rationale_text} Automation is disabled (limit 0); handing control back to you."
+                            ),
+                            1 => format!(
+                                "Auto-resolve: no remaining issues. {rationale_text} The single allowed review is complete; handing control back to you."
+                            ),
+                            _ => format!(
+                                "Auto-resolve: no remaining issues. {rationale_text} Review attempt limit ({limit}) reached; handing control back to you."
+                            ),
+                        }
+                    };
+                    self.auto_resolve_notice(message);
                     self.auto_resolve_clear();
                 } else {
                     if rationale_text.is_empty() {
@@ -26090,7 +26265,21 @@ impl ChatWidget<'_> {
                     .as_ref()
                     .is_some_and(|state| state.attempt >= state.max_attempts);
                 if stop {
-                    self.auto_resolve_notice("Auto-resolve: review-again requested but attempt limit reached. Stopping.");
+                    let limit = self
+                        .auto_resolve_state
+                        .as_ref()
+                        .map(|state| state.max_attempts)
+                        .unwrap_or(0);
+                    let message = if limit == 0 {
+                        "Auto-resolve: review-again requested but automation is disabled (limit 0). Stopping.".to_string()
+                    } else if limit == 1 {
+                        "Auto-resolve: review-again requested but the attempt limit has been reached (1 allowed review). Stopping.".to_string()
+                    } else {
+                        format!(
+                            "Auto-resolve: review-again requested but the attempt limit has been reached ({limit} allowed reviews). Stopping."
+                        )
+                    };
+                    self.auto_resolve_notice(message);
                     self.auto_resolve_clear();
                 } else {
                     if rationale.trim().is_empty() {
@@ -26151,17 +26340,30 @@ impl ChatWidget<'_> {
 
         let mut items: Vec<SelectionItem> = Vec::new();
 
-        let auto_label = if self.config.tui.review_auto_resolve {
-            "On"
+        let max_attempts = self.configured_auto_resolve_attempts();
+        let auto_note = if self.config.tui.review_auto_resolve {
+            if max_attempts == 0 {
+                "Auto Resolve is enabled (no automatic re-reviews)."
+            } else if max_attempts == 1 {
+                "Auto Resolve is enabled (max 1 re-review)."
+            } else {
+                "Auto Resolve is enabled."
+            }
         } else {
-            "Off"
+            "Auto Resolve is disabled."
         };
         items.push(SelectionItem {
-            name: format!("Auto Resolve reviews — {auto_label}"),
-            description: Some("Automatically rerun fixes and follow-up checks after each review.".to_string()),
+            name: "Auto Resolve settings moved to /settings".to_string(),
+            description: Some(format!(
+                "{} Manage Auto Resolve reviews and max re-reviews via `/settings validation`.",
+                auto_note
+            )),
             is_current: false,
             actions: vec![Box::new(|tx: &crate::app_event_sender::AppEventSender| {
-                tx.send(crate::app_event::AppEvent::ToggleReviewAutoResolve);
+                tx.send(crate::app_event::AppEvent::DispatchCommand(
+                    SlashCommand::Settings,
+                    "validation".to_string(),
+                ));
             })],
         });
 
@@ -26234,45 +26436,100 @@ impl ChatWidget<'_> {
         self.bottom_pane.show_custom_prompt(view);
     }
 
-    pub(crate) fn toggle_review_auto_resolve(&mut self) {
-        let new_value = !self.config.tui.review_auto_resolve;
-        self.config.tui.review_auto_resolve = new_value;
+    pub(crate) fn set_review_auto_resolve_enabled(&mut self, enabled: bool) {
+        if self.config.tui.review_auto_resolve == enabled {
+            return;
+        }
 
-        if !new_value {
+        self.config.tui.review_auto_resolve = enabled;
+        if !enabled {
             self.auto_resolve_clear();
         }
 
-        let (_persisted, message) = if let Ok(home) = code_core::config::find_code_home() {
-            match code_core::config::set_tui_review_auto_resolve(&home, new_value) {
+        let message = if let Ok(home) = code_core::config::find_code_home() {
+            match code_core::config::set_tui_review_auto_resolve(&home, enabled) {
                 Ok(_) => {
-                    tracing::info!("Persisted review auto resolve toggle: {}", new_value);
-                    (true, if new_value {
-                        "Auto Resolve enabled for /review."
+                    tracing::info!("Persisted review auto resolve toggle: {}", enabled);
+                    if enabled {
+                        "Auto Resolve reviews enabled."
                     } else {
-                        "Auto Resolve disabled for /review."
-                    })
+                        "Auto Resolve reviews disabled."
+                    }
                 }
                 Err(e) => {
                     tracing::warn!("Failed to persist review auto resolve toggle: {}", e);
-                    (false, if new_value {
+                    if enabled {
                         "Auto Resolve enabled for this session (failed to persist)."
                     } else {
                         "Auto Resolve disabled for this session (failed to persist)."
-                    })
+                    }
                 }
             }
         } else {
             tracing::warn!("Could not locate Codex home to persist review auto resolve toggle");
-            (false, if new_value {
+            if enabled {
                 "Auto Resolve enabled for this session."
             } else {
                 "Auto Resolve disabled for this session."
-            })
+            }
         };
 
         self.bottom_pane.flash_footer_notice(message.to_string());
-        // Reopen selection view to reflect new label.
-        self.open_review_dialog();
+        self.refresh_settings_overview_rows();
+        self.request_redraw();
+    }
+
+    pub(crate) fn set_review_auto_resolve_attempts(&mut self, attempts: u32) {
+        use code_core::config_types::AutoResolveAttemptLimit;
+
+        let Ok(limit) = AutoResolveAttemptLimit::try_new(attempts) else {
+            tracing::warn!("Ignoring invalid auto-resolve attempt value: {}", attempts);
+            return;
+        };
+
+        if self
+            .config
+            .auto_drive
+            .auto_resolve_review_attempts
+            .get()
+            == limit.get()
+        {
+            return;
+        }
+
+        self.config.auto_drive.auto_resolve_review_attempts = limit;
+        if let Some(state) = self.auto_resolve_state.as_mut() {
+            state.max_attempts = limit.get();
+            if state.max_attempts == 0 || state.attempt > state.max_attempts {
+                self.auto_resolve_clear();
+            }
+        }
+
+        let message = if let Ok(home) = code_core::config::find_code_home() {
+            match code_core::config::set_auto_drive_settings(&home, &self.config.auto_drive) {
+                Ok(_) => {
+                    tracing::info!(
+                        "Persisted auto resolve attempt limit: {}",
+                        limit.get()
+                    );
+                    format!("Max re-reviews set to {}.", limit.get())
+                }
+                Err(err) => {
+                    tracing::warn!("Failed to persist auto resolve attempts: {err}");
+                    format!(
+                        "Max re-reviews set to {} for this session (failed to persist).",
+                        limit.get()
+                    )
+                }
+            }
+        } else {
+            tracing::warn!("Could not locate Codex home to persist auto resolve attempts");
+            format!("Max re-reviews set to {} for this session.", limit.get())
+        };
+
+        self.bottom_pane.flash_footer_notice(message);
+        self.refresh_settings_overview_rows();
+        self.request_redraw();
     }
 
     pub(crate) fn show_review_commit_loading(&mut self) {
@@ -26614,11 +26871,17 @@ impl ChatWidget<'_> {
         auto_resolve: bool,
     ) {
         if auto_resolve {
-            self.auto_resolve_state = Some(AutoResolveState::new(
-                prompt.clone(),
-                hint.clone(),
-                metadata.clone(),
-            ));
+            let max_attempts = self.configured_auto_resolve_attempts();
+            if max_attempts > 0 {
+                self.auto_resolve_state = Some(AutoResolveState::new_with_limit(
+                    prompt.clone(),
+                    hint.clone(),
+                    metadata.clone(),
+                    max_attempts,
+                ));
+            } else {
+                self.auto_resolve_state = None;
+            }
         } else {
             self.auto_resolve_state = None;
         }

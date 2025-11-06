@@ -1,4 +1,4 @@
-use code_core::config_types::{validation_tool_category, ValidationCategory};
+use code_core::config_types::{validation_tool_category, AutoResolveAttemptLimit, ValidationCategory};
 use code_core::protocol::ValidationGroup;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
@@ -40,11 +40,15 @@ pub(crate) struct ToolRow {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum SelectionKind {
+    AutoResolveToggle,
+    AutoResolveAttempts,
     Group(usize),
     Tool(usize),
 }
 
 enum RowData {
+    AutoResolveToggle,
+    AutoResolveAttempts,
     Header { group_idx: usize },
     Spacer,
     Tool { idx: usize },
@@ -55,6 +59,9 @@ const DEFAULT_VISIBLE_ROWS: usize = 8;
 pub(crate) struct ValidationSettingsView {
     groups: Vec<(GroupStatus, bool)>,
     tools: Vec<ToolRow>,
+    auto_resolve_enabled: bool,
+    auto_resolve_attempts: u32,
+    auto_attempt_index: usize,
     app_event_tx: AppEventSender,
     state: ScrollState,
     is_complete: bool,
@@ -67,16 +74,27 @@ impl ValidationSettingsView {
     pub fn new(
         groups: Vec<(GroupStatus, bool)>,
         tools: Vec<ToolRow>,
+        auto_resolve_enabled: bool,
+        auto_resolve_attempts: u32,
         app_event_tx: AppEventSender,
     ) -> Self {
         let mut state = ScrollState::new();
-        if groups.len() + tools.len() > 0 {
-            state.selected_idx = Some(0);
-        }
+        state.selected_idx = Some(0);
         let tool_name_width = tools.iter().map(|row| row.status.name.len()).max().unwrap_or(0);
+        let default_index = AutoResolveAttemptLimit::ALLOWED
+            .iter()
+            .position(|&value| value == AutoResolveAttemptLimit::DEFAULT)
+            .unwrap_or(0);
+        let attempt_index = AutoResolveAttemptLimit::ALLOWED
+            .iter()
+            .position(|&value| value == auto_resolve_attempts)
+            .unwrap_or(default_index);
         Self {
             groups,
             tools,
+            auto_resolve_enabled,
+            auto_resolve_attempts,
+            auto_attempt_index: attempt_index,
             app_event_tx,
             state,
             is_complete: false,
@@ -115,6 +133,38 @@ impl ValidationSettingsView {
         }
     }
 
+    fn toggle_auto_resolve(&mut self) {
+        self.auto_resolve_enabled = !self.auto_resolve_enabled;
+        self.app_event_tx
+            .send(AppEvent::UpdateReviewAutoResolveEnabled(self.auto_resolve_enabled));
+    }
+
+    fn adjust_auto_resolve_attempts(&mut self, forward: bool) {
+        let allowed = AutoResolveAttemptLimit::ALLOWED;
+        if allowed.is_empty() {
+            return;
+        }
+
+        let len = allowed.len();
+        let mut next = self.auto_attempt_index;
+        next = if forward {
+            (next + 1) % len
+        } else if next == 0 {
+            len.saturating_sub(1)
+        } else {
+            next - 1
+        };
+
+        if next == self.auto_attempt_index {
+            return;
+        }
+
+        self.auto_attempt_index = next;
+        self.auto_resolve_attempts = allowed[next];
+        self.app_event_tx
+            .send(AppEvent::UpdateReviewAutoResolveAttempts(self.auto_resolve_attempts));
+    }
+
     fn apply_group_to_tools(&mut self, group: ValidationGroup, enabled: bool) {
         for tool in &mut self.tools {
             if group_for_category(tool.status.category) == group {
@@ -133,9 +183,16 @@ impl ValidationSettingsView {
     }
 
     fn build_rows(&self) -> (Vec<RowData>, Vec<usize>, Vec<SelectionKind>) {
-        let mut rows = Vec::new();
-        let mut selection_rows = Vec::new();
-        let mut selection_kinds = Vec::new();
+        let mut rows = vec![RowData::AutoResolveToggle, RowData::AutoResolveAttempts];
+        let mut selection_rows = vec![0, 1];
+        let mut selection_kinds = vec![
+            SelectionKind::AutoResolveToggle,
+            SelectionKind::AutoResolveAttempts,
+        ];
+
+        if !self.groups.is_empty() {
+            rows.push(RowData::Spacer);
+        }
 
         for (group_idx, (status, enabled)) in self.groups.iter().enumerate() {
             rows.push(RowData::Header { group_idx });
@@ -162,6 +219,8 @@ impl ValidationSettingsView {
 
     fn activate_selection(&mut self, pane: Option<&mut BottomPane<'_>>, selection: SelectionKind) {
         match selection {
+            SelectionKind::AutoResolveToggle => self.toggle_auto_resolve(),
+            SelectionKind::AutoResolveAttempts => self.adjust_auto_resolve_attempts(true),
             SelectionKind::Group(idx) => self.toggle_group(idx),
             SelectionKind::Tool(idx) => {
                 if let Some(tool) = self.tools.get(idx) {
@@ -237,9 +296,31 @@ impl ValidationSettingsView {
             KeyEvent { code: KeyCode::Down, .. } => {
                 self.state.move_down_wrap(total);
             }
-            KeyEvent { code: KeyCode::Left, .. } | KeyEvent { code: KeyCode::Right, .. } => {
+            KeyEvent { code: KeyCode::Left, .. } => {
                 if let Some(kind) = current_kind {
                     match kind {
+                        SelectionKind::AutoResolveToggle => self.toggle_auto_resolve(),
+                        SelectionKind::AutoResolveAttempts => {
+                            self.adjust_auto_resolve_attempts(false)
+                        }
+                        SelectionKind::Group(idx) => self.toggle_group(idx),
+                        SelectionKind::Tool(idx) => {
+                            if let Some(tool) = self.tools.get(idx) {
+                                if tool.status.installed {
+                                    self.toggle_tool(idx);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            KeyEvent { code: KeyCode::Right, .. } => {
+                if let Some(kind) = current_kind {
+                    match kind {
+                        SelectionKind::AutoResolveToggle => self.toggle_auto_resolve(),
+                        SelectionKind::AutoResolveAttempts => {
+                            self.adjust_auto_resolve_attempts(true)
+                        }
                         SelectionKind::Group(idx) => self.toggle_group(idx),
                         SelectionKind::Tool(idx) => {
                             if let Some(tool) = self.tools.get(idx) {
@@ -291,11 +372,11 @@ impl ValidationSettingsView {
     fn render_header_lines(&self) -> Vec<Line<'static>> {
         vec![
             Line::from(Span::styled(
-                "Functional checks compile changed code; stylistic linters cover docs and configs.",
+                "Configure Auto Resolve automation and validation tools.",
                 Style::default().fg(colors::text_dim()),
             )),
             Line::from(Span::styled(
-                "Use arrow keys to navigate. Enter toggles, Esc closes.",
+                "Use ↑↓ to navigate · Enter/Space toggle · ←→ adjust values · Esc close",
                 Style::default().fg(colors::text_dim()),
             )),
             Line::from(""),
@@ -310,6 +391,8 @@ impl ValidationSettingsView {
             Span::styled(" Toggle  ", Style::default().fg(colors::text_dim())),
             Span::styled("Space", Style::default().fg(colors::success())),
             Span::styled(" Toggle  ", Style::default().fg(colors::text_dim())),
+            Span::styled("←→", Style::default().fg(colors::function())),
+            Span::styled(" Adjust  ", Style::default().fg(colors::text_dim())),
             Span::styled("Esc", Style::default().fg(colors::error())),
             Span::styled(" Close", Style::default().fg(colors::text_dim())),
         ]);
@@ -332,6 +415,79 @@ impl ValidationSettingsView {
             Style::default().fg(colors::text_dim())
         };
         match row {
+            RowData::AutoResolveToggle => {
+                let label_style = if selected {
+                    Style::default()
+                        .fg(colors::primary())
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(colors::text()).add_modifier(Modifier::BOLD)
+                };
+                let status_span = if self.auto_resolve_enabled {
+                    Span::styled("On", Style::default().fg(colors::success()))
+                } else {
+                    Span::styled("Off", Style::default().fg(colors::text_dim()))
+                };
+                let mut spans = vec![
+                    Span::styled(arrow, arrow_style),
+                    Span::styled("Auto Resolve reviews", label_style),
+                    Span::raw("  "),
+                    status_span,
+                ];
+                if selected {
+                    let hint = if self.auto_resolve_enabled {
+                        "(press Enter to disable)"
+                    } else {
+                        "(press Enter to enable)"
+                    };
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled(hint, Style::default().fg(colors::text_dim())));
+                }
+                Line::from(spans)
+            }
+            RowData::AutoResolveAttempts => {
+                let label_style = if selected {
+                    Style::default()
+                        .fg(colors::primary())
+                        .add_modifier(Modifier::BOLD)
+                } else if self.auto_resolve_enabled {
+                    Style::default().fg(colors::text()).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(colors::text_dim()).add_modifier(Modifier::BOLD)
+                };
+                let value_style = if selected {
+                    Style::default().fg(colors::function()).add_modifier(Modifier::BOLD)
+                } else if self.auto_resolve_attempts == 0 {
+                    Style::default().fg(colors::text_dim())
+                } else {
+                    Style::default().fg(colors::text())
+                };
+                let value_label = if self.auto_resolve_attempts == 0 {
+                    "0 (no re-reviews)".to_string()
+                } else {
+                    format!("{}", self.auto_resolve_attempts)
+                };
+                let mut spans = vec![
+                    Span::styled(arrow, arrow_style),
+                    Span::styled("Max re-reviews", label_style),
+                    Span::raw("  "),
+                    Span::styled(value_label, value_style),
+                ];
+                if selected {
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled(
+                        "(press ←/→ to adjust)",
+                        Style::default().fg(colors::text_dim()),
+                    ));
+                } else if !self.auto_resolve_enabled {
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled(
+                        "Enable Auto Resolve to apply",
+                        Style::default().fg(colors::text_dim()),
+                    ));
+                }
+                Line::from(spans)
+            }
             RowData::Header { group_idx } => {
                 let Some((status, enabled)) = self.groups.get(*group_idx) else {
                     return Line::from("");
@@ -429,7 +585,7 @@ impl<'a> BottomPaneView<'a> for ValidationSettingsView {
 
     fn desired_height(&self, _width: u16) -> u16 {
         let base = 6; // header + footer + padding
-        let rows = (self.groups.len() + self.tools.len() + 2) as u16; // section headers and spacing
+        let rows = (self.groups.len() + self.tools.len() + 4) as u16; // auto-resolve rows + section headers and spacing
         base + rows.min(18)
     }
 
