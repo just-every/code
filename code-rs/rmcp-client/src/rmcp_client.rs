@@ -31,6 +31,10 @@ use reqwest::Error as ReqwestError;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
 use tokio::process::Command;
+
+const INITIALIZE_RETRY_BASE_DELAY_MS: u64 = 200;
+const INITIALIZE_RETRY_MAX_DELAY_MS: u64 = 1_600;
+const INITIALIZE_MAX_RETRIES: usize = 3;
 use tokio::sync::Mutex;
 use tokio::time;
 use tracing::info;
@@ -183,9 +187,9 @@ impl RmcpClient {
                         Ok(service) => break service,
                         Err(err) => {
                             let err = annotate_phase_error(Phase::Initialize, err);
-                            if should_retry_initialize(&err, attempt) {
+                            if let Some(delay) = retry_delay_for_initialize(&err, attempt) {
                                 attempt += 1;
-                                time::sleep(Duration::from_millis(250)).await;
+                                time::sleep(delay).await;
                                 transport = build_streamable_http_transport(&url, bearer_token.as_deref());
                                 continue;
                             }
@@ -299,12 +303,12 @@ fn annotate_phase_error(phase: Phase, err: anyhow::Error) -> anyhow::Error {
     err.context(format!("phase={}", phase.as_str()))
 }
 
-fn should_retry_initialize(err: &anyhow::Error, attempt: usize) -> bool {
-    if attempt != 0 {
-        return false;
+fn retry_delay_for_initialize(err: &anyhow::Error, attempt: usize) -> Option<Duration> {
+    if attempt >= INITIALIZE_MAX_RETRIES {
+        return None;
     }
 
-    for source in err.chain() {
+    let retryable = err.chain().any(|source| {
         if let Some(reqwest_err) = source.downcast_ref::<ReqwestError>() {
             if reqwest_err.is_timeout() || reqwest_err.is_connect() {
                 return true;
@@ -314,14 +318,32 @@ fn should_retry_initialize(err: &anyhow::Error, attempt: usize) -> bool {
         if let Some(io_err) = source.downcast_ref::<io::Error>() {
             if matches!(
                 io_err.kind(),
-                io::ErrorKind::TimedOut | io::ErrorKind::ConnectionRefused
+                io::ErrorKind::TimedOut
+                    | io::ErrorKind::ConnectionRefused
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::BrokenPipe
+                    | io::ErrorKind::NotConnected
+                    | io::ErrorKind::WouldBlock,
             ) {
                 return true;
             }
         }
-    }
 
-    false
+        source.downcast_ref::<HandshakeTimeoutError>().is_some()
+    });
+
+    if retryable {
+        Some(initialize_retry_delay(attempt))
+    } else {
+        None
+    }
+}
+
+fn initialize_retry_delay(attempt: usize) -> Duration {
+    let capped_attempt = attempt.min(4);
+    let multiplier = 1u64 << capped_attempt;
+    let delay = INITIALIZE_RETRY_BASE_DELAY_MS.saturating_mul(multiplier);
+    Duration::from_millis(delay.min(INITIALIZE_RETRY_MAX_DELAY_MS))
 }
 
 fn build_streamable_http_transport(
@@ -365,6 +387,7 @@ impl StdError for HandshakeTimeoutError {}
 mod tests {
     use super::*;
     use anyhow::anyhow;
+    use std::time::Duration;
 
     #[test]
     fn mcp_schema_version_is_well_formed() {
@@ -388,12 +411,41 @@ mod tests {
     }
 
     #[test]
-    fn should_retry_initialize_detects_transient_errors() {
-        let timeout_err = anyhow!(io::Error::new(io::ErrorKind::TimedOut, "timed out"));
-        assert!(should_retry_initialize(&timeout_err, 0));
-        assert!(!should_retry_initialize(&timeout_err, 1));
+    fn retry_delay_for_initialize_detects_transient_errors() {
+        let timeout_err = annotate_phase_error(
+            Phase::Initialize,
+            anyhow!(io::Error::new(io::ErrorKind::TimedOut, "timed out")),
+        );
+        assert_eq!(
+            retry_delay_for_initialize(&timeout_err, 0),
+            Some(Duration::from_millis(INITIALIZE_RETRY_BASE_DELAY_MS))
+        );
+        assert_eq!(retry_delay_for_initialize(&timeout_err, INITIALIZE_MAX_RETRIES), None);
 
-        let mismatch_err = anyhow!("protocol mismatch");
-        assert!(!should_retry_initialize(&mismatch_err, 0));
+        let mismatch_err = annotate_phase_error(Phase::Initialize, anyhow!("protocol mismatch"));
+        assert_eq!(retry_delay_for_initialize(&mismatch_err, 0), None);
+    }
+
+    #[test]
+    fn retry_delay_handles_handshake_timeout() {
+        let err = annotate_phase_error(
+            Phase::Initialize,
+            handshake_timeout_error(Duration::from_secs(1)),
+        );
+        assert!(retry_delay_for_initialize(&err, 0).is_some());
+    }
+
+    #[test]
+    fn initialize_retry_delay_exponential_and_capped() {
+        let first = initialize_retry_delay(0);
+        let second = initialize_retry_delay(1);
+        let capped = initialize_retry_delay(10);
+
+        assert_eq!(first, Duration::from_millis(INITIALIZE_RETRY_BASE_DELAY_MS));
+        assert_eq!(second, Duration::from_millis(INITIALIZE_RETRY_BASE_DELAY_MS * 2));
+        assert_eq!(
+            capped,
+            Duration::from_millis(INITIALIZE_RETRY_MAX_DELAY_MS)
+        );
     }
 }
