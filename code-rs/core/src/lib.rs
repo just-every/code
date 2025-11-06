@@ -104,6 +104,7 @@ pub use command_safety::is_safe_command;
 pub use safety::get_platform_sandbox;
 pub use housekeeping::run_housekeeping_if_due;
 pub use housekeeping::CleanupOutcome;
+pub use exec_command::{result_into_payload, ExecCommandParams, ExecSessionManager};
 // Use our internal protocol module for crate-internal types and helpers.
 // External callers should rely on specific re-exports below.
 // Re-export protocol config enums to ensure call sites can use the same types

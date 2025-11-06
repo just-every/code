@@ -79,8 +79,16 @@ where
         env_map.retain(|k, _| matches_any(k, &policy.include_only));
     }
 
-    for (key, value) in preserved_vars {
-        env_map.entry(key).or_insert(value);
+    if policy.inherit != ShellEnvironmentPolicyInherit::None {
+        for (key, value) in preserved_vars {
+            let already_present = env_map
+                .keys()
+                .any(|existing| existing.eq_ignore_ascii_case(&key));
+
+            if !already_present {
+                env_map.insert(key, value);
+            }
+        }
     }
 
     env_map
@@ -193,7 +201,7 @@ mod tests {
     #[test]
     fn test_path_preserved_after_include_only_filters() {
         let vars = make_vars(&[
-            ("PATH", "/usr/local/bin"),
+            ("PATH", "/usr/local/bin:/opt/node/bin"),
             ("NVM_DIR", "/home/user/.nvm"),
             ("FOO", "bar"),
         ]);
@@ -206,8 +214,91 @@ mod tests {
 
         let result = populate_env(vars, &policy);
 
-        assert_eq!(result.get("PATH"), Some(&"/usr/local/bin".to_string()));
+        assert_eq!(
+            result.get("PATH"),
+            Some(&"/usr/local/bin:/opt/node/bin".to_string())
+        );
         assert_eq!(result.get("NVM_DIR"), Some(&"/home/user/.nvm".to_string()));
+    }
+
+    fn count_case_insensitive(map: &HashMap<String, String>, needle: &str) -> usize {
+        map.keys()
+            .filter(|name| name.eq_ignore_ascii_case(needle))
+            .count()
+    }
+
+    #[test]
+    fn test_path_preserved_when_case_differs() {
+        let vars = make_vars(&[("Path", "C:/OldNode"), ("FOO", "bar")]);
+
+        let policy = ShellEnvironmentPolicy {
+            inherit: ShellEnvironmentPolicyInherit::Core,
+            ignore_default_excludes: true,
+            include_only: vec![EnvironmentVariablePattern::new_case_insensitive("FOO")],
+            ..Default::default()
+        };
+
+        let result = populate_env(vars, &policy);
+
+        assert_eq!(count_case_insensitive(&result, "PATH"), 1);
+        assert_eq!(
+            result
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("PATH"))
+                .map(|(_, v)| v.as_str()),
+            Some("C:/OldNode")
+        );
+    }
+
+    #[test]
+    fn test_path_override_keeps_new_value() {
+        let vars = make_vars(&[("Path", "C:/OldNode"), ("FOO", "bar")]);
+
+        let mut policy = ShellEnvironmentPolicy {
+            inherit: ShellEnvironmentPolicyInherit::Core,
+            ignore_default_excludes: true,
+            ..Default::default()
+        };
+        policy
+            .r#set
+            .insert("PATH".to_string(), "D:/Tools/node".to_string());
+
+        let result = populate_env(vars, &policy);
+
+        assert_eq!(count_case_insensitive(&result, "PATH"), 1);
+        assert_eq!(
+            result
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("PATH"))
+                .map(|(_, v)| v.as_str()),
+            Some("D:/Tools/node")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_windows_separators_preserved() {
+        let vars = make_vars(&[(
+            "Path",
+            r"C:\Windows\System32;C:\Program Files\nodejs;D:\nvm",
+        )]);
+
+        let policy = ShellEnvironmentPolicy {
+            inherit: ShellEnvironmentPolicyInherit::Core,
+            ignore_default_excludes: true,
+            ..Default::default()
+        };
+
+        let result = populate_env(vars, &policy);
+
+        assert_eq!(count_case_insensitive(&result, "PATH"), 1);
+        assert_eq!(
+            result
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("PATH"))
+                .map(|(_, v)| v.as_str()),
+            Some(r"C:\Windows\System32;C:\Program Files\nodejs;D:\nvm")
+        );
     }
 
     #[test]
