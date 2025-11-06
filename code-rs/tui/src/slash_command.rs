@@ -232,22 +232,18 @@ pub fn process_slash_command_message(message: &str) -> ProcessedCommand {
     let args_raw = parts.get(1).map(|s| s.trim()).unwrap_or("");
     let canonical_command = command_str.to_ascii_lowercase();
 
+    if !has_slash {
+        return ProcessedCommand::NotCommand(message.to_string());
+    }
+
     if matches!(canonical_command.as_str(), "quit" | "exit") {
-        if !has_slash && !args_raw.is_empty() {
+        if !args_raw.is_empty() {
             return ProcessedCommand::NotCommand(message.to_string());
         }
 
-        let command_text = if args_raw.is_empty() {
-            format!("/{}", canonical_command)
-        } else {
-            format!("/{} {}", canonical_command, args_raw)
-        };
+        let command_text = format!("/{}", canonical_command);
 
         return ProcessedCommand::RegularCommand(SlashCommand::Exit, command_text);
-    }
-
-    if !has_slash {
-        return ProcessedCommand::NotCommand(message.to_string());
     }
 
     // Try to parse the command
@@ -278,10 +274,20 @@ pub fn process_slash_command_message(message: &str) -> ProcessedCommand {
             }
         }
 
-        let command_text = if args_raw.is_empty() {
-            format!("/{}", command.command())
+        if command == SlashCommand::Exit && !args_raw.is_empty() {
+            return ProcessedCommand::NotCommand(message.to_string());
+        }
+
+        let command_name = if command == SlashCommand::Exit {
+            canonical_command.as_str()
         } else {
-            format!("/{} {}", command.command(), args_raw)
+            command.command()
+        };
+
+        let command_text = if args_raw.is_empty() {
+            format!("/{}", command_name)
+        } else {
+            format!("/{} {}", command_name, args_raw)
         };
 
         // It's a regular command, return it as-is with the canonical text
@@ -326,11 +332,25 @@ mod tests {
             other => panic!("expected /quit to map to SlashCommand::Exit, got {other:?}"),
         }
 
-        match process_slash_command_message("exit") {
+        match process_slash_command_message("/EXIT") {
             ProcessedCommand::RegularCommand(SlashCommand::Exit, command_text) => {
                 assert_eq!(command_text, "/exit");
             }
-            other => panic!("expected bare exit to dispatch SlashCommand::Exit, got {other:?}"),
+            other => panic!("expected /EXIT to dispatch SlashCommand::Exit, got {other:?}"),
+        }
+
+        match process_slash_command_message("exit") {
+            ProcessedCommand::NotCommand(original) => {
+                assert_eq!(original, "exit");
+            }
+            other => panic!("expected bare exit to be treated as message, got {other:?}"),
+        }
+
+        match process_slash_command_message("/exit later") {
+            ProcessedCommand::NotCommand(original) => {
+                assert_eq!(original, "/exit later");
+            }
+            other => panic!("expected '/exit later' to be treated as message, got {other:?}"),
         }
 
         match process_slash_command_message("exit later") {

@@ -7966,6 +7966,7 @@ impl ChatWidget<'_> {
             cell.trigger_fade();
         }
         let mut message = user_message;
+        let message_suppress_persistence = message.suppress_persistence;
         // If our configured cwd no longer exists (e.g., a worktree folder was
         // deleted outside the app), try to automatically recover to the repo
         // root for worktrees and re-submit the same message there.
@@ -8225,14 +8226,17 @@ impl ChatWidget<'_> {
                 }
             }
             crate::slash_command::ProcessedCommand::RegularCommand(cmd, command_text) => {
-                if cmd == SlashCommand::Undo {
+                if cmd == SlashCommand::Exit && message_suppress_persistence {
+                    // Treat synthetic/system messages as plain text to avoid accidental exits.
+                } else if cmd == SlashCommand::Undo {
                     self.handle_undo_command();
                     return;
+                } else {
+                    // This is a regular slash command, dispatch it normally
+                    self.app_event_tx
+                        .send(AppEvent::DispatchCommand(cmd, command_text));
+                    return;
                 }
-                // This is a regular slash command, dispatch it normally
-                self.app_event_tx
-                    .send(AppEvent::DispatchCommand(cmd, command_text));
-                return;
             }
             crate::slash_command::ProcessedCommand::Error(error_msg) => {
                 // Show error in history
@@ -22917,6 +22921,8 @@ mod tests {
     use crate::bottom_pane::AutoCoordinatorViewModel;
     use crate::chatwidget::message::UserMessage;
     use crate::chatwidget::smoke_helpers::ChatWidgetHarness;
+    use crate::slash_command::SlashCommand;
+    use crate::app_event::AppEvent;
     use crate::history_cell::{self, ExploreAggregationCell, HistoryCellType};
     use code_auto_drive_core::{
         AutoContinueMode,
@@ -22955,7 +22961,7 @@ mod tests {
         ExecCommandBeginEvent,
         TaskCompleteEvent,
     };
-    use code_core::protocol::AgentInfo as CoreAgentInfo;
+    use code_core::protocol::{AgentInfo as CoreAgentInfo, Op};
     use ratatui::backend::TestBackend;
     use ratatui::text::Line;
     use ratatui::Terminal;
@@ -22983,6 +22989,56 @@ mod tests {
             *slot = Some(Box::new(stub));
             Self
         }
+    }
+
+    #[test]
+    fn exit_command_ignored_for_suppressed_message() {
+        let mut harness = ChatWidgetHarness::new();
+
+        harness.with_chat(|chat| {
+            let mut message = UserMessage::from("/exit".to_string());
+            message.suppress_persistence = true;
+            chat.submit_user_message(message);
+        });
+
+        let events = harness.drain_events();
+        let exit_dispatched = events.into_iter().any(|event| matches!(
+            event,
+            AppEvent::DispatchCommand(SlashCommand::Exit, _)
+        ));
+        assert!(
+            !exit_dispatched,
+            "suppressed messages should not dispatch the exit command"
+        );
+    }
+
+    #[test]
+    fn exit_command_dispatches_without_history_persistence() {
+        let mut harness = ChatWidgetHarness::new();
+
+        harness.with_chat(|chat| chat.submit_text_message("/exit".to_string()));
+
+        let events = harness.drain_events();
+        let mut exit_dispatched = false;
+        let mut history_persisted = false;
+
+        for event in events {
+            match event {
+                AppEvent::DispatchCommand(SlashCommand::Exit, _) => {
+                    exit_dispatched = true;
+                }
+                AppEvent::CodexOp(Op::AddToHistory { .. }) => {
+                    history_persisted = true;
+                }
+                _ => {}
+            }
+        }
+
+        assert!(exit_dispatched, "expected exit command to dispatch");
+        assert!(
+            !history_persisted,
+            "/exit should not be persisted to history"
+        );
     }
 
     impl Drop for CaptureCommitStubGuard {
