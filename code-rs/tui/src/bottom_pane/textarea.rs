@@ -923,11 +923,12 @@ impl TextArea {
     }
 }
 
-#[cfg(all(test, target_os = "windows"))]
-mod windows_tests {
+#[cfg(test)]
+mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn altgr_control_alt_characters_insert_printables() {
         let mut textarea = TextArea::new();
@@ -957,6 +958,24 @@ mod windows_tests {
         ));
 
         assert_eq!(textarea.text(), "", "Ctrl+Alt+H should still delete backward word");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn ctrl_alt_symbol_shortcut_is_ignored_for_text_insertion() {
+        let mut textarea = TextArea::new();
+        textarea.set_text("");
+        textarea.set_cursor(0);
+
+        textarea.input(KeyEvent::new(
+            KeyCode::Char('@'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        ));
+
+        assert!(
+            textarea.text().is_empty(),
+            "Ctrl+Alt symbol should not insert printable characters on non-Windows"
+        );
     }
 }
 
