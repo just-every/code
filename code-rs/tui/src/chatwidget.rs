@@ -15820,16 +15820,12 @@ Have we met every part of this goal and is there no further work to do?"#
 
         if self.config.tui.review_auto_resolve {
             let max_attempts = self.configured_auto_resolve_attempts();
-            if max_attempts > 0 {
-                self.auto_resolve_state = Some(AutoResolveState::new_with_limit(
-                    prompt.clone(),
-                    hint.clone(),
-                    auto_metadata.clone(),
-                    max_attempts,
-                ));
-            } else {
-                self.auto_resolve_state = None;
-            }
+            self.auto_resolve_state = Some(AutoResolveState::new_with_limit(
+                prompt.clone(),
+                hint.clone(),
+                auto_metadata.clone(),
+                max_attempts,
+            ));
         } else {
             self.auto_resolve_state = None;
         }
@@ -24579,7 +24575,8 @@ mod tests {
     }
 
     #[test]
-    fn auto_resolve_not_started_when_limit_zero() {
+    fn auto_resolve_limit_zero_runs_single_fix_cycle() {
+        let _runtime_guard = enter_test_runtime_guard();
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
 
@@ -24595,7 +24592,72 @@ mod tests {
             true,
         );
 
-        assert!(chat.auto_resolve_state.is_none(), "limit 0 should skip automation state");
+        let state = chat
+            .auto_resolve_state
+            .as_ref()
+            .expect("limit 0 should still initialize auto-resolve state");
+        assert_eq!(state.max_attempts, 0);
+
+        chat.auto_resolve_handle_review_enter();
+
+        let review = ReviewOutputEvent {
+            findings: vec![ReviewFinding {
+                title: "issue".to_string(),
+                body: "details".to_string(),
+                confidence_score: 0.6,
+                priority: 1,
+                code_location: ReviewCodeLocation {
+                    absolute_file_path: PathBuf::from("src/lib.rs"),
+                    line_range: ReviewLineRange { start: 1, end: 1 },
+                },
+            }],
+            overall_correctness: "incorrect".to_string(),
+            overall_explanation: "needs follow up".to_string(),
+            overall_confidence_score: 0.6,
+        };
+
+        chat.auto_resolve_handle_review_exit(Some(review.clone()));
+        assert!(
+            matches!(
+                chat.auto_resolve_state
+                    .as_ref()
+                    .map(|state| &state.phase),
+                Some(AutoResolvePhase::PendingFix { .. })
+            ),
+            "limit 0 should still request an automated fix"
+        );
+
+        chat.auto_resolve_on_task_complete(Some("fix applied".to_string()));
+        assert!(
+            matches!(
+                chat.auto_resolve_state
+                    .as_ref()
+                    .map(|state| &state.phase),
+                Some(AutoResolvePhase::AwaitingFix { .. })
+            ),
+            "auto-resolve should wait for judge after fix"
+        );
+
+        chat.auto_resolve_on_task_complete(Some("ready for judge".to_string()));
+        assert!(
+            matches!(
+                chat.auto_resolve_state
+                    .as_ref()
+                    .map(|state| &state.phase),
+                Some(AutoResolvePhase::AwaitingJudge { .. })
+            ),
+            "auto-resolve should request a status check"
+        );
+
+        chat.auto_resolve_process_judge(
+            review,
+            r#"{"status":"review_again","rationale":"double-check"}"#.to_string(),
+        );
+
+        assert!(
+            chat.auto_resolve_state.is_none(),
+            "automation should halt after judge when limit is zero"
+        );
 
         let attempts_string_present = chat.history_cells.iter().any(|cell| {
             cell.display_lines_trimmed().iter().any(|line| {
@@ -25952,7 +26014,7 @@ impl ChatWidget<'_> {
                     if output.findings.is_empty() {
                         notice = Some("Auto-resolve: review reported no actionable findings. Exiting.".to_string());
                         should_clear = true;
-                    } else if state.attempt > state.max_attempts {
+                    } else if state.max_attempts > 0 && state.attempt > state.max_attempts {
                         let limit = state.max_attempts;
                         notice = Some(match limit {
                             0 => "Auto-resolve: attempt limit is set to 0, so automation stopped after the initial review.".to_string(),
@@ -26500,7 +26562,7 @@ impl ChatWidget<'_> {
         self.config.auto_drive.auto_resolve_review_attempts = limit;
         if let Some(state) = self.auto_resolve_state.as_mut() {
             state.max_attempts = limit.get();
-            if state.max_attempts == 0 || state.attempt > state.max_attempts {
+            if state.attempt > state.max_attempts {
                 self.auto_resolve_clear();
             }
         }
@@ -26872,16 +26934,12 @@ impl ChatWidget<'_> {
     ) {
         if auto_resolve {
             let max_attempts = self.configured_auto_resolve_attempts();
-            if max_attempts > 0 {
-                self.auto_resolve_state = Some(AutoResolveState::new_with_limit(
-                    prompt.clone(),
-                    hint.clone(),
-                    metadata.clone(),
-                    max_attempts,
-                ));
-            } else {
-                self.auto_resolve_state = None;
-            }
+            self.auto_resolve_state = Some(AutoResolveState::new_with_limit(
+                prompt.clone(),
+                hint.clone(),
+                metadata.clone(),
+                max_attempts,
+            ));
         } else {
             self.auto_resolve_state = None;
         }
