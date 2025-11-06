@@ -13158,7 +13158,7 @@ impl ChatWidget<'_> {
             })
             .collect();
 
-        let max_attempts = self.configured_auto_resolve_attempts();
+        let max_attempts = self.configured_auto_resolve_re_reviews();
         let view = ValidationSettingsView::new(
             groups,
             tool_rows,
@@ -15819,12 +15819,12 @@ Have we met every part of this goal and is there no further work to do?"#
         }
 
         if self.config.tui.review_auto_resolve {
-            let max_attempts = self.configured_auto_resolve_attempts();
+            let max_re_reviews = self.configured_auto_resolve_re_reviews();
             self.auto_resolve_state = Some(AutoResolveState::new_with_limit(
                 prompt.clone(),
                 hint.clone(),
                 auto_metadata.clone(),
-                max_attempts,
+                max_re_reviews,
             ));
         } else {
             self.auto_resolve_state = None;
@@ -18589,7 +18589,7 @@ Have we met every part of this goal and is there no further work to do?"#
 
     fn settings_summary_validation(&self) -> Option<String> {
         let groups = &self.config.validation.groups;
-        let attempts = self.configured_auto_resolve_attempts();
+        let attempts = self.configured_auto_resolve_re_reviews();
         let auto_label = if !self.config.tui.review_auto_resolve {
             "Auto Resolve: Off".to_string()
         } else if attempts == 0 {
@@ -24725,13 +24725,22 @@ mod tests {
 
         chat.auto_resolve_on_task_complete(Some("fix applied".to_string()));
         chat.auto_resolve_process_judge(
-            review,
+            review.clone(),
             r#"{"status":"review_again","rationale":"double-check"}"#.to_string(),
         );
 
+        let state = chat
+            .auto_resolve_state
+            .as_ref()
+            .expect("limit 1 should schedule a single re-review");
+        assert!(matches!(state.phase, AutoResolvePhase::WaitingForReview));
+
+        chat.auto_resolve_handle_review_enter();
+        chat.auto_resolve_handle_review_exit(Some(review.clone()));
+
         assert!(
             chat.auto_resolve_state.is_none(),
-            "automation should halt after limit 1 review_again response"
+            "automation should halt after completing the allowed re-review"
         );
 
         let mut history_strings = Vec::new();
@@ -25869,7 +25878,7 @@ impl ChatWidget<'_> {
         self.auto_resolve_state.is_some()
     }
 
-    fn configured_auto_resolve_attempts(&self) -> u32 {
+    fn configured_auto_resolve_re_reviews(&self) -> u32 {
         self.config
             .auto_drive
             .auto_resolve_review_attempts
@@ -26164,11 +26173,12 @@ impl ChatWidget<'_> {
             return;
         };
         let next_attempt = state_snapshot.attempt.saturating_add(1);
-        let max_attempts = state_snapshot.max_attempts;
-        let attempt_label = if max_attempts == 0 {
+        let re_reviews_allowed = state_snapshot.max_attempts;
+        let total_allowed = re_reviews_allowed.saturating_add(1);
+        let attempt_label = if re_reviews_allowed == 0 {
             "attempt limit reached".to_string()
         } else {
-            format!("attempt {next_attempt} of {max_attempts}")
+            format!("attempt {next_attempt} of {total_allowed}")
         };
         let prep_label = format!("Preparing follow-up code review ({attempt_label})");
         let mut base_prompt = state_snapshot.prompt.trim_end().to_string();
@@ -26266,7 +26276,10 @@ impl ChatWidget<'_> {
                 let attempt_limit_reached = self
                     .auto_resolve_state
                     .as_ref()
-                    .is_some_and(|state| state.attempt >= state.max_attempts);
+                    .is_some_and(|state| {
+                        let allowed = state.max_attempts.saturating_add(1);
+                        state.attempt >= allowed
+                    });
 
                 if attempt_limit_reached {
                     let limit = self
@@ -26325,7 +26338,10 @@ impl ChatWidget<'_> {
                 let stop = self
                     .auto_resolve_state
                     .as_ref()
-                    .is_some_and(|state| state.attempt >= state.max_attempts);
+                    .is_some_and(|state| {
+                        let allowed = state.max_attempts.saturating_add(1);
+                        state.attempt >= allowed
+                    });
                 if stop {
                     let limit = self
                         .auto_resolve_state
@@ -26402,7 +26418,7 @@ impl ChatWidget<'_> {
 
         let mut items: Vec<SelectionItem> = Vec::new();
 
-        let max_attempts = self.configured_auto_resolve_attempts();
+        let max_attempts = self.configured_auto_resolve_re_reviews();
         let auto_note = if self.config.tui.review_auto_resolve {
             if max_attempts == 0 {
                 "Auto Resolve is enabled (no automatic re-reviews)."
@@ -26562,7 +26578,8 @@ impl ChatWidget<'_> {
         self.config.auto_drive.auto_resolve_review_attempts = limit;
         if let Some(state) = self.auto_resolve_state.as_mut() {
             state.max_attempts = limit.get();
-            if state.attempt > state.max_attempts {
+            let allowed_total = state.max_attempts.saturating_add(1);
+            if state.attempt >= allowed_total {
                 self.auto_resolve_clear();
             }
         }
@@ -26933,12 +26950,12 @@ impl ChatWidget<'_> {
         auto_resolve: bool,
     ) {
         if auto_resolve {
-            let max_attempts = self.configured_auto_resolve_attempts();
+            let max_re_reviews = self.configured_auto_resolve_re_reviews();
             self.auto_resolve_state = Some(AutoResolveState::new_with_limit(
                 prompt.clone(),
                 hint.clone(),
                 metadata.clone(),
-                max_attempts,
+                max_re_reviews,
             ));
         } else {
             self.auto_resolve_state = None;
