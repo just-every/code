@@ -41,6 +41,9 @@ pub(crate) struct HistoryRenderState {
     // Row intervals that correspond to inter-cell spacing so we can avoid
     // landing the viewport on empty gaps when scrolling.
     spacing_ranges: RefCell<Vec<(u16, u16)>>,
+    bottom_spacer_range: Cell<Option<(u16, u16)>>,
+    bottom_spacer_lines: Cell<u16>,
+    pending_bottom_spacer_lines: Cell<Option<u16>>,
 }
 
 impl HistoryRenderState {
@@ -55,6 +58,9 @@ impl HistoryRenderState {
             last_total_height: Cell::new(0),
             prefix_valid: Cell::new(false),
             spacing_ranges: RefCell::new(Vec::new()),
+            bottom_spacer_range: Cell::new(None),
+            bottom_spacer_lines: Cell::new(0),
+            pending_bottom_spacer_lines: Cell::new(None),
         }
     }
 
@@ -65,6 +71,9 @@ impl HistoryRenderState {
         self.last_total_height.set(0);
         self.prefix_valid.set(false);
         self.spacing_ranges.borrow_mut().clear();
+        self.bottom_spacer_range.set(None);
+        self.bottom_spacer_lines.set(0);
+        self.pending_bottom_spacer_lines.set(None);
     }
 
     pub(crate) fn handle_width_change(&self, width: u16) {
@@ -80,6 +89,9 @@ impl HistoryRenderState {
             self.prefix_valid.set(false);
             self.height_cache_last_width.set(width);
             self.spacing_ranges.borrow_mut().clear();
+            self.bottom_spacer_range.set(None);
+            self.bottom_spacer_lines.set(0);
+            self.pending_bottom_spacer_lines.set(None);
         }
     }
 
@@ -97,6 +109,9 @@ impl HistoryRenderState {
         self.last_total_height.set(0);
         self.prefix_valid.set(false);
         self.spacing_ranges.borrow_mut().clear();
+        self.bottom_spacer_range.set(None);
+        self.bottom_spacer_lines.set(0);
+        self.pending_bottom_spacer_lines.set(None);
     }
 
     pub(crate) fn invalidate_all(&self) {
@@ -106,6 +121,9 @@ impl HistoryRenderState {
         self.last_total_height.set(0);
         self.prefix_valid.set(false);
         self.spacing_ranges.borrow_mut().clear();
+        self.bottom_spacer_range.set(None);
+        self.bottom_spacer_lines.set(0);
+        self.pending_bottom_spacer_lines.set(None);
     }
 
     pub(crate) fn should_rebuild_prefix(&self, width: u16, count: usize) -> bool {
@@ -142,25 +160,57 @@ impl HistoryRenderState {
         *self.spacing_ranges.borrow_mut() = ranges;
     }
 
+    pub(crate) fn set_bottom_spacer_range(&self, range: Option<(u16, u16)>) {
+        self.bottom_spacer_range.set(range);
+    }
+
+    pub(crate) fn select_bottom_spacer_lines(&self, requested: u16) -> u16 {
+        let current = self.bottom_spacer_lines.get();
+        if requested >= current {
+            self.bottom_spacer_lines.set(requested);
+            self.pending_bottom_spacer_lines.set(None);
+            return requested;
+        }
+
+        let pending = self.pending_bottom_spacer_lines.get();
+        if pending == Some(requested) {
+            self.bottom_spacer_lines.set(requested);
+            self.pending_bottom_spacer_lines.set(None);
+            requested
+        } else {
+            self.pending_bottom_spacer_lines.set(Some(requested));
+            current
+        }
+    }
+
     pub(crate) fn adjust_scroll_to_content(&self, mut scroll_pos: u16) -> u16 {
         if scroll_pos == 0 {
             return scroll_pos;
         }
         let ranges = self.spacing_ranges.borrow();
-        if ranges.is_empty() {
+        let bottom_spacer = self.bottom_spacer_range.get();
+        if ranges.is_empty() && bottom_spacer.is_none() {
             return scroll_pos;
         }
         // Walk backwards until we hit a true cell row or run out of history.
         loop {
             let mut adjusted = false;
-            for &(start, end) in ranges.iter() {
-                if start == 0 {
-                    continue;
-                }
-                if scroll_pos >= start && scroll_pos < end {
+            if let Some((start, end)) = bottom_spacer {
+                if start > 0 && scroll_pos >= start && scroll_pos < end {
                     scroll_pos = start.saturating_sub(1);
                     adjusted = true;
-                    break;
+                }
+            }
+            if !adjusted {
+                for &(start, end) in ranges.iter() {
+                    if start == 0 {
+                        continue;
+                    }
+                    if scroll_pos >= start && scroll_pos < end {
+                        scroll_pos = start.saturating_sub(1);
+                        adjusted = true;
+                        break;
+                    }
                 }
             }
             if !adjusted || scroll_pos == 0 {

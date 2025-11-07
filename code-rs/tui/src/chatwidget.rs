@@ -30577,31 +30577,51 @@ impl WidgetRef for &ChatWidget<'_> {
 
         let mut total_height = self.history_render.last_total_height();
         let base_total_height = total_height;
-        if total_height > 0 && content_area.height > 0 && request_count > 0 {
-            let viewport_rows = content_area.height;
+        let viewport_rows = content_area.height;
+        let mut requested_spacer_lines = 0u16;
+        let mut remainder_for_log: Option<u16> = None;
+
+        if total_height > 0 && viewport_rows > 0 && request_count > 0 {
             if base_total_height > viewport_rows {
                 let remainder = base_total_height % viewport_rows;
-                let mut spacer_lines = 0u16;
+                remainder_for_log = Some(remainder);
                 if remainder == 0 {
-                    spacer_lines = if base_total_height == viewport_rows { 1 } else { 2 };
-                } else if viewport_rows >= 4
-                    && (remainder <= 2 || remainder >= viewport_rows.saturating_sub(2))
-                {
-                    spacer_lines = 1;
-                }
-                if spacer_lines > 0 {
-                    total_height = total_height.saturating_add(spacer_lines);
-                    tracing::debug!(
-                        target: "code_tui::history_render",
-                        lines = spacer_lines,
-                        base_height = base_total_height,
-                        padded_height = total_height,
-                        viewport = viewport_rows,
-                        remainder = remainder,
-                        "history overscan: adding bottom spacer",
-                    );
+                    requested_spacer_lines = if base_total_height == viewport_rows { 1 } else { 2 };
+                } else if remainder <= 2 || remainder >= viewport_rows.saturating_sub(2) {
+                    requested_spacer_lines = 1;
                 }
             }
+        }
+
+        let composer_rows = self.layout.last_bottom_reserved_rows.get();
+        let ensure_footer_space = self.layout.scroll_offset == 0
+            && composer_rows > 0
+            && base_total_height >= viewport_rows
+            && request_count > 0;
+        if ensure_footer_space {
+            requested_spacer_lines = requested_spacer_lines.max(1);
+        }
+
+        let spacer_lines = self
+            .history_render
+            .select_bottom_spacer_lines(requested_spacer_lines);
+
+        if spacer_lines > 0 {
+            total_height = total_height.saturating_add(spacer_lines);
+            self.history_render
+                .set_bottom_spacer_range(Some((base_total_height, total_height)));
+            tracing::debug!(
+                target: "code_tui::history_render",
+                lines = spacer_lines,
+                base_height = base_total_height,
+                padded_height = total_height,
+                viewport = viewport_rows,
+                remainder = remainder_for_log,
+                footer_padding = ensure_footer_space,
+                "history overscan: adding bottom spacer",
+            );
+        } else {
+            self.history_render.set_bottom_spacer_range(None);
         }
         let overscan_extra = total_height.saturating_sub(base_total_height);
         // Calculate scroll position and vertical alignment
