@@ -1,6 +1,10 @@
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
 
+use code_core::codex::compact::{
+    collect_compaction_snippets,
+    make_compaction_summary_message,
+};
 use code_core::model_family::{derive_default_model_family, find_family_for_model};
 use code_core::{ModelClient, Prompt, ResponseEvent, TextFormat};
 use code_protocol::models::{ContentItem, ResponseItem};
@@ -73,7 +77,7 @@ pub(crate) fn apply_compaction(
     rebuilt.extend_from_slice(&conversation[..=goal_idx]);
 
     if let Some(prev_text) = prev_summary_text.filter(|text| !text.trim().is_empty()) {
-        rebuilt.push(make_checkpoint_message(prev_text.to_string()));
+        rebuilt.push(make_compaction_summary_message(&[], prev_text));
     }
 
     rebuilt.push(summary_message);
@@ -90,6 +94,7 @@ pub(crate) fn build_checkpoint_summary(
     prev_summary: Option<&str>,
     compact_prompt: &str,
 ) -> CheckpointSummary {
+    let snippets = collect_compaction_snippets(items);
     let summary_text = match summarize_with_model(
         runtime,
         client,
@@ -102,7 +107,7 @@ pub(crate) fn build_checkpoint_summary(
         Ok(_) | Err(_) => deterministic_summary(items, prev_summary),
     };
 
-    let message = make_checkpoint_message(summary_text.clone());
+    let message = make_compaction_summary_message(&snippets, &summary_text);
     CheckpointSummary { message, text: summary_text }
 }
 
@@ -394,10 +399,6 @@ pub(crate) fn estimate_item_tokens(item: &ResponseItem) -> usize {
     byte_count.div_ceil(BYTES_PER_TOKEN)
 }
 
-fn make_checkpoint_message(text: String) -> ResponseItem {
-    plain_message("user", format!("[CHECKPOINT SUMMARY]\n\n{}", text))
-}
-
 fn plain_message(role: &str, text: String) -> ResponseItem {
     ResponseItem::Message {
         id: None,
@@ -415,6 +416,8 @@ fn push_compaction_prompt(prompt: &mut Prompt, compact_prompt: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use code_core::codex::compact::CompactionSnippet;
+    use code_core::content_items_to_text;
 
     fn user_message(text: &str) -> ResponseItem {
         plain_message("user", text.to_string())
@@ -454,7 +457,10 @@ mod tests {
             assistant_message("Final"),
         ];
 
-        let summary = make_checkpoint_message("Summary".to_string());
+        let summary = make_compaction_summary_message(
+            &collect_compaction_snippets(&conversation),
+            "Summary",
+        );
         apply_compaction(&mut conversation, (2, 5), Some("Prev"), summary).expect("compaction");
 
         assert_eq!(conversation.len(), 4);
@@ -471,7 +477,10 @@ mod tests {
             user_message("Tail"),
         ];
 
-        let summary = make_checkpoint_message("New summary".to_string());
+        let summary = make_compaction_summary_message(
+            &collect_compaction_snippets(&conversation),
+            "New summary",
+        );
         apply_compaction(&mut conversation, (2, 4), Some("Prev summary"), summary).expect("compaction");
 
         assert_eq!(conversation.len(), 4);
@@ -523,6 +532,28 @@ mod tests {
             assert!(chunk.len() <= MAX_TRANSCRIPT_BYTES);
         }
         assert_eq!(chunks.concat(), text);
+    }
+
+    #[test]
+    fn compaction_summary_message_includes_snippets() {
+        let snippets = vec![
+            CompactionSnippet {
+                role: "user".to_string(),
+                text: "Investigate failing tests".to_string(),
+            },
+            CompactionSnippet {
+                role: "assistant".to_string(),
+                text: "Analyzed logs and proposed fix".to_string(),
+            },
+        ];
+        let message = make_compaction_summary_message(&snippets, "Tests still red; patch script");
+        let ResponseItem::Message { content, .. } = message else {
+            panic!("expected message response item");
+        };
+        let rendered = content_items_to_text(&content).expect("text content");
+        assert!(rendered.contains("(user) Investigate failing tests"));
+        assert!(rendered.contains("Key takeaways"));
+        assert!(rendered.contains("Tests still red"));
     }
 
     #[test]

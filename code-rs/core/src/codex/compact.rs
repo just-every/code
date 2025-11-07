@@ -35,12 +35,84 @@ const COMPACT_TEXT_CONTENT_MAX_BYTES: usize = 8 * 1024;
 const COMPACT_TOOL_ARGS_MAX_BYTES: usize = 4 * 1024;
 const COMPACT_TOOL_OUTPUT_MAX_BYTES: usize = 4 * 1024;
 const COMPACT_IMAGE_URL_MAX_BYTES: usize = 512;
+const MAX_COMPACTION_SNIPPETS: usize = 12;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompactionSnippet {
+    pub role: String,
+    pub text: String,
+}
 
 #[derive(Template)]
 #[template(path = "compact/history_bridge.md", escape = "none")]
 struct HistoryBridgeTemplate<'a> {
-    user_messages_text: &'a str,
+    snippets: &'a [CompactionSnippet],
     summary_text: &'a str,
+}
+
+pub fn collect_compaction_snippets(items: &[ResponseItem]) -> Vec<CompactionSnippet> {
+    let mut snippets = Vec::new();
+    let mut total_bytes = 0usize;
+
+    for item in items.iter().rev() {
+        if let ResponseItem::Message { role, content, .. } = item {
+            if role != "user" && role != "assistant" {
+                continue;
+            }
+            let Some(text) = content_items_to_text(content) else {
+                continue;
+            };
+            if role == "user" && is_session_prefix_message(&text) {
+                continue;
+            }
+            let truncated = truncate_for_compact(text, COMPACT_TEXT_CONTENT_MAX_BYTES);
+            if truncated.trim().is_empty() {
+                continue;
+            }
+            if snippets.len() >= MAX_COMPACTION_SNIPPETS {
+                break;
+            }
+            let snippet_len = truncated.len();
+            if !snippets.is_empty() && total_bytes + snippet_len > COMPACT_USER_MESSAGE_MAX_TOKENS * 4 {
+                break;
+            }
+            total_bytes += snippet_len;
+            snippets.push(CompactionSnippet {
+                role: role.clone(),
+                text: truncated,
+            });
+        }
+    }
+
+    snippets.reverse();
+    snippets
+}
+
+pub fn render_compaction_summary(snippets: &[CompactionSnippet], summary_text: &str) -> String {
+    let normalized_summary = if summary_text.trim().is_empty() {
+        "(no summary available)".to_string()
+    } else {
+        summary_text.to_string()
+    };
+
+    HistoryBridgeTemplate {
+        snippets,
+        summary_text: normalized_summary.as_str(),
+    }
+    .render()
+    .unwrap_or(normalized_summary)
+}
+
+pub fn make_compaction_summary_message(
+    snippets: &[CompactionSnippet],
+    summary_text: &str,
+) -> ResponseItem {
+    let text = render_compaction_summary(snippets, summary_text);
+    ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText { text }],
+    }
 }
 
 /// Resolve the compaction prompt text based on an optional override.
@@ -204,9 +276,9 @@ pub(super) async fn perform_compaction(
         state.history.contents()
     };
     let summary_text = get_last_assistant_message_from_turn(&history_snapshot).unwrap_or_default();
-    let user_messages = collect_user_messages(&history_snapshot);
+    let snippets = collect_compaction_snippets(&history_snapshot);
     let initial_context = sess.build_initial_context(turn_context.as_ref());
-    let new_history = build_compacted_history(initial_context, &user_messages, &summary_text);
+    let new_history = build_compacted_history(initial_context, &snippets, &summary_text);
 
     // Replace session history in-place
     {
@@ -314,9 +386,9 @@ async fn run_compact_task_inner_inline(
         state.history.contents()
     };
     let summary_text = get_last_assistant_message_from_turn(&history_snapshot).unwrap_or_default();
-    let user_messages = collect_user_messages(&history_snapshot);
+    let snippets = collect_compaction_snippets(&history_snapshot);
     let initial_context = sess.build_initial_context(turn_context.as_ref());
-    let new_history = build_compacted_history(initial_context, &user_messages, &summary_text);
+    let new_history = build_compacted_history(initial_context, &snippets, &summary_text);
 
     {
         let mut state = sess.state.lock().unwrap();
@@ -481,16 +553,12 @@ async fn send_compaction_checkpoint_warning(sess: &Arc<Session>, sub_id: &str) {
     sess.send_event(event).await;
 }
 
+#[cfg(test)]
 pub(crate) fn collect_user_messages(items: &[ResponseItem]) -> Vec<String> {
-    items
-        .iter()
-        .filter_map(|item| match item {
-            ResponseItem::Message { role, content, .. } if role == "user" => {
-                content_items_to_text(content)
-            }
-            _ => None,
-        })
-        .filter(|text| !is_session_prefix_message(text))
+    collect_compaction_snippets(items)
+        .into_iter()
+        .filter(|snippet| snippet.role == "user")
+        .map(|snippet| snippet.text)
         .collect()
 }
 
@@ -503,38 +571,11 @@ pub fn is_session_prefix_message(text: &str) -> bool {
 
 pub(crate) fn build_compacted_history(
     initial_context: Vec<ResponseItem>,
-    user_messages: &[String],
+    snippets: &[CompactionSnippet],
     summary_text: &str,
 ) -> Vec<ResponseItem> {
     let mut history = initial_context;
-    let mut user_messages_text = if user_messages.is_empty() {
-        "(none)".to_string()
-    } else {
-        user_messages.join("\n\n")
-    };
-    // Truncate the concatenated prior user messages so the bridge message
-    // stays well under the context window (approx. 4 bytes/token).
-    let max_bytes = COMPACT_USER_MESSAGE_MAX_TOKENS * 4;
-    if user_messages_text.len() > max_bytes {
-        user_messages_text = truncate_middle(&user_messages_text, max_bytes).0;
-    }
-    let summary_text = if summary_text.is_empty() {
-        "(no summary available)".to_string()
-    } else {
-        summary_text.to_string()
-    };
-    let Ok(bridge) = HistoryBridgeTemplate {
-        user_messages_text: &user_messages_text,
-        summary_text: &summary_text,
-    }
-    .render() else {
-        return vec![];
-    };
-    history.push(ResponseItem::Message {
-        id: None,
-        role: "user".to_string(),
-        content: vec![ContentItem::InputText { text: bridge }],
-    });
+    history.push(make_compaction_summary_message(snippets, summary_text));
     history
 }
 
@@ -741,12 +782,59 @@ mod tests {
     }
 
     #[test]
+    fn collect_compaction_snippets_limits_messages() {
+        let mut items = Vec::new();
+        for idx in 0..15 {
+            items.push(ResponseItem::Message {
+                id: None,
+                role: if idx % 2 == 0 { "user".to_string() } else { "assistant".to_string() },
+                content: vec![ContentItem::InputText {
+                    text: format!("Message #{idx} {}", "x".repeat(1024)),
+                }],
+            });
+        }
+
+        let snippets = collect_compaction_snippets(&items);
+        assert!(snippets.len() <= MAX_COMPACTION_SNIPPETS);
+        assert!(snippets.iter().any(|snippet| snippet.role == "user"));
+        assert!(snippets.last().unwrap().text.contains("Message #14"));
+    }
+
+    #[test]
+    fn make_compaction_summary_message_renders_template() {
+        let snippets = vec![
+            CompactionSnippet {
+                role: "user".to_string(),
+                text: "Investigate bug".to_string(),
+            },
+            CompactionSnippet {
+                role: "assistant".to_string(),
+                text: "Proposed fix".to_string(),
+            },
+        ];
+        let message = make_compaction_summary_message(&snippets, "Apply patch to parser");
+        let ResponseItem::Message { content, .. } = message else {
+            panic!("expected message variant");
+        };
+        let body = content_items_to_text(&content).expect("text body");
+        assert!(body.contains("(user) Investigate bug"));
+        assert!(body.contains("Key takeaways"));
+        assert!(body.contains("Apply patch to parser"));
+    }
+
+    #[test]
     fn build_compacted_history_truncates_overlong_user_messages() {
         // Prepare a very large prior user message so the aggregated
         // `user_messages_text` exceeds the truncation threshold used by
         // `build_compacted_history` (80k bytes).
         let big = "X".repeat(200_000);
-        let history = build_compacted_history(Vec::new(), std::slice::from_ref(&big), "SUMMARY");
+        let snippet_source = vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText { text: big.clone() }],
+        }];
+        let snippets = collect_compaction_snippets(&snippet_source);
+        let history = build_compacted_history(Vec::new(), &snippets, "SUMMARY");
 
         // Expect exactly one bridge message added to history (plus any initial context we provided, which is none).
         assert_eq!(history.len(), 1);
@@ -759,19 +847,9 @@ mod tests {
             other => panic!("unexpected item in history: {other:?}"),
         };
 
-        // The bridge should contain the truncation marker and not the full original payload.
-        assert!(
-            bridge_text.contains("tokens truncated"),
-            "expected truncation marker in bridge message"
-        );
-        assert!(
-            !bridge_text.contains(&big),
-            "bridge should not include the full oversized user text"
-        );
-        assert!(
-            bridge_text.contains("SUMMARY"),
-            "bridge should include the provided summary text"
-        );
+        assert!(bridge_text.contains("Key takeaways"));
+        assert!(bridge_text.contains("SUMMARY"));
+        assert!(bridge_text.len() < big.len());
     }
 
     #[test]

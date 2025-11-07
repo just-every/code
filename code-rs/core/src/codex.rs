@@ -75,8 +75,7 @@ use chrono::Local;
 use chrono::Utc;
 
 pub mod compact;
-use self::compact::build_compacted_history;
-use self::compact::collect_user_messages;
+use self::compact::{build_compacted_history, collect_compaction_snippets};
 
 /// Initial submission ID for session configuration
 pub(crate) const INITIAL_SUBMIT_ID: &str = "";
@@ -3106,10 +3105,10 @@ impl Session {
                     process_rollout_env_item(&mut replay_ctx, response_item);
                 }
                 RolloutItem::Compacted(compacted) => {
-                    let user_messages = collect_user_messages(&history);
+                    let snippets = collect_compaction_snippets(&history);
                     history = build_compacted_history(
                         self.build_initial_context(turn_context),
-                        &user_messages,
+                        &snippets,
                         &compacted.message,
                     );
                 }
