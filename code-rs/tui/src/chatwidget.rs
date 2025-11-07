@@ -30148,7 +30148,10 @@ impl WidgetRef for &ChatWidget<'_> {
         }
 
         let composer_rows = self.layout.last_bottom_reserved_rows.get();
-        let ensure_footer_space = self.layout.scroll_offset == 0 && composer_rows > 0;
+        let ensure_footer_space = self.layout.scroll_offset == 0
+            && composer_rows > 0
+            && base_total_height >= viewport_rows
+            && request_count > 0;
         if ensure_footer_space {
             requested_spacer_lines = requested_spacer_lines.max(1);
         }
