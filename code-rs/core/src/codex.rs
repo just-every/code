@@ -5345,7 +5345,9 @@ async fn run_turn(
             }
             Err(CodexErr::Interrupted) => return Err(CodexErr::Interrupted),
             Err(CodexErr::EnvVar(var)) => return Err(CodexErr::EnvVar(var)),
-            Err(e @ (CodexErr::UsageLimitReached(_) | CodexErr::UsageNotIncluded)) => {
+            Err(e @ (CodexErr::UsageLimitReached(_)
+                | CodexErr::UsageNotIncluded
+                | CodexErr::QuotaExceeded)) => {
                 if let CodexErr::UsageLimitReached(limit_err) = &e {
                     if let Some(ctx) = account_usage_context(&sess) {
                         let usage_home = ctx.code_home.clone();

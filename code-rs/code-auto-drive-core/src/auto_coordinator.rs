@@ -645,6 +645,17 @@ mod tests {
     }
 
     #[test]
+    fn quota_exceeded_errors_short_circuit_retries() {
+        let err = anyhow!(CodexErr::QuotaExceeded);
+        match classify_model_error(&err) {
+            RetryDecision::Fatal(e) => {
+                assert!(e.to_string().contains("Quota exceeded"));
+            }
+            other => panic!("expected fatal quota decision, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn push_unique_guidance_trims_and_dedupes() {
         let mut guidance = vec!["Keep CLI prompts short".to_string()];
         push_unique_guidance(&mut guidance, "  keep cli prompts short  ");
@@ -2109,6 +2120,9 @@ pub(crate) fn classify_model_error(error: &anyhow::Error) -> RetryDecision {
                 };
             }
             CodexErr::UsageNotIncluded => {
+                return RetryDecision::Fatal(anyhow!(error.to_string()));
+            }
+            CodexErr::QuotaExceeded => {
                 return RetryDecision::Fatal(anyhow!(error.to_string()));
             }
             CodexErr::ServerError(_) => {

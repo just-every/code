@@ -108,6 +108,17 @@ fn try_parse_retry_after(err: &Error) -> Option<std::time::Duration> {
     }
 }
 
+fn is_quota_exceeded_error(error: &Error) -> bool {
+    matches!(
+        error.code.as_deref().or_else(|| error.r#type.as_deref()),
+        Some("insufficient_quota")
+    )
+}
+
+fn is_quota_exceeded_http_error(status: StatusCode, error: &Error) -> bool {
+    status.is_client_error() && is_quota_exceeded_error(error)
+}
+
 #[derive(Debug, Clone)]
 pub struct ModelClient {
     config: Arc<Config>,
@@ -657,6 +668,12 @@ impl ModelClient {
                     }
 
                     let body = serde_json::from_str::<ErrorResponse>(&body_text).ok();
+
+                    if let Some(ErrorResponse { ref error }) = body {
+                        if is_quota_exceeded_http_error(status, error) {
+                            return Err(CodexErr::QuotaExceeded);
+                        }
+                    }
 
                     if status == StatusCode::TOO_MANY_REQUESTS {
                         if let Some(ErrorResponse { ref error }) = body {
@@ -1274,9 +1291,13 @@ async fn process_sse<S>(
                     if let Some(error) = error {
                         match serde_json::from_value::<Error>(error.clone()) {
                             Ok(error) => {
-                                let delay = try_parse_retry_after(&error);
-                                let message = error.message.unwrap_or_default();
-                                response_error = Some(CodexErr::Stream(message, delay));
+                                if is_quota_exceeded_error(&error) {
+                                    response_error = Some(CodexErr::QuotaExceeded);
+                                } else {
+                                    let delay = try_parse_retry_after(&error);
+                                    let message = error.message.unwrap_or_default();
+                                    response_error = Some(CodexErr::Stream(message, delay));
+                                }
                             }
                             Err(e) => {
                                 debug!("failed to parse ErrorResponse: {e}");
@@ -1914,5 +1935,72 @@ mod tests {
         };
 
         assert_eq!(try_parse_retry_after(&err), None);
+    }
+
+    #[test]
+    fn quota_error_detected_for_common_statuses() {
+        let error = Error {
+            r#type: Some("invalid_request_error".to_string()),
+            message: Some("You exceeded your current quota".to_string()),
+            code: Some("insufficient_quota".to_string()),
+            plan_type: None,
+            resets_in_seconds: None,
+        };
+
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::FORBIDDEN,
+            StatusCode::TOO_MANY_REQUESTS,
+        ] {
+            assert!(is_quota_exceeded_http_error(status, &error), "status {status} should be fatal");
+        }
+
+        assert!(
+            !is_quota_exceeded_http_error(StatusCode::INTERNAL_SERVER_ERROR, &error),
+            "server errors should not map to quota handling"
+        );
+    }
+
+    #[test]
+    fn malformed_quota_body_is_ignored() {
+        let error = Error {
+            r#type: Some("invalid_request_error".to_string()),
+            message: Some("missing code".to_string()),
+            code: None,
+            plan_type: None,
+            resets_in_seconds: None,
+        };
+
+        assert!(!is_quota_exceeded_http_error(StatusCode::BAD_REQUEST, &error));
+    }
+
+    #[tokio::test]
+    async fn quota_exceeded_error_is_fatal() {
+        let raw_error = r#"{"type":"response.failed","sequence_number":3,"response":{"id":"resp_quota","object":"response","created_at":1759771626,"status":"failed","background":false,"error":{"code":"insufficient_quota","message":"You exceeded your current quota, please check your plan and billing details."},"incomplete_details":null}}"#;
+
+        let sse1 = format!("event: response.failed\ndata: {raw_error}\n\n");
+        let provider = ModelProviderInfo {
+            name: "test".to_string(),
+            base_url: Some("https://test.com".to_string()),
+            env_key: Some("TEST_API_KEY".to_string()),
+            env_key_instructions: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: Some(0),
+            stream_max_retries: Some(0),
+            stream_idle_timeout_ms: Some(1000),
+            requires_openai_auth: false,
+            openrouter: None,
+        };
+
+        let events = collect_events(&[sse1.as_bytes()], provider).await;
+
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Err(CodexErr::QuotaExceeded) => {}
+            other => panic!("unexpected quota event: {other:?}"),
+        }
     }
 }
