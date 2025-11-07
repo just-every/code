@@ -39,6 +39,20 @@ const PRESETS: &[ModelPreset] = &[
         effort: Some(ReasoningEffort::High),
     },
     ModelPreset {
+        id: "gpt-5-codex-mini",
+        label: "gpt-5-codex-mini",
+        description: "Optimized for codex. Cheaper, faster, and less capable.",
+        model: "gpt-5-codex-mini",
+        effort: Some(ReasoningEffort::Medium),
+    },
+    ModelPreset {
+        id: "gpt-5-codex-mini-high",
+        label: "gpt-5-codex-mini high",
+        description: "Maximizes reasoning depth for complex or ambiguous problems",
+        model: "gpt-5-codex-mini",
+        effort: Some(ReasoningEffort::High),
+    },
+    ModelPreset {
         id: "gpt-5-minimal",
         label: "gpt-5 minimal",
         description: "Fastest responses with little reasoning",
@@ -68,6 +82,33 @@ const PRESETS: &[ModelPreset] = &[
     },
 ];
 
-pub fn builtin_model_presets(_auth_mode: Option<AuthMode>) -> Vec<ModelPreset> {
-    PRESETS.to_vec()
+pub fn builtin_model_presets(auth_mode: Option<AuthMode>) -> Vec<ModelPreset> {
+    let allow_codex_mini = matches!(auth_mode, Some(AuthMode::ChatGPT));
+    PRESETS
+        .iter()
+        .filter(|preset| {
+            allow_codex_mini || preset.model != "gpt-5-codex-mini"
+        })
+        .copied()
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chatgpt_accounts_include_codex_mini() {
+        let presets = builtin_model_presets(Some(AuthMode::ChatGPT));
+        assert!(presets.iter().filter(|preset| preset.model == "gpt-5-codex-mini").count() == 2);
+    }
+
+    #[test]
+    fn api_key_accounts_exclude_codex_mini() {
+        let presets = builtin_model_presets(Some(AuthMode::ApiKey));
+        assert!(!presets.iter().any(|preset| preset.model == "gpt-5-codex-mini"));
+
+        let presets = builtin_model_presets(None);
+        assert!(!presets.iter().any(|preset| preset.model == "gpt-5-codex-mini"));
+    }
 }

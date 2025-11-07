@@ -5515,16 +5515,33 @@ impl ChatWidget<'_> {
 
     /// Format model name with proper capitalization (e.g., "gpt-4" -> "GPT-4")
     fn format_model_name(&self, model_name: &str) -> String {
+        fn format_segment(segment: &str) -> String {
+            if segment.eq_ignore_ascii_case("codex") {
+                return "Codex".to_string();
+            }
+
+            let mut chars = segment.chars();
+            match chars.next() {
+                Some(first) if first.is_ascii_alphabetic() => {
+                    let mut formatted = String::new();
+                    formatted.push(first.to_ascii_uppercase());
+                    formatted.push_str(chars.as_str());
+                    formatted
+                }
+                Some(first) => {
+                    let mut formatted = String::new();
+                    formatted.push(first);
+                    formatted.push_str(chars.as_str());
+                    formatted
+                }
+                None => String::new(),
+            }
+        }
+
         if let Some(rest) = model_name.strip_prefix("gpt-") {
             let formatted_rest = rest
                 .split('-')
-                .map(|segment| {
-                    if segment.eq_ignore_ascii_case("codex") {
-                        "Codex".to_string()
-                    } else {
-                        segment.to_string()
-                    }
-                })
+                .map(format_segment)
                 .collect::<Vec<_>>()
                 .join("-");
             format!("GPT-{}", formatted_rest)
@@ -23661,6 +23678,13 @@ mod tests {
         TaskCompleteEvent,
     };
     use code_core::protocol::AgentInfo as CoreAgentInfo;
+
+    #[test]
+    fn format_model_name_capitalizes_codex_mini() {
+        let mut harness = ChatWidgetHarness::new();
+        let formatted = harness.chat().format_model_name("gpt-5-codex-mini");
+        assert_eq!(formatted, "GPT-5-Codex-Mini");
+    }
     use ratatui::backend::TestBackend;
     use ratatui::text::Line;
     use ratatui::Terminal;

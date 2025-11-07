@@ -169,10 +169,12 @@ impl ModelSelectionView {
 
             if is_new_model {
                 if previous_model.is_some() {
-                    // Spacer plus header when switching between model groups.
-                    lines = lines.saturating_add(2);
-                } else {
-                    // Only the header for the first model group; initial spacer already counted.
+                    // Spacer between model groups.
+                    lines = lines.saturating_add(1);
+                }
+                // Header when entering a new model group.
+                lines = lines.saturating_add(1);
+                if Self::model_description(preset.model).is_some() {
                     lines = lines.saturating_add(1);
                 }
                 previous_model = Some(preset.model);
@@ -218,10 +220,24 @@ impl ModelSelectionView {
     fn model_rank(model: &str) -> u8 {
         if model.eq_ignore_ascii_case("gpt-5-codex") {
             0
-        } else if model.eq_ignore_ascii_case("gpt-5") {
+        } else if model.eq_ignore_ascii_case("gpt-5-codex-mini") {
             1
-        } else {
+        } else if model.eq_ignore_ascii_case("gpt-5") {
             2
+        } else {
+            3
+        }
+    }
+
+    fn model_description(model: &str) -> Option<&'static str> {
+        if model.eq_ignore_ascii_case("gpt-5-codex") {
+            Some("Optimized for coding.")
+        } else if model.eq_ignore_ascii_case("gpt-5-codex-mini") {
+            Some("Optimized for coding. Cheaper, faster, but less capable.")
+        } else if model.eq_ignore_ascii_case("gpt-5") {
+            Some("Broad world knowledge with strong general reasoning.")
+        } else {
+            None
         }
     }
 
@@ -350,6 +366,12 @@ impl ModelSelectionView {
                         .fg(crate::colors::text_bright())
                         .add_modifier(Modifier::BOLD),
                 )]));
+                if let Some(desc) = Self::model_description(&preset.model) {
+                    lines.push(Line::from(vec![Span::styled(
+                        desc,
+                        Style::default().fg(crate::colors::text_dim()),
+                    )]));
+                }
                 previous_model = Some(preset.model);
             }
 
