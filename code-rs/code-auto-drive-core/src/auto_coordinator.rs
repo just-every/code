@@ -1362,9 +1362,9 @@ fn build_initial_planning_seed(goal_text: &str, include_agents: bool) -> Option<
     }
 
     let cli_prompt = if include_agents {
-        "Give me a concrete plan for how to best achieve the goal. Launch agents in parallel explore mulitple approaches. Use your tools to research while they are running."
+        "Please give me a clear plan for how to best achieve the goal. If this is not a trival task, launch agents in parallel explore mulitple approaches. Use your tools to research while they are running."
     } else {
-        "Give me a concrete plan for how to best achieve the goal. Use your tools to research the best approach."
+        "Please give me a clear plan for how to best achieve the goal. If this is not a trival task, use your tools to research the best approach."
     };
 
     Some(InitialPlanningSeed {
