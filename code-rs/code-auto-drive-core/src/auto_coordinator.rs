@@ -2122,6 +2122,9 @@ pub(crate) fn classify_model_error(error: &anyhow::Error) -> RetryDecision {
             CodexErr::UsageNotIncluded => {
                 return RetryDecision::Fatal(anyhow!(error.to_string()));
             }
+            CodexErr::AuthRefreshPermanent(_) => {
+                return RetryDecision::Fatal(anyhow!(error.to_string()));
+            }
             CodexErr::QuotaExceeded => {
                 return RetryDecision::Fatal(anyhow!(error.to_string()));
             }

@@ -82,6 +82,9 @@ pub enum CodexErr {
     #[error("Quota exceeded. Check your plan and billing details.")]
     QuotaExceeded,
 
+    #[error("Authentication expired. {0}")]
+    AuthRefreshPermanent(String),
+
     #[error(
         "To use Codex with your ChatGPT plan, upgrade to Plus: https://openai.com/chatgpt/pricing."
     )]

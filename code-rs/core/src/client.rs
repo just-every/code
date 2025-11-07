@@ -5,6 +5,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::AuthManager;
+use crate::RefreshTokenError;
 use bytes::Bytes;
 use code_app_server_protocol::AuthMode;
 use code_protocol::models::ResponseItem;
@@ -23,6 +24,8 @@ use tracing::debug;
 use tracing::trace;
 use tracing::warn;
 use uuid::Uuid;
+
+const AUTH_REQUIRED_MESSAGE: &str = "Authentication required. Run `code login` to continue.";
 
 use crate::agent_defaults::{default_agent_configs, enabled_agent_model_specs};
 use crate::chat_completions::AggregateStreamExt;
@@ -117,6 +120,26 @@ fn is_quota_exceeded_error(error: &Error) -> bool {
 
 fn is_quota_exceeded_http_error(status: StatusCode, error: &Error) -> bool {
     status.is_client_error() && is_quota_exceeded_error(error)
+}
+
+fn map_unauthorized_outcome(
+    had_auth: bool,
+    refresh_error: Option<&RefreshTokenError>,
+) -> Option<CodexErr> {
+    if let Some(err) = refresh_error {
+        if err.is_permanent() {
+            return Some(CodexErr::AuthRefreshPermanent(err.message.clone()));
+        }
+        return None;
+    }
+
+    if !had_auth {
+        return Some(CodexErr::AuthRefreshPermanent(
+            AUTH_REQUIRED_MESSAGE.to_string(),
+        ));
+    }
+
+    None
 }
 
 #[derive(Debug, Clone)]
@@ -480,6 +503,8 @@ impl ModelClient {
         loop {
             attempt += 1;
 
+            let mut auth_refresh_error: Option<RefreshTokenError> = None;
+
             // Always fetch the latest auth in case a prior attempt refreshed the token.
             let auth = auth_manager.as_ref().and_then(|m| m.auth());
 
@@ -629,8 +654,22 @@ impl ModelClient {
                         .and_then(parse_retry_after_header);
 
                     if status == StatusCode::UNAUTHORIZED {
-                        if let Some(a) = auth.as_ref() {
-                            let _ = a.refresh_token().await;
+                        if let Some(manager) = auth_manager.as_ref() {
+                            match manager.refresh_token_classified().await {
+                                Ok(Some(_)) => {}
+                                Ok(None) => {
+                                    auth_refresh_error = Some(RefreshTokenError::permanent(
+                                        AUTH_REQUIRED_MESSAGE,
+                                    ));
+                                }
+                                Err(err) => {
+                                    auth_refresh_error = Some(err);
+                                }
+                            }
+                        } else {
+                            auth_refresh_error = Some(RefreshTokenError::permanent(
+                                "Authentication manager unavailable; please log in again.",
+                            ));
                         }
                     }
 
@@ -672,6 +711,14 @@ impl ModelClient {
                     if let Some(ErrorResponse { ref error }) = body {
                         if is_quota_exceeded_http_error(status, error) {
                             return Err(CodexErr::QuotaExceeded);
+                        }
+                    }
+
+                    if status == StatusCode::UNAUTHORIZED {
+                        if let Some(error) =
+                            map_unauthorized_outcome(auth.is_some(), auth_refresh_error.as_ref())
+                        {
+                            return Err(error);
                         }
                     }
 
@@ -1408,6 +1455,41 @@ mod tests {
     // ────────────────────────────
     // Helpers
     // ────────────────────────────
+
+    #[test]
+    fn unauthorized_outcome_returns_permanent_error_for_permanent_refresh_failure() {
+        let err = RefreshTokenError::permanent("token revoked");
+        let outcome = map_unauthorized_outcome(true, Some(&err))
+            .expect("should produce CodexErr");
+        match outcome {
+            CodexErr::AuthRefreshPermanent(msg) => {
+                assert!(
+                    msg.contains("token revoked"),
+                    "unexpected message: {}",
+                    msg
+                );
+            }
+            other => panic!("unexpected outcome: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn unauthorized_outcome_requires_login_without_auth() {
+        let outcome = map_unauthorized_outcome(false, None)
+            .expect("should require login");
+        match outcome {
+            CodexErr::AuthRefreshPermanent(msg) => {
+                assert_eq!(msg, AUTH_REQUIRED_MESSAGE);
+            }
+            other => panic!("unexpected outcome: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn unauthorized_outcome_allows_retry_for_transient_refresh_error() {
+        let err = RefreshTokenError::transient("server busy");
+        assert!(map_unauthorized_outcome(true, Some(&err)).is_none());
+    }
 
     #[tokio::test]
     async fn responses_request_uses_beta_header_for_public_openai() {
