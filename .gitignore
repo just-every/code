@@ -105,6 +105,9 @@ yarn-error.log*
 # patches
 apply_patch/
 
+# generated reports
+reports/
+
 # coverage
 coverage/
 
