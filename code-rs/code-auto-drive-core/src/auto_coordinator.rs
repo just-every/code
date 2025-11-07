@@ -1362,19 +1362,19 @@ fn build_initial_planning_seed(goal_text: &str, include_agents: bool) -> Option<
     }
 
     let cli_prompt = if include_agents {
-        "Please give me a clear plan for how to best achieve the goal. If this is not a trival task, launch agents in parallel explore mulitple approaches. Use your tools to research while they are running."
+        "Please output a clear plan to best achieve the Primary Goal. If this is not a trival task, launch agents in parallel to find the best approach. Use your tools to research while they are running."
     } else {
-        "Please give me a clear plan for how to best achieve the goal. If this is not a trival task, use your tools to research the best approach."
+        "Please output a clear plan to best achieve the Primary Goal. If this is not a trival task, use your tools to research the best approach."
     };
 
     Some(InitialPlanningSeed {
         response_json: format!(
-            "{{\"finish_status\":\"continue\",\"status_title\":\"Planning\",\"status_sent_to_user\":\"Started initial planning phase.\",\"prompt_sent_to_cli\":\"{cli_prompt}\"}}"
+            "{{\"finish_status\":\"continue\",\"status_title\":\"Planning\",\"status_sent_to_user\":\"Started initial planning phase\",\"prompt_sent_to_cli\":\"{cli_prompt}\"}}"
         ),
         cli_prompt: cli_prompt.to_string(),
-        goal_message: format!("Goal: {}", goal),
-        status_title: "Planning path".to_string(),
-        status_sent_to_user: "Planning best path to reach the goal.".to_string(),
+        goal_message: format!("Primary Goal: {}", goal),
+        status_title: "Planning route".to_string(),
+        status_sent_to_user: "Planning best route to reach the goal.".to_string(),
         agents_timing: if include_agents {
             Some(AutoTurnAgentsTiming::Parallel)
         } else {
