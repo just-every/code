@@ -71,6 +71,8 @@ async fn run_command_under_sandbox(
         ConfigOverrides {
             sandbox_mode: Some(sandbox_mode),
             code_linux_sandbox_exe,
+            compact_prompt_override: None,
+            compact_prompt_override_file: None,
             ..Default::default()
         },
     )?;

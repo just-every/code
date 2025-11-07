@@ -43,18 +43,32 @@ struct HistoryBridgeTemplate<'a> {
     summary_text: &'a str,
 }
 
+/// Resolve the compaction prompt text based on an optional override.
+///
+/// Empty strings are treated as missing so we always fall back to the embedded
+/// template instead of sending a blank developer message.
+pub fn resolve_compact_prompt_text(override_prompt: Option<&str>) -> String {
+    if let Some(text) = override_prompt {
+        if !text.trim().is_empty() {
+            return text.to_string();
+        }
+    }
+    SUMMARIZATION_PROMPT.to_string()
+}
+
 pub(super) fn spawn_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
     sub_id: String,
     input: Vec<InputItem>,
 ) {
+    let prompt_text = resolve_compact_prompt_text(turn_context.compact_prompt_override.as_deref());
     let task = AgentTask::compact(
         sess.clone(),
         turn_context,
         sub_id,
         input,
-        SUMMARIZATION_PROMPT.to_string(),
+        prompt_text,
     );
     // set_task is synchronous in our fork
     sess.set_task(task);
@@ -65,13 +79,14 @@ pub(super) async fn run_inline_auto_compact_task(
     turn_context: Arc<TurnContext>,
 ) -> Vec<ResponseItem> {
     let sub_id = sess.next_internal_sub_id();
-    let input = vec![InputItem::Text { text: SUMMARIZATION_PROMPT.to_string() }];
+    let prompt_text = resolve_compact_prompt_text(turn_context.compact_prompt_override.as_deref());
+    let input = vec![InputItem::Text { text: prompt_text.clone() }];
     run_compact_task_inner_inline(
         sess,
         turn_context,
         sub_id,
         input,
-        SUMMARIZATION_PROMPT.to_string(),
+        prompt_text,
     )
     .await
 }
@@ -621,6 +636,18 @@ fn response_input_from_core_items(items: Vec<InputItem>) -> ResponseInputItem {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn resolve_compact_prompt_text_prefers_override() {
+        let text = resolve_compact_prompt_text(Some("custom prompt"));
+        assert_eq!(text, "custom prompt");
+    }
+
+    #[test]
+    fn resolve_compact_prompt_text_falls_back_on_blank() {
+        let text = resolve_compact_prompt_text(Some("   \n\t"));
+        assert_eq!(text, SUMMARIZATION_PROMPT);
+    }
 
     #[test]
     fn content_items_to_text_joins_non_empty_segments() {

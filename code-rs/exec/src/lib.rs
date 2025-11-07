@@ -178,6 +178,8 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         tools_web_search_request: None,
         mcp_servers: None,
         experimental_client_tools: None,
+        compact_prompt_override: None,
+        compact_prompt_override_file: None,
     };
     // Parse `-c` overrides.
     let cli_kv_overrides = match config_overrides.parse_overrides() {

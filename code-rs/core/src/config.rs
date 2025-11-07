@@ -174,6 +174,9 @@ pub struct Config {
     /// Base instructions override.
     pub base_instructions: Option<String>,
 
+    /// Optional override for the compaction prompt text.
+    pub compact_prompt_override: Option<String>,
+
     /// Optional external notifier command. When set, Codex will spawn this
     /// program after each completed *turn* (i.e. when the agent finishes
     /// processing a user submission). The value must be the full command
@@ -1757,6 +1760,12 @@ pub struct ConfigToml {
     /// Experimental path to a file whose contents replace the built-in BASE_INSTRUCTIONS.
     pub experimental_instructions_file: Option<PathBuf>,
 
+    /// Optional override string for the compaction prompt.
+    pub compact_prompt_override: Option<String>,
+
+    /// Path to a file whose contents should replace the compaction prompt template.
+    pub compact_prompt_file: Option<PathBuf>,
+
     pub experimental_use_exec_command_tool: Option<bool>,
 
     pub use_experimental_reasoning_summary: Option<bool>,
@@ -1951,6 +1960,8 @@ pub struct ConfigOverrides {
     pub tools_web_search_request: Option<bool>,
     pub mcp_servers: Option<HashMap<String, McpServerConfig>>,
     pub experimental_client_tools: Option<ClientTools>,
+    pub compact_prompt_override: Option<String>,
+    pub compact_prompt_override_file: Option<PathBuf>,
 }
 
 impl Config {
@@ -1985,6 +1996,8 @@ impl Config {
             tools_web_search_request: override_tools_web_search_request,
             mcp_servers,
             experimental_client_tools,
+            compact_prompt_override,
+            compact_prompt_override_file,
         } = overrides;
 
         if let Some(mcp_servers) = mcp_servers {
@@ -2194,6 +2207,16 @@ impl Config {
             Self::get_base_instructions(experimental_instructions_path, &resolved_cwd)?;
         let base_instructions = base_instructions.or(file_base_instructions);
 
+        let compact_prompt_file = compact_prompt_override_file
+            .or(config_profile.compact_prompt_override_file.clone())
+            .or(cfg.compact_prompt_file.clone());
+        let file_compact_prompt =
+            Self::get_compact_prompt_override(compact_prompt_file.as_ref(), &resolved_cwd)?;
+        let compact_prompt_override = compact_prompt_override
+            .or(config_profile.compact_prompt_override.clone())
+            .or(cfg.compact_prompt_override.clone())
+            .or(file_compact_prompt);
+
         let responses_originator_header: String = cfg
             .responses_originator_header_internal_override
             .unwrap_or_else(|| default_responses_originator());
@@ -2295,6 +2318,7 @@ impl Config {
             notify: cfg.notify,
             user_instructions,
             base_instructions,
+            compact_prompt_override,
             mcp_servers: cfg.mcp_servers,
             experimental_client_tools: cfg.experimental_client_tools.clone(),
             agents,
@@ -2437,9 +2461,10 @@ impl Config {
         }
     }
 
-    fn get_base_instructions(
+    fn read_override_file(
         path: Option<&PathBuf>,
         cwd: &Path,
+        description: &str,
     ) -> std::io::Result<Option<String>> {
         let p = match path.as_ref() {
             None => return Ok(None),
@@ -2458,10 +2483,7 @@ impl Config {
         let contents = std::fs::read_to_string(&full_path).map_err(|e| {
             std::io::Error::new(
                 e.kind(),
-                format!(
-                    "failed to read experimental instructions file {}: {e}",
-                    full_path.display()
-                ),
+                format!("failed to read {description} {}: {e}", full_path.display()),
             )
         })?;
 
@@ -2469,14 +2491,25 @@ impl Config {
         if s.is_empty() {
             Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!(
-                    "experimental instructions file is empty: {}",
-                    full_path.display()
-                ),
+                format!("{description} is empty: {}", full_path.display()),
             ))
         } else {
             Ok(Some(s))
         }
+    }
+
+    fn get_base_instructions(
+        path: Option<&PathBuf>,
+        cwd: &Path,
+    ) -> std::io::Result<Option<String>> {
+        Self::read_override_file(path, cwd, "experimental instructions file")
+    }
+
+    fn get_compact_prompt_override(
+        path: Option<&PathBuf>,
+        cwd: &Path,
+    ) -> std::io::Result<Option<String>> {
+        Self::read_override_file(path, cwd, "compact prompt override file")
     }
 }
 
@@ -3345,6 +3378,54 @@ model_verbosity = "high"
             &gpt5_profile_config.model_providers
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_compact_prompt_override_prefers_cli_string() -> std::io::Result<()> {
+        let fixture = create_test_fixture()?;
+        let mut cfg = fixture.cfg.clone();
+        cfg.compact_prompt_override = Some("config prompt".to_string());
+
+        let overrides = ConfigOverrides {
+            cwd: Some(fixture.cwd()),
+            compact_prompt_override: Some("cli prompt".to_string()),
+            ..Default::default()
+        };
+
+        let resolved = Config::load_from_base_config_with_overrides(
+            cfg,
+            overrides,
+            fixture.code_home(),
+        )?;
+
+        assert_eq!(resolved.compact_prompt_override.as_deref(), Some("cli prompt"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_compact_prompt_override_file_populates_string() -> std::io::Result<()> {
+        let fixture = create_test_fixture()?;
+        let mut file = NamedTempFile::new()?;
+        let file_contents = "file based compact prompt";
+        std::io::Write::write_all(&mut file, file_contents.as_bytes())?;
+
+        let overrides = ConfigOverrides {
+            cwd: Some(fixture.cwd()),
+            compact_prompt_override_file: Some(file.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let resolved = Config::load_from_base_config_with_overrides(
+            fixture.cfg.clone(),
+            overrides,
+            fixture.code_home(),
+        )?;
+
+        assert_eq!(
+            resolved.compact_prompt_override.as_deref(),
+            Some(file_contents)
+        );
         Ok(())
     }
 

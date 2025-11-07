@@ -8,6 +8,7 @@ use anyhow::{anyhow, Context, Result};
 use code_core::config::Config;
 use code_core::config_types::{AutoDriveSettings, ReasoningEffort, TextVerbosity};
 use code_core::debug_logger::DebugLogger;
+use code_core::codex::compact::resolve_compact_prompt_text;
 use code_core::model_family::{derive_default_model_family, find_family_for_model};
 use code_core::openai_model_info::get_model_info;
 use code_core::project_doc::read_auto_drive_docs;
@@ -902,6 +903,8 @@ fn run_auto_loop(
     let mut config = config;
     config.model_reasoning_effort = ReasoningEffort::High;
     config.model_text_verbosity = TextVerbosity::Low;
+    let compact_prompt_text =
+        resolve_compact_prompt_text(config.compact_prompt_override.as_deref());
 
     let preferred_auth = if config.using_chatgpt_auth {
         code_protocol::mcp_protocol::AuthMode::ChatGPT
@@ -1048,6 +1051,7 @@ fn run_auto_loop(
                 &session_metrics,
                 prev_compact_summary.as_deref(),
                 &active_model_slug,
+                &compact_prompt_text,
             ) {
                 prev_compact_summary = Some(summary);
             }
@@ -2747,6 +2751,7 @@ fn maybe_compact(
     metrics: &SessionMetrics,
     prev_summary: Option<&str>,
     model_slug: &str,
+    compact_prompt: &str,
 ) -> Option<String> {
     let transcript_tokens: u64 = conversation
         .iter()
@@ -2782,6 +2787,7 @@ fn maybe_compact(
         model_slug,
         &slice,
         prev_summary,
+        compact_prompt,
     );
 
     if apply_compaction(conversation, bounds, prev_summary, message).is_none() {

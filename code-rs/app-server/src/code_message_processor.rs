@@ -658,6 +658,8 @@ fn derive_config_from_params(
         tools_web_search_request: None,
         mcp_servers: None,
         experimental_client_tools: None,
+        compact_prompt_override: None,
+        compact_prompt_override_file: None,
     };
 
     let cli_overrides = cli_overrides

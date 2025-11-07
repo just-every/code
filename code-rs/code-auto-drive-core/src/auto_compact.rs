@@ -1,7 +1,6 @@
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
 
-use code_core::codex::compact::SUMMARIZATION_PROMPT;
 use code_core::model_family::{derive_default_model_family, find_family_for_model};
 use code_core::{ModelClient, Prompt, ResponseEvent, TextFormat};
 use code_protocol::models::{ContentItem, ResponseItem};
@@ -89,8 +88,16 @@ pub(crate) fn build_checkpoint_summary(
     model_slug: &str,
     items: &[ResponseItem],
     prev_summary: Option<&str>,
+    compact_prompt: &str,
 ) -> CheckpointSummary {
-    let summary_text = match summarize_with_model(runtime, client, model_slug, items, prev_summary) {
+    let summary_text = match summarize_with_model(
+        runtime,
+        client,
+        model_slug,
+        items,
+        prev_summary,
+        compact_prompt,
+    ) {
         Ok(text) if !text.trim().is_empty() => text,
         Ok(_) | Err(_) => deterministic_summary(items, prev_summary),
     };
@@ -105,6 +112,7 @@ fn summarize_with_model(
     model_slug: &str,
     items: &[ResponseItem],
     prev_summary: Option<&str>,
+    compact_prompt: &str,
 ) -> Result<String> {
     let mut aggregate_summary = prev_summary
         .filter(|text| !text.trim().is_empty())
@@ -136,9 +144,7 @@ fn summarize_with_model(
                 .unwrap_or_else(|| derive_default_model_family(model_slug));
             prompt.model_family_override = Some(family);
 
-            prompt
-                .input
-                .push(plain_message("developer", SUMMARIZATION_PROMPT.to_string()));
+            push_compaction_prompt(&mut prompt, compact_prompt);
 
             let mut user_text = String::new();
             if let Some(prev) = current_prev {
@@ -400,6 +406,12 @@ fn plain_message(role: &str, text: String) -> ResponseItem {
     }
 }
 
+fn push_compaction_prompt(prompt: &mut Prompt, compact_prompt: &str) {
+    prompt
+        .input
+        .push(plain_message("developer", compact_prompt.to_string()));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,5 +523,29 @@ mod tests {
             assert!(chunk.len() <= MAX_TRANSCRIPT_BYTES);
         }
         assert_eq!(chunks.concat(), text);
+    }
+
+    #[test]
+    fn push_compaction_prompt_inserts_override_text() {
+        let mut prompt = Prompt::default();
+        push_compaction_prompt(&mut prompt, "Custom override text");
+
+        assert_eq!(prompt.input.len(), 1);
+        match &prompt.input[0] {
+            ResponseItem::Message { role, content, .. } => {
+                assert_eq!(role, "developer");
+                let body = content
+                    .iter()
+                    .filter_map(|chunk| match chunk {
+                        ContentItem::InputText { text } => Some(text.as_str()),
+                        ContentItem::OutputText { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                assert_eq!(body, "Custom override text");
+            }
+            other => panic!("expected developer message, got {other:?}"),
+        }
     }
 }

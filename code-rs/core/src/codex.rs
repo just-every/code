@@ -215,6 +215,7 @@ pub(crate) struct TurnContext {
     pub(crate) cwd: PathBuf,
     pub(crate) base_instructions: Option<String>,
     pub(crate) user_instructions: Option<String>,
+    pub(crate) compact_prompt_override: Option<String>,
     pub(crate) approval_policy: AskForApproval,
     pub(crate) sandbox_policy: SandboxPolicy,
     pub(crate) shell_environment_policy: ShellEnvironmentPolicy,
@@ -1271,6 +1272,7 @@ pub(crate) struct Session {
     cwd: PathBuf,
     base_instructions: Option<String>,
     user_instructions: Option<String>,
+    compact_prompt_override: Option<String>,
     approval_policy: AskForApproval,
     sandbox_policy: SandboxPolicy,
     shell_environment_policy: ShellEnvironmentPolicy,
@@ -1853,12 +1855,19 @@ impl Session {
             cwd: self.cwd.clone(),
             base_instructions: self.base_instructions.clone(),
             user_instructions: self.user_instructions.clone(),
+            compact_prompt_override: self.compact_prompt_override.clone(),
             approval_policy: self.approval_policy,
             sandbox_policy: self.sandbox_policy.clone(),
             shell_environment_policy: self.shell_environment_policy.clone(),
             is_review_mode: false,
             text_format_override: self.next_turn_text_format.lock().unwrap().take(),
         })
+    }
+
+    fn compact_prompt_text(&self) -> String {
+        crate::codex::compact::resolve_compact_prompt_text(
+            self.compact_prompt_override.as_deref(),
+        )
     }
 
     pub async fn request_command_approval(
@@ -4289,6 +4298,7 @@ async fn submission_loop(
                     tx_event: tx_event.clone(),
                     user_instructions: effective_user_instructions.clone(),
                     base_instructions,
+                    compact_prompt_override: config.compact_prompt_override.clone(),
                     approval_policy,
                     sandbox_policy,
                     shell_environment_policy: config.shell_environment_policy.clone(),
@@ -4631,9 +4641,10 @@ async fn submission_loop(
                     }
                 };
 
+                let prompt_text = sess.compact_prompt_text();
                 // Attempt to inject input into current task
                 if let Err(items) = sess.inject_input(vec![InputItem::Text {
-                    text: compact::SUMMARIZATION_PROMPT.to_string(),
+                    text: prompt_text,
                 }]) {
                     let turn_context = sess.make_turn_context();
                     compact::spawn_compact_task(sess.clone(), turn_context, sub.id.clone(), items);
@@ -4790,6 +4801,7 @@ async fn spawn_review_thread(
         cwd: parent_turn_context.cwd.clone(),
         base_instructions: Some(REVIEW_PROMPT.to_string()),
         user_instructions: None,
+        compact_prompt_override: parent_turn_context.compact_prompt_override.clone(),
         approval_policy: parent_turn_context.approval_policy,
         sandbox_policy: parent_turn_context.sandbox_policy.clone(),
         shell_environment_policy: parent_turn_context.shell_environment_policy.clone(),
@@ -5241,12 +5253,13 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
 
     if let Some(compact_sub_id) = sess.dequeue_manual_compact() {
         let turn_context = sess.make_turn_context();
+        let prompt_text = sess.compact_prompt_text();
         compact::spawn_compact_task(
             Arc::clone(&sess),
             turn_context,
             compact_sub_id,
             vec![InputItem::Text {
-                text: compact::SUMMARIZATION_PROMPT.to_string(),
+                text: prompt_text,
             }],
         );
         return;

@@ -378,6 +378,8 @@ pub async fn run_main(
         tools_web_search_request: Some(cli.web_search),
         mcp_servers: None,
         experimental_client_tools: None,
+        compact_prompt_override: cli.compact_prompt_override.clone(),
+        compact_prompt_override_file: cli.compact_prompt_file.clone(),
     };
 
     // Parse `-c` overrides from the CLI.
@@ -1000,6 +1002,8 @@ mod tests {
 
         let overrides = ConfigOverrides {
             cwd: Some(workspace.path().to_path_buf()),
+            compact_prompt_override: None,
+            compact_prompt_override_file: None,
             ..Default::default()
         };
 

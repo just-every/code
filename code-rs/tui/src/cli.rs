@@ -77,6 +77,14 @@ pub struct Cli {
     #[clap(long = "debug", short = 'd', default_value_t = false)]
     pub debug: bool,
 
+    /// Override the compaction prompt text for this session.
+    #[arg(long = "compact-prompt", value_name = "TEXT")]
+    pub compact_prompt_override: Option<String>,
+
+    /// Read the compaction prompt text from a file.
+    #[arg(long = "compact-prompt-file", value_name = "FILE")]
+    pub compact_prompt_file: Option<PathBuf>,
+
     /// Show per-cell ordering overlays (request index, order key, window/position) to debug
     /// event ordering. Off by default.
     #[arg(long = "order", default_value_t = false)]
