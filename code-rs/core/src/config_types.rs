@@ -735,7 +735,7 @@ pub struct AutoResolveAttemptLimit(u32);
 
 impl AutoResolveAttemptLimit {
     pub const ALLOWED: [u32; 9] = [0, 1, 2, 3, 4, 5, 10, 20, 40];
-    pub const DEFAULT: u32 = 3;
+    pub const DEFAULT: u32 = 5;
 
     pub fn get(self) -> u32 {
         self.0

@@ -684,30 +684,38 @@ fn smoke_custom_tool_call() {
 }
 
 #[test]
-fn smoke_validation_settings_auto_resolve_controls() {
+fn smoke_review_settings_auto_resolve_controls() {
     let mut harness = ChatWidgetHarness::new();
 
-    harness.open_validation_settings_overlay();
+    harness.open_review_settings_overlay();
 
     let initial = render_chat_widget_to_vt100(&mut harness, 100, 28);
     assert!(
+        initial.contains("Review Settings"),
+        "review settings overlay should render"
+    );
+    assert!(
         initial.contains("Auto Resolve reviews"),
-        "validation settings should list Auto Resolve toggle"
+        "review settings should list Auto Resolve toggle"
     );
     assert!(
         initial.contains("Off"),
         "Auto Resolve toggle should start disabled for fresh config"
     );
+    assert!(
+        initial.contains("5 re-reviews"),
+        "default max re-reviews should be 5"
+    );
 
     harness.send_key(make_key(KeyCode::Enter, KeyModifiers::NONE));
-    let auto_enabled = harness.validation_auto_resolve_enabled();
+    let auto_enabled = harness.review_auto_resolve_enabled();
     assert!(auto_enabled, "toggling should enable Auto Resolve");
 
     harness.send_key(make_key(KeyCode::Down, KeyModifiers::NONE));
 
     let mut observed = Vec::new();
     for _ in 0..AutoResolveAttemptLimit::ALLOWED.len() {
-        let value = harness.validation_auto_resolve_attempts();
+        let value = harness.review_auto_resolve_attempts();
         observed.push(value);
         harness.send_key(make_key(KeyCode::Right, KeyModifiers::NONE));
     }
@@ -721,13 +729,13 @@ fn smoke_validation_settings_auto_resolve_controls() {
 
     for _ in 0..AutoResolveAttemptLimit::ALLOWED.len() {
         harness.send_key(make_key(KeyCode::Left, KeyModifiers::NONE));
-        let value = harness.validation_auto_resolve_attempts();
+        let value = harness.review_auto_resolve_attempts();
         if value == 0 {
             break;
         }
     }
 
-    let attempts_zero = harness.validation_auto_resolve_attempts();
+    let attempts_zero = harness.review_auto_resolve_attempts();
     assert_eq!(attempts_zero, 0, "← should allow selecting zero re-reviews");
 
     let frame_zero = render_chat_widget_to_vt100(&mut harness, 100, 28);

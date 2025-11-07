@@ -56,6 +56,7 @@ mod undo_timeline_view;
 mod notifications_settings_view;
 mod settings_overlay;
 pub(crate) use settings_overlay::SettingsSection;
+pub(crate) mod review_settings_view;
 pub mod settings_panel;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +86,7 @@ pub(crate) use login_accounts_view::{
 pub(crate) use update_settings_view::{UpdateSettingsView, UpdateSharedState};
 pub(crate) use notifications_settings_view::{NotificationsMode, NotificationsSettingsView};
 pub(crate) use validation_settings_view::ValidationSettingsView;
+pub(crate) use review_settings_view::ReviewSettingsView;
 use approval_modal_view::ApprovalModalView;
 #[cfg(feature = "code-fork")]
 use approval_ui::ApprovalUi;

@@ -5,6 +5,7 @@ pub(crate) enum SettingsSection {
     Updates,
     Agents,
     AutoDrive,
+    Review,
     Validation,
     Github,
     Limits,
@@ -14,12 +15,13 @@ pub(crate) enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub(crate) const ALL: [SettingsSection; 11] = [
+    pub(crate) const ALL: [SettingsSection; 12] = [
         SettingsSection::Model,
         SettingsSection::Theme,
         SettingsSection::Updates,
         SettingsSection::Agents,
         SettingsSection::AutoDrive,
+        SettingsSection::Review,
         SettingsSection::Validation,
         SettingsSection::Github,
         SettingsSection::Chrome,
@@ -35,6 +37,7 @@ impl SettingsSection {
             SettingsSection::Updates => "Updates",
             SettingsSection::Agents => "Agents",
             SettingsSection::AutoDrive => "Auto Drive",
+            SettingsSection::Review => "Review",
             SettingsSection::Validation => "Validation",
             SettingsSection::Github => "GitHub",
             SettingsSection::Limits => "Limits",
@@ -51,6 +54,7 @@ impl SettingsSection {
             SettingsSection::Updates => "Control CLI auto-update cadence and release channels.",
             SettingsSection::Agents => "Configure linked agents and default task permissions.",
             SettingsSection::AutoDrive => "Manage Auto Drive defaults for review and cadence.",
+            SettingsSection::Review => "Adjust Auto Resolve automation for /review.",
             SettingsSection::Validation => "Toggle validation groups and tool availability.",
             SettingsSection::Github => "Monitor GitHub workflows after pushes.",
             SettingsSection::Limits => "Inspect API usage, rate limits, and reset windows.",
@@ -67,7 +71,8 @@ impl SettingsSection {
             SettingsSection::Updates => "Upgrade Codex and manage automatic updates.",
             SettingsSection::Agents => "Agents configuration coming soon.",
             SettingsSection::AutoDrive => "Auto Drive controls coming soon.",
-            SettingsSection::Validation => "Validation harness controls coming soon.",
+            SettingsSection::Review => "Adjust Auto Resolve automation for /review.",
+            SettingsSection::Validation => "Toggle validation groups and tools.",
             SettingsSection::Github => "GitHub workflow watcher controls coming soon.",
             SettingsSection::Limits => "Limits usage visualization coming soon.",
             SettingsSection::Chrome => "Chrome integration settings coming soon.",
@@ -83,6 +88,7 @@ impl SettingsSection {
             "update" | "updates" => Some(SettingsSection::Updates),
             "agent" | "agents" => Some(SettingsSection::Agents),
             "auto" | "autodrive" | "drive" => Some(SettingsSection::AutoDrive),
+            "review" | "reviews" => Some(SettingsSection::Review),
             "validation" | "validate" => Some(SettingsSection::Validation),
             "github" | "gh" => Some(SettingsSection::Github),
             "limit" | "limits" | "usage" => Some(SettingsSection::Limits),

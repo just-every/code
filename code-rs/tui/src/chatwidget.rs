@@ -176,6 +176,7 @@ use crate::bottom_pane::{
     agent_editor_view::AgentEditorView,
     AutoDriveSettingsView,
     UpdateSettingsView,
+    ReviewSettingsView,
     ValidationSettingsView,
 };
 use crate::bottom_pane::agents_settings_view::SubagentEditorView;
@@ -1492,6 +1493,7 @@ use self::settings_overlay::{
     McpSettingsContent,
     ModelSettingsContent,
     NotificationsSettingsContent,
+    ReviewSettingsContent,
     ThemeSettingsContent,
     UpdatesSettingsContent,
     ValidationSettingsContent,
@@ -13158,15 +13160,19 @@ impl ChatWidget<'_> {
             })
             .collect();
 
-        let max_attempts = self.configured_auto_resolve_re_reviews();
         let view = ValidationSettingsView::new(
             groups,
             tool_rows,
-            self.config.tui.review_auto_resolve,
-            max_attempts,
             self.app_event_tx.clone(),
         );
         ValidationSettingsContent::new(view)
+    }
+
+    fn build_review_settings_content(&mut self) -> ReviewSettingsContent {
+        let auto_resolve_enabled = self.config.tui.review_auto_resolve;
+        let attempts = self.configured_auto_resolve_re_reviews();
+        let view = ReviewSettingsView::new(auto_resolve_enabled, attempts, self.app_event_tx.clone());
+        ReviewSettingsContent::new(view)
     }
 
     fn build_github_settings_content(&mut self) -> GithubSettingsContent {
@@ -18221,6 +18227,7 @@ Have we met every part of this goal and is there no further work to do?"#
         }
         overlay.set_agents_content(self.build_agents_settings_content());
         overlay.set_auto_drive_content(self.build_auto_drive_settings_content());
+        overlay.set_review_content(self.build_review_settings_content());
         overlay.set_validation_content(self.build_validation_settings_content());
         overlay.set_github_content(self.build_github_settings_content());
         overlay.set_limits_content(self.build_limits_settings_content());
@@ -18499,6 +18506,7 @@ Have we met every part of this goal and is there no further work to do?"#
                     SettingsSection::Updates => self.settings_summary_updates(),
                     SettingsSection::Agents => self.settings_summary_agents(),
                     SettingsSection::AutoDrive => self.settings_summary_auto_drive(),
+                    SettingsSection::Review => self.settings_summary_review(),
                     SettingsSection::Validation => self.settings_summary_validation(),
                     SettingsSection::Github => self.settings_summary_github(),
                     SettingsSection::Limits => self.settings_summary_limits(),
@@ -18589,6 +18597,14 @@ Have we met every part of this goal and is there no further work to do?"#
 
     fn settings_summary_validation(&self) -> Option<String> {
         let groups = &self.config.validation.groups;
+        Some(format!(
+            "Functional: {} · Stylistic: {}",
+            Self::on_off_label(groups.functional),
+            Self::on_off_label(groups.stylistic)
+        ))
+    }
+
+    fn settings_summary_review(&self) -> Option<String> {
         let attempts = self.configured_auto_resolve_re_reviews();
         let auto_label = if !self.config.tui.review_auto_resolve {
             "Auto Resolve: Off".to_string()
@@ -18599,12 +18615,7 @@ Have we met every part of this goal and is there no further work to do?"#
         } else {
             format!("Auto Resolve: On (max {} re-reviews)", attempts)
         };
-        Some(format!(
-            "{} · Functional: {} · Stylistic: {}",
-            auto_label,
-            Self::on_off_label(groups.functional),
-            Self::on_off_label(groups.stylistic)
-        ))
+        Some(auto_label)
     }
 
     fn settings_summary_github(&self) -> Option<String> {
@@ -18753,6 +18764,7 @@ Have we met every part of this goal and is there no further work to do?"#
             SettingsSection::Model
             | SettingsSection::Theme
             | SettingsSection::Updates
+            | SettingsSection::Review
             | SettingsSection::Validation
             | SettingsSection::Github
             | SettingsSection::AutoDrive
@@ -26433,14 +26445,14 @@ impl ChatWidget<'_> {
         items.push(SelectionItem {
             name: "Auto Resolve settings moved to /settings".to_string(),
             description: Some(format!(
-                "{} Manage Auto Resolve reviews and max re-reviews via `/settings validation`.",
+                "{} Manage Auto Resolve reviews and max re-reviews via `/settings review`.",
                 auto_note
             )),
             is_current: false,
             actions: vec![Box::new(|tx: &crate::app_event_sender::AppEventSender| {
                 tx.send(crate::app_event::AppEvent::DispatchCommand(
                     SlashCommand::Settings,
-                    "validation".to_string(),
+                    "review".to_string(),
                 ));
             })],
         });

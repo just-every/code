@@ -254,12 +254,18 @@ impl ChatWidgetHarness {
         self.flush_into_widget();
     }
 
-    pub fn validation_auto_resolve_enabled(&mut self) -> bool {
+    pub fn open_review_settings_overlay(&mut self) {
+        self.chat.ensure_settings_overlay_section(SettingsSection::Review);
+        self.chat.show_settings_overlay(Some(SettingsSection::Review));
+        self.flush_into_widget();
+    }
+
+    pub fn review_auto_resolve_enabled(&mut self) -> bool {
         self.flush_into_widget();
         self.chat.config.tui.review_auto_resolve
     }
 
-    pub fn validation_auto_resolve_attempts(&mut self) -> u32 {
+    pub fn review_auto_resolve_attempts(&mut self) -> u32 {
         self.flush_into_widget();
         self.chat
             .config
