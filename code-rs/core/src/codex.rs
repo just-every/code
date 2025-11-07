@@ -71,6 +71,8 @@ use code_protocol::models::WebSearchAction;
 use code_protocol::protocol::RolloutItem;
 use shlex::split as shlex_split;
 use shlex::try_join as shlex_try_join;
+use chrono::Duration as ChronoDuration;
+use chrono::Local;
 use chrono::Utc;
 
 pub mod compact;
@@ -1228,6 +1230,19 @@ where
     F: FnOnce() + Send + 'static,
 {
     let _ = tokio::task::spawn_blocking(task);
+}
+
+fn format_retry_eta(delay: Duration) -> Option<String> {
+    let chrono_delay = ChronoDuration::from_std(delay).ok()?;
+    let resume_at = Utc::now() + chrono_delay;
+    let local = resume_at.with_timezone(&Local);
+    let now = Local::now();
+    let formatted = if local.date_naive() == now.date_naive() {
+        local.format("%-I:%M %p %Z").to_string()
+    } else {
+        local.format("%b %-d, %Y %-I:%M %p %Z").to_string()
+    };
+    Some(formatted)
 }
 
 #[derive(Debug)]
@@ -5418,9 +5433,9 @@ async fn run_turn(
                 let max_retries = tc.client.get_provider().stream_max_retries();
                 if retries < max_retries {
                     retries += 1;
-                    let delay = match e {
-                        CodexErr::Stream(_, Some(delay)) => delay,
-                        _ => backoff(retries),
+                    let (delay, retry_eta) = match e {
+                        CodexErr::Stream(_, Some(delay)) => (delay, format_retry_eta(delay)),
+                        _ => (backoff(retries), None),
                     };
                     warn!(
                         "stream disconnected - retrying turn ({retries}/{max_retries} in {delay:?})...",
@@ -5429,13 +5444,13 @@ async fn run_turn(
                     // Surface retry information to any UI/front‑end so the
                     // user understands what is happening instead of staring
                     // at a seemingly frozen screen.
-                    sess.notify_stream_error(
-                        &sub_id,
-                        format!(
-                            "stream error: {e}; retrying {retries}/{max_retries} in {delay:?}…"
-                        ),
-                    )
-                    .await;
+                    let mut retry_message =
+                        format!("stream error: {e}; retrying {retries}/{max_retries} in {delay:?}");
+                    if let Some(eta) = retry_eta {
+                        retry_message.push_str(&format!(" (next attempt at {eta})"));
+                    }
+                    retry_message.push('…');
+                    sess.notify_stream_error(&sub_id, retry_message).await;
                     // Pull any partial progress from this attempt and append to
                     // the next request's input so we do not lose tool progress
                     // or already-finalized items.

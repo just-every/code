@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::io::BufRead;
 use std::path::Path;
-// use std::sync::OnceLock;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::AuthManager;
@@ -10,7 +10,7 @@ use code_app_server_protocol::AuthMode;
 use code_protocol::models::ResponseItem;
 use eventsource_stream::Eventsource;
 use futures::prelude::*;
-// use regex_lite::Regex;
+use regex_lite::Regex;
 use reqwest::StatusCode;
 use reqwest::header::HeaderMap;
 use serde::Deserialize;
@@ -80,45 +80,31 @@ struct Error {
     resets_in_seconds: Option<u64>,
 }
 
+fn rate_limit_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)try again in\s*(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|sec|secs|seconds?)")
+            .expect("valid rate limit regex")
+    })
+}
+
 fn try_parse_retry_after(err: &Error) -> Option<std::time::Duration> {
     if let Some(seconds) = err.resets_in_seconds {
         return Some(std::time::Duration::from_secs(seconds));
     }
 
     let message = err.message.as_deref()?;
-    let needle = "Please try again in ";
-    let start = message.find(needle)? + needle.len();
-    let rest = &message[start..];
+    let re = rate_limit_regex();
+    let captures = re.captures(message)?;
+    let value = captures.get(1)?.as_str().parse::<f64>().ok()?;
+    let unit = captures.get(2)?.as_str().trim().to_ascii_lowercase();
 
-    let mut value = String::new();
-    let mut unit = String::new();
-    for ch in rest.chars() {
-        if ch.is_ascii_digit() || ch == '.' {
-            if unit.is_empty() {
-                value.push(ch);
-                continue;
-            }
-            break;
-        } else if ch.is_ascii_alphabetic() {
-            unit.push(ch);
-        } else if !value.is_empty() && !unit.is_empty() {
-            break;
-        } else if !value.is_empty() {
-            break;
-        }
-    }
-
-    if value.is_empty() {
-        return None;
-    }
-
-    match unit.as_str() {
-        "ms" => value
-            .parse::<f64>()
-            .ok()
-            .map(|ms| std::time::Duration::from_millis(ms as u64)),
-        "s" | "sec" | "secs" | "seconds" => value.parse::<f64>().ok().map(std::time::Duration::from_secs_f64),
-        _ => None,
+    if unit.starts_with("ms") {
+        Some(std::time::Duration::from_millis(value as u64))
+    } else if unit.starts_with("sec") || unit == "s" || unit.starts_with("second") {
+        Some(std::time::Duration::from_secs_f64(value))
+    } else {
+        None
     }
 }
 
@@ -625,11 +611,11 @@ impl ModelClient {
                         .map(|s| s.to_string());
 
                     // Pull out Retry‑After header if present.
-                    let retry_after_secs = res
+                    let retry_after_hint = res
                         .headers()
                         .get(reqwest::header::RETRY_AFTER)
                         .and_then(|v| v.to_str().ok())
-                        .and_then(|s| s.parse::<u64>().ok());
+                        .and_then(parse_retry_after_header);
 
                     if status == StatusCode::UNAUTHORIZED {
                         if let Some(a) = auth.as_ref() {
@@ -670,15 +656,17 @@ impl ModelClient {
                         }));
                     }
 
+                    let body = serde_json::from_str::<ErrorResponse>(&body_text).ok();
+
                     if status == StatusCode::TOO_MANY_REQUESTS {
-                        let body = serde_json::from_str::<ErrorResponse>(&body_text).ok();
-                        if let Some(ErrorResponse { error }) = body {
+                        if let Some(ErrorResponse { ref error }) = body {
                             if error.r#type.as_deref() == Some("usage_limit_reached") {
                                 // Prefer the plan_type provided in the error message if present
                                 // because it's more up to date than the one encoded in the auth
                                 // token.
                                 let plan_type = error
                                     .plan_type
+                                    .clone()
                                     .or_else(|| auth.and_then(|a| a.get_plan_type()));
                                 let resets_in_seconds = error.resets_in_seconds;
                                 return Err(CodexErr::UsageLimitReached(UsageLimitReachedError {
@@ -753,9 +741,14 @@ impl ModelClient {
                         }));
                     }
 
-                    let delay = retry_after_secs
-                        .map(|s| Duration::from_millis(s * 1_000))
-                        .unwrap_or_else(|| backoff(attempt));
+                    let mut retry_after_delay = retry_after_hint;
+                    if retry_after_delay.is_none() {
+                        if let Some(ErrorResponse { ref error }) = body {
+                            retry_after_delay = try_parse_retry_after(error);
+                        }
+                    }
+
+                    let delay = retry_after_delay.unwrap_or_else(|| backoff(attempt));
                     tokio::time::sleep(delay).await;
                 }
                 Err(e) => {
@@ -936,6 +929,14 @@ fn parse_header_u64(headers: &HeaderMap, name: &str) -> Option<u64> {
 
 fn parse_header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers.get(name)?.to_str().ok()
+}
+
+fn parse_retry_after_header(value: &str) -> Option<Duration> {
+    let trimmed = value.trim();
+    if let Ok(secs) = trimmed.parse::<u64>() {
+        return Some(Duration::from_secs(secs));
+    }
+    None
 }
 
 fn header_map_to_json(headers: &HeaderMap) -> Value {
@@ -1863,13 +1864,13 @@ mod tests {
     }
 
     #[test]
-    fn test_try_parse_retry_after() {
+    fn test_try_parse_retry_after_ms() {
         let err = Error {
             r#type: None,
             message: Some("Rate limit reached for gpt-5 in organization org- on tokens per min (TPM): Limit 1, Used 1, Requested 19304. Please try again in 28ms. Visit https://platform.openai.com/account/rate-limits to learn more.".to_string()),
             code: Some("rate_limit_exceeded".to_string()),
             plan_type: None,
-            resets_in_seconds: None
+            resets_in_seconds: None,
         };
 
         let delay = try_parse_retry_after(&err);
@@ -1877,15 +1878,41 @@ mod tests {
     }
 
     #[test]
-    fn test_try_parse_retry_after_no_delay() {
+    fn test_try_parse_retry_after_seconds() {
         let err = Error {
             r#type: None,
             message: Some("Rate limit reached for gpt-5 in organization <ORG> on tokens per min (TPM): Limit 30000, Used 6899, Requested 24050. Please try again in 1.898s. Visit https://platform.openai.com/account/rate-limits to learn more.".to_string()),
             code: Some("rate_limit_exceeded".to_string()),
             plan_type: None,
-            resets_in_seconds: None
+            resets_in_seconds: None,
         };
         let delay = try_parse_retry_after(&err);
         assert_eq!(delay, Some(Duration::from_secs_f64(1.898)));
+    }
+
+    #[test]
+    fn test_try_parse_retry_after_azure() {
+        let err = Error {
+            r#type: None,
+            message: Some("Rate limit exceeded. Try again in 35 seconds.".to_string()),
+            code: Some("rate_limit_exceeded".to_string()),
+            plan_type: None,
+            resets_in_seconds: None,
+        };
+        let delay = try_parse_retry_after(&err);
+        assert_eq!(delay, Some(Duration::from_secs(35)));
+    }
+
+    #[test]
+    fn test_try_parse_retry_after_none_when_missing() {
+        let err = Error {
+            r#type: None,
+            message: Some("Some other error".to_string()),
+            code: None,
+            plan_type: None,
+            resets_in_seconds: None,
+        };
+
+        assert_eq!(try_parse_retry_after(&err), None);
     }
 }
