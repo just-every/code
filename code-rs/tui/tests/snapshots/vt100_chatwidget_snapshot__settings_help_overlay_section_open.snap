@@ -1,5 +1,6 @@
 ---
 source: tui/tests/vt100_chatwidget_snapshot.rs
+assertion_line: 1982
 expression: section_open
 ---
  +------------------------------------------------------------------------------------------------+
@@ -12,13 +13,13 @@ expression: section_open
  |    Updates            |  Curren+------------------------------+                              | |
  |    Agents             |  Reason|Model Shortcuts               |                              | |
  |    Auto Drive         |        |                              |                              | |
- |    Validation         |  GPT-5-|• Esc    Return to overview   |                              | |
- |    GitHub             |     Hig|• Tab    Cycle sections       |solving difficult problems. ( | |
- |    Chrome             |     Med|• Shift+Tab  Cycle backwards  |ng. Ideal for most tasks. (de | |
- |    MCP                |     Low|• ?      Toggle this help     |y in simple code bases. (fast | |
- |    Notifications      |        |                              |                              | |
- |    Limits             |  GPT-5 |Press Esc to close            |                              | |
- |                       |     Hig+------------------------------+solving difficult problems. ( | |
+ |    Review             |  GPT-5-|• Esc    Return to overview   |                              | |
+ |    Validation         |     Hig|• Tab    Cycle sections       |solving difficult problems. ( | |
+ |    GitHub             |     Med|• Shift+Tab  Cycle backwards  |ng. Ideal for most tasks. (de | |
+ |    Chrome             |     Low|• ?      Toggle this help     |y in simple code bases. (fast | |
+ |    MCP                |        |                              |                              | |
+ |    Notifications      |  GPT-5 |Press Esc to close            |                              | |
+ |    Limits             |     Hig+------------------------------+solving difficult problems. ( | |
  |                       |                                                                      | |
  |                       +----------------------------------------------------------------------+ |
  | ↑ ↓ Move    Enter Open    Esc Close    ? Help                                                  |
