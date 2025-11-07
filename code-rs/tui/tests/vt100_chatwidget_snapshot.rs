@@ -32,6 +32,8 @@ use code_tui::test_helpers::{
     AutoContinueModeFixture,
     ChatWidgetHarness,
 };
+use code_core::codex::compact::COMPACTION_CHECKPOINT_MESSAGE;
+use code_protocol::protocol::CompactionCheckpointWarningEvent;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 use regex_lite::{Captures, Regex};
 use serde_json::json;
@@ -1984,6 +1986,24 @@ fn settings_help_overlay_from_section() {
     harness.send_key(make_key(KeyCode::Esc, KeyModifiers::NONE));
     let section_closed = normalize_output(render_chat_widget_to_vt100(&mut harness, 100, 28));
     insta::assert_snapshot!("settings_help_overlay_section_closed", section_closed);
+}
+
+#[test]
+fn compaction_checkpoint_warning_notice() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let mut harness = ChatWidgetHarness::new();
+
+    harness.handle_event(Event {
+        id: "compaction-warning".into(),
+        event_seq: 0,
+        msg: EventMsg::CompactionCheckpointWarning(CompactionCheckpointWarningEvent {
+            message: COMPACTION_CHECKPOINT_MESSAGE.to_string(),
+        }),
+        order: None,
+    });
+
+    let frame = normalize_output(render_chat_widget_to_vt100(&mut harness, 80, 20));
+    insta::assert_snapshot!("compaction_checkpoint_warning_notice", frame);
 }
 
 #[test]

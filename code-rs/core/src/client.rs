@@ -1,16 +1,18 @@
 use std::collections::BTreeMap;
 use std::io::BufRead;
 use std::path::Path;
-// use std::sync::OnceLock;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::AuthManager;
+use crate::RefreshTokenError;
 use bytes::Bytes;
 use code_app_server_protocol::AuthMode;
 use code_protocol::models::ResponseItem;
 use eventsource_stream::Eventsource;
 use futures::prelude::*;
-// use regex_lite::Regex;
+use httpdate::parse_http_date;
+use regex_lite::Regex;
 use reqwest::StatusCode;
 use reqwest::header::HeaderMap;
 use serde::Deserialize;
@@ -23,6 +25,9 @@ use tracing::debug;
 use tracing::trace;
 use tracing::warn;
 use uuid::Uuid;
+use chrono::{DateTime, Utc};
+
+const AUTH_REQUIRED_MESSAGE: &str = "Authentication required. Run `code login` to continue.";
 
 use crate::agent_defaults::{default_agent_configs, enabled_agent_model_specs};
 use crate::chat_completions::AggregateStreamExt;
@@ -38,7 +43,7 @@ use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use crate::config_types::TextVerbosity as TextVerbosityConfig;
 use crate::debug_logger::DebugLogger;
 use crate::default_client::create_client;
-use crate::error::CodexErr;
+use crate::error::{CodexErr, RetryAfter};
 use crate::error::Result;
 use crate::error::RetryLimitReachedError;
 use crate::error::UnexpectedResponseError;
@@ -80,46 +85,68 @@ struct Error {
     resets_in_seconds: Option<u64>,
 }
 
-fn try_parse_retry_after(err: &Error) -> Option<std::time::Duration> {
+fn rate_limit_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)(?:please\s+try\s+again|try\s+again|please\s+retry|retry|try)\s+(?:in|after)\s*(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|sec|secs|seconds?)"
+        )
+            .expect("valid rate limit regex")
+    })
+}
+
+fn try_parse_retry_after(err: &Error, now: DateTime<Utc>) -> Option<RetryAfter> {
     if let Some(seconds) = err.resets_in_seconds {
-        return Some(std::time::Duration::from_secs(seconds));
+        return Some(RetryAfter::from_duration(Duration::from_secs(seconds), now));
     }
 
     let message = err.message.as_deref()?;
-    let needle = "Please try again in ";
-    let start = message.find(needle)? + needle.len();
-    let rest = &message[start..];
-
-    let mut value = String::new();
-    let mut unit = String::new();
-    for ch in rest.chars() {
-        if ch.is_ascii_digit() || ch == '.' {
-            if unit.is_empty() {
-                value.push(ch);
-                continue;
-            }
-            break;
-        } else if ch.is_ascii_alphabetic() {
-            unit.push(ch);
-        } else if !value.is_empty() && !unit.is_empty() {
-            break;
-        } else if !value.is_empty() {
-            break;
-        }
+    let re = rate_limit_regex();
+    let captures = re.captures(message)?;
+    let value = captures.get(1)?.as_str().trim().parse::<f64>().ok()?;
+    if value.is_sign_negative() {
+        return None;
     }
+    let unit = captures.get(2)?.as_str().trim().to_ascii_lowercase();
 
-    if value.is_empty() {
+    if unit.starts_with("ms") {
+        Some(RetryAfter::from_duration(Duration::from_millis(value.round() as u64), now))
+    } else if unit.starts_with("sec") || unit == "s" || unit.starts_with("second") {
+        Some(RetryAfter::from_duration(Duration::from_secs_f64(value), now))
+    } else {
+        None
+    }
+}
+
+fn is_quota_exceeded_error(error: &Error) -> bool {
+    matches!(
+        error.code.as_deref().or_else(|| error.r#type.as_deref()),
+        Some("insufficient_quota")
+    )
+}
+
+fn is_quota_exceeded_http_error(status: StatusCode, error: &Error) -> bool {
+    status.is_client_error() && is_quota_exceeded_error(error)
+}
+
+fn map_unauthorized_outcome(
+    had_auth: bool,
+    refresh_error: Option<&RefreshTokenError>,
+) -> Option<CodexErr> {
+    if let Some(err) = refresh_error {
+        if err.is_permanent() {
+            return Some(CodexErr::AuthRefreshPermanent(err.message.clone()));
+        }
         return None;
     }
 
-    match unit.as_str() {
-        "ms" => value
-            .parse::<f64>()
-            .ok()
-            .map(|ms| std::time::Duration::from_millis(ms as u64)),
-        "s" | "sec" | "secs" | "seconds" => value.parse::<f64>().ok().map(std::time::Duration::from_secs_f64),
-        _ => None,
+    if !had_auth {
+        return Some(CodexErr::AuthRefreshPermanent(
+            AUTH_REQUIRED_MESSAGE.to_string(),
+        ));
     }
+
+    None
 }
 
 #[derive(Debug, Clone)]
@@ -483,6 +510,8 @@ impl ModelClient {
         loop {
             attempt += 1;
 
+            let mut auth_refresh_error: Option<RefreshTokenError> = None;
+
             // Always fetch the latest auth in case a prior attempt refreshed the token.
             let auth = auth_manager.as_ref().and_then(|m| m.auth());
 
@@ -623,17 +652,32 @@ impl ModelClient {
                         .get("x-request-id")
                         .and_then(|v| v.to_str().ok())
                         .map(|s| s.to_string());
+                    let now = Utc::now();
 
                     // Pull out Retry‑After header if present.
-                    let retry_after_secs = res
+                    let retry_after_hint = res
                         .headers()
                         .get(reqwest::header::RETRY_AFTER)
                         .and_then(|v| v.to_str().ok())
-                        .and_then(|s| s.parse::<u64>().ok());
+                        .and_then(|raw| parse_retry_after_header(raw, now));
 
                     if status == StatusCode::UNAUTHORIZED {
-                        if let Some(a) = auth.as_ref() {
-                            let _ = a.refresh_token().await;
+                        if let Some(manager) = auth_manager.as_ref() {
+                            match manager.refresh_token_classified().await {
+                                Ok(Some(_)) => {}
+                                Ok(None) => {
+                                    auth_refresh_error = Some(RefreshTokenError::permanent(
+                                        AUTH_REQUIRED_MESSAGE,
+                                    ));
+                                }
+                                Err(err) => {
+                                    auth_refresh_error = Some(err);
+                                }
+                            }
+                        } else {
+                            auth_refresh_error = Some(RefreshTokenError::permanent(
+                                "Authentication manager unavailable; please log in again.",
+                            ));
                         }
                     }
 
@@ -670,15 +714,31 @@ impl ModelClient {
                         }));
                     }
 
+                    let body = serde_json::from_str::<ErrorResponse>(&body_text).ok();
+
+                    if let Some(ErrorResponse { ref error }) = body {
+                        if is_quota_exceeded_http_error(status, error) {
+                            return Err(CodexErr::QuotaExceeded);
+                        }
+                    }
+
+                    if status == StatusCode::UNAUTHORIZED {
+                        if let Some(error) =
+                            map_unauthorized_outcome(auth.is_some(), auth_refresh_error.as_ref())
+                        {
+                            return Err(error);
+                        }
+                    }
+
                     if status == StatusCode::TOO_MANY_REQUESTS {
-                        let body = serde_json::from_str::<ErrorResponse>(&body_text).ok();
-                        if let Some(ErrorResponse { error }) = body {
+                        if let Some(ErrorResponse { ref error }) = body {
                             if error.r#type.as_deref() == Some("usage_limit_reached") {
                                 // Prefer the plan_type provided in the error message if present
                                 // because it's more up to date than the one encoded in the auth
                                 // token.
                                 let plan_type = error
                                     .plan_type
+                                    .clone()
                                     .or_else(|| auth.and_then(|a| a.get_plan_type()));
                                 let resets_in_seconds = error.resets_in_seconds;
                                 return Err(CodexErr::UsageLimitReached(UsageLimitReachedError {
@@ -753,8 +813,16 @@ impl ModelClient {
                         }));
                     }
 
-                    let delay = retry_after_secs
-                        .map(|s| Duration::from_millis(s * 1_000))
+                    let mut retry_after_delay = retry_after_hint;
+                    if retry_after_delay.is_none() {
+                        if let Some(ErrorResponse { ref error }) = body {
+                            retry_after_delay = try_parse_retry_after(error, now);
+                        }
+                    }
+
+                    let delay = retry_after_delay
+                        .as_ref()
+                        .map(|info| info.delay)
                         .unwrap_or_else(|| backoff(attempt));
                     tokio::time::sleep(delay).await;
                 }
@@ -936,6 +1004,43 @@ fn parse_header_u64(headers: &HeaderMap, name: &str) -> Option<u64> {
 
 fn parse_header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers.get(name)?.to_str().ok()
+}
+
+fn parse_retry_after_header(value: &str, now: DateTime<Utc>) -> Option<RetryAfter> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let normalized = trimmed
+        .trim_matches(|c: char| matches!(c, '"' | '\'' | '<' | '>'))
+        .trim();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    if let Ok(secs) = normalized.parse::<u64>() {
+        return Some(RetryAfter::from_duration(Duration::from_secs(secs), now));
+    }
+    if let Ok(float_secs) = normalized.parse::<f64>() {
+        if !float_secs.is_sign_negative() {
+            return Some(RetryAfter::from_duration(Duration::from_secs_f64(float_secs), now));
+        }
+    }
+    if let Ok(system_time) = parse_http_date(normalized) {
+        let resume_at: DateTime<Utc> = system_time.into();
+        return Some(RetryAfter::from_resume_at(resume_at, now));
+    }
+    if let Ok(dt) = DateTime::parse_from_rfc3339(normalized) {
+        return Some(RetryAfter::from_resume_at(dt.with_timezone(&Utc), now));
+    }
+    if let Ok(dt) = DateTime::parse_from_rfc2822(normalized) {
+        return Some(RetryAfter::from_resume_at(dt.with_timezone(&Utc), now));
+    }
+    if let Ok(dt) = DateTime::parse_from_str(normalized, "%a, %d %b %Y %H:%M:%S %z") {
+        return Some(RetryAfter::from_resume_at(dt.with_timezone(&Utc), now));
+    }
+
+    None
 }
 
 fn header_map_to_json(headers: &HeaderMap) -> Value {
@@ -1273,9 +1378,13 @@ async fn process_sse<S>(
                     if let Some(error) = error {
                         match serde_json::from_value::<Error>(error.clone()) {
                             Ok(error) => {
-                                let delay = try_parse_retry_after(&error);
-                                let message = error.message.unwrap_or_default();
-                                response_error = Some(CodexErr::Stream(message, delay));
+                                if is_quota_exceeded_error(&error) {
+                                    response_error = Some(CodexErr::QuotaExceeded);
+                                } else {
+                                    let retry_after = try_parse_retry_after(&error, Utc::now());
+                                    let message = error.message.unwrap_or_default();
+                                    response_error = Some(CodexErr::Stream(message, retry_after));
+                                }
                             }
                             Err(e) => {
                                 debug!("failed to parse ErrorResponse: {e}");
@@ -1382,10 +1491,46 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio_test::io::Builder as IoBuilder;
     use tokio_util::io::ReaderStream;
+    use chrono::{Duration as ChronoDuration, TimeZone, Utc};
 
     // ────────────────────────────
     // Helpers
     // ────────────────────────────
+
+    #[test]
+    fn unauthorized_outcome_returns_permanent_error_for_permanent_refresh_failure() {
+        let err = RefreshTokenError::permanent("token revoked");
+        let outcome = map_unauthorized_outcome(true, Some(&err))
+            .expect("should produce CodexErr");
+        match outcome {
+            CodexErr::AuthRefreshPermanent(msg) => {
+                assert!(
+                    msg.contains("token revoked"),
+                    "unexpected message: {}",
+                    msg
+                );
+            }
+            other => panic!("unexpected outcome: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn unauthorized_outcome_requires_login_without_auth() {
+        let outcome = map_unauthorized_outcome(false, None)
+            .expect("should require login");
+        match outcome {
+            CodexErr::AuthRefreshPermanent(msg) => {
+                assert_eq!(msg, AUTH_REQUIRED_MESSAGE);
+            }
+            other => panic!("unexpected outcome: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn unauthorized_outcome_allows_retry_for_transient_refresh_error() {
+        let err = RefreshTokenError::transient("server busy");
+        assert!(map_unauthorized_outcome(true, Some(&err)).is_none());
+    }
 
     #[tokio::test]
     async fn responses_request_uses_beta_header_for_public_openai() {
@@ -1751,12 +1896,12 @@ mod tests {
         assert_eq!(events.len(), 1);
 
         match &events[0] {
-            Err(CodexErr::Stream(msg, delay)) => {
+            Err(CodexErr::Stream(msg, Some(retry))) => {
                 assert_eq!(
                     msg,
                     "Rate limit reached for gpt-5 in organization org-AAA on tokens per min (TPM): Limit 30000, Used 22999, Requested 12528. Please try again in 11.054s. Visit https://platform.openai.com/account/rate-limits to learn more."
                 );
-                assert_eq!(*delay, Some(Duration::from_secs_f64(11.054)));
+                assert_eq!(retry.delay, Duration::from_secs_f64(11.054));
             }
             other => panic!("unexpected second event: {other:?}"),
         }
@@ -1862,30 +2007,196 @@ mod tests {
         }
     }
 
+    fn fixed_now() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2025, 11, 7, 12, 0, 0).unwrap()
+    }
+
     #[test]
-    fn test_try_parse_retry_after() {
+    fn test_try_parse_retry_after_ms() {
+        let now = fixed_now();
         let err = Error {
             r#type: None,
             message: Some("Rate limit reached for gpt-5 in organization org- on tokens per min (TPM): Limit 1, Used 1, Requested 19304. Please try again in 28ms. Visit https://platform.openai.com/account/rate-limits to learn more.".to_string()),
             code: Some("rate_limit_exceeded".to_string()),
             plan_type: None,
-            resets_in_seconds: None
+            resets_in_seconds: None,
         };
 
-        let delay = try_parse_retry_after(&err);
-        assert_eq!(delay, Some(Duration::from_millis(28)));
+        let retry_after = try_parse_retry_after(&err, now).expect("retry");
+        assert_eq!(retry_after.delay, Duration::from_millis(28));
+        assert!(retry_after.resume_at >= now);
     }
 
     #[test]
-    fn test_try_parse_retry_after_no_delay() {
+    fn test_try_parse_retry_after_seconds() {
+        let now = fixed_now();
         let err = Error {
             r#type: None,
             message: Some("Rate limit reached for gpt-5 in organization <ORG> on tokens per min (TPM): Limit 30000, Used 6899, Requested 24050. Please try again in 1.898s. Visit https://platform.openai.com/account/rate-limits to learn more.".to_string()),
             code: Some("rate_limit_exceeded".to_string()),
             plan_type: None,
-            resets_in_seconds: None
+            resets_in_seconds: None,
         };
-        let delay = try_parse_retry_after(&err);
-        assert_eq!(delay, Some(Duration::from_secs_f64(1.898)));
+        let retry_after = try_parse_retry_after(&err, now).expect("retry");
+        assert_eq!(retry_after.delay, Duration::from_secs_f64(1.898));
+    }
+
+    #[test]
+    fn test_try_parse_retry_after_azure() {
+        let now = fixed_now();
+        let err = Error {
+            r#type: None,
+            message: Some("Rate limit exceeded. Retry after 35 seconds.".to_string()),
+            code: Some("rate_limit_exceeded".to_string()),
+            plan_type: None,
+            resets_in_seconds: None,
+        };
+        let retry_after = try_parse_retry_after(&err, now).expect("retry");
+        assert_eq!(retry_after.delay, Duration::from_secs(35));
+    }
+
+    #[test]
+    fn test_try_parse_retry_after_none_when_missing() {
+        let now = fixed_now();
+        let err = Error {
+            r#type: None,
+            message: Some("Some other error".to_string()),
+            code: None,
+            plan_type: None,
+            resets_in_seconds: None,
+        };
+
+        assert!(try_parse_retry_after(&err, now).is_none());
+    }
+
+    #[test]
+    fn parse_retry_after_header_parses_seconds() {
+        let now = fixed_now();
+        let retry = parse_retry_after_header("42", now).expect("header");
+        assert_eq!(retry.delay, Duration::from_secs(42));
+        assert_eq!(retry.resume_at, now + ChronoDuration::seconds(42));
+    }
+
+    #[test]
+    fn parse_retry_after_header_parses_rfc7231_date() {
+        let now = Utc.with_ymd_and_hms(1994, 11, 15, 8, 0, 0).unwrap();
+        let retry = parse_retry_after_header("Tue, 15 Nov 1994 08:12:31 GMT", now).expect("header");
+        assert_eq!(
+            retry.resume_at,
+            Utc.with_ymd_and_hms(1994, 11, 15, 8, 12, 31).unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_retry_after_header_clamps_past_date() {
+        let now = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
+        let retry = parse_retry_after_header("Tue, 15 Nov 1994 08:12:31 GMT", now).expect("header");
+        assert_eq!(retry.delay, Duration::ZERO);
+        assert_eq!(retry.resume_at, now);
+    }
+
+    #[test]
+    fn parse_retry_after_header_strips_wrappers() {
+        let now = fixed_now();
+        let retry = parse_retry_after_header(" \"17\" ", now).expect("header");
+        assert_eq!(retry.delay, Duration::from_secs(17));
+    }
+
+    #[test]
+    fn retry_after_prefers_header_over_body_hint() {
+        let now = fixed_now();
+        let header_retry = parse_retry_after_header("5", now);
+        let mut chosen = header_retry.clone();
+        if chosen.is_none() {
+            let err = Error {
+                r#type: None,
+                message: Some(
+                    "Rate limit reached for gpt-5. Please try again in 30 seconds.".to_string(),
+                ),
+                code: Some("rate_limit_exceeded".to_string()),
+                plan_type: None,
+                resets_in_seconds: None,
+            };
+            chosen = try_parse_retry_after(&err, now);
+        }
+        let retry = chosen.expect("retry");
+        assert_eq!(retry.delay, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn parse_retry_after_header_handles_timezones() {
+        let now = Utc.with_ymd_and_hms(2025, 3, 9, 5, 0, 0).unwrap();
+        let retry = parse_retry_after_header("Sun, 09 Mar 2025 01:30:00 -0500", now).expect("header");
+        assert_eq!(
+            retry.resume_at,
+            Utc.with_ymd_and_hms(2025, 3, 9, 6, 30, 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn quota_error_detected_for_common_statuses() {
+        let error = Error {
+            r#type: Some("invalid_request_error".to_string()),
+            message: Some("You exceeded your current quota".to_string()),
+            code: Some("insufficient_quota".to_string()),
+            plan_type: None,
+            resets_in_seconds: None,
+        };
+
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::FORBIDDEN,
+            StatusCode::TOO_MANY_REQUESTS,
+        ] {
+            assert!(is_quota_exceeded_http_error(status, &error), "status {status} should be fatal");
+        }
+
+        assert!(
+            !is_quota_exceeded_http_error(StatusCode::INTERNAL_SERVER_ERROR, &error),
+            "server errors should not map to quota handling"
+        );
+    }
+
+    #[test]
+    fn malformed_quota_body_is_ignored() {
+        let error = Error {
+            r#type: Some("invalid_request_error".to_string()),
+            message: Some("missing code".to_string()),
+            code: None,
+            plan_type: None,
+            resets_in_seconds: None,
+        };
+
+        assert!(!is_quota_exceeded_http_error(StatusCode::BAD_REQUEST, &error));
+    }
+
+    #[tokio::test]
+    async fn quota_exceeded_error_is_fatal() {
+        let raw_error = r#"{"type":"response.failed","sequence_number":3,"response":{"id":"resp_quota","object":"response","created_at":1759771626,"status":"failed","background":false,"error":{"code":"insufficient_quota","message":"You exceeded your current quota, please check your plan and billing details."},"incomplete_details":null}}"#;
+
+        let sse1 = format!("event: response.failed\ndata: {raw_error}\n\n");
+        let provider = ModelProviderInfo {
+            name: "test".to_string(),
+            base_url: Some("https://test.com".to_string()),
+            env_key: Some("TEST_API_KEY".to_string()),
+            env_key_instructions: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: Some(0),
+            stream_max_retries: Some(0),
+            stream_idle_timeout_ms: Some(1000),
+            requires_openai_auth: false,
+            openrouter: None,
+        };
+
+        let events = collect_events(&[sse1.as_bytes()], provider).await;
+
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Err(CodexErr::QuotaExceeded) => {}
+            other => panic!("unexpected quota event: {other:?}"),
+        }
     }
 }

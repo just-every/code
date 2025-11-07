@@ -71,11 +71,11 @@ use code_protocol::models::WebSearchAction;
 use code_protocol::protocol::RolloutItem;
 use shlex::split as shlex_split;
 use shlex::try_join as shlex_try_join;
+use chrono::Local;
 use chrono::Utc;
 
 pub mod compact;
-use self::compact::build_compacted_history;
-use self::compact::collect_user_messages;
+use self::compact::{build_compacted_history, collect_compaction_snippets};
 
 /// Initial submission ID for session configuration
 pub(crate) const INITIAL_SUBMIT_ID: &str = "";
@@ -213,6 +213,7 @@ pub(crate) struct TurnContext {
     pub(crate) cwd: PathBuf,
     pub(crate) base_instructions: Option<String>,
     pub(crate) user_instructions: Option<String>,
+    pub(crate) compact_prompt_override: Option<String>,
     pub(crate) approval_policy: AskForApproval,
     pub(crate) sandbox_policy: SandboxPolicy,
     pub(crate) shell_environment_policy: ShellEnvironmentPolicy,
@@ -816,7 +817,7 @@ use crate::config::{persist_model_selection, Config};
 use crate::config_types::ProjectHookEvent;
 use crate::config_types::ShellEnvironmentPolicy;
 use crate::conversation_history::ConversationHistory;
-use crate::error::CodexErr;
+use crate::error::{CodexErr, RetryAfter};
 use crate::error::Result as CodexResult;
 use crate::error::SandboxErr;
 use crate::error::get_error_message_ui;
@@ -1230,6 +1231,18 @@ where
     let _ = tokio::task::spawn_blocking(task);
 }
 
+fn format_retry_eta(retry_after: &RetryAfter) -> Option<String> {
+    let resume_at = retry_after.resume_at;
+    let local = resume_at.with_timezone(&Local);
+    let now = Local::now();
+    let formatted = if local.date_naive() == now.date_naive() {
+        local.format("%-I:%M %p %Z").to_string()
+    } else {
+        local.format("%b %-d, %Y %-I:%M %p %Z").to_string()
+    };
+    Some(formatted)
+}
+
 #[derive(Debug)]
 struct BackgroundExecState {
     notify: std::sync::Arc<tokio::sync::Notify>,
@@ -1256,6 +1269,7 @@ pub(crate) struct Session {
     cwd: PathBuf,
     base_instructions: Option<String>,
     user_instructions: Option<String>,
+    compact_prompt_override: Option<String>,
     approval_policy: AskForApproval,
     sandbox_policy: SandboxPolicy,
     shell_environment_policy: ShellEnvironmentPolicy,
@@ -1838,12 +1852,19 @@ impl Session {
             cwd: self.cwd.clone(),
             base_instructions: self.base_instructions.clone(),
             user_instructions: self.user_instructions.clone(),
+            compact_prompt_override: self.compact_prompt_override.clone(),
             approval_policy: self.approval_policy,
             sandbox_policy: self.sandbox_policy.clone(),
             shell_environment_policy: self.shell_environment_policy.clone(),
             is_review_mode: false,
             text_format_override: self.next_turn_text_format.lock().unwrap().take(),
         })
+    }
+
+    fn compact_prompt_text(&self) -> String {
+        crate::codex::compact::resolve_compact_prompt_text(
+            self.compact_prompt_override.as_deref(),
+        )
     }
 
     pub async fn request_command_approval(
@@ -3084,10 +3105,10 @@ impl Session {
                     process_rollout_env_item(&mut replay_ctx, response_item);
                 }
                 RolloutItem::Compacted(compacted) => {
-                    let user_messages = collect_user_messages(&history);
+                    let snippets = collect_compaction_snippets(&history);
                     history = build_compacted_history(
                         self.build_initial_context(turn_context),
-                        &user_messages,
+                        &snippets,
                         &compacted.message,
                     );
                 }
@@ -4274,6 +4295,7 @@ async fn submission_loop(
                     tx_event: tx_event.clone(),
                     user_instructions: effective_user_instructions.clone(),
                     base_instructions,
+                    compact_prompt_override: config.compact_prompt_override.clone(),
                     approval_policy,
                     sandbox_policy,
                     shell_environment_policy: config.shell_environment_policy.clone(),
@@ -4616,9 +4638,10 @@ async fn submission_loop(
                     }
                 };
 
+                let prompt_text = sess.compact_prompt_text();
                 // Attempt to inject input into current task
                 if let Err(items) = sess.inject_input(vec![InputItem::Text {
-                    text: compact::SUMMARIZATION_PROMPT.to_string(),
+                    text: prompt_text,
                 }]) {
                     let turn_context = sess.make_turn_context();
                     compact::spawn_compact_task(sess.clone(), turn_context, sub.id.clone(), items);
@@ -4775,6 +4798,7 @@ async fn spawn_review_thread(
         cwd: parent_turn_context.cwd.clone(),
         base_instructions: Some(REVIEW_PROMPT.to_string()),
         user_instructions: None,
+        compact_prompt_override: parent_turn_context.compact_prompt_override.clone(),
         approval_policy: parent_turn_context.approval_policy,
         sandbox_policy: parent_turn_context.sandbox_policy.clone(),
         shell_environment_policy: parent_turn_context.shell_environment_policy.clone(),
@@ -5226,12 +5250,13 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
 
     if let Some(compact_sub_id) = sess.dequeue_manual_compact() {
         let turn_context = sess.make_turn_context();
+        let prompt_text = sess.compact_prompt_text();
         compact::spawn_compact_task(
             Arc::clone(&sess),
             turn_context,
             compact_sub_id,
             vec![InputItem::Text {
-                text: compact::SUMMARIZATION_PROMPT.to_string(),
+                text: prompt_text,
             }],
         );
         return;
@@ -5330,7 +5355,9 @@ async fn run_turn(
             }
             Err(CodexErr::Interrupted) => return Err(CodexErr::Interrupted),
             Err(CodexErr::EnvVar(var)) => return Err(CodexErr::EnvVar(var)),
-            Err(e @ (CodexErr::UsageLimitReached(_) | CodexErr::UsageNotIncluded)) => {
+            Err(e @ (CodexErr::UsageLimitReached(_)
+                | CodexErr::UsageNotIncluded
+                | CodexErr::QuotaExceeded)) => {
                 if let CodexErr::UsageLimitReached(limit_err) = &e {
                     if let Some(ctx) = account_usage_context(&sess) {
                         let usage_home = ctx.code_home.clone();
@@ -5418,9 +5445,12 @@ async fn run_turn(
                 let max_retries = tc.client.get_provider().stream_max_retries();
                 if retries < max_retries {
                     retries += 1;
-                    let delay = match e {
-                        CodexErr::Stream(_, Some(delay)) => delay,
-                        _ => backoff(retries),
+                    let (delay, retry_eta) = match e {
+                        CodexErr::Stream(_, Some(ref retry_after)) => {
+                            let eta = format_retry_eta(&retry_after);
+                            (retry_after.delay, eta)
+                        }
+                        _ => (backoff(retries), None),
                     };
                     warn!(
                         "stream disconnected - retrying turn ({retries}/{max_retries} in {delay:?})...",
@@ -5429,13 +5459,13 @@ async fn run_turn(
                     // Surface retry information to any UI/front‑end so the
                     // user understands what is happening instead of staring
                     // at a seemingly frozen screen.
-                    sess.notify_stream_error(
-                        &sub_id,
-                        format!(
-                            "stream error: {e}; retrying {retries}/{max_retries} in {delay:?}…"
-                        ),
-                    )
-                    .await;
+                    let mut retry_message =
+                        format!("stream error: {e}; retrying {retries}/{max_retries} in {delay:?}");
+                    if let Some(eta) = retry_eta {
+                        retry_message.push_str(&format!(" (next attempt at {eta})"));
+                    }
+                    retry_message.push('…');
+                    sess.notify_stream_error(&sub_id, retry_message).await;
                     // Pull any partial progress from this attempt and append to
                     // the next request's input so we do not lose tool progress
                     // or already-finalized items.

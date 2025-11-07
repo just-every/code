@@ -80,6 +80,8 @@ pub use conversation_manager::NewConversation;
 // Re-export common auth types for workspace consumers
 pub use auth::AuthManager;
 pub use auth::CodexAuth;
+pub use auth::RefreshTokenError;
+pub use auth::RefreshTokenErrorKind;
 pub mod default_client;
 pub mod model_family;
 pub mod openai_model_info;

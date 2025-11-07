@@ -8,6 +8,7 @@ use anyhow::{anyhow, Context, Result};
 use code_core::config::Config;
 use code_core::config_types::{AutoDriveSettings, ReasoningEffort, TextVerbosity};
 use code_core::debug_logger::DebugLogger;
+use code_core::codex::compact::resolve_compact_prompt_text;
 use code_core::model_family::{derive_default_model_family, find_family_for_model};
 use code_core::openai_model_info::get_model_info;
 use code_core::project_doc::read_auto_drive_docs;
@@ -645,6 +646,17 @@ mod tests {
     }
 
     #[test]
+    fn quota_exceeded_errors_short_circuit_retries() {
+        let err = anyhow!(CodexErr::QuotaExceeded);
+        match classify_model_error(&err) {
+            RetryDecision::Fatal(e) => {
+                assert!(e.to_string().contains("Quota exceeded"));
+            }
+            other => panic!("expected fatal quota decision, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn push_unique_guidance_trims_and_dedupes() {
         let mut guidance = vec!["Keep CLI prompts short".to_string()];
         push_unique_guidance(&mut guidance, "  keep cli prompts short  ");
@@ -891,6 +903,8 @@ fn run_auto_loop(
     let mut config = config;
     config.model_reasoning_effort = ReasoningEffort::High;
     config.model_text_verbosity = TextVerbosity::Low;
+    let compact_prompt_text =
+        resolve_compact_prompt_text(config.compact_prompt_override.as_deref());
 
     let preferred_auth = if config.using_chatgpt_auth {
         code_protocol::mcp_protocol::AuthMode::ChatGPT
@@ -1037,6 +1051,7 @@ fn run_auto_loop(
                 &session_metrics,
                 prev_compact_summary.as_deref(),
                 &active_model_slug,
+                &compact_prompt_text,
             ) {
                 prev_compact_summary = Some(summary);
             }
@@ -2111,6 +2126,12 @@ pub(crate) fn classify_model_error(error: &anyhow::Error) -> RetryDecision {
             CodexErr::UsageNotIncluded => {
                 return RetryDecision::Fatal(anyhow!(error.to_string()));
             }
+            CodexErr::AuthRefreshPermanent(_) => {
+                return RetryDecision::Fatal(anyhow!(error.to_string()));
+            }
+            CodexErr::QuotaExceeded => {
+                return RetryDecision::Fatal(anyhow!(error.to_string()));
+            }
             CodexErr::ServerError(_) => {
                 return RetryDecision::RetryAfterBackoff {
                     reason: error.to_string(),
@@ -2730,6 +2751,7 @@ fn maybe_compact(
     metrics: &SessionMetrics,
     prev_summary: Option<&str>,
     model_slug: &str,
+    compact_prompt: &str,
 ) -> Option<String> {
     let transcript_tokens: u64 = conversation
         .iter()
@@ -2765,6 +2787,7 @@ fn maybe_compact(
         model_slug,
         &slice,
         prev_summary,
+        compact_prompt,
     );
 
     if apply_compaction(conversation, bounds, prev_summary, message).is_none() {

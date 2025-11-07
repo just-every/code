@@ -54,7 +54,16 @@ pub(crate) struct PlainHistoryCell {
 
 impl PlainHistoryCell {
     pub(crate) fn from_state(state: PlainMessageState) -> Self {
-        let kind = history_cell_kind_from_plain(state.kind);
+        let mut kind = history_cell_kind_from_plain(state.kind);
+        if kind == HistoryCellType::User {
+            if let Some(first_line) = state.lines.first() {
+                if first_line.spans.first().map_or(false, |span| {
+                    span.text.starts_with("[Compaction Summary]")
+                }) {
+                    kind = HistoryCellType::CompactionSummary;
+                }
+            }
+        }
         Self {
             state: PlainCellState {
                 message: state,
@@ -118,6 +127,7 @@ impl PlainHistoryCell {
 
         let cell_bg = match self.state.kind {
             HistoryCellType::Assistant => crate::colors::assistant_bg(),
+            HistoryCellType::CompactionSummary => crate::colors::background(),
             _ => crate::colors::background(),
         };
         let bg_style = Style::default().bg(cell_bg).fg(crate::colors::text());

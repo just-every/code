@@ -76,8 +76,15 @@ async fn run_llm_request(
     let overrides_vec = cli_overrides.parse_overrides().map_err(anyhow::Error::msg)?;
 
     let overrides = if let Some(model) = &args.model {
-        ConfigOverrides { model: Some(model.clone()), ..ConfigOverrides::default() }
-    } else { ConfigOverrides::default() };
+        ConfigOverrides {
+            model: Some(model.clone()),
+            compact_prompt_override: None,
+            compact_prompt_override_file: None,
+            ..ConfigOverrides::default()
+        }
+    } else {
+        ConfigOverrides::default()
+    };
 
     let config = Config::load_with_cli_overrides(overrides_vec, overrides)?;
 

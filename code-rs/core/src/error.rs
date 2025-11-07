@@ -1,4 +1,5 @@
 use crate::exec::ExecToolCallOutput;
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use reqwest::StatusCode;
 use serde_json;
 use std::io;
@@ -41,6 +42,33 @@ pub enum SandboxErr {
     LandlockRestrict,
 }
 
+#[derive(Debug, Clone)]
+pub struct RetryAfter {
+    pub delay: Duration,
+    pub resume_at: DateTime<Utc>,
+}
+
+impl RetryAfter {
+    pub fn from_duration(delay: Duration, now: DateTime<Utc>) -> Self {
+        let resume_at = now
+            + ChronoDuration::from_std(delay)
+                .unwrap_or_else(|_| ChronoDuration::zero());
+        Self { delay, resume_at }
+    }
+
+    pub fn from_resume_at(resume_at: DateTime<Utc>, now: DateTime<Utc>) -> Self {
+        let clamped = if resume_at < now { now } else { resume_at };
+        let delay = clamped
+            .signed_duration_since(now)
+            .to_std()
+            .unwrap_or_else(|_| Duration::ZERO);
+        Self {
+            delay,
+            resume_at: clamped,
+        }
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum CodexErr {
     /// Returned by ResponsesClient when the SSE stream disconnects or errors out **after** the HTTP
@@ -50,7 +78,7 @@ pub enum CodexErr {
     ///
     /// Optionally includes the requested delay before retrying the turn.
     #[error("stream disconnected before completion: {0}")]
-    Stream(String, Option<Duration>),
+    Stream(String, Option<RetryAfter>),
 
     #[error("no conversation with id: {0}")]
     ConversationNotFound(Uuid),
@@ -78,6 +106,12 @@ pub enum CodexErr {
 
     #[error("{0}")]
     UsageLimitReached(UsageLimitReachedError),
+
+    #[error("Quota exceeded. Check your plan and billing details.")]
+    QuotaExceeded,
+
+    #[error("Authentication expired. {0}")]
+    AuthRefreshPermanent(String),
 
     #[error(
         "To use Codex with your ChatGPT plan, upgrade to Plus: https://openai.com/chatgpt/pricing."

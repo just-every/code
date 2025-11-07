@@ -1293,6 +1293,7 @@ dependencies = [
  "fs2",
  "futures",
  "htmd",
+ "httpdate",
  "img_hash",
  "indexmap 2.12.0",
  "landlock",

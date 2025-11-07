@@ -161,6 +161,7 @@ use code_core::protocol::PatchApplyEndEvent;
 use code_core::protocol::TaskCompleteEvent;
 use code_core::protocol::TokenUsage;
 use code_core::protocol::TurnDiffEvent;
+use code_core::codex::compact::COMPACTION_CHECKPOINT_MESSAGE;
 use crate::bottom_pane::{
     AutoActiveViewModel,
     AutoCoordinatorButton,
@@ -2834,6 +2835,7 @@ impl ChatWidget<'_> {
             HistoryCellType::PlanUpdate => "PlanUpdate".to_string(),
             HistoryCellType::BackgroundEvent => "BackgroundEvent".to_string(),
             HistoryCellType::Notice => "Notice".to_string(),
+            HistoryCellType::CompactionSummary => "CompactionSummary".to_string(),
             HistoryCellType::Diff => "Diff".to_string(),
             HistoryCellType::Image => "Image".to_string(),
             HistoryCellType::Context => "Context".to_string(),
@@ -4989,6 +4991,7 @@ impl ChatWidget<'_> {
             | HistoryCellType::PlanUpdate
             | HistoryCellType::BackgroundEvent
             | HistoryCellType::Notice
+            | HistoryCellType::CompactionSummary
             | HistoryCellType::Diff
             | HistoryCellType::Plain
             | HistoryCellType::Image => Some(User),
@@ -10385,6 +10388,9 @@ impl ChatWidget<'_> {
             EventMsg::BrowserSnapshot(ev) => {
                 self.handle_browser_snapshot_event(&ev);
             }
+            EventMsg::CompactionCheckpointWarning(event) => {
+                self.history_push_plain_paragraphs(PlainMessageKind::Notice, [event.message]);
+            }
             EventMsg::SessionConfigured(event) => {
                 // Remove stale "Connecting MCP servers…" status from the startup notice
                 // now that MCP initialization has completed in core.
@@ -14995,6 +15001,10 @@ Have we met every part of this goal and is there no further work to do?"#
         self.auto_history.replace_all(conversation.clone());
         self.auto_compaction_overlay =
             self.derive_compaction_overlay(&previous_items, &previous_indices, &conversation);
+        self.history_push_plain_paragraphs(
+            PlainMessageKind::Notice,
+            [COMPACTION_CHECKPOINT_MESSAGE],
+        );
         self.auto_rebuild_live_ring();
         self.request_redraw();
     }

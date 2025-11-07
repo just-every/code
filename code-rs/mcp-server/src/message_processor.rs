@@ -980,6 +980,8 @@ impl MessageProcessor {
             cwd: Some(request.cwd),
             mcp_servers: Some(mcp_servers),
             experimental_client_tools: client_tools,
+            compact_prompt_override: None,
+            compact_prompt_override_file: None,
             ..Default::default()
         };
 

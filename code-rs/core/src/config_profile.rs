@@ -21,4 +21,6 @@ pub struct ConfigProfile {
     pub model_text_verbosity: Option<TextVerbosity>,
     pub chatgpt_base_url: Option<String>,
     pub experimental_instructions_file: Option<PathBuf>,
+    pub compact_prompt_override: Option<String>,
+    pub compact_prompt_override_file: Option<PathBuf>,
 }
