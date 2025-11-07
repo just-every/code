@@ -2835,6 +2835,7 @@ impl ChatWidget<'_> {
             HistoryCellType::PlanUpdate => "PlanUpdate".to_string(),
             HistoryCellType::BackgroundEvent => "BackgroundEvent".to_string(),
             HistoryCellType::Notice => "Notice".to_string(),
+            HistoryCellType::CompactionSummary => "CompactionSummary".to_string(),
             HistoryCellType::Diff => "Diff".to_string(),
             HistoryCellType::Image => "Image".to_string(),
             HistoryCellType::Context => "Context".to_string(),
@@ -4990,6 +4991,7 @@ impl ChatWidget<'_> {
             | HistoryCellType::PlanUpdate
             | HistoryCellType::BackgroundEvent
             | HistoryCellType::Notice
+            | HistoryCellType::CompactionSummary
             | HistoryCellType::Diff
             | HistoryCellType::Plain
             | HistoryCellType::Image => Some(User),
