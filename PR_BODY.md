@@ -1,9 +1,10 @@
-## Overview
-- AutoRunPhase now carries struct payloads; controller exposes helpers (`is_active`, `is_paused_manual`, `resume_after_submit`, `awaiting_coordinator_submit`, `awaiting_review`, `in_transient_recovery`).
-- ChatWidget hot paths (manual pause, coordinator routing, ESC handling, review exit) rely on helpers/`matches!` instead of raw booleans.
+## Summary
+- allow Windows AltGr combos (Control+Alt) to insert printable characters without swallowing them, while keeping Ctrl+Alt shortcuts intact
+- add Windows-only unit tests around `TextArea` and an integration-style ComposerInput test to cover `/`, `@`, and Ctrl+Alt+H
+- document the fix via regression tests so future Windows keyboard regressions are caught early
 
-## Tests
-- `./build-fast.sh`
+## Testing
+- ./build-fast.sh
+- cargo test -p code-tui --test windows_altgr -- --ignored *(fails: local cargo registry copy of `cc` 1.2.41 is missing generated modules; clear/update the registry and rerun on Windows)*
 
-## Follow-ups
-- See `docs/auto-drive-phase-migration-TODO.md` for remaining legacy-flag removals and snapshot coverage.
+Closes #5922.

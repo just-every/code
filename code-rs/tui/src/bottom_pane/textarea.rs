@@ -246,6 +246,20 @@ impl TextArea {
                 code: KeyCode::Char(c),
                 ..
             } if matches!(c, '\n' | '\r') => self.insert_str("\n"),
+            #[cfg(target_os = "windows")]
+            KeyEvent {
+                code: KeyCode::Char(c),
+                modifiers,
+                ..
+            } if (modifiers == (KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    || modifiers == (KeyModifiers::CONTROL
+                        | KeyModifiers::ALT
+                        | KeyModifiers::SHIFT))
+                && !c.is_ascii_control()
+                && !c.is_ascii_alphabetic() =>
+            {
+                self.insert_str(&c.to_string());
+            }
             KeyEvent {
                 code: KeyCode::Char(c),
                 // Insert plain characters (and Shift-modified). Do NOT insert when ALT is held,
@@ -909,6 +923,62 @@ impl TextArea {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn altgr_control_alt_characters_insert_printables() {
+        let mut textarea = TextArea::new();
+        let cases = [
+            ('/', KeyModifiers::CONTROL | KeyModifiers::ALT),
+            ('@', KeyModifiers::CONTROL | KeyModifiers::ALT),
+            ('{', KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT),
+        ];
+
+        for (ch, modifiers) in cases {
+            textarea.set_text("");
+            textarea.set_cursor(0);
+            textarea.input(KeyEvent::new(KeyCode::Char(ch), modifiers));
+            assert_eq!(textarea.text(), ch.to_string(), "expected AltGr combination to insert {ch}");
+        }
+    }
+
+    #[test]
+    fn ctrl_alt_letter_shortcut_preserved() {
+        let mut textarea = TextArea::new();
+        textarea.set_text("word");
+        textarea.set_cursor(textarea.text().len());
+
+        textarea.input(KeyEvent::new(
+            KeyCode::Char('h'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        ));
+
+        assert_eq!(textarea.text(), "", "Ctrl+Alt+H should still delete backward word");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn ctrl_alt_symbol_shortcut_is_ignored_for_text_insertion() {
+        let mut textarea = TextArea::new();
+        textarea.set_text("");
+        textarea.set_cursor(0);
+
+        textarea.input(KeyEvent::new(
+            KeyCode::Char('@'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        ));
+
+        assert!(
+            textarea.text().is_empty(),
+            "Ctrl+Alt symbol should not insert printable characters on non-Windows"
+        );
+    }
+}
+
 impl WidgetRef for &TextArea {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         let lines = self.wrapped_lines(area.width);
@@ -955,4 +1025,3 @@ impl TextArea {
         }
     }
 }
-
