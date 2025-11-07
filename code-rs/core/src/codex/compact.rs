@@ -12,6 +12,7 @@ use crate::error::Result as CodexResult;
 use crate::protocol::AgentMessageEvent;
 use crate::protocol::ErrorEvent;
 use crate::protocol::EventMsg;
+use code_protocol::protocol::CompactionCheckpointWarningEvent;
 use crate::protocol::InputItem;
 use crate::protocol::TaskCompleteEvent;
 use crate::truncate::truncate_middle;
@@ -28,6 +29,7 @@ use base64::Engine;
 use futures::prelude::*;
 
 pub const SUMMARIZATION_PROMPT: &str = include_str!("../../templates/compact/prompt.md");
+pub const COMPACTION_CHECKPOINT_MESSAGE: &str = "History checkpoint: earlier conversation compacted.";
 const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
 const COMPACT_TEXT_CONTENT_MAX_BYTES: usize = 8 * 1024;
 const COMPACT_TOOL_ARGS_MAX_BYTES: usize = 4 * 1024;
@@ -199,6 +201,8 @@ pub(super) async fn perform_compaction(
         state.history.record_items(new_history.iter());
     }
 
+    send_compaction_checkpoint_warning(&sess, &sub_id).await;
+
     let rollout_item = RolloutItem::Compacted(CompactedItem {
         message: summary_text.clone(),
     });
@@ -304,6 +308,8 @@ async fn run_compact_task_inner_inline(
         state.history = crate::conversation_history::ConversationHistory::new();
         state.history.record_items(new_history.iter());
     }
+
+    send_compaction_checkpoint_warning(&sess, &sub_id).await;
 
     let rollout_item = RolloutItem::Compacted(CompactedItem {
         message: summary_text.clone(),
@@ -447,6 +453,17 @@ fn sanitize_items_for_compact(items: Vec<ResponseItem>) -> Vec<ResponseItem> {
             other => Some(other),
         })
         .collect()
+}
+
+fn compaction_checkpoint_warning_event() -> EventMsg {
+    EventMsg::CompactionCheckpointWarning(CompactionCheckpointWarningEvent {
+        message: COMPACTION_CHECKPOINT_MESSAGE.to_string(),
+    })
+}
+
+async fn send_compaction_checkpoint_warning(sess: &Arc<Session>, sub_id: &str) {
+    let event = sess.make_event(sub_id, compaction_checkpoint_warning_event());
+    sess.send_event(event).await;
 }
 
 pub(crate) fn collect_user_messages(items: &[ResponseItem]) -> Vec<String> {
@@ -728,5 +745,15 @@ mod tests {
             bridge_text.contains("SUMMARY"),
             "bridge should include the provided summary text"
         );
+    }
+
+    #[test]
+    fn compaction_checkpoint_warning_event_has_copy() {
+        match compaction_checkpoint_warning_event() {
+            EventMsg::CompactionCheckpointWarning(payload) => {
+                assert!(payload.message.contains("checkpoint"));
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
     }
 }

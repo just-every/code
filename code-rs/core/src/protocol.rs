@@ -723,6 +723,9 @@ pub enum EventMsg {
     /// Browser snapshot metadata emitted alongside environment context.
     BrowserSnapshot(BrowserSnapshotEvent),
 
+    /// Warning that the platform compacted conversation history to stay within limits.
+    CompactionCheckpointWarning(code_protocol::protocol::CompactionCheckpointWarningEvent),
+
     /// Ack the client's configure message.
     SessionConfigured(SessionConfiguredEvent),
 

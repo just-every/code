@@ -618,6 +618,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::UserMessage(_) => {}
             EventMsg::EnteredReviewMode(_) => {}
             EventMsg::ExitedReviewMode(_) => {}
+            EventMsg::CompactionCheckpointWarning(_) => {}
         }
         CodexStatus::Running
     }

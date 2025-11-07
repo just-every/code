@@ -538,6 +538,9 @@ pub enum EventMsg {
     /// Browser snapshot metadata emitted alongside environment context.
     BrowserSnapshot(BrowserSnapshotEvent),
 
+    /// Warning that the platform compacted conversation history to stay within limits.
+    CompactionCheckpointWarning(CompactionCheckpointWarningEvent),
+
     /// Ack the client's configure message.
     SessionConfigured(SessionConfiguredEvent),
 
@@ -624,6 +627,11 @@ pub struct TaskCompleteEvent {
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
 pub struct TaskStartedEvent {
     pub model_context_window: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct CompactionCheckpointWarningEvent {
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, TS)]
@@ -1505,6 +1513,25 @@ mod tests {
 
         let deserialized: ExecCommandOutputDeltaEvent = serde_json::from_str(&serialized)?;
         assert_eq!(deserialized, event);
+        Ok(())
+    }
+
+    #[test]
+    fn compaction_checkpoint_warning_round_trips() -> Result<()> {
+        let event = EventMsg::CompactionCheckpointWarning(CompactionCheckpointWarningEvent {
+            message: "History checkpoint: earlier conversation compacted.".to_string(),
+        });
+
+        let serialized = serde_json::to_string(&event)?;
+        let restored: EventMsg = serde_json::from_str(&serialized)?;
+
+        match restored {
+            EventMsg::CompactionCheckpointWarning(payload) => {
+                assert!(payload.message.contains("checkpoint"));
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+
         Ok(())
     }
 }
