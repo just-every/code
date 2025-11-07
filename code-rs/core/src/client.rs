@@ -11,6 +11,7 @@ use code_app_server_protocol::AuthMode;
 use code_protocol::models::ResponseItem;
 use eventsource_stream::Eventsource;
 use futures::prelude::*;
+use httpdate::parse_http_date;
 use regex_lite::Regex;
 use reqwest::StatusCode;
 use reqwest::header::HeaderMap;
@@ -24,6 +25,7 @@ use tracing::debug;
 use tracing::trace;
 use tracing::warn;
 use uuid::Uuid;
+use chrono::{DateTime, Utc};
 
 const AUTH_REQUIRED_MESSAGE: &str = "Authentication required. Run `code login` to continue.";
 
@@ -41,7 +43,7 @@ use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use crate::config_types::TextVerbosity as TextVerbosityConfig;
 use crate::debug_logger::DebugLogger;
 use crate::default_client::create_client;
-use crate::error::CodexErr;
+use crate::error::{CodexErr, RetryAfter};
 use crate::error::Result;
 use crate::error::RetryLimitReachedError;
 use crate::error::UnexpectedResponseError;
@@ -86,26 +88,31 @@ struct Error {
 fn rate_limit_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"(?i)try again in\s*(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|sec|secs|seconds?)")
+        Regex::new(
+            r"(?i)(?:please\s+try\s+again|try\s+again|please\s+retry|retry|try)\s+(?:in|after)\s*(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|sec|secs|seconds?)"
+        )
             .expect("valid rate limit regex")
     })
 }
 
-fn try_parse_retry_after(err: &Error) -> Option<std::time::Duration> {
+fn try_parse_retry_after(err: &Error, now: DateTime<Utc>) -> Option<RetryAfter> {
     if let Some(seconds) = err.resets_in_seconds {
-        return Some(std::time::Duration::from_secs(seconds));
+        return Some(RetryAfter::from_duration(Duration::from_secs(seconds), now));
     }
 
     let message = err.message.as_deref()?;
     let re = rate_limit_regex();
     let captures = re.captures(message)?;
-    let value = captures.get(1)?.as_str().parse::<f64>().ok()?;
+    let value = captures.get(1)?.as_str().trim().parse::<f64>().ok()?;
+    if value.is_sign_negative() {
+        return None;
+    }
     let unit = captures.get(2)?.as_str().trim().to_ascii_lowercase();
 
     if unit.starts_with("ms") {
-        Some(std::time::Duration::from_millis(value as u64))
+        Some(RetryAfter::from_duration(Duration::from_millis(value.round() as u64), now))
     } else if unit.starts_with("sec") || unit == "s" || unit.starts_with("second") {
-        Some(std::time::Duration::from_secs_f64(value))
+        Some(RetryAfter::from_duration(Duration::from_secs_f64(value), now))
     } else {
         None
     }
@@ -645,13 +652,14 @@ impl ModelClient {
                         .get("x-request-id")
                         .and_then(|v| v.to_str().ok())
                         .map(|s| s.to_string());
+                    let now = Utc::now();
 
                     // Pull out Retry‑After header if present.
                     let retry_after_hint = res
                         .headers()
                         .get(reqwest::header::RETRY_AFTER)
                         .and_then(|v| v.to_str().ok())
-                        .and_then(parse_retry_after_header);
+                        .and_then(|raw| parse_retry_after_header(raw, now));
 
                     if status == StatusCode::UNAUTHORIZED {
                         if let Some(manager) = auth_manager.as_ref() {
@@ -808,11 +816,14 @@ impl ModelClient {
                     let mut retry_after_delay = retry_after_hint;
                     if retry_after_delay.is_none() {
                         if let Some(ErrorResponse { ref error }) = body {
-                            retry_after_delay = try_parse_retry_after(error);
+                            retry_after_delay = try_parse_retry_after(error, now);
                         }
                     }
 
-                    let delay = retry_after_delay.unwrap_or_else(|| backoff(attempt));
+                    let delay = retry_after_delay
+                        .as_ref()
+                        .map(|info| info.delay)
+                        .unwrap_or_else(|| backoff(attempt));
                     tokio::time::sleep(delay).await;
                 }
                 Err(e) => {
@@ -995,11 +1006,40 @@ fn parse_header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers.get(name)?.to_str().ok()
 }
 
-fn parse_retry_after_header(value: &str) -> Option<Duration> {
+fn parse_retry_after_header(value: &str, now: DateTime<Utc>) -> Option<RetryAfter> {
     let trimmed = value.trim();
-    if let Ok(secs) = trimmed.parse::<u64>() {
-        return Some(Duration::from_secs(secs));
+    if trimmed.is_empty() {
+        return None;
     }
+    let normalized = trimmed
+        .trim_matches(|c: char| matches!(c, '"' | '\'' | '<' | '>'))
+        .trim();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    if let Ok(secs) = normalized.parse::<u64>() {
+        return Some(RetryAfter::from_duration(Duration::from_secs(secs), now));
+    }
+    if let Ok(float_secs) = normalized.parse::<f64>() {
+        if !float_secs.is_sign_negative() {
+            return Some(RetryAfter::from_duration(Duration::from_secs_f64(float_secs), now));
+        }
+    }
+    if let Ok(system_time) = parse_http_date(normalized) {
+        let resume_at: DateTime<Utc> = system_time.into();
+        return Some(RetryAfter::from_resume_at(resume_at, now));
+    }
+    if let Ok(dt) = DateTime::parse_from_rfc3339(normalized) {
+        return Some(RetryAfter::from_resume_at(dt.with_timezone(&Utc), now));
+    }
+    if let Ok(dt) = DateTime::parse_from_rfc2822(normalized) {
+        return Some(RetryAfter::from_resume_at(dt.with_timezone(&Utc), now));
+    }
+    if let Ok(dt) = DateTime::parse_from_str(normalized, "%a, %d %b %Y %H:%M:%S %z") {
+        return Some(RetryAfter::from_resume_at(dt.with_timezone(&Utc), now));
+    }
+
     None
 }
 
@@ -1341,9 +1381,9 @@ async fn process_sse<S>(
                                 if is_quota_exceeded_error(&error) {
                                     response_error = Some(CodexErr::QuotaExceeded);
                                 } else {
-                                    let delay = try_parse_retry_after(&error);
+                                    let retry_after = try_parse_retry_after(&error, Utc::now());
                                     let message = error.message.unwrap_or_default();
-                                    response_error = Some(CodexErr::Stream(message, delay));
+                                    response_error = Some(CodexErr::Stream(message, retry_after));
                                 }
                             }
                             Err(e) => {
@@ -1451,6 +1491,7 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio_test::io::Builder as IoBuilder;
     use tokio_util::io::ReaderStream;
+    use chrono::{Duration as ChronoDuration, TimeZone, Utc};
 
     // ────────────────────────────
     // Helpers
@@ -1855,12 +1896,12 @@ mod tests {
         assert_eq!(events.len(), 1);
 
         match &events[0] {
-            Err(CodexErr::Stream(msg, delay)) => {
+            Err(CodexErr::Stream(msg, Some(retry))) => {
                 assert_eq!(
                     msg,
                     "Rate limit reached for gpt-5 in organization org-AAA on tokens per min (TPM): Limit 30000, Used 22999, Requested 12528. Please try again in 11.054s. Visit https://platform.openai.com/account/rate-limits to learn more."
                 );
-                assert_eq!(*delay, Some(Duration::from_secs_f64(11.054)));
+                assert_eq!(retry.delay, Duration::from_secs_f64(11.054));
             }
             other => panic!("unexpected second event: {other:?}"),
         }
@@ -1966,8 +2007,13 @@ mod tests {
         }
     }
 
+    fn fixed_now() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2025, 11, 7, 12, 0, 0).unwrap()
+    }
+
     #[test]
     fn test_try_parse_retry_after_ms() {
+        let now = fixed_now();
         let err = Error {
             r#type: None,
             message: Some("Rate limit reached for gpt-5 in organization org- on tokens per min (TPM): Limit 1, Used 1, Requested 19304. Please try again in 28ms. Visit https://platform.openai.com/account/rate-limits to learn more.".to_string()),
@@ -1976,12 +2022,14 @@ mod tests {
             resets_in_seconds: None,
         };
 
-        let delay = try_parse_retry_after(&err);
-        assert_eq!(delay, Some(Duration::from_millis(28)));
+        let retry_after = try_parse_retry_after(&err, now).expect("retry");
+        assert_eq!(retry_after.delay, Duration::from_millis(28));
+        assert!(retry_after.resume_at >= now);
     }
 
     #[test]
     fn test_try_parse_retry_after_seconds() {
+        let now = fixed_now();
         let err = Error {
             r#type: None,
             message: Some("Rate limit reached for gpt-5 in organization <ORG> on tokens per min (TPM): Limit 30000, Used 6899, Requested 24050. Please try again in 1.898s. Visit https://platform.openai.com/account/rate-limits to learn more.".to_string()),
@@ -1989,25 +2037,27 @@ mod tests {
             plan_type: None,
             resets_in_seconds: None,
         };
-        let delay = try_parse_retry_after(&err);
-        assert_eq!(delay, Some(Duration::from_secs_f64(1.898)));
+        let retry_after = try_parse_retry_after(&err, now).expect("retry");
+        assert_eq!(retry_after.delay, Duration::from_secs_f64(1.898));
     }
 
     #[test]
     fn test_try_parse_retry_after_azure() {
+        let now = fixed_now();
         let err = Error {
             r#type: None,
-            message: Some("Rate limit exceeded. Try again in 35 seconds.".to_string()),
+            message: Some("Rate limit exceeded. Retry after 35 seconds.".to_string()),
             code: Some("rate_limit_exceeded".to_string()),
             plan_type: None,
             resets_in_seconds: None,
         };
-        let delay = try_parse_retry_after(&err);
-        assert_eq!(delay, Some(Duration::from_secs(35)));
+        let retry_after = try_parse_retry_after(&err, now).expect("retry");
+        assert_eq!(retry_after.delay, Duration::from_secs(35));
     }
 
     #[test]
     fn test_try_parse_retry_after_none_when_missing() {
+        let now = fixed_now();
         let err = Error {
             r#type: None,
             message: Some("Some other error".to_string()),
@@ -2016,7 +2066,71 @@ mod tests {
             resets_in_seconds: None,
         };
 
-        assert_eq!(try_parse_retry_after(&err), None);
+        assert!(try_parse_retry_after(&err, now).is_none());
+    }
+
+    #[test]
+    fn parse_retry_after_header_parses_seconds() {
+        let now = fixed_now();
+        let retry = parse_retry_after_header("42", now).expect("header");
+        assert_eq!(retry.delay, Duration::from_secs(42));
+        assert_eq!(retry.resume_at, now + ChronoDuration::seconds(42));
+    }
+
+    #[test]
+    fn parse_retry_after_header_parses_rfc7231_date() {
+        let now = Utc.with_ymd_and_hms(1994, 11, 15, 8, 0, 0).unwrap();
+        let retry = parse_retry_after_header("Tue, 15 Nov 1994 08:12:31 GMT", now).expect("header");
+        assert_eq!(
+            retry.resume_at,
+            Utc.with_ymd_and_hms(1994, 11, 15, 8, 12, 31).unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_retry_after_header_clamps_past_date() {
+        let now = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
+        let retry = parse_retry_after_header("Tue, 15 Nov 1994 08:12:31 GMT", now).expect("header");
+        assert_eq!(retry.delay, Duration::ZERO);
+        assert_eq!(retry.resume_at, now);
+    }
+
+    #[test]
+    fn parse_retry_after_header_strips_wrappers() {
+        let now = fixed_now();
+        let retry = parse_retry_after_header(" \"17\" ", now).expect("header");
+        assert_eq!(retry.delay, Duration::from_secs(17));
+    }
+
+    #[test]
+    fn retry_after_prefers_header_over_body_hint() {
+        let now = fixed_now();
+        let header_retry = parse_retry_after_header("5", now);
+        let mut chosen = header_retry.clone();
+        if chosen.is_none() {
+            let err = Error {
+                r#type: None,
+                message: Some(
+                    "Rate limit reached for gpt-5. Please try again in 30 seconds.".to_string(),
+                ),
+                code: Some("rate_limit_exceeded".to_string()),
+                plan_type: None,
+                resets_in_seconds: None,
+            };
+            chosen = try_parse_retry_after(&err, now);
+        }
+        let retry = chosen.expect("retry");
+        assert_eq!(retry.delay, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn parse_retry_after_header_handles_timezones() {
+        let now = Utc.with_ymd_and_hms(2025, 3, 9, 5, 0, 0).unwrap();
+        let retry = parse_retry_after_header("Sun, 09 Mar 2025 01:30:00 -0500", now).expect("header");
+        assert_eq!(
+            retry.resume_at,
+            Utc.with_ymd_and_hms(2025, 3, 9, 6, 30, 0).unwrap()
+        );
     }
 
     #[test]

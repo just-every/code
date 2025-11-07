@@ -71,7 +71,6 @@ use code_protocol::models::WebSearchAction;
 use code_protocol::protocol::RolloutItem;
 use shlex::split as shlex_split;
 use shlex::try_join as shlex_try_join;
-use chrono::Duration as ChronoDuration;
 use chrono::Local;
 use chrono::Utc;
 
@@ -819,7 +818,7 @@ use crate::config::{persist_model_selection, Config};
 use crate::config_types::ProjectHookEvent;
 use crate::config_types::ShellEnvironmentPolicy;
 use crate::conversation_history::ConversationHistory;
-use crate::error::CodexErr;
+use crate::error::{CodexErr, RetryAfter};
 use crate::error::Result as CodexResult;
 use crate::error::SandboxErr;
 use crate::error::get_error_message_ui;
@@ -1233,9 +1232,8 @@ where
     let _ = tokio::task::spawn_blocking(task);
 }
 
-fn format_retry_eta(delay: Duration) -> Option<String> {
-    let chrono_delay = ChronoDuration::from_std(delay).ok()?;
-    let resume_at = Utc::now() + chrono_delay;
+fn format_retry_eta(retry_after: &RetryAfter) -> Option<String> {
+    let resume_at = retry_after.resume_at;
     let local = resume_at.with_timezone(&Local);
     let now = Local::now();
     let formatted = if local.date_naive() == now.date_naive() {
@@ -5449,7 +5447,10 @@ async fn run_turn(
                 if retries < max_retries {
                     retries += 1;
                     let (delay, retry_eta) = match e {
-                        CodexErr::Stream(_, Some(delay)) => (delay, format_retry_eta(delay)),
+                        CodexErr::Stream(_, Some(ref retry_after)) => {
+                            let eta = format_retry_eta(&retry_after);
+                            (retry_after.delay, eta)
+                        }
                         _ => (backoff(retries), None),
                     };
                     warn!(

@@ -80,6 +80,7 @@ which = { workspace = true }
 wildmatch = { workspace = true }
 fs2 = "0.4"
 htmd = "0.1"
+httpdate = "1"
 img_hash = "3"
 
 
