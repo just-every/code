@@ -252,7 +252,7 @@ pub const AUTO_RESOLVE_REVIEW_FOLLOWUP: &str = "This issue has been resolved. Pl
 #[derive(Debug, Clone)]
 pub enum AutoControllerEffect {
     RefreshUi,
-    StartCountdown { countdown_id: u64, seconds: u8 },
+    StartCountdown { countdown_id: u64, decision_seq: u64, seconds: u8 },
     SubmitPrompt,
     LaunchStarted { goal: String },
     LaunchFailed { goal: String, error: String },
@@ -285,6 +285,7 @@ pub struct AutoDriveController {
     pub thinking_prefix_stripped: bool,
     pub current_summary_index: Option<u32>,
     pub countdown_id: u64,
+    pub countdown_decision_seq: u64,
     pub seconds_remaining: u8,
     pub countdown_override: Option<u8>,
     pub last_broadcast_summary: Option<String>,
@@ -648,6 +649,7 @@ impl AutoDriveController {
 
     pub fn schedule_cli_prompt(
         &mut self,
+        decision_seq: u64,
         prompt_text: String,
         countdown_override: Option<u8>,
     ) -> Vec<AutoControllerEffect> {
@@ -656,6 +658,7 @@ impl AutoDriveController {
         self.countdown_override = countdown_override;
         self.reset_countdown();
         self.countdown_id = self.countdown_id.wrapping_add(1);
+        self.countdown_decision_seq = decision_seq;
         let countdown_id = self.countdown_id;
         let countdown = self.countdown_seconds();
         self.seconds_remaining = countdown.unwrap_or(0);
@@ -664,6 +667,7 @@ impl AutoDriveController {
         if let Some(seconds) = countdown {
             effects.push(AutoControllerEffect::StartCountdown {
                 countdown_id,
+                decision_seq,
                 seconds,
             });
         }
@@ -680,10 +684,12 @@ impl AutoDriveController {
         if self.phase.awaiting_coordinator_submit() && !self.phase.is_paused_manual() {
             self.countdown_id = self.countdown_id.wrapping_add(1);
             let countdown_id = self.countdown_id;
+            let decision_seq = self.countdown_decision_seq;
             let countdown = self.countdown_seconds();
             if let Some(seconds) = countdown {
                 effects.push(AutoControllerEffect::StartCountdown {
                     countdown_id,
+                    decision_seq,
                     seconds,
                 });
             }
@@ -694,10 +700,12 @@ impl AutoDriveController {
     pub fn handle_countdown_tick(
         &mut self,
         countdown_id: u64,
+        decision_seq: u64,
         seconds_left: u8,
     ) -> Vec<AutoControllerEffect> {
         if !self.phase.is_active()
             || countdown_id != self.countdown_id
+            || decision_seq != self.countdown_decision_seq
             || !self.phase.awaiting_coordinator_submit()
             || self.phase.is_paused_manual()
         {
@@ -786,6 +794,9 @@ impl AutoDriveController {
 
     pub fn reset_countdown(&mut self) {
         self.seconds_remaining = self.countdown_seconds().unwrap_or(0);
+        if self.seconds_remaining == 0 {
+            self.countdown_decision_seq = 0;
+        }
     }
 
     pub fn set_phase(&mut self, phase: AutoRunPhase) {
@@ -957,5 +968,42 @@ mod tests {
             .any(|effect| matches!(effect, AutoControllerEffect::CancelCoordinator)));
         assert!(matches!(controller.current_phase(), AutoRunPhase::AwaitingGoalEntry));
         assert!(controller.last_run_summary.is_some());
+    }
+
+    #[test]
+    fn countdown_tick_respects_decision_seq() {
+        let mut controller = AutoDriveController::default();
+
+        let _effects = controller.schedule_cli_prompt(1, "Test prompt".to_string(), None);
+        let countdown_id = controller.countdown_id;
+
+        let effects = controller.handle_countdown_tick(countdown_id, 1, 5);
+        assert_eq!(effects.len(), 1);
+
+        let effects = controller.handle_countdown_tick(countdown_id, 2, 5);
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn countdown_tick_final_emits_submit() {
+        let mut controller = AutoDriveController::default();
+
+        let _effects = controller.schedule_cli_prompt(7, "Prompt".to_string(), None);
+        let countdown_id = controller.countdown_id;
+
+        let effects = controller.handle_countdown_tick(countdown_id, 7, 0);
+        assert_eq!(effects.len(), 1);
+        assert!(matches!(effects[0], AutoControllerEffect::SubmitPrompt));
+    }
+
+    #[test]
+    fn countdown_tick_ignores_stopped_phase() {
+        let mut controller = AutoDriveController::default();
+        let _effects = controller.schedule_cli_prompt(3, "Prompt".to_string(), None);
+        let countdown_id = controller.countdown_id;
+        controller.set_phase(AutoRunPhase::Idle);
+
+        let effects = controller.handle_countdown_tick(countdown_id, 3, 5);
+        assert!(effects.is_empty());
     }
 }

@@ -134,6 +134,7 @@ pub(crate) enum AppEvent {
     CodexOp(code_core::protocol::Op),
 
     AutoCoordinatorDecision {
+        seq: u64,
         status: AutoCoordinatorStatus,
         status_title: Option<String>,
         status_sent_to_user: Option<String>,
@@ -155,10 +156,13 @@ pub(crate) enum AppEvent {
         total_usage: TokenUsage,
         last_turn_usage: TokenUsage,
         turn_count: u32,
+        duplicate_items: u32,
+        replay_updates: u32,
     },
     AutoCoordinatorCompactedHistory {
         conversation: Vec<ResponseItem>,
     },
+    AutoCoordinatorStopAck,
     AutoCoordinatorCountdown {
         countdown_id: u64,
         seconds_left: u8,

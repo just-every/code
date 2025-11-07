@@ -1843,6 +1843,7 @@ impl App<'_> {
                     AppState::Onboarding { .. } => {}
                 },
                 AppEvent::AutoCoordinatorDecision {
+                    seq,
                     status,
                     status_title,
                     status_sent_to_user,
@@ -1854,6 +1855,7 @@ impl App<'_> {
                 } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.auto_handle_decision(
+                            seq,
                             status,
                             status_title,
                             status_sent_to_user,
@@ -1882,14 +1884,21 @@ impl App<'_> {
                     total_usage,
                     last_turn_usage,
                     turn_count,
+                    duplicate_items,
+                    replay_updates,
                 } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.auto_handle_token_metrics(
                             total_usage,
                             last_turn_usage,
                             turn_count,
+                            duplicate_items,
+                            replay_updates,
                         );
                     }
+                }
+                AppEvent::AutoCoordinatorStopAck => {
+                    // Coordinator acknowledged stop; no additional action required currently.
                 }
                 AppEvent::AutoCoordinatorCompactedHistory { conversation } => {
                     if let AppState::Chat { widget } = &mut self.app_state {

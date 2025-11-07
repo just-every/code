@@ -9,6 +9,8 @@ pub struct SessionMetrics {
     running_total: TokenUsage,
     last_turn: TokenUsage,
     turn_count: u32,
+    replay_updates: u32,
+    duplicate_items: u32,
     recent_prompt_tokens: VecDeque<u64>,
     window: usize,
 }
@@ -25,6 +27,8 @@ impl SessionMetrics {
             running_total: TokenUsage::default(),
             last_turn: TokenUsage::default(),
             turn_count: 0,
+            replay_updates: 0,
+            duplicate_items: 0,
             recent_prompt_tokens: VecDeque::with_capacity(window),
             window: window.max(1),
         }
@@ -41,6 +45,8 @@ impl SessionMetrics {
         self.running_total = total;
         self.last_turn = last.clone();
         self.turn_count = turn_count;
+        self.replay_updates = 0;
+        self.duplicate_items = 0;
         self.recent_prompt_tokens.clear();
         self.push_prompt_observation(last.non_cached_input());
     }
@@ -76,6 +82,35 @@ impl SessionMetrics {
 
     pub fn reset(&mut self) {
         *self = Self::new(self.window);
+    }
+
+    pub fn record_replay(&mut self) {
+        self.replay_updates = self.replay_updates.saturating_add(1);
+    }
+
+    pub fn replay_updates(&self) -> u32 {
+        self.replay_updates
+    }
+
+    pub fn record_duplicate_items(&mut self, count: usize) {
+        if count == 0 {
+            return;
+        }
+        self.duplicate_items = self
+            .duplicate_items
+            .saturating_add(count.min(u32::MAX as usize) as u32);
+    }
+
+    pub fn set_duplicate_items(&mut self, count: u32) {
+        self.duplicate_items = count;
+    }
+
+    pub fn set_replay_updates(&mut self, count: u32) {
+        self.replay_updates = count;
+    }
+
+    pub fn duplicate_items(&self) -> u32 {
+        self.duplicate_items
     }
 
     fn push_prompt_observation(&mut self, tokens: u64) {
@@ -115,6 +150,8 @@ mod tests {
 
         // Average of observed prompt tokens (non-cached input)
         assert_eq!(metrics.estimated_next_prompt_tokens(), 2_500);
+        assert_eq!(metrics.duplicate_items(), 0);
+        assert_eq!(metrics.replay_updates(), 0);
     }
 
     #[test]
@@ -127,5 +164,15 @@ mod tests {
         assert_eq!(metrics.running_total().input_tokens, 10_000);
         assert_eq!(metrics.last_turn().input_tokens, 3_000);
         assert_eq!(metrics.estimated_next_prompt_tokens(), 3_000);
+        assert_eq!(metrics.duplicate_items(), 0);
+        assert_eq!(metrics.replay_updates(), 0);
+    }
+
+    #[test]
+    fn record_replay_increments_counter() {
+        let mut metrics = SessionMetrics::default();
+        metrics.record_replay();
+        metrics.record_replay();
+        assert_eq!(metrics.replay_updates(), 2);
     }
 }

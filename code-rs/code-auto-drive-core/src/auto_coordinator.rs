@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -68,7 +69,9 @@ impl AutoCoordinatorEventSender {
         Self { inner: Arc::new(f) }
     }
 
+    #[tracing::instrument(skip(self, event), fields(event = event.kind()))]
     pub fn send(&self, event: AutoCoordinatorEvent) {
+        tracing::debug!(target: "auto_drive::coordinator", event = event.kind(), "dispatch coordinator event");
         (self.inner)(event);
     }
 }
@@ -105,6 +108,7 @@ pub enum AutoCoordinatorStatus {
 #[derive(Debug, Clone)]
 pub enum AutoCoordinatorEvent {
     Decision {
+        seq: u64,
         status: AutoCoordinatorStatus,
         status_title: Option<String>,
         status_sent_to_user: Option<String>,
@@ -126,10 +130,26 @@ pub enum AutoCoordinatorEvent {
         total_usage: TokenUsage,
         last_turn_usage: TokenUsage,
         turn_count: u32,
+        duplicate_items: u32,
+        replay_updates: u32,
     },
     CompactedHistory {
         conversation: Vec<ResponseItem>,
     },
+    StopAck,
+}
+
+impl AutoCoordinatorEvent {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Decision { .. } => "decision",
+            Self::Thinking { .. } => "thinking",
+            Self::UserReply { .. } => "user_reply",
+            Self::TokenMetrics { .. } => "token_metrics",
+            Self::CompactedHistory { .. } => "compacted_history",
+            Self::StopAck => "stop_ack",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -158,11 +178,13 @@ pub enum AutoCoordinatorCommand {
         _prompt: String,
         conversation: Vec<ResponseItem>,
     },
+    AckDecision { seq: u64 },
     Stop,
 }
 
 #[derive(Clone)]
 struct PendingDecision {
+    seq: u64,
     status: AutoCoordinatorStatus,
     status_title: Option<String>,
     status_sent_to_user: Option<String>,
@@ -176,6 +198,7 @@ struct PendingDecision {
 impl PendingDecision {
     fn into_event(self) -> AutoCoordinatorEvent {
         AutoCoordinatorEvent::Decision {
+            seq: self.seq,
             status: self.status,
             status_title: self.status_title,
             status_sent_to_user: self.status_sent_to_user,
@@ -854,6 +877,7 @@ pub fn start_auto_coordinator(
     })
 }
 
+#[tracing::instrument(skip_all, fields(goal = %goal_text, derive_goal = derive_goal_from_history))]
 fn run_auto_loop(
     event_tx: AutoCoordinatorEventSender,
     goal_text: String,
@@ -940,6 +964,9 @@ fn run_auto_loop(
     }
     let include_agents = schema_features.include_agents;
     let mut pending_conversation = Some(filter_popular_commands(initial_conversation));
+    let mut decision_seq: u64 = 0;
+    let mut pending_ack_seq: Option<u64> = None;
+    let mut queued_updates: VecDeque<Vec<ResponseItem>> = VecDeque::new();
     if !derive_goal_from_history {
         if let Some(seed) = build_initial_planning_seed(&goal_text, include_agents) {
             let transcript_item = make_message("assistant", seed.response_json.clone());
@@ -949,6 +976,7 @@ fn run_auto_loop(
                 suppress_ui_context: true,
             };
             let event = AutoCoordinatorEvent::Decision {
+                seq: decision_seq,
                 status: AutoCoordinatorStatus::Continue,
                 status_title: Some(seed.status_title.clone()),
                 status_sent_to_user: Some(seed.status_sent_to_user.clone()),
@@ -959,6 +987,7 @@ fn run_auto_loop(
                 transcript: vec![transcript_item],
             };
             event_tx.send(event);
+            pending_ack_seq = Some(decision_seq);
             pending_conversation = None;
         }
     }
@@ -978,7 +1007,22 @@ fn run_auto_loop(
             break;
         }
 
+        let mut next_conversation: Option<Vec<ResponseItem>> = None;
+
         if let Some(conv) = pending_conversation.take() {
+            if let Some(pending_seq) = pending_ack_seq {
+                tracing::debug!(target: "auto_drive::coordinator", pending_seq, "queueing conversation until ack");
+                queued_updates.push_back(conv);
+            } else {
+                next_conversation = Some(conv);
+            }
+        } else if pending_ack_seq.is_none() {
+            if let Some(conv) = queued_updates.pop_front() {
+                next_conversation = Some(conv);
+            }
+        }
+
+        if let Some(conv) = next_conversation {
             if cancel_token.is_cancelled() {
                 stopped = true;
                 continue;
@@ -1044,8 +1088,11 @@ fn run_auto_loop(
                             schema = build_schema(&active_agent_names, schema_features);
                         }
                     }
+                    decision_seq = decision_seq.wrapping_add(1);
+                    let current_seq = decision_seq;
                     if matches!(status, AutoCoordinatorStatus::Continue) {
                         let event = AutoCoordinatorEvent::Decision {
+                            seq: current_seq,
                             status,
                             status_title: status_title.clone(),
                             status_sent_to_user: status_sent_to_user.clone(),
@@ -1055,11 +1102,13 @@ fn run_auto_loop(
                             agents: agents.iter().map(agent_action_to_event).collect(),
                             transcript: std::mem::take(&mut response_items),
                         };
+                        pending_ack_seq = Some(current_seq);
                         event_tx.send(event);
                         continue;
                     }
 
                     let decision_event = PendingDecision {
+                        seq: current_seq,
                         status,
                         status_title,
                         status_sent_to_user,
@@ -1071,6 +1120,7 @@ fn run_auto_loop(
                     };
 
                     let should_stop = matches!(decision_event.status, AutoCoordinatorStatus::Failed);
+                    pending_ack_seq = Some(current_seq);
                     event_tx.send(decision_event.into_event());
                     stopped = should_stop;
                     continue;
@@ -1136,7 +1186,10 @@ fn run_auto_loop(
                         );
                     }
                     consecutive_decision_failures = 0;
+                    decision_seq = decision_seq.wrapping_add(1);
+                    let current_seq = decision_seq;
                     let event = AutoCoordinatorEvent::Decision {
+                        seq: current_seq,
                         status: AutoCoordinatorStatus::Failed,
                         status_title: Some("Coordinator error".to_string()),
                         status_sent_to_user: Some(format!("Encountered an error: {error}")),
@@ -1146,6 +1199,7 @@ fn run_auto_loop(
                         agents: Vec::new(),
                         transcript: Vec::new(),
                     };
+                    pending_ack_seq = Some(current_seq);
                     event_tx.send(event);
                     stopped = true;
                     continue;
@@ -1154,6 +1208,17 @@ fn run_auto_loop(
         }
 
         match cmd_rx.recv() {
+            Ok(AutoCoordinatorCommand::AckDecision { seq }) => {
+                if pending_ack_seq == Some(seq) {
+                    tracing::debug!(target: "auto_drive::coordinator", seq, "ack received");
+                    pending_ack_seq = None;
+                    if let Some(queued) = queued_updates.pop_front() {
+                        pending_conversation = Some(queued);
+                    }
+                } else {
+                    tracing::debug!(target: "auto_drive::coordinator", pending = ?pending_ack_seq, seq, "ignoring ack for unexpected sequence");
+                }
+            }
             Ok(AutoCoordinatorCommand::HandleUserPrompt { _prompt, conversation }) => {
                 let developer_intro = base_developer_intro.as_str();
                 let mut updated_conversation = conversation.clone();
@@ -1208,10 +1273,23 @@ fn run_auto_loop(
             Ok(AutoCoordinatorCommand::UpdateConversation(conv)) => {
                 requests_completed = requests_completed.saturating_add(1);
                 consecutive_decision_failures = 0;
-                pending_conversation = Some(filter_popular_commands(conv));
+                let filtered = filter_popular_commands(conv);
+                if let Some(pending_seq) = pending_ack_seq {
+                    tracing::debug!(target: "auto_drive::coordinator", pending_seq, "queueing update while awaiting ack");
+                    session_metrics.record_replay();
+                    queued_updates.push_back(filtered);
+                } else if pending_conversation.is_some() {
+                    session_metrics.record_replay();
+                    queued_updates.push_back(filtered);
+                } else {
+                    pending_conversation = Some(filtered);
+                }
             }
             Ok(AutoCoordinatorCommand::Stop) | Err(_) => {
                 stopped = true;
+                event_tx.send(AutoCoordinatorEvent::StopAck);
+                pending_ack_seq = None;
+                queued_updates.clear();
             }
         }
     }
@@ -1568,6 +1646,7 @@ struct RequestStreamResult {
     model_slug: String,
 }
 
+#[tracing::instrument(skip_all, fields(conv_items = conversation.len()))]
 fn request_coordinator_decision(
     runtime: &tokio::runtime::Runtime,
     client: &ModelClient,
@@ -1692,6 +1771,7 @@ fn indent_lines(text: &str, prefix: &str) -> String {
         .join("\n")
 }
 
+#[tracing::instrument(skip_all, fields(conv_items = conversation.len()))]
 fn request_user_turn_decision(
     runtime: &tokio::runtime::Runtime,
     client: &ModelClient,
@@ -2636,6 +2716,8 @@ fn emit_auto_drive_metrics(event_tx: &AutoCoordinatorEventSender, metrics: &Sess
         total_usage: metrics.running_total().clone(),
         last_turn_usage: metrics.last_turn().clone(),
         turn_count: metrics.turn_count(),
+        duplicate_items: metrics.duplicate_items(),
+        replay_updates: metrics.replay_updates(),
     };
     event_tx.send(event);
 }

@@ -54,6 +54,10 @@ impl AutoDriveHistory {
         }
 
         if self.should_skip_entire_tail(&tail) {
+            self
+                .session_metrics
+                .record_duplicate_items(tail.len().saturating_sub(1));
+            self.session_metrics.record_replay();
             self.pending_duplicates.clear();
             return Vec::new();
         }
@@ -71,6 +75,7 @@ impl AutoDriveHistory {
                 .unwrap_or(false);
 
             if matched {
+                self.session_metrics.record_duplicate_items(1);
                 queue.pop_front();
                 continue;
             }
@@ -172,8 +177,12 @@ impl AutoDriveHistory {
         total: TokenUsage,
         last: TokenUsage,
         turn_count: u32,
+        duplicate_items: u32,
+        replay_updates: u32,
     ) {
         self.session_metrics.sync_absolute(total, last, turn_count);
+        self.session_metrics.set_duplicate_items(duplicate_items);
+        self.session_metrics.set_replay_updates(replay_updates);
     }
 
     /// Returns the cumulative token usage across all coordinator turns.
@@ -189,6 +198,14 @@ impl AutoDriveHistory {
     /// Returns the number of turns recorded so far.
     pub fn recorded_turns(&self) -> u32 {
         self.session_metrics.turn_count()
+    }
+
+    pub fn duplicate_items(&self) -> u32 {
+        self.session_metrics.duplicate_items()
+    }
+
+    pub fn replay_updates(&self) -> u32 {
+        self.session_metrics.replay_updates()
     }
 
     /// Returns the estimated prompt tokens for the next turn.
@@ -464,12 +481,35 @@ mod tests {
     #[test]
     fn test_apply_token_metrics_updates_totals() {
         let mut history = AutoDriveHistory::new();
-        history.apply_token_metrics(make_usage(10, 5), make_usage(4, 2), 3);
+        history.apply_token_metrics(make_usage(10, 5), make_usage(4, 2), 3, 0, 0);
 
         assert_eq!(history.total_tokens().input_tokens, 10);
         assert_eq!(history.last_turn_tokens().input_tokens, 4);
         assert_eq!(history.recorded_turns(), 3);
         assert_eq!(history.estimated_next_prompt_tokens(), 4);
+    }
+
+    #[test]
+    fn replace_converted_records_duplicate_items() {
+        let mut history = AutoDriveHistory::new();
+        let goal = make_user_message("Goal");
+        let first_reply = make_assistant_message("First reply");
+        let duplicate_reply = make_assistant_message("Duplicate reply");
+
+        history.replace_converted(vec![goal.clone(), first_reply.clone()]);
+        history.append_raw(&[duplicate_reply.clone()]);
+
+        // Introducing a new tail that begins with a user message followed by the duplicate.
+        let new_history = vec![
+            goal,
+            first_reply,
+            make_user_message("Follow-up"),
+            duplicate_reply,
+        ];
+        let tail = history.replace_converted(new_history);
+        assert!(tail.is_empty());
+        assert_eq!(history.duplicate_items(), 1);
+        assert_eq!(history.replay_updates(), 1);
     }
 
     #[test]
