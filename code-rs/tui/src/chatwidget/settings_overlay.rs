@@ -21,6 +21,7 @@ use crate::bottom_pane::{
     SettingsSection,
     ThemeSelectionView,
     UpdateSettingsView,
+    ReviewSettingsView,
     ValidationSettingsView,
 };
 use crate::chrome_launch::{ChromeLaunchOption, CHROME_LAUNCH_CHOICES};
@@ -257,6 +258,31 @@ pub(crate) struct ValidationSettingsContent {
 impl ValidationSettingsContent {
     pub(crate) fn new(view: ValidationSettingsView) -> Self {
         Self { view }
+    }
+}
+
+pub(crate) struct ReviewSettingsContent {
+    view: ReviewSettingsView,
+}
+
+impl ReviewSettingsContent {
+    pub(crate) fn new(view: ReviewSettingsView) -> Self {
+        Self { view }
+    }
+}
+
+impl SettingsContent for ReviewSettingsContent {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        self.view.render(area, buf);
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) -> bool {
+        self.view.handle_key_event_direct(key);
+        true
+    }
+
+    fn is_complete(&self) -> bool {
+        self.view.is_complete()
     }
 }
 
@@ -1032,6 +1058,7 @@ pub(crate) struct SettingsOverlayView {
     notifications_content: Option<NotificationsSettingsContent>,
     mcp_content: Option<McpSettingsContent>,
     agents_content: Option<AgentsSettingsContent>,
+    review_content: Option<ReviewSettingsContent>,
     validation_content: Option<ValidationSettingsContent>,
     github_content: Option<GithubSettingsContent>,
     auto_drive_content: Option<AutoDriveSettingsContent>,
@@ -1053,6 +1080,7 @@ impl SettingsOverlayView {
             notifications_content: None,
             mcp_content: None,
             agents_content: None,
+            review_content: None,
             validation_content: None,
             github_content: None,
             auto_drive_content: None,
@@ -1136,6 +1164,10 @@ impl SettingsOverlayView {
 
     pub(crate) fn set_agents_content(&mut self, content: AgentsSettingsContent) {
         self.agents_content = Some(content);
+    }
+
+    pub(crate) fn set_review_content(&mut self, content: ReviewSettingsContent) {
+        self.review_content = Some(content);
     }
 
     pub(crate) fn set_validation_content(&mut self, content: ValidationSettingsContent) {
@@ -1612,6 +1644,7 @@ impl SettingsOverlayView {
             SettingsSection::Updates => "Upgrade",
             SettingsSection::Agents => "Agents",
             SettingsSection::AutoDrive => "Auto Drive Settings",
+            SettingsSection::Review => "Review Settings",
             SettingsSection::Validation => "Validation Settings",
             SettingsSection::Github => "GitHub Settings",
             SettingsSection::Limits => "Rate Limits",
@@ -1928,6 +1961,13 @@ impl SettingsOverlayView {
                 }
                 self.render_placeholder(area, buf, SettingsSection::AutoDrive.placeholder());
             }
+            SettingsSection::Review => {
+                if let Some(content) = self.review_content.as_ref() {
+                    content.render(area, buf);
+                    return;
+                }
+                self.render_placeholder(area, buf, SettingsSection::Review.placeholder());
+            }
             SettingsSection::Validation => {
                 if let Some(content) = self.validation_content.as_ref() {
                     content.render(area, buf);
@@ -2004,6 +2044,10 @@ impl SettingsOverlayView {
                 .map(|content| content as &mut dyn SettingsContent),
             SettingsSection::AutoDrive => self
                 .auto_drive_content
+                .as_mut()
+                .map(|content| content as &mut dyn SettingsContent),
+            SettingsSection::Review => self
+                .review_content
                 .as_mut()
                 .map(|content| content as &mut dyn SettingsContent),
             SettingsSection::Validation => self

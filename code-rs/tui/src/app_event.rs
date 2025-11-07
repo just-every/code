@@ -214,6 +214,10 @@ pub(crate) enum AppEvent {
     UpdateGithubWatcher(bool),
     /// Update the TUI notifications toggle
     UpdateTuiNotifications(bool),
+    /// Enable or disable Auto Resolve for review flows
+    UpdateReviewAutoResolveEnabled(bool),
+    /// Set the maximum number of Auto Resolve re-review attempts
+    UpdateReviewAutoResolveAttempts(u32),
     /// Enable/disable a specific validation tool
     UpdateValidationTool { name: String, enable: bool },
     /// Enable/disable an entire validation group
@@ -243,9 +247,6 @@ pub(crate) enum AppEvent {
 
     /// Run the review command with the given argument string (mirrors `/review <args>`)
     RunReviewCommand(String),
-
-    /// Toggle the persisted auto-resolve setting for reviews.
-    ToggleReviewAutoResolve,
 
     /// Open a bottom-pane form that lets the user select a commit to review.
     StartReviewCommitPicker,

@@ -7,6 +7,7 @@
 #![cfg(test)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use code_core::config_types::AutoResolveAttemptLimit;
 use code_core::history::state::{
     AssistantStreamDelta,
     HistoryId,
@@ -35,7 +36,7 @@ use code_core::protocol::{
     OrderMeta,
     TokenUsage,
 };
-use code_tui::test_helpers::ChatWidgetHarness;
+use code_tui::test_helpers::{render_chat_widget_to_vt100, ChatWidgetHarness};
 use code_tui::{Cli, ComposerAction, ComposerInput};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use mcp_types::CallToolResult;
@@ -680,6 +681,68 @@ fn smoke_custom_tool_call() {
     });
 
     code_tui::test_helpers::assert_has_codex_event(&mut harness);
+}
+
+#[test]
+fn smoke_review_settings_auto_resolve_controls() {
+    let mut harness = ChatWidgetHarness::new();
+
+    harness.open_review_settings_overlay();
+
+    let initial = render_chat_widget_to_vt100(&mut harness, 100, 28);
+    assert!(
+        initial.contains("Review Settings"),
+        "review settings overlay should render"
+    );
+    assert!(
+        initial.contains("Auto Resolve reviews"),
+        "review settings should list Auto Resolve toggle"
+    );
+    assert!(
+        initial.contains("Off"),
+        "Auto Resolve toggle should start disabled for fresh config"
+    );
+    assert!(
+        initial.contains("5 re-reviews"),
+        "default max re-reviews should be 5"
+    );
+
+    harness.send_key(make_key(KeyCode::Enter, KeyModifiers::NONE));
+    let auto_enabled = harness.review_auto_resolve_enabled();
+    assert!(auto_enabled, "toggling should enable Auto Resolve");
+
+    harness.send_key(make_key(KeyCode::Down, KeyModifiers::NONE));
+
+    let mut observed = Vec::new();
+    for _ in 0..AutoResolveAttemptLimit::ALLOWED.len() {
+        let value = harness.review_auto_resolve_attempts();
+        observed.push(value);
+        harness.send_key(make_key(KeyCode::Right, KeyModifiers::NONE));
+    }
+    observed.sort_unstable();
+    observed.dedup();
+    assert_eq!(
+        observed,
+        AutoResolveAttemptLimit::ALLOWED.to_vec(),
+        "cycling with → should expose every allowed attempt count"
+    );
+
+    for _ in 0..AutoResolveAttemptLimit::ALLOWED.len() {
+        harness.send_key(make_key(KeyCode::Left, KeyModifiers::NONE));
+        let value = harness.review_auto_resolve_attempts();
+        if value == 0 {
+            break;
+        }
+    }
+
+    let attempts_zero = harness.review_auto_resolve_attempts();
+    assert_eq!(attempts_zero, 0, "← should allow selecting zero re-reviews");
+
+    let frame_zero = render_chat_widget_to_vt100(&mut harness, 100, 28);
+    assert!(
+        frame_zero.contains("0 (no re-reviews)"),
+        "UI should label zero-attempt selection"
+    );
 }
 
 #[test]

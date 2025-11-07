@@ -28,6 +28,10 @@ static TEST_RUNTIME: Lazy<Runtime> = Lazy::new(|| {
         .expect("test runtime")
 });
 
+pub fn enter_test_runtime_guard() -> tokio::runtime::EnterGuard<'static> {
+    TEST_RUNTIME.enter()
+}
+
 pub struct ChatWidgetHarness {
     chat: ChatWidget<'static>,
     events: Receiver<AppEvent>,
@@ -156,6 +160,12 @@ impl ChatWidgetHarness {
                         command,
                     );
                 }
+                AppEvent::UpdateReviewAutoResolveEnabled(enabled) => {
+                    self.chat.set_review_auto_resolve_enabled(enabled);
+                }
+                AppEvent::UpdateReviewAutoResolveAttempts(attempts) => {
+                    self.chat.set_review_auto_resolve_attempts(attempts);
+                }
                 AppEvent::ShowAgentsOverview => {
                     self.chat.ensure_settings_overlay_section(SettingsSection::Agents);
                     self.chat.show_agents_overview_ui();
@@ -236,6 +246,32 @@ impl ChatWidgetHarness {
         self.chat.ensure_settings_overlay_section(SettingsSection::Agents);
         self.chat.show_agents_overview_ui();
         self.flush_into_widget();
+    }
+
+    pub fn open_validation_settings_overlay(&mut self) {
+        self.chat.ensure_settings_overlay_section(SettingsSection::Validation);
+        self.chat.show_settings_overlay(Some(SettingsSection::Validation));
+        self.flush_into_widget();
+    }
+
+    pub fn open_review_settings_overlay(&mut self) {
+        self.chat.ensure_settings_overlay_section(SettingsSection::Review);
+        self.chat.show_settings_overlay(Some(SettingsSection::Review));
+        self.flush_into_widget();
+    }
+
+    pub fn review_auto_resolve_enabled(&mut self) -> bool {
+        self.flush_into_widget();
+        self.chat.config.tui.review_auto_resolve
+    }
+
+    pub fn review_auto_resolve_attempts(&mut self) -> u32 {
+        self.flush_into_widget();
+        self.chat
+            .config
+            .auto_drive
+            .auto_resolve_review_attempts
+            .get()
     }
 
     pub fn open_settings_overlay_overview(&mut self) {

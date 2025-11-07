@@ -70,9 +70,7 @@ impl ValidationSettingsView {
         app_event_tx: AppEventSender,
     ) -> Self {
         let mut state = ScrollState::new();
-        if groups.len() + tools.len() > 0 {
-            state.selected_idx = Some(0);
-        }
+        state.selected_idx = Some(0);
         let tool_name_width = tools.iter().map(|row| row.status.name.len()).max().unwrap_or(0);
         Self {
             groups,
@@ -291,11 +289,11 @@ impl ValidationSettingsView {
     fn render_header_lines(&self) -> Vec<Line<'static>> {
         vec![
             Line::from(Span::styled(
-                "Functional checks compile changed code; stylistic linters cover docs and configs.",
+                "Toggle validation groups and installed tools.",
                 Style::default().fg(colors::text_dim()),
             )),
             Line::from(Span::styled(
-                "Use arrow keys to navigate. Enter toggles, Esc closes.",
+                "Use ↑↓ to navigate · Enter/Space toggle · Esc close",
                 Style::default().fg(colors::text_dim()),
             )),
             Line::from(""),

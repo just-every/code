@@ -222,12 +222,21 @@ pub struct AutoResolveState {
 
 impl AutoResolveState {
     pub fn new(prompt: String, hint: String, metadata: Option<ReviewContextMetadata>) -> Self {
+        Self::new_with_limit(prompt, hint, metadata, AUTO_RESOLVE_MAX_REVIEW_ATTEMPTS)
+    }
+
+    pub fn new_with_limit(
+        prompt: String,
+        hint: String,
+        metadata: Option<ReviewContextMetadata>,
+        max_attempts: u32,
+    ) -> Self {
         Self {
             prompt,
             hint,
             metadata,
             attempt: 0,
-            max_attempts: AUTO_RESOLVE_MAX_REVIEW_ATTEMPTS,
+            max_attempts,
             phase: AutoResolvePhase::WaitingForReview,
             last_review: None,
             last_fix_message: None,

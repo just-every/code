@@ -729,6 +729,43 @@ impl Default for Tui {
     }
 }
 
+#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct AutoResolveAttemptLimit(u32);
+
+impl AutoResolveAttemptLimit {
+    pub const ALLOWED: [u32; 9] = [0, 1, 2, 3, 4, 5, 10, 20, 40];
+    pub const DEFAULT: u32 = 5;
+
+    pub fn get(self) -> u32 {
+        self.0
+    }
+
+    pub fn try_new(value: u32) -> Result<Self, &'static str> {
+        if Self::ALLOWED.contains(&value) {
+            Ok(Self(value))
+        } else {
+            Err("auto_resolve_review_attempts must be one of {0,1,2,3,4,5,10,20,40}")
+        }
+    }
+}
+
+impl Default for AutoResolveAttemptLimit {
+    fn default() -> Self {
+        Self(Self::DEFAULT)
+    }
+}
+
+impl<'de> Deserialize<'de> for AutoResolveAttemptLimit {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = u32::deserialize(deserializer)?;
+        Self::try_new(raw).map_err(D::Error::custom)
+    }
+}
+
 /// Auto Drive behavioral defaults persisted via `config.toml`.
 #[derive(Deserialize, Debug, Clone, PartialEq)]
 pub struct AutoDriveSettings {
@@ -753,6 +790,9 @@ pub struct AutoDriveSettings {
 
     #[serde(default)]
     pub continue_mode: AutoDriveContinueMode,
+
+    #[serde(default)]
+    pub auto_resolve_review_attempts: AutoResolveAttemptLimit,
 }
 
 impl Default for AutoDriveSettings {
@@ -765,6 +805,7 @@ impl Default for AutoDriveSettings {
             observer_enabled: true,
             coordinator_routing: true,
             continue_mode: AutoDriveContinueMode::TenSeconds,
+            auto_resolve_review_attempts: AutoResolveAttemptLimit::default(),
         }
     }
 }

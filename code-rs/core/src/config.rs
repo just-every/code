@@ -1016,6 +1016,8 @@ pub fn set_auto_drive_settings(
         toml_edit::value(settings.observer_enabled);
     doc["auto_drive"]["coordinator_routing"] =
         toml_edit::value(settings.coordinator_routing);
+    doc["auto_drive"]["auto_resolve_review_attempts"] =
+        toml_edit::value(settings.auto_resolve_review_attempts.get() as i64);
 
     let mode_str = match settings.continue_mode {
         AutoDriveContinueMode::Immediate => "immediate",
