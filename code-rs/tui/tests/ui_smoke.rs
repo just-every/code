@@ -77,6 +77,8 @@ fn cli_web_search_flag_defaults() {
         resume_picker: false,
         resume_last: false,
         resume_session_id: None,
+        compact_prompt_override: None,
+        compact_prompt_file: None,
     };
 
     cli.finalize_defaults();
@@ -107,6 +109,8 @@ fn cli_web_search_flag_explicit_enable() {
         resume_picker: false,
         resume_last: false,
         resume_session_id: None,
+        compact_prompt_override: None,
+        compact_prompt_file: None,
     };
 
     cli.finalize_defaults();
@@ -137,6 +141,8 @@ fn cli_web_search_flag_disable() {
         resume_picker: false,
         resume_last: false,
         resume_session_id: None,
+        compact_prompt_override: None,
+        compact_prompt_file: None,
     };
 
     cli.finalize_defaults();
