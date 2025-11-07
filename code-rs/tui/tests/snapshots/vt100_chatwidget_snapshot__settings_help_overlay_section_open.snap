@@ -1,6 +1,6 @@
 ---
 source: tui/tests/vt100_chatwidget_snapshot.rs
-assertion_line: 1982
+assertion_line: 1984
 expression: section_open
 ---
  +------------------------------------------------------------------------------------------------+
@@ -14,12 +14,12 @@ expression: section_open
  |    Agents             |  Reason|Model Shortcuts               |                              | |
  |    Auto Drive         |        |                              |                              | |
  |    Review             |  GPT-5-|• Esc    Return to overview   |                              | |
- |    Validation         |     Hig|• Tab    Cycle sections       |solving difficult problems. ( | |
- |    GitHub             |     Med|• Shift+Tab  Cycle backwards  |ng. Ideal for most tasks. (de | |
- |    Chrome             |     Low|• ?      Toggle this help     |y in simple code bases. (fast | |
- |    MCP                |        |                              |                              | |
- |    Notifications      |  GPT-5 |Press Esc to close            |                              | |
- |    Limits             |     Hig+------------------------------+solving difficult problems. ( | |
+ |    Validation         |  Optimi|• Tab    Cycle sections       |                              | |
+ |    GitHub             |     Hig|• Shift+Tab  Cycle backwards  |solving difficult problems. ( | |
+ |    Chrome             |     Med|• ?      Toggle this help     |ng. Ideal for most tasks. (de | |
+ |    MCP                |     Low|                              |y in simple code bases. (fast | |
+ |    Notifications      |        |Press Esc to close            |                              | |
+ |    Limits             |  GPT-5 +------------------------------+                              | |
  |                       |                                                                      | |
  |                       +----------------------------------------------------------------------+ |
  | ↑ ↓ Move    Enter Open    Esc Close    ? Help                                                  |

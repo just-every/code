@@ -1,6 +1,6 @@
 ---
 source: tui/tests/vt100_chatwidget_snapshot.rs
-assertion_line: 1986
+assertion_line: 1988
 expression: section_closed
 ---
  +------------------------------------------------------------------------------------------------+
@@ -14,12 +14,12 @@ expression: section_closed
  |    Agents             |  Reasoning effort: medium                                            | |
  |    Auto Drive         |                                                                      | |
  |    Review             |  GPT-5-Codex                                                         | |
- |    Validation         |     High - Deep reasoning. Useful when solving difficult problems. ( | |
- |    GitHub             |     Medium (current) - Balanced reasoning. Ideal for most tasks. (de | |
- |    Chrome             |     Low - Basic reasoning. Works quickly in simple code bases. (fast | |
- |    MCP                |                                                                      | |
- |    Notifications      |  GPT-5                                                               | |
- |    Limits             |     High - Deep reasoning. Useful when solving difficult problems. ( | |
+ |    Validation         |  Optimized for coding.                                               | |
+ |    GitHub             |     High - Deep reasoning. Useful when solving difficult problems. ( | |
+ |    Chrome             |     Medium (current) - Balanced reasoning. Ideal for most tasks. (de | |
+ |    MCP                |     Low - Basic reasoning. Works quickly in simple code bases. (fast | |
+ |    Notifications      |                                                                      | |
+ |    Limits             |  GPT-5                                                               | |
  |                       |                                                                      | |
  |                       +----------------------------------------------------------------------+ |
  | ↑ ↓ Move    Enter Open    Esc Close    ? Help                                                  |
