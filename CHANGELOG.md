@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.4.12] - 2025-11-08
+
+- Auto Drive/Compaction: refresh the compaction prompt and shorten rate-limit waits so automation resumes faster after throttles. (482fe13, a40fe2c)
+- TUI/Browser: prevent foreign background events from flooding the embedded console in browser sessions. (a7da0eb)
+
 ## [0.4.11] - 2025-11-07
 
 - Model: add gpt-5-codex-mini presets for quick access to lighter variants. (febfa7e)
