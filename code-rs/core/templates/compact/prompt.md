@@ -1,17 +1,9 @@
-You have exceeded the maximum number of tokens. Please write a concise context checkpoint for the next agent:
+You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
 
-**Progress So Far**
-- Summarize completed work, partial implementations, and the current state of open threads.
-- Mention any deviations from the original goal or in-flight experiments.
+Include:
+- Current progress and key decisions made
+- Important context, constraints, or user preferences
+- What remains to be done (clear next steps)
+- Any critical data, examples, or references needed to continue
 
-**Key Context & Constraints**
-- List active todos with file paths and line numbers when possible.
-- Flag code that still needs tests (edge cases, integration, performance) or manual verification.
-- Record blockers, open bugs, environment quirks, or dependencies that influenced recent decisions.
-
-**Next Concrete Steps**
-- Prioritize the immediate task(s) the next agent should tackle first.
-- Describe any setup, context, or reasoning they should revisit before coding.
-- Call out decisions that still need confirmation.
-
-Keep the tone factual and actionable. The goal is to let the next agent resume quickly without rereading the entire history.
+Be concise, structured, and focused on helping the next LLM seamlessly continue the work.
