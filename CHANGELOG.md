@@ -310,6 +310,11 @@
 - Auto-drive: stream coordinator reasoning, keep plan context, and smooth heading presentation. (fc8da8cf, 0d5bc1f1, 45a6fb94, aaa91865)
 - TUI/History: route diff and explore cells through domain events for consistent playback. (0ae94dca, 0d5d57ee)
 
+## [0.2.171] - 2025-09-27
+
+- Config/Subagents: document the long-context `context-collector` agent, `/context` helper, and env overrides so coding runs can pull repo summaries on demand. (3484b7f)
+- Profiles: drop the always-on Codex requirement from `/plan`, `/solve`, and `/code` defaults so customized agent rosters stay respected. (1e0f459)
+
 ## [0.2.170] - 2025-09-27
 
 - TUI/History: drive exec, assistant, explore, and rate-limit cells from domain events for consistent streaming. (38abccc, 5409493, e6e72d3, f851369, d7e9ee7)
