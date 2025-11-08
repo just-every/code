@@ -520,6 +520,10 @@
 - Release/Homebrew: compute bottle hashes from local artifacts and retry/backoff remote fetches so CDN propagation no longer blocks releases. (fd38d77)
 - Dev/Proxy: add `scripts/openai-proxy.js` to mirror CI proxy constraints for local SSE testing. (7e9203c)
 
+## [0.2.135] - 2025-09-12
+
+- CI/Proxy: centralize the SSE-safe OpenAI proxy script across upstream-merge, issue, and release workflows for consistent behavior. (7304efe)
+
 ## [0.2.133] - 2025-09-12
 
 - Release/Homebrew: compute `sha256` from local artifacts; add retry/backoff when fetching remote bottles; avoid failing during CDN propagation. (fd38d777b)
