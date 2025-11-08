@@ -13790,6 +13790,38 @@ impl ChatWidget<'_> {
         }
     }
 
+    pub(super) fn prune_agents_terminal_state(
+        &mut self,
+        active_agent_ids: &HashSet<String>,
+        active_batch_ids: &HashSet<String>,
+    ) {
+        self.agents_terminal
+            .entries
+            .retain(|id, _| active_agent_ids.contains(id));
+        self.agents_terminal
+            .order
+            .retain(|id| active_agent_ids.contains(id));
+        self.agents_terminal
+            .scroll_offsets
+            .retain(|key, _| {
+                if let Some(agent_id) = key.strip_prefix("agent:") {
+                    active_agent_ids.contains(agent_id)
+                } else if let Some(batch_id) = key.strip_prefix("batch:") {
+                    if batch_id == "__adhoc__" {
+                        true
+                    } else {
+                        active_batch_ids.contains(batch_id)
+                    }
+                } else {
+                    true
+                }
+            });
+        self.agents_terminal.clamp_selected_index();
+        if self.agents_terminal.active {
+            self.restore_selected_agent_scroll();
+        }
+    }
+
     fn enter_agents_terminal_mode(&mut self) {
         if self.agents_terminal.active {
             return;
