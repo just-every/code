@@ -250,6 +250,12 @@
 - Auto-drive: forward CLI context, export rendered history, and surface progress for coordinator runs. (0d2e51f, ec0bbc4, bccd39f)
 - TUI: open the undo timeline overlay on double Esc and persist auto-resolve workflows between sessions. (a658b1a, e1916f7, 4e35c09)
 
+## [0.2.181] - 2025-10-01
+
+- Cloud Tasks: add backend support plus the `/cloud` command so queued jobs, browser uploads, and task status live in one panel. (eec6aa1, 73fff03)
+- CLI/Exec: split `codex mcp` into `codex mcp-server` and `codex app-server`, scaffold the TypeScript SDK, and enable process hardening for release builds. (d9dbf48, adbc38a, b8e1fe6)
+- Browser/TUI: retry `goto` after recoverable failures and promote the cloud command in quick picks for faster discovery. (c698bc3, 32b1899)
+
 ## [0.2.180] - 2025-10-01
 
 - Auto-drive: add final observer validation before finishing runs so missed work is caught. (94061ee)
