@@ -356,6 +356,12 @@
 - Core/Config: allow overriding OpenAI wire API and support OpenRouter routing metadata for custom deployments. (a49cd2cd, 060cd5e2)
 - Core/Agents: cap agent previews and handle updated truncation tuple to stay within API limits. (a52dd361, c47f6767)
 
+## [0.2.163] - 2025-09-25
+
+- TUI/Agents: add overlays for agent logs and batch groups plus reliable ESC dismissal so multi-agent runs stay readable. (d2522c9, d3211d7, a42e0cc)
+- Limits/Usage: track per-account rate limits/tokens and surface a tabbed `/limits` overlay before throttles hit. (78038b8, eab74e1)
+- Undo/Git tooling: add workspace snapshot undo, VT100 overlays, and a `/demo` history generator to rehearse flows safely. (37f996a, 902fa5e, de276eb)
+
 ## [0.2.162] - 2025-09-22
 
 - CLI/Resume: fix --last to reliably select the most recent session under active runtimes. (1a2521ff)
