@@ -500,7 +500,7 @@ pub async fn run_main(
     let (critical_writer, _critical_guard) = non_blocking(critical_appender);
 
     let default_filter = if cli.debug {
-        "code_core=info,code_tui=info,code_browser=info"
+        "code_core=info,code_tui=info,code_browser=info,code_auto_drive_core=info"
     } else {
         "code_core=warn,code_tui=warn,code_browser=warn"
     };

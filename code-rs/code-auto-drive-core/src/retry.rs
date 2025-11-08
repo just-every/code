@@ -114,6 +114,17 @@ where
                             is_rate_limit: true,
                         });
                         wait_with_cancel(cancel, sleep).await?;
+                        // Once we finish the enforced wait, clear the resume metadata so
+                        // subsequent attempts are not artificially delayed.
+                        status_cb(RetryStatus {
+                            attempt,
+                            elapsed: start_time.elapsed(),
+                            sleep: None,
+                            resume_at: None,
+                            reason: "rate limit window cleared".to_string(),
+                            is_rate_limit: true,
+                        });
+                        continue;
                     }
                     RetryDecision::RetryAfterBackoff { reason } => {
                         let sleep = compute_delay(&options, attempt, &mut rng);
@@ -128,6 +139,7 @@ where
                             is_rate_limit: false,
                         });
                         wait_with_cancel(cancel, sleep).await?;
+                        continue;
                     }
                 }
             }
@@ -158,4 +170,3 @@ async fn wait_with_cancel(cancel: &CancellationToken, duration: Duration) -> Res
         _ = cancel.cancelled() => Err(RetryError::Aborted),
     }
 }
-

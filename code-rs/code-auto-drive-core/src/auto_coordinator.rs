@@ -42,8 +42,8 @@ use code_common::elapsed::format_duration;
 use chrono::{DateTime, Local, Utc};
 use rand::Rng;
 
-const RATE_LIMIT_BUFFER: Duration = Duration::from_secs(120);
-const RATE_LIMIT_JITTER_MAX: Duration = Duration::from_secs(30);
+const RATE_LIMIT_BUFFER: Duration = Duration::from_secs(5);
+const RATE_LIMIT_JITTER_MAX: Duration = Duration::from_secs(3);
 const MAX_RETRY_ELAPSED: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const MAX_DECISION_RECOVERY_ATTEMPTS: u32 = 3;
 const MESSAGE_LIMIT_FALLBACK: usize = 120;
