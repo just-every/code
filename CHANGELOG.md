@@ -914,6 +914,10 @@
 - TUI: align composer/history wrapping; add sanitize markers. (9e3e0d86)
 - Core: embed display version via tiny crate; remove CODE_VERSION env. (32f18333)
 
+## [0.2.62] - 2025-09-05
+
+- Release: align the crate/npm 0.2.62 version and make publish steps idempotent for per-target optional dependencies. (eeb8670, 6de0e0c)
+
 ## [0.2.61] - 2025-09-05
 
 - No functional changes; maintenance-only release focused on CI. (d7ac45c)
