@@ -524,6 +524,10 @@
 
 - CI/Proxy: centralize the SSE-safe OpenAI proxy script across upstream-merge, issue, and release workflows for consistent behavior. (7304efe)
 
+## [0.2.136] - 2025-09-12
+
+- Proxy Debug: add toggles for keepalive, gzip, session IDs, idempotency keys, and error-body logging to chase Responses API 500s. (a88f97c)
+
 ## [0.2.133] - 2025-09-12
 
 - Release/Homebrew: compute `sha256` from local artifacts; add retry/backoff when fetching remote bottles; avoid failing during CDN propagation. (fd38d777b)
