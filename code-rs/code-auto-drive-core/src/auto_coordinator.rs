@@ -1377,9 +1377,9 @@ fn build_initial_planning_seed(goal_text: &str, include_agents: bool) -> Option<
     }
 
     let cli_prompt = if include_agents {
-        "Please output a clear plan to best achieve the Primary Goal. If this is not a trival task, launch agents in parallel to find the best approach. Use your tools to research while they are running."
+        "Please provide a clear plan to best achieve the Primary Goal. If this is not a trival task, launch agents and use your tools to research the best approach. If this is a trival task, or the plan is already in the conversation history, just imediately provide the plan. Judge the length of research and planning you perform based on the complexity of the task. For more complex tasks, you could break the plan into workstreams which can be performed at the same time."
     } else {
-        "Please output a clear plan to best achieve the Primary Goal. If this is not a trival task, use your tools to research the best approach."
+        "Please provide a clear plan to best achieve the Primary Goal. If this is not a trival task, use your tools to research the best approach. If this is a trival task, or the plan is already in the conversation history, just imediately provide the plan. Judge the length of research and planning you perform based on the complexity of the task."
     };
 
     Some(InitialPlanningSeed {

@@ -220,6 +220,23 @@ impl ChatWidgetHarness {
         out
     }
 
+    pub fn take_scheduled_frame_events(&self) -> usize {
+        self.drain_events()
+            .into_iter()
+            .filter(|event| matches!(event, AppEvent::ScheduleFrameIn(_)))
+            .count()
+    }
+
+    pub fn bottom_spacer_lines(&self) -> u16 {
+        self.chat.history_render.bottom_spacer_lines_for_test()
+    }
+
+    pub fn pending_bottom_spacer_request(&self) -> Option<u16> {
+        self.chat
+            .history_render
+            .pending_bottom_spacer_lines_for_test()
+    }
+
     pub(crate) fn chat(&mut self) -> &mut ChatWidget<'static> {
         &mut self.chat
     }

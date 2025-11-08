@@ -72,6 +72,54 @@ fn bottom_spacer_skips_when_history_fits() {
     );
 }
 
+#[test]
+fn bottom_spacer_hysteresis_requests_followup_frame() {
+    let heights: Vec<u16> = (18..=44).collect();
+    let mut exercised = false;
+
+    'outer: for activate_h in &heights {
+        for release_h in &heights {
+            if activate_h == release_h {
+                continue;
+            }
+            let mut harness = ChatWidgetHarness::new();
+            seed_overflow_wrapped_transcript(&mut harness);
+
+            let _ = render_chat_widget_to_vt100(&mut harness, 100, *activate_h);
+            if harness.bottom_spacer_lines() == 0 {
+                continue;
+            }
+
+            harness.take_scheduled_frame_events();
+
+            let _ = render_chat_widget_to_vt100(&mut harness, 100, *release_h);
+            let Some(target) = harness.pending_bottom_spacer_request() else {
+                continue;
+            };
+
+            let scheduled = harness.take_scheduled_frame_events();
+            assert!(
+                scheduled > 0,
+                "viewport transition {activate_h}->{release_h} should schedule a follow-up frame"
+            );
+
+            let _ = render_chat_widget_to_vt100(&mut harness, 100, *release_h);
+            assert_eq!(
+                harness.bottom_spacer_lines(),
+                target,
+                "follow-up frame should settle spacer height"
+            );
+            exercised = true;
+            break 'outer;
+        }
+    }
+
+    assert!(
+        exercised,
+        "failed to find a viewport transition that exercises spacer hysteresis"
+    );
+}
+
 fn seed_short_wrapped_transcript(harness: &mut ChatWidgetHarness) {
     harness.push_user_prompt(
         "Could you provide a detailed overview of how the anti-clipping spacer works?\n\nMake sure the explanation spans multiple lines so we can exercise wrapping in the viewport.",

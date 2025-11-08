@@ -164,23 +164,33 @@ impl HistoryRenderState {
         self.bottom_spacer_range.set(range);
     }
 
-    pub(crate) fn select_bottom_spacer_lines(&self, requested: u16) -> u16 {
+    pub(crate) fn select_bottom_spacer_lines(&self, requested: u16) -> (u16, bool) {
         let current = self.bottom_spacer_lines.get();
         if requested >= current {
             self.bottom_spacer_lines.set(requested);
             self.pending_bottom_spacer_lines.set(None);
-            return requested;
+            return (requested, false);
         }
 
         let pending = self.pending_bottom_spacer_lines.get();
         if pending == Some(requested) {
             self.bottom_spacer_lines.set(requested);
             self.pending_bottom_spacer_lines.set(None);
-            requested
+            (requested, false)
         } else {
             self.pending_bottom_spacer_lines.set(Some(requested));
-            current
+            (current, true)
         }
+    }
+
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub(crate) fn bottom_spacer_lines_for_test(&self) -> u16 {
+        self.bottom_spacer_lines.get()
+    }
+
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub(crate) fn pending_bottom_spacer_lines_for_test(&self) -> Option<u16> {
+        self.pending_bottom_spacer_lines.get()
     }
 
     pub(crate) fn adjust_scroll_to_content(&self, mut scroll_pos: u16) -> u16 {

@@ -30661,9 +30661,19 @@ impl WidgetRef for &ChatWidget<'_> {
             requested_spacer_lines = requested_spacer_lines.max(1);
         }
 
-        let spacer_lines = self
+        let (spacer_lines, spacer_pending_shrink) = self
             .history_render
             .select_bottom_spacer_lines(requested_spacer_lines);
+
+        if spacer_pending_shrink {
+            // Force a follow-up frame so the spacer can settle back to the newly
+            // requested height even if no additional history events arrive. Without
+            // this, we'd keep the stale overscan row on-screen until the user types
+            // or resizes the window again.
+            let _ = self.app_event_tx.send(AppEvent::ScheduleFrameIn(
+                HISTORY_ANIMATION_FRAME_INTERVAL,
+            ));
+        }
 
         if spacer_lines > 0 {
             total_height = total_height.saturating_add(spacer_lines);
