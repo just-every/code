@@ -318,6 +318,12 @@
 - TUI/Accounts: prioritize ChatGPT accounts in login flows and restore the label prefix for clarity. (1db6193, 489bfb1)
 - UX: show a session resume hint on exit, surface Zed model selection, and restore Option+Enter newline plus Cmd+Z undo. (13dd4ca, 0e39d1f, eed1952)
 
+## [0.2.169] - 2025-09-26
+
+- TUI/Streaming: drive merged exec and assistant cells directly from recorded state so reasoning stays ordered even when cells merge. (1377166, 8f295c5, ae43387)
+- Core/Safety: add a potentially dangerous command check before running shell snippets to block destructive invocations. (eb2b739)
+- Security: introduce `CODEX_SECURE_MODE=1` to strip process observability in hardened environments. (d61dea6)
+
 ## [0.2.168] - 2025-09-26
 
 - TUI/Limits: restore the 6 month history view with expanded layout, spacing, and weekday labels. (840998b, 7c956be, 2f6b506, 395e2ba)
