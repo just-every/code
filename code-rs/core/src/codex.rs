@@ -3795,7 +3795,6 @@ impl AgentTask {
         turn_context: Arc<TurnContext>,
         sub_id: String,
         input: Vec<InputItem>,
-        compact_instructions: String,
     ) -> Self {
         let handle = {
             let sess_clone = Arc::clone(&sess);
@@ -3807,7 +3806,6 @@ impl AgentTask {
                     tc_clone,
                     sub_clone,
                     input,
-                    compact_instructions,
                 )
                 .await;
             })

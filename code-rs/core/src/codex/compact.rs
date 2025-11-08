@@ -134,14 +134,7 @@ pub(super) fn spawn_compact_task(
     sub_id: String,
     input: Vec<InputItem>,
 ) {
-    let prompt_text = resolve_compact_prompt_text(turn_context.compact_prompt_override.as_deref());
-    let task = AgentTask::compact(
-        sess.clone(),
-        turn_context,
-        sub_id,
-        input,
-        prompt_text,
-    );
+    let task = AgentTask::compact(sess.clone(), turn_context, sub_id, input);
     // set_task is synchronous in our fork
     sess.set_task(task);
 }
@@ -153,14 +146,7 @@ pub(super) async fn run_inline_auto_compact_task(
     let sub_id = sess.next_internal_sub_id();
     let prompt_text = resolve_compact_prompt_text(turn_context.compact_prompt_override.as_deref());
     let input = vec![InputItem::Text { text: prompt_text.clone() }];
-    run_compact_task_inner_inline(
-        sess,
-        turn_context,
-        sub_id,
-        input,
-        prompt_text,
-    )
-    .await
+    run_compact_task_inner_inline(sess, turn_context, sub_id, input).await
 }
 
 pub(super) async fn run_compact_task(
@@ -168,7 +154,6 @@ pub(super) async fn run_compact_task(
     turn_context: Arc<TurnContext>,
     sub_id: String,
     input: Vec<InputItem>,
-    compact_instructions: String,
 ) {
     let start_event = sess.make_event(&sub_id, EventMsg::TaskStarted);
     sess.send_event(start_event).await;
@@ -177,7 +162,6 @@ pub(super) async fn run_compact_task(
         turn_context,
         sub_id.clone(),
         input,
-        compact_instructions,
         true,
     )
     .await;
@@ -196,7 +180,6 @@ pub(super) async fn perform_compaction(
     turn_context: Arc<TurnContext>,
     sub_id: String,
     input: Vec<InputItem>,
-    compact_instructions: String,
     remove_task_on_completion: bool,
 ) -> CodexResult<()> {
     // Convert core InputItem -> ResponseInputItem using the same logic as the main turn flow
@@ -205,28 +188,17 @@ pub(super) async fn perform_compaction(
 
     let turn_input = sanitize_items_for_compact(turn_input);
 
-    let prompt = Prompt {
-        input: turn_input,
-        store: !sess.disable_response_storage,
-        user_instructions: turn_context.user_instructions.clone(),
-        environment_context: Some(EnvironmentContext::new(
-            Some(turn_context.cwd.clone()),
-            Some(turn_context.approval_policy),
-            Some(turn_context.sandbox_policy.clone()),
-            Some(sess.user_shell.clone()),
-        )),
-        tools: Vec::new(),
-        status_items: Vec::new(),
-        base_instructions_override: Some(compact_instructions),
-        include_additional_instructions: true,
-        prepend_developer_messages: Vec::new(),
-        text_format: None,
-        model_override: None,
-        model_family_override: None,
-        output_schema: None,
-        log_tag: Some("codex/compact".to_string()),
-        session_id_override: None,
-    };
+    let mut prompt = Prompt::default();
+    prompt.input = turn_input;
+    prompt.store = !sess.disable_response_storage;
+    prompt.user_instructions = turn_context.user_instructions.clone();
+    prompt.environment_context = Some(EnvironmentContext::new(
+        Some(turn_context.cwd.clone()),
+        Some(turn_context.approval_policy),
+        Some(turn_context.sandbox_policy.clone()),
+        Some(sess.user_shell.clone()),
+    ));
+    prompt.log_tag = Some("codex/compact".to_string());
 
     let max_retries = turn_context.client.get_provider().stream_max_retries();
     let mut retries = 0;
@@ -316,7 +288,6 @@ async fn run_compact_task_inner_inline(
     turn_context: Arc<TurnContext>,
     sub_id: String,
     input: Vec<InputItem>,
-    compact_instructions: String,
 ) -> Vec<ResponseItem> {
     // Convert core InputItem -> ResponseInputItem and build prompt
     let initial_input_for_turn: ResponseInputItem = response_input_from_core_items(input);
@@ -324,28 +295,17 @@ async fn run_compact_task_inner_inline(
 
     let turn_input = sanitize_items_for_compact(turn_input);
 
-    let prompt = Prompt {
-        input: turn_input,
-        store: !sess.disable_response_storage,
-        user_instructions: turn_context.user_instructions.clone(),
-        environment_context: Some(EnvironmentContext::new(
-            Some(turn_context.cwd.clone()),
-            Some(turn_context.approval_policy),
-            Some(turn_context.sandbox_policy.clone()),
-            Some(sess.user_shell.clone()),
-        )),
-        tools: Vec::new(),
-        status_items: Vec::new(),
-        base_instructions_override: Some(compact_instructions),
-        include_additional_instructions: true,
-        prepend_developer_messages: Vec::new(),
-        text_format: None,
-        model_override: None,
-        model_family_override: None,
-        output_schema: None,
-        log_tag: Some("codex/compact".to_string()),
-        session_id_override: None,
-    };
+    let mut prompt = Prompt::default();
+    prompt.input = turn_input;
+    prompt.store = !sess.disable_response_storage;
+    prompt.user_instructions = turn_context.user_instructions.clone();
+    prompt.environment_context = Some(EnvironmentContext::new(
+        Some(turn_context.cwd.clone()),
+        Some(turn_context.approval_policy),
+        Some(turn_context.sandbox_policy.clone()),
+        Some(sess.user_shell.clone()),
+    ));
+    prompt.log_tag = Some("codex/compact".to_string());
 
     let max_retries = turn_context.client.get_provider().stream_max_retries();
     let mut retries = 0;

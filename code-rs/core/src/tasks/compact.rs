@@ -26,6 +26,7 @@ impl SessionTask for CompactTask {
         sub_id: String,
         input: Vec<InputItem>,
     ) -> Option<String> {
-        compact::run_compact_task(session.clone_session(), ctx, sub_id, input).await
+        compact::run_compact_task(session.clone_session(), ctx, sub_id, input).await;
+        None
     }
 }
