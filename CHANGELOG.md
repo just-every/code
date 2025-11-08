@@ -230,6 +230,12 @@
 - CLI: Prefer rollout `.jsonl` transcripts when resuming sessions so `code resume` stays reliable after snapshots. (7f69aa55)
 - Core/Auth: Automatically use stored API keys for enterprise ChatGPT plans and honor retry hints from rate-limit errors. (fa1bd81f)
 
+## [0.2.186] - 2025-10-06
+
+- Tools/Exec: enable parallel tool calls, add freeform `apply_patch` output, and emit only the final exec message to keep transcripts tidy. (dc3c6bf, 4764fc1, 042d4d5)
+- CLI/Sandbox: add `codex sandbox {linux|macos}` and low-level stdin fixes so sandbox sessions remain stable offline. (77a8b7f, a30a902)
+- Auto Drive/TUI: add setup toggles, skip review waits when disabled, and polish exploring headers plus truncated exec hints. (40ff662, e39685b, 5f84f7c)
+
 ## [0.2.185] - 2025-10-03
 
 - CLI/Login: replace the deprecated `--api-key` flag with `--with-api-key` and restore color detection so `codex login` behaves on every shell. (69ac515, 1d94b91)
