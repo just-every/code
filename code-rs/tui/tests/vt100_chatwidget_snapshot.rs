@@ -1521,6 +1521,70 @@ fn browser_session_grouped_with_unordered_actions() {
 }
 
 #[test]
+fn browser_session_skips_foreign_background_events() {
+    let mut harness = ChatWidgetHarness::new();
+    harness.push_user_prompt("Keep browsing while checking status");
+
+    let mut event_seq = 0u64;
+    let mut order_seq = 0u64;
+
+    push_ordered_event(
+        &mut harness,
+        &mut event_seq,
+        &mut order_seq,
+        EventMsg::CustomToolCallBegin(CustomToolCallBeginEvent {
+            call_id: "browser-session-open".into(),
+            tool_name: "browser_open".into(),
+            parameters: Some(json!({ "url": "https://example.com" })),
+        }),
+    );
+    push_ordered_event(
+        &mut harness,
+        &mut event_seq,
+        &mut order_seq,
+        EventMsg::CustomToolCallEnd(CustomToolCallEndEvent {
+            call_id: "browser-session-open".into(),
+            tool_name: "browser_open".into(),
+            parameters: Some(json!({ "url": "https://example.com" })),
+            duration: Duration::from_secs(4),
+            result: Ok("{ \"status\": \"ok\" }".into()),
+        }),
+    );
+
+    // Browser-related console notice (matches session order)
+    push_ordered_event(
+        &mut harness,
+        &mut event_seq,
+        &mut order_seq,
+        EventMsg::BackgroundEvent(BackgroundEventEvent {
+            message: "Encountering captcha challenge on checkout".into(),
+        }),
+    );
+
+    // Foreign background event tagged to a different output_index should stay in history
+    let seq = event_seq;
+    let ord = order_seq;
+    harness.handle_event(Event {
+        id: format!("ordered-{seq}"),
+        event_seq: seq,
+        msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
+            message: "Command guard: Leading cd /tmp/work is redundant".into(),
+        }),
+        order: Some(OrderMeta {
+            request_ordinal: 1,
+            output_index: Some(99),
+            sequence_number: Some(ord),
+        }),
+    });
+
+    let output = normalize_output(render_chat_widget_to_vt100(&mut harness, 80, 24));
+    insta::assert_snapshot!(
+        "browser_session_skips_foreign_background_events",
+        output
+    );
+}
+
+#[test]
 fn agent_run_grouped_desired_layout() {
     let mut harness = ChatWidgetHarness::new();
     harness.push_user_prompt("Kick off QA bot regression run");

@@ -1,0 +1,28 @@
+---
+source: tui/tests/vt100_chatwidget_snapshot.rs
+assertion_line: 1583
+expression: output
+---
+ +----------------------------------------------------------------------------+
+ |                                    Code                                    |
+ +----------------------------------------------------------------------------+
+   - Running commands
+
+
+ » Command guard: Leading cd /tmp/work is redundant
+
+ › Keep browsing while checking status
+
+   +- Browser (headless): example.com
+   |
+   |   Actions
+   |    MM:SS  Opened  https://example.com
+   |
+   |   Console: ⚠️  Encountering captcha challenge on checkout
+   |
+   +- [Ctrl+B] View · [Esc] Stop
+
+ +----------------------------------------------------------------------------+
+ | What can I code for you today?                                             |
+ +----------------------------------------------------------------------------+
+   Read Only  (Shift+Tab change)                       Ctrl+H help  •  API key

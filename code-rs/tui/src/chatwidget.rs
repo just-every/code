@@ -1435,6 +1435,31 @@ struct OrderKey {
     seq: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct BrowserSessionOrderKey {
+    req: u64,
+    out: i32,
+}
+
+impl BrowserSessionOrderKey {
+    fn from_order_meta(meta: &code_core::protocol::OrderMeta) -> Self {
+        let out = meta
+            .output_index
+            .map(|value| {
+                if value > i32::MAX as u32 {
+                    i32::MAX
+                } else {
+                    value as i32
+                }
+            })
+            .unwrap_or(i32::MAX);
+        Self {
+            req: meta.request_ordinal,
+            out,
+        }
+    }
+}
+
 impl Ord for OrderKey {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         match self.req.cmp(&other.req) {
@@ -32260,7 +32285,7 @@ struct ToolState {
     running_kill_tools: HashMap<ToolCallId, ExecCallId>,
     browser_sessions: HashMap<String, browser_sessions::BrowserSessionTracker>,
     browser_session_by_call: HashMap<String, String>,
-    browser_session_by_order: HashMap<u64, String>,
+    browser_session_by_order: HashMap<BrowserSessionOrderKey, String>,
     browser_last_key: Option<String>,
     agent_runs: HashMap<String, agent_runs::AgentRunTracker>,
     agent_run_by_call: HashMap<String, String>,

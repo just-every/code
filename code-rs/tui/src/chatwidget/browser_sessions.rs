@@ -1,4 +1,4 @@
-use super::{tool_cards, ChatWidget, OrderKey};
+use super::{tool_cards, BrowserSessionOrderKey, ChatWidget, OrderKey};
 use super::tool_cards::ToolCardSlot;
 use crate::history_cell::{
     BrowserSessionCell,
@@ -104,7 +104,7 @@ pub(super) fn handle_custom_tool_begin(
         return false;
     }
 
-    let (order_key, ordinal) = order_key_and_ordinal(chat, order);
+    let (order_key, _) = order_key_and_ordinal(chat, order);
     let key = select_session_key(chat, order, call_id, tool_name);
     let mut tracker = chat
         .tools_state
@@ -138,11 +138,11 @@ pub(super) fn handle_custom_tool_begin(
         .tools_state
         .browser_session_by_call
         .insert(call_id.to_string(), key.clone());
-    if let Some(ord) = ordinal {
+    if let Some(meta) = order {
         chat
             .tools_state
             .browser_session_by_order
-            .insert(ord, key.clone());
+            .insert(BrowserSessionOrderKey::from_order_meta(meta), key.clone());
     }
     chat.tools_state.browser_last_key = Some(key.clone());
 
@@ -171,7 +171,15 @@ pub(super) fn handle_custom_tool_end(
         .tools_state
         .browser_session_by_call
         .remove(call_id)
-        .or_else(|| order.and_then(|meta| chat.tools_state.browser_session_by_order.get(&meta.request_ordinal).cloned()))
+        .or_else(|| {
+            order.and_then(|meta| {
+                chat
+                    .tools_state
+                    .browser_session_by_order
+                    .get(&BrowserSessionOrderKey::from_order_meta(meta))
+                    .cloned()
+            })
+        })
         .unwrap_or_else(|| browser_key(order, call_id));
 
     let mut tracker = match chat.tools_state.browser_sessions.remove(&key) {
@@ -222,12 +230,6 @@ pub(super) fn handle_custom_tool_end(
     tool_cards::assign_tool_card_key(&mut tracker.slot, &mut tracker.cell, Some(key.clone()));
     tool_cards::replace_tool_card::<BrowserSessionCell>(chat, &mut tracker.slot, &tracker.cell);
 
-    if let Some(ord) = order.map(|m| m.request_ordinal) {
-        chat
-            .tools_state
-            .browser_session_by_order
-            .insert(ord, key.clone());
-    }
     chat
         .tools_state
         .browser_sessions
@@ -374,7 +376,7 @@ fn select_session_key(
         if let Some(existing) = chat
             .tools_state
             .browser_session_by_order
-            .get(&meta.request_ordinal)
+            .get(&BrowserSessionOrderKey::from_order_meta(meta))
             .cloned()
         {
             if chat.tools_state.browser_sessions.contains_key(&existing) {
@@ -406,14 +408,11 @@ fn key_from_order_or_last(
     order: Option<&OrderMeta>,
 ) -> Option<String> {
     if let Some(meta) = order {
-        if let Some(key) = chat
+        return chat
             .tools_state
             .browser_session_by_order
-            .get(&meta.request_ordinal)
-            .cloned()
-        {
-            return Some(key);
-        }
+            .get(&BrowserSessionOrderKey::from_order_meta(meta))
+            .cloned();
     }
     chat.tools_state.browser_last_key.clone()
 }
