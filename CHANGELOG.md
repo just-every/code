@@ -167,6 +167,12 @@
 - CLI: enable CTRL-n and CTRL-p to navigate slash commands, files, and history without leaving the keyboard. (e30f651)
 - SDK: add network_access and web_search toggles to the TypeScript client for richer tool control. (c76528c)
 
+## [0.4.10] - 2025-11-07
+
+- Auto Drive: add seeded planning turns, richer status fields, reliability docs, and browser screenshots so `/auto` transcripts stay contextual. (82d4519, 77d2169, 9727a05)
+- TUI/Settings: move auto-resolve controls into Settings → Review and fix composer spacers/AltGr text so layouts stay steady. (7172f08, 10482ee, f9fc887, 648993a)
+- Core/Env: include the current date in environment context and block DevTools shortcuts inside embedded browsers. (ed823f3, e2369fb)
+
 ## [0.4.9] - 2025-11-03
 
 - CLI: rerun the bootstrap step when postinstall scripts are skipped so upgrades stay healthy. (8d842b8)
