@@ -1598,7 +1598,7 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
             json!({
                 "type": ["object", "null"],
                 "additionalProperties": false,
-                "description": "Parallel help agents for the CLI to spawn. Use as often as possible. Agents are faster, parallelize work and allow exploration of a range of approaches.",
+                "description": "Parallel help agents for the CLI to spawn. Use often. Agents are faster, parallelize work and allow exploration of a range of approaches.",
                 "properties": {
                     "timing": {
                         "type": "string",
@@ -1619,7 +1619,7 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
                                 "context": {
                                     "type": ["string", "null"],
                                     "maxLength": 1500,
-                                    "description": "Background details (agents can not see the conversation - you must provide ALL neccessary information here)."
+                                    "description": "Background details (agents can not see the conversation - you must provide ALL neccessary information here). You might want to include parts of the plan or conversation history relevant to the work given to the agent."
                                 },
                                 "prompt": {
                                     "type": "string",
@@ -1631,7 +1631,7 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
                             },
                             "required": ["prompt", "context", "write", "models"]
                         },
-                        "description": "Aim for 1-3 helper agents per turn. More or less is allowed if the situation calls for it."
+                        "description": "Up to 3 batches per turn with up to 4 agents in each. Use agents whenever it will help to source a variety of opinions when planning/researching or when there a mulitple workstreams which can be extecuted at once. Instruct the agent to carefully merge in the results of the agents work. Another great reason to use agents is that it helps to split the work up in small batches with a new context history - this speeds up work and dramatically improve focus. Having said that, the CLI has to be responible for merging in the results and producing the final product, so you need to balance the work given to the agents vs work given to the CLI at each step."
                     },
                 },
                 "required": ["timing", "list"]
