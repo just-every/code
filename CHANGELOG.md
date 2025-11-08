@@ -189,6 +189,12 @@
 - Build: drop the release notes gate so `build-fast` runs cleanly in CI. (b0bfd1f)
 - CLI: publish the v0.4.6 package metadata for all platform bundles. (ceccd4b)
 
+## [0.4.5] - 2025-10-30
+
+- Auto Drive: refresh the coordinator prompt, prefer reasoning-high GPT-5 defaults, and relax agent limits so `/auto` completes more reliably. (d31fd3d, 4fdea51, 467009b)
+- TUI/Limits: realign columns and hide stale compaction data in the history view. (29d8d5e)
+- CI/Preview: add a fallback build path for external PRs so preview artifacts still publish. (c289579)
+
 ## [0.4.4] - 2025-10-29
 
 - TUI: Interrupts in-flight runs when `/new` starts a fresh chat so responses never bleed between sessions. (0421f643)
