@@ -197,6 +197,12 @@
 - Config: Surfaces legacy `~/.codex/prompts` directories so custom prompts load automatically. (0be4f19c)
 - Rollout: Sorts session history by latest activity to make resume picks faster. (9f6481a1)
 
+## [0.4.3] - 2025-10-27
+
+- TUI/Undo: ship multi-turn undo operations, async ghost commit, and aggregated output cards so recoveries stay accurate. (afc4eaa, e92c4f6, 3ab6028)
+- Conversations: annotate threads with optional `model_provider`, allow provider filtering, and capture feedback uploads for regression triage. (15fa228, 5907422, f178805)
+- MCP/Tools: gate login after `mcp add`, redact env vars in listings, and upgrade rmcp to 0.8.3 for safer onboarding. (e2e1b65, 817d150, abccd3e)
+
 ## [0.4.2] - 2025-10-27
 
 - Auto Drive: add compaction, token metrics, and durable transcripts so long runs stay stable. (0071313, 57b398f, cd880a5)
