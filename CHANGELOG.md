@@ -230,6 +230,11 @@
 - CLI: Prefer rollout `.jsonl` transcripts when resuming sessions so `code resume` stays reliable after snapshots. (7f69aa55)
 - Core/Auth: Automatically use stored API keys for enterprise ChatGPT plans and honor retry hints from rate-limit errors. (fa1bd81f)
 
+## [0.2.185] - 2025-10-03
+
+- CLI/Login: replace the deprecated `--api-key` flag with `--with-api-key` and restore color detection so `codex login` behaves on every shell. (69ac515, 1d94b91)
+- Search/Composer: include filenames in fuzzy search results, fix Tab+Enter handling in slash commands, and make the model effort picker dismissible with Esc. (7be3b48, 1e4541b, 16b6951, 9617b69)
+
 ## [0.2.184] - 2025-10-03
 
 - Core: Record pid alongside port in server info to simplify local process debugging. (3778659)
