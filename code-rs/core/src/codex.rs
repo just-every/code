@@ -393,116 +393,124 @@ async fn build_turn_status_items_legacy(sess: &Session) -> Vec<ResponseItem> {
 
     if let Some(browser_manager) = code_browser::global::get_browser_manager().await {
         if browser_manager.is_enabled().await {
-            // Get current URL and browser info
-            let url = browser_manager
-                .get_current_url()
-                .await
-                .unwrap_or_else(|| "unknown".to_string());
-
-            // Try to get a tab title if available
-            let title = match browser_manager.get_or_create_page().await {
-                Ok(page) => page.get_title().await,
-                Err(_) => None,
-            };
-
-            // Get browser type description
-            let browser_type = browser_manager.get_browser_type().await;
-
-            // Get viewport dimensions
-            let (viewport_width, viewport_height) = browser_manager.get_viewport_size().await;
-            let viewport_info = format!(" | Viewport: {}x{}", viewport_width, viewport_height);
-
-            // Get cursor position
-            let cursor_info = match browser_manager.get_cursor_position().await {
-                Ok((x, y)) => format!(
-                    " | Mouse position: ({:.0}, {:.0}) [shown as a blue cursor in the screenshot]",
-                    x, y
-                ),
-                Err(_) => String::new(),
-            };
-
-            // Try to capture screenshot and compare with last one
-            let screenshot_status = match capture_browser_screenshot(sess).await {
-                Ok((screenshot_path, _url)) => {
-                    // Always update the UI with the latest screenshot, even if unchanged for LLM payload
-                    // This ensures the user sees that a fresh capture occurred each turn.
-                    add_pending_screenshot(sess, screenshot_path.clone(), url.clone());
-                    // Check if screenshot has changed using image hashing
-                    let mut last_screenshot_info = sess.last_screenshot_info.lock().unwrap();
-
-                    // Compute hash for current screenshot
-                    let current_hash =
-                        crate::image_comparison::compute_image_hash(&screenshot_path).ok();
-
-                    let should_include_screenshot = if let (
-                        Some((_last_path, last_phash, last_dhash)),
-                        Some((cur_phash, cur_dhash)),
-                    ) =
-                        (last_screenshot_info.as_ref(), current_hash.as_ref())
-                    {
-                        // Compare hashes to see if screenshots are similar
-                        let similar = crate::image_comparison::are_hashes_similar(
-                            last_phash, last_dhash, cur_phash, cur_dhash,
-                        );
-
-                        if !similar {
-                            // Screenshot has changed, include it
-                            *last_screenshot_info = Some((
-                                screenshot_path.clone(),
-                                cur_phash.clone(),
-                                cur_dhash.clone(),
-                            ));
-                            true
-                        } else {
-                            // Screenshot unchanged
-                            false
-                        }
-                    } else {
-                        // No previous screenshot or hash computation failed, include it
-                        if let Some((phash, dhash)) = current_hash {
-                            *last_screenshot_info = Some((screenshot_path.clone(), phash, dhash));
-                        }
-                        true
-                    };
-
-                    if should_include_screenshot {
-                        if let Ok(bytes) = std::fs::read(&screenshot_path) {
-                            let mime = mime_guess::from_path(&screenshot_path)
-                                .first()
-                                .map(|m| m.to_string())
-                                .unwrap_or_else(|| "image/png".to_string());
-                            let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-                            screenshot_content = Some(ContentItem::InputImage {
-                                image_url: format!("data:{mime};base64,{encoded}"),
-                            });
-                            include_screenshot = true;
-                            ""
-                        } else {
-                            " [Screenshot file read failed]"
-                        }
-                    } else {
-                        " [Screenshot unchanged]"
-                    }
-                }
-                Err(err_msg) => {
-                    // Include error message so LLM knows screenshot failed
-                    format!(" [Screenshot unavailable: {}]", err_msg).leak()
-                }
-            };
-
-            let status_line = if let Some(t) = title {
-                format!(
-                    "Browser url: {} — {} ({}){}{}{}. You can interact with it using browser_* tools.",
-                    url, t, browser_type, viewport_info, cursor_info, screenshot_status
-                )
+            if let Some(idle_timeout) = browser_manager.maybe_auto_stop_if_idle().await {
+                current_status.push_str("\n");
+                current_status.push_str(&format!(
+                    "Browser closed after being idle for {:?}; use browser_open to restart.",
+                    idle_timeout
+                ));
             } else {
-                format!(
-                    "Browser url: {} ({}){}{}{}. You can interact with it using browser_* tools.",
-                    url, browser_type, viewport_info, cursor_info, screenshot_status
-                )
-            };
-            current_status.push_str("\n");
-            current_status.push_str(&status_line);
+                // Get current URL and browser info
+                let url = browser_manager
+                    .get_current_url()
+                    .await
+                    .unwrap_or_else(|| "unknown".to_string());
+
+                // Try to get a tab title if available
+                let title = match browser_manager.get_or_create_page().await {
+                    Ok(page) => page.get_title().await,
+                    Err(_) => None,
+                };
+
+                // Get browser type description
+                let browser_type = browser_manager.get_browser_type().await;
+
+                // Get viewport dimensions
+                let (viewport_width, viewport_height) = browser_manager.get_viewport_size().await;
+                let viewport_info = format!(" | Viewport: {}x{}", viewport_width, viewport_height);
+
+                // Get cursor position
+                let cursor_info = match browser_manager.get_cursor_position().await {
+                    Ok((x, y)) => format!(
+                        " | Mouse position: ({:.0}, {:.0}) [shown as a blue cursor in the screenshot]",
+                        x, y
+                    ),
+                    Err(_) => String::new(),
+                };
+
+                // Try to capture screenshot and compare with last one
+                let screenshot_status = match capture_browser_screenshot(sess).await {
+                    Ok((screenshot_path, _url)) => {
+                        // Always update the UI with the latest screenshot, even if unchanged for LLM payload
+                        // This ensures the user sees that a fresh capture occurred each turn.
+                        add_pending_screenshot(sess, screenshot_path.clone(), url.clone());
+                        // Check if screenshot has changed using image hashing
+                        let mut last_screenshot_info = sess.last_screenshot_info.lock().unwrap();
+
+                        // Compute hash for current screenshot
+                        let current_hash =
+                            crate::image_comparison::compute_image_hash(&screenshot_path).ok();
+
+                        let should_include_screenshot = if let (
+                            Some((_last_path, last_phash, last_dhash)),
+                            Some((cur_phash, cur_dhash)),
+                        ) =
+                            (last_screenshot_info.as_ref(), current_hash.as_ref())
+                        {
+                            // Compare hashes to see if screenshots are similar
+                            let similar = crate::image_comparison::are_hashes_similar(
+                                last_phash, last_dhash, cur_phash, cur_dhash,
+                            );
+
+                            if !similar {
+                                // Screenshot has changed, include it
+                                *last_screenshot_info = Some((
+                                    screenshot_path.clone(),
+                                    cur_phash.clone(),
+                                    cur_dhash.clone(),
+                                ));
+                                true
+                            } else {
+                                // Screenshot unchanged
+                                false
+                            }
+                        } else {
+                            // No previous screenshot or hash computation failed, include it
+                            if let Some((phash, dhash)) = current_hash {
+                                *last_screenshot_info = Some((screenshot_path.clone(), phash, dhash));
+                            }
+                            true
+                        };
+
+                        if should_include_screenshot {
+                            if let Ok(bytes) = std::fs::read(&screenshot_path) {
+                                let mime = mime_guess::from_path(&screenshot_path)
+                                    .first()
+                                    .map(|m| m.to_string())
+                                    .unwrap_or_else(|| "image/png".to_string());
+                                let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+                                screenshot_content = Some(ContentItem::InputImage {
+                                    image_url: format!("data:{mime};base64,{encoded}"),
+                                });
+                                include_screenshot = true;
+                                ""
+                            } else {
+                                " [Screenshot file read failed]"
+                            }
+                        } else {
+                            " [Screenshot unchanged]"
+                        }
+                    }
+                    Err(err_msg) => {
+                        // Include error message so LLM knows screenshot failed
+                        format!(" [Screenshot unavailable: {}]", err_msg).leak()
+                    }
+                };
+
+                let status_line = if let Some(t) = title {
+                    format!(
+                        "Browser url: {} — {} ({}){}{}{}. You can interact with it using browser_* tools.",
+                        url, t, browser_type, viewport_info, cursor_info, screenshot_status
+                    )
+                } else {
+                    format!(
+                        "Browser url: {} ({}){}{}{}. You can interact with it using browser_* tools.",
+                        url, browser_type, viewport_info, cursor_info, screenshot_status
+                    )
+                };
+                current_status.push_str("\n");
+                current_status.push_str(&status_line);
+            }
         }
     }
 

@@ -1050,6 +1050,28 @@ impl BrowserManager {
         self.config.try_read().map(|c| c.enabled).unwrap_or(false)
     }
 
+    /// Auto-close the browser if it has been idle for longer than the configured timeout.
+    pub async fn maybe_auto_stop_if_idle(&self) -> Option<Duration> {
+        let idle_timeout = Duration::from_millis(self.config.read().await.idle_timeout_ms);
+        let elapsed = { *self.last_activity.lock().await }.elapsed();
+        if elapsed > idle_timeout {
+            info!(
+                "Browser idle for {:?} (threshold {:?}); closing automatically",
+                elapsed,
+                idle_timeout
+            );
+            if let Err(err) = self.set_enabled(false).await {
+                warn!(
+                    "Failed to auto-stop browser after idle ({}). Closing attempt still made.",
+                    err
+                );
+            }
+            Some(idle_timeout)
+        } else {
+            None
+        }
+    }
+
     /// Get a description of the browser connection type
     pub async fn get_browser_type(&self) -> String {
         let config = self.config.read().await;
