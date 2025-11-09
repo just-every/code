@@ -8820,13 +8820,20 @@ impl ChatWidget<'_> {
         tokio::spawn(async move {
             let browser_manager = ChatWidget::get_browser_manager().await;
             let enabled = browser_manager.is_enabled().await;
-            let _ = status_tx.send(enabled);
+            let idle = if enabled {
+                browser_manager.idle_elapsed_past_timeout().await.is_some()
+            } else {
+                false
+            };
+            let _ = status_tx.send((enabled, idle));
         });
 
-        let browser_enabled = status_rx.recv().unwrap_or(false);
+        let (browser_enabled, browser_idle) = status_rx.recv().unwrap_or((false, false));
 
         // Start async screenshot capture in background (non-blocking)
-        if browser_enabled {
+        if browser_enabled && browser_idle {
+            tracing::info!("Skipping background screenshot: browser idle");
+        } else if browser_enabled {
             tracing::info!("Browser is enabled, starting async screenshot capture...");
 
             // Clone necessary data for the async task
@@ -8865,6 +8872,11 @@ impl ChatWidget<'_> {
                 tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
 
                 let browser_manager = ChatWidget::get_browser_manager().await;
+
+                if browser_manager.idle_elapsed_past_timeout().await.is_some() {
+                    tracing::info!("Skipping background screenshot: browser idle");
+                    return;
+                }
 
                 // Retry screenshot capture with exponential backoff
                 // Keep background capture lightweight: single attempt with a modest timeout

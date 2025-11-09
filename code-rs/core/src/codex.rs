@@ -393,12 +393,13 @@ async fn build_turn_status_items_legacy(sess: &Session) -> Vec<ResponseItem> {
 
     if let Some(browser_manager) = code_browser::global::get_browser_manager().await {
         if browser_manager.is_enabled().await {
-            if let Some(idle_timeout) = browser_manager.maybe_auto_stop_if_idle().await {
-                current_status.push_str("\n");
-                current_status.push_str(&format!(
-                    "Browser closed after being idle for {:?}; use browser_open to restart.",
+            if let Some((_, idle_timeout)) = browser_manager.idle_elapsed_past_timeout().await {
+                let idle_text = format!(
+                    "Browser idle (timeout {:?}); screenshot capture paused until browser_* tools run again.",
                     idle_timeout
-                ));
+                );
+                current_status.push_str("\n");
+                current_status.push_str(&idle_text);
             } else {
                 // Get current URL and browser info
                 let url = browser_manager
@@ -569,10 +570,29 @@ async fn build_turn_status_items_v2(sess: &Session) -> Vec<ResponseItem> {
 
     if let Some(browser_manager) = code_browser::global::get_browser_manager().await {
         if browser_manager.is_enabled().await {
-            let url = browser_manager
-                .get_current_url()
-                .await
-                .unwrap_or_else(|| "unknown".to_string());
+            let browser_stream_id = {
+                let mut state = sess.state.lock().unwrap();
+                state
+                    .context_stream_ids
+                    .browser_stream_id(sess.id)
+            };
+
+            if let Some((_, timeout)) = browser_manager.idle_elapsed_past_timeout().await {
+                let idle_text = format!(
+                    "Browser idle (timeout {:?}); screenshot capture paused until browser_* tools run again.",
+                    timeout
+                );
+                items.push(ResponseItem::Message {
+                    id: Some(browser_stream_id),
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText { text: idle_text }],
+                });
+                return items;
+            } else {
+                let url = browser_manager
+                    .get_current_url()
+                    .await
+                    .unwrap_or_else(|| "unknown".to_string());
 
             let title = match browser_manager.get_or_create_page().await {
                 Ok(page) => page.get_title().await,
@@ -620,24 +640,17 @@ async fn build_turn_status_items_v2(sess: &Session) -> Vec<ResponseItem> {
                 }
             }
 
-            if let Some(path) = screenshot_path {
-                let captured_at = OffsetDateTime::now_utc()
-                    .format(&Rfc3339)
-                    .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string());
+                if let Some(path) = screenshot_path {
+                    let captured_at = OffsetDateTime::now_utc()
+                        .format(&Rfc3339)
+                        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string());
 
-                let mut snapshot = BrowserSnapshot::new(url.clone(), captured_at);
+                    let mut snapshot = BrowserSnapshot::new(url.clone(), captured_at);
                 snapshot.title = title.clone();
                 snapshot.viewport = viewport;
                 if !metadata.is_empty() {
                     snapshot.metadata = Some(metadata);
                 }
-
-                let browser_stream_id = {
-                    let mut state = sess.state.lock().unwrap();
-                    state
-                        .context_stream_ids
-                        .browser_stream_id(sess.id)
-                };
 
                 match snapshot.to_response_item_with_id(Some(&browser_stream_id)) {
                     Ok(item) => items.push(item),
@@ -667,6 +680,7 @@ async fn build_turn_status_items_v2(sess: &Session) -> Vec<ResponseItem> {
                         "env_ctx_v2: failed to read screenshot file {}: {err}",
                         path.display()
                     ),
+                }
                 }
             }
         }

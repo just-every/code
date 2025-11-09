@@ -1050,23 +1050,15 @@ impl BrowserManager {
         self.config.try_read().map(|c| c.enabled).unwrap_or(false)
     }
 
-    /// Auto-close the browser if it has been idle for longer than the configured timeout.
-    pub async fn maybe_auto_stop_if_idle(&self) -> Option<Duration> {
+    /// Returns how long the browser has been idle when it exceeds the configured timeout.
+    /// Used to decide whether we should avoid taking fresh screenshots (which would reset
+    /// the idle timer) until the user interacts with browser_* tools again.
+    pub async fn idle_elapsed_past_timeout(&self) -> Option<(Duration, Duration)> {
         let idle_timeout = Duration::from_millis(self.config.read().await.idle_timeout_ms);
-        let elapsed = { *self.last_activity.lock().await }.elapsed();
+        let last = *self.last_activity.lock().await;
+        let elapsed = last.elapsed();
         if elapsed > idle_timeout {
-            info!(
-                "Browser idle for {:?} (threshold {:?}); closing automatically",
-                elapsed,
-                idle_timeout
-            );
-            if let Err(err) = self.set_enabled(false).await {
-                warn!(
-                    "Failed to auto-stop browser after idle ({}). Closing attempt still made.",
-                    err
-                );
-            }
-            Some(idle_timeout)
+            Some((elapsed, idle_timeout))
         } else {
             None
         }

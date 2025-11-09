@@ -25,6 +25,15 @@ impl BrowserInjector {
             return Ok(None);
         }
 
+        if let Some((elapsed, timeout)) = self.manager.idle_elapsed_past_timeout().await {
+            info!(
+                "Skipping pre-LLM screenshot; browser idle for {:?} (timeout {:?})",
+                elapsed,
+                timeout
+            );
+            return Ok(None);
+        }
+
         debug!("Browser enabled, capturing pre-LLM screenshot");
 
         let page = match self.manager.get_or_create_page().await {
