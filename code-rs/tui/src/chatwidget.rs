@@ -8814,33 +8814,12 @@ impl ChatWidget<'_> {
         // IMPORTANT: Always use global browser manager for consistency
         // The global browser manager ensures both TUI and agent tools use the same instance
 
-        // We need to check if browser is enabled first
-        // Use a channel to check browser status from async context
-        let (status_tx, status_rx) = std::sync::mpsc::channel();
-        tokio::spawn(async move {
-            let browser_manager = ChatWidget::get_browser_manager().await;
-            let enabled = browser_manager.is_enabled().await;
-            let idle = if enabled {
-                browser_manager.idle_elapsed_past_timeout().await.is_some()
-            } else {
-                false
-            };
-            let _ = status_tx.send((enabled, idle));
-        });
-
-        let (browser_enabled, browser_idle) = status_rx.recv().unwrap_or((false, false));
-
         // Start async screenshot capture in background (non-blocking)
-        if browser_enabled && browser_idle {
-            tracing::info!("Skipping background screenshot: browser idle");
-        } else if browser_enabled {
-            tracing::info!("Browser is enabled, starting async screenshot capture...");
-
-            // Clone necessary data for the async task
+        {
             let latest_browser_screenshot_clone = Arc::clone(&self.latest_browser_screenshot);
 
             tokio::spawn(async move {
-                tracing::info!("Starting background screenshot capture...");
+                tracing::info!("Evaluating background screenshot capture...");
 
                 // Rate-limit: skip if a capture ran very recently (< 4000ms)
                 let now_ms = std::time::SystemTime::now()
@@ -8871,7 +8850,15 @@ impl ChatWidget<'_> {
                 // Short settle to allow page to reach a stable state; keep it small
                 tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
 
-                let browser_manager = ChatWidget::get_browser_manager().await;
+                let Some(browser_manager) = code_browser::global::get_browser_manager().await else {
+                    tracing::info!("Skipping background screenshot: browser manager unavailable");
+                    return;
+                };
+
+                if !browser_manager.is_enabled().await {
+                    tracing::info!("Skipping background screenshot: browser disabled");
+                    return;
+                }
 
                 if browser_manager.idle_elapsed_past_timeout().await.is_some() {
                     tracing::info!("Skipping background screenshot: browser idle");
@@ -8958,8 +8945,6 @@ impl ChatWidget<'_> {
                     }
                 }
             });
-        } else {
-            tracing::info!("Browser is not enabled, skipping screenshot capture");
         }
 
         // Use the ordered items (text + images interleaved with markers)
