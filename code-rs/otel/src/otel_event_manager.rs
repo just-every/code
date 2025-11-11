@@ -27,6 +27,47 @@ pub enum ToolDecisionSource {
     User,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum TurnLatencyPhase {
+    RequestScheduled,
+    RequestCompleted,
+    RequestFailed,
+}
+
+impl TurnLatencyPhase {
+    fn as_str(&self) -> &'static str {
+        match self {
+            TurnLatencyPhase::RequestScheduled => "request_scheduled",
+            TurnLatencyPhase::RequestCompleted => "request_completed",
+            TurnLatencyPhase::RequestFailed => "request_failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TurnLatencyPayload {
+    pub phase: TurnLatencyPhase,
+    pub attempt: u64,
+    pub gap_ms: Option<u64>,
+    pub duration_ms: Option<u64>,
+    pub pending_input_count: u64,
+    pub pending_user_input_count: u64,
+    pub pending_background_execs: u64,
+    pub running_exec_count: u64,
+    pub pending_manual_compacts: u64,
+    pub pending_browser_screenshots: u64,
+    pub scratchpad_active: bool,
+    pub prompt_input_count: Option<u64>,
+    pub prompt_status_count: Option<u64>,
+    pub output_item_count: Option<u64>,
+    pub token_usage_input_tokens: Option<u64>,
+    pub token_usage_cached_input_tokens: Option<u64>,
+    pub token_usage_output_tokens: Option<u64>,
+    pub token_usage_reasoning_output_tokens: Option<u64>,
+    pub token_usage_total_tokens: Option<u64>,
+    pub note: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct OtelEventMetadata {
     conversation_id: ConversationId,
@@ -450,6 +491,41 @@ impl OtelEventManager {
             duration_ms = %duration.as_millis(),
             success = %success_str,
             output = %output,
+        );
+    }
+
+    pub fn turn_latency_event(&self, payload: TurnLatencyPayload) {
+        tracing::event!(
+            tracing::Level::INFO,
+            event.name = "codex.turn_latency",
+            event.timestamp = %timestamp(),
+            conversation.id = %self.metadata.conversation_id,
+            app.version = %self.metadata.app_version,
+            auth_mode = self.metadata.auth_mode,
+            user.account_id = self.metadata.account_id,
+            terminal.type = %self.metadata.terminal_type,
+            model = %self.metadata.model,
+            slug = %self.metadata.slug,
+            turn.phase = %payload.phase.as_str(),
+            attempt = payload.attempt,
+            gap_ms = payload.gap_ms,
+            duration_ms = payload.duration_ms,
+            pending_input_count = payload.pending_input_count,
+            pending_user_input_count = payload.pending_user_input_count,
+            pending_background_execs = payload.pending_background_execs,
+            running_exec_count = payload.running_exec_count,
+            pending_manual_compacts = payload.pending_manual_compacts,
+            pending_browser_screenshots = payload.pending_browser_screenshots,
+            scratchpad_active = payload.scratchpad_active,
+            prompt_input_count = payload.prompt_input_count,
+            prompt_status_count = payload.prompt_status_count,
+            output_item_count = payload.output_item_count,
+            token_usage_input_tokens = payload.token_usage_input_tokens,
+            token_usage_cached_input_tokens = payload.token_usage_cached_input_tokens,
+            token_usage_output_tokens = payload.token_usage_output_tokens,
+            token_usage_reasoning_output_tokens = payload.token_usage_reasoning_output_tokens,
+            token_usage_total_tokens = payload.token_usage_total_tokens,
+            note = payload.note,
         );
     }
 }

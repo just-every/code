@@ -8837,7 +8837,6 @@ impl ChatWidget<'_> {
                     tracing::info!("Skipping background screenshot: already in-flight");
                     return;
                 }
-                BG_SHOT_LAST_START_MS.store(now_ms, Ordering::Relaxed);
                 // Ensure we always clear the flag
                 struct ShotGuard;
                 impl Drop for ShotGuard {
@@ -8864,6 +8863,8 @@ impl ChatWidget<'_> {
                     tracing::info!("Skipping background screenshot: browser idle");
                     return;
                 }
+
+                BG_SHOT_LAST_START_MS.store(now_ms, Ordering::Relaxed);
 
                 // Retry screenshot capture with exponential backoff
                 // Keep background capture lightweight: single attempt with a modest timeout

@@ -13,7 +13,7 @@ use std::sync::Mutex;
 use std::sync::RwLock;
 use std::sync::Weak;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
@@ -24,8 +24,12 @@ use code_apply_patch::ApplyPatchAction;
 use code_apply_patch::MaybeApplyPatchVerified;
 use code_browser::BrowserConfig as CodexBrowserConfig;
 use code_browser::BrowserManager;
-use code_otel::otel_event_manager::OtelEventManager;
-use code_otel::otel_event_manager::ToolDecisionSource;
+use code_otel::otel_event_manager::{
+    OtelEventManager,
+    ToolDecisionSource,
+    TurnLatencyPayload,
+    TurnLatencyPhase,
+};
 use code_protocol::config_types::ReasoningEffort as ProtoReasoningEffort;
 use code_protocol::config_types::ReasoningSummary as ProtoReasoningSummary;
 use code_protocol::protocol::AskForApproval as ProtoAskForApproval;
@@ -898,6 +902,7 @@ use crate::protocol::PatchApplyBeginEvent;
 use crate::protocol::PatchApplyEndEvent;
 use crate::protocol::RateLimitSnapshotEvent;
 use crate::protocol::TokenCountEvent;
+use crate::protocol::TokenUsage;
 use crate::protocol::TokenUsageInfo;
 use crate::protocol::ReviewDecision;
 use crate::protocol::ValidationGroup;
@@ -1196,6 +1201,45 @@ struct State {
     environment_context_seq: u64,
     last_environment_snapshot: Option<EnvironmentContextSnapshot>,
     context_stream_ids: EnvironmentContextStreamRegistry,
+    last_turn_started_at: Option<Instant>,
+    last_turn_completed_at: Option<Instant>,
+    last_turn_prompt_counts: Option<TurnPromptCounts>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct TurnPromptCounts {
+    input_items: usize,
+    status_items: usize,
+}
+
+#[derive(Clone, Copy, Default)]
+struct TurnQueueMetrics {
+    pending_input_count: usize,
+    pending_user_input_count: usize,
+    pending_background_execs: usize,
+    running_exec_count: usize,
+    pending_manual_compacts: usize,
+    scratchpad_active: bool,
+}
+
+fn capture_turn_queue_metrics(state: &State) -> TurnQueueMetrics {
+    TurnQueueMetrics {
+        pending_input_count: state.pending_input.len(),
+        pending_user_input_count: state.pending_user_input.len(),
+        pending_background_execs: state.background_execs.len(),
+        running_exec_count: state.running_execs.len(),
+        pending_manual_compacts: state.pending_manual_compacts.len(),
+        scratchpad_active: state.turn_scratchpad.is_some(),
+    }
+}
+
+fn duration_to_millis(duration: Duration) -> u64 {
+    let ms = duration.as_millis();
+    if ms > u128::from(u64::MAX) {
+        u64::MAX
+    } else {
+        ms as u64
+    }
 }
 
 #[derive(Clone)]
@@ -1524,6 +1568,156 @@ impl Session {
     fn begin_http_attempt(&self) {
         let mut state = self.state.lock().unwrap();
         state.request_ordinal = state.request_ordinal.saturating_add(1);
+    }
+
+    fn turn_latency_request_scheduled(&self, attempt_req: u64, prompt: &Prompt) {
+        let now = Instant::now();
+        let gap_and_metrics = {
+            let mut state = self.state.lock().unwrap();
+            let gap = state
+                .last_turn_completed_at
+                .map(|prev| now.saturating_duration_since(prev));
+            state.last_turn_started_at = Some(now);
+            state.last_turn_prompt_counts = Some(TurnPromptCounts {
+                input_items: prompt.input.len(),
+                status_items: prompt.status_items.len(),
+            });
+            let metrics = capture_turn_queue_metrics(&state);
+            (gap, metrics)
+        };
+
+        let Some(otel) = self.client.get_otel_event_manager() else {
+            return;
+        };
+
+        let pending_browser_screenshots = self.pending_browser_screenshots.lock().unwrap().len();
+        let (gap, metrics) = gap_and_metrics;
+        let payload = TurnLatencyPayload {
+            phase: TurnLatencyPhase::RequestScheduled,
+            attempt: attempt_req,
+            gap_ms: gap.map(duration_to_millis),
+            duration_ms: None,
+            pending_input_count: metrics.pending_input_count as u64,
+            pending_user_input_count: metrics.pending_user_input_count as u64,
+            pending_background_execs: metrics.pending_background_execs as u64,
+            running_exec_count: metrics.running_exec_count as u64,
+            pending_manual_compacts: metrics.pending_manual_compacts as u64,
+            pending_browser_screenshots: pending_browser_screenshots as u64,
+            scratchpad_active: metrics.scratchpad_active,
+            prompt_input_count: Some(prompt.input.len() as u64),
+            prompt_status_count: Some(prompt.status_items.len() as u64),
+            output_item_count: None,
+            token_usage_input_tokens: None,
+            token_usage_cached_input_tokens: None,
+            token_usage_output_tokens: None,
+            token_usage_reasoning_output_tokens: None,
+            token_usage_total_tokens: None,
+            note: None,
+        };
+        otel.turn_latency_event(payload);
+    }
+
+    fn turn_latency_request_completed(
+        &self,
+        attempt_req: u64,
+        output_item_count: usize,
+        token_usage: Option<&TokenUsage>,
+    ) {
+        let now = Instant::now();
+        let (duration, prompt_counts, metrics) = {
+            let mut state = self.state.lock().unwrap();
+            let duration = state
+                .last_turn_started_at
+                .map(|start| now.saturating_duration_since(start));
+            state.last_turn_started_at = None;
+            state.last_turn_completed_at = Some(now);
+            let prompt_counts = state.last_turn_prompt_counts.take();
+            let metrics = capture_turn_queue_metrics(&state);
+            (duration, prompt_counts, metrics)
+        };
+
+        let Some(otel) = self.client.get_otel_event_manager() else {
+            return;
+        };
+
+        let pending_browser_screenshots = self.pending_browser_screenshots.lock().unwrap().len();
+        let (token_usage_input_tokens, token_usage_cached_input_tokens, token_usage_output_tokens, token_usage_reasoning_output_tokens, token_usage_total_tokens) =
+            match token_usage {
+                Some(usage) => (
+                    Some(usage.input_tokens),
+                    Some(usage.cached_input_tokens),
+                    Some(usage.output_tokens),
+                    Some(usage.reasoning_output_tokens),
+                    Some(usage.total_tokens),
+                ),
+                None => (None, None, None, None, None),
+            };
+        let payload = TurnLatencyPayload {
+            phase: TurnLatencyPhase::RequestCompleted,
+            attempt: attempt_req,
+            gap_ms: None,
+            duration_ms: duration.map(duration_to_millis),
+            pending_input_count: metrics.pending_input_count as u64,
+            pending_user_input_count: metrics.pending_user_input_count as u64,
+            pending_background_execs: metrics.pending_background_execs as u64,
+            running_exec_count: metrics.running_exec_count as u64,
+            pending_manual_compacts: metrics.pending_manual_compacts as u64,
+            pending_browser_screenshots: pending_browser_screenshots as u64,
+            scratchpad_active: metrics.scratchpad_active,
+            prompt_input_count: prompt_counts.map(|counts| counts.input_items as u64),
+            prompt_status_count: prompt_counts.map(|counts| counts.status_items as u64),
+            output_item_count: Some(output_item_count as u64),
+            token_usage_input_tokens,
+            token_usage_cached_input_tokens,
+            token_usage_output_tokens,
+            token_usage_reasoning_output_tokens,
+            token_usage_total_tokens,
+            note: None,
+        };
+        otel.turn_latency_event(payload);
+    }
+
+    fn turn_latency_request_failed(&self, attempt_req: u64, note: Option<String>) {
+        let now = Instant::now();
+        let (duration, prompt_counts, metrics) = {
+            let mut state = self.state.lock().unwrap();
+            let duration = state
+                .last_turn_started_at
+                .map(|start| now.saturating_duration_since(start));
+            state.last_turn_started_at = None;
+            let prompt_counts = state.last_turn_prompt_counts.take();
+            let metrics = capture_turn_queue_metrics(&state);
+            (duration, prompt_counts, metrics)
+        };
+
+        let Some(otel) = self.client.get_otel_event_manager() else {
+            return;
+        };
+
+        let pending_browser_screenshots = self.pending_browser_screenshots.lock().unwrap().len();
+        let payload = TurnLatencyPayload {
+            phase: TurnLatencyPhase::RequestFailed,
+            attempt: attempt_req,
+            gap_ms: None,
+            duration_ms: duration.map(duration_to_millis),
+            pending_input_count: metrics.pending_input_count as u64,
+            pending_user_input_count: metrics.pending_user_input_count as u64,
+            pending_background_execs: metrics.pending_background_execs as u64,
+            running_exec_count: metrics.running_exec_count as u64,
+            pending_manual_compacts: metrics.pending_manual_compacts as u64,
+            pending_browser_screenshots: pending_browser_screenshots as u64,
+            scratchpad_active: metrics.scratchpad_active,
+            prompt_input_count: prompt_counts.map(|counts| counts.input_items as u64),
+            prompt_status_count: prompt_counts.map(|counts| counts.status_items as u64),
+            output_item_count: None,
+            token_usage_input_tokens: None,
+            token_usage_cached_input_tokens: None,
+            token_usage_output_tokens: None,
+            token_usage_reasoning_output_tokens: None,
+            token_usage_total_tokens: None,
+            note,
+        };
+        otel.turn_latency_event(payload);
     }
 
     fn scratchpad_push(&self, item: &ResponseItem, response: &Option<ResponseInputItem>, sub_id: &str) {
@@ -5650,6 +5844,51 @@ struct ProcessedResponseItem {
     response: Option<ResponseInputItem>,
 }
 
+struct TurnLatencyGuard<'a> {
+    sess: &'a Session,
+    attempt_req: u64,
+    active: bool,
+}
+
+impl<'a> TurnLatencyGuard<'a> {
+    fn new(sess: &'a Session, attempt_req: u64, prompt: &Prompt) -> Self {
+        sess.turn_latency_request_scheduled(attempt_req, prompt);
+        Self {
+            sess,
+            attempt_req,
+            active: true,
+        }
+    }
+
+    fn mark_completed(&mut self, output_item_count: usize, token_usage: Option<&TokenUsage>) {
+        if !self.active {
+            return;
+        }
+        self
+            .sess
+            .turn_latency_request_completed(self.attempt_req, output_item_count, token_usage);
+        self.active = false;
+    }
+
+    fn mark_failed(&mut self, note: Option<String>) {
+        if !self.active {
+            return;
+        }
+        self.sess.turn_latency_request_failed(self.attempt_req, note);
+        self.active = false;
+    }
+}
+
+impl Drop for TurnLatencyGuard<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            self
+                .sess
+                .turn_latency_request_failed(self.attempt_req, Some("dropped_without_outcome".to_string()));
+        }
+    }
+}
+
 async fn try_run_turn(
     sess: &Session,
     turn_diff_tracker: &mut TurnDiffTracker,
@@ -5712,7 +5951,14 @@ async fn try_run_turn(
         })
     };
 
-    let mut stream = sess.client.clone().stream(&prompt).await?;
+    let mut turn_latency_guard = TurnLatencyGuard::new(sess, attempt_req, prompt.as_ref());
+    let mut stream = match sess.client.clone().stream(&prompt).await {
+        Ok(stream) => stream,
+        Err(e) => {
+            turn_latency_guard.mark_failed(Some(format!("stream_init_failed: {e}")));
+            return Err(e);
+        }
+    };
 
     let mut output = Vec::new();
     loop {
@@ -5723,6 +5969,8 @@ async fn try_run_turn(
         let Some(event) = event else {
             // Channel closed without yielding a final Completed event or explicit error.
             // Treat as a disconnected stream so the caller can retry.
+            turn_latency_guard
+                .mark_failed(Some("stream_closed_before_completed".to_string()));
             return Err(CodexErr::Stream(
                 "stream closed before response.completed".into(),
                 None,
@@ -5734,6 +5982,7 @@ async fn try_run_turn(
             Err(e) => {
                 // Propagate the underlying stream error to the caller (run_turn), which
                 // will apply the configured `stream_max_retries` policy.
+                turn_latency_guard.mark_failed(Some(format!("stream_event_error: {e}")));
                 return Err(e);
             }
         };
@@ -5835,6 +6084,7 @@ async fn try_run_turn(
                     let _ = sess.tx_event.send(sess.make_event(&sub_id, msg)).await;
                 }
 
+                turn_latency_guard.mark_completed(output.len(), token_usage.as_ref());
                 return Ok(output);
             }
             ResponseEvent::OutputTextDelta { delta, item_id, sequence_number, output_index } => {
