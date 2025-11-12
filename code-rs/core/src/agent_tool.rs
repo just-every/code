@@ -875,6 +875,9 @@ async fn execute_model_with_permissions(
         if let Some(ds_base) = env.get("DASHSCOPE_BASE_URL").cloned() {
             env.entry("QWEN_BASE_URL".to_string()).or_insert(ds_base);
         }
+        if family == "qwen" {
+            env.insert("OPENAI_API_KEY".to_string(), String::new());
+        }
         // Reduce startup overhead for Claude CLI: disable auto-updater/telemetry.
         env.entry("DISABLE_AUTOUPDATER".to_string()).or_insert("1".to_string());
         env.entry("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC".to_string()).or_insert("1".to_string());
