@@ -1,3 +1,4 @@
+use crate::agent_defaults::model_guide_markdown;
 use crate::config_types::ReasoningEffort as ReasoningEffortConfig;
 use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use crate::config_types::TextVerbosity as TextVerbosityConfig;
@@ -11,6 +12,7 @@ use code_apply_patch::APPLY_PATCH_TOOL_INSTRUCTIONS;
 use code_protocol::models::ContentItem;
 use code_protocol::models::ResponseItem;
 use futures::Stream;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::borrow::Cow;
@@ -22,7 +24,10 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 /// Additional prompt for Code. Can not edit Codex instructions.
-const ADDITIONAL_INSTRUCTIONS: &str = include_str!("../prompt_coder.md");
+const PROMPT_CODER_TEMPLATE: &str = include_str!("../prompt_coder.md");
+static ADDITIONAL_INSTRUCTIONS: Lazy<String> = Lazy::new(|| {
+    PROMPT_CODER_TEMPLATE.replace("{MODEL_DESCRIPTIONS}", &model_guide_markdown())
+});
 
 /// wraps environment context message in a tag for the model to parse more easily.
 const ENVIRONMENT_CONTEXT_START: &str = "<environment_context>\n\n";

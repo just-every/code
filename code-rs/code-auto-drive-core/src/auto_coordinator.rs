@@ -6,6 +6,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{anyhow, Context, Result};
 use code_core::config::Config;
+use code_core::agent_defaults::build_model_guide_description;
 use code_core::config_types::{AutoDriveSettings, ReasoningEffort, TextVerbosity};
 use code_core::debug_logger::DebugLogger;
 use code_core::codex::compact::resolve_compact_prompt_text;
@@ -1467,68 +1468,7 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
         schema
     };
 
-    let models_description = {
-        let guides = [
-            (
-                "code-gpt-5-codex-mini",
-                "Your primary coding agent (along with claude-sonnet-4.5). Cheap (1/4 cost), fast and very capable. Excels at implementation, refactors, multi-file edits and code review.",
-            ),
-            (
-                "claude-sonnet-4.5",
-                "Front line for coding tasks (along with code-gpt-5-codex-mini). Excels at implementation, tool use, debugging, and testing.",
-            ),
-            (
-                "code-gpt-5-codex",
-                "Backup for complex coding tasks (along with claude-opus-4.1). Slower and more expensive, but slightly more capable if code-gpt-5-codex-mini did not succeed.",
-            ),
-            (
-                "claude-opus-4.1",
-                "Backup for complex coding tasks (along with code-gpt-5-codex). Slower and more expensive, but slightly more capable if claude-sonnet-4.5 did not succeed.",
-            ),
-            (
-                "gemini-2.5-pro",
-                "Use when you require huge context or multimodal grounding (repo-scale inputs, or search grounding); good for alternative architecture opinions.",
-            ),
-            (
-                "code-gpt-5",
-                "Use for UI/UX or mixed tasks where explanation, design judgment, or multi-domain reasoning is equally important as code.",
-            ),
-            (
-                "claude-haiku-4.5",
-                "Very fast model for simple tasks. Similar to gemini-2.5-flash in capability.",
-            ),
-            (
-                "gemini-2.5-flash",
-                "Use for fast, high-volume scaffolding, creating minimal repros/tests, or budget-sensitive operations.",
-            ),
-            (
-                "qwen-3-coder",
-                "Fast and reasonably effective. Good for providing an alternative opinion as it has quite different training data to other models.",
-            ),
-        ];
-
-        let mut description = String::from(
-            "Preferred agent models for this helper (choose from the valid agent list). Selection guide:",
-        );
-        let mut any_guides = false;
-
-        for (model, guide) in guides {
-            if active_agents.iter().any(|name| name == model) {
-                description.push('\n');
-                description.push_str("- `");
-                description.push_str(model);
-                description.push_str("`: ");
-                description.push_str(guide);
-                any_guides = true;
-            }
-        }
-
-        if !any_guides {
-            description.push_str("\n- No model guides available for the current configuration.");
-        }
-
-        description
-    };
+    let models_description = build_model_guide_description(active_agents);
 
     let models_request_property = json!({
         "type": "array",

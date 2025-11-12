@@ -32,8 +32,8 @@ const CLOUD_GPT5_CODEX_WRITE: &[&str] = &[];
 /// entries are configured. The ordering here controls priority for legacy
 /// CLI-name lookups.
 pub const DEFAULT_AGENT_NAMES: &[&str] = &[
-    "code-gpt-5-codex",
     "code-gpt-5-codex-mini",
+    "code-gpt-5-codex",
     "code-gpt-5",
     "claude-sonnet-4.5",
     "claude-opus-4.1",
@@ -52,6 +52,7 @@ pub struct AgentModelSpec {
     pub read_only_args: &'static [&'static str],
     pub write_args: &'static [&'static str],
     pub model_args: &'static [&'static str],
+    pub description: &'static str,
     pub enabled_by_default: bool,
     pub aliases: &'static [&'static str],
     pub gating_env: Option<&'static str>,
@@ -81,25 +82,27 @@ impl AgentModelSpec {
 
 const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
     AgentModelSpec {
-        slug: "code-gpt-5-codex",
-        family: "code",
-        cli: "coder",
-        read_only_args: CODE_GPT5_CODEX_READ_ONLY,
-        write_args: CODE_GPT5_CODEX_WRITE,
-        model_args: &["--model", "gpt-5-codex"],
-        enabled_by_default: true,
-        aliases: &["coder", "code", "codex"],
-        gating_env: None,
-    },
-    AgentModelSpec {
         slug: "code-gpt-5-codex-mini",
         family: "code",
         cli: "coder",
         read_only_args: CODE_GPT5_CODEX_READ_ONLY,
         write_args: CODE_GPT5_CODEX_WRITE,
         model_args: &["--model", "gpt-5-codex-mini"],
+        description: "Your primary coding agent (along with claude-sonnet-4.5). Cheap (1/4 cost), fast and very capable. Excels at implementation, refactors, multi-file edits and code review.",
         enabled_by_default: true,
         aliases: &["codex-mini", "coder-mini"],
+        gating_env: None,
+    },
+    AgentModelSpec {
+        slug: "code-gpt-5-codex",
+        family: "code",
+        cli: "coder",
+        read_only_args: CODE_GPT5_CODEX_READ_ONLY,
+        write_args: CODE_GPT5_CODEX_WRITE,
+        model_args: &["--model", "gpt-5-codex"],
+        description: "Backup for complex coding tasks (along with claude-opus-4.1). Slower and more expensive, but slightly more capable if code-gpt-5-codex-mini did not succeed.",
+        enabled_by_default: true,
+        aliases: &["coder", "code", "codex"],
         gating_env: None,
     },
     AgentModelSpec {
@@ -109,6 +112,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         read_only_args: CODE_GPT5_READ_ONLY,
         write_args: CODE_GPT5_WRITE,
         model_args: &["--model", "gpt-5"],
+        description: "Use for UI/UX or mixed tasks where explanation, design judgment, or multi-domain reasoning is equally important as code.",
         enabled_by_default: true,
         aliases: &["coder-gpt-5", "code-gpt-5"],
         gating_env: None,
@@ -120,6 +124,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         read_only_args: CLAUDE_SONNET_READ_ONLY,
         write_args: CLAUDE_SONNET_WRITE,
         model_args: &["--model", "sonnet"],
+        description: "Front line for coding tasks (along with code-gpt-5-codex-mini). Excels at implementation, tool use, debugging, and testing.",
         enabled_by_default: true,
         aliases: &["claude", "claude-sonnet"],
         gating_env: None,
@@ -131,6 +136,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         read_only_args: CLAUDE_OPUS_READ_ONLY,
         write_args: CLAUDE_OPUS_WRITE,
         model_args: &["--model", "opus"],
+        description: "Backup for complex coding tasks (along with code-gpt-5-codex). Slower and more expensive, but slightly more capable if claude-sonnet-4.5 did not succeed.",
         enabled_by_default: true,
         aliases: &["claude-opus"],
         gating_env: None,
@@ -142,6 +148,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         read_only_args: CLAUDE_HAIKU_READ_ONLY,
         write_args: CLAUDE_HAIKU_WRITE,
         model_args: &["--model", "haiku"],
+        description: "Very fast model for simple tasks. Similar to gemini-2.5-flash in capability.",
         enabled_by_default: true,
         aliases: &["claude-haiku"],
         gating_env: None,
@@ -153,6 +160,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         read_only_args: GEMINI_PRO_READ_ONLY,
         write_args: GEMINI_PRO_WRITE,
         model_args: &["--model", "gemini-2.5-pro"],
+        description: "Use when you require huge context or multimodal grounding (repo-scale inputs, or search grounding); good for alternative architecture opinions.",
         enabled_by_default: true,
         aliases: &["gemini"],
         gating_env: None,
@@ -164,6 +172,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         read_only_args: GEMINI_FLASH_READ_ONLY,
         write_args: GEMINI_FLASH_WRITE,
         model_args: &["--model", "gemini-2.5-flash"],
+        description: "Use for fast, high-volume scaffolding, creating minimal repros/tests, or budget-sensitive operations.",
         enabled_by_default: true,
         aliases: &["gemini-flash"],
         gating_env: None,
@@ -175,6 +184,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         read_only_args: QWEN_3_CODER_READ_ONLY,
         write_args: QWEN_3_CODER_WRITE,
         model_args: &["-m", "qwen-3-coder"],
+        description: "Fast and reasonably effective. Good for providing an alternative opinion as it has quite different training data to other models.",
         enabled_by_default: true,
         aliases: &["qwen", "qwen3"],
         gating_env: None,
@@ -186,6 +196,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         read_only_args: CLOUD_GPT5_CODEX_READ_ONLY,
         write_args: CLOUD_GPT5_CODEX_WRITE,
         model_args: &["--model", "gpt-5-codex"],
+        description: "Cloud-hosted gpt-5-codex agent. Requires the CODE_ENABLE_CLOUD_AGENT_MODEL flag and carries the latency of a remote run.",
         enabled_by_default: false,
         aliases: &["cloud"],
         gating_env: Some(CLOUD_MODEL_ENV_FLAG),
@@ -215,6 +226,39 @@ pub fn agent_model_spec(identifier: &str) -> Option<&'static AgentModelSpec> {
                     .any(|alias| alias.eq_ignore_ascii_case(&lower))
             })
         })
+}
+
+const MODEL_GUIDE_INTRO: &str =
+    "Preferred agent models for this helper (choose from the valid agent list). Selection guide:";
+
+fn model_guide_line(spec: &AgentModelSpec) -> String {
+    format!("- `{}`: {}", spec.slug, spec.description)
+}
+
+pub fn build_model_guide_description(active_agents: &[String]) -> String {
+    let mut description = String::from(MODEL_GUIDE_INTRO);
+
+    let lines: Vec<String> = AGENT_MODEL_SPECS
+        .iter()
+        .filter(|spec| active_agents.iter().any(|name| name == spec.slug))
+        .map(model_guide_line)
+        .collect();
+
+    if lines.is_empty() {
+        description.push('\n');
+        description.push_str("- No model guides available for the current configuration.");
+    } else {
+        for line in lines {
+            description.push('\n');
+            description.push_str(&line);
+        }
+    }
+
+    description
+}
+
+pub fn model_guide_markdown() -> String {
+    AGENT_MODEL_SPECS.iter().map(model_guide_line).collect::<Vec<_>>().join("\n")
 }
 
 pub fn default_agent_configs() -> Vec<AgentConfig> {

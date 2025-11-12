@@ -59,14 +59,7 @@ agent {
 agent {"action":"wait","wait":{"batch_id":"<batch_id>","return_all":true,"timeout_seconds":600}} // Long timeout or you can do separate work and check back later.
 
 ##  Model Guide for `agent.create.models`
-- `claude-sonnet-4.5`: Default for most coding tasks (along with code-gpt-5-codex) — excels at implementation, tool use, debugging, and testing.
-- `claude-opus-4.1`: Prefer claude-sonnet-4.5 for most tasks, but a good fallback for complex reasoning when other attempts have failed.
-- `claude-haiku-4.5`: Very fast model for simple tasks. Similar to gemini-2.5-flash in capability.
-- `code-gpt-5-codex`: Default for most coding tasks (along with claude-sonnet-4.5) - excels at implementation, refactors, multi-file edits and code review.
-- `code-gpt-5`: Use for UI/UX or mixed tasks where explanation, design judgment, or multi-domain reasoning is equally important as code.
-- `gemini-2.5-pro`: Use when you require huge context or multimodal grounding (repo-scale inputs, or search grounding); good for alternative architecture opinions.
-- `gemini-2.5-flash`: Use for fast, high-volume scaffolding, creating minimal repros/tests, or budget-sensitive operations.
-- `qwen-3-coder`: Fast and reasonably effective. Good for providing an alternative opinion as it has quite different training data to other models.
+{MODEL_DESCRIPTIONS}
 
 # WARNING (using git)
 - Do not create new branches or make changes to git unless requested.
