@@ -7,7 +7,7 @@ use super::textarea::{TextArea, TextAreaState};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputFilter {
     None,
-    /// Allow only ASCII alphanumeric, '-' and '_'; disallow spaces and newlines
+    /// Allow only ASCII alphanumeric, '-', '_' and '.'; disallow spaces and newlines
     Id,
 }
 
@@ -37,7 +37,7 @@ impl FormTextField {
     pub fn set_filter(&mut self, filter: InputFilter) { self.filter = filter; }
 
     fn id_char_allowed(c: char) -> bool {
-        c.is_ascii_alphanumeric() || c == '-' || c == '_'
+        c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')
     }
 
     pub fn set_text(&mut self, text: &str) {

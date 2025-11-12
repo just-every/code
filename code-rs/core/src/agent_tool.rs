@@ -15,7 +15,7 @@ use tokio::runtime::Builder as TokioRuntimeBuilder;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tokio::time::{timeout, Duration as TokioDuration};
+use tokio::time::Duration as TokioDuration;
 use std::thread;
 
 use crate::agent_defaults::{agent_model_spec, default_params_for};
@@ -1039,18 +1039,24 @@ fn should_validate_in_read_only(cfg: &AgentConfig) -> bool {
 async fn run_agent_smoke_test(cfg: AgentConfig) -> Result<String, String> {
     let model_name = cfg.name.clone();
     let read_only = should_validate_in_read_only(&cfg);
-    let response = timeout(
-        AGENT_SMOKE_TEST_TIMEOUT,
-        execute_model_with_permissions(&model_name, AGENT_SMOKE_TEST_PROMPT, read_only, None, Some(cfg)),
-    )
-    .await
-    .map_err(|_| {
-        format!(
-            "agent validation timed out after {}s",
-            AGENT_SMOKE_TEST_TIMEOUT.as_secs()
-        )
-    })??;
-    Ok(response)
+    let mut task = tokio::spawn(async move {
+        execute_model_with_permissions(&model_name, AGENT_SMOKE_TEST_PROMPT, read_only, None, Some(cfg)).await
+    });
+    let timer = tokio::time::sleep(AGENT_SMOKE_TEST_TIMEOUT);
+    tokio::pin!(timer);
+    tokio::select! {
+        res = &mut task => {
+            res.map_err(|e| format!("agent validation task failed: {e}"))?
+        }
+        _ = timer.as_mut() => {
+            task.abort();
+            let _ = task.await;
+            return Err(format!(
+                "agent validation timed out after {}s",
+                AGENT_SMOKE_TEST_TIMEOUT.as_secs()
+            ));
+        }
+    }
 }
 
 fn summarize_agent_output(output: &str) -> String {
