@@ -1048,10 +1048,8 @@ fn summarize_agent_output(output: &str) -> String {
 
 pub async fn smoke_test_agent(cfg: AgentConfig) -> Result<(), String> {
     let output = run_agent_smoke_test(cfg).await?;
-    if output
-        .to_ascii_lowercase()
-        .contains(AGENT_SMOKE_TEST_EXPECTED)
-    {
+    let normalized = output.trim().to_ascii_lowercase();
+    if normalized == AGENT_SMOKE_TEST_EXPECTED {
         Ok(())
     } else {
         Err(format!(

@@ -776,6 +776,8 @@ struct AutoResolveDecision {
     rationale: Option<String>,
 }
 
+const AGENTS_OVERVIEW_STATIC_ROWS: usize = 2; // spacer + "Add new agent" row
+
 pub(crate) struct ChatWidget<'a> {
     app_event_tx: AppEventSender,
     code_op_tx: UnboundedSender<Op>,
@@ -13376,7 +13378,7 @@ impl ChatWidget<'_> {
         let total_rows = rows
             .len()
             .saturating_add(commands.len())
-            .saturating_add(1);
+            .saturating_add(AGENTS_OVERVIEW_STATIC_ROWS);
         let selected = if total_rows == 0 {
             0
         } else {
@@ -13451,7 +13453,10 @@ impl ChatWidget<'_> {
 
         if needs_content {
             let (rows, commands) = self.collect_agents_overview_rows();
-            let total = rows.len().saturating_add(commands.len()).saturating_add(1);
+            let total = rows
+                .len()
+                .saturating_add(commands.len())
+                .saturating_add(AGENTS_OVERVIEW_STATIC_ROWS);
             let selected = if total == 0 {
                 0
             } else {
@@ -13496,7 +13501,10 @@ impl ChatWidget<'_> {
 
         if needs_content {
             let (rows, commands) = self.collect_agents_overview_rows();
-            let total = rows.len().saturating_add(commands.len()).saturating_add(1);
+            let total = rows
+                .len()
+                .saturating_add(commands.len())
+                .saturating_add(AGENTS_OVERVIEW_STATIC_ROWS);
             let selected = if total == 0 {
                 0
             } else {
@@ -18703,7 +18711,10 @@ Have we met every part of this goal and is there no further work to do?"#
 
     fn build_agents_settings_content(&mut self) -> AgentsSettingsContent {
         let (rows, commands) = self.collect_agents_overview_rows();
-        let total = rows.len().saturating_add(commands.len()).saturating_add(1);
+        let total = rows
+            .len()
+            .saturating_add(commands.len())
+            .saturating_add(AGENTS_OVERVIEW_STATIC_ROWS);
         let selected = if total == 0 {
             0
         } else {
