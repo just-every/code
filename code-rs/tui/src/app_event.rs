@@ -15,6 +15,7 @@ use ratatui::text::Line;
 use crate::streaming::StreamKind;
 use crate::history::state::HistorySnapshot;
 use std::time::Duration;
+use uuid::Uuid;
 
 use code_git_tooling::{GhostCommit, GitToolingError};
 use code_cloud_tasks_client::{ApplyOutcome, CloudTaskError, CreatedTask, TaskSummary};
@@ -497,7 +498,7 @@ pub(crate) enum AppEvent {
     AgentValidationFinished {
         name: String,
         result: Result<(), String>,
-        attempt_id: uuid::Uuid,
+        attempt_id: Uuid,
     },
     
 }

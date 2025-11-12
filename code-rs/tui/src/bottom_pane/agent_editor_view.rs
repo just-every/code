@@ -63,9 +63,6 @@ const FIELD_SAVE: usize = 7;
 const FIELD_CANCEL: usize = 8;
 
 impl AgentEditorView {
-    fn editor_active(&self) -> bool {
-        self.installed || self.command.trim().is_empty()
-    }
     fn persist_current_agent(&mut self, require_description: bool) -> bool {
         let ro = self
             .params_ro
@@ -122,100 +119,90 @@ impl AgentEditorView {
     }
 
     fn handle_key_internal(&mut self, key_event: KeyEvent) -> bool {
-        if !self.editor_active() {
-            match key_event.code {
-                KeyCode::Esc | KeyCode::Enter => {
-                    self.complete = true;
-                    true
-                }
-                _ => false,
+        let last_field_idx = FIELD_CANCEL;
+        match key_event {
+            KeyEvent { code: KeyCode::Esc, .. } => {
+                self.complete = true;
+                self.app_event_tx.send(AppEvent::ShowAgentsOverview);
+                true
             }
-        } else {
-            let last_field_idx = FIELD_CANCEL;
-            match key_event {
-                KeyEvent { code: KeyCode::Esc, .. } => {
+            KeyEvent { code: KeyCode::Tab, .. } => {
+                self.field = (self.field + 1).min(last_field_idx);
+                true
+            }
+            KeyEvent { code: KeyCode::BackTab, .. } => {
+                if self.field > 0 {
+                    self.field -= 1;
+                }
+                true
+            }
+            KeyEvent { code: KeyCode::Up, .. } => {
+                if self.field > 0 {
+                    self.field -= 1;
+                }
+                true
+            }
+            KeyEvent { code: KeyCode::Down, .. } => {
+                self.field = (self.field + 1).min(last_field_idx);
+                true
+            }
+            KeyEvent { code: KeyCode::Left, .. } if self.field == FIELD_TOGGLE => {
+                self.enabled = true;
+                let _ = self.persist_current_agent(false);
+                true
+            }
+            KeyEvent { code: KeyCode::Right, .. } if self.field == FIELD_TOGGLE => {
+                self.enabled = false;
+                let _ = self.persist_current_agent(false);
+                true
+            }
+            KeyEvent { code: KeyCode::Char(' '), .. } if self.field == FIELD_TOGGLE => {
+                self.enabled = !self.enabled;
+                let _ = self.persist_current_agent(false);
+                true
+            }
+            ev @ KeyEvent { .. } if self.field == FIELD_NAME => {
+                if self.name_editable {
+                    let _ = self.name_field.handle_key(ev);
+                }
+                true
+            }
+            ev @ KeyEvent { .. } if self.field == FIELD_COMMAND => {
+                let _ = self.command_field.handle_key(ev);
+                true
+            }
+            ev @ KeyEvent { .. } if self.field == FIELD_READ_ONLY => {
+                let _ = self.params_ro.handle_key(ev);
+                true
+            }
+            ev @ KeyEvent { .. } if self.field == FIELD_WRITE => {
+                let _ = self.params_wr.handle_key(ev);
+                true
+            }
+            ev @ KeyEvent { .. } if self.field == FIELD_DESCRIPTION => {
+                let _ = self.description_field.handle_key(ev);
+                self.description_error = None;
+                true
+            }
+            ev @ KeyEvent { .. } if self.field == FIELD_INSTRUCTIONS => {
+                let _ = self.instr.handle_key(ev);
+                true
+            }
+            KeyEvent { code: KeyCode::Enter, .. } if self.field == FIELD_SAVE => {
+                if self.persist_current_agent(true) {
                     self.complete = true;
                     self.app_event_tx.send(AppEvent::ShowAgentsOverview);
-                    true
+                } else {
+                    self.field = FIELD_DESCRIPTION;
                 }
-                KeyEvent { code: KeyCode::Tab, .. } => {
-                    self.field = (self.field + 1).min(last_field_idx);
-                    true
-                }
-                KeyEvent { code: KeyCode::BackTab, .. } => {
-                    if self.field > 0 {
-                        self.field -= 1;
-                    }
-                    true
-                }
-                KeyEvent { code: KeyCode::Up, .. } => {
-                    if self.field > 0 {
-                        self.field -= 1;
-                    }
-                    true
-                }
-                KeyEvent { code: KeyCode::Down, .. } => {
-                    self.field = (self.field + 1).min(last_field_idx);
-                    true
-                }
-                KeyEvent { code: KeyCode::Left, .. } if self.field == FIELD_TOGGLE => {
-                    self.enabled = true;
-                    let _ = self.persist_current_agent(false);
-                    true
-                }
-                KeyEvent { code: KeyCode::Right, .. } if self.field == FIELD_TOGGLE => {
-                    self.enabled = false;
-                    let _ = self.persist_current_agent(false);
-                    true
-                }
-                KeyEvent { code: KeyCode::Char(' '), .. } if self.field == FIELD_TOGGLE => {
-                    self.enabled = !self.enabled;
-                    let _ = self.persist_current_agent(false);
-                    true
-                }
-                ev @ KeyEvent { .. } if self.field == FIELD_NAME => {
-                    if self.name_editable {
-                        let _ = self.name_field.handle_key(ev);
-                    }
-                    true
-                }
-                ev @ KeyEvent { .. } if self.field == FIELD_COMMAND => {
-                    let _ = self.command_field.handle_key(ev);
-                    true
-                }
-                ev @ KeyEvent { .. } if self.field == FIELD_READ_ONLY => {
-                    let _ = self.params_ro.handle_key(ev);
-                    true
-                }
-                ev @ KeyEvent { .. } if self.field == FIELD_WRITE => {
-                    let _ = self.params_wr.handle_key(ev);
-                    true
-                }
-                ev @ KeyEvent { .. } if self.field == FIELD_DESCRIPTION => {
-                    let _ = self.description_field.handle_key(ev);
-                    self.description_error = None;
-                    true
-                }
-                ev @ KeyEvent { .. } if self.field == FIELD_INSTRUCTIONS => {
-                    let _ = self.instr.handle_key(ev);
-                    true
-                }
-                KeyEvent { code: KeyCode::Enter, .. } if self.field == FIELD_SAVE => {
-                    if self.persist_current_agent(true) {
-                        self.complete = true;
-                        self.app_event_tx.send(AppEvent::ShowAgentsOverview);
-                    } else {
-                        self.field = FIELD_DESCRIPTION;
-                    }
-                    true
-                }
-                KeyEvent { code: KeyCode::Enter, .. } if self.field == FIELD_CANCEL => {
-                    self.complete = true;
-                    self.app_event_tx.send(AppEvent::ShowAgentsOverview);
-                    true
-                }
-                _ => false,
+                true
             }
+            KeyEvent { code: KeyCode::Enter, .. } if self.field == FIELD_CANCEL => {
+                self.complete = true;
+                self.app_event_tx.send(AppEvent::ShowAgentsOverview);
+                true
+            }
+            _ => false,
         }
     }
 
@@ -425,6 +412,17 @@ impl AgentEditorView {
             Style::default().add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(""));
+        if !self.installed && !self.install_hint.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "Command not found on PATH.",
+                Style::default().fg(crate::colors::warning()).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(Span::styled(
+                self.install_hint.clone(),
+                Style::default().fg(crate::colors::text_dim()),
+            )));
+            lines.push(Line::from(""));
+        }
 
         // Reserve space for Name box
         for _ in 0..name_box_h {
@@ -577,28 +575,6 @@ impl<'a> BottomPaneView<'a> for AgentEditorView {
         block.render(area, buf);
 
         let content = Rect { x: inner.x.saturating_add(1), y: inner.y, width: inner.width.saturating_sub(2), height: inner.height };
-
-        if !self.editor_active() {
-            let mut lines: Vec<Line<'static>> = Vec::new();
-            lines.push(Line::from(Span::styled("Not installed", Style::default().fg(crate::colors::warning()).add_modifier(Modifier::BOLD))));
-            lines.push(Line::from(Span::styled(self.install_hint.clone(), Style::default().fg(crate::colors::text_dim()))));
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![Span::styled("[ Close ]", Style::default().bg(crate::colors::selection()).add_modifier(Modifier::BOLD))]));
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::styled("Enter", Style::default().fg(crate::colors::success())),
-                Span::styled(" Close  ", Style::default().fg(crate::colors::text_dim())),
-                Span::styled("Esc", Style::default().fg(crate::colors::error())),
-                Span::styled(" Cancel", Style::default().fg(crate::colors::text_dim())),
-            ]));
-
-            Paragraph::new(lines)
-                .alignment(Alignment::Left)
-                .wrap(ratatui::widgets::Wrap { trim: false })
-                .style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()))
-                .render(content, buf);
-            return;
-        }
 
         let layout = self.layout(content.width, Some(content.height));
         let AgentEditorLayout {

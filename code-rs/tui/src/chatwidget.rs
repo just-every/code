@@ -17559,22 +17559,40 @@ Have we met every part of this goal and is there no further work to do?"#
             existing_command.as_deref(),
         );
 
-        let env_clone = existing_index
-            .and_then(|idx| self.config.agents.get(idx))
-            .and_then(|cfg| cfg.env.clone());
-
-        let candidate_cfg = AgentConfig {
-            name: name.to_string(),
-            command: resolved.clone(),
-            args: Vec::new(),
-            read_only: false,
-            enabled,
-            description: description.clone(),
-            env: env_clone,
-            args_read_only: args_ro.clone(),
-            args_write: args_wr.clone(),
-            instructions: instr.clone(),
+        let mut candidate_cfg = if let Some(idx) = existing_index {
+            self.config.agents.get(idx).cloned().unwrap_or_else(|| AgentConfig {
+                name: name.to_string(),
+                command: resolved.clone(),
+                args: Vec::new(),
+                read_only: false,
+                enabled,
+                description: description.clone(),
+                env: None,
+                args_read_only: args_ro.clone(),
+                args_write: args_wr.clone(),
+                instructions: instr.clone(),
+            })
+        } else {
+            AgentConfig {
+                name: name.to_string(),
+                command: resolved.clone(),
+                args: Vec::new(),
+                read_only: false,
+                enabled,
+                description: description.clone(),
+                env: None,
+                args_read_only: args_ro.clone(),
+                args_write: args_wr.clone(),
+                instructions: instr.clone(),
+            }
         };
+
+        candidate_cfg.command = resolved.clone();
+        candidate_cfg.enabled = enabled;
+        candidate_cfg.description = description.clone();
+        candidate_cfg.args_read_only = args_ro.clone();
+        candidate_cfg.args_write = args_wr.clone();
+        candidate_cfg.instructions = instr.clone();
 
         let pending = PendingAgentUpdate { id: Uuid::new_v4(), cfg: candidate_cfg };
         let requires_validation = !self.test_mode && existing_index.is_none();
@@ -17592,12 +17610,17 @@ Have we met every part of this goal and is there no further work to do?"#
             "🧪 Testing agent `{}` (expecting \"ok\")…",
             name
         ));
-        self.pending_agent_updates.insert(pending.key(), pending.clone());
+        self.pending_agent_updates.retain(|_, existing| {
+            !existing.cfg.name.eq_ignore_ascii_case(&name)
+        });
+        let key = pending.key();
+        let attempt = pending.clone();
+        self.pending_agent_updates.insert(key, pending);
         let tx = self.app_event_tx.clone();
         tokio::spawn(async move {
-            let cfg = pending.cfg.clone();
+            let cfg = attempt.cfg.clone();
             let agent_name = cfg.name.clone();
-            let attempt_id = pending.id;
+            let attempt_id = attempt.id;
             let result = task::spawn_blocking(move || smoke_test_agent_blocking(cfg))
                 .await
                 .map_err(|e| format!("validation task failed: {e}"))
@@ -17607,8 +17630,7 @@ Have we met every part of this goal and is there no further work to do?"#
     }
 
     pub(crate) fn handle_agent_validation_finished(&mut self, name: &str, attempt_id: Uuid, result: Result<(), String>) {
-        let key_prefix = name.to_ascii_lowercase();
-        let key = format!("{}:{}", key_prefix, attempt_id);
+        let key = format!("{}:{}", name.to_ascii_lowercase(), attempt_id);
         let Some(pending) = self.pending_agent_updates.remove(&key) else {
             return;
         };
