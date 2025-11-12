@@ -4,7 +4,7 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
@@ -380,6 +380,7 @@ pub(crate) struct AgentOverviewRow {
     pub(crate) name: String,
     pub(crate) enabled: bool,
     pub(crate) installed: bool,
+    pub(crate) description: Option<String>,
 }
 
 #[derive(Default)]
@@ -461,17 +462,29 @@ impl AgentsSettingsContent {
     fn render_overview(&self, area: Rect, buf: &mut Buffer, state: &AgentsOverviewState) {
         use ratatui::widgets::Paragraph;
 
-        let mut lines: Vec<Line<'static>> = Vec::new();
+        let lines = Self::build_overview_lines(state, Some(area.width as usize));
+        Paragraph::new(lines)
+            .style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()))
+            .render(area, buf);
+    }
 
+    fn build_overview_lines(state: &AgentsOverviewState, available_width: Option<usize>) -> Vec<Line<'static>> {
+        let mut lines: Vec<Line<'static>> = Vec::new();
         lines.push(Line::from(Span::styled(
             "Agents",
             Style::default().add_modifier(Modifier::BOLD),
         )));
 
-        let max_name = state
+        let max_name_chars = state
             .rows
             .iter()
             .map(|row| row.name.chars().count())
+            .max()
+            .unwrap_or(0);
+        let max_name_width = state
+            .rows
+            .iter()
+            .map(|row| UnicodeWidthStr::width(row.name.as_str()))
             .max()
             .unwrap_or(0);
 
@@ -495,7 +508,7 @@ impl AgentsSettingsContent {
                 },
             ));
             spans.push(Span::styled(
-                format!("{:<width$}", row.name, width = max_name),
+                format!("{:<width$}", row.name, width = max_name_chars),
                 if selected {
                     Style::default()
                         .fg(crate::colors::primary())
@@ -508,6 +521,31 @@ impl AgentsSettingsContent {
             spans.push(Span::styled("•", Style::default().fg(status.1)));
             spans.push(Span::raw(" "));
             spans.push(Span::styled(status.0.to_string(), Style::default().fg(status.1)));
+
+            if let Some(desc) = row
+                .description
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                if let Some(width) = available_width {
+                    let status_width = UnicodeWidthStr::width(status.0);
+                    let prefix_width = 2 + max_name_width + 2 + 2 + status_width;
+                    if width > prefix_width + 3 {
+                        let desc_width = width - prefix_width - 3;
+                        if desc_width > 0 {
+                            let truncated = Self::truncate_to_width(desc, desc_width);
+                            if !truncated.is_empty() {
+                                spans.push(Span::raw("  "));
+                                spans.push(Span::styled(
+                                    truncated,
+                                    Style::default().fg(crate::colors::text_dim()),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
 
             if selected {
                 spans.push(Span::raw("  "));
@@ -600,9 +638,27 @@ impl AgentsSettingsContent {
             Span::styled(" Close", Style::default().fg(crate::colors::text_dim())),
         ]));
 
-        Paragraph::new(lines)
-            .style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()))
-            .render(area, buf);
+        lines
+    }
+
+    fn truncate_to_width(text: &str, max_width: usize) -> String {
+        if max_width == 0 {
+            return String::new();
+        }
+        let mut width = 0;
+        let mut truncated = String::new();
+        for ch in text.chars() {
+            let ch_width = ch.width().unwrap_or(0);
+            if width + ch_width > max_width {
+                break;
+            }
+            truncated.push(ch);
+            width += ch_width;
+            if width == max_width {
+                break;
+            }
+        }
+        truncated
     }
 
     fn handle_overview_key(

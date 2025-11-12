@@ -37,6 +37,7 @@ pub(crate) struct AgentEditorView {
     app_event_tx: AppEventSender,
     installed: bool,
     command: String,
+    description: Option<String>,
     install_hint: String,
 }
 
@@ -174,6 +175,7 @@ impl AgentEditorView {
         args_read_only: Option<Vec<String>>,
         args_write: Option<Vec<String>>,
         instructions: Option<String>,
+        description: Option<String>,
         command: String,
         app_event_tx: AppEventSender,
     ) -> Self {
@@ -209,6 +211,16 @@ impl AgentEditorView {
             }
         }
 
+        let trimmed_description = description
+            .and_then(|desc| {
+                let trimmed = desc.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            });
+
         let mut v = Self {
             name,
             enabled,
@@ -220,6 +232,7 @@ impl AgentEditorView {
             app_event_tx,
             installed: command_exists(&command),
             command,
+            description: trimmed_description,
             install_hint: String::new(),
         };
 
@@ -252,7 +265,16 @@ impl AgentEditorView {
         let desired_wr_inner = self.params_wr.desired_height(ro_inner_width).min(6);
         let wr_box_h = desired_wr_inner.saturating_add(2);
 
-        let top_block: u16 = 3; // blank, title, blank
+        let title_block: u16 = 2; // title + blank
+        let desc_style = Style::default().fg(crate::colors::text_dim());
+        let desc_text = self
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string());
+        let desc_block = if desc_text.is_some() { 2 } else { 0 };
+        let top_block = title_block + desc_block;
         let enabled_block: u16 = 2; // toggle row + spacer
         let instr_desc_lines: u16 = 1; // description row after box
         let spacer_before_buttons: u16 = 1;
@@ -300,7 +322,6 @@ impl AgentEditorView {
 
         let mut lines: Vec<Line<'static>> = Vec::new();
         let mut cursor: u16 = 0;
-        let desc_style = Style::default().fg(crate::colors::text_dim());
 
         // Title, spacer
         lines.push(Line::from(Span::styled(
@@ -310,6 +331,12 @@ impl AgentEditorView {
         cursor = cursor.saturating_add(1);
         lines.push(Line::from(""));
         cursor = cursor.saturating_add(1);
+        if let Some(desc_line) = &desc_text {
+            lines.push(Line::from(Span::styled(desc_line.clone(), desc_style)));
+            cursor = cursor.saturating_add(1);
+            lines.push(Line::from(""));
+            cursor = cursor.saturating_add(1);
+        }
 
         // Enabled toggle + spacer
         let enabled_style = if self.enabled {

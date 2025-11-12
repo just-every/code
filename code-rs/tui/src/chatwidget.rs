@@ -17400,6 +17400,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 Some(cfg.command.as_str()),
                 Some(cfg.command.as_str()),
             );
+            let description = Self::agent_description_for(&cfg.name, Some(&cfg_command));
             let build_editor = || {
                 AgentEditorView::new(
                     cfg_name.clone(),
@@ -17407,6 +17408,7 @@ Have we met every part of this goal and is there no further work to do?"#
                     ro.clone(),
                     wr.clone(),
                     cfg_instructions.clone(),
+                    description.clone(),
                     cfg_command.clone(),
                     app_event_tx.clone(),
                 )
@@ -17427,6 +17429,7 @@ Have we met every part of this goal and is there no further work to do?"#
             let wr =
                 code_core::agent_defaults::default_params_for(&name, false /*read_only*/);
             let app_event_tx = self.app_event_tx.clone();
+            let description = Self::agent_description_for(&name, Some(&cmd));
             let build_editor = || {
                 AgentEditorView::new(
                     name.clone(),
@@ -17434,6 +17437,7 @@ Have we met every part of this goal and is there no further work to do?"#
                     if ro.is_empty() { None } else { Some(ro.clone()) },
                     if wr.is_empty() { None } else { Some(wr.clone()) },
                     None,
+                    description.clone(),
                     cmd.clone(),
                     app_event_tx.clone(),
                 )
@@ -18569,6 +18573,7 @@ Have we met every part of this goal and is there no further work to do?"#
                     name: cfg.name.clone(),
                     enabled: cfg.enabled,
                     installed,
+                    description: Self::agent_description_for(&cfg.name, Some(&cfg.command)),
                 });
             } else {
                 let cmd = name.clone();
@@ -18585,6 +18590,7 @@ Have we met every part of this goal and is there no further work to do?"#
                     name: name.clone(),
                     enabled: true,
                     installed,
+                    description: Self::agent_description_for(name, Some(&cmd)),
                 });
             }
         }
@@ -18600,6 +18606,13 @@ Have we met every part of this goal and is there no further work to do?"#
         commands.extend(custom);
 
         (agent_rows, commands)
+    }
+
+    fn agent_description_for(name: &str, command: Option<&str>) -> Option<String> {
+        agent_model_spec(name)
+            .or_else(|| command.and_then(|cmd| agent_model_spec(cmd)))
+            .map(|spec| spec.description.trim().to_string())
+            .filter(|desc| !desc.is_empty())
     }
 
     fn build_agents_settings_content(&mut self) -> AgentsSettingsContent {
