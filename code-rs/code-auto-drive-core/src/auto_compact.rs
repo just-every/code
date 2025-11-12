@@ -1,5 +1,7 @@
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
+use std::time::Duration;
+use tokio::time::timeout;
 
 use code_core::codex::compact::{
     collect_compaction_snippets,
@@ -14,6 +16,7 @@ const BYTES_PER_TOKEN: usize = 4;
 const MAX_TRANSCRIPT_BYTES: usize = 32_000;
 const MAX_COMMANDS_IN_SUMMARY: usize = 5;
 const MAX_ACTION_LINES: usize = 5;
+const SUMMARY_TIMEOUT_SECONDS: u64 = 45;
 
 pub(crate) struct CheckpointSummary {
     pub message: ResponseItem,
@@ -93,8 +96,9 @@ pub(crate) fn build_checkpoint_summary(
     items: &[ResponseItem],
     prev_summary: Option<&str>,
     compact_prompt: &str,
-) -> CheckpointSummary {
+) -> (CheckpointSummary, Option<String>) {
     let snippets = collect_compaction_snippets(items);
+    let mut warning: Option<String> = None;
     let summary_text = match summarize_with_model(
         runtime,
         client,
@@ -104,11 +108,16 @@ pub(crate) fn build_checkpoint_summary(
         compact_prompt,
     ) {
         Ok(text) if !text.trim().is_empty() => text,
-        Ok(_) | Err(_) => deterministic_summary(items, prev_summary),
+        Ok(_) => deterministic_summary(items, prev_summary),
+        Err(err) => {
+            warning = Some(format!(
+                "checkpoint summary model request failed: {err:#}"));
+            deterministic_summary(items, prev_summary)
+        }
     };
 
     let message = make_compaction_summary_message(&snippets, &summary_text);
-    CheckpointSummary { message, text: summary_text }
+    (CheckpointSummary { message, text: summary_text }, warning)
 }
 
 fn summarize_with_model(
@@ -136,65 +145,81 @@ fn summarize_with_model(
 
         let current_prev = aggregate_summary.as_deref();
         let summary = runtime.block_on(async {
-            let mut prompt = Prompt::default();
-            prompt.store = false;
-            prompt.text_format = Some(TextFormat {
-                r#type: "text".to_string(),
-                name: None,
-                strict: None,
-                schema: None,
-            });
-            prompt.model_override = Some(model_slug.to_string());
-            let family = find_family_for_model(model_slug)
-                .unwrap_or_else(|| derive_default_model_family(model_slug));
-            prompt.model_family_override = Some(family);
+            timeout(Duration::from_secs(SUMMARY_TIMEOUT_SECONDS), async {
+                let mut prompt = Prompt::default();
+                prompt.store = false;
+                prompt.text_format = Some(TextFormat {
+                    r#type: "text".to_string(),
+                    name: None,
+                    strict: None,
+                    schema: None,
+                });
+                prompt.model_override = Some(model_slug.to_string());
+                let family = find_family_for_model(model_slug)
+                    .unwrap_or_else(|| derive_default_model_family(model_slug));
+                prompt.model_family_override = Some(family);
 
-            push_compaction_prompt(&mut prompt, compact_prompt);
+                push_compaction_prompt(&mut prompt, compact_prompt);
 
-            let mut user_text = String::new();
-            if let Some(prev) = current_prev {
-                user_text.push_str("Previous checkpoint summary:\n");
-                user_text.push_str(prev);
-                user_text.push_str("\n\n");
-            }
-            user_text.push_str("Conversation slice:\n");
-            user_text.push_str(&chunk);
-
-            prompt.input.push(plain_message("user", user_text));
-
-            let mut stream = client.stream(&prompt).await?;
-            let mut collected = String::new();
-            let mut response_items = Vec::new();
-
-            while let Some(event) = stream.next().await {
-                match event {
-                    Ok(ResponseEvent::OutputTextDelta { delta, .. }) => collected.push_str(&delta),
-                    Ok(ResponseEvent::OutputItemDone { item, .. }) => {
-                        response_items.push(item);
-                    }
-                    Ok(ResponseEvent::Completed { .. }) => break,
-                    Ok(_) => {}
-                    Err(err) => return Err(anyhow!(err)),
+                let mut user_text = String::new();
+                if let Some(prev) = current_prev {
+                    user_text.push_str("Previous checkpoint summary:\n");
+                    user_text.push_str(prev);
+                    user_text.push_str("\n\n");
                 }
-            }
+                user_text.push_str("Conversation slice:\n");
+                user_text.push_str(&chunk);
 
-            if let Some(message) = response_items.into_iter().find_map(|item| match item {
-                ResponseItem::Message { role, content, .. } if role == "assistant" => Some(content),
-                _ => None,
-            }) {
-                let mut text = String::new();
-                for chunk in message {
-                    if let ContentItem::OutputText { text: chunk_text } = chunk {
-                        text.push_str(&chunk_text);
+                prompt.input.push(plain_message("user", user_text));
+
+                let mut stream = client.stream(&prompt).await?;
+                let mut collected = String::new();
+                let mut response_items = Vec::new();
+
+                while let Some(event) = stream.next().await {
+                    match event {
+                        Ok(ResponseEvent::OutputTextDelta { delta, .. }) => {
+                            collected.push_str(&delta)
+                        }
+                        Ok(ResponseEvent::OutputItemDone { item, .. }) => {
+                            response_items.push(item);
+                        }
+                        Ok(ResponseEvent::Completed { .. }) => break,
+                        Ok(_) => {}
+                        Err(err) => return Err(anyhow!(err)),
                     }
                 }
-                if !text.trim().is_empty() {
-                    return Ok(text);
-                }
-            }
 
-            Ok(collected)
-        })?;
+                if let Some(message) = response_items.into_iter().find_map(|item| match item {
+                    ResponseItem::Message { role, content, .. } if role == "assistant" => {
+                        Some(content)
+                    }
+                    _ => None,
+                }) {
+                    let mut text = String::new();
+                    for chunk in message {
+                        if let ContentItem::OutputText { text: chunk_text } = chunk {
+                            text.push_str(&chunk_text);
+                        }
+                    }
+                    if !text.trim().is_empty() {
+                        return Ok(text);
+                    }
+                }
+
+                Ok(collected)
+            })
+            .await
+        });
+
+        let summary = match summary {
+            Ok(result) => result?,
+            Err(_) => {
+                return Err(anyhow!(
+                    "checkpoint summary request timed out after {SUMMARY_TIMEOUT_SECONDS}s"
+                ));
+            }
+        };
 
         if !summary.trim().is_empty() {
             aggregate_summary = Some(summary);

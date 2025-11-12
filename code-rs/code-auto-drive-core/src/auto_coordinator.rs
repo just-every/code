@@ -31,7 +31,6 @@ use crate::auto_compact::{
     build_checkpoint_summary,
     compute_slice_bounds,
     estimate_item_tokens,
-    CheckpointSummary,
 };
 use crate::coordinator_user_schema::{parse_user_turn_reply, user_turn_schema};
 use crate::session_metrics::SessionMetrics;
@@ -2781,7 +2780,7 @@ fn maybe_compact(
         summary_index: None,
     });
 
-    let CheckpointSummary { message, text } = build_checkpoint_summary(
+    let (checkpoint, summary_warning) = build_checkpoint_summary(
         runtime,
         client,
         model_slug,
@@ -2790,7 +2789,24 @@ fn maybe_compact(
         compact_prompt,
     );
 
-    if apply_compaction(conversation, bounds, prev_summary, message).is_none() {
+    if let Some(warning_text) = summary_warning {
+        warn!(
+            "[Auto coordinator] checkpoint summary fell back to deterministic mode: {warning_text}"
+        );
+        event_tx.send(AutoCoordinatorEvent::Thinking {
+            delta: format!(
+                "History compaction warning: {warning_text}. Falling back to a deterministic summary."
+            ),
+            summary_index: None,
+        });
+    }
+
+    if apply_compaction(conversation, bounds, prev_summary, checkpoint.message).is_none() {
+        warn!("[Auto coordinator] apply_compaction returned None; bounds={bounds:?}");
+        event_tx.send(AutoCoordinatorEvent::Thinking {
+            delta: "Failed to compact history because the conversation changed while applying the summary. Continuing without compaction.".to_string(),
+            summary_index: None,
+        });
         return None;
     }
 
@@ -2798,12 +2814,22 @@ fn maybe_compact(
         conversation: conversation.clone(),
     });
 
+    let removed = slice.len();
+    let total = conversation.len();
+    let plural = if removed == 1 { "" } else { "s" };
+    event_tx.send(AutoCoordinatorEvent::Thinking {
+        delta: format!(
+            "Finished compacting history ({removed} message{plural} -> {total} total)."
+        ),
+        summary_index: None,
+    });
+
     debug!(
         "[Auto coordinator] compacted {} messages; new conversation length {}",
         slice.len(),
         conversation.len()
     );
-    Some(text)
+    Some(checkpoint.text)
 }
 
 /// Determine if compaction should occur based on token usage.

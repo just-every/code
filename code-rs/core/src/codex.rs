@@ -1586,10 +1586,6 @@ impl Session {
             (gap, metrics)
         };
 
-        let Some(otel) = self.client.get_otel_event_manager() else {
-            return;
-        };
-
         let pending_browser_screenshots = self.pending_browser_screenshots.lock().unwrap().len();
         let (gap, metrics) = gap_and_metrics;
         let payload = TurnLatencyPayload {
@@ -1614,7 +1610,7 @@ impl Session {
             token_usage_total_tokens: None,
             note: None,
         };
-        otel.turn_latency_event(payload);
+        self.emit_turn_latency(payload);
     }
 
     fn turn_latency_request_completed(
@@ -1634,10 +1630,6 @@ impl Session {
             let prompt_counts = state.last_turn_prompt_counts.take();
             let metrics = capture_turn_queue_metrics(&state);
             (duration, prompt_counts, metrics)
-        };
-
-        let Some(otel) = self.client.get_otel_event_manager() else {
-            return;
         };
 
         let pending_browser_screenshots = self.pending_browser_screenshots.lock().unwrap().len();
@@ -1674,7 +1666,7 @@ impl Session {
             token_usage_total_tokens,
             note: None,
         };
-        otel.turn_latency_event(payload);
+        self.emit_turn_latency(payload);
     }
 
     fn turn_latency_request_failed(&self, attempt_req: u64, note: Option<String>) {
@@ -1688,10 +1680,6 @@ impl Session {
             let prompt_counts = state.last_turn_prompt_counts.take();
             let metrics = capture_turn_queue_metrics(&state);
             (duration, prompt_counts, metrics)
-        };
-
-        let Some(otel) = self.client.get_otel_event_manager() else {
-            return;
         };
 
         let pending_browser_screenshots = self.pending_browser_screenshots.lock().unwrap().len();
@@ -1717,7 +1705,14 @@ impl Session {
             token_usage_total_tokens: None,
             note,
         };
-        otel.turn_latency_event(payload);
+        self.emit_turn_latency(payload);
+    }
+
+    fn emit_turn_latency(&self, payload: TurnLatencyPayload) {
+        if let Some(otel) = self.client.get_otel_event_manager() {
+            otel.turn_latency_event(payload.clone());
+        }
+        self.client.log_turn_latency_debug(&payload);
     }
 
     fn scratchpad_push(&self, item: &ResponseItem, response: &Option<ResponseInputItem>, sub_id: &str) {

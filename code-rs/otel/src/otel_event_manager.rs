@@ -27,7 +27,7 @@ pub enum ToolDecisionSource {
     User,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub enum TurnLatencyPhase {
     RequestScheduled,
     RequestCompleted,
@@ -44,7 +44,7 @@ impl TurnLatencyPhase {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TurnLatencyPayload {
     pub phase: TurnLatencyPhase,
     pub attempt: u64,

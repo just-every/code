@@ -1,7 +1,9 @@
 use chrono::Local;
+use code_otel::otel_event_manager::TurnLatencyPayload;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use uuid::Uuid;
@@ -20,6 +22,8 @@ pub struct DebugLogger {
     active_streams: Mutex<HashMap<String, StreamInfo>>,
     usage_dir: PathBuf,
     session_usage_file: Mutex<PathBuf>,
+    turn_latency_dir: PathBuf,
+    turn_latency_file: Mutex<Option<PathBuf>>,
 }
 
 impl DebugLogger {
@@ -31,6 +35,8 @@ impl DebugLogger {
                 active_streams: Mutex::new(HashMap::new()),
                 usage_dir: PathBuf::new(),
                 session_usage_file: Mutex::new(PathBuf::new()),
+                turn_latency_dir: PathBuf::new(),
+                turn_latency_file: Mutex::new(None),
             });
         }
 
@@ -43,12 +49,17 @@ impl DebugLogger {
         usage_dir.push("usage");
         fs::create_dir_all(&usage_dir)?;
 
+        let turn_latency_dir = log_dir.join("turn_latency");
+        fs::create_dir_all(&turn_latency_dir)?;
+
         Ok(Self {
             enabled,
             log_dir,
             active_streams: Mutex::new(HashMap::new()),
             usage_dir,
             session_usage_file: Mutex::new(PathBuf::new()),
+            turn_latency_dir,
+            turn_latency_file: Mutex::new(None),
         })
     }
 
@@ -263,6 +274,67 @@ impl DebugLogger {
             .expect("usage lock poisoned");
         *guard = path;
 
+        self.set_turn_latency_file(session_id)
+    }
+
+    fn set_turn_latency_file(&self, session_id: &Uuid) -> Result<(), std::io::Error> {
+        if !self.enabled {
+            return Ok(());
+        }
+
+        let path = self
+            .turn_latency_dir
+            .join(format!("{}_turn_latency.jsonl", session_id));
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        // Ensure file exists so tail -f works immediately.
+        OpenOptions::new().create(true).append(true).open(&path)?;
+
+        let mut guard = self
+            .turn_latency_file
+            .lock()
+            .expect("turn latency lock poisoned");
+        *guard = Some(path);
+
+        Ok(())
+    }
+
+    pub fn log_turn_latency(&self, payload: &TurnLatencyPayload) -> Result<(), std::io::Error> {
+        if !self.enabled {
+            return Ok(());
+        }
+
+        let path = {
+            let guard = self
+                .turn_latency_file
+                .lock()
+                .expect("turn latency lock poisoned");
+            guard.clone()
+        };
+
+        let Some(path) = path else {
+            return Ok(());
+        };
+
+        let payload_value = serde_json::to_value(payload).unwrap_or(Value::Null);
+        let entry = match payload_value {
+            Value::Object(mut map) => {
+                map.insert(
+                    "timestamp".to_string(),
+                    Value::String(Local::now().to_rfc3339()),
+                );
+                Value::Object(map)
+            }
+            other => serde_json::json!({
+                "timestamp": Local::now().to_rfc3339(),
+                "payload": other,
+            }),
+        };
+
+        let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+        writeln!(file, "{}", serde_json::to_string(&entry)?)?;
         Ok(())
     }
 

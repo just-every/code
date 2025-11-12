@@ -61,7 +61,7 @@ use crate::protocol::SandboxPolicy;
 use crate::protocol::TokenUsage;
 use crate::slash_commands::get_enabled_agents;
 use crate::util::backoff;
-use code_otel::otel_event_manager::OtelEventManager;
+use code_otel::otel_event_manager::{OtelEventManager, TurnLatencyPayload};
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -209,6 +209,12 @@ impl ModelClient {
 
     pub fn get_otel_event_manager(&self) -> Option<OtelEventManager> {
         self.otel_event_manager.clone()
+    }
+
+    pub fn log_turn_latency_debug(&self, payload: &TurnLatencyPayload) {
+        if let Ok(logger) = self.debug_logger.lock() {
+            let _ = logger.log_turn_latency(payload);
+        }
     }
 
     pub fn code_home(&self) -> &Path {
