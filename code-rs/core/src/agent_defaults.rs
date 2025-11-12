@@ -5,7 +5,7 @@
 //! (to surface the available sub-agent options).
 
 use crate::config_types::AgentConfig;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const CLAUDE_ALLOWED_TOOLS: &str = "Bash(ls:*), Bash(cat:*), Bash(grep:*), Bash(git status:*), Bash(git log:*), Bash(find:*), Read, Grep, Glob, LS, WebFetch, TodoRead, TodoWrite, WebSearch";
 const CLOUD_MODEL_ENV_FLAG: &str = "CODE_ENABLE_CLOUD_AGENT_MODEL";
@@ -243,9 +243,22 @@ fn custom_model_guide_line(name: &str, description: &str) -> String {
 pub fn build_model_guide_description(active_agents: &[String]) -> String {
     let mut description = String::from(MODEL_GUIDE_INTRO);
 
+    let mut canonical: HashSet<String> = HashSet::new();
+    for name in active_agents {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(spec) = agent_model_spec(trimmed) {
+            canonical.insert(spec.slug.to_ascii_lowercase());
+        } else {
+            canonical.insert(trimmed.to_ascii_lowercase());
+        }
+    }
+
     let lines: Vec<String> = AGENT_MODEL_SPECS
         .iter()
-        .filter(|spec| active_agents.iter().any(|name| name == spec.slug))
+        .filter(|spec| canonical.contains(&spec.slug.to_ascii_lowercase()))
         .map(model_guide_line)
         .collect();
 
