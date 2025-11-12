@@ -162,8 +162,8 @@ impl ChatWidgetHarness {
                         command,
                     );
                 }
-                AppEvent::AgentValidationFinished { name, result } => {
-                    self.chat.handle_agent_validation_finished(&name, result);
+                AppEvent::AgentValidationFinished { name, result, attempt_id } => {
+                    self.chat.handle_agent_validation_finished(&name, attempt_id, result);
                 }
                 AppEvent::UpdateReviewAutoResolveEnabled(enabled) => {
                     self.chat.set_review_auto_resolve_enabled(enabled);

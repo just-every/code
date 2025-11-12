@@ -2353,9 +2353,9 @@ impl App<'_> {
                         widget.apply_agent_update(&name, enabled, args_read_only, args_write, instructions, description, command);
                     }
                 }
-                AppEvent::AgentValidationFinished { name, result } => {
+                AppEvent::AgentValidationFinished { name, result, attempt_id } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.handle_agent_validation_finished(&name, result);
+                        widget.handle_agent_validation_finished(&name, attempt_id, result);
                     }
                 }
                 AppEvent::PrefillComposer(text) => {

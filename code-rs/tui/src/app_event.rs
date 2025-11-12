@@ -497,6 +497,7 @@ pub(crate) enum AppEvent {
     AgentValidationFinished {
         name: String,
         result: Result<(), String>,
+        attempt_id: uuid::Uuid,
     },
     
 }

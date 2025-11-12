@@ -350,6 +350,7 @@ use std::cell::{Cell, RefCell};
 use std::sync::mpsc;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::task;
+use uuid::Uuid;
 
 fn history_cell_logging_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -781,11 +782,12 @@ const AGENTS_OVERVIEW_STATIC_ROWS: usize = 2; // spacer + "Add new agent" row
 
 #[derive(Clone)]
 struct PendingAgentUpdate {
+    id: uuid::Uuid,
     cfg: AgentConfig,
 }
 
 impl PendingAgentUpdate {
-    fn key(&self) -> String { self.cfg.name.to_ascii_lowercase() }
+    fn key(&self) -> String { format!("{}:{}", self.cfg.name.to_ascii_lowercase(), self.id) }
 }
 
 pub(crate) struct ChatWidget<'a> {
@@ -17574,7 +17576,7 @@ Have we met every part of this goal and is there no further work to do?"#
             instructions: instr.clone(),
         };
 
-        let pending = PendingAgentUpdate { cfg: candidate_cfg };
+        let pending = PendingAgentUpdate { id: Uuid::new_v4(), cfg: candidate_cfg };
         let requires_validation = !self.test_mode && existing_index.is_none();
         if requires_validation {
             self.start_agent_validation(pending);
@@ -17595,16 +17597,18 @@ Have we met every part of this goal and is there no further work to do?"#
         tokio::spawn(async move {
             let cfg = pending.cfg.clone();
             let agent_name = cfg.name.clone();
+            let attempt_id = pending.id;
             let result = task::spawn_blocking(move || smoke_test_agent_blocking(cfg))
                 .await
                 .map_err(|e| format!("validation task failed: {e}"))
                 .and_then(|res| res);
-            tx.send(AppEvent::AgentValidationFinished { name: agent_name, result });
+            tx.send(AppEvent::AgentValidationFinished { name: agent_name, result, attempt_id });
         });
     }
 
-    pub(crate) fn handle_agent_validation_finished(&mut self, name: &str, result: Result<(), String>) {
-        let key = name.to_ascii_lowercase();
+    pub(crate) fn handle_agent_validation_finished(&mut self, name: &str, attempt_id: Uuid, result: Result<(), String>) {
+        let key_prefix = name.to_ascii_lowercase();
+        let key = format!("{}:{}", key_prefix, attempt_id);
         let Some(pending) = self.pending_agent_updates.remove(&key) else {
             return;
         };
