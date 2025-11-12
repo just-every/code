@@ -263,7 +263,12 @@ pub fn build_model_guide_description(active_agents: &[String]) -> String {
 }
 
 pub fn model_guide_markdown() -> String {
-    AGENT_MODEL_SPECS.iter().map(model_guide_line).collect::<Vec<_>>().join("\n")
+    AGENT_MODEL_SPECS
+        .iter()
+        .filter(|spec| spec.is_enabled())
+        .map(model_guide_line)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub fn model_guide_markdown_with_custom(configured_agents: &[AgentConfig]) -> Option<String> {
