@@ -28479,10 +28479,10 @@ impl ChatWidget<'_> {
                         .unwrap_or_else(|| "unknown (inspect branch metadata)".to_string());
                     let step2 = if let Some(branch) = default_branch_for_instructions.as_ref() {
                         format!(
-                            "2. Ensure the local {branch} branch exists and is clean. If it is missing or outdated, create or update it manually before proceeding."
+                            "2. Ensure the local {branch} branch exists and is clean using non-destructive commands. Fast-forward with `git fetch origin` + `git merge --ff-only origin/{branch}` (or similar). If the branch is missing, create it without rewriting history."
                         )
                     } else {
-                        "2. Determine the correct default branch (metadata missing) and make sure it exists locally.".to_string()
+                        "2. Determine the correct default branch (metadata missing), create it if needed, and fast-forward it without using destructive resets.".to_string()
                     };
                     let step3 = if let Some(branch) = default_branch_for_instructions.as_ref() {
                         format!(
