@@ -494,6 +494,10 @@ pub(crate) enum AppEvent {
         description: Option<String>,
         command: String,
     },
+    AgentValidationFinished {
+        name: String,
+        result: Result<(), String>,
+    },
     
 }
 

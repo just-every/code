@@ -2353,6 +2353,11 @@ impl App<'_> {
                         widget.apply_agent_update(&name, enabled, args_read_only, args_write, instructions, description, command);
                     }
                 }
+                AppEvent::AgentValidationFinished { name, result } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.handle_agent_validation_finished(&name, result);
+                    }
+                }
                 AppEvent::PrefillComposer(text) => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.insert_str(&text);

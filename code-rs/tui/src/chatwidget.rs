@@ -349,6 +349,7 @@ use ratatui_image::picker::Picker;
 use std::cell::{Cell, RefCell};
 use std::sync::mpsc;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::task;
 
 fn history_cell_logging_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -778,6 +779,15 @@ struct AutoResolveDecision {
 
 const AGENTS_OVERVIEW_STATIC_ROWS: usize = 2; // spacer + "Add new agent" row
 
+#[derive(Clone)]
+struct PendingAgentUpdate {
+    cfg: AgentConfig,
+}
+
+impl PendingAgentUpdate {
+    fn key(&self) -> String { self.cfg.name.to_ascii_lowercase() }
+}
+
 pub(crate) struct ChatWidget<'a> {
     app_event_tx: AppEventSender,
     code_op_tx: UnboundedSender<Op>,
@@ -861,6 +871,7 @@ pub(crate) struct ChatWidget<'a> {
     active_plan_title: Option<String>,
     /// Runtime timing per-agent (by id) to improve visibility in the HUD
     agent_runtime: HashMap<String, AgentRuntime>,
+    pending_agent_updates: HashMap<String, PendingAgentUpdate>,
     // Sparkline data for showing agent activity (using RefCell for interior mutability)
     // Each tuple is (value, is_completed) where is_completed indicates if any agent was complete at that time
     sparkline_data: std::cell::RefCell<Vec<(u64, bool)>>,
@@ -4525,6 +4536,7 @@ impl ChatWidget<'_> {
             overall_task_status: "preparing".to_string(),
             active_plan_title: None,
             agent_runtime: HashMap::new(),
+            pending_agent_updates: HashMap::new(),
             sparkline_data: std::cell::RefCell::new(Vec::new()),
             last_sparkline_update: std::cell::RefCell::new(std::time::Instant::now()),
             stream: crate::streaming::controller::StreamController::new(config.clone()),
@@ -4849,6 +4861,7 @@ impl ChatWidget<'_> {
             overall_task_status: "preparing".to_string(),
             active_plan_title: None,
             agent_runtime: HashMap::new(),
+            pending_agent_updates: HashMap::new(),
             sparkline_data: std::cell::RefCell::new(Vec::new()),
             last_sparkline_update: std::cell::RefCell::new(std::time::Instant::now()),
             stream: crate::streaming::controller::StreamController::new(config.clone()),
@@ -17561,70 +17574,134 @@ Have we met every part of this goal and is there no further work to do?"#
             instructions: instr.clone(),
         };
 
+        let pending = PendingAgentUpdate { cfg: candidate_cfg };
         let requires_validation = !self.test_mode && existing_index.is_none();
-        if requires_validation && !self.validate_agent_candidate(&candidate_cfg) {
+        if requires_validation {
+            self.start_agent_validation(pending);
             return;
         }
 
-        let mut command_to_persist: Option<String> = None;
-        if let Some(idx) = existing_index {
-            if let Some(slot) = self.config.agents.get_mut(idx) {
-                slot.enabled = enabled;
-                slot.args_read_only = args_ro.clone();
-                slot.args_write = args_wr.clone();
-                slot.instructions = instr.clone();
-                slot.description = description.clone();
-                slot.command = resolved.clone();
-                command_to_persist = Some(resolved.clone());
-            }
-        } else {
-            self.config.agents.push(candidate_cfg);
-            command_to_persist = Some(resolved.clone());
-        }
-        // Persist asynchronously
-        if let Ok(home) = code_core::config::find_code_home() {
-            let name_s = name.to_string();
-            let (en2, ro2, wr2, ins2, desc2) = (enabled, args_ro, args_wr, instr, description);
-            let cmd2 = command_to_persist.clone();
-            tokio::spawn(async move {
-                let _ = code_core::config_edit::upsert_agent_config(
-                    &home,
-                    &name_s,
-                    Some(en2),
-                    None, // keep plain args as‑is
-                    ro2.as_deref(),
-                    wr2.as_deref(),
-                    ins2.as_deref(),
-                    desc2.as_deref(),
-                    cmd2.as_deref(),
-                )
-                .await;
-            });
-        }
-
-        self.refresh_settings_overview_rows();
+        self.commit_agent_update(pending);
     }
 
-    fn validate_agent_candidate(&mut self, cfg: &AgentConfig) -> bool {
-        let start_message = format!("🧪 Testing agent `{}` (expecting \"ok\")…", cfg.name);
-        self.push_background_tail(start_message);
-        match smoke_test_agent_blocking(cfg.clone()) {
+    fn start_agent_validation(&mut self, pending: PendingAgentUpdate) {
+        let name = pending.cfg.name.clone();
+        self.push_background_tail(format!(
+            "🧪 Testing agent `{}` (expecting \"ok\")…",
+            name
+        ));
+        self.pending_agent_updates.insert(pending.key(), pending.clone());
+        let tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let cfg = pending.cfg.clone();
+            let agent_name = cfg.name.clone();
+            let result = task::spawn_blocking(move || smoke_test_agent_blocking(cfg))
+                .await
+                .map_err(|e| format!("validation task failed: {e}"))
+                .and_then(|res| res);
+            tx.send(AppEvent::AgentValidationFinished { name: agent_name, result });
+        });
+    }
+
+    pub(crate) fn handle_agent_validation_finished(&mut self, name: &str, result: Result<(), String>) {
+        let key = name.to_ascii_lowercase();
+        let Some(pending) = self.pending_agent_updates.remove(&key) else {
+            return;
+        };
+
+        match result {
             Ok(()) => {
                 self.push_background_tail(format!(
                     "✅ Agent `{}` responded with \"ok\".",
-                    cfg.name
+                    name
                 ));
-                true
+                self.commit_agent_update(pending);
             }
             Err(err) => {
                 self.history_push_plain_state(history_cell::new_error_event(format!(
                     "❌ Agent `{}` validation failed: {}",
-                    cfg.name, err
+                    name, err
                 )));
-                self.request_redraw();
-                false
+                self.show_agent_editor_for_pending(&pending);
             }
         }
+        self.request_redraw();
+    }
+
+    fn commit_agent_update(&mut self, pending: PendingAgentUpdate) {
+        let name = pending.cfg.name.clone();
+        if let Some(slot) = self
+            .config
+            .agents
+            .iter_mut()
+            .find(|a| a.name.eq_ignore_ascii_case(&name))
+        {
+            *slot = pending.cfg.clone();
+        } else {
+            self.config.agents.push(pending.cfg.clone());
+        }
+
+        self.persist_agent_config(&pending.cfg);
+        self.refresh_settings_overview_rows();
+        self.show_agents_overview_ui();
+    }
+
+    fn persist_agent_config(&self, cfg: &AgentConfig) {
+        if let Ok(home) = code_core::config::find_code_home() {
+            let name = cfg.name.clone();
+            let enabled = cfg.enabled;
+            let ro = cfg.args_read_only.clone();
+            let wr = cfg.args_write.clone();
+            let instr = cfg.instructions.clone();
+            let desc = cfg.description.clone();
+            let command = cfg.command.clone();
+            tokio::spawn(async move {
+                let _ = code_core::config_edit::upsert_agent_config(
+                    &home,
+                    &name,
+                    Some(enabled),
+                    None,
+                    ro.as_deref(),
+                    wr.as_deref(),
+                    instr.as_deref(),
+                    desc.as_deref(),
+                    Some(command.as_str()),
+                )
+                .await;
+            });
+        }
+    }
+
+    fn show_agent_editor_for_pending(&mut self, pending: &PendingAgentUpdate) {
+        let cfg = pending.cfg.clone();
+        let app_event_tx = self.app_event_tx.clone();
+        let name_value = cfg.name.clone();
+        let enabled_value = cfg.enabled;
+        let ro = cfg.args_read_only.clone();
+        let wr = cfg.args_write.clone();
+        let instructions = cfg.instructions.clone();
+        let description = cfg.description.clone();
+        let command = cfg.command.clone();
+        let build_editor = || {
+            AgentEditorView::new(
+                name_value.clone(),
+                enabled_value,
+                ro.clone(),
+                wr.clone(),
+                instructions.clone(),
+                description.clone(),
+                command.clone(),
+                app_event_tx.clone(),
+            )
+        };
+        if self.try_set_agents_settings_agent_editor(build_editor()) {
+            self.request_redraw();
+            return;
+        }
+        self.ensure_settings_overlay_section(SettingsSection::Agents);
+        self.show_agents_overview_ui();
+        let _ = self.try_set_agents_settings_agent_editor(build_editor());
+        self.request_redraw();
     }
 
     fn resolve_agent_command(
