@@ -522,6 +522,7 @@ impl AgentsSettingsContent {
             spans.push(Span::raw(" "));
             spans.push(Span::styled(status.0.to_string(), Style::default().fg(status.1)));
 
+            let mut showed_desc = false;
             if let Some(desc) = row
                 .description
                 .as_deref()
@@ -541,13 +542,14 @@ impl AgentsSettingsContent {
                                     truncated,
                                     Style::default().fg(crate::colors::text_dim()),
                                 ));
+                                showed_desc = true;
                             }
                         }
                     }
                 }
             }
 
-            if selected {
+            if selected && !showed_desc {
                 spans.push(Span::raw("  "));
                 let hint = if !row.installed {
                     "Enter to install"
