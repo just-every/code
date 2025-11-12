@@ -49,6 +49,7 @@ pub(crate) struct AgentEditorView {
     installed: bool,
     install_hint: String,
     description_error: Option<String>,
+    name_error: Option<String>,
 }
 
 const FIELD_TOGGLE: usize = 0;
@@ -99,8 +100,13 @@ impl AgentEditorView {
             }
         };
 
-        let name_value = self.name_field.text().trim();
-        let final_name = if name_value.is_empty() { self.name.clone() } else { name_value.to_string() };
+        let trimmed_name = self.name_field.text().trim();
+        if self.name_editable && trimmed_name.is_empty() {
+            self.name_error = Some("Agent ID is required.".to_string());
+            return false;
+        }
+        self.name_error = None;
+        let final_name = if trimmed_name.is_empty() { self.name.clone() } else { trimmed_name.to_string() };
         let command_value = self.command_field.text().trim();
         let final_command = if command_value.is_empty() { self.command.clone() } else { command_value.to_string() };
         self.app_event_tx.send(AppEvent::UpdateAgentConfig {
@@ -312,6 +318,7 @@ impl AgentEditorView {
             installed: command_exists_flag,
             install_hint: String::new(),
             description_error: None,
+            name_error: None,
         };
 
         if let Some(ro) = args_read_only { v.params_ro.set_text(&ro.join(" ")); }
@@ -423,7 +430,14 @@ impl AgentEditorView {
         for _ in 0..name_box_h {
             lines.push(Line::from(""));
         }
-        lines.push(Line::from(""));
+        if let Some(err) = &self.name_error {
+            lines.push(Line::from(Span::styled(
+                err.clone(),
+                Style::default().fg(crate::colors::error()),
+            )));
+        } else {
+            lines.push(Line::from(""));
+        }
         // Reserve space for Command box
         for _ in 0..command_box_h {
             lines.push(Line::from(""));
@@ -613,14 +627,20 @@ impl<'a> BottomPaneView<'a> for AgentEditorView {
         let name_rect = Rect { x: content.x, y: content.y.saturating_add(name_offset), width: content.width, height: name_height };
         let name_rect = name_rect.intersection(*buf.area());
         if name_rect.width > 0 && name_rect.height > 0 {
+            let mut name_border = if self.field == FIELD_NAME {
+                Style::default()
+                    .fg(crate::colors::primary())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(crate::colors::border())
+            };
+            if self.name_error.is_some() {
+                name_border = name_border.fg(crate::colors::error());
+            }
             let name_block = Block::default()
                 .borders(Borders::ALL)
                 .title(Line::from(" ID "))
-                .border_style(if self.field == FIELD_NAME {
-                    Style::default().fg(crate::colors::primary()).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(crate::colors::border())
-                });
+                .border_style(name_border);
             let name_inner = name_block.inner(name_rect);
             let name_field_inner = name_inner.inner(Margin::new(1, 0));
             name_block.render(name_rect, buf);

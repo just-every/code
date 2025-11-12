@@ -184,7 +184,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         cli: "qwen",
         read_only_args: QWEN_3_CODER_READ_ONLY,
         write_args: QWEN_3_CODER_WRITE,
-        model_args: &["-m", "coder-model"],
+        model_args: &["-m", "qwen-3-coder"],
         description: "Fast and reasonably effective. Good for providing an alternative opinion as it has quite different training data to other models.",
         enabled_by_default: true,
         aliases: &["qwen", "qwen3"],
