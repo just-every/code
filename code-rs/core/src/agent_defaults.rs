@@ -33,6 +33,7 @@ const CLOUD_GPT5_CODEX_WRITE: &[&str] = &[];
 /// CLI-name lookups.
 pub const DEFAULT_AGENT_NAMES: &[&str] = &[
     "code-gpt-5-codex",
+    "code-gpt-5-codex-mini",
     "code-gpt-5",
     "claude-sonnet-4.5",
     "claude-opus-4.1",
@@ -88,6 +89,17 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         model_args: &["--model", "gpt-5-codex"],
         enabled_by_default: true,
         aliases: &["coder", "code", "codex"],
+        gating_env: None,
+    },
+    AgentModelSpec {
+        slug: "code-gpt-5-codex-mini",
+        family: "code",
+        cli: "coder",
+        read_only_args: CODE_GPT5_CODEX_READ_ONLY,
+        write_args: CODE_GPT5_CODEX_WRITE,
+        model_args: &["--model", "gpt-5-codex-mini"],
+        enabled_by_default: true,
+        aliases: &["codex-mini", "coder-mini"],
         gating_env: None,
     },
     AgentModelSpec {

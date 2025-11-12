@@ -1470,28 +1470,32 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
     let models_description = {
         let guides = [
             (
+                "code-gpt-5-codex-mini",
+                "Your primary coding agent (along with claude-sonnet-4.5). Cheap (1/4 cost), fast and very capable. Excels at implementation, refactors, multi-file edits and code review.",
+            ),
+            (
                 "claude-sonnet-4.5",
-                "Default for most coding tasks (along with code-gpt-5-codex) — excels at implementation, tool use, debugging, and testing.",
-            ),
-            (
-                "claude-opus-4.1",
-                "Prefer claude-sonnet-4.5 for most tasks, but a good fallback for complex reasoning when other attempts have failed.",
-            ),
-            (
-                "claude-haiku-4.5",
-                "Very fast model for simple tasks. Similar to gemini-2.5-flash in capability.",
+                "Front line for coding tasks (along with code-gpt-5-codex-mini). Excels at implementation, tool use, debugging, and testing.",
             ),
             (
                 "code-gpt-5-codex",
-                "Default for most coding tasks (along with claude-sonnet-4.5) - excels at implementation, refactors, multi-file edits and code review.",
+                "Backup for complex coding tasks (along with claude-opus-4.1). Slower and more expensive, but slightly more capable if code-gpt-5-codex-mini did not succeed.",
+            ),
+            (
+                "claude-opus-4.1",
+                "Backup for complex coding tasks (along with code-gpt-5-codex). Slower and more expensive, but slightly more capable if claude-sonnet-4.5 did not succeed.",
+            ),
+            (
+                "gemini-2.5-pro",
+                "Use when you require huge context or multimodal grounding (repo-scale inputs, or search grounding); good for alternative architecture opinions.",
             ),
             (
                 "code-gpt-5",
                 "Use for UI/UX or mixed tasks where explanation, design judgment, or multi-domain reasoning is equally important as code.",
             ),
             (
-                "gemini-2.5-pro",
-                "Use when you require huge context or multimodal grounding (repo-scale inputs, or search grounding); good for alternative architecture opinions.",
+                "claude-haiku-4.5",
+                "Very fast model for simple tasks. Similar to gemini-2.5-flash in capability.",
             ),
             (
                 "gemini-2.5-flash",
