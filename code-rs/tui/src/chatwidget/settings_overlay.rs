@@ -392,7 +392,7 @@ struct AgentsOverviewState {
 
 impl AgentsOverviewState {
     fn total_rows(&self) -> usize {
-        self.rows.len().saturating_add(self.commands.len()).saturating_add(1)
+        self.rows.len().saturating_add(self.commands.len()).saturating_add(2)
     }
 
     fn clamp_selection(&mut self) {
@@ -563,13 +563,45 @@ impl AgentsSettingsContent {
         }
 
         lines.push(Line::from(""));
+
+        let add_agent_idx = state.rows.len();
+        let add_agent_selected = add_agent_idx == state.selected;
+        let mut add_spans: Vec<Span<'static>> = Vec::new();
+        add_spans.push(Span::styled(
+            if add_agent_selected { "› " } else { "  " },
+            if add_agent_selected {
+                Style::default().fg(crate::colors::primary())
+            } else {
+                Style::default()
+            },
+        ));
+        add_spans.push(Span::styled(
+            "Add new agent…",
+            if add_agent_selected {
+                Style::default()
+                    .fg(crate::colors::primary())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            },
+        ));
+        if add_agent_selected {
+            add_spans.push(Span::raw("  "));
+            add_spans.push(Span::styled(
+                "Enter to configure",
+                Style::default().fg(crate::colors::text_dim()),
+            ));
+        }
+        lines.push(Line::from(add_spans));
+
+        lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "Commands",
             Style::default().add_modifier(Modifier::BOLD),
         )));
 
         for (offset, cmd) in state.commands.iter().enumerate() {
-            let idx = state.rows.len() + offset;
+            let idx = state.rows.len() + 1 + offset;
             let selected = idx == state.selected;
             let mut spans = Vec::new();
             spans.push(Span::styled(
@@ -600,7 +632,7 @@ impl AgentsSettingsContent {
             lines.push(Line::from(spans));
         }
 
-        let add_idx = state.rows.len() + state.commands.len();
+        let add_idx = state.rows.len() + 1 + state.commands.len();
         let add_selected = add_idx == state.selected;
         let mut add_spans = Vec::new();
         add_spans.push(Span::styled(
@@ -693,20 +725,23 @@ impl AgentsSettingsContent {
                 true
             }
             KeyCode::Enter => {
-                let idx = state.selected;
-                if idx < state.rows.len() {
-                    let row = &state.rows[idx];
-                    if !row.installed {
-                        app_event_tx
-                            .send(AppEvent::RequestAgentInstall { name: row.name.clone(), selected_index: idx });
-                    } else {
-                        app_event_tx
-                            .send(AppEvent::ShowAgentEditor { name: row.name.clone() });
+            let idx = state.selected;
+            let add_agent_idx = state.rows.len();
+            if idx == add_agent_idx {
+                app_event_tx.send(AppEvent::ShowAgentEditorNew);
+            } else if idx < add_agent_idx {
+                let row = &state.rows[idx];
+                if !row.installed {
+                    app_event_tx
+                        .send(AppEvent::RequestAgentInstall { name: row.name.clone(), selected_index: idx });
+                } else {
+                    app_event_tx
+                        .send(AppEvent::ShowAgentEditor { name: row.name.clone() });
                     }
                 } else {
-                    let cmd_idx = idx.saturating_sub(state.rows.len());
-                    if cmd_idx < state.commands.len() {
-                        if let Some(name) = state.commands.get(cmd_idx) {
+                let cmd_idx = idx.saturating_sub(state.rows.len() + 1);
+                if cmd_idx < state.commands.len() {
+                    if let Some(name) = state.commands.get(cmd_idx) {
                             app_event_tx
                                 .send(AppEvent::ShowSubagentEditorForName { name: name.clone() });
                         }

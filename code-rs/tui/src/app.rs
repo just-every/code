@@ -2266,6 +2266,12 @@ impl App<'_> {
                         widget.show_agent_editor_ui(name);
                     }
                 }
+                AppEvent::ShowAgentEditorNew => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.ensure_settings_overlay_section(SettingsSection::Agents);
+                        widget.show_agent_editor_new_ui();
+                    }
+                }
                 AppEvent::UpdateModelSelection { model, effort } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.apply_model_selection(model, effort);

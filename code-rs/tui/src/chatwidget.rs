@@ -17454,6 +17454,32 @@ Have we met every part of this goal and is there no further work to do?"#
         }
     }
 
+    pub(crate) fn show_agent_editor_new_ui(&mut self) {
+        let app_event_tx = self.app_event_tx.clone();
+        let build_editor = || {
+            AgentEditorView::new(
+                String::new(),
+                true,
+                None,
+                None,
+                None,
+                None,
+                String::new(),
+                app_event_tx.clone(),
+            )
+        };
+
+        if self.try_set_agents_settings_agent_editor(build_editor()) {
+            self.request_redraw();
+            return;
+        }
+
+        self.ensure_settings_overlay_section(SettingsSection::Agents);
+        self.show_agents_overview_ui();
+        let _ = self.try_set_agents_settings_agent_editor(build_editor());
+        self.request_redraw();
+    }
+
     pub(crate) fn apply_subagent_update(
         &mut self,
         cmd: code_core::config_types::SubagentCommandConfig,

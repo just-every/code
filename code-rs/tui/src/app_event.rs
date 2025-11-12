@@ -312,6 +312,8 @@ pub(crate) enum AppEvent {
     ShowAgentsOverview,
     /// Open the agent editor form for a specific agent name
     ShowAgentEditor { name: String },
+    /// Open a blank agent editor form for adding a new agent
+    ShowAgentEditorNew,
     // ShowSubagentEditor removed; use ShowSubagentEditorForName or ShowSubagentEditorNew
     /// Open the subagent editor for a specific command name; ChatWidget supplies data
     ShowSubagentEditorForName { name: String },

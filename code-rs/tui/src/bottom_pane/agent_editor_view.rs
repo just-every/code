@@ -11,32 +11,39 @@ use crate::app_event_sender::AppEventSender;
 use crate::agent_install_helpers::macos_brew_formula_for_command;
 
 use super::bottom_pane_view::BottomPaneView;
-use super::form_text_field::FormTextField;
+use super::form_text_field::{FormTextField, InputFilter};
 use super::BottomPane;
 
 #[derive(Debug)]
 struct AgentEditorLayout {
     lines: Vec<Line<'static>>,
+    name_offset: u16,
+    command_offset: u16,
     ro_offset: u16,
     wr_offset: u16,
     instr_offset: u16,
     ro_height: u16,
     wr_height: u16,
     instr_height: u16,
+    name_height: u16,
+    command_height: u16,
 }
 
 #[derive(Debug)]
 pub(crate) struct AgentEditorView {
     name: String,
+    name_field: FormTextField,
+    name_editable: bool,
     enabled: bool,
+    command: String,
+    command_field: FormTextField,
     params_ro: FormTextField,
     params_wr: FormTextField,
     instr: FormTextField,
-    field: usize, // 0 toggle, 1 ro, 2 wr, 3 instr, 4 save, 5 cancel
+    field: usize, // 0 toggle, 1 name, 2 command, 3 ro, 4 wr, 5 instr, 6 save, 7 cancel
     complete: bool,
     app_event_tx: AppEventSender,
     installed: bool,
-    command: String,
     description: Option<String>,
     install_hint: String,
 }
@@ -62,13 +69,17 @@ impl AgentEditorView {
             if t.is_empty() { None } else { Some(t) }
         };
 
+        let name_value = self.name_field.text().trim();
+        let final_name = if name_value.is_empty() { self.name.clone() } else { name_value.to_string() };
+        let command_value = self.command_field.text().trim();
+        let final_command = if command_value.is_empty() { self.command.clone() } else { command_value.to_string() };
         self.app_event_tx.send(AppEvent::UpdateAgentConfig {
-            name: self.name.clone(),
+            name: final_name,
             enabled: self.enabled,
             args_read_only: ro_opt,
             args_write: wr_opt,
             instructions: instr_opt,
-            command: self.command.clone(),
+            command: final_command,
         });
     }
 
@@ -82,10 +93,21 @@ impl AgentEditorView {
                 _ => false,
             }
         } else {
+            let last_field_idx = 7;
             match key_event {
                 KeyEvent { code: KeyCode::Esc, .. } => {
                     self.complete = true;
                     self.app_event_tx.send(AppEvent::ShowAgentsOverview);
+                    true
+                }
+                KeyEvent { code: KeyCode::Tab, .. } => {
+                    self.field = (self.field + 1).min(last_field_idx);
+                    true
+                }
+                KeyEvent { code: KeyCode::BackTab, .. } => {
+                    if self.field > 0 {
+                        self.field -= 1;
+                    }
                     true
                 }
                 KeyEvent { code: KeyCode::Up, .. } => {
@@ -95,7 +117,7 @@ impl AgentEditorView {
                     true
                 }
                 KeyEvent { code: KeyCode::Down, .. } => {
-                    self.field = (self.field + 1).min(5);
+                    self.field = (self.field + 1).min(last_field_idx);
                     true
                 }
                 KeyEvent { code: KeyCode::Left, .. } if self.field == 0 => {
@@ -108,38 +130,40 @@ impl AgentEditorView {
                     self.persist_current_agent();
                     true
                 }
-                KeyEvent { code: KeyCode::Left, .. } if self.field == 5 => {
-                    self.field = 4;
-                    true
-                }
-                KeyEvent { code: KeyCode::Right, .. } if self.field == 4 => {
-                    self.field = 5;
-                    true
-                }
                 KeyEvent { code: KeyCode::Char(' '), .. } if self.field == 0 => {
                     self.enabled = !self.enabled;
                     self.persist_current_agent();
                     true
                 }
                 ev @ KeyEvent { .. } if self.field == 1 => {
-                    let _ = self.params_ro.handle_key(ev);
+                    if self.name_editable {
+                        let _ = self.name_field.handle_key(ev);
+                    }
                     true
                 }
                 ev @ KeyEvent { .. } if self.field == 2 => {
-                    let _ = self.params_wr.handle_key(ev);
+                    let _ = self.command_field.handle_key(ev);
                     true
                 }
                 ev @ KeyEvent { .. } if self.field == 3 => {
+                    let _ = self.params_ro.handle_key(ev);
+                    true
+                }
+                ev @ KeyEvent { .. } if self.field == 4 => {
+                    let _ = self.params_wr.handle_key(ev);
+                    true
+                }
+                ev @ KeyEvent { .. } if self.field == 5 => {
                     let _ = self.instr.handle_key(ev);
                     true
                 }
-                KeyEvent { code: KeyCode::Enter, .. } if self.field == 4 => {
+                KeyEvent { code: KeyCode::Enter, .. } if self.field == 6 => {
                     self.persist_current_agent();
                     self.complete = true;
                     self.app_event_tx.send(AppEvent::ShowAgentsOverview);
                     true
                 }
-                KeyEvent { code: KeyCode::Enter, .. } if self.field == 5 => {
+                KeyEvent { code: KeyCode::Enter, .. } if self.field == 7 => {
                     self.complete = true;
                     self.app_event_tx.send(AppEvent::ShowAgentsOverview);
                     true
@@ -221,17 +245,27 @@ impl AgentEditorView {
                 }
             });
 
+        let name_editable = name.is_empty();
+        let mut name_field = FormTextField::new_single_line();
+        name_field.set_text(&name);
+        name_field.set_filter(InputFilter::Id);
+        let mut command_field = FormTextField::new_single_line();
+        command_field.set_text(&command);
+        let command_exists_flag = command_exists(&command);
         let mut v = Self {
             name,
+            name_field,
+            name_editable,
             enabled,
+            command: command.clone(),
+            command_field,
             params_ro: FormTextField::new_multi_line(),
             params_wr: FormTextField::new_multi_line(),
             instr: FormTextField::new_multi_line(),
             field: 0,
             complete: false,
             app_event_tx,
-            installed: command_exists(&command),
-            command,
+            installed: command_exists_flag,
             description: trimmed_description,
             install_hint: String::new(),
         };
@@ -274,6 +308,8 @@ impl AgentEditorView {
             .filter(|value| !value.is_empty())
             .map(|value| value.to_string());
         let desc_block = if desc_text.is_some() { 2 } else { 0 };
+        let name_box_h: u16 = 3;
+        let command_box_h: u16 = 3;
         let top_block = title_block + desc_block;
         let enabled_block: u16 = 2; // toggle row + spacer
         let instr_desc_lines: u16 = 1; // description row after box
@@ -282,6 +318,10 @@ impl AgentEditorView {
         let footer_lines_default: u16 = 0;
 
         let base_fixed_top = top_block
+            + name_box_h
+            + 1
+            + command_box_h
+            + 1
             + enabled_block
             + ro_box_h
             + 1 // blank after read-only box
@@ -320,23 +360,35 @@ impl AgentEditorView {
             }
         };
 
+        let name_offset = top_block;
+        let command_offset = name_offset + name_box_h + 1;
+        let toggle_offset = command_offset + command_box_h + 1;
+        let ro_offset = toggle_offset + enabled_block;
+        let wr_offset = ro_offset + ro_box_h + 1;
+        let instr_offset = wr_offset + wr_box_h + 1;
         let mut lines: Vec<Line<'static>> = Vec::new();
-        let mut cursor: u16 = 0;
 
         // Title, spacer
         lines.push(Line::from(Span::styled(
             format!("Agents » Edit Agent » {}", self.name),
             Style::default().add_modifier(Modifier::BOLD),
         )));
-        cursor = cursor.saturating_add(1);
         lines.push(Line::from(""));
-        cursor = cursor.saturating_add(1);
         if let Some(desc_line) = &desc_text {
             lines.push(Line::from(Span::styled(desc_line.clone(), desc_style)));
-            cursor = cursor.saturating_add(1);
             lines.push(Line::from(""));
-            cursor = cursor.saturating_add(1);
         }
+
+        // Reserve space for Name box
+        for _ in 0..name_box_h {
+            lines.push(Line::from(""));
+        }
+        lines.push(Line::from(""));
+        // Reserve space for Command box
+        for _ in 0..command_box_h {
+            lines.push(Line::from(""));
+        }
+        lines.push(Line::from(""));
 
         // Enabled toggle + spacer
         let enabled_style = if self.enabled {
@@ -369,33 +421,23 @@ impl AgentEditorView {
             Span::raw("  "),
             Span::styled(disabled_text, disabled_style),
         ]));
-        cursor = cursor.saturating_add(1);
         lines.push(Line::from(""));
-        cursor = cursor.saturating_add(1);
 
         // Read-only params box
-        let ro_offset = cursor;
         for _ in 0..ro_box_h {
             lines.push(Line::from(""));
-            cursor = cursor.saturating_add(1);
         }
         lines.push(Line::from(""));
-        cursor = cursor.saturating_add(1);
 
         // Write params box
-        let wr_offset = cursor;
         for _ in 0..wr_box_h {
             lines.push(Line::from(""));
-            cursor = cursor.saturating_add(1);
         }
         lines.push(Line::from(""));
-        cursor = cursor.saturating_add(1);
 
         // Instructions box
-        let instr_offset = cursor;
         for _ in 0..instr_box_h {
             lines.push(Line::from(""));
-            cursor = cursor.saturating_add(1);
         }
         lines.push(Line::from(Span::styled(
             "Optional guidance prepended to every request sent to the agent.",
@@ -407,8 +449,8 @@ impl AgentEditorView {
         if include_gap_before_buttons {
             lines.push(Line::from(""));
         }
-        let save_style = sel(4).fg(crate::colors::success());
-        let cancel_style = sel(5).fg(crate::colors::text());
+        let save_style = sel(6).fg(crate::colors::success());
+        let cancel_style = sel(7).fg(crate::colors::text());
         lines.push(Line::from(vec![
             Span::styled("[ Save ]", save_style),
             Span::raw("  "),
@@ -423,20 +465,20 @@ impl AgentEditorView {
         {
             lines.pop();
         }
-        cursor = lines.len() as u16;
-
         // No footer hints in the editor form
-
-        debug_assert_eq!(cursor as usize, lines.len());
 
         AgentEditorLayout {
             lines,
+            name_offset,
+            command_offset,
             ro_offset,
             wr_offset,
             instr_offset,
             ro_height: ro_box_h,
             wr_height: wr_box_h,
             instr_height: instr_box_h,
+            name_height: name_box_h,
+            command_height: command_box_h,
         }
     }
 }
@@ -490,13 +532,63 @@ impl<'a> BottomPaneView<'a> for AgentEditorView {
         }
 
         let layout = self.layout(content.width, Some(content.height));
-        let AgentEditorLayout { lines, ro_offset, wr_offset, instr_offset, ro_height, wr_height, instr_height } = layout;
+        let AgentEditorLayout {
+            lines,
+            name_offset,
+            command_offset,
+            ro_offset,
+            wr_offset,
+            instr_offset,
+            ro_height,
+            wr_height,
+            instr_height,
+            name_height,
+            command_height,
+        } = layout;
 
         Paragraph::new(lines)
             .alignment(Alignment::Left)
             .wrap(ratatui::widgets::Wrap { trim: false })
             .style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()))
             .render(content, buf);
+
+        // Draw name and command boxes
+        let name_rect = Rect { x: content.x, y: content.y.saturating_add(name_offset), width: content.width, height: name_height };
+        let name_rect = name_rect.intersection(*buf.area());
+        if name_rect.width > 0 && name_rect.height > 0 {
+            let name_block = Block::default()
+                .borders(Borders::ALL)
+                .title(Line::from(" ID "))
+                .border_style(if self.field == 1 {
+                    Style::default().fg(crate::colors::primary()).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(crate::colors::border())
+                });
+            let name_inner = name_block.inner(name_rect);
+            let name_field_inner = name_inner.inner(Margin::new(1, 0));
+            name_block.render(name_rect, buf);
+            Self::clear_rect(buf, name_inner);
+            self.name_field
+                .render(name_field_inner, buf, self.field == 1 && self.name_editable);
+        }
+
+        let command_rect = Rect { x: content.x, y: content.y.saturating_add(command_offset), width: content.width, height: command_height };
+        let command_rect = command_rect.intersection(*buf.area());
+        if command_rect.width > 0 && command_rect.height > 0 {
+            let command_block = Block::default()
+                .borders(Borders::ALL)
+                .title(Line::from(" Command "))
+                .border_style(if self.field == 2 {
+                    Style::default().fg(crate::colors::primary()).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(crate::colors::border())
+                });
+            let command_inner = command_block.inner(command_rect);
+            let command_field_inner = command_inner.inner(Margin::new(1, 0));
+            command_block.render(command_rect, buf);
+            Self::clear_rect(buf, command_inner);
+            self.command_field.render(command_field_inner, buf, self.field == 2);
+        }
 
         // Draw input boxes at the same y offsets we reserved above
         let ro_rect = Rect { x: content.x, y: content.y.saturating_add(ro_offset), width: content.width, height: ro_height };
