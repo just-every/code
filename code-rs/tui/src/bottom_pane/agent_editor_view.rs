@@ -251,7 +251,7 @@ impl AgentEditorView {
         name_field.set_filter(InputFilter::Id);
         let mut command_field = FormTextField::new_single_line();
         command_field.set_text(&command);
-        let command_exists_flag = command_exists(&command);
+        let command_exists_flag = !command.trim().is_empty() && command_exists(&command);
         let mut v = Self {
             name,
             name_field,
@@ -275,15 +275,17 @@ impl AgentEditorView {
         if let Some(s) = instructions { v.instr.set_text(&s); v.instr.move_cursor_to_start(); }
 
         // OS-specific short hint
-        #[cfg(target_os = "macos")]
-        {
-            let brew_formula = macos_brew_formula_for_command(&v.command);
-            v.install_hint = format!("'{}' not found. On macOS, try Homebrew (brew install {brew_formula}) or consult the agent's docs.", v.command);
+        if !v.command.trim().is_empty() {
+            #[cfg(target_os = "macos")]
+            {
+                let brew_formula = macos_brew_formula_for_command(&v.command);
+                v.install_hint = format!("'{}' not found. On macOS, try Homebrew (brew install {brew_formula}) or consult the agent's docs.", v.command);
+            }
+            #[cfg(target_os = "linux")]
+            { v.install_hint = format!("'{}' not found. On Linux, install via your package manager or consult the agent's docs.", v.command); }
+            #[cfg(target_os = "windows")]
+            { v.install_hint = format!("'{}' not found. On Windows, install the CLI from the vendor site and ensure it’s on PATH.", v.command); }
         }
-        #[cfg(target_os = "linux")]
-        { v.install_hint = format!("'{}' not found. On Linux, install via your package manager or consult the agent's docs.", v.command); }
-        #[cfg(target_os = "windows")]
-        { v.install_hint = format!("'{}' not found. On Windows, install the CLI from the vendor site and ensure it’s on PATH.", v.command); }
 
         v
     }
@@ -509,7 +511,7 @@ impl<'a> BottomPaneView<'a> for AgentEditorView {
 
         let content = Rect { x: inner.x.saturating_add(1), y: inner.y, width: inner.width.saturating_sub(2), height: inner.height };
 
-        if !self.installed {
+        if !self.installed && !self.command.trim().is_empty() {
             let mut lines: Vec<Line<'static>> = Vec::new();
             lines.push(Line::from(Span::styled("Not installed", Style::default().fg(crate::colors::warning()).add_modifier(Modifier::BOLD))));
             lines.push(Line::from(Span::styled(self.install_hint.clone(), Style::default().fg(crate::colors::text_dim()))));
@@ -596,13 +598,13 @@ impl<'a> BottomPaneView<'a> for AgentEditorView {
         let ro_block = Block::default()
             .borders(Borders::ALL)
             .title(Line::from(" Read-only Params "))
-            .border_style(if self.field == 1 { Style::default().fg(crate::colors::primary()).add_modifier(Modifier::BOLD) } else { Style::default().fg(crate::colors::border()) });
+            .border_style(if self.field == 3 { Style::default().fg(crate::colors::primary()).add_modifier(Modifier::BOLD) } else { Style::default().fg(crate::colors::border()) });
         if ro_rect.width > 0 && ro_rect.height > 0 {
             let ro_inner_rect = ro_block.inner(ro_rect);
             let ro_inner = ro_inner_rect.inner(Margin::new(1, 0));
             ro_block.render(ro_rect, buf);
             Self::clear_rect(buf, ro_inner_rect);
-            self.params_ro.render(ro_inner, buf, self.field == 1);
+            self.params_ro.render(ro_inner, buf, self.field == 3);
         }
 
         // WR params box (3 rows)
@@ -611,13 +613,13 @@ impl<'a> BottomPaneView<'a> for AgentEditorView {
         let wr_block = Block::default()
             .borders(Borders::ALL)
             .title(Line::from(" Write Params "))
-            .border_style(if self.field == 2 { Style::default().fg(crate::colors::primary()).add_modifier(Modifier::BOLD) } else { Style::default().fg(crate::colors::border()) });
+            .border_style(if self.field == 4 { Style::default().fg(crate::colors::primary()).add_modifier(Modifier::BOLD) } else { Style::default().fg(crate::colors::border()) });
         if wr_rect.width > 0 && wr_rect.height > 0 {
             let wr_inner_rect = wr_block.inner(wr_rect);
             let wr_inner = wr_inner_rect.inner(Margin::new(1, 0));
             wr_block.render(wr_rect, buf);
             Self::clear_rect(buf, wr_inner_rect);
-            self.params_wr.render(wr_inner, buf, self.field == 2);
+            self.params_wr.render(wr_inner, buf, self.field == 4);
         }
 
         // Instructions (multi-line; height consistent with reserved space above)
@@ -626,13 +628,13 @@ impl<'a> BottomPaneView<'a> for AgentEditorView {
         let instr_block = Block::default()
             .borders(Borders::ALL)
             .title(Line::from(" Instructions "))
-            .border_style(if self.field == 3 { Style::default().fg(crate::colors::primary()).add_modifier(Modifier::BOLD) } else { Style::default().fg(crate::colors::border()) });
+            .border_style(if self.field == 5 { Style::default().fg(crate::colors::primary()).add_modifier(Modifier::BOLD) } else { Style::default().fg(crate::colors::border()) });
         if instr_rect.width > 0 && instr_rect.height > 0 {
             let instr_inner_rect = instr_block.inner(instr_rect);
             let instr_inner = instr_inner_rect.inner(Margin::new(1, 0));
             instr_block.render(instr_rect, buf);
             Self::clear_rect(buf, instr_inner_rect);
-            self.instr.render(instr_inner, buf, self.field == 3);
+            self.instr.render(instr_inner, buf, self.field == 5);
         }
     }
 }
