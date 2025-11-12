@@ -41,6 +41,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use once_cell::sync::Lazy;
+use std::sync::Once;
+use tracing_subscriber::{self, EnvFilter};
 use tempfile::TempDir;
 
 fn normalize_output(text: String) -> String {
@@ -54,6 +56,15 @@ fn normalize_output(text: String) -> String {
         .pipe(normalize_agent_history_details)
         .pipe(normalize_spacer_rows)
         .pipe(normalize_trailing_whitespace)
+}
+
+fn init_tracing_once() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            .try_init();
+    });
 }
 
 fn normalize_ellipsis(text: String) -> String {
@@ -1113,6 +1124,81 @@ fn scroll_spacing_remains_when_scrolled_up() {
         "scroll_spacing_scrolled_intact",
         scrolled
     );
+}
+
+#[test]
+fn multiline_final_history_line_visible_at_bottom() {
+    init_tracing_once();
+    let mut harness = ChatWidgetHarness::new();
+
+    for idx in 0..4 {
+        harness.push_user_prompt(format!("User prompt #{idx}: request status"));
+        harness.push_assistant_markdown(format!(
+            "Assistant response #{idx} line one explains the current task.\nLine two adds more detail for idx {idx}.\nLine three keeps the history tall."
+        ));
+    }
+
+    harness.push_user_prompt("Summarize next actions");
+    harness.push_assistant_markdown(
+        "Summary line one keeps context flowing.\nSummary line two clarifies blockers.\nSummary line three references the fix.\nFINAL ROW SENTINEL -- ensure this stays visible.",
+    );
+
+    // Initial render computes layout metrics (including max scroll) for the scenario.
+    let _ = render_chat_widget_to_vt100(&mut harness, 60, 14);
+    let metrics = harness_layout_metrics(&harness);
+    assert!(
+        metrics.last_max_scroll > 0,
+        "scenario must overflow history viewport to exercise bottom-aligned rendering"
+    );
+
+    // Reset scroll offset to show the most recent content (bottom of history).
+    harness_force_scroll_offset(&mut harness, 0);
+    let frame = normalize_output(render_chat_widget_to_vt100(&mut harness, 60, 14));
+
+    assert!(
+        frame.contains("FINAL ROW SENTINEL -- ensure this stays visible."),
+        "final assistant line disappeared when scrolled to bottom:\n{}",
+        frame
+    );
+}
+
+fn build_history_for_final_line_case(harness: &mut ChatWidgetHarness, blocks: usize) {
+    for idx in 0..blocks {
+        harness.push_user_prompt(format!("User prompt #{idx}: please summarize batch {idx}"));
+        harness.push_assistant_markdown(format!(
+            "Assistant response #{idx} line one.\nLine two expands context for block {idx}.\nLine three keeps the transcript tall."
+        ));
+    }
+
+    harness.push_user_prompt("Summarize next actions");
+    harness.push_assistant_markdown(
+        "Summary line one keeps context flowing.\nSummary line two clarifies blockers.\nSummary line three references the fix.\nFINAL ROW SENTINEL -- ensure this stays visible.",
+    );
+}
+
+fn assert_final_line_visible(mut harness: ChatWidgetHarness, viewport_height: u16) {
+    let _ = render_chat_widget_to_vt100(&mut harness, 60, viewport_height);
+    if harness.history_viewport_height() == 0 {
+        // Nothing to render; composer consumes all rows. Skip this viewport.
+        return;
+    }
+    harness_force_scroll_offset(&mut harness, 0);
+    let frame = normalize_output(render_chat_widget_to_vt100(&mut harness, 60, viewport_height));
+    assert!(
+        frame.contains("FINAL ROW SENTINEL -- ensure this stays visible."),
+        "final assistant line disappeared for viewport {viewport_height}:\n{}",
+        frame
+    );
+}
+
+#[test]
+fn final_history_line_visible_across_viewports() {
+    init_tracing_once();
+    for viewport in 6..=12 {
+        let mut harness = ChatWidgetHarness::new();
+        build_history_for_final_line_case(&mut harness, 6);
+        assert_final_line_visible(harness, viewport);
+    }
 }
 
 #[test]
