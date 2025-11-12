@@ -49,6 +49,9 @@ pub(crate) struct AgentEditorView {
 }
 
 impl AgentEditorView {
+    fn editor_active(&self) -> bool {
+        self.installed || self.command.trim().is_empty()
+    }
     fn persist_current_agent(&self) {
         let ro = self
             .params_ro
@@ -84,7 +87,7 @@ impl AgentEditorView {
     }
 
     fn handle_key_internal(&mut self, key_event: KeyEvent) -> bool {
-        if !self.installed {
+        if !self.editor_active() {
             match key_event.code {
                 KeyCode::Esc | KeyCode::Enter => {
                     self.complete = true;
@@ -262,7 +265,7 @@ impl AgentEditorView {
             params_ro: FormTextField::new_multi_line(),
             params_wr: FormTextField::new_multi_line(),
             instr: FormTextField::new_multi_line(),
-            field: 0,
+            field: if name_editable { 1 } else { 0 },
             complete: false,
             app_event_tx,
             installed: command_exists_flag,
@@ -511,7 +514,7 @@ impl<'a> BottomPaneView<'a> for AgentEditorView {
 
         let content = Rect { x: inner.x.saturating_add(1), y: inner.y, width: inner.width.saturating_sub(2), height: inner.height };
 
-        if !self.installed && !self.command.trim().is_empty() {
+        if !self.editor_active() {
             let mut lines: Vec<Line<'static>> = Vec::new();
             lines.push(Line::from(Span::styled("Not installed", Style::default().fg(crate::colors::warning()).add_modifier(Modifier::BOLD))));
             lines.push(Line::from(Span::styled(self.install_hint.clone(), Style::default().fg(crate::colors::text_dim()))));
