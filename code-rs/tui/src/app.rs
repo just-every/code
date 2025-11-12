@@ -2348,9 +2348,9 @@ impl App<'_> {
                         widget.show_new_subagent_editor();
                     }
                 }
-                AppEvent::UpdateAgentConfig { name, enabled, args_read_only, args_write, instructions, command } => {
+                AppEvent::UpdateAgentConfig { name, enabled, args_read_only, args_write, instructions, description, command } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.apply_agent_update(&name, enabled, args_read_only, args_write, instructions, command);
+                        widget.apply_agent_update(&name, enabled, args_read_only, args_write, instructions, description, command);
                     }
                 }
                 AppEvent::PrefillComposer(text) => {

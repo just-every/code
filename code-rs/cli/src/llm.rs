@@ -6,6 +6,7 @@ use code_core::config::Config;
 use code_core::config::ConfigOverrides;
 use code_core::ModelClient;
 use code_core::ModelProviderInfo;
+use code_core::agent_defaults::model_guide_markdown_with_custom;
 use code_core::AuthManager;
 use code_core::Prompt;
 use code_core::TextFormat;
@@ -125,6 +126,9 @@ async fn run_llm_request(
     prompt.status_items = vec![];
     prompt.base_instructions_override = None;
     prompt.text_format = Some(text_format);
+    if let Some(custom) = model_guide_markdown_with_custom(&config.agents) {
+        prompt.model_descriptions = Some(custom);
+    }
     prompt.set_log_tag("cli/manual_prompt");
 
     // Auth + provider

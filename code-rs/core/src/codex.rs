@@ -817,6 +817,7 @@ mod tests {
 use crate::agent_tool::AGENT_MANAGER;
 use crate::agent_tool::AgentStatus;
 use crate::agent_tool::AgentToolRequest;
+use crate::agent_defaults::model_guide_markdown_with_custom;
 use crate::agent_tool::CancelAgentParams;
 use crate::agent_tool::CheckAgentStatusParams;
 use crate::agent_tool::GetAgentResultParams;
@@ -1381,6 +1382,7 @@ pub(crate) struct Session {
     next_turn_text_format: Mutex<Option<TextFormat>>,
     env_ctx_v2: bool,
     retention_config: crate::config_types::RetentionConfig,
+    model_descriptions: Option<String>,
 }
 
 struct HookGuard<'a> {
@@ -4497,6 +4499,7 @@ async fn submission_loop(
                 agent_models.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
                 tools_config.set_agent_models(agent_models);
 
+                let model_descriptions = model_guide_markdown_with_custom(&config.agents);
                 let mut new_session = Arc::new(Session {
                     id: session_id,
                     client,
@@ -4535,6 +4538,7 @@ async fn submission_loop(
                     next_turn_text_format: Mutex::new(None),
                     env_ctx_v2: config.env_ctx_v2,
                     retention_config: config.retention.clone(),
+                    model_descriptions,
                 });
                 let weak_handle = Arc::downgrade(&new_session);
                 if let Some(inner) = Arc::get_mut(&mut new_session) {
@@ -5546,6 +5550,7 @@ async fn run_turn(
             output_schema: None,
             log_tag: Some("codex/turn".to_string()),
             session_id_override: None,
+            model_descriptions: sess.model_descriptions.clone(),
         };
 
         // Start a new scratchpad for this HTTP attempt

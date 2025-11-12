@@ -21,9 +21,11 @@ struct AgentEditorLayout {
     command_offset: u16,
     ro_offset: u16,
     wr_offset: u16,
+    desc_offset: u16,
     instr_offset: u16,
     ro_height: u16,
     wr_height: u16,
+    desc_height: u16,
     instr_height: u16,
     name_height: u16,
     command_height: u16,
@@ -39,20 +41,31 @@ pub(crate) struct AgentEditorView {
     command_field: FormTextField,
     params_ro: FormTextField,
     params_wr: FormTextField,
+    description_field: FormTextField,
     instr: FormTextField,
-    field: usize, // 0 toggle, 1 name, 2 command, 3 ro, 4 wr, 5 instr, 6 save, 7 cancel
+    field: usize, // see FIELD_* constants below
     complete: bool,
     app_event_tx: AppEventSender,
     installed: bool,
-    description: Option<String>,
     install_hint: String,
+    description_error: Option<String>,
 }
+
+const FIELD_TOGGLE: usize = 0;
+const FIELD_NAME: usize = 1;
+const FIELD_COMMAND: usize = 2;
+const FIELD_READ_ONLY: usize = 3;
+const FIELD_WRITE: usize = 4;
+const FIELD_DESCRIPTION: usize = 5;
+const FIELD_INSTRUCTIONS: usize = 6;
+const FIELD_SAVE: usize = 7;
+const FIELD_CANCEL: usize = 8;
 
 impl AgentEditorView {
     fn editor_active(&self) -> bool {
         self.installed || self.command.trim().is_empty()
     }
-    fn persist_current_agent(&self) {
+    fn persist_current_agent(&mut self, require_description: bool) -> bool {
         let ro = self
             .params_ro
             .text()
@@ -71,6 +84,20 @@ impl AgentEditorView {
             let t = self.instr.text().trim().to_string();
             if t.is_empty() { None } else { Some(t) }
         };
+        let desc_opt = {
+            let t = self.description_field.text().trim().to_string();
+            if t.is_empty() {
+                if require_description {
+                    self.description_error = Some("Describe what this agent is good at before saving.".to_string());
+                    return false;
+                }
+                self.description_error = None;
+                None
+            } else {
+                self.description_error = None;
+                Some(t)
+            }
+        };
 
         let name_value = self.name_field.text().trim();
         let final_name = if name_value.is_empty() { self.name.clone() } else { name_value.to_string() };
@@ -82,8 +109,10 @@ impl AgentEditorView {
             args_read_only: ro_opt,
             args_write: wr_opt,
             instructions: instr_opt,
+            description: desc_opt,
             command: final_command,
         });
+        true
     }
 
     fn handle_key_internal(&mut self, key_event: KeyEvent) -> bool {
@@ -96,7 +125,7 @@ impl AgentEditorView {
                 _ => false,
             }
         } else {
-            let last_field_idx = 7;
+            let last_field_idx = FIELD_CANCEL;
             match key_event {
                 KeyEvent { code: KeyCode::Esc, .. } => {
                     self.complete = true;
@@ -123,50 +152,58 @@ impl AgentEditorView {
                     self.field = (self.field + 1).min(last_field_idx);
                     true
                 }
-                KeyEvent { code: KeyCode::Left, .. } if self.field == 0 => {
+                KeyEvent { code: KeyCode::Left, .. } if self.field == FIELD_TOGGLE => {
                     self.enabled = true;
-                    self.persist_current_agent();
+                    let _ = self.persist_current_agent(false);
                     true
                 }
-                KeyEvent { code: KeyCode::Right, .. } if self.field == 0 => {
+                KeyEvent { code: KeyCode::Right, .. } if self.field == FIELD_TOGGLE => {
                     self.enabled = false;
-                    self.persist_current_agent();
+                    let _ = self.persist_current_agent(false);
                     true
                 }
-                KeyEvent { code: KeyCode::Char(' '), .. } if self.field == 0 => {
+                KeyEvent { code: KeyCode::Char(' '), .. } if self.field == FIELD_TOGGLE => {
                     self.enabled = !self.enabled;
-                    self.persist_current_agent();
+                    let _ = self.persist_current_agent(false);
                     true
                 }
-                ev @ KeyEvent { .. } if self.field == 1 => {
+                ev @ KeyEvent { .. } if self.field == FIELD_NAME => {
                     if self.name_editable {
                         let _ = self.name_field.handle_key(ev);
                     }
                     true
                 }
-                ev @ KeyEvent { .. } if self.field == 2 => {
+                ev @ KeyEvent { .. } if self.field == FIELD_COMMAND => {
                     let _ = self.command_field.handle_key(ev);
                     true
                 }
-                ev @ KeyEvent { .. } if self.field == 3 => {
+                ev @ KeyEvent { .. } if self.field == FIELD_READ_ONLY => {
                     let _ = self.params_ro.handle_key(ev);
                     true
                 }
-                ev @ KeyEvent { .. } if self.field == 4 => {
+                ev @ KeyEvent { .. } if self.field == FIELD_WRITE => {
                     let _ = self.params_wr.handle_key(ev);
                     true
                 }
-                ev @ KeyEvent { .. } if self.field == 5 => {
+                ev @ KeyEvent { .. } if self.field == FIELD_DESCRIPTION => {
+                    let _ = self.description_field.handle_key(ev);
+                    self.description_error = None;
+                    true
+                }
+                ev @ KeyEvent { .. } if self.field == FIELD_INSTRUCTIONS => {
                     let _ = self.instr.handle_key(ev);
                     true
                 }
-                KeyEvent { code: KeyCode::Enter, .. } if self.field == 6 => {
-                    self.persist_current_agent();
-                    self.complete = true;
-                    self.app_event_tx.send(AppEvent::ShowAgentsOverview);
+                KeyEvent { code: KeyCode::Enter, .. } if self.field == FIELD_SAVE => {
+                    if self.persist_current_agent(true) {
+                        self.complete = true;
+                        self.app_event_tx.send(AppEvent::ShowAgentsOverview);
+                    } else {
+                        self.field = FIELD_DESCRIPTION;
+                    }
                     true
                 }
-                KeyEvent { code: KeyCode::Enter, .. } if self.field == 7 => {
+                KeyEvent { code: KeyCode::Enter, .. } if self.field == FIELD_CANCEL => {
                     self.complete = true;
                     self.app_event_tx.send(AppEvent::ShowAgentsOverview);
                     true
@@ -238,16 +275,6 @@ impl AgentEditorView {
             }
         }
 
-        let trimmed_description = description
-            .and_then(|desc| {
-                let trimmed = desc.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed.to_string())
-                }
-            });
-
         let name_editable = name.is_empty();
         let mut name_field = FormTextField::new_single_line();
         name_field.set_text(&name);
@@ -255,6 +282,15 @@ impl AgentEditorView {
         let mut command_field = FormTextField::new_single_line();
         command_field.set_text(&command);
         let command_exists_flag = !command.trim().is_empty() && command_exists(&command);
+        let mut description_field = FormTextField::new_multi_line();
+        if let Some(desc) = description
+            .as_ref()
+            .map(|d| d.trim())
+            .filter(|value| !value.is_empty())
+        {
+            description_field.set_text(desc);
+            description_field.move_cursor_to_start();
+        }
         let mut v = Self {
             name,
             name_field,
@@ -264,13 +300,18 @@ impl AgentEditorView {
             command_field,
             params_ro: FormTextField::new_multi_line(),
             params_wr: FormTextField::new_multi_line(),
+            description_field,
             instr: FormTextField::new_multi_line(),
-            field: if name_editable { 1 } else { 0 },
+            field: if name_editable {
+                FIELD_NAME
+            } else {
+                FIELD_TOGGLE
+            },
             complete: false,
             app_event_tx,
             installed: command_exists_flag,
-            description: trimmed_description,
             install_hint: String::new(),
+            description_error: None,
         };
 
         if let Some(ro) = args_read_only { v.params_ro.set_text(&ro.join(" ")); }
@@ -294,30 +335,25 @@ impl AgentEditorView {
     }
 
     fn layout(&self, content_width: u16, max_height: Option<u16>) -> AgentEditorLayout {
-        let instr_inner_width = content_width.saturating_sub(4);
-        let desired_instr_inner = self.instr.desired_height(instr_inner_width).min(8);
+        let inner_width = content_width.saturating_sub(4);
+        let desired_instr_inner = self.instr.desired_height(inner_width).min(8);
         let mut instr_box_h = desired_instr_inner.saturating_add(2);
 
-        let ro_inner_width = content_width.saturating_sub(4);
-        let desired_ro_inner = self.params_ro.desired_height(ro_inner_width).min(6);
+        let desired_ro_inner = self.params_ro.desired_height(inner_width).min(6);
         let ro_box_h = desired_ro_inner.saturating_add(2);
-        let desired_wr_inner = self.params_wr.desired_height(ro_inner_width).min(6);
+        let desired_wr_inner = self.params_wr.desired_height(inner_width).min(6);
         let wr_box_h = desired_wr_inner.saturating_add(2);
+        let desired_desc_inner = self.description_field.desired_height(inner_width).min(6);
+        let desc_box_h = desired_desc_inner.saturating_add(2);
 
         let title_block: u16 = 2; // title + blank
         let desc_style = Style::default().fg(crate::colors::text_dim());
-        let desc_text = self
-            .description
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| value.to_string());
-        let desc_block = if desc_text.is_some() { 2 } else { 0 };
         let name_box_h: u16 = 3;
         let command_box_h: u16 = 3;
-        let top_block = title_block + desc_block;
+        let top_block = title_block;
         let enabled_block: u16 = 2; // toggle row + spacer
-        let instr_desc_lines: u16 = 1; // description row after box
+        let desc_hint_lines: u16 = 2; // guidance line + spacer
+        let instr_desc_lines: u16 = 1;
         let spacer_before_buttons: u16 = 1;
         let buttons_block: u16 = 1;
         let footer_lines_default: u16 = 0;
@@ -329,9 +365,11 @@ impl AgentEditorView {
             + 1
             + enabled_block
             + ro_box_h
-            + 1 // blank after read-only box
+            + 1
             + wr_box_h
-            + 1; // blank after write box
+            + 1
+            + desc_box_h
+            + desc_hint_lines;
 
         let mut footer_lines = footer_lines_default;
         let mut include_gap_before_buttons = spacer_before_buttons > 0;
@@ -370,7 +408,8 @@ impl AgentEditorView {
         let toggle_offset = command_offset + command_box_h + 1;
         let ro_offset = toggle_offset + enabled_block;
         let wr_offset = ro_offset + ro_box_h + 1;
-        let instr_offset = wr_offset + wr_box_h + 1;
+        let desc_offset = wr_offset + wr_box_h + 1;
+        let instr_offset = desc_offset + desc_box_h + desc_hint_lines;
         let mut lines: Vec<Line<'static>> = Vec::new();
 
         // Title, spacer
@@ -379,10 +418,6 @@ impl AgentEditorView {
             Style::default().add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(""));
-        if let Some(desc_line) = &desc_text {
-            lines.push(Line::from(Span::styled(desc_line.clone(), desc_style)));
-            lines.push(Line::from(""));
-        }
 
         // Reserve space for Name box
         for _ in 0..name_box_h {
@@ -410,7 +445,7 @@ impl AgentEditorView {
                 .fg(crate::colors::error())
                 .add_modifier(Modifier::BOLD)
         };
-        let label_style = if self.field == 0 {
+        let label_style = if self.field == FIELD_TOGGLE {
             Style::default()
                 .fg(crate::colors::primary())
                 .add_modifier(Modifier::BOLD)
@@ -440,6 +475,21 @@ impl AgentEditorView {
         }
         lines.push(Line::from(""));
 
+        // Description box + helper text
+        for _ in 0..desc_box_h {
+            lines.push(Line::from(""));
+        }
+        let desc_message = if let Some(err) = &self.description_error {
+            Line::from(Span::styled(err.clone(), Style::default().fg(crate::colors::error())))
+        } else {
+            Line::from(Span::styled(
+                "Required: explain what this agent is good at so Code can pick it intelligently.",
+                desc_style,
+            ))
+        };
+        lines.push(desc_message);
+        lines.push(Line::from(""));
+
         // Instructions box
         for _ in 0..instr_box_h {
             lines.push(Line::from(""));
@@ -454,15 +504,14 @@ impl AgentEditorView {
         if include_gap_before_buttons {
             lines.push(Line::from(""));
         }
-        let save_style = sel(6).fg(crate::colors::success());
-        let cancel_style = sel(7).fg(crate::colors::text());
+        let save_style = sel(FIELD_SAVE).fg(crate::colors::success());
+        let cancel_style = sel(FIELD_CANCEL).fg(crate::colors::text());
         lines.push(Line::from(vec![
             Span::styled("[ Save ]", save_style),
             Span::raw("  "),
             Span::styled("[ Cancel ]", cancel_style),
         ]));
 
-        // Trim any trailing blank rows so the button row hugs the bottom border
         while lines
             .last()
             .map(|line| line.spans.iter().all(|s| s.content.trim().is_empty()))
@@ -470,7 +519,6 @@ impl AgentEditorView {
         {
             lines.pop();
         }
-        // No footer hints in the editor form
 
         AgentEditorLayout {
             lines,
@@ -478,9 +526,11 @@ impl AgentEditorView {
             command_offset,
             ro_offset,
             wr_offset,
+            desc_offset,
             instr_offset,
             ro_height: ro_box_h,
             wr_height: wr_box_h,
+            desc_height: desc_box_h,
             instr_height: instr_box_h,
             name_height: name_box_h,
             command_height: command_box_h,
@@ -543,9 +593,11 @@ impl<'a> BottomPaneView<'a> for AgentEditorView {
             command_offset,
             ro_offset,
             wr_offset,
+            desc_offset,
             instr_offset,
             ro_height,
             wr_height,
+            desc_height,
             instr_height,
             name_height,
             command_height,
@@ -564,7 +616,7 @@ impl<'a> BottomPaneView<'a> for AgentEditorView {
             let name_block = Block::default()
                 .borders(Borders::ALL)
                 .title(Line::from(" ID "))
-                .border_style(if self.field == 1 {
+                .border_style(if self.field == FIELD_NAME {
                     Style::default().fg(crate::colors::primary()).add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(crate::colors::border())
@@ -574,7 +626,7 @@ impl<'a> BottomPaneView<'a> for AgentEditorView {
             name_block.render(name_rect, buf);
             Self::clear_rect(buf, name_inner);
             self.name_field
-                .render(name_field_inner, buf, self.field == 1 && self.name_editable);
+                .render(name_field_inner, buf, self.field == FIELD_NAME && self.name_editable);
         }
 
         let command_rect = Rect { x: content.x, y: content.y.saturating_add(command_offset), width: content.width, height: command_height };
@@ -583,7 +635,7 @@ impl<'a> BottomPaneView<'a> for AgentEditorView {
             let command_block = Block::default()
                 .borders(Borders::ALL)
                 .title(Line::from(" Command "))
-                .border_style(if self.field == 2 {
+                .border_style(if self.field == FIELD_COMMAND {
                     Style::default().fg(crate::colors::primary()).add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(crate::colors::border())
@@ -592,7 +644,7 @@ impl<'a> BottomPaneView<'a> for AgentEditorView {
             let command_field_inner = command_inner.inner(Margin::new(1, 0));
             command_block.render(command_rect, buf);
             Self::clear_rect(buf, command_inner);
-            self.command_field.render(command_field_inner, buf, self.field == 2);
+            self.command_field.render(command_field_inner, buf, self.field == FIELD_COMMAND);
         }
 
         // Draw input boxes at the same y offsets we reserved above
@@ -601,13 +653,13 @@ impl<'a> BottomPaneView<'a> for AgentEditorView {
         let ro_block = Block::default()
             .borders(Borders::ALL)
             .title(Line::from(" Read-only Params "))
-            .border_style(if self.field == 3 { Style::default().fg(crate::colors::primary()).add_modifier(Modifier::BOLD) } else { Style::default().fg(crate::colors::border()) });
+            .border_style(if self.field == FIELD_READ_ONLY { Style::default().fg(crate::colors::primary()).add_modifier(Modifier::BOLD) } else { Style::default().fg(crate::colors::border()) });
         if ro_rect.width > 0 && ro_rect.height > 0 {
             let ro_inner_rect = ro_block.inner(ro_rect);
             let ro_inner = ro_inner_rect.inner(Margin::new(1, 0));
             ro_block.render(ro_rect, buf);
             Self::clear_rect(buf, ro_inner_rect);
-            self.params_ro.render(ro_inner, buf, self.field == 3);
+            self.params_ro.render(ro_inner, buf, self.field == FIELD_READ_ONLY);
         }
 
         // WR params box (3 rows)
@@ -616,13 +668,35 @@ impl<'a> BottomPaneView<'a> for AgentEditorView {
         let wr_block = Block::default()
             .borders(Borders::ALL)
             .title(Line::from(" Write Params "))
-            .border_style(if self.field == 4 { Style::default().fg(crate::colors::primary()).add_modifier(Modifier::BOLD) } else { Style::default().fg(crate::colors::border()) });
+            .border_style(if self.field == FIELD_WRITE { Style::default().fg(crate::colors::primary()).add_modifier(Modifier::BOLD) } else { Style::default().fg(crate::colors::border()) });
         if wr_rect.width > 0 && wr_rect.height > 0 {
             let wr_inner_rect = wr_block.inner(wr_rect);
             let wr_inner = wr_inner_rect.inner(Margin::new(1, 0));
             wr_block.render(wr_rect, buf);
             Self::clear_rect(buf, wr_inner_rect);
-            self.params_wr.render(wr_inner, buf, self.field == 4);
+            self.params_wr.render(wr_inner, buf, self.field == FIELD_WRITE);
+        }
+
+        let desc_rect = Rect { x: content.x, y: content.y.saturating_add(desc_offset), width: content.width, height: desc_height };
+        let desc_rect = desc_rect.intersection(*buf.area());
+        let mut desc_border_style = if self.field == FIELD_DESCRIPTION {
+            Style::default().fg(crate::colors::primary()).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(crate::colors::border())
+        };
+        if self.description_error.is_some() {
+            desc_border_style = desc_border_style.fg(crate::colors::error());
+        }
+        let desc_block = Block::default()
+            .borders(Borders::ALL)
+            .title(Line::from(" What is this agent good at? "))
+            .border_style(desc_border_style);
+        if desc_rect.width > 0 && desc_rect.height > 0 {
+            let desc_inner_rect = desc_block.inner(desc_rect);
+            let desc_inner = desc_inner_rect.inner(Margin::new(1, 0));
+            desc_block.render(desc_rect, buf);
+            Self::clear_rect(buf, desc_inner_rect);
+            self.description_field.render(desc_inner, buf, self.field == FIELD_DESCRIPTION);
         }
 
         // Instructions (multi-line; height consistent with reserved space above)
@@ -631,13 +705,13 @@ impl<'a> BottomPaneView<'a> for AgentEditorView {
         let instr_block = Block::default()
             .borders(Borders::ALL)
             .title(Line::from(" Instructions "))
-            .border_style(if self.field == 5 { Style::default().fg(crate::colors::primary()).add_modifier(Modifier::BOLD) } else { Style::default().fg(crate::colors::border()) });
+            .border_style(if self.field == FIELD_INSTRUCTIONS { Style::default().fg(crate::colors::primary()).add_modifier(Modifier::BOLD) } else { Style::default().fg(crate::colors::border()) });
         if instr_rect.width > 0 && instr_rect.height > 0 {
             let instr_inner_rect = instr_block.inner(instr_rect);
             let instr_inner = instr_inner_rect.inner(Margin::new(1, 0));
             instr_block.render(instr_rect, buf);
             Self::clear_rect(buf, instr_inner_rect);
-            self.instr.render(instr_inner, buf, self.field == 5);
+            self.instr.render(instr_inner, buf, self.field == FIELD_INSTRUCTIONS);
         }
     }
 }

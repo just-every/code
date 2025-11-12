@@ -198,6 +198,7 @@ pub(super) async fn perform_compaction(
         Some(turn_context.sandbox_policy.clone()),
         Some(sess.user_shell.clone()),
     ));
+    prompt.model_descriptions = sess.model_descriptions.clone();
     prompt.log_tag = Some("codex/compact".to_string());
 
     let max_retries = turn_context.client.get_provider().stream_max_retries();
@@ -305,6 +306,7 @@ async fn run_compact_task_inner_inline(
         Some(turn_context.sandbox_policy.clone()),
         Some(sess.user_shell.clone()),
     ));
+    prompt.model_descriptions = sess.model_descriptions.clone();
     prompt.log_tag = Some("codex/compact".to_string());
 
     let max_retries = turn_context.client.get_provider().stream_max_retries();

@@ -17400,7 +17400,11 @@ Have we met every part of this goal and is there no further work to do?"#
                 Some(cfg.command.as_str()),
                 Some(cfg.command.as_str()),
             );
-            let description = Self::agent_description_for(&cfg.name, Some(&cfg_command));
+            let description = Self::agent_description_for(
+                &cfg.name,
+                Some(&cfg_command),
+                cfg.description.as_deref(),
+            );
             let build_editor = || {
                 AgentEditorView::new(
                     cfg_name.clone(),
@@ -17429,7 +17433,7 @@ Have we met every part of this goal and is there no further work to do?"#
             let wr =
                 code_core::agent_defaults::default_params_for(&name, false /*read_only*/);
             let app_event_tx = self.app_event_tx.clone();
-            let description = Self::agent_description_for(&name, Some(&cmd));
+            let description = Self::agent_description_for(&name, Some(&cmd), None);
             let build_editor = || {
                 AgentEditorView::new(
                     name.clone(),
@@ -17512,6 +17516,7 @@ Have we met every part of this goal and is there no further work to do?"#
         args_ro: Option<Vec<String>>,
         args_wr: Option<Vec<String>>,
         instr: Option<String>,
+        description: Option<String>,
         command: String,
     ) {
         let mut updated_existing = false;
@@ -17527,6 +17532,7 @@ Have we met every part of this goal and is there no further work to do?"#
             slot.args_read_only = args_ro.clone();
             slot.args_write = args_wr.clone();
             slot.instructions = instr.clone();
+            slot.description = description.clone();
             let resolved = Self::resolve_agent_command(name, provided_command, Some(slot.command.as_str()));
             slot.command = resolved.clone();
             command_to_persist = Some(resolved);
@@ -17541,7 +17547,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 args: Vec::new(),
                 read_only: false,
                 enabled,
-                description: None,
+                description: description.clone(),
                 env: None,
                 args_read_only: args_ro.clone(),
                 args_write: args_wr.clone(),
@@ -17553,7 +17559,7 @@ Have we met every part of this goal and is there no further work to do?"#
         // Persist asynchronously
         if let Ok(home) = code_core::config::find_code_home() {
             let name_s = name.to_string();
-            let (en2, ro2, wr2, ins2) = (enabled, args_ro, args_wr, instr);
+            let (en2, ro2, wr2, ins2, desc2) = (enabled, args_ro, args_wr, instr, description);
             let cmd2 = command_to_persist.clone();
             tokio::spawn(async move {
                 let _ = code_core::config_edit::upsert_agent_config(
@@ -17564,6 +17570,7 @@ Have we met every part of this goal and is there no further work to do?"#
                     ro2.as_deref(),
                     wr2.as_deref(),
                     ins2.as_deref(),
+                    desc2.as_deref(),
                     cmd2.as_deref(),
                 )
                 .await;
@@ -18599,7 +18606,11 @@ Have we met every part of this goal and is there no further work to do?"#
                     name: cfg.name.clone(),
                     enabled: cfg.enabled,
                     installed,
-                    description: Self::agent_description_for(&cfg.name, Some(&cfg.command)),
+                    description: Self::agent_description_for(
+                        &cfg.name,
+                        Some(&cfg.command),
+                        cfg.description.as_deref(),
+                    ),
                 });
             } else {
                 let cmd = name.clone();
@@ -18616,7 +18627,7 @@ Have we met every part of this goal and is there no further work to do?"#
                     name: name.clone(),
                     enabled: true,
                     installed,
-                    description: Self::agent_description_for(name, Some(&cmd)),
+                    description: Self::agent_description_for(name, Some(&cmd), None),
                 });
             }
         }
@@ -18634,7 +18645,17 @@ Have we met every part of this goal and is there no further work to do?"#
         (agent_rows, commands)
     }
 
-    fn agent_description_for(name: &str, command: Option<&str>) -> Option<String> {
+    fn agent_description_for(
+        name: &str,
+        command: Option<&str>,
+        config_description: Option<&str>,
+    ) -> Option<String> {
+        if let Some(desc) = config_description {
+            let trimmed = desc.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
         agent_model_spec(name)
             .or_else(|| command.and_then(|cmd| agent_model_spec(cmd)))
             .map(|spec| spec.description.trim().to_string())

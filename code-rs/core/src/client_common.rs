@@ -25,8 +25,9 @@ use uuid::Uuid;
 
 /// Additional prompt for Code. Can not edit Codex instructions.
 const PROMPT_CODER_TEMPLATE: &str = include_str!("../prompt_coder.md");
-static ADDITIONAL_INSTRUCTIONS: Lazy<String> = Lazy::new(|| {
-    PROMPT_CODER_TEMPLATE.replace("{MODEL_DESCRIPTIONS}", &model_guide_markdown())
+static BASE_MODEL_DESCRIPTIONS: Lazy<String> = Lazy::new(|| model_guide_markdown());
+static DEFAULT_DEVELOPER_PROMPT: Lazy<String> = Lazy::new(|| {
+    PROMPT_CODER_TEMPLATE.replace("{MODEL_DESCRIPTIONS}", &BASE_MODEL_DESCRIPTIONS)
 });
 
 /// wraps environment context message in a tag for the model to parse more easily.
@@ -88,6 +89,9 @@ pub struct Prompt {
     pub log_tag: Option<String>,
     /// Optional override for session/conversation identifiers used for caching.
     pub session_id_override: Option<Uuid>,
+
+    /// Optional override for the model guide placeholder in the developer prompt.
+    pub model_descriptions: Option<String>,
 }
 
 impl Default for Prompt {
@@ -108,6 +112,7 @@ impl Default for Prompt {
             output_schema: None,
             log_tag: None,
             session_id_override: None,
+            model_descriptions: None,
         }
     }
 }
@@ -143,6 +148,14 @@ impl Prompt {
         self.log_tag = Some(tag.into());
     }
 
+    fn additional_instructions(&self) -> Cow<'_, str> {
+        if let Some(custom) = &self.model_descriptions {
+            Cow::Owned(PROMPT_CODER_TEMPLATE.replace("{MODEL_DESCRIPTIONS}", custom))
+        } else {
+            Cow::Borrowed(DEFAULT_DEVELOPER_PROMPT.deref())
+        }
+    }
+
     fn get_formatted_user_instructions(&self) -> Option<String> {
         self.user_instructions
             .as_ref()
@@ -160,12 +173,11 @@ impl Prompt {
         let mut input_with_instructions =
             Vec::with_capacity(self.input.len() + self.status_items.len() + 3);
         if self.include_additional_instructions {
+            let developer_text = self.additional_instructions().into_owned();
             input_with_instructions.push(ResponseItem::Message {
                 id: None,
                 role: "developer".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: ADDITIONAL_INSTRUCTIONS.to_string(),
-                }],
+                content: vec![ContentItem::InputText { text: developer_text }],
             });
             for message in &self.prepend_developer_messages {
                 let trimmed = message.trim();

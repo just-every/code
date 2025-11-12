@@ -5,6 +5,7 @@
 //! (to surface the available sub-agent options).
 
 use crate::config_types::AgentConfig;
+use std::collections::HashMap;
 
 const CLAUDE_ALLOWED_TOOLS: &str = "Bash(ls:*), Bash(cat:*), Bash(grep:*), Bash(git status:*), Bash(git log:*), Bash(find:*), Read, Grep, Glob, LS, WebFetch, TodoRead, TodoWrite, WebSearch";
 const CLOUD_MODEL_ENV_FLAG: &str = "CODE_ENABLE_CLOUD_AGENT_MODEL";
@@ -235,6 +236,10 @@ fn model_guide_line(spec: &AgentModelSpec) -> String {
     format!("- `{}`: {}", spec.slug, spec.description)
 }
 
+fn custom_model_guide_line(name: &str, description: &str) -> String {
+    format!("- `{}`: {}", name, description)
+}
+
 pub fn build_model_guide_description(active_agents: &[String]) -> String {
     let mut description = String::from(MODEL_GUIDE_INTRO);
 
@@ -259,6 +264,48 @@ pub fn build_model_guide_description(active_agents: &[String]) -> String {
 
 pub fn model_guide_markdown() -> String {
     AGENT_MODEL_SPECS.iter().map(model_guide_line).collect::<Vec<_>>().join("\n")
+}
+
+pub fn model_guide_markdown_with_custom(configured_agents: &[AgentConfig]) -> Option<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut positions: HashMap<String, usize> = HashMap::new();
+
+    for spec in AGENT_MODEL_SPECS.iter() {
+        let idx = lines.len();
+        positions.insert(spec.slug.to_ascii_lowercase(), idx);
+        lines.push(model_guide_line(spec));
+    }
+
+    let mut saw_custom = false;
+    for agent in configured_agents {
+        if !agent.enabled {
+            continue;
+        }
+        let Some(description) = agent.description.as_deref() else { continue };
+        let trimmed = description.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let slug = agent.name.trim();
+        if slug.is_empty() {
+            continue;
+        }
+        saw_custom = true;
+        let line = custom_model_guide_line(slug, trimmed);
+        let key = slug.to_ascii_lowercase();
+        if let Some(idx) = positions.get(&key).copied() {
+            lines[idx] = line;
+        } else {
+            positions.insert(key, lines.len());
+            lines.push(line);
+        }
+    }
+
+    if saw_custom {
+        Some(lines.join("\n"))
+    } else {
+        None
+    }
 }
 
 pub fn default_agent_configs() -> Vec<AgentConfig> {

@@ -147,6 +147,7 @@ impl ChatWidgetHarness {
                     args_read_only,
                     args_write,
                     instructions,
+                    description,
                     command,
                 } => {
                     let runtime = &*TEST_RUNTIME;
@@ -157,6 +158,7 @@ impl ChatWidgetHarness {
                         args_read_only,
                         args_write,
                         instructions,
+                        description,
                         command,
                     );
                 }
