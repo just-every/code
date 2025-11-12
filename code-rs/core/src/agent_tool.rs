@@ -11,9 +11,11 @@ use std::process::Stdio;
 use std::sync::Arc;
 use tokio::process::Command;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::runtime::Builder as TokioRuntimeBuilder;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio::time::{timeout, Duration as TokioDuration};
 
 use crate::agent_defaults::{agent_model_spec, default_params_for};
 use crate::config_types::AgentConfig;
@@ -1009,6 +1011,62 @@ fn strip_model_flags(args: &mut Vec<String>) {
         }
         i += 1;
     }
+}
+
+const AGENT_SMOKE_TEST_PROMPT: &str = "Reply only with the string \"ok\". Do not include any other words.";
+const AGENT_SMOKE_TEST_EXPECTED: &str = "ok";
+const AGENT_SMOKE_TEST_TIMEOUT: TokioDuration = TokioDuration::from_secs(20);
+
+async fn run_agent_smoke_test(cfg: AgentConfig) -> Result<String, String> {
+    let model_name = cfg.name.clone();
+    let response = timeout(
+        AGENT_SMOKE_TEST_TIMEOUT,
+        execute_model_with_permissions(&model_name, AGENT_SMOKE_TEST_PROMPT, true, None, Some(cfg)),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "agent validation timed out after {}s",
+            AGENT_SMOKE_TEST_TIMEOUT.as_secs()
+        )
+    })??;
+    Ok(response)
+}
+
+fn summarize_agent_output(output: &str) -> String {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return "<empty response>".to_string();
+    }
+    const MAX_LEN: usize = 240;
+    if trimmed.len() <= MAX_LEN {
+        trimmed.to_string()
+    } else {
+        format!("{}…", &trimmed[..MAX_LEN])
+    }
+}
+
+pub async fn smoke_test_agent(cfg: AgentConfig) -> Result<(), String> {
+    let output = run_agent_smoke_test(cfg).await?;
+    if output
+        .to_ascii_lowercase()
+        .contains(AGENT_SMOKE_TEST_EXPECTED)
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "agent response missing \"ok\": {}",
+            summarize_agent_output(&output)
+        ))
+    }
+}
+
+pub fn smoke_test_agent_blocking(cfg: AgentConfig) -> Result<(), String> {
+    TokioRuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("failed to build validation runtime: {}", e))?
+        .block_on(smoke_test_agent(cfg))
 }
 
 /// Execute the built-in cloud agent via the current `code` binary, streaming

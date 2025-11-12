@@ -31,6 +31,7 @@ use code_common::model_presets::ModelPreset;
 use code_common::model_presets::builtin_model_presets;
 use code_core::ConversationManager;
 use code_core::agent_defaults::{agent_model_spec, enabled_agent_model_specs};
+use code_core::smoke_test_agent_blocking;
 use code_core::config::Config;
 use code_core::git_info::CommitLogEntry;
 use code_core::config_types::AgentConfig;
@@ -17519,42 +17520,58 @@ Have we met every part of this goal and is there no further work to do?"#
         description: Option<String>,
         command: String,
     ) {
-        let mut updated_existing = false;
         let provided_command = if command.trim().is_empty() { None } else { Some(command.as_str()) };
-        let mut command_to_persist: Option<String> = None;
-        if let Some(slot) = self
+        let existing_index = self
             .config
             .agents
-            .iter_mut()
-            .find(|a| a.name.eq_ignore_ascii_case(name))
-        {
-            slot.enabled = enabled;
-            slot.args_read_only = args_ro.clone();
-            slot.args_write = args_wr.clone();
-            slot.instructions = instr.clone();
-            slot.description = description.clone();
-            let resolved = Self::resolve_agent_command(name, provided_command, Some(slot.command.as_str()));
-            slot.command = resolved.clone();
-            command_to_persist = Some(resolved);
-            updated_existing = true;
+            .iter()
+            .position(|a| a.name.eq_ignore_ascii_case(name));
+
+        let existing_command = existing_index
+            .and_then(|idx| self.config.agents.get(idx))
+            .map(|cfg| cfg.command.clone());
+        let resolved = Self::resolve_agent_command(
+            name,
+            provided_command,
+            existing_command.as_deref(),
+        );
+
+        let env_clone = existing_index
+            .and_then(|idx| self.config.agents.get(idx))
+            .and_then(|cfg| cfg.env.clone());
+
+        let candidate_cfg = AgentConfig {
+            name: name.to_string(),
+            command: resolved.clone(),
+            args: Vec::new(),
+            read_only: false,
+            enabled,
+            description: description.clone(),
+            env: env_clone,
+            args_read_only: args_ro.clone(),
+            args_write: args_wr.clone(),
+            instructions: instr.clone(),
+        };
+
+        let requires_validation = !self.test_mode && existing_index.is_none();
+        if requires_validation && !self.validate_agent_candidate(&candidate_cfg) {
+            return;
         }
 
-        if !updated_existing {
-            let resolved = Self::resolve_agent_command(name, provided_command, None);
-            let new_cfg = AgentConfig {
-                name: name.to_string(),
-                command: resolved.clone(),
-                args: Vec::new(),
-                read_only: false,
-                enabled,
-                description: description.clone(),
-                env: None,
-                args_read_only: args_ro.clone(),
-                args_write: args_wr.clone(),
-                instructions: instr.clone(),
-            };
-            self.config.agents.push(new_cfg);
-            command_to_persist = Some(resolved);
+        let mut command_to_persist: Option<String> = None;
+        if let Some(idx) = existing_index {
+            if let Some(slot) = self.config.agents.get_mut(idx) {
+                slot.enabled = enabled;
+                slot.args_read_only = args_ro.clone();
+                slot.args_write = args_wr.clone();
+                slot.instructions = instr.clone();
+                slot.description = description.clone();
+                slot.command = resolved.clone();
+                command_to_persist = Some(resolved.clone());
+            }
+        } else {
+            self.config.agents.push(candidate_cfg);
+            command_to_persist = Some(resolved.clone());
         }
         // Persist asynchronously
         if let Ok(home) = code_core::config::find_code_home() {
@@ -17578,6 +17595,28 @@ Have we met every part of this goal and is there no further work to do?"#
         }
 
         self.refresh_settings_overview_rows();
+    }
+
+    fn validate_agent_candidate(&mut self, cfg: &AgentConfig) -> bool {
+        let start_message = format!("🧪 Testing agent `{}` (expecting \"ok\")…", cfg.name);
+        self.push_background_tail(start_message);
+        match smoke_test_agent_blocking(cfg.clone()) {
+            Ok(()) => {
+                self.push_background_tail(format!(
+                    "✅ Agent `{}` responded with \"ok\".",
+                    cfg.name
+                ));
+                true
+            }
+            Err(err) => {
+                self.history_push_plain_state(history_cell::new_error_event(format!(
+                    "❌ Agent `{}` validation failed: {}",
+                    cfg.name, err
+                )));
+                self.request_redraw();
+                false
+            }
+        }
     }
 
     fn resolve_agent_command(

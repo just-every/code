@@ -115,6 +115,7 @@ pub mod util;
 
 pub use apply_patch::CODEX_APPLY_PATCH_ARG1;
 pub use command_safety::is_safe_command;
+pub use agent_tool::smoke_test_agent_blocking;
 pub use safety::get_platform_sandbox;
 pub use housekeeping::run_housekeeping_if_due;
 pub use housekeeping::CleanupOutcome;
