@@ -1018,11 +1018,30 @@ const AGENT_SMOKE_TEST_PROMPT: &str = "Reply only with the string \"ok\". Do not
 const AGENT_SMOKE_TEST_EXPECTED: &str = "ok";
 const AGENT_SMOKE_TEST_TIMEOUT: TokioDuration = TokioDuration::from_secs(20);
 
+fn should_validate_in_read_only(cfg: &AgentConfig) -> bool {
+    let has_write = cfg
+        .args_write
+        .as_ref()
+        .map(|args| !args.is_empty())
+        .unwrap_or(false);
+    let has_read_only = cfg
+        .args_read_only
+        .as_ref()
+        .map(|args| !args.is_empty())
+        .unwrap_or(false);
+    if has_write && !has_read_only {
+        false
+    } else {
+        true
+    }
+}
+
 async fn run_agent_smoke_test(cfg: AgentConfig) -> Result<String, String> {
     let model_name = cfg.name.clone();
+    let read_only = should_validate_in_read_only(&cfg);
     let response = timeout(
         AGENT_SMOKE_TEST_TIMEOUT,
-        execute_model_with_permissions(&model_name, AGENT_SMOKE_TEST_PROMPT, true, None, Some(cfg)),
+        execute_model_with_permissions(&model_name, AGENT_SMOKE_TEST_PROMPT, read_only, None, Some(cfg)),
     )
     .await
     .map_err(|_| {

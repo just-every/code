@@ -275,7 +275,7 @@ pub fn model_guide_markdown_with_custom(configured_agents: &[AgentConfig]) -> Op
     let mut lines: Vec<String> = Vec::new();
     let mut positions: HashMap<String, usize> = HashMap::new();
 
-    for spec in AGENT_MODEL_SPECS.iter() {
+    for spec in AGENT_MODEL_SPECS.iter().filter(|spec| spec.is_enabled()) {
         let idx = lines.len();
         positions.insert(spec.slug.to_ascii_lowercase(), idx);
         lines.push(model_guide_line(spec));
