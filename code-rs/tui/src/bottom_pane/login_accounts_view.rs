@@ -13,6 +13,7 @@ use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
+use textwrap::Options as TwOptions;
 
 use crate::account_label::{account_display_label, account_mode_priority};
 use crate::app_event::AppEvent;
@@ -575,6 +576,16 @@ impl LoginAccountsState {
     }
 }
 
+fn wrap_url_segments(url: &str, available_width: u16) -> Vec<String> {
+    let width = available_width.max(1) as usize;
+    let mut opts = TwOptions::new(width);
+    opts.break_words = true;
+    textwrap::wrap(url, opts)
+        .into_iter()
+        .map(|segment| segment.into_owned())
+        .collect()
+}
+
 pub(crate) struct LoginAddAccountView {
     state: Rc<RefCell<LoginAddAccountState>>,
 }
@@ -769,6 +780,14 @@ impl LoginAddAccountState {
         let inner = block.inner(area);
         block.render(area, buf);
 
+        let content_width = inner.width.saturating_sub(2).max(1);
+        let content_area = Rect {
+            x: inner.x.saturating_add(1),
+            y: inner.y,
+            width: content_width,
+            height: inner.height,
+        };
+
         let mut lines = Vec::new();
         if let Some(feedback) = &self.feedback {
             let style = if feedback.is_error {
@@ -822,10 +841,12 @@ impl LoginAddAccountState {
             AddStep::Waiting { auth_url } => {
                 lines.push(Line::from("Finish signing in with ChatGPT in your browser."));
                 if let Some(url) = auth_url {
-                    lines.push(Line::from(vec![Span::styled(
-                        url.clone(),
-                        Style::default().fg(crate::colors::primary()),
-                    )]));
+                    for chunk in wrap_url_segments(url, content_width) {
+                        lines.push(Line::from(vec![Span::styled(
+                            chunk,
+                            Style::default().fg(crate::colors::primary()),
+                        )]));
+                    }
                 }
                 lines.push(Line::from(""));
                 lines.push(Line::from(vec![
@@ -836,17 +857,10 @@ impl LoginAddAccountState {
         }
 
         Paragraph::new(lines)
+            .wrap(Wrap { trim: true })
             .alignment(Alignment::Left)
             .style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()))
-            .render(
-                Rect {
-                    x: inner.x.saturating_add(1),
-                    y: inner.y,
-                    width: inner.width.saturating_sub(2),
-                    height: inner.height,
-                },
-                buf,
-            );
+            .render(content_area, buf);
     }
 
     pub fn acknowledge_chatgpt_started(&mut self, auth_url: String) {
