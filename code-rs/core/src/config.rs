@@ -67,7 +67,7 @@ use toml_edit::Table as TomlTable;
 use which::which;
 
 const OPENAI_DEFAULT_MODEL: &str = "gpt-5-codex";
-const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5-codex";
+const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5-codex-mini";
 pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5-codex";
 
 /// Maximum number of bytes of the documentation that will be embedded. Larger
@@ -104,8 +104,11 @@ pub struct Config {
     /// Optional override of model selection.
     pub model: String,
 
-    /// Model used specifically for review sessions. Defaults to "gpt-5-codex".
+    /// Model used specifically for review sessions. Defaults to "gpt-5-codex-mini".
     pub review_model: String,
+
+    /// Reasoning effort used when running review sessions.
+    pub review_model_reasoning_effort: ReasoningEffort,
 
     pub model_family: ModelFamily,
 
@@ -991,6 +994,37 @@ pub fn set_tui_review_auto_resolve(code_home: &Path, enabled: bool) -> anyhow::R
     Ok(())
 }
 
+/// Persist the review model + reasoning effort into `CODEX_HOME/config.toml`.
+pub fn set_review_model(
+    code_home: &Path,
+    model: &str,
+    effort: ReasoningEffort,
+) -> anyhow::Result<()> {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow::anyhow!("review model cannot be empty"));
+    }
+
+    let config_path = code_home.join(CONFIG_TOML_FILE);
+    let read_path = resolve_code_path_for_read(code_home, Path::new(CONFIG_TOML_FILE));
+    let mut doc = match std::fs::read_to_string(&read_path) {
+        Ok(contents) => contents.parse::<DocumentMut>()?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentMut::new(),
+        Err(e) => return Err(e.into()),
+    };
+
+    doc["review_model"] = toml_edit::value(trimmed);
+    doc["review_model_reasoning_effort"] =
+        toml_edit::value(effort.to_string().to_ascii_lowercase());
+
+    std::fs::create_dir_all(code_home)?;
+    let tmp_file = NamedTempFile::new_in(code_home)?;
+    std::fs::write(tmp_file.path(), doc.to_string())?;
+    tmp_file.persist(config_path)?;
+
+    Ok(())
+}
+
 /// Persist Auto Drive defaults under `[auto_drive]`.
 pub fn set_auto_drive_settings(
     code_home: &Path,
@@ -1639,6 +1673,8 @@ pub struct ConfigToml {
     pub model: Option<String>,
     /// Review model override used by the `/review` feature.
     pub review_model: Option<String>,
+    /// Reasoning effort override used for the review model.
+    pub review_model_reasoning_effort: Option<ReasoningEffort>,
 
     /// Provider to use from the model_providers map.
     pub model_provider: Option<String>,
@@ -2289,12 +2325,19 @@ impl Config {
 
         // Default review model when not set in config; allow CLI override to take precedence.
         let review_model = override_review_model
+            .or(config_profile.review_model.clone())
             .or(cfg.review_model)
             .unwrap_or_else(default_review_model);
+
+        let review_model_reasoning_effort = config_profile
+            .review_model_reasoning_effort
+            .or(cfg.review_model_reasoning_effort)
+            .unwrap_or(ReasoningEffort::High);
 
         let config = Self {
             model,
             review_model,
+            review_model_reasoning_effort,
             model_family,
             model_context_window,
             model_max_output_tokens,
@@ -3193,6 +3236,10 @@ model_verbosity = "high"
         assert_eq!("o3", o3_profile_config.model);
         assert_eq!(OPENAI_DEFAULT_REVIEW_MODEL, o3_profile_config.review_model);
         assert_eq!(
+            ReasoningEffort::High,
+            o3_profile_config.review_model_reasoning_effort
+        );
+        assert_eq!(
             find_family_for_model("o3").expect("known model slug"),
             o3_profile_config.model_family
         );
@@ -3242,6 +3289,10 @@ model_verbosity = "high"
         )?;
         assert_eq!("gpt-3.5-turbo", gpt3_profile_config.model);
         assert_eq!(OPENAI_DEFAULT_REVIEW_MODEL, gpt3_profile_config.review_model);
+        assert_eq!(
+            ReasoningEffort::High,
+            gpt3_profile_config.review_model_reasoning_effort
+        );
         assert_eq!(
             find_family_for_model("gpt-3.5-turbo").expect("known model slug"),
             gpt3_profile_config.model_family
@@ -3308,6 +3359,10 @@ model_verbosity = "high"
         assert_eq!("o3", zdr_profile_config.model);
         assert_eq!(OPENAI_DEFAULT_REVIEW_MODEL, zdr_profile_config.review_model);
         assert_eq!(
+            ReasoningEffort::High,
+            zdr_profile_config.review_model_reasoning_effort
+        );
+        assert_eq!(
             find_family_for_model("o3").expect("known model slug"),
             zdr_profile_config.model_family
         );
@@ -3348,6 +3403,10 @@ model_verbosity = "high"
         )?;
         assert_eq!("gpt-5", gpt5_profile_config.model);
         assert_eq!(OPENAI_DEFAULT_REVIEW_MODEL, gpt5_profile_config.review_model);
+        assert_eq!(
+            ReasoningEffort::High,
+            gpt5_profile_config.review_model_reasoning_effort
+        );
         assert_eq!(
             find_family_for_model("gpt-5").expect("known model slug"),
             gpt5_profile_config.model_family

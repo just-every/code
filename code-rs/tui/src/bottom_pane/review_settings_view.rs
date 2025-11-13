@@ -1,4 +1,4 @@
-use code_core::config_types::AutoResolveAttemptLimit;
+use code_core::config_types::{AutoResolveAttemptLimit, ReasoningEffort};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
@@ -19,16 +19,20 @@ const DEFAULT_VISIBLE_ROWS: usize = 4;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum SelectionKind {
+    Model,
     Toggle,
     Attempts,
 }
 
 enum RowData {
+    Model,
     Toggle,
     Attempts,
 }
 
 pub(crate) struct ReviewSettingsView {
+    review_model: String,
+    review_reasoning: ReasoningEffort,
     auto_resolve_enabled: bool,
     auto_resolve_attempts: u32,
     auto_attempt_index: usize,
@@ -40,7 +44,14 @@ pub(crate) struct ReviewSettingsView {
 }
 
 impl ReviewSettingsView {
+    pub fn set_review_model(&mut self, model: String, effort: ReasoningEffort) {
+        self.review_model = model;
+        self.review_reasoning = effort;
+    }
+
     pub fn new(
+        review_model: String,
+        review_reasoning: ReasoningEffort,
         auto_resolve_enabled: bool,
         auto_resolve_attempts: u32,
         app_event_tx: AppEventSender,
@@ -56,6 +67,8 @@ impl ReviewSettingsView {
             .position(|&value| value == auto_resolve_attempts)
             .unwrap_or(default_index);
         Self {
+            review_model,
+            review_reasoning,
             auto_resolve_enabled,
             auto_resolve_attempts,
             auto_attempt_index: attempt_index,
@@ -99,10 +112,19 @@ impl ReviewSettingsView {
             .send(AppEvent::UpdateReviewAutoResolveAttempts(self.auto_resolve_attempts));
     }
 
+    fn open_review_model_selector(&self) {
+        self.app_event_tx
+            .send(AppEvent::ShowReviewModelSelector);
+    }
+
     fn build_rows(&self) -> (Vec<RowData>, Vec<usize>, Vec<SelectionKind>) {
-        let rows = vec![RowData::Toggle, RowData::Attempts];
-        let selection_rows = vec![0, 1];
-        let selection_kinds = vec![SelectionKind::Toggle, SelectionKind::Attempts];
+        let rows = vec![RowData::Model, RowData::Toggle, RowData::Attempts];
+        let selection_rows = vec![0, 1, 2];
+        let selection_kinds = vec![
+            SelectionKind::Model,
+            SelectionKind::Toggle,
+            SelectionKind::Attempts,
+        ];
         (rows, selection_rows, selection_kinds)
     }
 
@@ -115,6 +137,16 @@ impl ReviewSettingsView {
         target.clamp(1, total)
     }
 
+    fn reasoning_label(effort: ReasoningEffort) -> &'static str {
+        match effort {
+            ReasoningEffort::High => "High",
+            ReasoningEffort::Medium => "Medium",
+            ReasoningEffort::Low => "Low",
+            ReasoningEffort::Minimal => "Minimal",
+            ReasoningEffort::None => "None",
+        }
+    }
+
     fn render_row(&self, row: &RowData, selected: bool) -> Line<'static> {
         let arrow = if selected { "› " } else { "  " };
         let arrow_style = if selected {
@@ -123,6 +155,43 @@ impl ReviewSettingsView {
             Style::default().fg(colors::text_dim())
         };
         match row {
+            RowData::Model => {
+                let label_style = if selected {
+                    Style::default()
+                        .fg(colors::primary())
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(colors::text()).add_modifier(Modifier::BOLD)
+                };
+                let value_style = if selected {
+                    Style::default()
+                        .fg(colors::function())
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(colors::text())
+                };
+                let model_label = self.review_model.trim();
+                let model_display = if model_label.is_empty() {
+                    "(not set)"
+                } else {
+                    model_label
+                };
+                let value_text = format!(
+                    "{} · {} reasoning",
+                    model_display,
+                    Self::reasoning_label(self.review_reasoning)
+                );
+                let mut spans = vec![
+                    Span::styled(arrow, arrow_style),
+                    Span::styled("Review model", label_style),
+                    Span::raw("  "),
+                    Span::styled(value_text, value_style),
+                ];
+                if selected {
+                    spans.push(Span::raw("  (Enter to change)"));
+                }
+                Line::from(spans)
+            }
             RowData::Toggle => {
                 let label_style = if selected {
                     Style::default()
@@ -228,6 +297,7 @@ impl ReviewSettingsView {
                     match kind {
                         SelectionKind::Toggle => self.toggle_auto_resolve(),
                         SelectionKind::Attempts => self.adjust_auto_resolve_attempts(false),
+                        SelectionKind::Model => {}
                     }
                 }
             }
@@ -236,6 +306,7 @@ impl ReviewSettingsView {
                     match kind {
                         SelectionKind::Toggle => self.toggle_auto_resolve(),
                         SelectionKind::Attempts => self.adjust_auto_resolve_attempts(true),
+                        SelectionKind::Model => {}
                     }
                 }
             }
@@ -245,6 +316,7 @@ impl ReviewSettingsView {
                     match kind {
                         SelectionKind::Toggle => self.toggle_auto_resolve(),
                         SelectionKind::Attempts => self.adjust_auto_resolve_attempts(true),
+                        SelectionKind::Model => self.open_review_model_selector(),
                     }
                 }
             }
@@ -296,11 +368,11 @@ impl<'a> BottomPaneView<'a> for ReviewSettingsView {
 
         let header_lines = vec![
             Line::from(Span::styled(
-                "Adjust Auto Resolve automation for /review.",
+                "Choose review model + Auto Resolve automation for /review.",
                 Style::default().fg(colors::text_dim()),
             )),
             Line::from(Span::styled(
-                "Use ↑↓ to navigate · Enter/Space toggle · ←→ adjust values · Esc close",
+                "Use ↑↓ to navigate · Enter select/open · Space toggle · ←→ adjust values · Esc close",
                 Style::default().fg(colors::text_dim()),
             )),
             Line::from(""),
@@ -310,7 +382,7 @@ impl<'a> BottomPaneView<'a> for ReviewSettingsView {
                 Span::styled("↑↓", Style::default().fg(colors::function())),
                 Span::styled(" Navigate  ", Style::default().fg(colors::text_dim())),
                 Span::styled("Enter", Style::default().fg(colors::success())),
-                Span::styled(" Toggle  ", Style::default().fg(colors::text_dim())),
+                Span::styled(" Select  ", Style::default().fg(colors::text_dim())),
                 Span::styled("Space", Style::default().fg(colors::success())),
                 Span::styled(" Toggle  ", Style::default().fg(colors::text_dim())),
                 Span::styled("←→", Style::default().fg(colors::function())),

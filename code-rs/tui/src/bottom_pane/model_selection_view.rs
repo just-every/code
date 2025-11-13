@@ -17,6 +17,35 @@ use std::cmp::Ordering;
 
 use super::settings_panel::{render_panel, PanelFrameStyle};
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ModelSelectionTarget {
+    Session,
+    Review,
+}
+
+impl ModelSelectionTarget {
+    fn panel_title(self) -> &'static str {
+        match self {
+            ModelSelectionTarget::Session => "Select Model & Reasoning",
+            ModelSelectionTarget::Review => "Select Review Model & Reasoning",
+        }
+    }
+
+    fn current_label(self) -> &'static str {
+        match self {
+            ModelSelectionTarget::Session => "Current model",
+            ModelSelectionTarget::Review => "Review model",
+        }
+    }
+
+    fn reasoning_label(self) -> &'static str {
+        match self {
+            ModelSelectionTarget::Session => "Reasoning effort",
+            ModelSelectionTarget::Review => "Review reasoning",
+        }
+    }
+}
+
 pub(crate) struct ModelSelectionView {
     presets: Vec<ModelPreset>,
     selected_index: usize,
@@ -24,15 +53,15 @@ pub(crate) struct ModelSelectionView {
     current_effort: ReasoningEffort,
     app_event_tx: AppEventSender,
     is_complete: bool,
+    target: ModelSelectionTarget,
 }
 
 impl ModelSelectionView {
-    const PANEL_TITLE: &'static str = "Select Model & Reasoning";
-
     pub fn new(
         presets: Vec<ModelPreset>,
         current_model: String,
         current_effort: ReasoningEffort,
+        target: ModelSelectionTarget,
         app_event_tx: AppEventSender,
     ) -> Self {
         let initial_index = Self::initial_selection(&presets, &current_model, current_effort);
@@ -43,6 +72,7 @@ impl ModelSelectionView {
             current_effort,
             app_event_tx,
             is_complete: false,
+            target,
         }
     }
 
@@ -148,10 +178,20 @@ impl ModelSelectionView {
     fn confirm_selection(&mut self) {
         if let Some(preset) = self.presets.get(self.selected_index) {
             let effort = Self::preset_effort(preset);
-            let _ = self.app_event_tx.send(AppEvent::UpdateModelSelection {
-                model: preset.model.to_string(),
-                effort: Some(effort),
-            });
+            match self.target {
+                ModelSelectionTarget::Session => {
+                    let _ = self.app_event_tx.send(AppEvent::UpdateModelSelection {
+                        model: preset.model.to_string(),
+                        effort: Some(effort),
+                    });
+                }
+                ModelSelectionTarget::Review => {
+                    let _ = self.app_event_tx.send(AppEvent::UpdateReviewModelSelection {
+                        model: preset.model.to_string(),
+                        effort,
+                    });
+                }
+            }
         }
         self.is_complete = true;
     }
@@ -324,7 +364,7 @@ impl ModelSelectionView {
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(vec![
             Span::styled(
-                "Current model: ",
+                format!("{}: ", self.target.current_label()),
                 Style::default().fg(crate::colors::text_dim()),
             ),
             Span::styled(
@@ -336,7 +376,7 @@ impl ModelSelectionView {
         ]));
         lines.push(Line::from(vec![
             Span::styled(
-                "Reasoning effort: ",
+                format!("{}: ", self.target.reasoning_label()),
                 Style::default().fg(crate::colors::text_dim()),
             ),
             Span::styled(
@@ -479,7 +519,7 @@ impl<'a> BottomPaneView<'a> for ModelSelectionView {
         render_panel(
             area,
             buf,
-            Self::PANEL_TITLE,
+            self.target.panel_title(),
             PanelFrameStyle::bottom_pane(),
             |inner, buf| self.render_panel_body(inner, buf),
         );

@@ -208,6 +208,12 @@ pub(crate) enum AppEvent {
         effort: Option<ReasoningEffort>,
     },
 
+    /// Update the dedicated review model + reasoning effort
+    UpdateReviewModelSelection {
+        model: String,
+        effort: ReasoningEffort,
+    },
+
     /// Update the text verbosity level
     UpdateTextVerbosity(TextVerbosity),
 
@@ -219,6 +225,8 @@ pub(crate) enum AppEvent {
     UpdateReviewAutoResolveEnabled(bool),
     /// Set the maximum number of Auto Resolve re-review attempts
     UpdateReviewAutoResolveAttempts(u32),
+    /// Open the review model selector overlay
+    ShowReviewModelSelector,
     /// Enable/disable a specific validation tool
     UpdateValidationTool { name: String, enable: bool },
     /// Enable/disable an entire validation group
