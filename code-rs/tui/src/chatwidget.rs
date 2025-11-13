@@ -15,7 +15,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime};
-use std::process::Command;
+use std::process::{Command, Output};
 use std::str::FromStr;
 use base64::prelude::{Engine as _, BASE64_STANDARD};
 
@@ -245,6 +245,414 @@ impl EscRoute {
             consume,
             allows_double_esc,
         }
+    }
+}
+
+struct MergeRepoState {
+    git_root: PathBuf,
+    worktree_path: PathBuf,
+    worktree_branch: String,
+    worktree_sha: String,
+    worktree_status: String,
+    worktree_dirty: bool,
+    worktree_status_ok: bool,
+    worktree_diff_summary: Option<String>,
+    repo_status: String,
+    repo_dirty: bool,
+    repo_status_ok: bool,
+    default_branch: Option<String>,
+    default_branch_exists: bool,
+    repo_head_branch: Option<String>,
+    repo_has_in_progress_op: bool,
+    fast_forward_possible: bool,
+}
+
+impl MergeRepoState {
+    async fn gather(worktree_path: PathBuf, git_root: PathBuf) -> Result<Self, String> {
+        use tokio::process::Command;
+
+        let worktree_branch = match Command::new("git")
+            .current_dir(&worktree_path)
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .await
+        {
+            Ok(out) if out.status.success() => {
+                String::from_utf8_lossy(&out.stdout).trim().to_string()
+            }
+            _ => {
+                return Err("failed to detect worktree branch name".to_string());
+            }
+        };
+
+        let worktree_sha = match Command::new("git")
+            .current_dir(&worktree_path)
+            .args(["rev-parse", "--short", "HEAD"])
+            .output()
+            .await
+        {
+            Ok(out) if out.status.success() => {
+                let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if sha.is_empty() {
+                    "unknown".to_string()
+                } else {
+                    sha
+                }
+            }
+            _ => "unknown".to_string(),
+        };
+
+        let worktree_status_raw = ChatWidget::git_short_status(&worktree_path).await;
+        let (worktree_status, worktree_dirty, worktree_status_ok) =
+            Self::normalize_status(worktree_status_raw);
+        let worktree_diff_summary = if worktree_dirty {
+            ChatWidget::git_diff_stat(&worktree_path)
+                .await
+                .ok()
+                .map(|d| d.trim().to_string())
+                .filter(|d| !d.is_empty())
+        } else {
+            None
+        };
+
+        let branch_metadata = code_core::git_worktree::load_branch_metadata(&worktree_path);
+        let mut default_branch = branch_metadata
+            .as_ref()
+            .and_then(|meta| meta.base_branch.clone());
+        if default_branch.is_none() {
+            default_branch = code_core::git_worktree::detect_default_branch(&git_root).await;
+        }
+
+        let repo_status_raw = ChatWidget::git_short_status(&git_root).await;
+        let (repo_status, repo_dirty, repo_status_ok) = Self::normalize_status(repo_status_raw);
+
+        let repo_head_branch = match Command::new("git")
+            .current_dir(&git_root)
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .await
+        {
+            Ok(out) if out.status.success() => {
+                Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+            }
+            _ => None,
+        };
+
+        let (default_branch_exists, fast_forward_possible) =
+            if let Some(ref default_branch) = default_branch {
+                let exists = Command::new("git")
+                    .current_dir(&git_root)
+                    .args([
+                        "rev-parse",
+                        "--verify",
+                        "--quiet",
+                        &format!("refs/heads/{}", default_branch),
+                    ])
+                    .output()
+                    .await
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+                let fast_forward = if exists {
+                    Command::new("git")
+                        .current_dir(&git_root)
+                        .args([
+                            "merge-base",
+                            "--is-ancestor",
+                            &format!("refs/heads/{}", default_branch),
+                            &format!("refs/heads/{}", worktree_branch),
+                        ])
+                        .output()
+                        .await
+                        .map(|o| o.status.success())
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+                (exists, fast_forward)
+            } else {
+                (false, false)
+            };
+
+        let git_dir = match Command::new("git")
+            .current_dir(&git_root)
+            .args(["rev-parse", "--git-dir"])
+            .output()
+            .await
+        {
+            Ok(out) if out.status.success() => {
+                let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                let candidate = PathBuf::from(&raw);
+                if candidate.is_absolute() {
+                    candidate
+                } else {
+                    git_root.join(raw)
+                }
+            }
+            _ => git_root.join(".git"),
+        };
+        let repo_has_in_progress_op = [
+            "MERGE_HEAD",
+            "rebase-apply",
+            "rebase-merge",
+            "CHERRY_PICK_HEAD",
+            "BISECT_LOG",
+        ]
+        .iter()
+        .any(|name| git_dir.join(name).exists());
+
+        Ok(MergeRepoState {
+            git_root,
+            worktree_path,
+            worktree_branch,
+            worktree_sha,
+            worktree_status,
+            worktree_dirty,
+            worktree_status_ok,
+            worktree_diff_summary,
+            repo_status,
+            repo_dirty,
+            repo_status_ok,
+            default_branch,
+            default_branch_exists,
+            repo_head_branch,
+            repo_has_in_progress_op,
+            fast_forward_possible,
+        })
+    }
+
+    fn normalize_status(result: Result<String, String>) -> (String, bool, bool) {
+        match result {
+            Ok(s) => {
+                let trimmed = s.trim().to_string();
+                if trimmed.is_empty() {
+                    ("clean".to_string(), false, true)
+                } else {
+                    (trimmed, true, true)
+                }
+            }
+            Err(err) => (format!("status unavailable: {}", err), true, false),
+        }
+    }
+
+    fn snapshot_summary(&self) -> String {
+        let worktree_state = if !self.worktree_status_ok {
+            "unknown"
+        } else if self.worktree_dirty {
+            "dirty"
+        } else {
+            "clean"
+        };
+        let repo_state = if !self.repo_status_ok {
+            "unknown"
+        } else if self.repo_dirty {
+            "dirty"
+        } else {
+            "clean"
+        };
+        format!(
+            "`/merge` — repo snapshot: worktree '{}' ({}) → default '{}' ({}), fast-forward: {}",
+            self.worktree_branch,
+            worktree_state,
+            self.default_branch_label(),
+            repo_state,
+            if self.fast_forward_possible { "yes" } else { "no" }
+        )
+    }
+
+    fn auto_fast_forward_blockers(&self) -> Vec<String> {
+        let mut reasons = Vec::new();
+        if !self.worktree_status_ok {
+            reasons.push("unable to read worktree status".to_string());
+        }
+        if self.worktree_dirty {
+            reasons.push("worktree has uncommitted changes".to_string());
+        }
+        if !self.repo_status_ok {
+            reasons.push("unable to read repo status".to_string());
+        }
+        if self.repo_dirty {
+            reasons.push(format!(
+                "{} checkout has uncommitted changes",
+                self.default_branch_label()
+            ));
+        }
+        if self.repo_has_in_progress_op {
+            reasons.push(
+                "default checkout has an in-progress merge/rebase/cherry-pick".to_string(),
+            );
+        }
+        if self.default_branch.is_none() {
+            reasons.push("default branch is unknown".to_string());
+        }
+        if self.default_branch.is_some() && !self.default_branch_exists {
+            reasons.push(format!(
+                "default branch '{}' missing locally",
+                self.default_branch_label()
+            ));
+        }
+        match (&self.repo_head_branch, &self.default_branch) {
+            (Some(head), Some(default)) if head == default => {}
+            (Some(head), Some(default)) => reasons.push(format!(
+                "repo root is on '{}' instead of '{}'",
+                head, default
+            )),
+            (Some(_), None) => reasons.push(
+                "repo root branch detected but default branch is still unknown".to_string(),
+            ),
+            (None, _) => reasons.push("unable to detect branch currently checked out in repo root".to_string()),
+        }
+        if !self.fast_forward_possible {
+            reasons.push("fast-forward merge is not possible".to_string());
+        }
+        reasons
+    }
+
+    fn default_branch_label(&self) -> String {
+        self.default_branch
+            .as_deref()
+            .unwrap_or("default branch (determine before merging)")
+            .to_string()
+    }
+
+    fn agent_preface(&self, reason_text: &str) -> String {
+        let default_branch_line = self
+            .default_branch
+            .as_deref()
+            .unwrap_or("unknown default branch (determine before merging)");
+        let worktree_status = Self::format_status_for_context(&self.worktree_status);
+        let repo_status = Self::format_status_for_context(&self.repo_status);
+        let fast_forward_label = if self.fast_forward_possible { "yes" } else { "no" };
+        let mut preface = format!(
+            "[developer] Automation skipped because: {}. Finish the merge manually with the steps below.\n\nContext:\n- Worktree path (current cwd): {} — branch {} @ {}, status {}\n- Repo root path: {} — target {} checkout, status {}\n- Fast-forward possible: {}\n",
+            reason_text,
+            self.worktree_path.display(),
+            self.worktree_branch,
+            self.worktree_sha,
+            worktree_status,
+            self.git_root.display(),
+            default_branch_line,
+            repo_status,
+            fast_forward_label,
+        );
+        preface.push_str(&format!(
+            "\n1. Worktree prep (already in {} on {}):\n   - Review `git status`.\n   - Stage and commit every change that belongs in the merge. Use descriptive messages; no network commands and no resets.\n",
+            self.worktree_path.display(),
+            self.worktree_branch,
+        ));
+        if let Some(ref default_branch) = self.default_branch {
+            preface.push_str(&format!(
+                "2. Default-branch checkout prep:\n   - cd {}\n   - If HEAD is not {}, run `git checkout {}`.\n   - If this checkout is dirty, stash with a clear message before continuing.\n",
+                self.git_root.display(),
+                default_branch,
+                default_branch,
+            ));
+        } else {
+            preface.push_str(&format!(
+                "2. Default-branch checkout prep:\n   - cd {}\n   - Determine the correct default branch for this repo (metadata missing) and check it out.\n   - If this checkout is dirty, stash with a clear message before continuing.\n",
+                self.git_root.display(),
+            ));
+        }
+        let default_branch_for_copy = self
+            .default_branch
+            .as_deref()
+            .unwrap_or("the default branch you selected");
+        preface.push_str(&format!(
+            "3. Merge locally (still in {} on {}):\n   - Run `git merge --no-ff {}`.\n   - Resolve conflicts line by line; keep intent from both branches.\n   - No network commands, no `git reset --hard`, no `git checkout -- .`, no `git clean`, and no `-X ours/theirs`.\n   - WARNING: Do not delete files, rewrite them in full, or checkout/prefer commits from one branch over another. Instead use apply_patch to surgically resolve conflicts, even if they are large in scale. Work on each conflict, line by line, so both branches' changes survive.\n   - If you stashed in step 2, apply/pop it now and commit if needed.\n",
+            self.git_root.display(),
+            default_branch_for_copy,
+            self.worktree_branch,
+        ));
+        preface.push_str(&format!(
+            "4. Verify in {}:\n   - `git status` is clean.\n   - `git merge-base --is-ancestor {} HEAD` succeeds.\n   - No MERGE_HEAD/rebase/cherry-pick artifacts remain.\n",
+            self.git_root.display(),
+            self.worktree_branch,
+        ));
+        preface.push_str(&format!(
+            "5. Cleanup:\n   - `git worktree remove {}` (only after verification).\n   - `git branch -D {}` in {} if the branch still exists.\n",
+            self.worktree_path.display(),
+            self.worktree_branch,
+            self.git_root.display(),
+        ));
+        preface.push_str(
+            "6. Report back with a concise command log and any conflicts you resolved.\n\nAbsolute rules: no network operations, no resets, no dropping local history, no blanket \"ours/theirs\" strategies.\n",
+        );
+        if let Some(diff) = &self.worktree_diff_summary {
+            preface.push_str("\nWorktree diff summary:\n");
+            preface.push_str(diff);
+        }
+        preface
+    }
+
+    fn format_status_for_context(status: &str) -> String {
+        if status == "clean" {
+            return "clean".to_string();
+        }
+        status
+            .lines()
+            .enumerate()
+            .map(|(idx, line)| if idx == 0 { line.to_string() } else { format!("  {}", line) })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+async fn run_fast_forward_merge(state: &MergeRepoState) -> Result<(), String> {
+    use tokio::process::Command;
+
+    let merge = Command::new("git")
+        .current_dir(&state.git_root)
+        .args(["merge", "--ff-only", &state.worktree_branch])
+        .output()
+        .await
+        .map_err(|err| format!("failed to run git merge --ff-only: {}", err))?;
+    if !merge.status.success() {
+        return Err(format!(
+            "fast-forward merge failed: {}",
+            describe_command_failure(&merge, "git merge --ff-only failed")
+        ));
+    }
+
+    let worktree_remove = Command::new("git")
+        .current_dir(&state.git_root)
+        .args(["worktree", "remove"])
+        .arg(&state.worktree_path)
+        .arg("--force")
+        .output()
+        .await
+        .map_err(|err| format!("failed to remove worktree: {}", err))?;
+    if !worktree_remove.status.success() {
+        return Err(format!(
+            "failed to remove worktree: {}",
+            describe_command_failure(&worktree_remove, "git worktree remove failed")
+        ));
+    }
+
+    let branch_delete = Command::new("git")
+        .current_dir(&state.git_root)
+        .args(["branch", "-D", &state.worktree_branch])
+        .output()
+        .await
+        .map_err(|err| format!("failed to delete branch: {}", err))?;
+    if !branch_delete.status.success() {
+        return Err(format!(
+            "failed to delete branch '{}': {}",
+            state.worktree_branch,
+            describe_command_failure(&branch_delete, "git branch -D failed")
+        ));
+    }
+
+    Ok(())
+}
+
+fn describe_command_failure(out: &Output, fallback: &str) -> String {
+    let stderr_s = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    let stdout_s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !stderr_s.is_empty() {
+        stderr_s
+    } else if !stdout_s.is_empty() {
+        stdout_s
+    } else {
+        fallback.to_string()
     }
 }
 
@@ -28408,15 +28816,14 @@ impl ChatWidget<'_> {
         self.request_redraw();
     }
 
-    /// Handle `/merge` to merge the current worktree branch back into the
-    /// default branch. Hands off to the agent when the repository state is
-    /// non-trivial.
+    /// Handle `/merge` for branch worktrees. Attempts a clean fast-forward
+    /// when both checkouts are pristine; otherwise it hands the work to the agent
+    /// with explicit manual instructions.
     pub(crate) fn handle_merge_command(&mut self) {
         self.consume_pending_prompt_for_ui_only_turn();
         if !Self::is_branch_worktree_path(&self.config.cwd) {
             self.history_push_plain_state(crate::history_cell::new_error_event(
-                "`/merge` — run this command from inside a branch worktree created with '/branch'."
-                    .to_string(),
+                "`/merge` — run this command from inside a branch worktree created with '/branch'.".to_string(),
             ));
             self.request_redraw();
             return;
@@ -28432,7 +28839,6 @@ impl ChatWidget<'_> {
         self.request_redraw();
 
         tokio::spawn(async move {
-            use tokio::process::Command;
 
             fn send_background(
                 tx: &AppEventSender,
@@ -28450,8 +28856,30 @@ impl ChatWidget<'_> {
                 tx.send_background_event_with_ticket(ticket, message);
             }
 
-            let git_root = match code_core::git_info::resolve_root_git_project_for_trust(&work_cwd)
-            {
+            fn handoff_to_agent(
+                tx: &AppEventSender,
+                ticket: &BackgroundOrderTicket,
+                state: MergeRepoState,
+                mut reasons: Vec<String>,
+            ) {
+                if reasons.is_empty() {
+                    reasons.push("manual follow-up requested".to_string());
+                }
+                let reason_text = reasons.join(", ");
+                send_background(
+                    tx,
+                    ticket,
+                    format!("`/merge` — handing off to agent ({})", reason_text),
+                );
+                let visible = format!(
+                    "Finalize branch '{}' via /merge (manual merge required)",
+                    state.worktree_branch
+                );
+                let preface = state.agent_preface(&reason_text);
+                let _ = tx.send(AppEvent::SubmitTextWithPreface { visible, preface });
+            }
+
+            let git_root = match code_core::git_info::resolve_root_git_project_for_trust(&work_cwd) {
                 Some(p) => p,
                 None => {
                     send_background(&tx, &ticket, "`/merge` — not a git repo".to_string());
@@ -28471,711 +28899,51 @@ impl ChatWidget<'_> {
                 }
             };
 
-            fn normalize_status(result: Result<String, String>) -> String {
-                match result {
-                    Ok(s) if s.trim().is_empty() => "clean".to_string(),
-                    Ok(s) => s,
-                    Err(err) => format!("status unavailable: {}", err),
-                }
-            }
-
-            let branch_name = match Command::new("git")
-                .current_dir(&work_cwd)
-                .args(["rev-parse", "--abbrev-ref", "HEAD"])
-                .output()
-                .await
-            {
-                Ok(out) if out.status.success() => {
-                    String::from_utf8_lossy(&out.stdout).trim().to_string()
-                }
-                _ => {
-                    send_background(&tx, &ticket, "`/merge` — failed to detect branch name".to_string());
-                    return;
-                }
-            };
-
-            let worktree_status_raw = ChatWidget::git_short_status(&work_cwd).await;
-            let worktree_status_for_agent = normalize_status(worktree_status_raw.clone());
-            let worktree_dirty =
-                matches!(worktree_status_raw.as_ref(), Ok(s) if !s.trim().is_empty());
-
-            let worktree_diff_stat = if worktree_dirty {
-                ChatWidget::git_diff_stat(&work_cwd)
-                    .await
-                    .ok()
-                    .map(|d| d.trim().to_string())
-                    .filter(|d| !d.is_empty())
-            } else {
-                None
-            };
-
-            let repo_status_raw = ChatWidget::git_short_status(&git_root).await;
-            let repo_status_for_agent = normalize_status(repo_status_raw.clone());
-            let repo_dirty = matches!(repo_status_raw.as_ref(), Ok(s) if !s.trim().is_empty());
-
-            let branch_metadata = code_core::git_worktree::load_branch_metadata(&work_cwd);
-            let mut default_branch_opt = branch_metadata
-                .as_ref()
-                .and_then(|meta| meta.base_branch.clone());
-            if default_branch_opt.is_none() {
-                default_branch_opt =
-                    code_core::git_worktree::detect_default_branch(&git_root).await;
-            }
-
-            let mut handoff_reasons: Vec<String> = Vec::new();
-            if let Err(err) = &worktree_status_raw {
-                handoff_reasons.push(format!("unable to read worktree status: {}", err));
-            }
-            if worktree_dirty {
-                handoff_reasons.push("worktree has uncommitted changes".to_string());
-            }
-            if let Err(err) = &repo_status_raw {
-                handoff_reasons.push(format!("unable to read repo status: {}", err));
-            }
-            if repo_dirty {
-                handoff_reasons.push("default branch checkout has uncommitted changes".to_string());
-            }
-            if default_branch_opt.is_none() {
-                handoff_reasons.push("could not determine default branch".to_string());
-            }
-
-            let branch_label = format!("{}", branch_name);
-            let root_display = git_root.display().to_string();
-            let worktree_display = work_cwd.display().to_string();
-            let tx_for_switch = tx.clone();
-            let git_root_for_switch = git_root.clone();
-            let default_branch_for_instructions = default_branch_opt.clone();
-            let send_agent_handoff =
-                |mut reasons: Vec<String>,
-                 extra_note: Option<String>,
-                 worktree_status: String,
-                 repo_status: String,
-                 worktree_diff: Option<String>| {
-                    if reasons.is_empty() {
-                        reasons.push("manual follow-up requested".to_string());
-                    }
-                    let reason_text = reasons.join(", ");
-                    send_background(
-                        &tx,
-                        &ticket,
-                        format!("`/merge` — handing off to agent ({})", reason_text),
-                    );
-                    let default_branch_display = default_branch_for_instructions
-                        .clone()
-                        .unwrap_or_else(|| "unknown (inspect branch metadata)".to_string());
-                    let step2 = if let Some(branch) = default_branch_for_instructions.as_ref() {
-                        format!(
-                            "2. Ensure the local {branch} branch exists and is clean using non-destructive commands. Fast-forward with `git fetch origin` + `git merge --ff-only origin/{branch}` (or similar). If the branch is missing, create it without rewriting history."
-                        )
-                    } else {
-                        "2. Determine the correct default branch (metadata missing), create it if needed, and fast-forward it without using destructive resets.".to_string()
-                    };
-                    let step3 = if let Some(branch) = default_branch_for_instructions.as_ref() {
-                        format!(
-                            "3. Merge {branch} into {branch_label} inside the worktree and resolve conflicts."
-                        )
-                    } else {
-                        "3. Merge the chosen default branch into the worktree branch and resolve any conflicts.".to_string()
-                    };
-                    let step4 = if let Some(ref branch) = default_branch_for_instructions {
-                        format!(
-                            "4. cd {}\n   - Ensure the local {} branch exists (create it if needed). If checkout complains about local changes, stash safely, then checkout and pop/apply before finishing.",
-                            root_display, branch
-                        )
-                    } else {
-                        format!(
-                            "4. cd {}\n   - Ensure the chosen target branch exists locally. If checkout complains about local changes, stash safely, then checkout and pop/apply before finishing.",
-                            root_display
-                        )
-                    };
-                    let step5 = if let Some(ref branch) = default_branch_for_instructions {
-                        format!(
-                            "5. Merge {} into {} from {} (`git merge --no-ff {}`) and resolve conflicts.",
-                            branch_label, branch, root_display, branch_label
-                        )
-                    } else {
-                        format!(
-                            "5. Merge {} into the chosen target branch from {} (`git merge --no-ff {}`) and resolve conflicts.",
-                            branch_label, root_display, branch_label
-                        )
-                    };
-                    let mut preface = format!(
-                        "[developer] Non-trivial git state detected while finalizing the branch. Reasons: {}.\n\nRepository context:\n- Repo root: {}\n- Worktree: {}\n- Branch to merge: {}\n- Default branch target: {}\n\nCurrent git status:\nWorktree status:\n{}\n\nRepo root status:\n{}\n\nRequired actions:\n1. cd {}\n   - Inspect status. Review the diff summary below and stage/commit only the changes that belong in this merge (`git add -A` + `git commit -m \"merge {} via /merge\"`). Stash or drop anything that should stay local.\n{}\n{}\n{}\n{}\n6. Remove the worktree (`git worktree remove {} --force`) and delete the branch (`git branch -D {}`).\n7. End inside {} with a clean working tree and no leftover stashes. Pop/apply anything you created.\n\nReport back with a concise summary of the steps or explain any blockers.",
-                        reason_text,
-                        root_display,
-                        worktree_display,
-                        branch_label,
-                        default_branch_display,
-                        worktree_status,
-                        repo_status,
-                        worktree_display,
-                        branch_label,
-                        step2,
-                        step3,
-                        step4,
-                        step5,
-                        worktree_display,
-                        branch_label,
-                        root_display
-                    );
-                    if let Some(note) = extra_note {
-                        preface.push_str("\n\nAdditional notes:\n");
-                        preface.push_str(&note);
-                    }
-                    if let Some(diff) = worktree_diff {
-                        preface.push_str("\n\nWorktree diff summary:\n");
-                        preface.push_str(&diff);
-                    }
-                    let visible = format!(
-                        "Finalize branch '{}' via /merge (agent handoff)",
-                        branch_label
-                    );
-                    let _ =
-                        tx_for_switch.send(AppEvent::SwitchCwd(git_root_for_switch.clone(), None));
-                    let _ = tx.send(AppEvent::SubmitTextWithPreface { visible, preface });
-                };
-
-            if !handoff_reasons.is_empty() {
-                send_agent_handoff(
-                    handoff_reasons,
-                    None,
-                    worktree_status_for_agent.clone(),
-                    repo_status_for_agent.clone(),
-                    worktree_diff_stat.clone(),
-                );
-                return;
-            }
-
-            let default_branch = default_branch_opt.expect("default branch must exist when clean");
-
-            let stage_out = Command::new("git")
-                .current_dir(&work_cwd)
-                .args(["add", "-A"])
-                .output()
-                .await;
-            if !matches!(stage_out.as_ref(), Ok(o) if o.status.success()) {
-                let mut reason = String::from("failed to stage changes before merge");
-                if let Ok(out) = stage_out {
-                    let stderr_s = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                    let stdout_s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                    if !stderr_s.is_empty() {
-                        reason = format!("{}: {}", reason, stderr_s);
-                    } else if !stdout_s.is_empty() {
-                        reason = format!("{}: {}", reason, stdout_s);
-                    }
-                } else if let Err(err) = stage_out {
-                    reason = format!("{}: {}", reason, err);
-                }
-                let updated_worktree_status = normalize_status(ChatWidget::git_short_status(&work_cwd).await);
-                let updated_repo_status = normalize_status(ChatWidget::git_short_status(&git_root).await);
-                let updated_diff = ChatWidget::git_diff_stat(&work_cwd)
-                    .await
-                    .ok()
-                    .map(|d| d.trim().to_string())
-                    .filter(|d| !d.is_empty())
-                    .or(worktree_diff_stat.clone());
-                send_agent_handoff(
-                    vec![reason],
-                    None,
-                    updated_worktree_status,
-                    updated_repo_status,
-                    updated_diff,
-                );
-                return;
-            }
-
-            let commit_out = Command::new("git")
-                .current_dir(&work_cwd)
-                .args(["commit", "-m", &format!("merge {branch_label} via /merge")])
-                .output()
-                .await;
-
-            let mut commit_issue: Option<String> = None;
-            match commit_out {
-                Ok(ref out) if out.status.success() => {}
-                Ok(out) => {
-                    let stderr_s = String::from_utf8_lossy(&out.stderr);
-                    let stdout_s = String::from_utf8_lossy(&out.stdout);
-                    let benign = stdout_s.contains("nothing to commit")
-                        || stdout_s.contains("working tree clean")
-                        || stderr_s.contains("nothing to commit")
-                        || stderr_s.contains("working tree clean");
-                    if !benign {
-                        let message = if !stderr_s.trim().is_empty() {
-                            stderr_s.trim().to_string()
-                        } else {
-                            stdout_s.trim().to_string()
-                        };
-                        commit_issue = Some(format!(
-                            "commit failed before merge: {}",
-                            if message.is_empty() {
-                                "unknown error".to_string()
-                            } else {
-                                message
-                            }
-                        ));
-                    }
-                }
+            let state = match MergeRepoState::gather(work_cwd.clone(), git_root.clone()).await {
+                Ok(state) => state,
                 Err(err) => {
-                    commit_issue = Some(format!("commit failed before merge: {}", err));
+                    send_background(&tx, &ticket, format!("`/merge` — {}", err));
+                    return;
                 }
-            }
-
-            if let Some(issue) = commit_issue {
-                let updated_worktree_status = normalize_status(ChatWidget::git_short_status(&work_cwd).await);
-                let updated_repo_status = normalize_status(ChatWidget::git_short_status(&git_root).await);
-                let updated_diff = ChatWidget::git_diff_stat(&work_cwd)
-                    .await
-                    .ok()
-                    .map(|d| d.trim().to_string())
-                    .filter(|d| !d.is_empty())
-                    .or(worktree_diff_stat.clone());
-                send_agent_handoff(
-                    vec![issue],
-                    None,
-                    updated_worktree_status,
-                    updated_repo_status,
-                    updated_diff,
-                );
-                return;
-            }
-
-            let post_stage_status = ChatWidget::git_short_status(&work_cwd).await;
-            if matches!(post_stage_status.as_ref(), Ok(s) if !s.trim().is_empty()) {
-                let updated_diff = ChatWidget::git_diff_stat(&work_cwd)
-                    .await
-                    .ok()
-                    .map(|d| d.trim().to_string())
-                    .filter(|d| !d.is_empty())
-                    .or(worktree_diff_stat.clone());
-                send_agent_handoff(
-                    vec!["worktree not clean after staging and committing changes".to_string()],
-                    None,
-                    normalize_status(post_stage_status),
-                    normalize_status(ChatWidget::git_short_status(&git_root).await),
-                    updated_diff,
-                );
-                return;
-            }
-
-            let local_default_ref = format!("refs/heads/{}", default_branch);
-            let local_default_exists = Command::new("git")
-                .current_dir(&git_root)
-                .args(["rev-parse", "--verify", "--quiet", &local_default_ref])
-                .output()
-                .await
-                .map(|o| o.status.success())
-                .unwrap_or(false);
-
-            if local_default_exists {
-                let ff_local = Command::new("git")
-                    .current_dir(&work_cwd)
-                    .args(["merge", "--ff-only", &local_default_ref])
-                    .output()
-                    .await;
-
-                if !matches!(ff_local, Ok(ref o) if o.status.success()) {
-                    let merge_local = Command::new("git")
-                        .current_dir(&work_cwd)
-                        .args(["merge", "--no-ff", "--no-commit", &local_default_ref])
-                        .output()
-                        .await;
-
-                    match merge_local {
-                        Ok(out) if out.status.success() => {
-                            let commit_sync = Command::new("git")
-                                .current_dir(&work_cwd)
-                                .args([
-                                    "commit",
-                                    "-m",
-                                    &format!(
-                                        "merge local {} into {} before merge",
-                                        default_branch, branch_label
-                                    ),
-                                ])
-                                .output()
-                                .await;
-                            if !matches!(commit_sync.as_ref(), Ok(o) if o.status.success()) {
-                                let note = commit_sync
-                                    .ok()
-                                    .map(|o| {
-                                        let stderr_s = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                                        let stdout_s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                                        if !stderr_s.is_empty() {
-                                            stderr_s
-                                        } else {
-                                            stdout_s
-                                        }
-                                    })
-                                    .unwrap_or_else(|| "git commit failed".to_string());
-                                let updated_worktree_status = normalize_status(ChatWidget::git_short_status(&work_cwd).await);
-                                let updated_diff = ChatWidget::git_diff_stat(&work_cwd)
-                                    .await
-                                    .ok()
-                                    .map(|d| d.trim().to_string())
-                                    .filter(|d| !d.is_empty())
-                                    .or(worktree_diff_stat.clone());
-                                send_agent_handoff(
-                                    vec!["failed to commit local default merge result".to_string()],
-                                    Some(note),
-                                    updated_worktree_status,
-                                    repo_status_for_agent.clone(),
-                                    updated_diff,
-                                );
-                                return;
-                            }
-                        }
-                        Ok(_) => {
-                            let updated_worktree_status = normalize_status(ChatWidget::git_short_status(&work_cwd).await);
-                            let updated_diff = ChatWidget::git_diff_stat(&work_cwd)
-                                .await
-                                .ok()
-                                .map(|d| d.trim().to_string())
-                                .filter(|d| !d.is_empty())
-                                .or(worktree_diff_stat.clone());
-                            send_agent_handoff(
-                                vec![format!(
-                                    "merge conflicts while merging local '{}' into '{}'",
-                                    default_branch, branch_label
-                                )],
-                                Some(
-                                    "The worktree currently has an in-progress merge that needs to be resolved. Please complete it before retrying the final merge.".to_string(),
-                                ),
-                                updated_worktree_status,
-                                repo_status_for_agent.clone(),
-                                updated_diff,
-                            );
-                            return;
-                        }
-                        Err(err) => {
-                            let updated_worktree_status = normalize_status(ChatWidget::git_short_status(&work_cwd).await);
-                            let updated_diff = ChatWidget::git_diff_stat(&work_cwd)
-                                .await
-                                .ok()
-                                .map(|d| d.trim().to_string())
-                                .filter(|d| !d.is_empty())
-                                .or(worktree_diff_stat.clone());
-                            send_agent_handoff(
-                                vec![format!(
-                                    "failed to merge local '{}' into '{}': {}",
-                                    default_branch, branch_label, err
-                                )],
-                                None,
-                                updated_worktree_status,
-                                repo_status_for_agent.clone(),
-                                updated_diff,
-                            );
-                            return;
-                        }
-                    }
-                }
-            }
-
-            let on_default = match Command::new("git")
-                .current_dir(&git_root)
-                .args(["rev-parse", "--abbrev-ref", "HEAD"])
-                .output()
-                .await
-            {
-                Ok(o) if o.status.success() => {
-                    String::from_utf8_lossy(&o.stdout).trim() == default_branch
-                }
-                _ => false,
             };
 
-            if !on_default {
-                let has_local = match Command::new("git")
-                    .current_dir(&git_root)
-                    .args([
-                        "rev-parse",
-                        "--verify",
-                        "--quiet",
-                        &format!("refs/heads/{}", default_branch),
-                    ])
-                    .output()
-                    .await
-                {
-                    Ok(o) => o.status.success(),
-                    _ => false,
-                };
-                if !has_local {
-                    let updated_repo_status = ChatWidget::git_short_status(&git_root)
-                        .await
-                        .map(|s| {
-                            if s.trim().is_empty() {
-                                "clean".to_string()
-                            } else {
-                                s
-                            }
-                        })
-                        .unwrap_or_else(|err| format!("status unavailable: {}", err));
-                    let updated_diff = ChatWidget::git_diff_stat(&work_cwd)
-                        .await
-                        .ok()
-                        .map(|d| d.trim().to_string())
-                        .filter(|d| !d.is_empty())
-                        .or(worktree_diff_stat.clone());
-                    send_agent_handoff(
-                        vec![format!(
-                            "default branch '{}' missing locally",
-                            default_branch
-                        )],
-                        None,
-                        worktree_status_for_agent.clone(),
-                        updated_repo_status,
-                        updated_diff,
-                    );
-                    return;
-                }
+            send_background(&tx, &ticket, state.snapshot_summary());
 
-                let co = Command::new("git")
-                    .current_dir(&git_root)
-                    .args(["checkout", &default_branch])
-                    .output()
-                    .await;
-                if !matches!(co, Ok(ref o) if o.status.success()) {
-                    let (stderr_s, stdout_s) = co
-                        .ok()
-                        .map(|o| {
-                            (
-                                String::from_utf8_lossy(&o.stderr).trim().to_string(),
-                                String::from_utf8_lossy(&o.stdout).trim().to_string(),
-                            )
-                        })
-                        .unwrap_or_else(|| (String::new(), String::new()));
-
-                    let mut note = String::new();
-                    if !stderr_s.is_empty() {
-                        note = stderr_s;
-                    } else if !stdout_s.is_empty() {
-                        note = stdout_s;
-                    }
-
-                    let mut hint: Option<String> = None;
-                    if let Ok(wt) = Command::new("git")
-                        .current_dir(&git_root)
-                        .args(["worktree", "list", "--porcelain"])
-                        .output()
-                        .await
-                    {
-                        if wt.status.success() {
-                            let s = String::from_utf8_lossy(&wt.stdout);
-                            let mut cur_path: Option<String> = None;
-                            let mut cur_branch: Option<String> = None;
-                            for line in s.lines() {
-                                if let Some(rest) = line.strip_prefix("worktree ") {
-                                    cur_path = Some(rest.trim().to_string());
-                                    cur_branch = None;
-                                    continue;
-                                }
-                                if let Some(rest) = line.strip_prefix("branch ") {
-                                    cur_branch = Some(rest.trim().to_string());
-                                }
-                                if let (Some(p), Some(b)) = (&cur_path, &cur_branch) {
-                                    if b == &format!("refs/heads/{}", default_branch)
-                                        && std::path::Path::new(p) != git_root.as_path()
-                                    {
-                                        hint = Some(p.clone());
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if let Some(h) = hint {
-                        if note.is_empty() {
-                            note = format!("default branch checked out in worktree: {}", h);
-                        } else {
-                            note = format!("{} (checked out in worktree: {})", note, h);
-                        }
-                    }
-
-                    let updated_repo_status = ChatWidget::git_short_status(&git_root)
-                        .await
-                        .map(|s| {
-                            if s.trim().is_empty() {
-                                "clean".to_string()
-                            } else {
-                                s
-                            }
-                        })
-                        .unwrap_or_else(|err| format!("status unavailable: {}", err));
-                    let updated_diff = ChatWidget::git_diff_stat(&work_cwd)
-                        .await
-                        .ok()
-                        .map(|d| d.trim().to_string())
-                        .filter(|d| !d.is_empty())
-                        .or(worktree_diff_stat.clone());
-
-                    send_agent_handoff(
-                        vec![format!(
-                            "failed to checkout '{}' in repo root",
-                            default_branch
-                        )],
-                        if note.is_empty() { None } else { Some(note) },
-                        worktree_status_for_agent.clone(),
-                        updated_repo_status,
-                        updated_diff,
-                    );
-                    return;
-                }
-            }
-
-            let merge = Command::new("git")
-                .current_dir(&git_root)
-                .args(["merge", "--no-ff", &branch_label])
-                .output()
-                .await;
-            if !matches!(merge, Ok(ref o) if o.status.success()) {
-                let err = merge
-                    .ok()
-                    .and_then(|o| String::from_utf8(o.stderr).ok())
-                    .unwrap_or_else(|| "unknown error".to_string());
-                let updated_repo_status = ChatWidget::git_short_status(&git_root)
-                    .await
-                    .map(|s| {
-                        if s.trim().is_empty() {
-                            "clean".to_string()
-                        } else {
-                            s
-                        }
-                    })
-                    .unwrap_or_else(|e| format!("status unavailable: {}", e));
-                let updated_diff = ChatWidget::git_diff_stat(&work_cwd)
-                    .await
-                    .ok()
-                    .map(|d| d.trim().to_string())
-                    .filter(|d| !d.is_empty())
-                    .or(worktree_diff_stat.clone());
-                send_agent_handoff(
-                    vec![format!(
-                        "merge of '{}' into '{}' failed: {}",
-                        branch_label,
-                        default_branch,
-                        err.trim()
-                    )],
-                    None,
-                    worktree_status_for_agent.clone(),
-                    updated_repo_status,
-                    updated_diff,
-                );
-                return;
-            }
-
-            let final_worktree_status_raw = ChatWidget::git_short_status(&work_cwd).await;
-            if matches!(
-                final_worktree_status_raw.as_ref(),
-                Ok(s) if !s.trim().is_empty()
-            ) {
-                let updated_diff = ChatWidget::git_diff_stat(&work_cwd)
-                    .await
-                    .ok()
-                    .map(|d| d.trim().to_string())
-                    .filter(|d| !d.is_empty())
-                    .or(worktree_diff_stat.clone());
-                send_agent_handoff(
-                    vec!["worktree not clean after merging into default".to_string()],
-                    None,
-                    normalize_status(final_worktree_status_raw),
-                    normalize_status(ChatWidget::git_short_status(&git_root).await),
-                    updated_diff,
-                );
-                return;
-            }
-
-            let final_repo_status_raw = ChatWidget::git_short_status(&git_root).await;
-            if matches!(final_repo_status_raw.as_ref(), Ok(s) if !s.trim().is_empty()) {
-                let updated_diff = ChatWidget::git_diff_stat(&work_cwd)
-                    .await
-                    .ok()
-                    .map(|d| d.trim().to_string())
-                    .filter(|d| !d.is_empty())
-                    .or(worktree_diff_stat.clone());
-                send_agent_handoff(
-                    vec!["default branch not clean after merge".to_string()],
-                    None,
-                    normalize_status(ChatWidget::git_short_status(&work_cwd).await),
-                    normalize_status(final_repo_status_raw),
-                    updated_diff,
-                );
-                return;
-            }
-
-            let worktree_remove = Command::new("git")
-                .current_dir(&git_root)
-                .args(["worktree", "remove", work_cwd.to_str().unwrap(), "--force"])
-                .output()
-                .await;
-            if !matches!(worktree_remove.as_ref(), Ok(o) if o.status.success()) {
-                let note = match worktree_remove {
-                    Ok(o) => {
-                        let stderr_s = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                        let stdout_s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                        if !stderr_s.is_empty() {
-                            stderr_s
-                        } else if !stdout_s.is_empty() {
-                            stdout_s
-                        } else {
-                            "git worktree remove failed".to_string()
-                        }
-                    }
-                    Err(err) => err.to_string(),
-                };
+            let mut blockers = state.auto_fast_forward_blockers();
+            if blockers.is_empty() {
                 send_background(
                     &tx,
                     &ticket,
                     format!(
-                        "`/merge` — merged successfully but failed to remove worktree automatically: {}",
-                        note
+                        "`/merge` — attempting clean fast-forward of '{}' into '{}'",
+                        state.worktree_branch,
+                        state.default_branch_label()
                     ),
                 );
-                let _ = tx.send(AppEvent::SwitchCwd(git_root, None));
-                return;
-            }
-
-            let branch_delete = Command::new("git")
-                .current_dir(&git_root)
-                .args(["branch", "-D", &branch_label])
-                .output()
-                .await;
-            if !matches!(branch_delete.as_ref(), Ok(o) if o.status.success()) {
-                let note = match branch_delete {
-                    Ok(o) => {
-                        let stderr_s = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                        let stdout_s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                        if !stderr_s.is_empty() {
-                            stderr_s
-                        } else if !stdout_s.is_empty() {
-                            stdout_s
-                        } else {
-                            "git branch -D failed".to_string()
-                        }
+                match run_fast_forward_merge(&state).await {
+                    Ok(()) => {
+                        send_background_late(
+                            &tx,
+                            &ticket,
+                            format!(
+                                "`/merge` — fast-forwarded '{}' into '{}' and removed the worktree",
+                                state.worktree_branch,
+                                state.default_branch_label()
+                            ),
+                        );
+                        let _ = tx.send(AppEvent::SwitchCwd(state.git_root.clone(), None));
+                        return;
                     }
-                    Err(err) => err.to_string(),
-                };
-                send_background(
-                    &tx,
-                    &ticket,
-                    format!(
-                        "`/merge` — merged successfully but failed to delete branch automatically: {}",
-                        note
-                    ),
-                );
-                let _ = tx.send(AppEvent::SwitchCwd(git_root, None));
-                return;
+                    Err(err) => {
+                        blockers.push(err);
+                    }
+                }
             }
 
-            let msg = format!(
-                "Merged '{}' into '{}' and cleaned up worktree. Switching back to {}",
-                branch_label,
-                default_branch,
-                git_root.display()
-            );
-            send_background_late(&tx, &ticket, msg);
-            tx.send(AppEvent::SwitchCwd(git_root, None));
+            handoff_to_agent(&tx, &ticket, state, blockers);
         });
     }
+
 }
 
 impl ChatWidget<'_> {
