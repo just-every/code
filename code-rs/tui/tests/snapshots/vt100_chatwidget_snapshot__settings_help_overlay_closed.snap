@@ -1,5 +1,6 @@
 ---
 source: tui/tests/vt100_chatwidget_snapshot.rs
+assertion_line: 2035
 expression: closed
 ---
  +------------------------------------------------------------------------------------------------+
@@ -18,7 +19,7 @@ expression: closed
  |                                                                                                |
  |                                                                                                |
 
- |   Agents             Enabled: 8/8                                                              |
+ |   Agents             Enabled: 9/9                                                              |
  |   + Configure linked agents and default task permissions.                                      |
  |                                                                                                |
  | ↑ ↓ Move    Enter Open    Esc Close    ? Help                                                  |
