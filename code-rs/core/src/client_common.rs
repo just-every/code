@@ -521,7 +521,7 @@ mod tests {
             },
             InstructionsTestCase {
                 slug: "gpt-5.1",
-                expects_apply_patch_instructions: true,
+                expects_apply_patch_instructions: false,
             },
             InstructionsTestCase {
                 slug: "codex-mini-latest",

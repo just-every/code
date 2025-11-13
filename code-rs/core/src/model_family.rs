@@ -109,13 +109,14 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             supports_reasoning_summaries: true,
             reasoning_summary_format: ReasoningSummaryFormat::Experimental,
             base_instructions: GPT_5_CODEX_INSTRUCTIONS.to_string(),
+            apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
         )
     } else if slug.starts_with("gpt-5.1") {
         model_family!(
             slug, "gpt-5.1",
             supports_reasoning_summaries: true,
-            needs_special_apply_patch_instructions: true,
             base_instructions: GPT_5_1_INSTRUCTIONS.to_string(),
+            apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
         )
     } else if slug.starts_with("gpt-5") {
         model_family!(
