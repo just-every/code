@@ -395,10 +395,18 @@ pub(crate) enum AppEvent {
 
     /// Begin ChatGPT login flow from the in-app login manager.
     LoginStartChatGpt,
+    /// Begin device code login flow from the in-app login manager.
+    LoginStartDeviceCode,
     /// Cancel an in-progress ChatGPT login flow triggered via `/login`.
     LoginCancelChatGpt,
     /// ChatGPT login flow has completed (success or failure).
     LoginChatGptComplete { result: Result<(), String> },
+    /// Device code login flow produced a user code/link.
+    LoginDeviceCodeReady { authorize_url: String, user_code: String },
+    /// Device code login flow failed before completion.
+    LoginDeviceCodeFailed { message: String },
+    /// Device code login flow completed (success or failure).
+    LoginDeviceCodeComplete { result: Result<(), String> },
     /// The active authentication mode changed (e.g., switched accounts).
     LoginUsingChatGptChanged { using_chatgpt_auth: bool },
 

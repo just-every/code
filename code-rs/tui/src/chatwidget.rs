@@ -13680,10 +13680,26 @@ impl ChatWidget<'_> {
         }
     }
 
-    pub(crate) fn notify_login_chatgpt_cancelled(&mut self) {
-        if self.with_login_add_view(|state| state.cancel_chatgpt_wait()) {
+    pub(crate) fn notify_login_device_code_pending(&mut self) {
+        let _ = self.with_login_add_view(|state| state.begin_device_code_flow());
+    }
+
+    pub(crate) fn notify_login_device_code_ready(&mut self, authorize_url: String, user_code: String) {
+        let _ = self.with_login_add_view(|state| state.set_device_code_ready(authorize_url.clone(), user_code.clone()));
+    }
+
+    pub(crate) fn notify_login_device_code_failed(&mut self, error: String) {
+        let _ = self.with_login_add_view(|state| state.on_device_code_failed(error.clone()));
+    }
+
+    pub(crate) fn notify_login_device_code_complete(&mut self, result: Result<(), String>) {
+        if self.with_login_add_view(|state| state.on_chatgpt_complete(result.clone())) {
             return;
         }
+    }
+
+    pub(crate) fn notify_login_flow_cancelled(&mut self) {
+        let _ = self.with_login_add_view(|state| state.cancel_active_flow());
     }
 
     pub(crate) fn login_add_view_active(&self) -> bool {

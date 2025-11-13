@@ -7,7 +7,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crate::pkce::PkceCodes;
-use crate::server::ServerOptions;
+use crate::server::{persist_tokens_async, exchange_code_for_tokens, ServerOptions};
 use std::io::Write;
 use std::io::{self};
 
@@ -147,50 +147,91 @@ fn print_colored_warning_device_code() {
 
 /// Full device code login flow.
 pub async fn run_device_code_login(opts: ServerOptions) -> std::io::Result<()> {
-    let client = reqwest::Client::new();
-    let base_url = opts.issuer.trim_end_matches('/');
-    let api_base_url = format!("{}/api/accounts", opts.issuer.trim_end_matches('/'));
     print_colored_warning_device_code();
     println!("⏳ Generating a new 9-digit device code for authentication...\n");
-    let uc = request_user_code(&client, &api_base_url, &opts.client_id).await?;
+    let session = DeviceCodeSession::start(opts).await?;
 
     println!(
-        "To authenticate, visit: {}/deviceauth/authorize and enter code: {}",
-        api_base_url, uc.user_code
+        "To authenticate, visit: {} and enter code: {}",
+        session.authorize_url(),
+        session.user_code()
     );
 
-    let code_resp = poll_for_token(
-        &client,
-        &api_base_url,
-        &uc.device_auth_id,
-        &uc.user_code,
-        uc.interval,
-    )
-    .await?;
+    session
+        .wait_for_tokens()
+        .await
+        .map_err(|err| std::io::Error::other(format!("device code exchange failed: {err}")))
+}
 
-    let pkce = PkceCodes {
-        code_verifier: code_resp.code_verifier,
-        code_challenge: code_resp.code_challenge,
-    };
-    println!("authorization code received");
-    let redirect_uri = format!("{base_url}/deviceauth/callback");
+pub struct DeviceCodeSession {
+    client: reqwest::Client,
+    opts: ServerOptions,
+    api_base_url: String,
+    base_url: String,
+    device_auth_id: String,
+    user_code: String,
+    interval: u64,
+}
 
-    let tokens = crate::server::exchange_code_for_tokens(
-        base_url,
-        &opts.client_id,
-        &redirect_uri,
-        &pkce,
-        &code_resp.authorization_code,
-    )
-    .await
-    .map_err(|err| std::io::Error::other(format!("device code exchange failed: {err}")))?;
+impl DeviceCodeSession {
+    pub async fn start(opts: ServerOptions) -> std::io::Result<Self> {
+        let client = reqwest::Client::new();
+        let base_url = opts.issuer.trim_end_matches('/').to_string();
+        let api_base_url = format!("{}/api/accounts", base_url);
+        let uc = request_user_code(&client, &api_base_url, &opts.client_id).await?;
 
-    crate::server::persist_tokens_async(
-        &opts.code_home,
-        None,
-        tokens.id_token,
-        tokens.access_token,
-        tokens.refresh_token,
-    )
-    .await
+        Ok(Self {
+            client,
+            api_base_url,
+            base_url,
+            device_auth_id: uc.device_auth_id,
+            user_code: uc.user_code,
+            interval: uc.interval,
+            opts,
+        })
+    }
+
+    pub fn authorize_url(&self) -> String {
+        format!("{}/deviceauth/authorize", self.api_base_url)
+    }
+
+    pub fn user_code(&self) -> &str {
+        &self.user_code
+    }
+
+    pub async fn wait_for_tokens(self) -> std::io::Result<()> {
+        let code_resp = poll_for_token(
+            &self.client,
+            &self.api_base_url,
+            &self.device_auth_id,
+            &self.user_code,
+            self.interval,
+        )
+        .await?;
+
+        let pkce = PkceCodes {
+            code_verifier: code_resp.code_verifier,
+            code_challenge: code_resp.code_challenge,
+        };
+        let redirect_uri = format!("{}/deviceauth/callback", self.base_url);
+
+        let tokens = exchange_code_for_tokens(
+            &self.base_url,
+            &self.opts.client_id,
+            &redirect_uri,
+            &pkce,
+            &code_resp.authorization_code,
+        )
+        .await
+        .map_err(|err| std::io::Error::other(format!("device code exchange failed: {err}")))?;
+
+        persist_tokens_async(
+            &self.opts.code_home,
+            None,
+            tokens.id_token,
+            tokens.access_token,
+            tokens.refresh_token,
+        )
+        .await
+    }
 }
