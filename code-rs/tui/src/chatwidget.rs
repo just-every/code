@@ -5,7 +5,7 @@ use std::collections::hash_map::Entry;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
@@ -400,6 +400,7 @@ impl MergeRepoState {
         .iter()
         .any(|name| git_dir.join(name).exists());
 
+        remember_worktree_root_hint(&worktree_path, &git_root);
         Ok(MergeRepoState {
             git_root,
             worktree_path,
@@ -534,10 +535,18 @@ impl MergeRepoState {
             repo_status,
             fast_forward_label,
         );
+        preface.push_str(
+            "\nNOTE: Each command runs in its own shell. Use `cd <path> && <command>` (or `git -C <path> ...`) whenever you need to operate in a different directory.\n",
+        );
         preface.push_str(&format!(
             "\n1. Worktree prep (already in {} on {}):\n   - Review `git status`.\n   - Stage and commit every change that belongs in the merge. Use descriptive messages; no network commands and no resets.\n",
             self.worktree_path.display(),
             self.worktree_branch,
+        ));
+        preface.push_str(&format!(
+            "   - When running commands here, prefix them with `cd {} && ...` (or use `git -C {}`) so they actually execute inside the worktree.\n",
+            self.worktree_path.display(),
+            self.worktree_path.display(),
         ));
         if let Some(ref default_branch) = self.default_branch {
             preface.push_str(&format!(
@@ -552,6 +561,11 @@ impl MergeRepoState {
                 self.git_root.display(),
             ));
         }
+        preface.push_str(&format!(
+            "   - Run these commands as `cd {} && ...` (or `git -C {}`) so they execute inside the repo root.\n",
+            self.git_root.display(),
+            self.git_root.display(),
+        ));
         let default_branch_for_copy = self
             .default_branch
             .as_deref()
@@ -1932,6 +1946,45 @@ static BG_SHOT_IN_FLIGHT: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false)
 static BG_SHOT_LAST_START_MS: Lazy<AtomicU64> = Lazy::new(|| AtomicU64::new(0));
 static MERGE_LOCKS: Lazy<Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+static WORKTREE_ROOT_HINTS: Lazy<Mutex<HashMap<PathBuf, PathBuf>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+static CWD_HISTORY: Lazy<Mutex<Vec<PathBuf>>> = Lazy::new(|| Mutex::new(Vec::new()));
+const CWD_HISTORY_LIMIT: usize = 16;
+
+fn remember_worktree_root_hint(worktree: &Path, git_root: &Path) {
+    let mut hints = WORKTREE_ROOT_HINTS.lock().unwrap();
+    let root = git_root.to_path_buf();
+    hints.insert(worktree.to_path_buf(), root.clone());
+    if let Ok(real) = std::fs::canonicalize(worktree) {
+        hints.insert(real, root);
+    }
+}
+
+fn worktree_root_hint_for(path: &Path) -> Option<PathBuf> {
+    let hints = WORKTREE_ROOT_HINTS.lock().unwrap();
+    hints.get(path).cloned()
+}
+
+fn remember_cwd_history(path: &Path) {
+    let mut history = CWD_HISTORY.lock().unwrap();
+    if history.last().map_or(false, |p| p == path) {
+        return;
+    }
+    history.push(path.to_path_buf());
+    if history.len() > CWD_HISTORY_LIMIT {
+        history.remove(0);
+    }
+}
+
+fn last_existing_cwd(except: &Path) -> Option<PathBuf> {
+    let history = CWD_HISTORY.lock().unwrap();
+    history
+        .iter()
+        .rev()
+        .filter(|p| p.as_path() != except)
+        .find(|p| p.exists())
+        .cloned()
+}
 
 use self::diff_ui::DiffBlock;
 use self::diff_ui::DiffConfirm;
@@ -4840,6 +4893,7 @@ impl ChatWidget<'_> {
             config.tui.theme.is_dark,
         );
         config.tui.theme.name = mapped_theme;
+        remember_cwd_history(&config.cwd);
 
         let (code_op_tx, code_op_rx) = unbounded_channel::<Op>();
 
@@ -5141,6 +5195,7 @@ impl ChatWidget<'_> {
         auth_manager: Arc<AuthManager>,
         show_welcome: bool,
     ) -> Self {
+        remember_cwd_history(&config.cwd);
         let (code_op_tx, mut code_op_rx) = unbounded_channel::<Op>();
 
         let auto_drive_variant = AutoDriveVariant::from_env();
@@ -8963,33 +9018,62 @@ impl ChatWidget<'_> {
         // root for worktrees and re-submit the same message there.
         if !self.config.cwd.exists() {
             let missing = self.config.cwd.clone();
-            let missing_s = missing.display().to_string();
-            if missing_s.contains("/.code/branches/") {
-                // Recover by walking up to '<repo>/.code/branches/<branch>' -> repo root
-                let mut anc = missing.as_path();
-                // Walk up 3 parents if available
-                for _ in 0..3 {
-                    if let Some(p) = anc.parent() {
-                        anc = p;
-                    }
-                }
-                let fallback_root = anc.to_path_buf();
-                if fallback_root.exists() {
-                    let msg = format!(
-                        "⚠️ Worktree directory is missing: {}\nSwitching to repo root: {}",
-                        missing.display(),
-                        fallback_root.display()
-                    );
-                    self.send_background_tail_ordered(msg);
-                    // Re-submit this exact message after switching cwd
-                    self.app_event_tx.send(AppEvent::SwitchCwd(
-                        fallback_root,
-                        Some(message.display_text.clone()),
-                    ));
-                    return;
+            let mut fallback: Option<(PathBuf, &'static str)> =
+                worktree_root_hint_for(&missing).map(|p| (p, "recorded repo root"));
+            if fallback.is_none() {
+                if let Some(parent) = missing.parent().and_then(worktree_root_hint_for) {
+                    fallback = Some((parent, "recorded repo root"));
                 }
             }
-            // If we can't recover, surface an error and drop the message to prevent loops
+            if fallback.is_none() {
+                if let Some(prev) = last_existing_cwd(&missing) {
+                    fallback = Some((prev, "last known directory"));
+                }
+            }
+            let missing_s = missing.display().to_string();
+            if fallback.is_none() && missing_s.contains("/.code/branches/") {
+                let mut current = missing.as_path();
+                let mut first_existing: Option<PathBuf> = None;
+                while let Some(parent) = current.parent() {
+                    current = parent;
+                    if !current.exists() {
+                        continue;
+                    }
+                    if first_existing.is_none() {
+                        first_existing = Some(current.to_path_buf());
+                    }
+                    if let Some(repo_root) =
+                        code_core::git_info::resolve_root_git_project_for_trust(current)
+                    {
+                        fallback = Some((repo_root, "repository root"));
+                        break;
+                    }
+                }
+                if fallback.is_none() {
+                    if let Some(existing) = first_existing {
+                        fallback = Some((existing, "parent directory"));
+                    }
+                }
+            }
+            if fallback.is_none() {
+                if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+                    fallback = Some((home, "home directory"));
+                }
+            }
+            if let Some((fallback_root, label)) = fallback {
+                let msg = format!(
+                    "⚠️ Worktree directory is missing: {}\nSwitching to {}: {}",
+                    missing.display(),
+                    label,
+                    fallback_root.display()
+                );
+                self.send_background_tail_ordered(msg);
+                self.app_event_tx.send(AppEvent::SwitchCwd(
+                    fallback_root,
+                    Some(message.display_text.clone()),
+                ));
+                return;
+            }
             self.history_push_plain_state(history_cell::new_error_event(format!(
                 "Working directory is missing: {}",
                 self.config.cwd.display()
@@ -28619,6 +28703,7 @@ impl ChatWidget<'_> {
                         return;
                     }
                 };
+            remember_worktree_root_hint(&worktree, &git_root);
             // Copy uncommitted changes from the source root into the new worktree
             let copied =
                 match code_core::git_worktree::copy_uncommitted_to_worktree(&git_root, &worktree)
@@ -28824,6 +28909,7 @@ impl ChatWidget<'_> {
     ) {
         let previous_cwd = self.config.cwd.clone();
         self.config.cwd = new_cwd.clone();
+        remember_cwd_history(&self.config.cwd);
         let ticket = self.make_background_tail_ticket();
 
         let msg = format!(
@@ -28977,7 +29063,7 @@ impl ChatWidget<'_> {
                     format!("`/merge` — handing off to agent ({})", reason_text),
                 );
                 let visible = format!(
-                    "Finalize branch '{}' via /merge (manual merge required)",
+                    "Finalize branch '{}' via /merge (agent merge required)",
                     state.worktree_branch
                 );
                 let preface = state.agent_preface(&reason_text);
