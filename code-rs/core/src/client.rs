@@ -422,7 +422,9 @@ impl ModelClient {
         });
 
         let verbosity = match &self.config.model_family.family {
-            family if family == "gpt-5" => Some(self.config.model_text_verbosity),
+            family if family == "gpt-5" || family == "gpt-5.1" => {
+                Some(self.config.model_text_verbosity)
+            }
             _ => None,
         };
 
@@ -1878,7 +1880,7 @@ mod tests {
 
     #[tokio::test]
     async fn error_when_error_event() {
-        let raw_error = r#"{"type":"response.failed","sequence_number":3,"response":{"id":"resp_689bcf18d7f08194bf3440ba62fe05d803fee0cdac429894","object":"response","created_at":1755041560,"status":"failed","background":false,"error":{"code":"rate_limit_exceeded","message":"Rate limit reached for gpt-5 in organization org-AAA on tokens per min (TPM): Limit 30000, Used 22999, Requested 12528. Please try again in 11.054s. Visit https://platform.openai.com/account/rate-limits to learn more."}, "usage":null,"user":null,"metadata":{}}}"#;
+        let raw_error = r#"{"type":"response.failed","sequence_number":3,"response":{"id":"resp_689bcf18d7f08194bf3440ba62fe05d803fee0cdac429894","object":"response","created_at":1755041560,"status":"failed","background":false,"error":{"code":"rate_limit_exceeded","message":"Rate limit reached for gpt-5.1 in organization org-AAA on tokens per min (TPM): Limit 30000, Used 22999, Requested 12528. Please try again in 11.054s. Visit https://platform.openai.com/account/rate-limits to learn more."}, "usage":null,"user":null,"metadata":{}}}"#;
 
         let sse1 = format!("event: response.failed\ndata: {raw_error}\n\n");
         let provider = ModelProviderInfo {
@@ -1905,7 +1907,7 @@ mod tests {
             Err(CodexErr::Stream(msg, Some(retry))) => {
                 assert_eq!(
                     msg,
-                    "Rate limit reached for gpt-5 in organization org-AAA on tokens per min (TPM): Limit 30000, Used 22999, Requested 12528. Please try again in 11.054s. Visit https://platform.openai.com/account/rate-limits to learn more."
+                    "Rate limit reached for gpt-5.1 in organization org-AAA on tokens per min (TPM): Limit 30000, Used 22999, Requested 12528. Please try again in 11.054s. Visit https://platform.openai.com/account/rate-limits to learn more."
                 );
                 assert_eq!(retry.delay, Duration::from_secs_f64(11.054));
             }
@@ -2022,7 +2024,7 @@ mod tests {
         let now = fixed_now();
         let err = Error {
             r#type: None,
-            message: Some("Rate limit reached for gpt-5 in organization org- on tokens per min (TPM): Limit 1, Used 1, Requested 19304. Please try again in 28ms. Visit https://platform.openai.com/account/rate-limits to learn more.".to_string()),
+            message: Some("Rate limit reached for gpt-5.1 in organization org- on tokens per min (TPM): Limit 1, Used 1, Requested 19304. Please try again in 28ms. Visit https://platform.openai.com/account/rate-limits to learn more.".to_string()),
             code: Some("rate_limit_exceeded".to_string()),
             plan_type: None,
             resets_in_seconds: None,
@@ -2038,7 +2040,7 @@ mod tests {
         let now = fixed_now();
         let err = Error {
             r#type: None,
-            message: Some("Rate limit reached for gpt-5 in organization <ORG> on tokens per min (TPM): Limit 30000, Used 6899, Requested 24050. Please try again in 1.898s. Visit https://platform.openai.com/account/rate-limits to learn more.".to_string()),
+            message: Some("Rate limit reached for gpt-5.1 in organization <ORG> on tokens per min (TPM): Limit 30000, Used 6899, Requested 24050. Please try again in 1.898s. Visit https://platform.openai.com/account/rate-limits to learn more.".to_string()),
             code: Some("rate_limit_exceeded".to_string()),
             plan_type: None,
             resets_in_seconds: None,
@@ -2117,7 +2119,7 @@ mod tests {
             let err = Error {
                 r#type: None,
                 message: Some(
-                    "Rate limit reached for gpt-5. Please try again in 30 seconds.".to_string(),
+                    "Rate limit reached for gpt-5.1. Please try again in 30 seconds.".to_string(),
                 ),
                 code: Some("rate_limit_exceeded".to_string()),
                 plan_type: None,

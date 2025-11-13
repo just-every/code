@@ -35,7 +35,7 @@ const { randomUUID } = require('crypto');
 const argv = parseArgs(process.argv.slice(2));
 
 function parseArgs(args) {
-  const out = { auth: 'auto', model: 'gpt-5', tests: ['base','json-schema'], stream: undefined, store: undefined };
+  const out = { auth: 'auto', model: 'gpt-5.1', tests: ['base','json-schema'], stream: undefined, store: undefined };
   for (let i=0; i<args.length; i++) {
     const a = args[i];
     const next = () => args[++i];

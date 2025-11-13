@@ -10,7 +10,7 @@ expression: section_closed
  |                                                                                                |
  | ›  Model              + Select Model & Reasoning --------------------------------------------+ |
  |    Theme              |                                                                      | |
- |    Updates            |  Current model: gpt-5-codex                                          | |
+|    Updates            |  Current model: gpt-5.1-codex                                        | |
  |    Agents             |  Reasoning effort: medium                                            | |
  |    Auto Drive         |                                                                      | |
  |    Review             |  GPT-5-Codex                                                         | |

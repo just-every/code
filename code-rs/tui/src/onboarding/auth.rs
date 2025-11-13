@@ -388,7 +388,7 @@ impl AuthModeWidget {
             if args
                 .config
                 .model
-                .eq_ignore_ascii_case("gpt-5")
+                .eq_ignore_ascii_case("gpt-5.1")
             {
                 let new_model = GPT_5_CODEX_MEDIUM_MODEL.to_string();
                 args.config.model = new_model.clone();

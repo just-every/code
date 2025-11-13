@@ -66,9 +66,9 @@ use toml_edit::Item as TomlItem;
 use toml_edit::Table as TomlTable;
 use which::which;
 
-const OPENAI_DEFAULT_MODEL: &str = "gpt-5-codex";
-const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5-codex-mini";
-pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5-codex";
+const OPENAI_DEFAULT_MODEL: &str = "gpt-5.1-codex";
+const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5.1-codex-mini";
+pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5.1-codex";
 
 /// Maximum number of bytes of the documentation that will be embedded. Larger
 /// files are *silently truncated* to this size so we do not take up too much of
@@ -104,7 +104,7 @@ pub struct Config {
     /// Optional override of model selection.
     pub model: String,
 
-    /// Model used specifically for review sessions. Defaults to "gpt-5-codex-mini".
+    /// Model used specifically for review sessions. Defaults to "gpt-5.1-codex-mini".
     pub review_model: String,
 
     /// Reasoning effort used when running review sessions.
@@ -1975,6 +1975,54 @@ impl ConfigToml {
     }
 }
 
+fn upgrade_legacy_model_slugs(cfg: &mut ConfigToml) {
+    fn maybe_upgrade(field: &mut Option<String>) {
+        if let Some(old) = field.clone() {
+            if let Some(new) = upgrade_legacy_model_slug(&old) {
+                tracing::info!(
+                    target: "code.config",
+                    old,
+                    new,
+                    "upgrading legacy gpt-5 model slug to gpt-5.1",
+                );
+                *field = Some(new);
+            }
+        }
+    }
+
+    maybe_upgrade(&mut cfg.model);
+    maybe_upgrade(&mut cfg.review_model);
+
+    for profile in cfg.profiles.values_mut() {
+        maybe_upgrade(&mut profile.model);
+        maybe_upgrade(&mut profile.review_model);
+    }
+}
+
+fn upgrade_legacy_model_slug(slug: &str) -> Option<String> {
+    if slug.starts_with("gpt-5.1") || slug.starts_with("test-gpt-5.1") {
+        return None;
+    }
+
+    if let Some(rest) = slug.strip_prefix("test-gpt-5-codex") {
+        return Some(format!("test-gpt-5.1-codex{rest}"));
+    }
+
+    if let Some(rest) = slug.strip_prefix("test-gpt-5") {
+        return Some(format!("test-gpt-5.1{rest}"));
+    }
+
+    if let Some(rest) = slug.strip_prefix("gpt-5-codex") {
+        return Some(format!("gpt-5.1-codex{rest}"));
+    }
+
+    if let Some(rest) = slug.strip_prefix("gpt-5") {
+        return Some(format!("gpt-5.1{rest}"));
+    }
+
+    None
+}
+
 /// Optional overrides for user configuration (e.g., from CLI flags).
 #[derive(Default, Debug, Clone)]
 pub struct ConfigOverrides {
@@ -2011,6 +2059,7 @@ impl Config {
         let user_instructions = Self::load_instructions(Some(&code_home));
 
         let mut cfg = cfg;
+        upgrade_legacy_model_slugs(&mut cfg);
 
         // Destructure ConfigOverrides fully to ensure all overrides are applied.
         let ConfigOverrides {
@@ -2958,7 +3007,7 @@ args = ["-y", "@upstash/context7-mcp"]
         persist_model_selection(
             code_home.path(),
             None,
-            "gpt-5-codex",
+            "gpt-5.1-codex",
             Some(ReasoningEffort::High),
         )
         .await?;
@@ -2967,7 +3016,7 @@ args = ["-y", "@upstash/context7-mcp"]
             tokio::fs::read_to_string(code_home.path().join(CONFIG_TOML_FILE)).await?;
         let parsed: ConfigToml = toml::from_str(&serialized)?;
 
-        assert_eq!(parsed.model.as_deref(), Some("gpt-5-codex"));
+        assert_eq!(parsed.model.as_deref(), Some("gpt-5.1-codex"));
         assert_eq!(parsed.model_reasoning_effort, Some(ReasoningEffort::High));
 
         Ok(())
@@ -2981,7 +3030,7 @@ args = ["-y", "@upstash/context7-mcp"]
         tokio::fs::write(
             &config_path,
             r#"
-model = "gpt-5-codex"
+model = "gpt-5.1-codex"
 model_reasoning_effort = "medium"
 
 [profiles.dev]
@@ -3021,7 +3070,7 @@ model = "gpt-4.1"
         persist_model_selection(
             code_home.path(),
             Some("dev"),
-            "gpt-5-codex",
+            "gpt-5.1-codex",
             Some(ReasoningEffort::Medium),
         )
         .await?;
@@ -3034,7 +3083,7 @@ model = "gpt-4.1"
             .get("dev")
             .expect("profile should be created");
 
-        assert_eq!(profile.model.as_deref(), Some("gpt-5-codex"));
+        assert_eq!(profile.model.as_deref(), Some("gpt-5.1-codex"));
         assert_eq!(
             profile.model_reasoning_effort,
             Some(ReasoningEffort::Medium)
@@ -3056,7 +3105,7 @@ model = "gpt-4"
 model_reasoning_effort = "medium"
 
 [profiles.prod]
-model = "gpt-5-codex"
+model = "gpt-5.1-codex"
 "#,
         )
         .await?;
@@ -3087,7 +3136,7 @@ model = "gpt-5-codex"
                 .profiles
                 .get("prod")
                 .and_then(|profile| profile.model.as_deref()),
-            Some("gpt-5-codex"),
+            Some("gpt-5.1-codex"),
         );
 
         Ok(())
@@ -3148,7 +3197,7 @@ approval_policy = "on-failure"
 disable_response_storage = true
 
 [profiles.gpt5]
-model = "gpt-5"
+model = "gpt-5.1"
 model_provider = "openai"
 approval_policy = "on-failure"
 model_reasoning_effort = "high"
@@ -3401,14 +3450,14 @@ model_verbosity = "high"
             gpt5_profile_overrides,
             fixture.code_home(),
         )?;
-        assert_eq!("gpt-5", gpt5_profile_config.model);
+        assert_eq!("gpt-5.1", gpt5_profile_config.model);
         assert_eq!(OPENAI_DEFAULT_REVIEW_MODEL, gpt5_profile_config.review_model);
         assert_eq!(
             ReasoningEffort::High,
             gpt5_profile_config.review_model_reasoning_effort
         );
         assert_eq!(
-            find_family_for_model("gpt-5").expect("known model slug"),
+            find_family_for_model("gpt-5.1").expect("known model slug"),
             gpt5_profile_config.model_family
         );
         assert!(gpt5_profile_config.model_context_window.is_some());
@@ -3438,6 +3487,39 @@ model_verbosity = "high"
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn upgrade_legacy_model_slugs_updates_top_level() {
+        let mut cfg = ConfigToml {
+            model: Some("gpt-5-codex".to_string()),
+            review_model: Some("gpt-5".to_string()),
+            ..Default::default()
+        };
+
+        upgrade_legacy_model_slugs(&mut cfg);
+
+        assert_eq!(cfg.model.as_deref(), Some("gpt-5.1-codex"));
+        assert_eq!(cfg.review_model.as_deref(), Some("gpt-5.1"));
+    }
+
+    #[test]
+    fn upgrade_legacy_model_slugs_updates_profiles() {
+        let mut cfg = ConfigToml::default();
+        cfg.profiles.insert(
+            "legacy".to_string(),
+            ConfigProfile {
+                model: Some("test-gpt-5-codex".to_string()),
+                review_model: Some("gpt-5-codex".to_string()),
+                ..Default::default()
+            },
+        );
+
+        upgrade_legacy_model_slugs(&mut cfg);
+
+        let legacy = cfg.profiles.get("legacy").expect("profile exists");
+        assert_eq!(legacy.model.as_deref(), Some("test-gpt-5.1-codex"));
+        assert_eq!(legacy.review_model.as_deref(), Some("gpt-5.1-codex"));
     }
 
     #[test]

@@ -161,7 +161,7 @@ qwen --version
 code [options] [prompt]
 
 Options:
-  --model <name>        Override the model (gpt-5, claude-opus, etc.)
+  --model <name>        Override the model (gpt-5.1, claude-opus, etc.)
   --read-only          Prevent file modifications
   --no-approval        Skip approval prompts (use with caution)
   --config <key=val>   Override config values
@@ -238,7 +238,7 @@ Main config file: `~/.code/config.toml`
 
 ```toml
 # Model settings
-model = "gpt-5"
+model = "gpt-5.1"
 model_provider = "openai"
 
 # Behavior
@@ -252,7 +252,7 @@ name = "light-photon"
 
 # Add config for specific models
 [profiles.gpt-5]
-model = "gpt-5"
+model = "gpt-5.1"
 model_provider = "openai"
 approval_policy = "never"
 model_reasoning_effort = "high"

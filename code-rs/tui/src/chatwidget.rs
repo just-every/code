@@ -12978,7 +12978,7 @@ impl ChatWidget<'_> {
             self.history_push_plain_state(history_cell::new_warning_event((*warning_text).to_string()));
             self.history_push_plain_state(history_cell::new_error_event((*error_text).to_string()));
 
-            self.history_push_plain_state(history_cell::new_model_output("gpt-5-codex", *effort));
+            self.history_push_plain_state(history_cell::new_model_output("gpt-5.1-codex", *effort));
             self.history_push_plain_state(history_cell::new_reasoning_output(effort));
 
             self.history_push_plain_state(history_cell::new_status_output(
@@ -13026,7 +13026,7 @@ impl ChatWidget<'_> {
         running_preview.id = "demo-running".to_string();
         running_preview.name = "Lint Fixer".to_string();
         running_preview.status = "Running".to_string();
-        running_preview.model = Some("code-gpt-5".to_string());
+        running_preview.model = Some("code-gpt-5.1".to_string());
         running_preview.details = vec![history_cell::AgentDetail::Progress(
             "Refining suggested fixes".to_string(),
         )];
@@ -24586,8 +24586,8 @@ mod tests {
     #[test]
     fn format_model_name_capitalizes_codex_mini() {
         let mut harness = ChatWidgetHarness::new();
-        let formatted = harness.chat().format_model_name("gpt-5-codex-mini");
-        assert_eq!(formatted, "GPT-5-Codex-Mini");
+        let formatted = harness.chat().format_model_name("gpt-5.1-codex-mini");
+        assert_eq!(formatted, "GPT-5.1-Codex-Mini");
     }
 
     #[test]
@@ -25477,7 +25477,7 @@ mod tests {
 
         chat.auto_on_assistant_final();
 
-        // With cloud-gpt-5-codex gated off, the review request is still queued but
+        // With cloud-gpt-5.1-codex gated off, the review request is still queued but
         // may be processed synchronously; ensure the review slot was populated.
         if chat.auto_state.awaiting_review() {
             // Review remains pending; nothing else to assert.

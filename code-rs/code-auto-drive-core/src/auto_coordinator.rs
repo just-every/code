@@ -53,7 +53,7 @@ const DEBUG_JSON_MAX_CHARS: usize = 1200;
 #[error("auto coordinator cancelled")]
 struct AutoCoordinatorCancelled;
 
-pub const MODEL_SLUG: &str = "gpt-5";
+pub const MODEL_SLUG: &str = "gpt-5.1";
 const USER_TURN_SCHEMA_NAME: &str = "auto_coordinator_user_turn";
 const COORDINATOR_PROMPT: &str = include_str!("../../core/prompt_coordinator.md");
 
@@ -668,8 +668,8 @@ mod tests {
 
     #[test]
     fn compaction_triggers_when_projected_exceeds_threshold() {
-        assert!(should_compact("gpt-5", 220_000, 10_000, 0, true));
-        assert!(!should_compact("gpt-5", 100_000, 10_000, 0, true));
+        assert!(should_compact("gpt-5.1", 220_000, 10_000, 0, true));
+        assert!(!should_compact("gpt-5.1", 100_000, 10_000, 0, true));
     }
 
     #[test]
@@ -693,7 +693,7 @@ mod tests {
     #[test]
     fn compaction_skip_fallback_when_context_known() {
         assert!(!should_compact(
-            "gpt-5",
+            "gpt-5.1",
             0,
             4_000,
             MESSAGE_LIMIT_FALLBACK,
@@ -704,7 +704,7 @@ mod tests {
     #[test]
     fn compaction_fallback_stops_once_tokens_recorded() {
         assert!(!should_compact(
-            "gpt-5",
+            "gpt-5.1",
             1,
             0,
             MESSAGE_LIMIT_FALLBACK,

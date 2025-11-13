@@ -520,7 +520,7 @@ mod tests {
                 expects_apply_patch_instructions: true,
             },
             InstructionsTestCase {
-                slug: "gpt-5",
+                slug: "gpt-5.1",
                 expects_apply_patch_instructions: true,
             },
             InstructionsTestCase {
@@ -532,7 +532,7 @@ mod tests {
                 expects_apply_patch_instructions: false,
             },
             InstructionsTestCase {
-                slug: "gpt-5-codex",
+                slug: "gpt-5.1-codex",
                 expects_apply_patch_instructions: false,
             },
         ];
@@ -605,7 +605,7 @@ mod tests {
         let input: Vec<ResponseItem> = vec![];
         let tools: Vec<serde_json::Value> = vec![];
         let req = ResponsesApiRequest {
-            model: "gpt-5",
+            model: "gpt-5.1",
             instructions: "i",
             input: &input,
             tools: &tools,
@@ -640,7 +640,7 @@ mod tests {
             "required": ["answer"],
         });
         let req = ResponsesApiRequest {
-            model: "gpt-5",
+            model: "gpt-5.1",
             instructions: "i",
             input: &input,
             tools: &tools,
@@ -687,7 +687,7 @@ mod tests {
         let input: Vec<ResponseItem> = vec![];
         let tools: Vec<serde_json::Value> = vec![];
         let req = ResponsesApiRequest {
-            model: "gpt-5",
+            model: "gpt-5.1",
             instructions: "i",
             input: &input,
             tools: &tools,

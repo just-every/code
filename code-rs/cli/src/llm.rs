@@ -59,7 +59,7 @@ pub struct RequestArgs {
     #[arg(long = "schema-file")] 
     pub schema_file: Option<PathBuf>,
 
-    /// Optional model override (e.g. gpt-4.1, gpt-5)
+    /// Optional model override (e.g. gpt-4.1, gpt-5.1)
     #[arg(long)]
     pub model: Option<String>,
 }

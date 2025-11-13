@@ -258,11 +258,11 @@ impl ModelSelectionView {
     }
 
     fn model_rank(model: &str) -> u8 {
-        if model.eq_ignore_ascii_case("gpt-5-codex") {
+        if model.eq_ignore_ascii_case("gpt-5.1-codex") {
             0
-        } else if model.eq_ignore_ascii_case("gpt-5-codex-mini") {
+        } else if model.eq_ignore_ascii_case("gpt-5.1-codex-mini") {
             1
-        } else if model.eq_ignore_ascii_case("gpt-5") {
+        } else if model.eq_ignore_ascii_case("gpt-5.1") {
             2
         } else {
             3
@@ -270,11 +270,11 @@ impl ModelSelectionView {
     }
 
     fn model_description(model: &str) -> Option<&'static str> {
-        if model.eq_ignore_ascii_case("gpt-5-codex") {
+        if model.eq_ignore_ascii_case("gpt-5.1-codex") {
             Some("Optimized for coding.")
-        } else if model.eq_ignore_ascii_case("gpt-5-codex-mini") {
+        } else if model.eq_ignore_ascii_case("gpt-5.1-codex-mini") {
             Some("Optimized for coding. Cheaper, faster, but less capable.")
-        } else if model.eq_ignore_ascii_case("gpt-5") {
+        } else if model.eq_ignore_ascii_case("gpt-5.1") {
             Some("Broad world knowledge with strong general reasoning.")
         } else {
             None

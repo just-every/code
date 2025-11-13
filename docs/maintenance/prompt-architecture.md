@@ -11,7 +11,7 @@ be preserved when we sync with upstream Codex.
 | Category | File | Runtime Usage | Notes |
 | --- | --- | --- | --- |
 | Base instructions | `code-rs/core/prompt.md` | Loaded by default for non–GPT‑5 models | Mirrors upstream, kept in sync during merges. |
-| Base instructions | `code-rs/core/gpt_5_code_prompt.md` | Selected when GPT‑5/Codex family is active | Upstream content; differences tracked in `UPSTREAM_PARITY_CHECKLIST.md`. |
+| Base instructions | `code-rs/core/gpt_5_codex_prompt.md` | Selected when GPT‑5/Codex family is active | Upstream content; differences tracked in `UPSTREAM_PARITY_CHECKLIST.md`. |
 | Fork overlay | `code-rs/core/prompt_coder.md` | Appended after base prompt in fork builds | Holds browser/tooling UX guidance and approve/sandbox policies. |
 | Review flows | `code-rs/core/review_prompt.md` | Used by review executor | Shared with upstream; lightweight customisations allowed. |
 | Compact summaries | `code-rs/core/templates/compact/prompt.md` | Generated during conversation compaction | Template strings only; keep deterministic for snapshots. |
@@ -22,7 +22,7 @@ be preserved when we sync with upstream Codex.
 ## Layering Strategy
 
 1. **Base prompt** is selected by model family (`prompt.md` or
-   `gpt_5_code_prompt.md`).
+   `gpt_5_codex_prompt.md`).
 2. **Fork overlay** (`prompt_coder.md`) is appended to inject tool UX, sandbox
    policy, and parallel-agent expectations. All edits here must remain fork
    scoped.
