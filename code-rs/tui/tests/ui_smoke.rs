@@ -713,6 +713,7 @@ fn smoke_review_settings_auto_resolve_controls() {
         "default max re-reviews should be 5"
     );
 
+    harness.send_key(make_key(KeyCode::Down, KeyModifiers::NONE));
     harness.send_key(make_key(KeyCode::Enter, KeyModifiers::NONE));
     let auto_enabled = harness.review_auto_resolve_enabled();
     assert!(auto_enabled, "toggling should enable Auto Resolve");
