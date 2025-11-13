@@ -33,7 +33,7 @@ mod file_search_popup;
 mod paste_burst;
 mod popup_consts;
 pub(crate) mod agent_editor_view;
-mod model_selection_view;
+pub(crate) mod model_selection_view;
 mod scroll_state;
 mod selection_popup_common;
 pub mod list_selection_view;
@@ -95,7 +95,7 @@ use code_common::model_presets::ModelPreset;
 use code_core::config_types::ReasoningEffort;
 use code_core::config_types::TextVerbosity;
 use code_core::config_types::ThemeName;
-pub(crate) use model_selection_view::ModelSelectionView;
+pub(crate) use model_selection_view::{ModelSelectionTarget, ModelSelectionView};
 pub(crate) use mcp_settings_view::McpSettingsView;
 pub(crate) use theme_selection_view::ThemeSelectionView;
 use verbosity_selection_view::VerbositySelectionView;
@@ -678,8 +678,15 @@ impl BottomPane<'_> {
         presets: Vec<ModelPreset>,
         current_model: String,
         current_effort: ReasoningEffort,
+        target: ModelSelectionTarget,
     ) {
-        let view = ModelSelectionView::new(presets, current_model, current_effort, self.app_event_tx.clone());
+        let view = ModelSelectionView::new(
+            presets,
+            current_model,
+            current_effort,
+            target,
+            self.app_event_tx.clone(),
+        );
         self.active_view = Some(Box::new(view));
         self.active_view_kind = ActiveViewKind::Other;
         // Status shown in composer title now

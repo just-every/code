@@ -878,6 +878,7 @@ use crate::bottom_pane::list_selection_view::{ListSelectionView, SelectionItem};
 use crate::bottom_pane::CloudTasksView;
 use crate::bottom_pane::validation_settings_view;
 use crate::bottom_pane::validation_settings_view::{GroupStatus, ToolRow};
+use crate::bottom_pane::model_selection_view::ModelSelectionTarget;
 use crate::bottom_pane::BottomPane;
 use crate::bottom_pane::BottomPaneParams;
 use crate::bottom_pane::{UndoTimelineEntry, UndoTimelineEntryKind, UndoTimelineView};
@@ -13721,7 +13722,13 @@ impl ChatWidget<'_> {
     fn build_review_settings_content(&mut self) -> ReviewSettingsContent {
         let auto_resolve_enabled = self.config.tui.review_auto_resolve;
         let attempts = self.configured_auto_resolve_re_reviews();
-        let view = ReviewSettingsView::new(auto_resolve_enabled, attempts, self.app_event_tx.clone());
+        let view = ReviewSettingsView::new(
+            self.config.review_model.clone(),
+            self.config.review_model_reasoning_effort,
+            auto_resolve_enabled,
+            attempts,
+            self.app_event_tx.clone(),
+        );
         ReviewSettingsContent::new(view)
     }
 
@@ -18572,6 +18579,24 @@ Have we met every part of this goal and is there no further work to do?"#
             presets,
             self.config.model.clone(),
             self.config.model_reasoning_effort,
+            ModelSelectionTarget::Session,
+        );
+    }
+
+    pub(crate) fn show_review_model_selector(&mut self) {
+        let presets = self.available_model_presets();
+        if presets.is_empty() {
+            self.bottom_pane.flash_footer_notice(
+                "No model presets are available for review. Update configuration to define models."
+                    .to_string(),
+            );
+            return;
+        }
+        self.bottom_pane.show_model_selection(
+            presets,
+            self.config.review_model.clone(),
+            self.config.review_model_reasoning_effort,
+            ModelSelectionTarget::Review,
         );
     }
 
@@ -18632,6 +18657,66 @@ Have we met every part of this goal and is there no further work to do?"#
         self.request_redraw();
     }
 
+    pub(crate) fn apply_review_model_selection(
+        &mut self,
+        model: String,
+        effort: ReasoningEffort,
+    ) {
+        let trimmed = model.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+
+        let mut updated = false;
+        if !self.config.review_model.eq_ignore_ascii_case(trimmed) {
+            self.config.review_model = trimmed.to_string();
+            updated = true;
+        }
+
+        if self.config.review_model_reasoning_effort != effort {
+            self.config.review_model_reasoning_effort = effort;
+            updated = true;
+        }
+
+        if !updated {
+            self.bottom_pane
+                .flash_footer_notice("Review model unchanged.".to_string());
+            return;
+        }
+
+        let message = if let Ok(home) = code_core::config::find_code_home() {
+            match code_core::config::set_review_model(
+                &home,
+                &self.config.review_model,
+                self.config.review_model_reasoning_effort,
+            ) {
+                Ok(_) => format!(
+                    "Review model set to {} ({} reasoning)",
+                    self.config.review_model,
+                    Self::format_reasoning_effort(self.config.review_model_reasoning_effort)
+                ),
+                Err(err) => {
+                    tracing::warn!("Failed to persist review model: {err}");
+                    format!(
+                        "Review model set for this session (failed to persist): {}",
+                        self.config.review_model
+                    )
+                }
+            }
+        } else {
+            tracing::warn!("Could not locate Code home to persist review model");
+            format!(
+                "Review model set for this session: {}",
+                self.config.review_model
+            )
+        };
+
+        self.bottom_pane.flash_footer_notice(message);
+        self.refresh_settings_overview_rows();
+        self.update_review_settings_model_row();
+        self.request_redraw();
+    }
+
     pub(crate) fn handle_reasoning_command(&mut self, command_args: String) {
         // command_args contains only the arguments after the command (e.g., "high" not "/reasoning high")
         let trimmed = command_args.trim();
@@ -18666,11 +18751,12 @@ Have we met every part of this goal and is there no further work to do?"#
                 return;
             }
 
-            self.bottom_pane.show_model_selection(
-                presets,
-                self.config.model.clone(),
-                self.config.model_reasoning_effort,
-            );
+        self.bottom_pane.show_model_selection(
+            presets,
+            self.config.model.clone(),
+            self.config.model_reasoning_effort,
+            ModelSelectionTarget::Session,
+        );
             return;
         }
     }
@@ -19027,6 +19113,7 @@ Have we met every part of this goal and is there no further work to do?"#
             presets,
             current_model,
             current_effort,
+            ModelSelectionTarget::Session,
             self.app_event_tx.clone(),
         );
         ModelSettingsContent::new(view)
@@ -19444,7 +19531,14 @@ Have we met every part of this goal and is there no further work to do?"#
         } else {
             format!("Auto Resolve: On (max {} re-reviews)", attempts)
         };
-        Some(auto_label)
+        let model = self.config.review_model.trim();
+        let model_display = if model.is_empty() { "(not set)" } else { model };
+        let model_part = format!(
+            "Model: {} ({})",
+            model_display,
+            Self::format_reasoning_effort(self.config.review_model_reasoning_effort)
+        );
+        Some(format!("{} · {}", model_part, auto_label))
     }
 
     fn settings_summary_github(&self) -> Option<String> {
@@ -27481,6 +27575,17 @@ impl ChatWidget<'_> {
         self.bottom_pane.flash_footer_notice(message);
         self.refresh_settings_overview_rows();
         self.request_redraw();
+    }
+
+    fn update_review_settings_model_row(&mut self) {
+        if let Some(overlay) = self.settings.overlay.as_mut() {
+            if let Some(content) = overlay.review_content_mut() {
+                content.update_review_model(
+                    self.config.review_model.clone(),
+                    self.config.review_model_reasoning_effort,
+                );
+            }
+        }
     }
 
     pub(crate) fn show_review_commit_loading(&mut self) {

@@ -29,6 +29,7 @@ use crate::chrome_launch::{ChromeLaunchOption, CHROME_LAUNCH_CHOICES};
 use super::limits_overlay::{LimitsOverlay, LimitsOverlayContent};
 use crate::live_wrap::take_prefix_by_width;
 use crate::util::buffer::fill_rect;
+use code_core::config_types::ReasoningEffort;
 
 const LABEL_COLUMN_WIDTH: usize = 18;
 
@@ -272,6 +273,10 @@ pub(crate) struct ReviewSettingsContent {
 impl ReviewSettingsContent {
     pub(crate) fn new(view: ReviewSettingsView) -> Self {
         Self { view }
+    }
+
+    pub(crate) fn update_review_model(&mut self, model: String, effort: ReasoningEffort) {
+        self.view.set_review_model(model, effort);
     }
 }
 
@@ -1303,6 +1308,10 @@ impl SettingsOverlayView {
 
     pub(crate) fn agents_content_mut(&mut self) -> Option<&mut AgentsSettingsContent> {
         self.agents_content.as_mut()
+    }
+
+    pub(crate) fn review_content_mut(&mut self) -> Option<&mut ReviewSettingsContent> {
+        self.review_content.as_mut()
     }
 
     pub(crate) fn limits_content_mut(&mut self) -> Option<&mut LimitsSettingsContent> {

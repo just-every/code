@@ -4969,7 +4969,7 @@ async fn spawn_review_thread(
     let mut review_config = (*config).clone();
     review_config.model = review_model.clone();
     review_config.model_family = review_family.clone();
-    review_config.model_reasoning_effort = ReasoningEffortConfig::Low;
+    review_config.model_reasoning_effort = config.review_model_reasoning_effort;
     review_config.model_reasoning_summary = ReasoningSummaryConfig::Detailed;
     review_config.model_text_verbosity = config.model_text_verbosity;
     review_config.user_instructions = None;
