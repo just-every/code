@@ -236,6 +236,10 @@ impl ChatWidgetHarness {
         self.chat.history_render.bottom_spacer_lines_for_test()
     }
 
+    pub fn history_viewport_height(&self) -> u16 {
+        self.chat.layout.last_history_viewport_height.get()
+    }
+
     pub fn pending_bottom_spacer_request(&self) -> Option<u16> {
         self.chat
             .history_render

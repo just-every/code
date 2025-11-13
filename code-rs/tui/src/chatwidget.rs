@@ -30983,6 +30983,18 @@ impl WidgetRef for &ChatWidget<'_> {
                 scroll_from_top = scroll_from_top.saturating_sub(overscan_extra);
             }
 
+            tracing::debug!(
+                target: "code_tui::scrollback",
+                total_height,
+                base_total_height,
+                viewport = content_area.height,
+                overscan_extra,
+                max_scroll,
+                scroll_offset = clamped_scroll_offset,
+                initial_scroll_from_top = scroll_from_top,
+                "scrollback pre-adjust scroll position",
+            );
+
             // Viewport stabilization: when user is scrolled up (offset > 0) and the
             // history viewport height changes due to the input area growing/shrinking,
             // adjust the scroll_from_top to keep the top line steady on screen.
@@ -31000,11 +31012,22 @@ impl WidgetRef for &ChatWidget<'_> {
 
             // If our scroll origin landed on a spacer row between cells, nudge it up so
             // the viewport starts with real content instead of an empty separator.
-            let adjusted_scroll_from_top = self
-                .history_render
-                .adjust_scroll_to_content(scroll_from_top);
+            let scroll_pos = if clamped_scroll_offset > 0 {
+                let adjusted = self
+                    .history_render
+                    .adjust_scroll_to_content(scroll_from_top);
+                tracing::debug!(
+                    target: "code_tui::scrollback",
+                    adjusted_scroll_from_top = adjusted,
+                    scroll_from_top,
+                    "scrollback adjusted scroll position",
+                );
+                adjusted
+            } else {
+                scroll_from_top
+            };
 
-            (content_area.y, adjusted_scroll_from_top)
+            (content_area.y, scroll_pos)
         };
 
         // Record current viewport height for the next frame
@@ -31461,6 +31484,27 @@ impl WidgetRef for &ChatWidget<'_> {
             // Add spacing only if something was actually rendered for this item.
             // Prevent a stray blank when zero-height, and suppress spacing between
             // consecutive collapsed reasoning titles so they appear as a tight list.
+            if idx == request_count.saturating_sub(1) {
+                let viewport_top = content_area.y;
+                let viewport_bottom = content_area.y.saturating_add(content_area.height);
+                tracing::debug!(
+                    target: "code_tui::scrollback",
+                    idx,
+                    request_count,
+                    content_y,
+                    scroll_pos,
+                    viewport_top,
+                    viewport_bottom,
+                    skip_top,
+                    item_height,
+                    available_height,
+                    visible_height,
+                    screen_y,
+                    spacing,
+                    "last visible history cell metrics"
+                );
+            }
+
             let mut should_add_spacing = idx < request_count.saturating_sub(1) && visible_height > 0;
             if should_add_spacing {
                 // Special-case: two adjacent collapsed reasoning cells → no spacer.

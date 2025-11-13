@@ -154,8 +154,26 @@ pub fn insert_history_lines_to_writer_above<B, W>(
     // Pre-wrap to avoid terminal hard-wrap artifacts
     let content_width = screen_size.width.max(1);
     let wrapped = word_wrap_lines(&lines, content_width);
+    let wrapped_count = wrapped.len();
+
+    tracing::debug!(
+        target: "code_tui::scrollback",
+        screen_h,
+        reserved_bottom_rows,
+        reserved,
+        region_bottom,
+        wrapped_count,
+        "scrollback insert sizing"
+    );
 
     if region_bottom <= 1 {
+        tracing::debug!(
+            target: "code_tui::scrollback",
+            screen_h,
+            reserved_bottom_rows,
+            reserved,
+            "scrollback insert fallback: region bottom collapsed"
+        );
         // Degenerate case (startup or unknown size): fall back to simple
         // line-by-line prints that let the terminal naturally scroll. This is
         // safe before the first bottom-pane draw and avoids a 1-line scroll
@@ -182,6 +200,16 @@ pub fn insert_history_lines_to_writer_above<B, W>(
         // Newline scrolls the region up by one when at the bottom margin.
         queue!(writer, Print("\r\n")).ok();
     }
+
+    tracing::debug!(
+        target: "code_tui::scrollback",
+        screen_h,
+        reserved_bottom_rows,
+        reserved,
+        region_bottom,
+        wrapped_count,
+        "scrollback insert complete"
+    );
 
     queue!(writer, ResetScrollRegion).ok();
     if let Some(cursor_pos) = cursor_pos {
@@ -546,4 +574,3 @@ fn slice_line_spans(
         spans: acc,
     }
 }
-

@@ -363,7 +363,18 @@ fn trim_transcript_cells_to_nth_user(
         return;
     }
 
-    if let Some(cut_idx) = nth_user_position(transcript_cells, nth_user_message) {
+    if let Some(mut cut_idx) = nth_user_position(transcript_cells, nth_user_message) {
+        // Retain the selected user cell and any subsequent non-user cells (assistant answers,
+        // background notices, etc.) so the replayed transcript still shows the final exchange.
+        cut_idx = cut_idx.saturating_add(1);
+        let user_type = TypeId::of::<UserHistoryCell>();
+        while cut_idx < transcript_cells.len() {
+            let cell_type = transcript_cells[cut_idx].as_any().type_id();
+            if cell_type == user_type {
+                break;
+            }
+            cut_idx += 1;
+        }
         transcript_cells.truncate(cut_idx);
     }
 }
@@ -409,17 +420,24 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn trim_transcript_for_first_user_drops_user_and_newer_cells() {
+    fn trim_transcript_for_first_user_keeps_selected_exchange() {
         let mut cells: Vec<Arc<dyn HistoryCell>> = vec![
             Arc::new(UserHistoryCell {
                 message: "first user".to_string(),
             }) as Arc<dyn HistoryCell>,
-            Arc::new(AgentMessageCell::new(vec![Line::from("assistant")], true))
+            Arc::new(AgentMessageCell::new(vec![Line::from("assistant after first")], true))
+                as Arc<dyn HistoryCell>,
+            Arc::new(UserHistoryCell {
+                message: "second user".to_string(),
+            }) as Arc<dyn HistoryCell>,
+            Arc::new(AgentMessageCell::new(vec![Line::from("assistant after second")], true))
                 as Arc<dyn HistoryCell>,
         ];
         trim_transcript_cells_to_nth_user(&mut cells, 0);
 
-        assert!(cells.is_empty());
+        assert_eq!(cells.len(), 2, "user and answer block should remain");
+        assert!(cells[0].as_any().is::<UserHistoryCell>());
+        assert!(cells[1].as_any().downcast_ref::<AgentMessageCell>().is_some());
     }
 
     #[test]
@@ -435,19 +453,54 @@ mod tests {
         ];
         trim_transcript_cells_to_nth_user(&mut cells, 0);
 
-        assert_eq!(cells.len(), 1);
-        let agent = cells[0]
+        assert_eq!(cells.len(), 3);
+        let intro = cells[0]
             .as_any()
             .downcast_ref::<AgentMessageCell>()
-            .expect("agent cell");
-        let agent_lines = agent.display_lines(u16::MAX);
-        assert_eq!(agent_lines.len(), 1);
-        let intro_text: String = agent_lines[0]
+            .expect("intro agent cell");
+        let intro_lines = intro.display_lines(u16::MAX);
+        let intro_text: String = intro_lines[0]
             .spans
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
         assert_eq!(intro_text, "• intro");
+        assert!(cells[1].as_any().is::<UserHistoryCell>());
+        assert!(cells[2].as_any().downcast_ref::<AgentMessageCell>().is_some());
+    }
+
+    #[test]
+    fn trim_transcript_keeps_follow_up_agent_block_until_next_user() {
+        let mut cells: Vec<Arc<dyn HistoryCell>> = vec![
+            Arc::new(UserHistoryCell {
+                message: "alpha".to_string(),
+            }) as Arc<dyn HistoryCell>,
+            Arc::new(AgentMessageCell::new(
+                vec![
+                    Line::from("assistant line one"),
+                    Line::from("assistant line two"),
+                ],
+                true,
+            )) as Arc<dyn HistoryCell>,
+            Arc::new(UserHistoryCell {
+                message: "beta".to_string(),
+            }) as Arc<dyn HistoryCell>,
+        ];
+        trim_transcript_cells_to_nth_user(&mut cells, 0);
+
+        assert_eq!(cells.len(), 2);
+        let agent = cells[1]
+            .as_any()
+            .downcast_ref::<AgentMessageCell>()
+            .expect("agent cell for alpha");
+        let lines = agent.display_lines(u16::MAX);
+        assert_eq!(lines.len(), 2, "multi-line agent block should be preserved");
+        let last_line: String = lines[1]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(last_line.contains("assistant line two"));
     }
 
     #[test]
