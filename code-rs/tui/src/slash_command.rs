@@ -226,9 +226,9 @@ pub fn process_slash_command_message(message: &str) -> ProcessedCommand {
 
     let has_slash = trimmed.starts_with('/');
     let command_portion = if has_slash { &trimmed[1..] } else { trimmed };
-    let parts: Vec<&str> = command_portion.splitn(2, ' ').collect();
-    let command_str = parts.first().copied().unwrap_or("");
-    let args_raw = parts.get(1).map(|s| s.trim()).unwrap_or("");
+    let mut parts = command_portion.splitn(2, |c: char| c.is_whitespace());
+    let command_str = parts.next().unwrap_or("");
+    let args_raw = parts.next().map(|s| s.trim()).unwrap_or("");
     let canonical_command = command_str.to_ascii_lowercase();
 
     if matches!(canonical_command.as_str(), "quit" | "exit") {
@@ -303,4 +303,32 @@ pub enum ProcessedCommand {
     NotCommand(String),
     /// Error processing the command
     Error(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plan_command_with_newline_arguments_is_recognized() {
+        let msg = "/plan\nBuild a release plan\n- tighten scope";
+        match process_slash_command_message(msg) {
+            ProcessedCommand::ExpandedPrompt(prompt) => {
+                assert!(prompt.contains("Build a release plan"));
+                assert!(prompt.contains("tighten scope"));
+            }
+            other => panic!("expected ExpandedPrompt, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn auto_command_with_newline_arguments_is_regular_command() {
+        let msg = "/auto\ninspect the failing build";
+        match process_slash_command_message(msg) {
+            ProcessedCommand::RegularCommand(SlashCommand::Auto, command_text) => {
+                assert!(command_text.contains("inspect the failing build"));
+            }
+            other => panic!("expected RegularCommand, got {:?}", other),
+        }
+    }
 }

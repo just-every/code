@@ -16,6 +16,7 @@ use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime};
 use std::process::Command;
+use std::str::FromStr;
 use base64::prelude::{Engine as _, BASE64_STANDARD};
 
 use ratatui::style::Modifier;
@@ -8665,29 +8666,31 @@ impl ChatWidget<'_> {
             if let Some((command_line, rest_text)) =
                 Self::split_leading_slash_command(&original_text)
             {
-                let preview = crate::slash_command::process_slash_command_message(
-                    command_line.as_str(),
-                );
-                match preview {
-                    ProcessedCommand::RegularCommand(SlashCommand::Auto, canonical_text) => {
-                        let goal = rest_text.trim();
-                        let command_text = if goal.is_empty() {
-                            canonical_text
-                        } else {
-                            format!("{canonical_text} {goal}")
-                        };
-                        self.app_event_tx
-                            .send(AppEvent::DispatchCommand(SlashCommand::Auto, command_text));
-                        return;
-                    }
-                    ProcessedCommand::NotCommand(_) => {}
-                    _ => {
-                        self.submit_user_message(command_line.into());
-                        let trimmed_rest = rest_text.trim();
-                        if !trimmed_rest.is_empty() {
-                            self.submit_user_message(rest_text.into());
+                if Self::multiline_slash_command_requires_split(&command_line) {
+                    let preview = crate::slash_command::process_slash_command_message(
+                        command_line.as_str(),
+                    );
+                    match preview {
+                        ProcessedCommand::RegularCommand(SlashCommand::Auto, canonical_text) => {
+                            let goal = rest_text.trim();
+                            let command_text = if goal.is_empty() {
+                                canonical_text
+                            } else {
+                                format!("{canonical_text} {goal}")
+                            };
+                            self.app_event_tx
+                                .send(AppEvent::DispatchCommand(SlashCommand::Auto, command_text));
+                            return;
                         }
-                        return;
+                        ProcessedCommand::NotCommand(_) => {}
+                        _ => {
+                            self.submit_user_message(command_line.into());
+                            let trimmed_rest = rest_text.trim();
+                            if !trimmed_rest.is_empty() {
+                                self.submit_user_message(rest_text.into());
+                            }
+                            return;
+                        }
                     }
                 }
             }
@@ -9072,6 +9075,20 @@ impl ChatWidget<'_> {
             return None;
         }
         Some((command.to_string(), rest.to_string()))
+    }
+
+    fn slash_command_from_line(line: &str) -> Option<SlashCommand> {
+        let trimmed = line.trim();
+        let command_portion = trimmed.strip_prefix('/')?;
+        let name = command_portion.split_whitespace().next()?;
+        let canonical = name.to_ascii_lowercase();
+        SlashCommand::from_str(&canonical).ok()
+    }
+
+    fn multiline_slash_command_requires_split(command_line: &str) -> bool {
+        Self::slash_command_from_line(command_line)
+            .map(|cmd| !cmd.is_prompt_expanding())
+            .unwrap_or(true)
     }
 
     fn capture_ghost_snapshot(&mut self, summary: Option<String>) -> GhostSnapshotJobHandle {
@@ -23969,6 +23986,26 @@ mod tests {
         let mut harness = ChatWidgetHarness::new();
         let formatted = harness.chat().format_model_name("gpt-5-codex-mini");
         assert_eq!(formatted, "GPT-5-Codex-Mini");
+    }
+
+    #[test]
+    fn slash_command_from_line_parses_prompt_expanding_commands() {
+        assert!(matches!(
+            ChatWidget::slash_command_from_line("/plan build it"),
+            Some(SlashCommand::Plan)
+        ));
+        assert!(matches!(
+            ChatWidget::slash_command_from_line("/code"),
+            Some(SlashCommand::Code)
+        ));
+        assert_eq!(ChatWidget::slash_command_from_line("not-a-command"), None);
+    }
+
+    #[test]
+    fn plan_multiline_commands_are_not_split() {
+        assert!(ChatWidget::multiline_slash_command_requires_split("/auto"));
+        assert!(!ChatWidget::multiline_slash_command_requires_split("/plan"));
+        assert!(!ChatWidget::multiline_slash_command_requires_split("/solve add context"));
     }
     use ratatui::backend::TestBackend;
     use ratatui::text::Line;
