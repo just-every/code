@@ -2,7 +2,7 @@ mod device_code_auth;
 mod pkce;
 mod server;
 
-pub use device_code_auth::run_device_code_login;
+pub use device_code_auth::{run_device_code_login, DeviceCodeSession};
 pub use server::LoginServer;
 pub use server::ServerOptions;
 pub use server::ShutdownHandle;

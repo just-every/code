@@ -175,7 +175,7 @@ impl FrameTimer {
 }
 
 struct LoginFlowState {
-    shutdown: code_login::ShutdownHandle,
+    shutdown: Option<code_login::ShutdownHandle>,
     join_handle: tokio::task::JoinHandle<()>,
 }
 
@@ -2725,7 +2725,9 @@ impl App<'_> {
                         }
 
                         if let Some(flow) = self.login_flow.take() {
-                            flow.shutdown.shutdown();
+                            if let Some(shutdown) = flow.shutdown {
+                                shutdown.shutdown();
+                            }
                             flow.join_handle.abort();
                         }
 
@@ -2747,7 +2749,10 @@ impl App<'_> {
                                         .map_err(|e| e.to_string());
                                     tx.send(AppEvent::LoginChatGptComplete { result });
                                 });
-                                self.login_flow = Some(LoginFlowState { shutdown, join_handle });
+                                self.login_flow = Some(LoginFlowState {
+                                    shutdown: Some(shutdown),
+                                    join_handle,
+                                });
                             }
                             Err(err) => {
                                 widget.notify_login_chatgpt_failed(format!(
@@ -2757,18 +2762,60 @@ impl App<'_> {
                         }
                     }
                 }
+                AppEvent::LoginStartDeviceCode => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        if !widget.login_add_view_active() {
+                            continue 'main;
+                        }
+
+                        if let Some(flow) = self.login_flow.take() {
+                            if let Some(shutdown) = flow.shutdown {
+                                shutdown.shutdown();
+                            }
+                            flow.join_handle.abort();
+                        }
+
+                        widget.notify_login_device_code_pending();
+
+                        let opts = ServerOptions::new(
+                            self.config.code_home.clone(),
+                            code_login::CLIENT_ID.to_string(),
+                            self.config.responses_originator_header.clone(),
+                        );
+                        let tx = self.app_event_tx.clone();
+                        let join_handle = tokio::spawn(async move {
+                            match code_login::DeviceCodeSession::start(opts).await {
+                                Ok(session) => {
+                                    let authorize_url = session.authorize_url();
+                                    let user_code = session.user_code().to_string();
+                                    let _ = tx.send(AppEvent::LoginDeviceCodeReady { authorize_url, user_code });
+                                    let result = session.wait_for_tokens().await.map_err(|e| e.to_string());
+                                    let _ = tx.send(AppEvent::LoginDeviceCodeComplete { result });
+                                }
+                                Err(err) => {
+                                    let _ = tx.send(AppEvent::LoginDeviceCodeFailed { message: err.to_string() });
+                                }
+                            }
+                        });
+                        self.login_flow = Some(LoginFlowState { shutdown: None, join_handle });
+                    }
+                }
                 AppEvent::LoginCancelChatGpt => {
                     if let Some(flow) = self.login_flow.take() {
-                        flow.shutdown.shutdown();
+                        if let Some(shutdown) = flow.shutdown {
+                            shutdown.shutdown();
+                        }
                         flow.join_handle.abort();
                     }
                     if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.notify_login_chatgpt_cancelled();
+                        widget.notify_login_flow_cancelled();
                     }
                 }
                 AppEvent::LoginChatGptComplete { result } => {
                     if let Some(flow) = self.login_flow.take() {
-                        flow.shutdown.shutdown();
+                        if let Some(shutdown) = flow.shutdown {
+                            shutdown.shutdown();
+                        }
                         // Allow the task to finish naturally; if still running, abort.
                         if !flow.join_handle.is_finished() {
                             flow.join_handle.abort();
@@ -2777,6 +2824,38 @@ impl App<'_> {
 
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.notify_login_chatgpt_complete(result);
+                    }
+                }
+                AppEvent::LoginDeviceCodeReady { authorize_url, user_code } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.notify_login_device_code_ready(authorize_url, user_code);
+                    }
+                }
+                AppEvent::LoginDeviceCodeFailed { message } => {
+                    if let Some(flow) = self.login_flow.take() {
+                        if let Some(shutdown) = flow.shutdown {
+                            shutdown.shutdown();
+                        }
+                        if !flow.join_handle.is_finished() {
+                            flow.join_handle.abort();
+                        }
+                    }
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.notify_login_device_code_failed(message);
+                    }
+                }
+                AppEvent::LoginDeviceCodeComplete { result } => {
+                    if let Some(flow) = self.login_flow.take() {
+                        if let Some(shutdown) = flow.shutdown {
+                            shutdown.shutdown();
+                        }
+                        if !flow.join_handle.is_finished() {
+                            flow.join_handle.abort();
+                        }
+                    }
+
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.notify_login_device_code_complete(result);
                     }
                 }
                 AppEvent::LoginUsingChatGptChanged { using_chatgpt_auth } => {

@@ -632,6 +632,20 @@ enum AddStep {
     Choose { selected: usize },
     ApiKey { field: FormTextField },
     Waiting { auth_url: Option<String> },
+    DeviceCode(DeviceCodeState),
+}
+
+#[derive(Debug)]
+struct DeviceCodeState {
+    authorize_url: Option<String>,
+    user_code: Option<String>,
+    status: DeviceCodeStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeviceCodeStatus {
+    Generating,
+    WaitingForApproval,
 }
 
 pub(crate) struct LoginAddAccountState {
@@ -728,7 +742,21 @@ impl LoginAddAccountState {
                     let _ = field.handle_key(key_event);
                 }
             },
-            AddStep::Waiting { .. } => {
+            AddStep::Waiting { .. } => match key_event.code {
+                KeyCode::Esc => {
+                    self.app_event_tx.send(AppEvent::LoginCancelChatGpt);
+                }
+                KeyCode::Char('c') | KeyCode::Char('C') => {
+                    self.feedback = Some(Feedback {
+                        message: "Switching to code authentication…".to_string(),
+                        is_error: false,
+                    });
+                    self.step = AddStep::DeviceCode(DeviceCodeState::generating());
+                    self.app_event_tx.send(AppEvent::LoginStartDeviceCode);
+                }
+                _ => {}
+            },
+            AddStep::DeviceCode(_) => {
                 if matches!(key_event.code, KeyCode::Esc) {
                     self.app_event_tx.send(AppEvent::LoginCancelChatGpt);
                 }
@@ -763,6 +791,9 @@ impl LoginAddAccountState {
                 if auth_url.is_some() {
                     lines += 1;
                 }
+            }
+            AddStep::DeviceCode(_) => {
+                lines += 6;
             }
         }
 
@@ -840,12 +871,53 @@ impl LoginAddAccountState {
             }
             AddStep::Waiting { auth_url } => {
                 lines.push(Line::from("Finish signing in with ChatGPT in your browser."));
+                lines.push(Line::from(vec![
+                    Span::styled("Not seeing a browser? ", Style::default().fg(crate::colors::text_dim())),
+                    Span::styled(
+                        "Press C to switch to code authentication.",
+                        Style::default().fg(crate::colors::primary()),
+                    ),
+                ]));
                 if let Some(url) = auth_url {
                     for chunk in wrap_url_segments(url, content_width) {
                         lines.push(Line::from(vec![Span::styled(
                             chunk,
                             Style::default().fg(crate::colors::primary()),
                         )]));
+                    }
+                }
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![
+                    Span::styled("Esc", Style::default().fg(crate::colors::error()).add_modifier(Modifier::BOLD)),
+                    Span::styled(" Cancel login", Style::default().fg(crate::colors::text_dim())),
+                ]));
+            }
+            AddStep::DeviceCode(state) => {
+                lines.push(Line::from("Complete sign-in using a verification code."));
+                match state.status {
+                    DeviceCodeStatus::Generating => {
+                        lines.push(Line::from("Generating a secure code and link…"));
+                    }
+                    DeviceCodeStatus::WaitingForApproval => {
+                        if let Some(code) = &state.user_code {
+                            lines.push(Line::from(vec![
+                                Span::styled("Code: ", Style::default().fg(crate::colors::text_dim())),
+                                Span::styled(
+                                    code.clone(),
+                                    Style::default().fg(crate::colors::primary()).add_modifier(Modifier::BOLD),
+                                ),
+                            ]));
+                        }
+                        if let Some(url) = &state.authorize_url {
+                            lines.push(Line::from("Visit this link on any device:"));
+                            for chunk in wrap_url_segments(url, content_width) {
+                                lines.push(Line::from(vec![Span::styled(
+                                    chunk,
+                                    Style::default().fg(crate::colors::info()),
+                                )]));
+                            }
+                        }
+                        lines.push(Line::from("Keep this code private. It expires after 15 minutes."));
                     }
                 }
                 lines.push(Line::from(""));
@@ -876,6 +948,29 @@ impl LoginAddAccountState {
         self.feedback = Some(Feedback { message: error, is_error: true });
     }
 
+    pub fn begin_device_code_flow(&mut self) {
+        if !matches!(self.step, AddStep::DeviceCode(_)) {
+            self.step = AddStep::DeviceCode(DeviceCodeState::generating());
+        }
+        self.feedback = Some(Feedback {
+            message: "Use the on-screen code to finish signing in.".to_string(),
+            is_error: false,
+        });
+    }
+
+    pub fn set_device_code_ready(&mut self, authorize_url: String, user_code: String) {
+        self.step = AddStep::DeviceCode(DeviceCodeState::with_details(authorize_url, user_code));
+        self.feedback = Some(Feedback {
+            message: "Enter the code in your browser to continue.".to_string(),
+            is_error: false,
+        });
+    }
+
+    pub fn on_device_code_failed(&mut self, error: String) {
+        self.step = AddStep::Choose { selected: 0 };
+        self.feedback = Some(Feedback { message: error, is_error: true });
+    }
+
     pub fn on_chatgpt_complete(&mut self, result: Result<(), String>) {
         match result {
             Ok(()) => {
@@ -892,12 +987,14 @@ impl LoginAddAccountState {
         }
     }
 
-    pub fn cancel_chatgpt_wait(&mut self) {
+    pub fn cancel_active_flow(&mut self) {
+        let message = match self.step {
+            AddStep::DeviceCode(_) => "Cancelled code authentication",
+            AddStep::Waiting { .. } => "Cancelled ChatGPT login",
+            _ => "Cancelled login",
+        };
         self.step = AddStep::Choose { selected: 0 };
-        self.feedback = Some(Feedback {
-            message: "Cancelled ChatGPT login".to_string(),
-            is_error: false,
-        });
+        self.feedback = Some(Feedback { message: message.to_string(), is_error: false });
     }
 
     fn finish_and_show_accounts(&mut self) {
@@ -907,6 +1004,24 @@ impl LoginAddAccountState {
 
     fn is_complete(&self) -> bool {
         self.is_complete
+    }
+}
+
+impl DeviceCodeState {
+    fn generating() -> Self {
+        Self {
+            authorize_url: None,
+            user_code: None,
+            status: DeviceCodeStatus::Generating,
+        }
+    }
+
+    fn with_details(authorize_url: String, user_code: String) -> Self {
+        Self {
+            authorize_url: Some(authorize_url),
+            user_code: Some(user_code),
+            status: DeviceCodeStatus::WaitingForApproval,
+        }
     }
 }
 
