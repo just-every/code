@@ -63,6 +63,7 @@ use crate::EnvironmentContextEmission;
 use crate::AuthManager;
 use crate::CodexAuth;
 use crate::agent_tool::AgentStatusUpdatePayload;
+use crate::split_command_and_args;
 use crate::git_worktree;
 use crate::protocol::ApprovedCommandMatchKind;
 use crate::protocol::WebSearchBeginEvent;
@@ -8309,7 +8310,14 @@ pub(crate) async fn handle_run_agent(
 
             // Helper: derive the command to check for a given model/config pair.
             fn resolve_command_for_check(model: &str, cfg: Option<&crate::config_types::AgentConfig>) -> (String, bool) {
-                if let Some(c) = cfg { return (c.command.clone(), false); }
+                if let Some(c) = cfg {
+                    let (base, _) = split_command_and_args(&c.command);
+                    let trimmed = base.trim();
+                    if !trimmed.is_empty() {
+                        return (trimmed.to_string(), false);
+                    }
+                    return (c.command.clone(), false);
+                }
                 let m = model.to_lowercase();
                 match m.as_str() {
                     // Built-in: always available via current_exe fallback.

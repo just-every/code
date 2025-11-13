@@ -10,7 +10,7 @@ use crate::app_event_sender::AppEventSender;
 #[cfg(target_os = "macos")]
 use crate::agent_install_helpers::macos_brew_formula_for_command;
 
-use super::bottom_pane_view::BottomPaneView;
+use super::bottom_pane_view::{BottomPaneView, ConditionalUpdate};
 use super::form_text_field::{FormTextField, InputFilter};
 use super::BottomPane;
 
@@ -116,6 +116,24 @@ impl AgentEditorView {
             command: final_command,
         });
         true
+    }
+
+    fn paste_into_field(field: &mut FormTextField, text: &str) -> bool {
+        let before = field.text().len();
+        field.handle_paste(text.to_string());
+        field.text().len() != before
+    }
+
+    fn paste_into_current_field(&mut self, text: &str) -> bool {
+        match self.field {
+            FIELD_NAME => Self::paste_into_field(&mut self.name_field, text),
+            FIELD_COMMAND => Self::paste_into_field(&mut self.command_field, text),
+            FIELD_READ_ONLY => Self::paste_into_field(&mut self.params_ro, text),
+            FIELD_WRITE => Self::paste_into_field(&mut self.params_wr, text),
+            FIELD_DESCRIPTION => Self::paste_into_field(&mut self.description_field, text),
+            FIELD_INSTRUCTIONS => Self::paste_into_field(&mut self.instr, text),
+            _ => false,
+        }
     }
 
     fn handle_key_internal(&mut self, key_event: KeyEvent) -> bool {
@@ -553,6 +571,14 @@ impl AgentEditorView {
 impl<'a> BottomPaneView<'a> for AgentEditorView {
     fn handle_key_event(&mut self, _pane: &mut BottomPane<'a>, key_event: KeyEvent) {
         let _ = self.handle_key_internal(key_event);
+    }
+
+    fn handle_paste(&mut self, text: String) -> ConditionalUpdate {
+        if self.paste_into_current_field(&text) {
+            ConditionalUpdate::NeedsRedraw
+        } else {
+            ConditionalUpdate::NoRedraw
+        }
     }
 
     fn is_complete(&self) -> bool { self.complete }

@@ -55,6 +55,7 @@ use code_login::AuthMode;
 use code_protocol::mcp_protocol::AuthMode as McpAuthMode;
 use code_protocol::protocol::SessionSource;
 use code_protocol::num_format::format_with_separators;
+use code_core::split_command_and_args;
 
 
 mod diff_handlers;
@@ -7001,6 +7002,9 @@ impl ChatWidget<'_> {
     // dispatch_command() removed — command routing is handled at the App layer via AppEvent::DispatchCommand
 
     pub(crate) fn handle_paste(&mut self, text: String) {
+        if settings_handlers::handle_settings_paste(self, text.clone()) {
+            return;
+        }
         // Check if the pasted text is a file path to an image
         let trimmed = text.trim();
 
@@ -17616,6 +17620,7 @@ Have we met every part of this goal and is there no further work to do?"#
         let key = pending.key();
         let attempt = pending.clone();
         self.pending_agent_updates.insert(key, pending);
+        self.refresh_settings_overview_rows();
         let tx = self.app_event_tx.clone();
         tokio::spawn(async move {
             let cfg = attempt.cfg.clone();
@@ -18705,6 +18710,15 @@ Have we met every part of this goal and is there no further work to do?"#
             }
         }
 
+        fn command_for_check(command: &str) -> String {
+            let (base, _) = split_command_and_args(command);
+            if base.trim().is_empty() {
+                command.trim().to_string()
+            } else {
+                base
+            }
+        }
+
         fn is_builtin_agent(name: &str, command: &str) -> bool {
             name.eq_ignore_ascii_case("code")
                 || name.eq_ignore_ascii_case("codex")
@@ -18725,6 +18739,14 @@ Have we met every part of this goal and is there no further work to do?"#
                 extras.push(agent.name.to_ascii_lowercase());
             }
         }
+        let mut pending_agents: HashMap<String, AgentConfig> = HashMap::new();
+        for pending in self.pending_agent_updates.values() {
+            let lower = pending.cfg.name.to_ascii_lowercase();
+            pending_agents.insert(lower.clone(), pending.cfg.clone());
+            if !ordered.iter().any(|name| name.eq_ignore_ascii_case(&lower)) {
+                extras.push(lower);
+            }
+        }
         extras.sort();
         for extra in extras {
             if !ordered.iter().any(|name| name.eq_ignore_ascii_case(&extra)) {
@@ -18733,6 +18755,7 @@ Have we met every part of this goal and is there no further work to do?"#
         }
 
         for name in ordered.iter() {
+            let name_lower = name.to_ascii_lowercase();
             if let Some(cfg) = self
                 .config
                 .agents
@@ -18740,12 +18763,38 @@ Have we met every part of this goal and is there no further work to do?"#
                 .find(|a| a.name.eq_ignore_ascii_case(name))
             {
                 let builtin = is_builtin_agent(&cfg.name, &cfg.command);
+                    let spec_cli = agent_model_spec(&cfg.name)
+                        .or_else(|| agent_model_spec(&cfg.command))
+                        .map(|spec| spec.cli);
+                let command_to_check = command_for_check(&cfg.command);
+                let installed = if builtin {
+                    true
+                } else if command_exists(&command_to_check) {
+                    true
+                } else if let Some(cli) = spec_cli {
+                    command_exists(cli)
+                } else {
+                    false
+                };
+                agent_rows.push(AgentOverviewRow {
+                    name: cfg.name.clone(),
+                    enabled: cfg.enabled,
+                    installed,
+                    description: Self::agent_description_for(
+                        &cfg.name,
+                        Some(&cfg.command),
+                        cfg.description.as_deref(),
+                    ),
+                });
+            } else if let Some(cfg) = pending_agents.get(&name_lower) {
+                let builtin = is_builtin_agent(&cfg.name, &cfg.command);
                 let spec_cli = agent_model_spec(&cfg.name)
                     .or_else(|| agent_model_spec(&cfg.command))
                     .map(|spec| spec.cli);
+                let command_to_check = command_for_check(&cfg.command);
                 let installed = if builtin {
                     true
-                } else if command_exists(&cfg.command) {
+                } else if command_exists(&command_to_check) {
                     true
                 } else if let Some(cli) = spec_cli {
                     command_exists(cli)

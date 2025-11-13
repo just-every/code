@@ -8,6 +8,7 @@ use crate::chatwidget::BackgroundOrderTicket;
 use crate::user_approval_widget::{ApprovalRequest, UserApprovalWidget};
 use crate::thread_spawner;
 pub(crate) use bottom_pane_view::BottomPaneView;
+pub(crate) use bottom_pane_view::ConditionalUpdate;
 use crate::util::buffer::fill_rect;
 use code_core::protocol::TokenUsage;
 use code_file_search::FileMatch;

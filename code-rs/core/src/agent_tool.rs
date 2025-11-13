@@ -19,6 +19,7 @@ use tokio::time::Duration as TokioDuration;
 use std::thread;
 
 use crate::agent_defaults::{agent_model_spec, default_params_for};
+use shlex::split as shlex_split;
 use crate::config_types::AgentConfig;
 use crate::openai_tools::JsonSchema;
 use crate::openai_tools::OpenAiTool;
@@ -702,12 +703,19 @@ async fn execute_model_with_permissions(
         model.to_lowercase()
     };
 
+    let (command_base, command_extra_args) = split_command_and_args(&command);
+    let command_for_spawn = if command_base.is_empty() {
+        command.clone()
+    } else {
+        command_base.clone()
+    };
+
     // Special case: for the built‑in Codex agent, prefer invoking the currently
     // running executable with the `exec` subcommand rather than relying on a
     // `codex` binary to be present on PATH. This improves portability,
     // especially on Windows where global shims may be missing.
     let model_lower = model.to_lowercase();
-    let command_lower = command.to_ascii_lowercase();
+    let command_lower = command_for_spawn.to_ascii_lowercase();
     fn is_known_family(s: &str) -> bool {
         matches!(s, "claude" | "gemini" | "qwen" | "codex" | "code" | "cloud")
     }
@@ -728,7 +736,7 @@ async fn execute_model_with_permissions(
 
     if matches!(family, "code" | "codex" | "cloud") {
         if config.is_none() {
-            if !command_exists(&command) {
+            if !command_exists(&command_for_spawn) {
                 use_current_exe = true;
             }
         } else if let Some(ref cfg) = config {
@@ -744,7 +752,7 @@ async fn execute_model_with_permissions(
             Err(e) => return Err(format!("Failed to resolve current executable: {}", e)),
         }
     } else {
-        Command::new(command.clone())
+        Command::new(command_for_spawn.clone())
     };
 
     // Set working directory if provided
@@ -761,7 +769,7 @@ async fn execute_model_with_permissions(
         }
     }
 
-    let mut final_args: Vec<String> = Vec::new();
+    let mut final_args: Vec<String> = command_extra_args;
 
     if let Some(ref cfg) = config {
         if read_only {
@@ -828,14 +836,17 @@ async fn execute_model_with_permissions(
             final_args.extend(spec_model_args.iter().cloned());
             final_args.push(prompt.to_string());
         }
-        _ => { return Err(format!("Unknown model: {}", model)); }
+        _ => {
+            final_args.extend(spec_model_args.iter().cloned());
+            final_args.push(prompt.to_string());
+        }
     }
 
     // Proactively check for presence of external command before spawn when not
     // using the current executable fallback. This avoids confusing OS errors
     // like "program not found" and lets us surface a cleaner message.
     if !(family == "codex" || family == "code" || (family == "cloud" && config.is_none()))
-        && !command_exists(&command)
+        && !command_exists(&command_for_spawn)
     {
         return Err(format!("Required agent '{}' is not installed or not in PATH", command));
     }
@@ -913,7 +924,7 @@ async fn execute_model_with_permissions(
             std::env::current_exe().map_err(|e| format!("Failed to resolve current executable: {}", e))?
         } else {
             // Use program name; PATH resolution will be handled by spawn helper with provided env.
-            std::path::PathBuf::from(&command)
+            std::path::PathBuf::from(&command_for_spawn)
         };
         let args = final_args.clone();
 
@@ -1011,6 +1022,26 @@ fn strip_model_flags(args: &mut Vec<String>) {
             continue;
         }
         i += 1;
+    }
+}
+
+pub fn split_command_and_args(command: &str) -> (String, Vec<String>) {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return (String::new(), Vec::new());
+    }
+    if let Some(tokens) = shlex_split(trimmed) {
+        if let Some((first, rest)) = tokens.split_first() {
+            return (first.clone(), rest.to_vec());
+        }
+    }
+
+    let tokens: Vec<String> = trimmed.split_whitespace().map(|s| s.to_string()).collect();
+    if tokens.is_empty() {
+        (String::new(), Vec::new())
+    } else {
+        let head = tokens[0].clone();
+        (head, tokens[1..].to_vec())
     }
 }
 

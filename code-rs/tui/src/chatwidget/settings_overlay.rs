@@ -13,6 +13,7 @@ use crate::bottom_pane::{
     agents_settings_view::SubagentEditorView,
     AutoDriveSettingsView,
     BottomPaneView,
+    ConditionalUpdate,
     settings_panel::{render_panel, PanelFrameStyle},
     GithubSettingsView,
     McpSettingsView,
@@ -36,6 +37,9 @@ pub(crate) trait SettingsContent {
     fn handle_key(&mut self, key: KeyEvent) -> bool;
     fn is_complete(&self) -> bool;
     fn on_close(&mut self) {}
+    fn handle_paste(&mut self, _text: String) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -783,6 +787,15 @@ impl SettingsContent for AgentsSettingsContent {
 
     fn is_complete(&self) -> bool {
         false
+    }
+
+    fn handle_paste(&mut self, text: String) -> bool {
+        match &mut self.pane {
+            AgentsPane::Agent(view) => {
+                matches!(view.handle_paste(text), ConditionalUpdate::NeedsRedraw)
+            }
+            _ => false,
+        }
     }
 }
 
