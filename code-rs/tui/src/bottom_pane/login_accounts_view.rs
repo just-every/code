@@ -12,7 +12,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
 
 use crate::account_label::{account_display_label, account_mode_priority};
 use crate::app_event::AppEvent;
@@ -552,6 +552,7 @@ impl LoginAccountsState {
         }
 
         Paragraph::new(lines)
+            .wrap(Wrap { trim: true })
             .alignment(Alignment::Left)
             .style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()))
             .render(
