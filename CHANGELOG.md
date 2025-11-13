@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.4.14] - 2025-11-13
+
+- Settings: let reviewers choose the model used for /review from the settings overlay. (2134f3e)
+- TUI: keep the final scrollback line visible after a command completes so transcripts stay readable. (f6f7a75)
+- TUI: simplify the /merge handoff so follow-up flows resume without manual cleanup. (7d8684e)
+- TUI: keep multiline slash commands intact when dispatching plan or solve sequences. (8d9398d)
+- Stability: recover gracefully when the working directory vanishes mid-run instead of crashing. (97b956f)
+
 ## [0.4.11] - 2025-11-07
 
 - Model: add gpt-5-codex-mini presets for quick access to lighter variants. (febfa7e)
