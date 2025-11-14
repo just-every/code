@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.4.15] - 2025-11-14
+
+- Core: migrate default CLI, TUI, and Auto Drive models to gpt-5.1 so new sessions use the upgraded stack. (698c53f)
+- Prompts: align the gpt-5.1 system instructions with Codex guidance to keep responses consistent. (e0ec79c)
+- TUI Login: add device-code fallback and ensure ChatGPT auth links wrap cleanly on narrow terminals. (5279dd8, 2e47735, 322396c)
+
 ## [0.4.14] - 2025-11-13
 
 - Settings: let reviewers choose the model used for /review from the settings overlay. (2134f3e)
