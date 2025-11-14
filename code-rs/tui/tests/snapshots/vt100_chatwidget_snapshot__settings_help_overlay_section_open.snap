@@ -1,6 +1,5 @@
 ---
 source: tui/tests/vt100_chatwidget_snapshot.rs
-assertion_line: 1984
 expression: section_open
 ---
  +------------------------------------------------------------------------------------------------+
@@ -13,13 +12,13 @@ expression: section_open
  |    Updates            |  Curren+------------------------------+                              | |
  |    Agents             |  Reason|Model Shortcuts               |                              | |
  |    Auto Drive         |        |                              |                              | |
- |    Review             |  GPT-5-|• Esc    Return to overview   |                              | |
+ |    Review             |  GPT-5.|• Esc    Return to overview   |                              | |
  |    Validation         |  Optimi|• Tab    Cycle sections       |                              | |
  |    GitHub             |     Hig|• Shift+Tab  Cycle backwards  |solving difficult problems. ( | |
  |    Chrome             |     Med|• ?      Toggle this help     |ng. Ideal for most tasks. (de | |
  |    MCP                |     Low|                              |y in simple code bases. (fast | |
  |    Notifications      |        |Press Esc to close            |                              | |
- |    Limits             |  GPT-5 +------------------------------+                              | |
+ |    Limits             |  GPT-5.+------------------------------+                              | |
  |                       |                                                                      | |
  |                       +----------------------------------------------------------------------+ |
  | ↑ ↓ Move    Enter Open    Esc Close    ? Help                                                  |
