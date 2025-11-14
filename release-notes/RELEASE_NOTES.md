@@ -1,13 +1,11 @@
-## @just-every/code v0.4.14
+## @just-every/code v0.4.15
 
-This release sharpens review ergonomics and smooths TUI flows so everyday runs stay reliable.
+Codex v0.4.15 refreshes model defaults and tightens the login flow for a smoother release-week upgrade.
 
 ### Changes
-- Settings: let reviewers choose the model used for /review from the settings overlay.
-- TUI: keep the final scrollback line visible after a command completes so transcripts stay readable.
-- TUI: simplify the /merge handoff so follow-up flows resume without manual cleanup.
-- TUI: keep multiline slash commands intact when dispatching plan or solve sequences.
-- Stability: recover gracefully when the working directory vanishes mid-run instead of crashing.
+- Core: migrate default CLI, TUI, and Auto Drive models to gpt-5.1 so new sessions use the upgraded stack.
+- Prompts: align the gpt-5.1 system instructions with Codex guidance to keep responses consistent.
+- TUI Login: add device-code fallback and ensure ChatGPT auth links wrap cleanly on narrow terminals.
 
 ### Install
 ```
@@ -15,4 +13,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.4.13...v0.4.14
+Compare: https://github.com/just-every/code/compare/v0.4.14...v0.4.15
