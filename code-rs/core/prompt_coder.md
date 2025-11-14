@@ -50,7 +50,7 @@ agent {
     "task": "Implement JWT middleware (RS256) with key rotation and unit/integration tests. Preserve existing OAuth flows. Provide README usage snippet.",
     "context": "Service: services/api (Rust Axum). Secrets via env. CI: `cargo test --all`.",
     "files": ["services/api", "services/api/src", "services/api/Cargo.toml"],
-    "models": ["claude-sonnet-4.5","code-gpt-5-codex","gemini-2.5-pro"],
+    "models": ["claude-sonnet-4.5","code-gpt-5.1-codex","gemini-2.5-pro"],
     "output": "Middleware + passing tests + README snippet",
     "write": true // Allow changes - will launch every agent in a separate worktree
   }
