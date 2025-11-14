@@ -34,7 +34,7 @@ jobs:
     name: Preflight Tests (Linux fast E2E)
     runs-on: ubuntu-24.04
     env:
-      CARGO_TARGET_DIR: /home/runner/.cargo-target
+      CARGO_TARGET_DIR: /mnt/cargo-target
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -89,6 +89,13 @@ jobs:
           SKIP_CARGO_TESTS: "1"
           CI_CLI_BIN: ${{ env.CARGO_TARGET_DIR }}/dev-fast/code
         run: bash scripts/ci-tests.sh
+
+      - name: Drop dev-fast artifacts before workspace tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$CARGO_TARGET_DIR"/dev-fast || true
+          df -h
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
