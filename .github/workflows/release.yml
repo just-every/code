@@ -36,6 +36,13 @@ jobs:
     env:
       CARGO_TARGET_DIR: /mnt/cargo-target
     steps:
+      - name: Prepare cargo target dir on data disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo mkdir -p "$CARGO_TARGET_DIR"
+          sudo chown "$USER":"$USER" "$CARGO_TARGET_DIR"
+
       - name: Checkout code
         uses: actions/checkout@v4
         with:
