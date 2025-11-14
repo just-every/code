@@ -52,6 +52,7 @@ code-app-server = { path = "app-server" }
 code-app-server-protocol = { path = "app-server-protocol" }
 code-apply-patch = { path = "apply-patch" }
 code-arg0 = { path = "arg0" }
+code-browser = { path = "browser" }
 code-chatgpt = { path = "chatgpt" }
 code-common = { path = "common" }
 code-core = { path = "core" }
