@@ -1,3 +1,3 @@
-//! Thin wrapper around the upstream `codex-mcp-client` crate so existing
-//! `code-mcp-client` imports continue to work while we track upstream updates.
-pub use codex_mcp_client::*;
+mod mcp_client;
+
+pub use mcp_client::McpClient;

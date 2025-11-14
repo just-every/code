@@ -56,11 +56,14 @@ code-browser = { path = "browser" }
 code-chatgpt = { path = "chatgpt" }
 code-common = { path = "common" }
 code-core = { path = "core" }
+code-backend-client = { path = "backend-client" }
+code-backend-openapi-models = { path = "code-backend-openapi-models" }
 code-cloud-tasks = { path = "cloud-tasks" }
 code-cloud-tasks-client = { path = "cloud-tasks-client" }
 code-exec = { path = "exec" }
 code-file-search = { path = "file-search" }
 code-git-tooling = { path = "git-tooling" }
+code-git-apply = { path = "git-apply" }
 code-linux-sandbox = { path = "linux-sandbox" }
 code-login = { path = "login" }
 code-mcp-client = { path = "mcp-client" }
@@ -77,16 +80,7 @@ code-utils-json-to-toml = { path = "utils/json-to-toml" }
 code-utils-readiness = { path = "utils/readiness" }
 code-auto-drive-core = { path = "code-auto-drive-core" }
 mcp-types = { path = "mcp-types", package = "code-mcp-types" }
-codex-mcp-client = { path = "../codex-rs/mcp-client" }
-codex-ansi-escape = { path = "../codex-rs/ansi-escape" }
-codex-backend-client = { path = "../codex-rs/backend-client" }
-codex-cloud-tasks-client = { path = "../codex-rs/cloud-tasks-client" }
-codex-execpolicy = { path = "../codex-rs/execpolicy" }
-codex-git-apply = { path = "../codex-rs/git-apply" }
-codex-linux-sandbox = { path = "../codex-rs/linux-sandbox" }
-codex-process-hardening = { path = "../codex-rs/process-hardening" }
-codex-responses-api-proxy = { path = "../codex-rs/responses-api-proxy" }
-upstream-mcp-types = { path = "../codex-rs/mcp-types", package = "mcp-types" }
+upstream-mcp-types = { git = "https://github.com/openai/codex.git", package = "mcp-types", rev = "6c384eb9c610f9a83037d9cad120fb792e782c7c" }
 
 # External
 allocative = "0.3.3"
@@ -150,6 +144,7 @@ pretty_assertions = "1.4.1"
 pulldown-cmark = "0.10"
 rand = "0.9"
 ratatui = "0.29.0"
+regex = "1"
 regex-lite = "0.1.7"
 reqwest = "0.12"
 schemars = "0.8.22"

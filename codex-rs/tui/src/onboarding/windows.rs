@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use codex_core::config::set_windows_wsl_setup_acknowledged;
+use codex_core::config::edit::ConfigEditsBuilder;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
@@ -19,14 +19,25 @@ use crate::onboarding::onboarding_screen::StepStateProvider;
 
 use super::onboarding_screen::StepState;
 
-pub(crate) const WSL_INSTRUCTIONS: &str = r"Windows Subsystem for Linux (WSL2) is required to run Codex.
+pub(crate) const WSL_INSTRUCTIONS: &str = r#"Install WSL2 by opening PowerShell as Administrator and running:
+    # Install WSL using the default Linux distribution (Ubuntu).
+    # See https://learn.microsoft.com/en-us/windows/wsl/install for more info
+    wsl --install
 
-To install WSL2:
-  1. Open PowerShell as Administrator and run: wsl --install
-  2. Restart your machine if prompted.
-  3. Launch the Ubuntu shortcut from the Start menu to complete setup.
+    # Restart your computer, then start a shell inside of Windows Subsystem for Linux
+    wsl
 
-After installation, reopen Codex from a WSL shell.";
+    # Install Node.js in WSL via nvm
+    # Documentation: https://learn.microsoft.com/en-us/windows/dev-environment/javascript/nodejs-on-wsl
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/master/install.sh | bash && export NVM_DIR="$HOME/.nvm" && \. "$NVM_DIR/nvm.sh"
+    nvm install 22
+
+    # Install and run Codex in WSL
+    npm install --global @openai/codex
+    codex
+
+    # Additional details and instructions for how to install and run Codex in WSL:
+    https://developers.openai.com/codex/windows"#;
 
 pub(crate) struct WindowsSetupWidget {
     pub codex_home: PathBuf,
@@ -47,7 +58,7 @@ impl WindowsSetupWidget {
         Self {
             codex_home,
             selection: None,
-            highlighted: WindowsSetupSelection::Continue,
+            highlighted: WindowsSetupSelection::Install,
             error: None,
             exit_requested: false,
         }
@@ -55,7 +66,10 @@ impl WindowsSetupWidget {
 
     fn handle_continue(&mut self) {
         self.highlighted = WindowsSetupSelection::Continue;
-        match set_windows_wsl_setup_acknowledged(&self.codex_home, true) {
+        match ConfigEditsBuilder::new(&self.codex_home)
+            .set_windows_wsl_setup_acknowledged(true)
+            .apply_blocking()
+        {
             Ok(()) => {
                 self.selection = Some(WindowsSetupSelection::Continue);
                 self.exit_requested = false;
@@ -83,11 +97,12 @@ impl WindowsSetupWidget {
 impl WidgetRef for &WindowsSetupWidget {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         let mut lines: Vec<Line> = vec![
-            Line::from(vec!["> ".into(), "Codex Windows Support".bold()]),
-            Line::from(""),
-            Line::from(
-                "  Codex support for Windows is in progress. Full support for Codex on Windows requires Windows Subsystem for Linux (WSL2).",
-            ),
+            Line::from(vec![
+                "> ".into(),
+                "To use all Codex features, we recommend running Codex in Windows Subsystem for Linux (WSL2)".bold(),
+            ]),
+            Line::from(vec!["  ".into(), "WSL allows Codex to run Agent mode in a sandboxed environment with better data protections in place.".into()]),
+            Line::from(vec!["  ".into(), "Learn more: https://developers.openai.com/codex/windows".into()]),
             Line::from(""),
         ];
 
@@ -102,13 +117,13 @@ impl WidgetRef for &WindowsSetupWidget {
 
         lines.push(create_option(
             0,
-            WindowsSetupSelection::Continue,
-            "Continue anyway",
+            WindowsSetupSelection::Install,
+            "Exit and install WSL2",
         ));
         lines.push(create_option(
             1,
-            WindowsSetupSelection::Install,
-            "Exit and install Windows Subsystem for Linux (WSL2)",
+            WindowsSetupSelection::Continue,
+            "Continue anyway",
         ));
         lines.push("".into());
 
@@ -133,16 +148,16 @@ impl KeyboardHandler for WindowsSetupWidget {
 
         match key_event.code {
             KeyCode::Up | KeyCode::Char('k') => {
-                self.highlighted = WindowsSetupSelection::Continue;
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
                 self.highlighted = WindowsSetupSelection::Install;
             }
-            KeyCode::Char('1') => self.handle_continue(),
-            KeyCode::Char('2') => self.handle_install(),
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.highlighted = WindowsSetupSelection::Continue;
+            }
+            KeyCode::Char('1') => self.handle_install(),
+            KeyCode::Char('2') => self.handle_continue(),
             KeyCode::Enter => match self.highlighted {
-                WindowsSetupSelection::Continue => self.handle_continue(),
                 WindowsSetupSelection::Install => self.handle_install(),
+                WindowsSetupSelection::Continue => self.handle_continue(),
             },
             _ => {}
         }

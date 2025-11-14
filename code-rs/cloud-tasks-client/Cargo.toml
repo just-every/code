@@ -12,8 +12,16 @@ workspace = true
 
 [features]
 default = ["online"]
-online = ["codex-cloud-tasks-client/online"]
-mock = ["codex-cloud-tasks-client/mock"]
+online = ["dep:code-backend-client"]
+mock = []
 
 [dependencies]
-codex-cloud-tasks-client = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+diffy = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+code-backend-client = { workspace = true, optional = true }
+code-git-apply = { workspace = true }

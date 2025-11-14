@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::app::App;
-use crate::history_cell::CompositeHistoryCell;
+use crate::history_cell::SessionInfoCell;
 use crate::history_cell::UserHistoryCell;
 use crate::pager_overlay::Overlay;
 use crate::tui;
@@ -82,15 +82,16 @@ impl App {
 
     /// Handle global Esc presses for backtracking when no overlay is present.
     pub(crate) fn handle_backtrack_esc_key(&mut self, tui: &mut tui::Tui) {
-        // Only handle backtracking when composer is empty to avoid clobbering edits.
-        if self.chat_widget.composer_is_empty() {
-            if !self.backtrack.primed {
-                self.prime_backtrack();
-            } else if self.overlay.is_none() {
-                self.open_backtrack_preview(tui);
-            } else if self.backtrack.overlay_preview_active {
-                self.step_backtrack_and_highlight(tui);
-            }
+        if !self.chat_widget.composer_is_empty() {
+            return;
+        }
+
+        if !self.backtrack.primed {
+            self.prime_backtrack();
+        } else if self.overlay.is_none() {
+            self.open_backtrack_preview(tui);
+        } else if self.backtrack.overlay_preview_active {
+            self.step_backtrack_and_highlight(tui);
         }
     }
 
@@ -102,9 +103,16 @@ impl App {
         nth_user_message: usize,
     ) {
         self.backtrack.pending = Some((base_id, nth_user_message, prefill));
-        self.app_event_tx.send(crate::app_event::AppEvent::CodexOp(
-            codex_core::protocol::Op::GetPath,
-        ));
+        if let Some(path) = self.chat_widget.rollout_path() {
+            let ev = ConversationPathResponseEvent {
+                conversation_id: base_id,
+                path,
+            };
+            self.app_event_tx
+                .send(crate::app_event::AppEvent::ConversationHistory(ev));
+        } else {
+            tracing::error!("rollout path unavailable; cannot backtrack");
+        }
     }
 
     /// Open transcript overlay (enters alternate screen and shows full transcript).
@@ -134,8 +142,9 @@ impl App {
     /// Useful when switching sessions to ensure prior history remains visible.
     pub(crate) fn render_transcript_once(&mut self, tui: &mut tui::Tui) {
         if !self.transcript_cells.is_empty() {
+            let width = tui.terminal.last_known_screen_size.width;
             for cell in &self.transcript_cells {
-                tui.insert_history_lines(cell.transcript_lines());
+                tui.insert_history_lines(cell.display_lines(width));
             }
         }
     }
@@ -337,6 +346,7 @@ impl App {
             initial_images: Vec::new(),
             enhanced_keys_supported: self.enhanced_keys_supported,
             auth_manager: self.auth_manager.clone(),
+            feedback: self.feedback.clone(),
         };
         self.chat_widget =
             crate::chatwidget::ChatWidget::new_from_existing(init, conv, session_configured);
@@ -363,18 +373,7 @@ fn trim_transcript_cells_to_nth_user(
         return;
     }
 
-    if let Some(mut cut_idx) = nth_user_position(transcript_cells, nth_user_message) {
-        // Retain the selected user cell and any subsequent non-user cells (assistant answers,
-        // background notices, etc.) so the replayed transcript still shows the final exchange.
-        cut_idx = cut_idx.saturating_add(1);
-        let user_type = TypeId::of::<UserHistoryCell>();
-        while cut_idx < transcript_cells.len() {
-            let cell_type = transcript_cells[cut_idx].as_any().type_id();
-            if cell_type == user_type {
-                break;
-            }
-            cut_idx += 1;
-        }
+    if let Some(cut_idx) = nth_user_position(transcript_cells, nth_user_message) {
         transcript_cells.truncate(cut_idx);
     }
 }
@@ -395,13 +394,13 @@ fn nth_user_position(
 fn user_positions_iter(
     cells: &[Arc<dyn crate::history_cell::HistoryCell>],
 ) -> impl Iterator<Item = usize> + '_ {
-    let header_type = TypeId::of::<CompositeHistoryCell>();
+    let session_start_type = TypeId::of::<SessionInfoCell>();
     let user_type = TypeId::of::<UserHistoryCell>();
     let type_of = |cell: &Arc<dyn crate::history_cell::HistoryCell>| cell.as_any().type_id();
 
     let start = cells
         .iter()
-        .rposition(|cell| type_of(cell) == header_type)
+        .rposition(|cell| type_of(cell) == session_start_type)
         .map_or(0, |idx| idx + 1);
 
     cells
@@ -420,24 +419,17 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn trim_transcript_for_first_user_keeps_selected_exchange() {
+    fn trim_transcript_for_first_user_drops_user_and_newer_cells() {
         let mut cells: Vec<Arc<dyn HistoryCell>> = vec![
             Arc::new(UserHistoryCell {
                 message: "first user".to_string(),
             }) as Arc<dyn HistoryCell>,
-            Arc::new(AgentMessageCell::new(vec![Line::from("assistant after first")], true))
-                as Arc<dyn HistoryCell>,
-            Arc::new(UserHistoryCell {
-                message: "second user".to_string(),
-            }) as Arc<dyn HistoryCell>,
-            Arc::new(AgentMessageCell::new(vec![Line::from("assistant after second")], true))
+            Arc::new(AgentMessageCell::new(vec![Line::from("assistant")], true))
                 as Arc<dyn HistoryCell>,
         ];
         trim_transcript_cells_to_nth_user(&mut cells, 0);
 
-        assert_eq!(cells.len(), 2, "user and answer block should remain");
-        assert!(cells[0].as_any().is::<UserHistoryCell>());
-        assert!(cells[1].as_any().downcast_ref::<AgentMessageCell>().is_some());
+        assert!(cells.is_empty());
     }
 
     #[test]
@@ -453,54 +445,19 @@ mod tests {
         ];
         trim_transcript_cells_to_nth_user(&mut cells, 0);
 
-        assert_eq!(cells.len(), 3);
-        let intro = cells[0]
+        assert_eq!(cells.len(), 1);
+        let agent = cells[0]
             .as_any()
             .downcast_ref::<AgentMessageCell>()
-            .expect("intro agent cell");
-        let intro_lines = intro.display_lines(u16::MAX);
-        let intro_text: String = intro_lines[0]
+            .expect("agent cell");
+        let agent_lines = agent.display_lines(u16::MAX);
+        assert_eq!(agent_lines.len(), 1);
+        let intro_text: String = agent_lines[0]
             .spans
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
         assert_eq!(intro_text, "• intro");
-        assert!(cells[1].as_any().is::<UserHistoryCell>());
-        assert!(cells[2].as_any().downcast_ref::<AgentMessageCell>().is_some());
-    }
-
-    #[test]
-    fn trim_transcript_keeps_follow_up_agent_block_until_next_user() {
-        let mut cells: Vec<Arc<dyn HistoryCell>> = vec![
-            Arc::new(UserHistoryCell {
-                message: "alpha".to_string(),
-            }) as Arc<dyn HistoryCell>,
-            Arc::new(AgentMessageCell::new(
-                vec![
-                    Line::from("assistant line one"),
-                    Line::from("assistant line two"),
-                ],
-                true,
-            )) as Arc<dyn HistoryCell>,
-            Arc::new(UserHistoryCell {
-                message: "beta".to_string(),
-            }) as Arc<dyn HistoryCell>,
-        ];
-        trim_transcript_cells_to_nth_user(&mut cells, 0);
-
-        assert_eq!(cells.len(), 2);
-        let agent = cells[1]
-            .as_any()
-            .downcast_ref::<AgentMessageCell>()
-            .expect("agent cell for alpha");
-        let lines = agent.display_lines(u16::MAX);
-        assert_eq!(lines.len(), 2, "multi-line agent block should be preserved");
-        let last_line: String = lines[1]
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        assert!(last_line.contains("assistant line two"));
     }
 
     #[test]

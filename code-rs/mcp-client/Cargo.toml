@@ -7,7 +7,6 @@ edition = "2024"
 workspace = true
 
 [dependencies]
-codex-mcp-client = { workspace = true }
 anyhow = { workspace = true }
 mcp-types = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

@@ -1,5 +1,5 @@
 [package]
-edition = "2021"
+edition = "2024"
 name = "code-process-hardening"
 version = { workspace = true }
 
@@ -10,5 +10,11 @@ path = "src/lib.rs"
 [lints]
 workspace = true
 
-[dependencies]
-codex-process-hardening = { workspace = true }
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = { workspace = true }

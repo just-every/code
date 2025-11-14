@@ -1,2 +1,9 @@
-//! Thin wrapper around the upstream `codex-backend-client` crate.
-pub use codex_backend_client::*;
+mod client;
+pub mod types;
+
+pub use client::Client;
+pub use types::CodeTaskDetailsResponse;
+pub use types::CodeTaskDetailsResponseExt;
+pub use types::PaginatedListTaskListItem;
+pub use types::TaskListItem;
+pub use types::TurnAttemptsSiblingTurnsResponse;
