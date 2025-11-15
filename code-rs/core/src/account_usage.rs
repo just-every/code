@@ -194,6 +194,8 @@ impl AccountUsageData {
         self.hourly_entries = recent;
 
         for (period_start, tokens) in rollover {
+            let day_start = truncate_to_day(period_start);
+            add_to_bucket(&mut self.daily_buckets, day_start, tokens.clone());
             add_to_bucket(&mut self.hourly_buckets, period_start, tokens);
         }
 
@@ -209,26 +211,15 @@ impl AccountUsageData {
         let current_hour = truncate_to_hour(now);
         let cutoff = current_hour - Duration::hours(24);
         let mut remaining: Vec<AggregatedUsageEntry> = Vec::new();
-        let mut daily_rollover: BTreeMap<DateTime<Utc>, TokenTotals> = BTreeMap::new();
 
         for entry in self.hourly_buckets.drain(..) {
-            if entry.period_start < cutoff {
-                let day_key = truncate_to_day(entry.period_start);
-                daily_rollover
-                    .entry(day_key)
-                    .or_insert_with(TokenTotals::default)
-                    .add_totals(&entry.tokens);
-            } else {
+            if entry.period_start >= cutoff {
                 remaining.push(entry);
             }
         }
 
         remaining.sort_by_key(|item| item.period_start);
         self.hourly_buckets = remaining;
-
-        for (period_start, tokens) in daily_rollover {
-            add_to_bucket(&mut self.daily_buckets, period_start, tokens);
-        }
     }
 
     fn compact_daily_buckets(&mut self, now: DateTime<Utc>) {
