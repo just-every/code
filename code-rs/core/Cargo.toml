@@ -37,6 +37,7 @@ futures = { workspace = true }
 indexmap = { workspace = true }
 lazy_static = { workspace = true }
 libc = { workspace = true }
+core-foundation = "0.9"
 mcp-types = { workspace = true }
 mime_guess = { workspace = true }
 os_info = { workspace = true }

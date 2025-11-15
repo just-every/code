@@ -1141,6 +1141,7 @@ dependencies = [
  "code-protocol",
  "code-rmcp-client",
  "code-version",
+ "core-foundation 0.9.4",
  "dirs",
  "dunce",
  "env-flags",
