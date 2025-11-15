@@ -26,7 +26,7 @@
    - Large upstream-only crates (async-utils, app-server-test-client, windows-sandbox-rs, etc.) exist solely under `codex-rs`. Confirm they’re unnecessary for the fork and, if so, exclude them from future workstreams.
 
 6. **Automation**
-   - Integrate `scripts/check-codex-path-deps.sh` into CI (build-fast + GH Actions) to prevent future regressions.
+   - `scripts/check-codex-path-deps.sh` now runs automatically at the start of `./build-fast.sh`, so both local builds and GH workflows that invoke it enforce the guard.
    - Continue regenerating diff/critical reports after every upstream merge to maintain visibility.
 
 ## Success Criteria

@@ -1,5 +1,6 @@
 use crate::codex::ApprovedCommandPattern;
 use crate::protocol::ApprovedCommandMatchKind;
+use crate::config_loader::{load_config_as_toml_blocking, LoaderOverrides};
 use crate::config_profile::ConfigProfile;
 use crate::config_types::AgentConfig;
 use crate::agent_defaults::{agent_model_spec, default_agent_configs};
@@ -75,7 +76,7 @@ pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5.1-codex";
 /// the context window.
 pub(crate) const PROJECT_DOC_MAX_BYTES: usize = 32 * 1024; // 32 KiB
 
-const CONFIG_TOML_FILE: &str = "config.toml";
+pub(crate) const CONFIG_TOML_FILE: &str = "config.toml";
 
 const DEFAULT_RESPONSES_ORIGINATOR_HEADER: &str = "code_cli_rs";
 
@@ -375,24 +376,7 @@ pub fn load_config_as_toml_with_cli_overrides(
 /// Read `CODEX_HOME/config.toml` and return it as a generic TOML value. Returns
 /// an empty TOML table when the file does not exist.
 pub fn load_config_as_toml(code_home: &Path) -> std::io::Result<TomlValue> {
-    let read_path = resolve_code_path_for_read(code_home, Path::new(CONFIG_TOML_FILE));
-    match std::fs::read_to_string(&read_path) {
-        Ok(contents) => match toml::from_str::<TomlValue>(&contents) {
-            Ok(val) => Ok(val),
-            Err(e) => {
-                tracing::error!("Failed to parse config.toml: {e}");
-                Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-            }
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            tracing::info!("config.toml not found, using defaults");
-            Ok(TomlValue::Table(Default::default()))
-        }
-        Err(e) => {
-            tracing::error!("Failed to read config.toml: {e}");
-            Err(e)
-        }
-    }
+    load_config_as_toml_blocking(code_home, LoaderOverrides::default())
 }
 
 pub fn load_global_mcp_servers(

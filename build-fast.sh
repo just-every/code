@@ -170,17 +170,6 @@ if [ -z "$WORKSPACE_CHOICE" ]; then
   WORKSPACE_CHOICE="code"
 fi
 
-if [ "$WORKSPACE_CHOICE" = "both" ]; then
-  if [ "$RUN_AFTER_BUILD" -eq 1 ]; then
-    echo "Error: --workspace both cannot be combined with 'run'." >&2
-    exit 1
-  fi
-  for ws in codex code; do
-    WORKSPACE="$ws" "$0" "${PASSTHROUGH_ARGS[@]}" --workspace "$ws"
-  done
-  exit 0
-fi
-
 if [ "$ARG_PROFILE" = "pref" ]; then
   ARG_PROFILE="perf"
 fi
@@ -204,6 +193,26 @@ else
 fi
 
 REPO_ROOT="${SCRIPT_DIR}"
+
+# Guard against regressions where a code-rs crate references ../codex-rs.
+if [ "${BUILD_FAST_SKIP_CODEX_GUARD:-0}" != "1" ]; then
+  echo "Running codex path dependency guard..."
+  (
+    cd "$REPO_ROOT"
+    scripts/check-codex-path-deps.sh
+  )
+fi
+
+if [ "$WORKSPACE_CHOICE" = "both" ]; then
+  if [ "$RUN_AFTER_BUILD" -eq 1 ]; then
+    echo "Error: --workspace both cannot be combined with 'run'." >&2
+    exit 1
+  fi
+  for ws in codex code; do
+    WORKSPACE="$ws" "$0" "${PASSTHROUGH_ARGS[@]}" --workspace "$ws"
+  done
+  exit 0
+fi
 
 if [ -n "${CODE_HOME:-}" ] && [ -n "${CODE_HOME}" ]; then
   CACHE_HOME="${CODE_HOME%/}"

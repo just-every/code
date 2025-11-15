@@ -788,6 +788,64 @@ mod tests {
     }
 
     #[test]
+    fn usage_limit_hint_updates_last_hit_and_resets() {
+        let home = TempDir::new().expect("tempdir");
+        let now = Utc::now();
+
+        record_usage_limit_hint(home.path(), "acct-1", Some("Team"), Some(300), now)
+            .expect("hint recorded");
+
+        let snapshots = list_rate_limit_snapshots(home.path()).expect("snapshot listing");
+        assert_eq!(snapshots.len(), 1, "usage hint should create one snapshot entry");
+        let snapshot = &snapshots[0];
+        assert_eq!(snapshot.account_id, "acct-1");
+        assert_eq!(snapshot.plan.as_deref(), Some("Team"));
+        assert_eq!(snapshot.last_usage_limit_hit_at, Some(now));
+        let expected_reset = now + Duration::seconds(300);
+        assert_eq!(snapshot.primary_next_reset_at, Some(expected_reset));
+        assert_eq!(snapshot.secondary_next_reset_at, Some(expected_reset));
+    }
+
+    #[test]
+    fn token_usage_compacts_old_hourly_entries_into_buckets() {
+        let home = TempDir::new().expect("tempdir");
+        let account = "acct-compaction";
+        let usage = sample_usage();
+        let now = Utc::now();
+
+        // Two records that should roll into hourly buckets once a fresh entry is written.
+        record_token_usage(
+            home.path(),
+            account,
+            None,
+            &usage,
+            now - Duration::hours(2),
+        )
+        .expect("first record");
+        record_token_usage(
+            home.path(),
+            account,
+            None,
+            &usage,
+            now - Duration::minutes(90),
+        )
+        .expect("second record");
+
+        // Recent usage that should remain in the in-memory hourly entries window.
+        record_token_usage(home.path(), account, None, &usage, now)
+            .expect("recent record");
+
+        let summary = load_account_usage(home.path(), account)
+            .expect("load summary")
+            .expect("summary present");
+
+        // Only the most recent entry should remain in the sliding hourly window.
+        assert_eq!(summary.hourly_entries.len(), 1);
+        assert!(summary.hourly_buckets.len() >= 1, "older usage should compact into buckets");
+        assert!(summary.daily_buckets.len() >= 1, "hourly buckets roll into daily aggregates");
+    }
+
+    #[test]
     fn rate_limit_warning_only_logs_once_per_reset() {
         let home = TempDir::new().expect("tempdir");
         let now = Utc::now();
