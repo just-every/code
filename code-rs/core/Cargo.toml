@@ -37,10 +37,14 @@ futures = { workspace = true }
 indexmap = { workspace = true }
 lazy_static = { workspace = true }
 libc = { workspace = true }
-core-foundation = "0.9"
 mcp-types = { workspace = true }
 mime_guess = { workspace = true }
 os_info = { workspace = true }
+fs2 = "0.4"
+htmd = "0.1"
+httpdate = "1"
+img_hash = "3"
+once_cell = { workspace = true }
 portable-pty = { workspace = true }
 rand = { workspace = true }
 regex-lite = { workspace = true }
@@ -79,11 +83,9 @@ uuid = { workspace = true, features = ["serde", "v4"] }
 url = "2"
 which = { workspace = true }
 wildmatch = { workspace = true }
-fs2 = "0.4"
-htmd = "0.1"
-httpdate = "1"
-img_hash = "3"
-once_cell = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.9"
 
 
 [target.'cfg(target_os = "linux")'.dependencies]
