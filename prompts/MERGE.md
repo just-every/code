@@ -54,11 +54,16 @@
    - For GitHub workflows: compare with `git show upstream/main:.github/workflows/<file>.yml`, cherry-pick any improvements, then restore our workflow set (`git checkout --ours .github/workflows && git clean -fd -- .github/workflows`).
    - Keep local AGENTS/README/CHANGELOG versions unless we intentionally refresh them.
 
-4. **Commit**
+4. **Commit & record the upstream pointer**
    ```bash
    git commit  # include “Merge upstream/main …” context
    ```
-   Ensure `git merge-base --is-ancestor $(git rev-parse upstream/main) HEAD` succeeds and `git rev-list --left-right --count upstream/main...HEAD` reports `0` behind before you continue work.
+   If you end up aborting the staged merge and porting manually, still record a
+   merge commit referencing `upstream/main` (e.g., `git merge -s ours upstream/main`)
+   so GitHub recognizes that our history contains the upstream tip.
+   Ensure `git merge-base --is-ancestor $(git rev-parse upstream/main) HEAD`
+   succeeds and `git rev-list --left-right --count upstream/main...HEAD`
+   reports `0` behind before you continue work.
 
 ---
 
