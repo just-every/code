@@ -6,6 +6,7 @@ use std::fs;
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
+use code_protocol::models::{ContentItem, ResponseItem};
 use code_protocol::protocol::{RolloutItem, RolloutLine, SessionSource};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -60,6 +61,10 @@ pub struct SessionIndexEntry {
     /// Number of messages/turns in the session
     pub message_count: usize,
 
+    /// Number of user messages in the session
+    #[serde(default)]
+    pub user_message_count: usize,
+
     /// Snippet from the last user message
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_user_snippet: Option<String>,
@@ -93,7 +98,7 @@ impl SessionIndexEntry {
 }
 
 /// In-memory session catalog with secondary indexes for efficient querying.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct SessionCatalog {
     /// All entries indexed by session_id
     pub(crate) entries: HashMap<Uuid, SessionIndexEntry>,
@@ -425,6 +430,7 @@ async fn parse_rollout_file(
     let mut git_project_root: Option<PathBuf> = None;
     let mut session_source: Option<SessionSource> = None;
     let mut message_count = 0usize;
+    let mut user_message_count = 0usize;
     let mut last_user_snippet: Option<String> = None;
 
     // Parse the file line by line
@@ -455,24 +461,23 @@ async fn parse_rollout_file(
                     git_project_root = Some(meta_line.meta.cwd.clone());
                 }
             }
-            RolloutItem::ResponseItem(_) => {
-                message_count += 1;
-            }
-            RolloutItem::Event(event) => {
+            RolloutItem::ResponseItem(response_item) => {
                 message_count += 1;
 
-                // Try to extract user message snippet
-                if let Some(msg) = crate::protocol::event_msg_from_protocol(&event.msg) {
-                    if let crate::protocol::EventMsg::UserMessage(user_msg) = msg {
-                        last_user_snippet = Some(
-                            user_msg
-                                .message
-                                .chars()
-                                .take(100)
-                                .collect::<String>(),
-                        );
+                if let ResponseItem::Message { role, content, .. } = response_item {
+                    if role.eq_ignore_ascii_case("user") {
+                        user_message_count += 1;
+                        if let Some(snippet) = snippet_from_content(&content) {
+                            last_user_snippet = Some(snippet);
+                        }
                     }
                 }
+            }
+            RolloutItem::Event(_event) => {
+                // Event lines record internal state changes (tool output, approvals, etc.).
+                // They are not a reliable indicator of user-submitted turns, so avoid
+                // counting them toward `user_message_count` to keep resume filters strict.
+                message_count += 1;
             }
             RolloutItem::Compacted(_) | RolloutItem::TurnContext(_) => {
                 message_count += 1;
@@ -520,6 +525,7 @@ async fn parse_rollout_file(
         model_provider: None, // TODO: extract from session if available
         session_source,
         message_count,
+        user_message_count,
         last_user_snippet,
         sync_origin_device: None,
         sync_version: 0,
@@ -555,24 +561,37 @@ pub async fn update_catalog_entry(
     let mut catalog = SessionCatalog::load(code_home)?;
 
     // If entry exists, update last_event_at
-    if let Some(mut entry) = catalog.entries.remove(&session_id) {
-        entry.last_event_at = last_timestamp.to_string();
+        if let Some(mut entry) = catalog.entries.remove(&session_id) {
+            entry.last_event_at = last_timestamp.to_string();
 
-        // Re-parse file to update message count and snippet
-        if let Some(updated) = parse_rollout_file(rollout_path, &code_home.join(SESSIONS_SUBDIR)).await {
-            entry.message_count = updated.message_count;
-            entry.last_user_snippet = updated.last_user_snippet;
-        }
+            // Re-parse file to update message count and snippet
+            if let Some(updated) = parse_rollout_file(rollout_path, &code_home.join(SESSIONS_SUBDIR)).await {
+                entry.message_count = updated.message_count;
+                entry.user_message_count = updated.user_message_count;
+                entry.last_user_snippet = updated.last_user_snippet;
+            }
 
-        catalog.upsert(entry)?;
-    } else {
-        // Entry doesn't exist, parse and add it
-        if let Some(entry) = parse_rollout_file(rollout_path, &code_home.join(SESSIONS_SUBDIR)).await {
             catalog.upsert(entry)?;
-        }
+        } else {
+            // Entry doesn't exist, parse and add it
+            if let Some(entry) = parse_rollout_file(rollout_path, &code_home.join(SESSIONS_SUBDIR)).await {
+                catalog.upsert(entry)?;
+            }
     }
 
     Ok(())
+}
+
+fn snippet_from_content(content: &[ContentItem]) -> Option<String> {
+    content.iter().find_map(|item| match item {
+        ContentItem::InputText { text }
+        | ContentItem::OutputText { text } => Some(truncate_snippet(text)),
+        _ => None,
+    })
+}
+
+fn truncate_snippet(text: &str) -> String {
+    text.chars().take(100).collect()
 }
 
 #[cfg(test)]
@@ -595,6 +614,7 @@ mod tests {
             model_provider: None,
             session_source: SessionSource::Cli,
             message_count: 5,
+            user_message_count: 2,
             last_user_snippet: None,
             sync_origin_device: None,
             sync_version: 0,
@@ -629,6 +649,7 @@ mod tests {
             model_provider: None,
             session_source: SessionSource::Cli,
             message_count: 5,
+            user_message_count: 1,
             last_user_snippet: Some("test message".to_string()),
             sync_origin_device: None,
             sync_version: 0,
@@ -668,6 +689,7 @@ mod tests {
             model_provider: None,
             session_source: SessionSource::Cli,
             message_count: 5,
+            user_message_count: 1,
             last_user_snippet: None,
             sync_origin_device: None,
             sync_version: 0,
@@ -717,6 +739,7 @@ mod tests {
             model_provider: None,
             session_source: SessionSource::Cli,
             message_count: 5,
+            user_message_count: 2,
             last_user_snippet: Some("first message".to_string()),
             sync_origin_device: None,
             sync_version: 0,
@@ -765,6 +788,7 @@ mod tests {
             model_provider: None,
             session_source: SessionSource::Cli,
             message_count: 5,
+            user_message_count: 1,
             last_user_snippet: None,
             sync_origin_device: None,
             sync_version: 0,
@@ -807,6 +831,7 @@ mod tests {
             model_provider: None,
             session_source: SessionSource::Cli,
             message_count: 5,
+            user_message_count: 2,
             last_user_snippet: None,
             sync_origin_device: None,
             sync_version: 0,
@@ -866,6 +891,7 @@ mod tests {
             model_provider: None,
             session_source: SessionSource::Cli,
             message_count: 5,
+            user_message_count: 2,
             last_user_snippet: None,
             sync_origin_device: None,
             sync_version: 0,
@@ -942,6 +968,7 @@ mod tests {
             model_provider: None,
             session_source: SessionSource::Cli,
             message_count: 5,
+            user_message_count: 2,
             last_user_snippet: None,
             sync_origin_device: None,
             sync_version: 0,

@@ -65,6 +65,17 @@ fn write_rollout(
         }),
     };
 
+    let user_line = RolloutLine {
+        timestamp: last_event_at.to_string(),
+        item: RolloutItem::ResponseItem(ResponseItem::Message {
+            id: Some(format!("user-{}", session_id)),
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: user_text.to_string(),
+            }],
+        }),
+    };
+
     let assistant_line = RolloutLine {
         timestamp: last_event_at.to_string(),
         item: RolloutItem::ResponseItem(ResponseItem::Message {
@@ -80,6 +91,8 @@ fn write_rollout(
     serde_json::to_writer(&mut writer, &session_line).unwrap();
     writer.write_all(b"\n").unwrap();
     serde_json::to_writer(&mut writer, &event_line).unwrap();
+    writer.write_all(b"\n").unwrap();
+    serde_json::to_writer(&mut writer, &user_line).unwrap();
     writer.write_all(b"\n").unwrap();
     serde_json::to_writer(&mut writer, &assistant_line).unwrap();
     writer.write_all(b"\n").unwrap();
@@ -113,7 +126,7 @@ fn resume_picker_lists_exec_sessions() {
         "exec",
     );
 
-    let results = list_sessions_for_cwd(&cwd, temp.path());
+    let results = list_sessions_for_cwd(&cwd, temp.path(), None);
     assert_eq!(results.len(), 2);
     let sources: Vec<_> = results.iter().map(|cand| cand.subtitle.clone()).collect();
     assert!(sources.iter().any(|s| s.as_deref() == Some("cli")));
@@ -150,7 +163,59 @@ fn resume_picker_orders_by_last_event_even_with_mtime_drift() {
     set_file_mtime(&old_path, FileTime::from_system_time(base + Duration::from_secs(300))).unwrap();
     set_file_mtime(&new_path, FileTime::from_system_time(base + Duration::from_secs(60))).unwrap();
 
-    let results = list_sessions_for_cwd(&cwd, temp.path());
+    let results = list_sessions_for_cwd(&cwd, temp.path(), None);
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].path, new_path);
+}
+
+#[test]
+fn resume_picker_excludes_current_path_and_empty_sessions() {
+    let temp = TempDir::new().unwrap();
+    let cwd = std::path::PathBuf::from("/project");
+
+    let exclude = write_rollout(
+        temp.path(),
+        Uuid::parse_str("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee").unwrap(),
+        "2025-11-17T10:00:00Z",
+        "2025-11-17T10:00:05Z",
+        &cwd,
+        SessionSource::Cli,
+        "current",
+    );
+
+    // Empty session
+    let sessions_dir = temp.path().join("sessions").join("2025").join("11").join("18");
+    std::fs::create_dir_all(&sessions_dir).unwrap();
+    let empty_path = sessions_dir.join("rollout-empty.jsonl");
+    let session_meta = SessionMeta {
+        id: ConversationId::new(),
+        timestamp: "2025-11-18T09:00:00Z".to_string(),
+        cwd: cwd.clone(),
+        originator: "test".to_string(),
+        cli_version: "0.0.0-test".to_string(),
+        instructions: None,
+        source: SessionSource::Cli,
+    };
+    let session_line = RolloutLine {
+        timestamp: session_meta.timestamp.clone(),
+        item: RolloutItem::SessionMeta(SessionMetaLine { meta: session_meta, git: None }),
+    };
+    let mut writer = BufWriter::new(std::fs::File::create(&empty_path).unwrap());
+    serde_json::to_writer(&mut writer, &session_line).unwrap();
+    writer.write_all(b"\n").unwrap();
+    writer.flush().unwrap();
+
+    let visible = write_rollout(
+        temp.path(),
+        Uuid::parse_str("ffffffff-ffff-4fff-8fff-ffffffffffff").unwrap(),
+        "2025-11-18T08:00:00Z",
+        "2025-11-18T08:05:00Z",
+        &cwd,
+        SessionSource::Exec,
+        "visible",
+    );
+
+    let results = list_sessions_for_cwd(&cwd, temp.path(), Some(exclude.as_path()));
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].path, visible);
 }

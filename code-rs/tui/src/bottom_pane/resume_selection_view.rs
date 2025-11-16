@@ -15,9 +15,9 @@ use super::{BottomPane, popup_consts::MAX_POPUP_ROWS};
 pub struct ResumeRow {
     pub modified: String,
     pub created: String,
-    pub msgs: String,
+    pub user_msgs: String,
     pub branch: String,
-    pub summary: String,
+    pub last_user_message: String,
     pub path: std::path::PathBuf,
 }
 
@@ -171,8 +171,14 @@ impl BottomPaneView<'_> for ResumeSelectionView {
         let rows_iter = self.rows[start..end].iter().enumerate().map(|(idx, r)| {
             let i = start + idx; // absolute index
             let cells = vec![
-                r.modified.clone(), r.created.clone(), r.msgs.clone(), r.branch.clone(), r.summary.clone()
-            ].into_iter().map(|c| ratatui::widgets::Cell::from(c));
+                r.modified.clone(),
+                r.created.clone(),
+                r.user_msgs.clone(),
+                r.branch.clone(),
+                r.last_user_message.clone(),
+            ]
+            .into_iter()
+            .map(ratatui::widgets::Cell::from);
             let mut row = Row::new(cells).height(1);
             if i == self.selected {
                 row = row.style(Style::default().bg(crate::colors::selection()).add_modifier(Modifier::BOLD));
@@ -184,12 +190,12 @@ impl BottomPaneView<'_> for ResumeSelectionView {
         let widths = [
             Constraint::Length(10), // Modified
             Constraint::Length(10), // Created
-            Constraint::Length(6),  // #Msgs
+            Constraint::Length(11), // User Msgs
             Constraint::Length(10), // Branch
-            Constraint::Min(10),    // Summary
+            Constraint::Min(10),    // Last User Message
         ];
 
-        let header = Row::new(vec!["Modified", "Created", "#Msgs", "Branch", "Summary"]).height(1)
+        let header = Row::new(vec!["Modified", "Created", "User Msgs", "Branch", "Last User Message"]).height(1)
             .style(Style::default().fg(crate::colors::text_bright()));
 
         let table = Table::new(rows_iter, widths)

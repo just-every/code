@@ -3,7 +3,7 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use code_core::{SessionCatalog, SessionIndexEntry, SessionQuery};
+use code_core::{SessionCatalog, SessionQuery};
 use code_protocol::models::{ContentItem, ResponseItem};
 use code_protocol::protocol::{
     EventMsg as ProtoEventMsg, RecordedEvent, RolloutItem, RolloutLine, SessionMeta,
@@ -13,41 +13,6 @@ use code_protocol::ConversationId;
 use filetime::{set_file_mtime, FileTime};
 use tempfile::TempDir;
 use uuid::Uuid;
-
-fn write_catalog(code_home: &Path, entries: &[SessionIndexEntry]) {
-    let catalog_path = code_home.join("sessions/index/catalog.jsonl");
-    if let Some(parent) = catalog_path.parent() {
-        fs::create_dir_all(parent).unwrap();
-    }
-    let data = entries
-        .iter()
-        .map(|entry| serde_json::to_string(entry).unwrap())
-        .collect::<Vec<_>>()
-        .join("\n");
-    fs::write(catalog_path, format!("{}\n", data)).unwrap();
-}
-
-fn entry(id: &str, source: SessionSource, last: &str, created: &str, cwd: &Path) -> SessionIndexEntry {
-    SessionIndexEntry {
-        session_id: Uuid::parse_str(id).unwrap(),
-        rollout_path: PathBuf::from(format!("sessions/2025/11/16/rollout-{id}.jsonl")),
-        snapshot_path: None,
-        created_at: created.to_string(),
-        last_event_at: last.to_string(),
-        cwd_real: cwd.to_path_buf(),
-        cwd_display: cwd.to_string_lossy().to_string(),
-        git_project_root: None,
-        git_branch: None,
-        model_provider: Some("test-provider".to_string()),
-        session_source: source,
-        message_count: 3,
-        last_user_snippet: Some("last user input".to_string()),
-        sync_origin_device: None,
-        sync_version: 0,
-        archived: false,
-        deleted: false,
-    }
-}
 
 fn write_rollout_transcript(
     code_home: &Path,
@@ -100,6 +65,17 @@ fn write_rollout_transcript(
         }),
     };
 
+    let user_line = RolloutLine {
+        timestamp: last_event_at.to_string(),
+        item: RolloutItem::ResponseItem(ResponseItem::Message {
+            id: Some(format!("user-{}", session_id)),
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: user_message.to_string(),
+            }],
+        }),
+    };
+
     let response_line = RolloutLine {
         timestamp: last_event_at.to_string(),
         item: RolloutItem::ResponseItem(ResponseItem::Message {
@@ -116,6 +92,8 @@ fn write_rollout_transcript(
     writer.write_all(b"\n").unwrap();
     serde_json::to_writer(&mut writer, &user_event).unwrap();
     writer.write_all(b"\n").unwrap();
+    serde_json::to_writer(&mut writer, &user_line).unwrap();
+    writer.write_all(b"\n").unwrap();
     serde_json::to_writer(&mut writer, &response_line).unwrap();
     writer.write_all(b"\n").unwrap();
     writer.flush().unwrap();
@@ -127,26 +105,29 @@ fn write_rollout_transcript(
 async fn query_includes_exec_sessions() {
     let temp = TempDir::new().unwrap();
     let cwd = PathBuf::from("/workspace/project");
-    let cli_entry = entry(
-        "11111111-1111-4111-8111-111111111111",
-        SessionSource::Cli,
+    write_rollout_transcript(
+        temp.path(),
+        Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap(),
         "2025-11-15T12:00:00Z",
-        "2025-11-15T11:59:00Z",
+        "2025-11-15T12:00:10Z",
         &cwd,
+        SessionSource::Cli,
+        "cli",
     );
-    let exec_entry = entry(
-        "22222222-2222-4222-8222-222222222222",
-        SessionSource::Exec,
+    write_rollout_transcript(
+        temp.path(),
+        Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap(),
         "2025-11-15T13:00:00Z",
-        "2025-11-15T12:59:00Z",
+        "2025-11-15T13:00:10Z",
         &cwd,
+        SessionSource::Exec,
+        "exec",
     );
-
-    write_catalog(temp.path(), &[cli_entry.clone(), exec_entry.clone()]);
 
     let catalog = SessionCatalog::new(temp.path().to_path_buf());
     let query = SessionQuery {
         cwd: Some(cwd.clone()),
+        min_user_messages: 1,
         ..SessionQuery::default()
     };
     let results = catalog.query(&query).await.unwrap();
@@ -161,42 +142,52 @@ async fn query_includes_exec_sessions() {
 async fn latest_prefers_newer_timestamp() {
     let temp = TempDir::new().unwrap();
     let cwd = PathBuf::from("/workspace/project");
-    let older = entry(
-        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-        SessionSource::Cli,
+    write_rollout_transcript(
+        temp.path(),
+        Uuid::parse_str("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap(),
         "2025-11-15T10:00:00Z",
-        "2025-11-15T09:00:00Z",
+        "2025-11-15T10:00:10Z",
         &cwd,
-    );
-    let newer = entry(
-        "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
         SessionSource::Cli,
-        "2025-11-16T10:00:00Z",
-        "2025-11-16T09:00:00Z",
-        &cwd,
+        "older",
     );
-
-    write_catalog(temp.path(), &[older, newer.clone()]);
+    write_rollout_transcript(
+        temp.path(),
+        Uuid::parse_str("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap(),
+        "2025-11-16T10:00:00Z",
+        "2025-11-16T10:00:10Z",
+        &cwd,
+        SessionSource::Cli,
+        "newer",
+    );
 
     let catalog = SessionCatalog::new(temp.path().to_path_buf());
-    let query = SessionQuery { limit: Some(1), ..SessionQuery::default() };
+    let query = SessionQuery {
+        limit: Some(1),
+        min_user_messages: 1,
+        ..SessionQuery::default()
+    };
     let result = catalog.get_latest(&query).await.unwrap().unwrap();
-    assert_eq!(result.session_id, newer.session_id);
+    assert_eq!(
+        result.session_id,
+        Uuid::parse_str("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap()
+    );
 }
 
 #[tokio::test]
 async fn find_by_prefix_matches_entry() {
     let temp = TempDir::new().unwrap();
     let cwd = PathBuf::from("/workspace/project");
-    let target = entry(
-        "12345678-9abc-4def-8123-456789abcdef",
-        SessionSource::Cli,
-        "2025-11-16T12:34:56Z",
+    let target_id = Uuid::parse_str("12345678-9abc-4def-8123-456789abcdef").unwrap();
+    write_rollout_transcript(
+        temp.path(),
+        target_id,
         "2025-11-16T12:00:00Z",
+        "2025-11-16T12:34:56Z",
         &cwd,
+        SessionSource::Cli,
+        "prefix target",
     );
-
-    write_catalog(temp.path(), &[target.clone()]);
 
     let catalog = SessionCatalog::new(temp.path().to_path_buf());
     let result = catalog
@@ -204,7 +195,7 @@ async fn find_by_prefix_matches_entry() {
         .await
         .unwrap()
         .expect("entry should exist");
-    assert_eq!(result.session_id, target.session_id);
+    assert_eq!(result.session_id, target_id);
 }
 
 #[tokio::test]
@@ -237,6 +228,7 @@ async fn bootstrap_catalog_from_rollouts() {
     let catalog = SessionCatalog::new(temp.path().to_path_buf());
     let query = SessionQuery {
         cwd: Some(cwd.clone()),
+        min_user_messages: 1,
         ..SessionQuery::default()
     };
     let results = catalog.query(&query).await.unwrap();
@@ -258,21 +250,19 @@ async fn reconcile_removes_deleted_sessions() {
         "2025-11-15T12:05:00Z",
         &cwd,
         SessionSource::Cli,
-        "to delete",
+        "delete",
     );
 
     let catalog = SessionCatalog::new(temp.path().to_path_buf());
     let query = SessionQuery {
         cwd: Some(cwd.clone()),
+        min_user_messages: 1,
         ..SessionQuery::default()
     };
-    let results = catalog.query(&query).await.unwrap();
-    assert_eq!(results.len(), 1);
+    assert_eq!(catalog.query(&query).await.unwrap().len(), 1);
 
     fs::remove_file(rollout_path).unwrap();
-
-    let results_after = catalog.query(&query).await.unwrap();
-    assert!(results_after.is_empty());
+    assert_eq!(catalog.query(&query).await.unwrap().len(), 0);
 }
 
 #[tokio::test]
@@ -308,7 +298,10 @@ async fn reconcile_prefers_last_event_over_mtime() {
 
     let catalog = SessionCatalog::new(temp.path().to_path_buf());
     let latest = catalog
-        .get_latest(&SessionQuery::default())
+        .get_latest(&SessionQuery {
+            min_user_messages: 1,
+            ..SessionQuery::default()
+        })
         .await
         .unwrap()
         .expect("latest entry");

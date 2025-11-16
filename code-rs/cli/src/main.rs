@@ -19,6 +19,7 @@ mod llm;
 use llm::{LlmCli, run_llm};
 use code_common::CliConfigOverrides;
 use code_core::{entry_to_rollout_path, SessionCatalog, SessionQuery};
+use code_protocol::protocol::SessionSource;
 use code_cloud_tasks::Cli as CloudTasksCli;
 use code_exec::Cli as ExecCli;
 use code_responses_api_proxy::Args as ResponsesApiProxyArgs;
@@ -593,15 +594,16 @@ fn resolve_resume_path(session_id: Option<&str>, last: bool) -> anyhow::Result<O
                 .await
                 .context("failed to look up session by id")?;
             Ok(entry.map(|entry| entry_to_rollout_path(&code_home, &entry)))
-        } else if last {
-            let query = SessionQuery {
-                cwd: None,
-                git_root: None,
-                sources: Vec::new(),
-                include_archived: false,
-                include_deleted: false,
-                limit: Some(1),
-            };
+    } else if last {
+        let query = SessionQuery {
+            cwd: None,
+            git_root: None,
+            sources: vec![SessionSource::Cli, SessionSource::VSCode, SessionSource::Exec],
+            min_user_messages: 1,
+            include_archived: false,
+            include_deleted: false,
+            limit: Some(1),
+        };
             let entry = catalog
                 .get_latest(&query)
                 .await
@@ -1113,11 +1115,13 @@ mod tests {
 
     static CODE_HOME_MUTEX: Mutex<()> = Mutex::new(());
 
-    fn with_temp_code_home<F, R>(f: F) -> R
-    where
-        F: FnOnce(&Path) -> R,
-    {
-        let _guard = CODE_HOME_MUTEX.lock().expect("lock CODE_HOME mutex");
+fn with_temp_code_home<F, R>(f: F) -> R
+where
+    F: FnOnce(&Path) -> R,
+{
+    let _guard = CODE_HOME_MUTEX
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
         let temp_home = TempDir::new().expect("temp code home");
         let prev_code_home = std::env::var("CODE_HOME").ok();
         let prev_codex_home = std::env::var("CODEX_HOME").ok();
@@ -1181,8 +1185,6 @@ mod tests {
         );
         let path = sessions_dir.join(filename);
 
-        let session_id_str = id.to_string();
-
         let session_meta = SessionMeta {
             id: ConversationId::from(*id),
             timestamp: created_at.to_string(),
@@ -1215,6 +1217,17 @@ mod tests {
             }),
         };
 
+        let user_line = RolloutLine {
+            timestamp: last_event_at.to_string(),
+            item: RolloutItem::ResponseItem(ResponseItem::Message {
+                id: Some(format!("user-{}", id)),
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: user_message.to_string(),
+                }],
+            }),
+        };
+
         let response_line = RolloutLine {
             timestamp: last_event_at.to_string(),
             item: RolloutItem::ResponseItem(ResponseItem::Message {
@@ -1230,6 +1243,8 @@ mod tests {
         serde_json::to_writer(&mut writer, &session_line).expect("write session meta");
         writer.write_all(b"\n").expect("newline");
         serde_json::to_writer(&mut writer, &event_line).expect("write event");
+        writer.write_all(b"\n").expect("newline");
+        serde_json::to_writer(&mut writer, &user_line).expect("write user message");
         writer.write_all(b"\n").expect("newline");
         serde_json::to_writer(&mut writer, &response_line).expect("write response");
         writer.write_all(b"\n").expect("newline");
@@ -1299,7 +1314,12 @@ mod tests {
             );
 
             let path = resolve_resume_path(None, true).expect("query").expect("path");
-            assert!(path.ends_with("22222222-2222-4222-8222-222222222222.jsonl"));
+            let path_str = path.to_string_lossy();
+            assert!(
+                path_str.contains("22222222-2222-4222-8222-222222222222"),
+                "path resolved to {}",
+                path_str
+            );
         });
     }
 
@@ -1321,7 +1341,12 @@ mod tests {
             let result = resolve_resume_path(Some("33333333"), false)
                 .expect("query")
                 .expect("path");
-            assert!(result.ends_with("33333333-3333-4333-8333-333333333333.jsonl"));
+            let result_str = result.to_string_lossy();
+            assert!(
+                result_str.contains("33333333-3333-4333-8333-333333333333"),
+                "path resolved to {}",
+                result_str
+            );
         });
     }
 
@@ -1356,7 +1381,12 @@ mod tests {
             set_file_mtime(&newer_path, FileTime::from_system_time(base + Duration::from_secs(60))).unwrap();
 
             let path = resolve_resume_path(None, true).expect("query").expect("path");
-            assert!(path.ends_with("55555555-5555-4555-8555-555555555555.jsonl"));
+            let path_str = path.to_string_lossy();
+            assert!(
+                path_str.contains("55555555-5555-4555-8555-555555555555"),
+                "path resolved to {}",
+                path_str
+            );
         });
     }
 

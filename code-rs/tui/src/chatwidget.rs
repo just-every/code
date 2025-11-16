@@ -3353,7 +3353,12 @@ impl ChatWidget<'_> {
         // Discover candidates
         let cwd = self.config.cwd.clone();
         let code_home = self.config.code_home.clone();
-        let candidates = crate::resume::discovery::list_sessions_for_cwd(&cwd, &code_home);
+        let exclude_path = self.config.experimental_resume.clone();
+        let candidates = crate::resume::discovery::list_sessions_for_cwd(
+            &cwd,
+            &code_home,
+            exclude_path.as_deref(),
+        );
         if candidates.is_empty() {
             self.push_background_tail("No past sessions found for this folder".to_string());
             return;
@@ -3392,7 +3397,7 @@ impl ChatWidget<'_> {
             .map(|c| {
                 let modified = human_ago(&c.modified_ts.unwrap_or_default());
                 let created = human_ago(&c.created_ts.unwrap_or_default());
-                let msgs = format!("{}", c.message_count);
+                let user_msgs = format!("{}", c.user_message_count);
                 let branch = c.branch.unwrap_or_else(|| "-".to_string());
                 let mut summary = c.snippet.unwrap_or_else(|| c.subtitle.unwrap_or_default());
                 const SNIPPET_MAX: usize = 64;
@@ -3402,9 +3407,9 @@ impl ChatWidget<'_> {
                 crate::bottom_pane::resume_selection_view::ResumeRow {
                     modified,
                     created,
-                    msgs,
+                    user_msgs,
                     branch,
-                    summary,
+                    last_user_message: summary,
                     path: c.path,
                 }
             })

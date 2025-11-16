@@ -1,10 +1,14 @@
 //! Async-friendly wrapper around the rollout session catalog.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use code_protocol::protocol::SessionSource;
+use once_cell::sync::OnceCell;
 use tokio::task;
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::rollout::catalog::{self as rollout_catalog, SessionIndexEntry};
 
@@ -17,6 +21,8 @@ pub struct SessionQuery {
     pub git_root: Option<PathBuf>,
     /// Restrict to these sources; empty = all sources.
     pub sources: Vec<SessionSource>,
+    /// Minimum number of user messages required.
+    pub min_user_messages: usize,
     /// Include archived sessions.
     pub include_archived: bool,
     /// Include deleted sessions.
@@ -28,12 +34,14 @@ pub struct SessionQuery {
 /// Public catalog facade used by TUI/CLI/Exec entrypoints.
 pub struct SessionCatalog {
     code_home: PathBuf,
+    cache: Arc<AsyncMutex<Option<rollout_catalog::SessionCatalog>>>,
 }
 
 impl SessionCatalog {
     /// Create a catalog facade for the provided code home directory.
     pub fn new(code_home: PathBuf) -> Self {
-        Self { code_home }
+        let cache = catalog_cache_handle(&code_home);
+        Self { code_home, cache }
     }
 
     /// Query the catalog with the provided filters, returning ordered entries.
@@ -59,6 +67,9 @@ impl SessionCatalog {
                 }
             }
             if !query.sources.is_empty() && !query.sources.contains(&entry.session_source) {
+                continue;
+            }
+            if entry.user_message_count < query.min_user_messages {
                 continue;
             }
 
@@ -108,6 +119,17 @@ impl SessionCatalog {
     }
 
     async fn load_inner(&self) -> Result<rollout_catalog::SessionCatalog> {
+        {
+            let mut guard = self.cache.lock().await;
+            if let Some(existing) = guard.as_mut() {
+                existing
+                    .reconcile(&self.code_home)
+                    .await
+                    .context("failed to reconcile session catalog")?;
+                return Ok(existing.clone());
+            }
+        }
+
         let code_home = self.code_home.clone();
         let mut catalog = task::spawn_blocking(move || rollout_catalog::SessionCatalog::load(&code_home))
             .await
@@ -119,6 +141,8 @@ impl SessionCatalog {
             .await
             .context("failed to reconcile session catalog")?;
 
+        let mut guard = self.cache.lock().await;
+        *guard = Some(catalog.clone());
         Ok(catalog)
     }
 }
@@ -126,4 +150,16 @@ impl SessionCatalog {
 /// Helper to convert an entry to an absolute rollout path.
 pub fn entry_to_rollout_path(code_home: &Path, entry: &SessionIndexEntry) -> PathBuf {
     code_home.join(&entry.rollout_path)
+}
+
+type SharedCatalog = Arc<AsyncMutex<Option<rollout_catalog::SessionCatalog>>>;
+
+fn catalog_cache_handle(code_home: &Path) -> SharedCatalog {
+    static CACHE: OnceCell<Mutex<HashMap<PathBuf, SharedCatalog>>> = OnceCell::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().expect("session catalog cache poisoned");
+    guard
+        .entry(code_home.to_path_buf())
+        .or_insert_with(|| Arc::new(AsyncMutex::new(None)))
+        .clone()
 }

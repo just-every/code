@@ -51,3 +51,4 @@ libc = "0.2"
 [dev-dependencies]
 filetime = { workspace = true }
 tempfile = { workspace = true }
+uuid = { version = "1", features = ["v4"] }

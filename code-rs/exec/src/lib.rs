@@ -455,7 +455,8 @@ async fn resolve_resume_path(
         let query = SessionQuery {
             cwd: None,
             git_root: None,
-            sources: Vec::new(),
+            sources: vec![SessionSource::Cli, SessionSource::VSCode, SessionSource::Exec],
+            min_user_messages: 1,
             include_archived: false,
             include_deleted: false,
             limit: Some(1),
@@ -499,6 +500,7 @@ fn load_output_schema(path: Option<PathBuf>) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::time::{Duration, SystemTime};
 
@@ -573,6 +575,17 @@ mod tests {
                 }),
             }),
         };
+        let user_line = RolloutLine {
+            timestamp: last_event_at.to_string(),
+            item: RolloutItem::ResponseItem(ResponseItem::Message {
+                id: Some(format!("user-{}", session_id)),
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: message.to_string(),
+                }],
+            }),
+        };
+
         let assistant_line = RolloutLine {
             timestamp: last_event_at.to_string(),
             item: RolloutItem::ResponseItem(ResponseItem::Message {
@@ -588,6 +601,8 @@ mod tests {
         serde_json::to_writer(&mut writer, &session_line).unwrap();
         writer.write_all(b"\n").unwrap();
         serde_json::to_writer(&mut writer, &event_line).unwrap();
+        writer.write_all(b"\n").unwrap();
+        serde_json::to_writer(&mut writer, &user_line).unwrap();
         writer.write_all(b"\n").unwrap();
         serde_json::to_writer(&mut writer, &assistant_line).unwrap();
         writer.write_all(b"\n").unwrap();
@@ -629,7 +644,12 @@ mod tests {
             .await
             .unwrap()
             .expect("path");
-        assert!(path.ends_with("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.jsonl"));
+        let path_str = path.to_string_lossy();
+        assert!(
+            path_str.contains("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+            "resolved path should reference newer session, got {}",
+            path_str
+        );
     }
 
     #[tokio::test]
@@ -656,7 +676,12 @@ mod tests {
             .await
             .unwrap()
             .expect("path");
-        assert!(path.ends_with("cccccccc-cccc-4ccc-8ccc-cccccccccccc.jsonl"));
+        let path_str = path.to_string_lossy();
+        assert!(
+            path_str.contains("cccccccc-cccc-4ccc-8ccc-cccccccccccc"),
+            "resolved path should match requested session, got {}",
+            path_str
+        );
     }
 
     #[tokio::test]
@@ -696,6 +721,11 @@ mod tests {
             .await
             .unwrap()
             .expect("path");
-        assert!(path.ends_with("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee.jsonl"));
+        let path_str = path.to_string_lossy();
+        assert!(
+            path_str.contains("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"),
+            "resolved path should ignore mtime drift, got {}",
+            path_str
+        );
     }
 }

@@ -1,4 +1,5 @@
 use code_core::{entry_to_rollout_path, SessionCatalog, SessionIndexEntry, SessionQuery};
+use code_protocol::protocol::SessionSource;
 use std::path::{Path, PathBuf};
 use std::thread;
 use tokio::runtime::{Builder, Handle};
@@ -9,25 +10,31 @@ pub struct ResumeCandidate {
     pub subtitle: Option<String>,
     pub created_ts: Option<String>,
     pub modified_ts: Option<String>,
-    pub message_count: usize,
+    pub user_message_count: usize,
     pub branch: Option<String>,
     pub snippet: Option<String>,
 }
 
 /// Return sessions matching the provided cwd using the SessionCatalog.
 /// Includes CLI, VSCode, Exec/model sessions, etc.
-pub fn list_sessions_for_cwd(cwd: &Path, code_home: &Path) -> Vec<ResumeCandidate> {
+pub fn list_sessions_for_cwd(
+    cwd: &Path,
+    code_home: &Path,
+    exclude_path: Option<&Path>,
+) -> Vec<ResumeCandidate> {
     const MAX_RESULTS: usize = 200;
 
     let code_home = code_home.to_path_buf();
     let cwd = cwd.to_path_buf();
+    let exclude_path = exclude_path.map(|p| p.to_path_buf());
 
     let fetch = async move {
         let catalog = SessionCatalog::new(code_home.clone());
         let query = SessionQuery {
             cwd: Some(cwd),
             git_root: None,
-            sources: Vec::new(),
+            sources: vec![SessionSource::Cli, SessionSource::VSCode, SessionSource::Exec],
+            min_user_messages: 1,
             include_archived: false,
             include_deleted: false,
             limit: Some(MAX_RESULTS),
@@ -36,6 +43,17 @@ pub fn list_sessions_for_cwd(cwd: &Path, code_home: &Path) -> Vec<ResumeCandidat
         match catalog.query(&query).await {
             Ok(entries) => entries
                 .into_iter()
+                .filter(|entry| {
+                    if entry.session_source == SessionSource::Mcp {
+                        return false;
+                    }
+                    if let Some(exclude) = exclude_path.as_deref() {
+                        if entry_to_rollout_path(&code_home, entry) == exclude {
+                            return false;
+                        }
+                    }
+                    true
+                })
                 .map(|entry| entry_to_candidate(&code_home, entry))
                 .collect(),
             Err(err) => {
@@ -75,7 +93,7 @@ fn entry_to_candidate(code_home: &Path, entry: SessionIndexEntry) -> ResumeCandi
         subtitle: entry.last_user_snippet.clone(),
         created_ts: Some(entry.created_at.clone()),
         modified_ts: Some(entry.last_event_at.clone()),
-        message_count: entry.message_count,
+        user_message_count: entry.user_message_count,
         branch: entry.git_branch.clone(),
         snippet: entry.last_user_snippet.clone(),
     }

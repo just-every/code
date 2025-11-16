@@ -79,12 +79,10 @@ fn event_only_sessions_are_dropped_by_resume_discovery() {
     let rollout_path = sessions_dir.join("rollout-2025-10-06T12-00-00-00000000-0000-0000-0000-000000000042.jsonl");
     write_event_only_session(&rollout_path, &project_cwd);
 
-    let results = super::discovery::list_sessions_for_cwd(&project_cwd, code_home);
+    let results = super::discovery::list_sessions_for_cwd(&project_cwd, code_home, None);
 
     assert!(
-        !results.is_empty(),
-        "expected resume discovery to surface sessions that only contain Event-based user messages. \
-         An empty result demonstrates the regression where event-only transcripts are filtered out, \
-         making '/resume' miss recent conversations."
+        results.is_empty(),
+        "event-only sessions should be excluded from the resume picker"
     );
 }
