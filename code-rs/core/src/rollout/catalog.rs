@@ -466,8 +466,16 @@ async fn parse_rollout_file(
 
                 if let ResponseItem::Message { role, content, .. } = response_item {
                     if role.eq_ignore_ascii_case("user") {
+                        let snippet = snippet_from_content(&content);
+                        if snippet
+                            .as_deref()
+                            .map_or(false, is_system_status_snippet)
+                        {
+                            continue;
+                        }
+
                         user_message_count += 1;
-                        if let Some(snippet) = snippet_from_content(&content) {
+                        if let Some(snippet) = snippet {
                             last_user_snippet = Some(snippet);
                         }
                     }
@@ -592,6 +600,10 @@ fn snippet_from_content(content: &[ContentItem]) -> Option<String> {
 
 fn truncate_snippet(text: &str) -> String {
     text.chars().take(100).collect()
+}
+
+fn is_system_status_snippet(text: &str) -> bool {
+    text.starts_with("== System Status ==")
 }
 
 #[cfg(test)]
