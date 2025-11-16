@@ -22,7 +22,7 @@ These tests exist in `codex-rs/` but not in `code-rs/`:
 
 | Test File | Coverage Area | Code-rs Replacement | Gap Status |
 |-----------|---------------|---------------------|------------|
-| `model_tools.rs` | Model tool selection, SSE tool identifiers | ❌ No replacement | **COVERAGE GAP** - Critical |
+| `model_tools.rs` | Model tool selection, SSE tool identifiers | ✅ `code-rs/core/tests/tool_selection.rs` | Coverage restored – ready to delete upstream |
 | `read_file.rs` | File reading tool functionality | ❌ No replacement | **COVERAGE GAP** - High |
 | `tool_harness.rs` | Tool execution framework | ❌ No replacement | **COVERAGE GAP** - High |
 | `tools.rs` | General tool integration tests | ❌ No replacement | **COVERAGE GAP** - High |
@@ -106,7 +106,7 @@ The following test files exist in both trees with equivalent coverage:
 - ⚠️  Fork uses different tool router (hybrid approach per migration status)
 
 **Prerequisites for Deletion:**
-1. Create `code-rs/core/tests/suite/tool_selection.rs` for model tool tests
+1. Create `code-rs/core/tests/tool_selection.rs` for model tool tests
 2. Create `code-rs/core/tests/suite/tool_execution.rs` for harness/tools tests
 3. Create `code-rs/core/tests/suite/file_tools.rs` for read_file/view_image tests
 4. Verify coverage with: `cargo test -p code-core tool`
@@ -211,7 +211,7 @@ cargo run -p code-cli -- chat "show me the image at docs/logo.png"
 **Owner:** Core runtime pod
 
 - [ ] **BLOCKED** - Create tool coverage tests in `code-rs/core/tests/suite/`
-  - [ ] Port `model_tools.rs` → `tool_selection.rs`
+  - [x] Port `model_tools.rs` → `tool_selection.rs`
   - [ ] Port `tool_harness.rs` + `tools.rs` → `tool_execution.rs`
   - [ ] Port `read_file.rs` + `view_image.rs` → `file_tools.rs`
   - [ ] Port `unified_exec.rs` → enhance `exec.rs` and `exec_stream_events.rs`
@@ -412,7 +412,7 @@ Track these metrics throughout retirement:
 - **Functions tested:** 4 tests
 - **Key scenarios:** SSE tool completion, model-specific tool selection
 - **Dependencies:** Mock SSE server, tool identifier parsing
-- **Replacement status:** ❌ Not yet ported
+- **Replacement status:** ✅ Ported as `code-rs/core/tests/tool_selection.rs` (2025-11-16)
 
 #### `codex-rs/core/tests/suite/unified_exec.rs`
 - **Functions tested:** 2 tests
@@ -435,6 +435,6 @@ Track these metrics throughout retirement:
 
 ---
 
-**Last Updated:** 2025-10-05
-**Next Review:** 2025-10-20 (Phase 1 kickoff)
+**Last Updated:** 2025-11-16
+**Next Review:** 2025-11-23 (Phase 1 status check)
 **Playbook Status:** 🟡 IN PROGRESS - Awaiting test porting

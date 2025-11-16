@@ -107,6 +107,7 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 
 [dev-dependencies]
+assert_cmd = { workspace = true }
 filetime = { workspace = true }
 maplit = { workspace = true }
 serial_test = "3.2.0"
