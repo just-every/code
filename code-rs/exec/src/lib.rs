@@ -33,10 +33,11 @@ use tracing::error;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+use anyhow::Context;
 use crate::cli::Command as ExecCommand;
 use crate::event_processor::CodexStatus;
 use crate::event_processor::EventProcessor;
-use code_core::find_conversation_path_by_id_str;
+use code_core::{entry_to_rollout_path, SessionCatalog, SessionQuery};
 
 pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()> {
     if let Err(err) = set_default_originator("code_exec") {
@@ -438,17 +439,32 @@ async fn resolve_resume_path(
     config: &Config,
     args: &crate::cli::ResumeArgs,
 ) -> anyhow::Result<Option<PathBuf>> {
-    if args.last {
-        match code_core::RolloutRecorder::list_conversations(&config.code_home, 1, None, &[]).await {
-            Ok(page) => Ok(page.items.first().map(|it| it.path.clone())),
-            Err(e) => {
-                error!("Error listing conversations: {e}");
-                Ok(None)
-            }
-        }
-    } else if let Some(id_str) = args.session_id.as_deref() {
-        let path = find_conversation_path_by_id_str(&config.code_home, id_str).await?;
-        Ok(path)
+    if !args.last && args.session_id.is_none() {
+        return Ok(None);
+    }
+
+    let catalog = SessionCatalog::new(config.code_home.clone());
+
+    if let Some(id_str) = args.session_id.as_deref() {
+        let entry = catalog
+            .find_by_id(id_str)
+            .await
+            .context("failed to look up session by id")?;
+        Ok(entry.map(|entry| entry_to_rollout_path(&config.code_home, &entry)))
+    } else if args.last {
+        let query = SessionQuery {
+            cwd: None,
+            git_root: None,
+            sources: Vec::new(),
+            include_archived: false,
+            include_deleted: false,
+            limit: Some(1),
+        };
+        let entry = catalog
+            .get_latest(&query)
+            .await
+            .context("failed to get latest session from catalog")?;
+        Ok(entry.map(|entry| entry_to_rollout_path(&config.code_home, &entry)))
     } else {
         Ok(None)
     }
@@ -477,5 +493,209 @@ fn load_output_schema(path: Option<PathBuf>) -> Option<Value> {
             );
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, SystemTime};
+
+    use code_core::config::{ConfigOverrides, ConfigToml};
+    use code_protocol::models::{ContentItem, ResponseItem};
+    use code_protocol::mcp_protocol::ConversationId;
+    use code_protocol::protocol::{
+        EventMsg as ProtoEventMsg, RecordedEvent, RolloutItem, RolloutLine, SessionMeta,
+        SessionMetaLine, SessionSource, UserMessageEvent,
+    };
+    use filetime::{set_file_mtime, FileTime};
+    use tempfile::TempDir;
+    use uuid::Uuid;
+
+    fn test_config(code_home: &Path) -> Config {
+        let mut overrides = ConfigOverrides::default();
+        let workspace = code_home.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        overrides.cwd = Some(workspace);
+        Config::load_from_base_config_with_overrides(
+            ConfigToml::default(),
+            overrides,
+            code_home.to_path_buf(),
+        )
+        .unwrap()
+    }
+
+    fn write_rollout(
+        code_home: &Path,
+        session_id: Uuid,
+        created_at: &str,
+        last_event_at: &str,
+        source: SessionSource,
+        message: &str,
+    ) -> PathBuf {
+        let sessions_dir = code_home.join("sessions").join("2025").join("11").join("16");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        let filename = format!(
+            "rollout-{}-{}.jsonl",
+            created_at.replace(':', "-"),
+            session_id
+        );
+        let path = sessions_dir.join(filename);
+
+        let session_meta = SessionMeta {
+            id: ConversationId::from(session_id),
+            timestamp: created_at.to_string(),
+            cwd: Path::new("/workspace/project").to_path_buf(),
+            originator: "test".to_string(),
+            cli_version: "0.0.0-test".to_string(),
+            instructions: None,
+            source,
+        };
+
+        let session_line = RolloutLine {
+            timestamp: created_at.to_string(),
+            item: RolloutItem::SessionMeta(SessionMetaLine {
+                meta: session_meta,
+                git: None,
+            }),
+        };
+        let event_line = RolloutLine {
+            timestamp: last_event_at.to_string(),
+            item: RolloutItem::Event(RecordedEvent {
+                id: "event-0".to_string(),
+                event_seq: 0,
+                order: None,
+                msg: ProtoEventMsg::UserMessage(UserMessageEvent {
+                    message: message.to_string(),
+                    kind: None,
+                    images: None,
+                }),
+            }),
+        };
+        let assistant_line = RolloutLine {
+            timestamp: last_event_at.to_string(),
+            item: RolloutItem::ResponseItem(ResponseItem::Message {
+                id: Some(format!("msg-{}", session_id)),
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: format!("Ack: {}", message),
+                }],
+            }),
+        };
+
+        let mut writer = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
+        serde_json::to_writer(&mut writer, &session_line).unwrap();
+        writer.write_all(b"\n").unwrap();
+        serde_json::to_writer(&mut writer, &event_line).unwrap();
+        writer.write_all(b"\n").unwrap();
+        serde_json::to_writer(&mut writer, &assistant_line).unwrap();
+        writer.write_all(b"\n").unwrap();
+        writer.flush().unwrap();
+
+        path
+    }
+
+    #[tokio::test]
+    async fn exec_resolve_last_prefers_latest_timestamp() {
+        let temp = TempDir::new().unwrap();
+        let config = test_config(temp.path());
+        let older = Uuid::parse_str("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+        let newer = Uuid::parse_str("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap();
+
+        write_rollout(
+            temp.path(),
+            older,
+            "2025-11-10T09:00:00Z",
+            "2025-11-10T09:05:00Z",
+            SessionSource::Cli,
+            "older",
+        );
+        write_rollout(
+            temp.path(),
+            newer,
+            "2025-11-16T09:00:00Z",
+            "2025-11-16T09:10:00Z",
+            SessionSource::Exec,
+            "newer",
+        );
+
+        let args = crate::cli::ResumeArgs {
+            session_id: None,
+            last: true,
+            prompt: None,
+        };
+        let path = resolve_resume_path(&config, &args)
+            .await
+            .unwrap()
+            .expect("path");
+        assert!(path.ends_with("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.jsonl"));
+    }
+
+    #[tokio::test]
+    async fn exec_resolve_by_id_uses_catalog_bootstrap() {
+        let temp = TempDir::new().unwrap();
+        let config = test_config(temp.path());
+        let session_id = Uuid::parse_str("cccccccc-cccc-4ccc-8ccc-cccccccccccc").unwrap();
+        write_rollout(
+            temp.path(),
+            session_id,
+            "2025-11-12T09:00:00Z",
+            "2025-11-12T09:05:00Z",
+            SessionSource::Cli,
+            "resume",
+        );
+
+        let args = crate::cli::ResumeArgs {
+            session_id: Some("cccccccc".to_string()),
+            last: false,
+            prompt: None,
+        };
+
+        let path = resolve_resume_path(&config, &args)
+            .await
+            .unwrap()
+            .expect("path");
+        assert!(path.ends_with("cccccccc-cccc-4ccc-8ccc-cccccccccccc.jsonl"));
+    }
+
+    #[tokio::test]
+    async fn exec_resolve_last_ignores_mtime_drift() {
+        let temp = TempDir::new().unwrap();
+        let config = test_config(temp.path());
+        let older = Uuid::parse_str("dddddddd-dddd-4ddd-8ddd-dddddddddddd").unwrap();
+        let newer = Uuid::parse_str("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee").unwrap();
+
+        let older_path = write_rollout(
+            temp.path(),
+            older,
+            "2025-11-01T09:00:00Z",
+            "2025-11-01T09:05:00Z",
+            SessionSource::Cli,
+            "old",
+        );
+        let newer_path = write_rollout(
+            temp.path(),
+            newer,
+            "2025-11-20T09:00:00Z",
+            "2025-11-20T09:05:00Z",
+            SessionSource::Exec,
+            "new",
+        );
+
+        let base = SystemTime::now();
+        set_file_mtime(&older_path, FileTime::from_system_time(base + Duration::from_secs(500))).unwrap();
+        set_file_mtime(&newer_path, FileTime::from_system_time(base + Duration::from_secs(10))).unwrap();
+
+        let args = crate::cli::ResumeArgs {
+            session_id: None,
+            last: true,
+            prompt: None,
+        };
+        let path = resolve_resume_path(&config, &args)
+            .await
+            .unwrap()
+            .expect("path");
+        assert!(path.ends_with("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee.jsonl"));
     }
 }

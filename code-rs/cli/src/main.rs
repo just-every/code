@@ -18,8 +18,7 @@ use code_cli::login::run_logout;
 mod llm;
 use llm::{LlmCli, run_llm};
 use code_common::CliConfigOverrides;
-use code_core::find_conversation_path_by_id_str;
-use code_core::RolloutRecorder;
+use code_core::{entry_to_rollout_path, SessionCatalog, SessionQuery};
 use code_cloud_tasks::Cli as CloudTasksCli;
 use code_exec::Cli as ExecCli;
 use code_responses_api_proxy::Args as ResponsesApiProxyArgs;
@@ -585,21 +584,29 @@ fn resolve_resume_path(session_id: Option<&str>, last: bool) -> anyhow::Result<O
     let code_home = code_core::config::find_code_home()
         .context("failed to locate Codex home directory")?;
 
-    // Build the async work once, then execute it either on the existing
-    // runtime (from a helper thread) or a fresh current-thread runtime.
-    // Clone borrowed inputs so the async task can be 'static when spawned.
     let sess = session_id.map(|s| s.to_string());
     let fetch = async move {
+        let catalog = SessionCatalog::new(code_home.clone());
         if let Some(id) = sess.as_deref() {
-            let maybe = find_conversation_path_by_id_str(&code_home, id)
+            let entry = catalog
+                .find_by_id(id)
                 .await
                 .context("failed to look up session by id")?;
-            Ok(maybe)
+            Ok(entry.map(|entry| entry_to_rollout_path(&code_home, &entry)))
         } else if last {
-            let page = RolloutRecorder::list_conversations(&code_home, 1, None, &[])
+            let query = SessionQuery {
+                cwd: None,
+                git_root: None,
+                sources: Vec::new(),
+                include_archived: false,
+                include_deleted: false,
+                limit: Some(1),
+            };
+            let entry = catalog
+                .get_latest(&query)
                 .await
-                .context("failed to list recorded sessions")?;
-            Ok(page.items.first().map(|it| it.path.clone()))
+                .context("failed to get latest session from catalog")?;
+            Ok(entry.map(|entry| entry_to_rollout_path(&code_home, &entry)))
         } else {
             Ok(None)
         }
@@ -1040,11 +1047,14 @@ mod tests {
     use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
+    use std::time::{Duration, SystemTime};
 
+    use filetime::{set_file_mtime, FileTime};
     use tempfile::TempDir;
     use uuid::Uuid;
 
     use code_protocol::mcp_protocol::ConversationId;
+    use code_protocol::models::{ContentItem, ResponseItem};
     use code_protocol::protocol::EventMsg as ProtoEventMsg;
     use code_protocol::protocol::RecordedEvent;
     use code_protocol::protocol::RolloutItem;
@@ -1137,6 +1147,26 @@ mod tests {
     }
 
     fn create_session_fixture(code_home: &Path, id: &Uuid) -> PathBuf {
+        create_session_fixture_with_details(
+            code_home,
+            id,
+            "2025-10-06T12:00:00Z",
+            "2025-10-06T12:00:00Z",
+            Path::new("/project"),
+            SessionSource::Cli,
+            "Hello",
+        )
+    }
+
+    fn create_session_fixture_with_details(
+        code_home: &Path,
+        id: &Uuid,
+        created_at: &str,
+        last_event_at: &str,
+        cwd: &Path,
+        source: SessionSource,
+        user_message: &str,
+    ) -> PathBuf {
         let sessions_dir = code_home
             .join("sessions")
             .join("2025")
@@ -1144,24 +1174,27 @@ mod tests {
             .join("06");
         std::fs::create_dir_all(&sessions_dir).expect("create sessions dir");
 
-        let timestamp = "2025-10-06T12-00-00";
-        let filename = format!("rollout-{timestamp}-{id}.jsonl");
+        let filename = format!(
+            "rollout-{}-{}.jsonl",
+            created_at.replace(':', "-"),
+            id
+        );
         let path = sessions_dir.join(filename);
 
         let session_id_str = id.to_string();
 
         let session_meta = SessionMeta {
             id: ConversationId::from(*id),
-            timestamp: timestamp.to_string(),
-            cwd: Path::new(".").to_path_buf(),
+            timestamp: created_at.to_string(),
+            cwd: cwd.to_path_buf(),
             originator: "test".to_string(),
             cli_version: "0.0.0-test".to_string(),
             instructions: None,
-            source: SessionSource::Cli,
+            source,
         };
 
         let session_line = RolloutLine {
-            timestamp: timestamp.to_string(),
+            timestamp: created_at.to_string(),
             item: RolloutItem::SessionMeta(SessionMetaLine {
                 meta: session_meta,
                 git: None,
@@ -1169,16 +1202,27 @@ mod tests {
         };
 
         let event_line = RolloutLine {
-            timestamp: timestamp.to_string(),
+            timestamp: last_event_at.to_string(),
             item: RolloutItem::Event(RecordedEvent {
                 id: "event-0".to_string(),
                 event_seq: 0,
                 order: None,
                 msg: ProtoEventMsg::UserMessage(UserMessageEvent {
-                    message: "Hello".to_string(),
+                    message: user_message.to_string(),
                     kind: None,
                     images: None,
                 }),
+            }),
+        };
+
+        let response_line = RolloutLine {
+            timestamp: last_event_at.to_string(),
+            item: RolloutItem::ResponseItem(ResponseItem::Message {
+                id: Some(format!("msg-{}", id)),
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: format!("Ack: {}", user_message),
+                }],
             }),
         };
 
@@ -1187,16 +1231,9 @@ mod tests {
         writer.write_all(b"\n").expect("newline");
         serde_json::to_writer(&mut writer, &event_line).expect("write event");
         writer.write_all(b"\n").expect("newline");
+        serde_json::to_writer(&mut writer, &response_line).expect("write response");
+        writer.write_all(b"\n").expect("newline");
         writer.flush().expect("flush session file");
-
-        let runtime = TokioRuntimeBuilder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("build runtime for session lookup");
-        runtime
-            .block_on(find_conversation_path_by_id_str(code_home, &session_id_str))
-            .expect("lookup session by id")
-            .expect("session file should be discoverable");
 
         path
     }
@@ -1232,6 +1269,94 @@ mod tests {
             assert!(!interactive.resume_picker);
             assert!(!interactive.resume_last);
             assert_eq!(interactive.resume_session_id.as_deref(), Some(session_id_str.as_str()));
+        });
+    }
+
+    #[test]
+    fn resolve_resume_path_uses_catalog_for_last() {
+        with_temp_code_home(|code_home| {
+            let cwd = Path::new("/project");
+            let older_id = Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap();
+            let newer_id = Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap();
+
+            create_session_fixture_with_details(
+                code_home,
+                &older_id,
+                "2025-11-15T10:00:00Z",
+                "2025-11-15T10:00:10Z",
+                cwd,
+                SessionSource::Cli,
+                "older",
+            );
+            create_session_fixture_with_details(
+                code_home,
+                &newer_id,
+                "2025-11-16T10:00:00Z",
+                "2025-11-16T10:00:10Z",
+                cwd,
+                SessionSource::Exec,
+                "newer",
+            );
+
+            let path = resolve_resume_path(None, true).expect("query").expect("path");
+            assert!(path.ends_with("22222222-2222-4222-8222-222222222222.jsonl"));
+        });
+    }
+
+    #[test]
+    fn resolve_resume_path_prefix_lookup() {
+        with_temp_code_home(|code_home| {
+            let cwd = Path::new("/project");
+            let session_id = Uuid::parse_str("33333333-3333-4333-8333-333333333333").unwrap();
+            create_session_fixture_with_details(
+                code_home,
+                &session_id,
+                "2025-11-16T12:00:00Z",
+                "2025-11-16T12:00:05Z",
+                cwd,
+                SessionSource::Cli,
+                "prefix",
+            );
+
+            let result = resolve_resume_path(Some("33333333"), false)
+                .expect("query")
+                .expect("path");
+            assert!(result.ends_with("33333333-3333-4333-8333-333333333333.jsonl"));
+        });
+    }
+
+    #[test]
+    fn resolve_resume_path_handles_sync_like_mtime() {
+        with_temp_code_home(|code_home| {
+            let cwd = Path::new("/project");
+            let older_id = Uuid::parse_str("44444444-4444-4444-8444-444444444444").unwrap();
+            let newer_id = Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap();
+
+            let older_path = create_session_fixture_with_details(
+                code_home,
+                &older_id,
+                "2025-11-10T10:00:00Z",
+                "2025-11-10T10:05:00Z",
+                cwd,
+                SessionSource::Cli,
+                "older",
+            );
+            let newer_path = create_session_fixture_with_details(
+                code_home,
+                &newer_id,
+                "2025-11-16T10:00:00Z",
+                "2025-11-16T10:05:00Z",
+                cwd,
+                SessionSource::Exec,
+                "newer",
+            );
+
+            let base = SystemTime::now();
+            set_file_mtime(&older_path, FileTime::from_system_time(base + Duration::from_secs(300))).unwrap();
+            set_file_mtime(&newer_path, FileTime::from_system_time(base + Duration::from_secs(60))).unwrap();
+
+            let path = resolve_resume_path(None, true).expect("query").expect("path");
+            assert!(path.ends_with("55555555-5555-4555-8555-555555555555.jsonl"));
         });
     }
 

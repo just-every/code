@@ -73,7 +73,7 @@ mod session_log;
 mod shimmer;
 mod slash_command;
 mod rate_limits_view;
-mod resume;
+pub mod resume;
 mod streaming;
 mod sanitize;
 mod layout_consts;
