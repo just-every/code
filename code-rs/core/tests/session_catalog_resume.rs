@@ -3,7 +3,7 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use code_core::{SessionCatalog, SessionQuery};
+use code_core::session_catalog::{SessionCatalog, SessionQuery};
 use code_protocol::models::{ContentItem, ResponseItem};
 use code_protocol::protocol::{
     EventMsg as ProtoEventMsg, RecordedEvent, RolloutItem, RolloutLine, SessionMeta,

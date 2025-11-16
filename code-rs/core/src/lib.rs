@@ -93,7 +93,7 @@ pub mod project_doc;
 pub mod project_features;
 mod rollout;
 pub(crate) mod safety;
-mod session_catalog;
+pub mod session_catalog;
 pub mod seatbelt;
 pub mod shell;
 pub mod spawn;
