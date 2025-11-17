@@ -24844,6 +24844,47 @@ mod tests {
     }
 
     #[test]
+    fn review_dialog_uncommitted_option_runs_workspace_scope() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.open_review_dialog();
+        chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let (prompt, hint, preparation_label, metadata, auto_resolve) = harness
+            .drain_events()
+            .into_iter()
+            .find_map(|event| match event {
+                AppEvent::RunReviewWithScope {
+                    prompt,
+                    hint,
+                    preparation_label,
+                    metadata,
+                    auto_resolve,
+                } => Some((prompt, hint, preparation_label, metadata, auto_resolve)),
+                _ => None,
+            })
+            .expect("uncommitted preset should dispatch a workspace review");
+
+        assert_eq!(
+            prompt,
+            "Review the current workspace changes (staged, unstaged, and untracked files) and highlight bugs, regressions, risky patterns, and missing tests before merge.".to_string()
+        );
+        assert_eq!(hint, "current workspace changes");
+        assert_eq!(
+            preparation_label.as_deref(),
+            Some("Preparing code review for current changes")
+        );
+        assert!(!auto_resolve, "default config disables auto resolve");
+
+        let metadata = metadata.expect("workspace scope metadata");
+        assert_eq!(metadata.scope.as_deref(), Some("workspace"));
+        assert!(metadata.base_branch.is_none());
+        assert!(metadata.current_branch.is_none());
+    }
+
+    #[test]
     fn esc_router_prioritizes_auto_stop_when_waiting_for_review() {
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
@@ -27575,6 +27616,35 @@ impl ChatWidget<'_> {
                     SlashCommand::Settings,
                     "review".to_string(),
                 ));
+            })],
+        });
+
+        let workspace_prompt = "Review the current workspace changes (staged, unstaged, and untracked files) and highlight bugs, regressions, risky patterns, and missing tests before merge.".to_string();
+        let workspace_hint = "current workspace changes".to_string();
+        let workspace_preparation = "Preparing code review for current changes".to_string();
+        let workspace_metadata = Some(ReviewContextMetadata {
+            scope: Some("workspace".to_string()),
+            ..Default::default()
+        });
+        let workspace_auto_resolve = self.config.tui.review_auto_resolve;
+        items.push(SelectionItem {
+            name: "Review uncommitted changes".to_string(),
+            description: Some("Look at staged, unstaged, and untracked files".to_string()),
+            is_current: false,
+            actions: vec![Box::new({
+                let prompt = workspace_prompt.clone();
+                let hint = workspace_hint.clone();
+                let preparation = workspace_preparation.clone();
+                let metadata = workspace_metadata.clone();
+                move |tx: &crate::app_event_sender::AppEventSender| {
+                    tx.send(crate::app_event::AppEvent::RunReviewWithScope {
+                        prompt: prompt.clone(),
+                        hint: hint.clone(),
+                        preparation_label: Some(preparation.clone()),
+                        metadata: metadata.clone(),
+                        auto_resolve: workspace_auto_resolve,
+                    });
+                }
             })],
         });
 
