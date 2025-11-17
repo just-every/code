@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.4.18] - 2025-11-17
+
+- Nix: add the ratatui cargoLock output hash so code-rs builds succeed without manual prefetching. (b1abe8a)
+- Nix: point the code-rs derivation at the workspace root and explicit sourceRoot to keep multi-crate packaging aligned. (b1abe8a)
+
 ## [0.4.17] - 2025-11-17
 
 - TUI: add an uncommitted preset to /review so you can diff local edits without staging. (dda8d2d)
