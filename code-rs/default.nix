@@ -12,19 +12,16 @@ rec {
     cargoLock = {
       lockFile = ./Cargo.lock;
       outputHashes = {
+        "mcp-types-0.0.0" = "sha256-BGpEuNXky7neVIQQHqyqRjoa/wemfp6zj+usJlkRN+g=";
         "ratatui-0.29.0" = "sha256-HBvT5c8GsiCxMffNjJGLmHnvG77A6cqEL+1ARurBXho=";
       };
     };
 
     doCheck = false;
-    # Cargo toml depends on ../codex-rs
+    # Cargo.toml depends on ../codex-rs, so point the builder at the
+    # repository root and then cd back into this package's directory.
     src = ../.;
-
-    # 2. Tell the builder to cd into this package's directory before building
-    #    baseNameOf ./. automatically gets the name of the current directory
-    #    (e.g., "code-rs")
     sourceRoot = "${baseNameOf ../.}/${baseNameOf ./.}";
-
     nativeBuildInputs = with pkgs; [
       pkg-config
       openssl
