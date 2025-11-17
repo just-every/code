@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.4.17] - 2025-11-17
+
+- TUI: add an uncommitted preset to /review so you can diff local edits without staging. (dda8d2d)
+- Resume: make the session picker async and add /push for fast handoff into publish. (a3be266)
+- Resume: ignore system status snippets so regenerated plans stay focused on user messages. (e08999a)
+- Resume: count user input coming from rollouts to keep token and action history accurate. (479edd1)
+- Resume: unify the session catalog across views so saved sessions appear consistently. (0b26627)
+
 ## [0.4.16] - 2025-11-15
 
 - TUI: enable desktop notifications by default so background job updates surface immediately. (799364de)
