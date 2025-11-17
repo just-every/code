@@ -1455,6 +1455,7 @@ pub(crate) struct ChatWidget<'a> {
     last_assigned_order: Option<OrderKey>,
     replay_history_depth: usize,
     resume_placeholder_visible: bool,
+    resume_picker_loading: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -3350,33 +3351,64 @@ impl ChatWidget<'_> {
     }
 
     pub(crate) fn show_resume_picker(&mut self) {
-        // Discover candidates
+        if self.resume_picker_loading {
+            self.bottom_pane
+                .flash_footer_notice("Still loading past sessions…".to_string());
+            return;
+        }
+        self.resume_picker_loading = true;
+        self.bottom_pane.flash_footer_notice_for(
+            "Loading past sessions…".to_string(),
+            std::time::Duration::from_secs(30),
+        );
+        self.request_redraw();
+
         let cwd = self.config.cwd.clone();
         let code_home = self.config.code_home.clone();
         let exclude_path = self.config.experimental_resume.clone();
-        let candidates = crate::resume::discovery::list_sessions_for_cwd(
-            &cwd,
-            &code_home,
-            exclude_path.as_deref(),
-        );
-        if candidates.is_empty() {
-            self.push_background_tail("No past sessions found for this folder".to_string());
-            return;
-        }
-        // Convert to simple rows with aligned columns and human-friendly times
+        let tx = self.app_event_tx.clone();
+
+        tokio::spawn(async move {
+            let fetch_cwd = cwd.clone();
+            let fetch_code_home = code_home.clone();
+            let fetch_exclude = exclude_path.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                crate::resume::discovery::list_sessions_for_cwd(
+                    &fetch_cwd,
+                    &fetch_code_home,
+                    fetch_exclude.as_deref(),
+                )
+            })
+            .await;
+
+            match result {
+                Ok(candidates) => {
+                    tx.send(AppEvent::ResumePickerLoaded { cwd, candidates });
+                }
+                Err(err) => {
+                    tx.send(AppEvent::ResumePickerLoadFailed {
+                        message: format!("Failed to load past sessions: {}", err),
+                    });
+                }
+            }
+        });
+    }
+
+    fn resume_rows_from_candidates(
+        candidates: Vec<crate::resume::discovery::ResumeCandidate>,
+    ) -> Vec<crate::bottom_pane::resume_selection_view::ResumeRow> {
         fn human_ago(ts: &str) -> String {
-            use chrono::DateTime;
-            use chrono::Utc;
+            use chrono::{DateTime, Local};
             if let Ok(dt) = DateTime::parse_from_rfc3339(ts) {
-                let now = Utc::now();
-                let delta = now.signed_duration_since(dt.with_timezone(&Utc));
+                let local_dt = dt.with_timezone(&Local);
+                let now = Local::now();
+                let delta = now.signed_duration_since(local_dt);
                 let secs = delta.num_seconds().max(0);
                 let mins = secs / 60;
                 let hours = mins / 60;
                 let days = hours / 24;
                 if days >= 7 {
-                    // Show date for older entries
-                    return dt.format("%Y-%m-%d").to_string();
+                    return local_dt.format("%Y-%m-%d %H:%M").to_string();
                 }
                 if days >= 1 {
                     return format!("{}d ago", days);
@@ -3392,7 +3424,7 @@ impl ChatWidget<'_> {
             ts.to_string()
         }
 
-        let rows: Vec<crate::bottom_pane::resume_selection_view::ResumeRow> = candidates
+        candidates
             .into_iter()
             .map(|c| {
                 let modified = human_ago(&c.modified_ts.unwrap_or_default());
@@ -3413,11 +3445,35 @@ impl ChatWidget<'_> {
                     path: c.path,
                 }
             })
-            .collect();
+            .collect()
+    }
+
+    pub(crate) fn present_resume_picker(
+        &mut self,
+        cwd: std::path::PathBuf,
+        candidates: Vec<crate::resume::discovery::ResumeCandidate>,
+    ) {
+        self.resume_picker_loading = false;
+        if candidates.is_empty() {
+            self.bottom_pane
+                .flash_footer_notice("No past sessions found for this folder".to_string());
+            self.request_redraw();
+            return;
+        }
+        let rows = Self::resume_rows_from_candidates(candidates);
+        let count = rows.len();
         let title = format!("Resume Session — {}", cwd.display());
-        let subtitle = Some(String::new());
         self.bottom_pane
-            .show_resume_selection(title, subtitle, rows);
+            .show_resume_selection(title, Some(String::new()), rows);
+        self.bottom_pane
+            .flash_footer_notice(format!("Loaded {} past sessions.", count));
+        self.request_redraw();
+    }
+
+    pub(crate) fn handle_resume_picker_load_failed(&mut self, message: String) {
+        self.resume_picker_loading = false;
+        self.bottom_pane.flash_footer_notice(message);
+        self.request_redraw();
     }
 
     /// Render a single recorded ResponseItem into history without executing tools
@@ -5125,6 +5181,7 @@ impl ChatWidget<'_> {
             standard_terminal_mode: !config.tui.alternate_screen,
             replay_history_depth: 0,
             resume_placeholder_visible: false,
+            resume_picker_loading: false,
         };
         new_widget.spawn_conversation_runtime(config.clone(), auth_manager.clone(), code_op_rx);
         if let Ok(Some(active_id)) = auth_accounts::get_active_account_id(&config.code_home) {
@@ -5451,6 +5508,7 @@ impl ChatWidget<'_> {
             last_assigned_order: None,
             replay_history_depth: 0,
             resume_placeholder_visible: false,
+            resume_picker_loading: false,
         };
         if let Ok(Some(active_id)) = auth_accounts::get_active_account_id(&config.code_home) {
             if let Ok(records) = account_usage::list_rate_limit_snapshots(&config.code_home) {
@@ -23862,7 +23920,11 @@ Have we met every part of this goal and is there no further work to do?"#
         self.submit_user_message(msg);
     }
 
-    fn submit_hidden_text_message_with_preface(&mut self, agent_text: String, preface: String) {
+    pub(crate) fn submit_hidden_text_message_with_preface(
+        &mut self,
+        agent_text: String,
+        preface: String,
+    ) {
         if agent_text.trim().is_empty() && preface.trim().is_empty() {
             return;
         }
@@ -28862,6 +28924,175 @@ impl ChatWidget<'_> {
             // Prefix the auto-submitted task so it's obvious it started in the new branch
             let initial_prompt = task_opt.map(|s| format!("[branch created] {}", s));
             let _ = tx.send(AppEvent::SwitchCwd(worktree, initial_prompt));
+        });
+    }
+
+    pub(crate) fn handle_push_command(&mut self) {
+        self.consume_pending_prompt_for_ui_only_turn();
+        let Some(git_root) =
+            code_core::git_info::resolve_root_git_project_for_trust(&self.config.cwd)
+        else {
+            self.push_background_tail("`/push` — run this command inside a git repository.".to_string());
+            self.request_redraw();
+            return;
+        };
+
+        self.push_background_tail("Commit, push and monitor workflows.".to_string());
+        self.request_redraw();
+
+        let tx = self.app_event_tx.clone();
+        let ticket = self.make_background_tail_ticket();
+        let worktree = git_root.clone();
+
+        tokio::spawn(async move {
+            use std::fmt::Write as _;
+            use tokio::{fs, process::Command};
+
+            let short_status = match ChatWidget::git_short_status(&worktree).await {
+                Ok(output) => output,
+                Err(err) => {
+                    tx.send_background_event_with_ticket(
+                        &ticket,
+                        format!("`/push` — failed to read git status: {err}"),
+                    );
+                    return;
+                }
+            };
+            let has_dirty_changes = short_status.lines().any(|line| !line.trim().is_empty());
+
+            let gh_available = Command::new("gh")
+                .arg("--version")
+                .output()
+                .await
+                .map(|out| out.status.success())
+                .unwrap_or(false);
+
+            let workflow_dir = worktree.join(".github").join("workflows");
+            let workflows_exist = if fs::metadata(&workflow_dir)
+                .await
+                .map(|meta| meta.is_dir())
+                .unwrap_or(false)
+            {
+                match fs::read_dir(&workflow_dir).await {
+                    Ok(mut dir) => {
+                        let mut found = false;
+                        loop {
+                            match dir.next_entry().await {
+                                Ok(Some(entry)) => {
+                                    if entry
+                                        .file_type()
+                                        .await
+                                        .map(|ft| ft.is_file())
+                                        .unwrap_or(false)
+                                    {
+                                        found = true;
+                                        break;
+                                    }
+                                }
+                                Ok(None) | Err(_) => {
+                                    break;
+                                }
+                            }
+                        }
+                        found
+                    }
+                    Err(_) => false,
+                }
+            } else {
+                false
+            };
+
+            let status_snippet = if short_status.trim().is_empty() {
+                "(clean working tree)".to_string()
+            } else {
+                short_status.trim_end().to_string()
+            };
+
+            let diff_output = Command::new("git")
+                .current_dir(&worktree)
+                .args(["diff", "--cached"])
+                .output()
+                .await;
+            let diff_snippet = match diff_output {
+                Ok(out) if out.status.success() => {
+                    let diff_text = String::from_utf8_lossy(&out.stdout);
+                    if diff_text.trim().is_empty() {
+                        "(no staged changes)".to_string()
+                    } else {
+                        const MAX_LINES: usize = 200;
+                        const MAX_CHARS: usize = 16_000;
+                        let mut preview = String::new();
+                        let mut truncated = false;
+                        let mut emitted = 0usize;
+                        let mut chars = 0usize;
+                        for line in diff_text.lines() {
+                            if emitted >= MAX_LINES || chars >= MAX_CHARS {
+                                truncated = true;
+                                break;
+                            }
+                            preview.push_str(line);
+                            preview.push('\n');
+                            emitted += 1;
+                            chars += line.len() + 1;
+                        }
+                        if truncated {
+                            preview.push_str("…\n(truncated)\n");
+                        }
+                        preview.trim_end().to_string()
+                    }
+                }
+                Ok(out) => {
+                    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                    if err.is_empty() {
+                        "(failed to read staged diff)".to_string()
+                    } else {
+                        format!("(failed to read staged diff: {err})")
+                    }
+                }
+                Err(err) => format!("(failed to run git diff --cached: {err})"),
+            };
+
+            let mut steps = Vec::new();
+            if has_dirty_changes {
+                steps.push(
+                    "Briefly clean this repo (add working files/secrets to .gitignore, delete any temporary files) if neccessary, then commit all remaining dirty files."
+                        .to_string(),
+                );
+            }
+            steps.push(
+                "Run git pull and merge any remote changes, carefully. Ensure conflicts are resolved line-by-line, do not bulk checkout or prefer changes from one side or the other."
+                    .to_string(),
+            );
+            steps.push("Perform a git push.".to_string());
+            if gh_available && workflows_exist {
+                steps.push(
+                    "Use gh to see if any workflows were triggered. If they are wait until they finish with `gh run watch`."
+                        .to_string(),
+                );
+                steps.push(
+                    "If the workflow fails, then view errors, commit, push, monitor and repeat until the workflow succeeds."
+                        .to_string(),
+                );
+            }
+
+            let mut message = String::from("You have permission to commit and push.\n");
+            message.push_str("\nRepository snapshot:\n");
+            message.push_str("`git status --short`:\n");
+            message.push_str(&status_snippet);
+            message.push_str("\n\n`git diff --cached` (first 200 lines, 16k chars):\n");
+            message.push_str(&diff_snippet);
+            message.push_str("\n\n");
+            for (idx, step) in steps.iter().enumerate() {
+                let _ = writeln!(message, "{}. {}", idx + 1, step);
+            }
+            message.push_str(
+                "You must ensure all workflows complete successfully. Do not yeild or respond until this has been completed.",
+            );
+
+            tx.send(AppEvent::SubmitHiddenTextWithPreface {
+                agent_text: message,
+                preface: String::new(),
+            });
         });
     }
 

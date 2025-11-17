@@ -1975,6 +1975,11 @@ impl App<'_> {
                                 widget.handle_merge_command();
                             }
                         }
+                        SlashCommand::Push => {
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                widget.handle_push_command();
+                            }
+                        }
                         SlashCommand::Resume => {
                             if let AppState::Chat { widget } = &mut self.app_state {
                                 widget.show_resume_picker();
@@ -2234,6 +2239,16 @@ impl App<'_> {
                         widget.switch_cwd(target, initial_prompt);
                     }
                 }
+                AppEvent::ResumePickerLoaded { cwd, candidates } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.present_resume_picker(cwd, candidates);
+                    }
+                }
+                AppEvent::ResumePickerLoadFailed { message } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.handle_resume_picker_load_failed(message);
+                    }
+                }
                 AppEvent::ResumeFrom(path) => {
                     // Replace the current chat widget with a new one configured to resume
                     let mut cfg = self.config.clone();
@@ -2371,6 +2386,11 @@ impl App<'_> {
                 AppEvent::SubmitTextWithPreface { visible, preface } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.submit_text_message_with_preface(visible, preface);
+                    }
+                }
+                AppEvent::SubmitHiddenTextWithPreface { agent_text, preface } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.submit_hidden_text_message_with_preface(agent_text, preface);
                     }
                 }
                 AppEvent::RunReviewCommand(args) => {

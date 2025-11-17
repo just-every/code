@@ -38,6 +38,9 @@ Notes
   directories are copied automatically.
 - `/merge`: merge the current worktree branch back into the default branch and
   remove the worktree. Run this from inside the worktree created by `/branch`.
+- `/push`: tell Codex to commit, push, and monitor workflows with guarded
+  instructions. Skips cleanup or GitHub monitoring steps automatically when the
+  workspace is already clean or required tooling/files are missing.
 - `/review [focus]`: without arguments, opens a review picker so you can audit
   the workspace, a specific commit, compare against another branch, or enter
   custom instructions. With a focus argument, skips the picker and uses your

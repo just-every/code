@@ -5,6 +5,7 @@ use std::thread;
 use tokio::runtime::{Builder, Handle};
 
 /// One candidate session for the picker
+#[derive(Clone, Debug)]
 pub struct ResumeCandidate {
     pub path: PathBuf,
     pub subtitle: Option<String>,

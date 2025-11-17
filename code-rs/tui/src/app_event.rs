@@ -28,6 +28,7 @@ use std::fmt;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender as StdSender;
 use crate::cloud_tasks_service::CloudEnvironment;
+use crate::resume::discovery::ResumeCandidate;
 
 /// Wrapper to allow including non-Debug types in Debug enums without leaking internals.
 pub(crate) struct Redacted<T>(pub T);
@@ -199,6 +200,15 @@ pub(crate) enum AppEvent {
     /// initial prompt once the new session is ready.
     SwitchCwd(std::path::PathBuf, Option<String>),
 
+    /// Resume picker data finished loading
+    ResumePickerLoaded {
+        cwd: std::path::PathBuf,
+        candidates: Vec<ResumeCandidate>,
+    },
+
+    /// Resume picker failed to load
+    ResumePickerLoadFailed { message: String },
+
     /// Signal that agents are about to start (triggered when /plan, /solve, /code commands are entered)
     PrepareAgents,
 
@@ -244,6 +254,9 @@ pub(crate) enum AppEvent {
 
     /// Submit a message with hidden preface instructions
     SubmitTextWithPreface { visible: String, preface: String },
+
+    /// Submit a hidden message that is not rendered in history but still sent to the LLM
+    SubmitHiddenTextWithPreface { agent_text: String, preface: String },
 
     /// Run a review with an explicit prompt/hint pair (used by TUI selections)
     RunReviewWithScope {

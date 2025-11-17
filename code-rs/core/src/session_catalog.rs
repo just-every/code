@@ -49,7 +49,15 @@ impl SessionCatalog {
         let catalog = self.load_inner().await?;
         let mut rows = Vec::new();
 
-        for entry in catalog.all_ordered() {
+        let candidates: Vec<&SessionIndexEntry> = if let Some(cwd) = &query.cwd {
+            catalog.by_cwd(cwd)
+        } else if let Some(git_root) = &query.git_root {
+            catalog.by_git_root(git_root)
+        } else {
+            catalog.all_ordered()
+        };
+
+        for entry in candidates {
             if !query.include_archived && entry.archived {
                 continue;
             }
