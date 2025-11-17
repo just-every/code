@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.4.16] - 2025-11-15
+
+- TUI: enable desktop notifications by default so background job updates surface immediately. (799364de)
+- TUI: refine unified exec with clearer UI and explicit workdir overrides for commands launched from history. (63c8c01f, f01f2ec9)
+- Onboarding: handle "Don't Trust" directory selections gracefully so setup cannot get stuck in untrusted folders. (89ecc00b)
+- SDK: add CLI environment override and AbortSignal support for better automation integrations. (93665000, 439bc5db)
+
 ## [0.4.15] - 2025-11-14
 
 - Core: migrate default CLI, TUI, and Auto Drive models to gpt-5.1 so new sessions use the upgraded stack. (698c53f)
