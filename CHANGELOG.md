@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.4.20] - 2025-11-18
+
+- Core: serialize `shell_command` tool invocations so concurrent steps no longer trample each other during runs. (497fb4a1)
+- Models: ignore empty Claude `finish_reason` fields so streamed answers no longer truncate mid-response. (de1768d3)
+- Windows: treat AltGr chords as literal text and resolve MCP script-based tools via PATHEXT so international keyboards and script servers work again. (702238f0, f828cd28)
+- Core: overhaul compaction/truncation paths to remove double-truncation panics and keep summaries concise on long sessions. (94dfb211, 0b28e72b, 3f1c4b9a)
+- Platform: gate keyring backends per target and add BSD hardening so FreeBSD/OpenBSD builds succeed out of the box. (5860481b)
+
 ## [0.4.19] - 2025-11-17
 
 - Nix: vendor all git-sourced crates so offline builds no longer depend on network access. (079f833)
