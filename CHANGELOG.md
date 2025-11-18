@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.4.19] - 2025-11-17
+
+- Nix: vendor all git-sourced crates so offline builds no longer depend on network access. (079f833)
+- Build: point the Nix derivation at the repo root to keep codex-rs workspace dependencies available. (079f833)
+
 ## [0.4.17] - 2025-11-17
 
 - TUI: add an uncommitted preset to /review so you can diff local edits without staging. (dda8d2d)
