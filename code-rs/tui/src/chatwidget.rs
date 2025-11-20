@@ -20590,7 +20590,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 return EscRoute::new(EscIntent::CancelAgents, true, false);
             }
 
-            if self.has_running_commands_or_tools() {
+            if self.is_task_running() {
                 return EscRoute::new(EscIntent::CancelTask, true, false);
             }
 
@@ -20733,6 +20733,8 @@ Have we met every part of this goal and is there no further work to do?"#
             || !self.tools_state.web_search_sessions.is_empty()
             || !self.tools_state.running_wait_tools.is_empty()
             || !self.tools_state.running_kill_tools.is_empty()
+            || !self.active_task_ids.is_empty()
+            || self.stream.is_write_cycle_active()
     }
 
     /// Clear the composer text and any pending paste placeholders/history cursors.
@@ -25042,6 +25044,27 @@ mod tests {
 
         let route = chat.describe_esc_context();
         assert_eq!(route.intent, EscIntent::CancelAgents);
+    }
+
+    #[test]
+    fn esc_router_cancels_active_auto_turn_streaming() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.auto_state.set_phase(AutoRunPhase::Active);
+        chat.active_task_ids.insert("turn-1".to_string());
+        chat.bottom_pane.set_task_running(true);
+
+        let route = chat.describe_esc_context();
+        assert_eq!(route.intent, EscIntent::CancelTask);
+
+        let esc_event = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(chat.execute_esc_intent(route.intent, esc_event));
+
+        assert!(
+            !chat.auto_state.is_active(),
+            "Auto Drive should stop after cancelling the active turn",
+        );
     }
 
     #[test]
