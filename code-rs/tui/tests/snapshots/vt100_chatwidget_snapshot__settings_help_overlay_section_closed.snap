@@ -13,12 +13,12 @@ expression: section_closed
  |    Agents             |  Reasoning effort: medium                                            | |
  |    Auto Drive         |                                                                      | |
  |    Review             |  GPT-5.1-Codex                                                       | |
- |    Validation         |  Optimized for coding.                                               | |
- |    GitHub             |     High - Deep reasoning. Useful when solving difficult problems. ( | |
- |    Chrome             |     Medium (current) - Balanced reasoning. Ideal for most tasks. (de | |
- |    MCP                |     Low - Basic reasoning. Works quickly in simple code bases. (fast | |
+ |    Validation         |  Optimized for Code.                                                 | |
+ |    GitHub             |     High - Maximizes reasoning depth for complex or ambiguous proble | |
+ |    Chrome             |     Medium (current) - Dynamically adjusts reasoning based on the ta | |
+ |    MCP                |     Low - Fastest responses with limited reasoning                   | |
  |    Notifications      |                                                                      | |
- |    Limits             |  GPT-5.1                                                             | |
+ |    Limits             |  GPT-5.1-Codex-Mini                                                  | |
  |                       |                                                                      | |
  |                       +----------------------------------------------------------------------+ |
  | ↑ ↓ Move    Enter Open    Esc Close    ? Help                                                  |

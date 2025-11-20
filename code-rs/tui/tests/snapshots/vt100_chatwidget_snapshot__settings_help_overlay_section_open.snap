@@ -14,9 +14,9 @@ expression: section_open
  |    Auto Drive         |        |                              |                              | |
  |    Review             |  GPT-5.|• Esc    Return to overview   |                              | |
  |    Validation         |  Optimi|• Tab    Cycle sections       |                              | |
- |    GitHub             |     Hig|• Shift+Tab  Cycle backwards  |solving difficult problems. ( | |
- |    Chrome             |     Med|• ?      Toggle this help     |ng. Ideal for most tasks. (de | |
- |    MCP                |     Low|                              |y in simple code bases. (fast | |
+ |    GitHub             |     Hig|• Shift+Tab  Cycle backwards  |r complex or ambiguous proble | |
+ |    Chrome             |     Med|• ?      Toggle this help     |sts reasoning based on the ta | |
+ |    MCP                |     Low|                              |d reasoning                   | |
  |    Notifications      |        |Press Esc to close            |                              | |
  |    Limits             |  GPT-5.+------------------------------+                              | |
  |                       |                                                                      | |
