@@ -11,6 +11,7 @@ clap = { workspace = true, features = ["derive", "wrap_help"], optional = true }
 code-core = { workspace = true }
 code-protocol = { workspace = true }
 code-app-server-protocol = { workspace = true }
+once_cell = { workspace = true }
 serde = { workspace = true, optional = true }
 toml = { workspace = true, optional = true }
 

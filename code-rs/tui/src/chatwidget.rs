@@ -18632,10 +18632,7 @@ Have we met every part of this goal and is there no further work to do?"#
     }
 
     fn preset_effort_for_model(preset: &ModelPreset) -> ReasoningEffort {
-        preset
-            .effort
-            .map(ReasoningEffort::from)
-            .unwrap_or(ReasoningEffort::Medium)
+        preset.default_reasoning_effort.into()
     }
 
     fn find_model_preset(&self, input: &str, presets: &[ModelPreset]) -> Option<ModelPreset> {
@@ -18650,49 +18647,45 @@ Have we met every part of this goal and is there no further work to do?"#
             .collect();
 
         let mut fallback_medium: Option<ModelPreset> = None;
-        let mut fallback_none: Option<ModelPreset> = None;
         let mut fallback_first: Option<ModelPreset> = None;
 
-        for &preset in presets.iter() {
-            let preset_effort = Self::preset_effort_for_model(&preset);
+        for preset in presets.iter() {
+            let preset_effort = Self::preset_effort_for_model(preset);
 
             let id_lower = preset.id.to_ascii_lowercase();
             if Self::candidate_matches(&input_lower, &collapsed_input, &id_lower) {
-                return Some(preset);
+                return Some(preset.clone());
             }
 
-            let label_lower = preset.label.to_ascii_lowercase();
-            if Self::candidate_matches(&input_lower, &collapsed_input, &label_lower) {
-                return Some(preset);
+            let display_name_lower = preset.display_name.to_ascii_lowercase();
+            if Self::candidate_matches(&input_lower, &collapsed_input, &display_name_lower) {
+                return Some(preset.clone());
             }
 
             let effort_lower = preset_effort.to_string().to_ascii_lowercase();
             let model_lower = preset.model.to_ascii_lowercase();
             let spaced = format!("{model_lower} {effort_lower}");
             if Self::candidate_matches(&input_lower, &collapsed_input, &spaced) {
-                return Some(preset);
+                return Some(preset.clone());
             }
             let dashed = format!("{model_lower}-{effort_lower}");
             if Self::candidate_matches(&input_lower, &collapsed_input, &dashed) {
-                return Some(preset);
+                return Some(preset.clone());
             }
 
             if model_lower == input_lower
                 || Self::candidate_matches(&input_lower, &collapsed_input, &model_lower)
             {
                 if fallback_medium.is_none() && preset_effort == ReasoningEffort::Medium {
-                    fallback_medium = Some(preset);
-                }
-                if fallback_none.is_none() && preset.effort.is_none() {
-                    fallback_none = Some(preset);
+                    fallback_medium = Some(preset.clone());
                 }
                 if fallback_first.is_none() {
-                    fallback_first = Some(preset);
+                    fallback_first = Some(preset.clone());
                 }
             }
         }
 
-        fallback_medium.or(fallback_none).or(fallback_first)
+        fallback_medium.or(fallback_first)
     }
 
     fn candidate_matches(input: &str, collapsed_input: &str, candidate: &str) -> bool {
@@ -18890,6 +18883,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 "minimal" | "min" => ReasoningEffort::Minimal,
                 "low" => ReasoningEffort::Low,
                 "medium" | "med" => ReasoningEffort::Medium,
+                "xhigh" | "extra-high" | "extra_high" => ReasoningEffort::XHigh,
                 "high" => ReasoningEffort::High,
                 // Backwards compatibility: map legacy values to minimal.
                 "none" | "off" => ReasoningEffort::Minimal,
@@ -19764,6 +19758,7 @@ Have we met every part of this goal and is there no further work to do?"#
             ReasoningEffort::Low => "Low",
             ReasoningEffort::Medium => "Medium",
             ReasoningEffort::High => "High",
+            ReasoningEffort::XHigh => "XHigh",
         }
     }
 

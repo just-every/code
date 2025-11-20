@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use super::AgentTask;
 use super::Session;
+use super::compact_remote;
 use super::TurnContext;
 use super::get_last_assistant_message_from_turn;
 use crate::Prompt;
@@ -27,6 +28,7 @@ use code_protocol::protocol::InputMessageKind;
 use code_protocol::protocol::RolloutItem;
 use base64::Engine;
 use futures::prelude::*;
+use code_app_server_protocol::AuthMode;
 
 pub const SUMMARIZATION_PROMPT: &str = include_str!("../../templates/compact/prompt.md");
 pub const COMPACTION_CHECKPOINT_MESSAGE: &str = "History checkpoint: earlier conversation compacted.";
@@ -36,6 +38,29 @@ const COMPACT_TOOL_ARGS_MAX_BYTES: usize = 4 * 1024;
 const COMPACT_TOOL_OUTPUT_MAX_BYTES: usize = 4 * 1024;
 const COMPACT_IMAGE_URL_MAX_BYTES: usize = 512;
 const MAX_COMPACTION_SNIPPETS: usize = 12;
+
+/// Determine whether to use remote compaction (ChatGPT-based) or local compaction.
+///
+/// Upstream codex-rs checks if auth mode is ChatGPT and RemoteCompaction feature is enabled.
+/// In code-rs, remote compaction infrastructure is not yet implemented, so this always
+/// returns false (always use local compaction).
+///
+/// TODO: Once ChatGPT auth and remote compaction are implemented, update this to:
+/// ```
+/// session
+///     .services
+///     .auth_manager
+///     .auth()
+///     .is_some_and(|auth| auth.mode == AuthMode::ChatGPT)
+///     && session.enabled(Feature::RemoteCompaction).await
+/// ```
+pub(super) async fn should_use_remote_compact_task(session: &Session) -> bool {
+    session
+        .client
+        .get_auth_manager()
+        .and_then(|manager| manager.auth())
+        .is_some_and(|auth| auth.mode == AuthMode::ChatGPT)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompactionSnippet {
@@ -157,14 +182,26 @@ pub(super) async fn run_compact_task(
 ) {
     let start_event = sess.make_event(&sub_id, EventMsg::TaskStarted);
     sess.send_event(start_event).await;
-    let _ = perform_compaction(
-        sess.clone(),
-        turn_context,
-        sub_id.clone(),
-        input,
-        true,
-    )
-    .await;
+    let compaction_result = if should_use_remote_compact_task(&sess).await {
+        compact_remote::run_remote_compact_task(
+            Arc::clone(&sess),
+            Arc::clone(&turn_context),
+            sub_id.clone(),
+            input,
+        )
+        .await
+    } else {
+        perform_compaction(
+            sess.clone(),
+            turn_context,
+            sub_id.clone(),
+            input,
+            true,
+        )
+        .await
+    };
+
+    let _ = compaction_result;
     let event = sess.make_event(
         &sub_id,
         EventMsg::TaskComplete(TaskCompleteEvent {
@@ -253,13 +290,9 @@ pub(super) async fn perform_compaction(
     let initial_context = sess.build_initial_context(turn_context.as_ref());
     let new_history = build_compacted_history(initial_context, &snippets, &summary_text);
 
-    // Replace session history in-place
-    {
-        let mut state = sess.state.lock().unwrap();
-        // Replace entire history with the compacted one
-        state.history = crate::conversation_history::ConversationHistory::new();
-        state.history.record_items(new_history.iter());
-    }
+    // Replace session history in-place using the canonical helper so any future
+    // state bookkeeping stays centralized.
+    sess.replace_history(new_history);
 
     send_compaction_checkpoint_warning(&sess, &sub_id).await;
 
@@ -356,6 +389,7 @@ async fn run_compact_task_inner_inline(
         let mut state = sess.state.lock().unwrap();
         state.history = crate::conversation_history::ConversationHistory::new();
         state.history.record_items(new_history.iter());
+        state.token_usage_info = None;
     }
 
     send_compaction_checkpoint_warning(&sess, &sub_id).await;
@@ -407,7 +441,7 @@ fn truncate_for_compact(text: String, max_bytes: usize) -> String {
     truncate_middle(&text, max_bytes).0
 }
 
-fn sanitize_items_for_compact(items: Vec<ResponseItem>) -> Vec<ResponseItem> {
+pub(super) fn sanitize_items_for_compact(items: Vec<ResponseItem>) -> Vec<ResponseItem> {
     items
         .into_iter()
         .filter_map(|item| match item {
@@ -510,7 +544,7 @@ fn compaction_checkpoint_warning_event() -> EventMsg {
     })
 }
 
-async fn send_compaction_checkpoint_warning(sess: &Arc<Session>, sub_id: &str) {
+pub(super) async fn send_compaction_checkpoint_warning(sess: &Arc<Session>, sub_id: &str) {
     let event = sess.make_event(sub_id, compaction_checkpoint_warning_event());
     sess.send_event(event).await;
 }
@@ -570,7 +604,7 @@ async fn drain_to_completed(
 }
 
 // Helper copied from codex.rs (private there): convert core InputItem -> ResponseInputItem
-fn response_input_from_core_items(items: Vec<InputItem>) -> ResponseInputItem {
+pub(super) fn response_input_from_core_items(items: Vec<InputItem>) -> ResponseInputItem {
     let mut content_items = Vec::new();
 
     for item in items {

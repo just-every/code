@@ -23,8 +23,13 @@ impl ModelInfo {
         Self {
             context_window,
             max_output_tokens,
-            auto_compact_token_limit: None,
+            auto_compact_token_limit: Some(Self::default_auto_compact_limit(context_window)),
         }
+    }
+
+    const fn default_auto_compact_limit(context_window: u64) -> i64 {
+        // 90% of context window, matching upstream codex-rs behavior
+        ((context_window * 9) / 10) as i64
     }
 }
 
@@ -62,12 +67,11 @@ pub fn get_model_info(model_family: &ModelFamily) -> Option<ModelInfo> {
         // https://platform.openai.com/docs/models/gpt-3.5-turbo
         "gpt-3.5-turbo" => Some(ModelInfo::new(16_385, 4_096)),
 
-        _ if slug.starts_with("gpt-5-codex") || slug.starts_with("gpt-5.1-codex") => {
-            Some(ModelInfo {
-                context_window: 272_000,
-                max_output_tokens: 128_000,
-                auto_compact_token_limit: Some(350_000),
-            })
+        _ if slug.starts_with("gpt-5-codex")
+            || slug.starts_with("gpt-5.1-codex")
+            || slug.starts_with("gpt-5.1-codex-max") =>
+        {
+            Some(ModelInfo::new(272_000, 128_000))
         }
 
         _ if slug.starts_with("gpt-5.1") => Some(ModelInfo::new(272_000, 128_000)),

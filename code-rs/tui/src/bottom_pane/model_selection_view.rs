@@ -1,12 +1,11 @@
-use super::BottomPane;
 use super::bottom_pane_view::BottomPaneView;
+use super::settings_panel::{render_panel, PanelFrameStyle};
+use super::BottomPane;
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use code_common::model_presets::ModelPreset;
 use code_core::config_types::ReasoningEffort;
-use crossterm::event::KeyCode;
-use crossterm::event::KeyEvent;
-use crossterm::event::KeyModifiers;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::prelude::Widget;
@@ -15,7 +14,43 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use std::cmp::Ordering;
 
-use super::settings_panel::{render_panel, PanelFrameStyle};
+/// Flattened preset entry combining a model with a specific reasoning effort.
+#[derive(Clone, Debug)]
+struct FlatPreset {
+    model: String,
+    effort: ReasoningEffort,
+    label: String,
+    description: String,
+}
+
+impl FlatPreset {
+    fn from_model_preset(preset: &ModelPreset) -> Vec<Self> {
+        preset
+            .supported_reasoning_efforts
+            .iter()
+            .map(|effort_preset| {
+                let effort_label = Self::effort_label(effort_preset.effort.into());
+                FlatPreset {
+                    model: preset.model.to_string(),
+                    effort: effort_preset.effort.into(),
+                    label: format!("{} {}", preset.display_name, effort_label.to_lowercase()),
+                    description: effort_preset.description.to_string(),
+                }
+            })
+            .collect()
+    }
+
+    fn effort_label(effort: ReasoningEffort) -> &'static str {
+        match effort {
+            ReasoningEffort::XHigh => "XHigh",
+            ReasoningEffort::High => "High",
+            ReasoningEffort::Medium => "Medium",
+            ReasoningEffort::Low => "Low",
+            ReasoningEffort::Minimal => "Minimal",
+            ReasoningEffort::None => "None",
+        }
+    }
+}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ModelSelectionTarget {
@@ -47,7 +82,7 @@ impl ModelSelectionTarget {
 }
 
 pub(crate) struct ModelSelectionView {
-    presets: Vec<ModelPreset>,
+    flat_presets: Vec<FlatPreset>,
     selected_index: usize,
     current_model: String,
     current_effort: ReasoningEffort,
@@ -64,9 +99,14 @@ impl ModelSelectionView {
         target: ModelSelectionTarget,
         app_event_tx: AppEventSender,
     ) -> Self {
-        let initial_index = Self::initial_selection(&presets, &current_model, current_effort);
+        let flat_presets: Vec<FlatPreset> = presets
+            .iter()
+            .flat_map(FlatPreset::from_model_preset)
+            .collect();
+
+        let initial_index = Self::initial_selection(&flat_presets, &current_model, current_effort);
         Self {
-            presets,
+            flat_presets,
             selected_index: initial_index,
             current_model,
             current_effort,
@@ -77,19 +117,17 @@ impl ModelSelectionView {
     }
 
     fn initial_selection(
-        presets: &[ModelPreset],
+        flat_presets: &[FlatPreset],
         current_model: &str,
         current_effort: ReasoningEffort,
     ) -> usize {
-        // Prefer an exact match on model + effort, fall back to first model match, then first entry.
-        if let Some((idx, _)) = presets.iter().enumerate().find(|(_, preset)| {
-            preset.model.eq_ignore_ascii_case(current_model)
-                && Self::preset_effort(preset) == current_effort
+        if let Some((idx, _)) = flat_presets.iter().enumerate().find(|(_, preset)| {
+            preset.model.eq_ignore_ascii_case(current_model) && preset.effort == current_effort
         }) {
             return idx;
         }
 
-        if let Some((idx, _)) = presets
+        if let Some((idx, _)) = flat_presets
             .iter()
             .enumerate()
             .find(|(_, preset)| preset.model.eq_ignore_ascii_case(current_model))
@@ -98,13 +136,6 @@ impl ModelSelectionView {
         }
 
         0
-    }
-
-    fn preset_effort(preset: &ModelPreset) -> ReasoningEffort {
-        preset
-            .effort
-            .map(ReasoningEffort::from)
-            .unwrap_or(ReasoningEffort::Medium)
     }
 
     fn format_model_header(model: &str) -> String {
@@ -138,7 +169,7 @@ impl ModelSelectionView {
     }
 
     fn move_selection_up(&mut self) {
-        if self.presets.is_empty() {
+        if self.flat_presets.is_empty() {
             return;
         }
         let sorted = self.sorted_indices();
@@ -159,7 +190,7 @@ impl ModelSelectionView {
     }
 
     fn move_selection_down(&mut self) {
-        if self.presets.is_empty() {
+        if self.flat_presets.is_empty() {
             return;
         }
         let sorted = self.sorted_indices();
@@ -176,19 +207,18 @@ impl ModelSelectionView {
     }
 
     fn confirm_selection(&mut self) {
-        if let Some(preset) = self.presets.get(self.selected_index) {
-            let effort = Self::preset_effort(preset);
+        if let Some(flat_preset) = self.flat_presets.get(self.selected_index) {
             match self.target {
                 ModelSelectionTarget::Session => {
                     let _ = self.app_event_tx.send(AppEvent::UpdateModelSelection {
-                        model: preset.model.to_string(),
-                        effort: Some(effort),
+                        model: flat_preset.model.clone(),
+                        effort: Some(flat_preset.effort),
                     });
                 }
                 ModelSelectionTarget::Review => {
                     let _ = self.app_event_tx.send(AppEvent::UpdateReviewModelSelection {
-                        model: preset.model.to_string(),
-                        effort,
+                        model: flat_preset.model.clone(),
+                        effort: flat_preset.effort,
                     });
                 }
             }
@@ -197,45 +227,40 @@ impl ModelSelectionView {
     }
 
     fn content_line_count(&self) -> u16 {
-        // Current model, reasoning effort, and initial spacer.
         let mut lines: u16 = 3;
 
         let mut previous_model: Option<&str> = None;
         for idx in self.sorted_indices() {
-            let preset = &self.presets[idx];
+            let flat_preset = &self.flat_presets[idx];
             let is_new_model = previous_model
-                .map(|prev| !prev.eq_ignore_ascii_case(&preset.model))
+                .map(|prev| !prev.eq_ignore_ascii_case(&flat_preset.model))
                 .unwrap_or(true);
 
             if is_new_model {
                 if previous_model.is_some() {
-                    // Spacer between model groups.
                     lines = lines.saturating_add(1);
                 }
-                // Header when entering a new model group.
                 lines = lines.saturating_add(1);
-                if Self::model_description(preset.model).is_some() {
+                if Self::model_description(&flat_preset.model).is_some() {
                     lines = lines.saturating_add(1);
                 }
-                previous_model = Some(preset.model);
+                previous_model = Some(&flat_preset.model);
             }
 
-            // The preset entry row.
             lines = lines.saturating_add(1);
         }
 
-        // Spacer before footer plus footer hint row.
         lines.saturating_add(2)
     }
 
     fn sorted_indices(&self) -> Vec<usize> {
-        let mut indices: Vec<usize> = (0..self.presets.len()).collect();
-        indices.sort_by(|&a, &b| Self::compare_presets(&self.presets[a], &self.presets[b]));
+        let mut indices: Vec<usize> = (0..self.flat_presets.len()).collect();
+        indices.sort_by(|&a, &b| Self::compare_presets(&self.flat_presets[a], &self.flat_presets[b]));
         indices
     }
 
-    fn compare_presets(a: &ModelPreset, b: &ModelPreset) -> Ordering {
-        let model_rank = Self::model_rank(a.model).cmp(&Self::model_rank(b.model));
+    fn compare_presets(a: &FlatPreset, b: &FlatPreset) -> Ordering {
+        let model_rank = Self::model_rank(&a.model).cmp(&Self::model_rank(&b.model));
         if model_rank != Ordering::Equal {
             return model_rank;
         }
@@ -248,32 +273,35 @@ impl ModelSelectionView {
             return model_name_rank;
         }
 
-        let effort_rank = Self::effort_rank(Self::preset_effort(a))
-            .cmp(&Self::effort_rank(Self::preset_effort(b)));
+        let effort_rank = Self::effort_rank(a.effort).cmp(&Self::effort_rank(b.effort));
         if effort_rank != Ordering::Equal {
             return effort_rank;
         }
 
-        a.label.cmp(b.label)
+        a.label.cmp(&b.label)
     }
 
     fn model_rank(model: &str) -> u8 {
-        if model.eq_ignore_ascii_case("gpt-5.1-codex") {
+        if model.eq_ignore_ascii_case("gpt-5.1-codex-max") {
             0
-        } else if model.eq_ignore_ascii_case("gpt-5.1-codex-mini") {
+        } else if model.eq_ignore_ascii_case("gpt-5.1-codex") {
             1
-        } else if model.eq_ignore_ascii_case("gpt-5.1") {
+        } else if model.eq_ignore_ascii_case("gpt-5.1-codex-mini") {
             2
-        } else {
+        } else if model.eq_ignore_ascii_case("gpt-5.1") {
             3
+        } else {
+            4
         }
     }
 
     fn model_description(model: &str) -> Option<&'static str> {
-        if model.eq_ignore_ascii_case("gpt-5.1-codex") {
-            Some("Optimized for coding.")
+        if model.eq_ignore_ascii_case("gpt-5.1-codex-max") {
+            Some("Latest Codex-optimized flagship for deep and fast reasoning.")
+        } else if model.eq_ignore_ascii_case("gpt-5.1-codex") {
+            Some("Optimized for Code.")
         } else if model.eq_ignore_ascii_case("gpt-5.1-codex-mini") {
-            Some("Optimized for coding. Cheaper, faster, but less capable.")
+            Some("Optimized for Code. Cheaper, faster, but less capable.")
         } else if model.eq_ignore_ascii_case("gpt-5.1") {
             Some("Broad world knowledge with strong general reasoning.")
         } else {
@@ -283,16 +311,18 @@ impl ModelSelectionView {
 
     fn effort_rank(effort: ReasoningEffort) -> u8 {
         match effort {
-            ReasoningEffort::High => 0,
-            ReasoningEffort::Medium => 1,
-            ReasoningEffort::Low => 2,
-            ReasoningEffort::Minimal => 3,
-            ReasoningEffort::None => 4,
+            ReasoningEffort::XHigh => 0,
+            ReasoningEffort::High => 1,
+            ReasoningEffort::Medium => 2,
+            ReasoningEffort::Low => 3,
+            ReasoningEffort::Minimal => 4,
+            ReasoningEffort::None => 5,
         }
     }
 
     fn effort_label(effort: ReasoningEffort) -> &'static str {
         match effort {
+            ReasoningEffort::XHigh => "XHigh",
             ReasoningEffort::High => "High",
             ReasoningEffort::Medium => "Medium",
             ReasoningEffort::Low => "Low",
@@ -300,55 +330,24 @@ impl ModelSelectionView {
             ReasoningEffort::None => "None",
         }
     }
-
-    fn effort_description(effort: ReasoningEffort) -> &'static str {
-        match effort {
-            ReasoningEffort::Minimal => {
-                "Minimal reasoning. When speed is more important than accuracy. (fastest)"
-            }
-            ReasoningEffort::Low => "Basic reasoning. Works quickly in simple code bases. (fast)",
-            ReasoningEffort::Medium => "Balanced reasoning. Ideal for most tasks. (default)",
-            ReasoningEffort::High => {
-                "Deep reasoning. Useful when solving difficult problems. (slower)"
-            }
-            ReasoningEffort::None => "Reasoning disabled",
-        }
-    }
 }
 
 impl ModelSelectionView {
     pub(crate) fn handle_key_event_direct(&mut self, key_event: KeyEvent) -> bool {
         match key_event {
-            KeyEvent {
-                code: KeyCode::Up,
-                modifiers: KeyModifiers::NONE,
-                ..
-            } => {
+            KeyEvent { code: KeyCode::Up, modifiers: KeyModifiers::NONE, .. } => {
                 self.move_selection_up();
                 true
             }
-            KeyEvent {
-                code: KeyCode::Down,
-                modifiers: KeyModifiers::NONE,
-                ..
-            }
-            => {
+            KeyEvent { code: KeyCode::Down, modifiers: KeyModifiers::NONE, .. } => {
                 self.move_selection_down();
                 true
             }
-            KeyEvent {
-                code: KeyCode::Enter,
-                modifiers: KeyModifiers::NONE,
-                ..
-            } => {
+            KeyEvent { code: KeyCode::Enter, modifiers: KeyModifiers::NONE, .. } => {
                 self.confirm_selection();
                 true
             }
-            KeyEvent {
-                code: KeyCode::Esc,
-                modifiers: KeyModifiers::NONE,
-                ..
-            } => {
+            KeyEvent { code: KeyCode::Esc, modifiers: KeyModifiers::NONE, .. } => {
                 self.is_complete = true;
                 true
             }
@@ -389,37 +388,34 @@ impl ModelSelectionView {
         lines.push(Line::from(""));
 
         let mut previous_model: Option<&str> = None;
-        let sorted_indices = self.sorted_indices();
-
-        for preset_index in sorted_indices {
-            let preset = &self.presets[preset_index];
+        for preset_index in self.sorted_indices() {
+            let flat_preset = &self.flat_presets[preset_index];
             if previous_model
-                .map(|m| !m.eq_ignore_ascii_case(&preset.model))
+                .map(|m| !m.eq_ignore_ascii_case(&flat_preset.model))
                 .unwrap_or(true)
             {
                 if previous_model.is_some() {
                     lines.push(Line::from(""));
                 }
                 lines.push(Line::from(vec![Span::styled(
-                    Self::format_model_header(&preset.model),
+                    Self::format_model_header(&flat_preset.model),
                     Style::default()
                         .fg(crate::colors::text_bright())
                         .add_modifier(Modifier::BOLD),
                 )]));
-                if let Some(desc) = Self::model_description(&preset.model) {
+                if let Some(desc) = Self::model_description(&flat_preset.model) {
                     lines.push(Line::from(vec![Span::styled(
                         desc,
                         Style::default().fg(crate::colors::text_dim()),
                     )]));
                 }
-                previous_model = Some(preset.model);
+                previous_model = Some(&flat_preset.model);
             }
 
             let is_selected = preset_index == self.selected_index;
-            let preset_effort = Self::preset_effort(preset);
-            let is_current = preset.model.eq_ignore_ascii_case(&self.current_model)
-                && preset_effort == self.current_effort;
-            let label = Self::effort_label(preset_effort);
+            let is_current = flat_preset.model.eq_ignore_ascii_case(&self.current_model)
+                && flat_preset.effort == self.current_effort;
+            let label = Self::effort_label(flat_preset.effort);
             let mut row_text = label.to_string();
             if is_current {
                 row_text.push_str(" (current)");
@@ -456,13 +452,11 @@ impl ModelSelectionView {
                     .add_modifier(Modifier::BOLD);
             }
 
-            let description = Self::effort_description(preset_effort);
-
             lines.push(Line::from(vec![
                 Span::styled("   ", indent_style),
                 Span::styled(row_text, label_style),
                 Span::styled(" - ", divider_style),
-                Span::styled(description, description_style),
+                Span::styled(&flat_preset.description, description_style),
             ]));
         }
 
@@ -496,7 +490,6 @@ impl ModelSelectionView {
     pub(crate) fn render_without_frame(&self, area: Rect, buf: &mut Buffer) {
         self.render_panel_body(area, buf);
     }
-
 }
 
 impl<'a> BottomPaneView<'a> for ModelSelectionView {
@@ -509,7 +502,6 @@ impl<'a> BottomPaneView<'a> for ModelSelectionView {
     }
 
     fn desired_height(&self, _width: u16) -> u16 {
-        // Account for content rows plus bordered block padding.
         let content_lines = self.content_line_count();
         let total = content_lines.saturating_add(2);
         total.max(9)

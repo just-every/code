@@ -56,6 +56,11 @@ pub enum ResponseItem {
         content: Option<Vec<ReasoningItemContent>>,
         encrypted_content: Option<String>,
     },
+    /// Produced by the /responses/compact endpoint. Carries an encrypted summary
+    /// of the prior conversation that must be forwarded verbatim on the next turn.
+    CompactionSummary {
+        encrypted_content: String,
+    },
     LocalShellCall {
         /// Set when using the chat completions API.
         #[serde(skip_serializing)]

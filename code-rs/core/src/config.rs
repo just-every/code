@@ -12,6 +12,7 @@ use crate::config_types::AllowedCommandMatchKind;
 use crate::config_types::BrowserConfig;
 use crate::config_types::CachedTerminalBackground;
 use crate::config_types::ClientTools;
+use crate::config_types::Notice;
 use crate::config_types::History;
 use crate::config_types::GithubConfig;
 use crate::config_types::ValidationConfig;
@@ -69,7 +70,7 @@ use which::which;
 
 const OPENAI_DEFAULT_MODEL: &str = "gpt-5.1-codex";
 const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5.1-codex-mini";
-pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5.1-codex";
+pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5.1-codex-max";
 
 /// Maximum number of bytes of the documentation that will be embedded. Larger
 /// files are *silently truncated* to this size so we do not take up too much of
@@ -203,6 +204,9 @@ pub struct Config {
     ///
     /// If unset the feature is disabled.
     pub notify: Option<Vec<String>>,
+
+    /// Record of which one-time notices the user has acknowledged.
+    pub notices: Notice,
 
     /// TUI notifications preference. When set, the TUI will send OSC 9 notifications on approvals
     /// and turn completions when not focused.
@@ -1706,6 +1710,9 @@ pub struct ConfigToml {
     #[serde(default)]
     pub notify: Option<Vec<String>>,
 
+    /// Stored acknowledgement flags for in-product notices.
+    pub notice: Option<Notice>,
+
     /// System instructions.
     pub instructions: Option<String>,
 
@@ -2392,6 +2399,7 @@ impl Config {
                 .unwrap_or(false),
             auto_upgrade_enabled: cfg.auto_upgrade_enabled.unwrap_or(false),
             notify: cfg.notify,
+            notices: cfg.notice.unwrap_or_default(),
             user_instructions,
             base_instructions,
             compact_prompt_override,

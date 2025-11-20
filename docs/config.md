@@ -22,7 +22,7 @@ Both the `--config` flag and the `config.toml` file support the following option
 The model that Codex should use.
 
 ```toml
-model = "o3"  # overrides the default of "gpt-5.1"
+model = "o3"  # overrides the default of "gpt-5.1-codex-max"
 ```
 
 ## model_providers
@@ -196,6 +196,18 @@ read-only = true
 description = "Gemini long-context helper that summarizes large repositories"
 args = ["-y"]
 env = { GEMINI_API_KEY = "..." }
+```
+
+## notice
+
+Codex stores acknowledgement flags for one-time upgrade prompts inside a `[notice]`
+table. These booleans allow you to suppress specific dialogs globally. When set
+to `true`, Codex will no longer prompt about that migration.
+
+```toml
+[notice]
+hide_gpt5_1_migration_prompt = true
+hide_gpt-5.1-codex-max_migration_prompt = true
 ```
 
 When `enabled = true`, the agent is surfaced in the TUI picker and any sub-agent commands that reference it. Setting `read-only = true` forces the agent to request approval before modifying files even if the primary session permits writes.

@@ -80,7 +80,9 @@ use chrono::Local;
 use chrono::Utc;
 
 pub mod compact;
+pub mod compact_remote;
 use self::compact::{build_compacted_history, collect_compaction_snippets};
+use self::compact_remote::run_inline_remote_auto_compact_task;
 
 /// Initial submission ID for session configuration
 pub(crate) const INITIAL_SUBMIT_ID: &str = "";
@@ -148,6 +150,7 @@ fn to_proto_reasoning_effort(effort: ReasoningEffortConfig) -> ProtoReasoningEff
         ReasoningEffortConfig::Low => ProtoReasoningEffort::Low,
         ReasoningEffortConfig::Medium => ProtoReasoningEffort::Medium,
         ReasoningEffortConfig::High => ProtoReasoningEffort::High,
+        ReasoningEffortConfig::XHigh => ProtoReasoningEffort::XHigh,
         ReasoningEffortConfig::None => ProtoReasoningEffort::Minimal,
     }
 }
@@ -1784,6 +1787,11 @@ impl Session {
             current_task.abort(TurnAbortReason::Replaced);
         }
         state.current_task = Some(agent);
+    }
+
+    pub fn replace_history(&self, items: Vec<ResponseItem>) {
+        let mut state = self.state.lock().unwrap();
+        state.history.replace(items);
     }
 
     pub fn remove_task(&self, sub_id: &str) {
@@ -5197,6 +5205,11 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
     // Track if this is the first iteration - if so, include the initial input
     let mut first_iteration = true;
 
+    // Track if we've done a proactive compaction in this iteration to prevent
+    // infinite loops. As long as compaction works well in getting us way below
+    // the token limit, we shouldn't need more than one compaction per iteration.
+    let mut did_proactive_compact_this_iteration = false;
+
     loop {
         // Note that pending_input would be something like a message the user
         // submitted through the UI while the model was running. Though the UI
@@ -5392,6 +5405,60 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
                     }
                 }
 
+                // Check whether we should proactively compact before queuing follow-up work.
+                // Upstream codex-rs compacts as soon as usage hits the configured threshold,
+                // which keeps us from hitting hard context-window errors mid-session.
+                let limit = turn_context
+                    .client
+                    .get_auto_compact_token_limit()
+                    .unwrap_or(i64::MAX);
+                let most_recent_usage_tokens: Option<i64> = {
+                    let state = sess.state.lock().unwrap();
+                    state.token_usage_info.as_ref().and_then(|info| {
+                        info.last_token_usage.total_tokens.try_into().ok()
+                    })
+                };
+                // auto_compact_token_limit is defined relative to a single turn's
+                // token usage (input + output). Using the cumulative total caused
+                // the limit check to stay tripped permanently once crossed, even
+                // after compacting history, which spammed repeated /compact runs.
+                let token_limit_reached = most_recent_usage_tokens
+                    .map_or(false, |tokens| tokens >= limit);
+
+                // As long as compaction works well in getting us way below the token limit,
+                // we shouldn't worry about being in an infinite loop. However, guard against
+                // repeated compaction attempts within a single iteration.
+                if token_limit_reached && !did_proactive_compact_this_iteration {
+                    did_proactive_compact_this_iteration = true;
+                    sess
+                        .notify_stream_error(
+                            &sub_id,
+                            "Token limit reached; running /compact and continuing…".to_string(),
+                        )
+                        .await;
+
+                    // Choose between local and remote compact based on auth mode,
+                    // matching upstream codex-rs behavior
+                    if compact::should_use_remote_compact_task(&sess).await {
+                        let _ = run_inline_remote_auto_compact_task(
+                            Arc::clone(&sess),
+                            Arc::clone(&turn_context),
+                            Vec::new(),
+                        )
+                        .await;
+                    } else {
+                        let _ = compact::run_inline_auto_compact_task(
+                            Arc::clone(&sess),
+                            Arc::clone(&turn_context),
+                        )
+                        .await;
+                    }
+
+                    // Restart this loop with the newly compacted history so the
+                    // next turn can see the trimmed conversation state.
+                    continue;
+                }
+
                 // If there are responses, add them to pending input for the next iteration
                 if !responses.is_empty() {
                     if !is_review_mode {
@@ -5399,6 +5466,9 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
                             sess.add_pending_input(response.clone());
                         }
                     }
+                    // Reset the proactive compact guard for the next iteration since we're
+                    // about to process new tool calls and may need to compact again
+                    did_proactive_compact_this_iteration = false;
                 }
 
                 if responses.is_empty() {
@@ -5621,11 +5691,20 @@ async fn run_turn(
                                 .await;
 
                             let previous_input_snapshot = input.clone();
-                            let compacted_history = compact::run_inline_auto_compact_task(
-                                Arc::clone(&sess),
-                                Arc::clone(&turn_context),
-                            )
-                            .await;
+                            let compacted_history = if compact::should_use_remote_compact_task(sess).await {
+                                run_inline_remote_auto_compact_task(
+                                    Arc::clone(&sess),
+                                    Arc::clone(&turn_context),
+                                    Vec::new(),
+                                )
+                                .await
+                            } else {
+                                compact::run_inline_auto_compact_task(
+                                    Arc::clone(&sess),
+                                    Arc::clone(&turn_context),
+                                )
+                                .await
+                            };
 
                             // Reset any partial attempt state and rebuild the request payload using the
                             // newly compacted history plus the current user turn items.
@@ -6180,6 +6259,10 @@ async fn handle_response_item(
                     sess.tx_event.send(stamped).await.ok();
                 }
             }
+            None
+        }
+        ResponseItem::CompactionSummary { .. } => {
+            // Keep compaction summaries in history; no user-visible event to emit.
             None
         }
         ResponseItem::Reasoning {

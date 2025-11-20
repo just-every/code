@@ -134,6 +134,11 @@ set = { EDITOR = "vim", PAGER = "less" }
 persistence = "save-all"
 max-bytes = 10485760  # 10MB
 
+# Notice acknowledgement flags
+[notice]
+hide_gpt5_1_migration_prompt = false
+hide_gpt-5.1-codex-max_migration_prompt = false
+
 # MCP Server Configuration
 # Example MCP server configurations
 [mcp-servers.example-server]

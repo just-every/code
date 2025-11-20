@@ -85,6 +85,19 @@ struct Error {
     resets_in_seconds: Option<u64>,
 }
 
+#[derive(Serialize)]
+struct CompactHistoryRequest<'a> {
+    model: &'a str,
+    #[serde(borrow)]
+    input: &'a [ResponseItem],
+    instructions: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CompactHistoryResponse {
+    output: Vec<ResponseItem>,
+}
+
 fn rate_limit_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
@@ -548,16 +561,11 @@ impl ModelClient {
                 req_builder = req_builder.header("OpenAI-Beta", beta_value);
             }
 
-            // `Codex-Task-Type` differentiates traffic for caching; default to "standard" until
-            // task-specific dispatch is re-introduced.
-            let codex_task_type = "standard";
-
             req_builder = req_builder
                 // Send `conversation_id`/`session_id` so the server can hit the prompt-cache.
                 .header("conversation_id", session_id_str.clone())
                 .header("session_id", session_id_str.clone())
                 .header(reqwest::header::ACCEPT, "text/event-stream")
-                .header("Codex-Task-Type", codex_task_type)
                 .json(&payload_json);
 
             if let Some(auth) = auth.as_ref()
@@ -873,6 +881,103 @@ impl ModelClient {
     #[allow(dead_code)]
     pub fn get_auth_manager(&self) -> Option<Arc<AuthManager>> {
         self.auth_manager.clone()
+    }
+
+    pub async fn compact_conversation_history(&self, prompt: &Prompt) -> Result<Vec<ResponseItem>> {
+        if prompt.input.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let auth_manager = self.auth_manager.clone();
+        let auth = auth_manager.as_ref().and_then(|m| m.auth());
+        let mut request = self
+            .provider
+            .create_compact_request_builder(&self.client, &auth)
+            .await?;
+
+        // Ensure Responses API beta header is present for compact calls. Mirror the
+        // streaming path: use the public "responses=v1" header for the public OpenAI
+        // endpoint and fall back to "responses=experimental" for other providers.
+        let has_beta_header = request
+            .try_clone()
+            .and_then(|builder| builder.build().ok())
+            .map_or(false, |req| req.headers().contains_key("OpenAI-Beta"));
+
+        if !has_beta_header {
+            let beta_value = if self.provider.is_public_openai_responses_endpoint() {
+                RESPONSES_BETA_HEADER_V1
+            } else {
+                RESPONSES_BETA_HEADER_EXPERIMENTAL
+            };
+            request = request.header("OpenAI-Beta", beta_value);
+        }
+
+        if let Some(auth) = auth.as_ref()
+            && auth.mode == AuthMode::ChatGPT
+            && let Some(account_id) = auth.get_account_id()
+        {
+            request = request.header("chatgpt-account-id", account_id);
+        }
+
+        let instructions = prompt
+            .get_full_instructions(&self.config.model_family)
+            .into_owned();
+        let payload = CompactHistoryRequest {
+            model: &self.config.model,
+            input: &prompt.input,
+            instructions: instructions.clone(),
+        };
+        let payload_json = serde_json::json!({
+            "model": payload.model,
+            "input": payload.input,
+            "instructions": instructions,
+        });
+        request = request.json(&payload);
+
+        let header_snapshot = request
+            .try_clone()
+            .and_then(|builder| builder.build().ok())
+            .map(|req| header_map_to_json(req.headers()));
+
+        let mut request_id = String::new();
+        if let Ok(logger) = self.debug_logger.lock() {
+            let endpoint = self
+                .provider
+                .get_compact_url(&auth)
+                .unwrap_or_else(|| self.provider.get_full_url(&auth));
+            request_id = logger
+                .start_request_log(&endpoint, &payload_json, header_snapshot.as_ref(), Some("compact_remote"))
+                .unwrap_or_default();
+        }
+
+        let response = request.send().await?;
+        let status = response.status();
+        let body = response.text().await?;
+
+        if let Ok(logger) = self.debug_logger.lock() {
+            let response_body: serde_json::Value = serde_json::from_str(&body)
+                .unwrap_or_else(|_| serde_json::json!({ "raw": body }));
+            let _ = logger.append_response_event(
+                &request_id,
+                "compact_response",
+                &serde_json::json!({
+                    "status_code": status.as_u16(),
+                    "body": response_body,
+                }),
+            );
+            let _ = logger.end_request_log(&request_id);
+        }
+
+        if !status.is_success() {
+            return Err(CodexErr::UnexpectedStatus(UnexpectedResponseError {
+                status,
+                body,
+                request_id: None,
+            }));
+        }
+
+        let CompactHistoryResponse { output } = serde_json::from_str(&body)?;
+        Ok(output)
     }
 }
 

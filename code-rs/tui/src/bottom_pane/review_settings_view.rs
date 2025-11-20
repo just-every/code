@@ -139,6 +139,7 @@ impl ReviewSettingsView {
 
     fn reasoning_label(effort: ReasoningEffort) -> &'static str {
         match effort {
+            ReasoningEffort::XHigh => "XHigh",
             ReasoningEffort::High => "High",
             ReasoningEffort::Medium => "Medium",
             ReasoningEffort::Low => "Low",

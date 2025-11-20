@@ -1501,7 +1501,7 @@ fn session_models_from_config(config: &Config) -> Option<acp::SessionModelState>
         };
         available_models.push(acp::ModelInfo {
             model_id: id.clone(),
-            name: preset.label.to_string(),
+            name: preset.display_name.to_string(),
             description,
             meta: None,
         });
@@ -1550,10 +1550,7 @@ fn session_models_from_config(config: &Config) -> Option<acp::SessionModelState>
 }
 
 fn preset_effort(preset: &ModelPreset) -> ReasoningEffort {
-    preset
-        .effort
-        .map(ReasoningEffort::from)
-        .unwrap_or(ReasoningEffort::Medium)
+    preset.default_reasoning_effort.into()
 }
 
 fn resolve_model_selection(model_id: &acp::ModelId, config: &Config) -> Option<ModelSelection> {
@@ -1562,7 +1559,7 @@ fn resolve_model_selection(model_id: &acp::ModelId, config: &Config) -> Option<M
 
     for preset in builtin_model_presets(None).iter() {
         if preset.id.eq_ignore_ascii_case(&requested)
-            || preset.label.eq_ignore_ascii_case(&requested)
+            || preset.display_name.eq_ignore_ascii_case(&requested)
             || preset.model.eq_ignore_ascii_case(&requested)
         {
             return Some(ModelSelection {

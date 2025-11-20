@@ -729,6 +729,15 @@ impl Default for Tui {
     }
 }
 
+/// User acknowledgements for in-product notices (distinct from notifications).
+#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct Notice {
+    pub hide_full_access_warning: Option<bool>,
+    pub hide_gpt5_1_migration_prompt: Option<bool>,
+    #[serde(rename = "hide_gpt-5.1-codex-max_migration_prompt")]
+    pub hide_gpt_5_1_codex_max_migration_prompt: Option<bool>,
+}
+
 #[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(transparent)]
 pub struct AutoResolveAttemptLimit(u32);
@@ -1221,6 +1230,7 @@ pub enum ReasoningEffort {
     #[default]
     Medium,
     High,
+    XHigh,
     /// Deprecated: previously disabled reasoning. Kept for internal use only.
     #[serde(skip)]
     None,
@@ -1398,6 +1408,7 @@ impl From<code_protocol::config_types::ReasoningEffort> for ReasoningEffort {
             code_protocol::config_types::ReasoningEffort::Low => ReasoningEffort::Low,
             code_protocol::config_types::ReasoningEffort::Medium => ReasoningEffort::Medium,
             code_protocol::config_types::ReasoningEffort::High => ReasoningEffort::High,
+            code_protocol::config_types::ReasoningEffort::XHigh => ReasoningEffort::XHigh,
         }
     }
 }

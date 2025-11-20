@@ -24,26 +24,45 @@ CRITICAL_DIR="${OUTPUT_DIR}/critical-changes"
 mkdir -p "$CRITICAL_DIR"
 
 # Critical files and patterns to watch
-declare -A CRITICAL_PATTERNS=(
-    # Prompts and tool definitions
-    ["prompts"]="prompts/.*\.md"
-    ["openai_tools"]="codex-rs/core/src/openai_tools\.rs|code-rs/core/src/openai_tools\.rs"
-    ["agent_tool"]="codex-rs/core/src/agent_tool\.rs|code-rs/core/src/agent_tool\.rs"
-
-    # Protocol and API surface
-    ["protocol"]="codex-rs/core/src/protocol\.rs|code-rs/core/src/protocol\.rs"
-    ["app_server_protocol"]="codex-rs/app-server-protocol/src/.*|code-rs/app-server-protocol/src/.*"
-    ["mcp_types"]="codex-rs/mcp-types/src/.*|code-rs/mcp-types/src/.*"
-
-    # Executor and core logic
-    ["codex_main"]="codex-rs/core/src/codex\.rs|code-rs/core/src/codex\.rs"
-    ["exec"]="codex-rs/exec/src/.*|code-rs/exec/src/.*"
-    ["apply_patch"]="codex-rs/apply-patch/src/.*|code-rs/apply-patch/src/.*"
-    ["acp"]="codex-rs/core/src/acp\.rs|code-rs/core/src/acp\.rs"
-
-    # Config and behavior toggles
-    ["config"]="codex-rs/core/src/config.*\.rs|code-rs/core/src/config.*\.rs"
+CRITICAL_PATTERN_KEYS=(
+    "prompts"
+    "openai_tools"
+    "agent_tool"
+    "protocol"
+    "app_server_protocol"
+    "mcp_types"
+    "codex_main"
+    "exec"
+    "apply_patch"
+    "acp"
+    "config"
 )
+
+CRITICAL_PATTERN_REGEXES=(
+    'prompts/.*\.md'
+    'codex-rs/core/src/openai_tools\.rs|code-rs/core/src/openai_tools\.rs'
+    'codex-rs/core/src/agent_tool\.rs|code-rs/core/src/agent_tool\.rs'
+    'codex-rs/core/src/protocol\.rs|code-rs/core/src/protocol\.rs'
+    'codex-rs/app-server-protocol/src/.*|code-rs/app-server-protocol/src/.*'
+    'codex-rs/mcp-types/src/.*|code-rs/mcp-types/src/.*'
+    'codex-rs/core/src/codex\.rs|code-rs/core/src/codex\.rs'
+    'codex-rs/exec/src/.*|code-rs/exec/src/.*'
+    'codex-rs/apply-patch/src/.*|code-rs/apply-patch/src/.*'
+    'codex-rs/core/src/acp\.rs|code-rs/core/src/acp\.rs'
+    'codex-rs/core/src/config.*\.rs|code-rs/core/src/config.*\.rs'
+)
+
+pattern_for_category() {
+    local key="$1"
+    local idx
+    for ((idx = 0; idx < ${#CRITICAL_PATTERN_KEYS[@]}; idx++)); do
+        if [[ "${CRITICAL_PATTERN_KEYS[$idx]}" == "$key" ]]; then
+            printf '%s' "${CRITICAL_PATTERN_REGEXES[$idx]}"
+            return 0
+        fi
+    done
+    return 1
+}
 
 # Color codes for output
 RED='\033[0;31m'
@@ -76,8 +95,9 @@ Generated: $(date -u +%Y-%m-%d\ %H:%M:%S\ UTC)
 HEADER
 
     # Check for each critical pattern
-    for category in "${!CRITICAL_PATTERNS[@]}"; do
-        local pattern="${CRITICAL_PATTERNS[$category]}"
+    for category in "${CRITICAL_PATTERN_KEYS[@]}"; do
+        local pattern
+        pattern=$(pattern_for_category "$category") || continue
 
         # Extract relevant sections from diff
         if grep -E "^\+\+\+ |^--- " "$diff_file" | grep -E "$pattern" > /dev/null 2>&1; then

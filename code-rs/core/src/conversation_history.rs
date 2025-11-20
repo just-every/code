@@ -32,6 +32,13 @@ impl ConversationHistory {
         }
     }
 
+    /// Replace the entire history with a new set of items.
+    /// Filtering is intentionally skipped here so compaction can preserve any
+    /// non-standard items (e.g., bridge summaries) exactly as computed.
+    pub(crate) fn replace(&mut self, items: Vec<ResponseItem>) {
+        self.items = items;
+    }
+
 }
 
 /// Anything that is not a system message or "reasoning" message is considered
@@ -44,6 +51,7 @@ fn is_api_message(message: &ResponseItem) -> bool {
         | ResponseItem::CustomToolCall { .. }
         | ResponseItem::CustomToolCallOutput { .. }
         | ResponseItem::LocalShellCall { .. }
+        | ResponseItem::CompactionSummary { .. }
         | ResponseItem::Reasoning { .. }
         | ResponseItem::WebSearchCall { .. } => true,
         ResponseItem::Other => false,

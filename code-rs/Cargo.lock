@@ -1132,6 +1132,7 @@ dependencies = [
  "code-app-server-protocol",
  "code-core",
  "code-protocol",
+ "once_cell",
  "serde",
  "toml 0.9.8",
 ]
