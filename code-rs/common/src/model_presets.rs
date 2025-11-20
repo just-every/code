@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use code_app_server_protocol::AuthMode;
+use code_core::config_types::TextVerbosity as TextVerbosityConfig;
 use code_core::protocol_config_types::ReasoningEffort;
 use once_cell::sync::Lazy;
 
@@ -31,10 +32,17 @@ pub struct ModelPreset {
     pub description: &'static str,
     pub default_reasoning_effort: ReasoningEffort,
     pub supported_reasoning_efforts: &'static [ReasoningEffortPreset],
+    pub supported_text_verbosity: &'static [TextVerbosityConfig],
     pub is_default: bool,
     pub upgrade: Option<ModelUpgrade>,
     pub show_in_picker: bool,
 }
+
+const ALL_TEXT_VERBOSITY: &[TextVerbosityConfig] = &[
+    TextVerbosityConfig::Low,
+    TextVerbosityConfig::Medium,
+    TextVerbosityConfig::High,
+];
 
 static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
     vec![
@@ -62,6 +70,7 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                     description: "Extra high reasoning depth for complex problems",
                 },
             ],
+            supported_text_verbosity: &[TextVerbosityConfig::Medium],
             is_default: true,
             upgrade: None,
             show_in_picker: true,
@@ -86,6 +95,7 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                     description: "Maximizes reasoning depth for complex or ambiguous problems",
                 },
             ],
+            supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
                 id: "gpt-5.1-codex-max",
@@ -110,6 +120,7 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                     description: "Maximizes reasoning depth for complex or ambiguous problems",
                 },
             ],
+            supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
                 id: "gpt-5.1-codex-max",
@@ -140,6 +151,7 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                     description: "Maximizes reasoning depth for complex or ambiguous problems",
                 },
             ],
+            supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
                 id: "gpt-5.1-codex-max",
@@ -169,6 +181,7 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                     description: "Maximizes reasoning depth for complex or ambiguous problems",
                 },
             ],
+            supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
                 id: "gpt-5.1-codex-max",
@@ -193,6 +206,7 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                     description: "Maximizes reasoning depth for complex or ambiguous problems",
                 },
             ],
+            supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
                 id: "gpt-5.1-codex-mini",
@@ -227,6 +241,7 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                     description: "Maximizes reasoning depth for complex or ambiguous problems",
                 },
             ],
+            supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
                 id: "gpt-5.1-codex-max",
@@ -251,6 +266,18 @@ pub fn builtin_model_presets(auth_mode: Option<AuthMode>) -> Vec<ModelPreset> {
 
 pub fn all_model_presets() -> &'static Vec<ModelPreset> {
     &PRESETS
+}
+
+pub fn allowed_text_verbosity_for_model(model: &str) -> &'static [TextVerbosityConfig] {
+    let model_lower = model.to_ascii_lowercase();
+    PRESETS
+        .iter()
+        .find(|preset| {
+            preset.model.eq_ignore_ascii_case(&model_lower)
+                || preset.id.eq_ignore_ascii_case(&model_lower)
+        })
+        .map(|preset| preset.supported_text_verbosity)
+        .unwrap_or(ALL_TEXT_VERBOSITY)
 }
 
 #[cfg(test)]

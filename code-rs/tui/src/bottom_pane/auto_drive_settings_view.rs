@@ -1,6 +1,7 @@
 use crate::app_event::{AppEvent, AutoContinueMode};
 use crate::app_event_sender::AppEventSender;
 use crate::colors;
+use code_core::config_types::ReasoningEffort;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -16,6 +17,8 @@ use super::settings_panel::{render_panel, PanelFrameStyle};
 pub(crate) struct AutoDriveSettingsView {
     app_event_tx: AppEventSender,
     selected_index: usize,
+    model: String,
+    model_reasoning: ReasoningEffort,
     review_enabled: bool,
     agents_enabled: bool,
     cross_check_enabled: bool,
@@ -30,6 +33,8 @@ impl AutoDriveSettingsView {
 
     pub fn new(
         app_event_tx: AppEventSender,
+        model: String,
+        model_reasoning: ReasoningEffort,
         review_enabled: bool,
         agents_enabled: bool,
         cross_check_enabled: bool,
@@ -41,6 +46,8 @@ impl AutoDriveSettingsView {
         Self {
             app_event_tx,
             selected_index: 0,
+            model,
+            model_reasoning,
             review_enabled,
             agents_enabled,
             cross_check_enabled,
@@ -52,7 +59,7 @@ impl AutoDriveSettingsView {
     }
 
     fn option_count() -> usize {
-        3
+        4
     }
 
     fn send_update(&self) {
@@ -65,12 +72,28 @@ impl AutoDriveSettingsView {
         });
     }
 
+    pub fn set_model(&mut self, model: String, effort: ReasoningEffort) {
+        self.model = model;
+        self.model_reasoning = effort;
+    }
+
     fn set_diagnostics(&mut self, enabled: bool) {
         self.review_enabled = enabled;
         self.cross_check_enabled = enabled;
         self.qa_automation_enabled = enabled;
         self.diagnostics_enabled =
             self.qa_automation_enabled && (self.review_enabled || self.cross_check_enabled);
+    }
+
+    fn reasoning_label(effort: ReasoningEffort) -> &'static str {
+        match effort {
+            ReasoningEffort::XHigh => "XHigh",
+            ReasoningEffort::High => "High",
+            ReasoningEffort::Medium => "Medium",
+            ReasoningEffort::Low => "Low",
+            ReasoningEffort::Minimal => "Minimal",
+            ReasoningEffort::None => "None",
+        }
     }
 
     fn cycle_continue_mode(&mut self, forward: bool) {
@@ -85,15 +108,18 @@ impl AutoDriveSettingsView {
     fn toggle_selected(&mut self) {
         match self.selected_index {
             0 => {
+                self.app_event_tx.send(AppEvent::ShowAutoDriveModelSelector);
+            }
+            1 => {
                 self.agents_enabled = !self.agents_enabled;
                 self.send_update();
             }
-            1 => {
+            2 => {
                 let next = !self.diagnostics_enabled;
                 self.set_diagnostics(next);
                 self.send_update();
             }
-            2 => self.cycle_continue_mode(true),
+            3 => self.cycle_continue_mode(true),
             _ => {}
         }
     }
@@ -126,15 +152,16 @@ impl AutoDriveSettingsView {
         let indicator = if selected { "›" } else { " " };
         let prefix = format!("{indicator} ");
         let (label, enabled) = match index {
-            0 => (
+            0 => ("Auto Drive model", true),
+            1 => (
                 "Agents enabled (uses multiple agents to speed up complex tasks)",
                 self.agents_enabled,
             ),
-            1 => (
+            2 => (
                 "Diagnostics enabled (monitors and adjusts system in real time)",
                 self.diagnostics_enabled,
             ),
-            2 => (
+            3 => (
                 "Auto-continue delay",
                 matches!(self.continue_mode, AutoContinueMode::Manual),
             ),
@@ -151,14 +178,30 @@ impl AutoDriveSettingsView {
 
         let mut spans = vec![Span::styled(prefix, label_style)];
         match index {
-            0 | 1 => {
+            0 => {
+                let model_label = self.model.trim();
+                let display = if model_label.is_empty() {
+                    "(not set)".to_string()
+                } else {
+                    format!(
+                        "{} · {}",
+                        model_label,
+                        Self::reasoning_label(self.model_reasoning)
+                    )
+                };
+                spans.push(Span::styled(display, label_style));
+                if selected {
+                    spans.push(Span::raw("  (Enter to change)"));
+                }
+            }
+            1 | 2 => {
                 let checkbox = if enabled { "[x]" } else { "[ ]" };
                 spans.push(Span::styled(
                     format!("{checkbox} {label}"),
                     label_style,
                 ));
             }
-            2 => {
+            3 => {
                 spans.push(Span::styled(label.to_string(), label_style));
                 spans.push(Span::raw("  "));
                 spans.push(Span::styled(
@@ -179,12 +222,13 @@ impl AutoDriveSettingsView {
         lines.push(self.option_label(0));
         lines.push(self.option_label(1));
         lines.push(self.option_label(2));
+        lines.push(self.option_label(3));
         lines.push(Line::default());
 
         let footer_style = Style::default().fg(colors::text_dim());
         lines.push(Line::from(vec![
             Span::styled("Enter", Style::default().fg(colors::primary())),
-            Span::styled(" toggle", footer_style),
+            Span::styled(" select/toggle", footer_style),
             Span::raw("   "),
             Span::styled("←/→", Style::default().fg(colors::primary())),
             Span::styled(" adjust delay", footer_style),

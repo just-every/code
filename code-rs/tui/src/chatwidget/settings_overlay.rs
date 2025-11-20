@@ -343,6 +343,10 @@ impl AutoDriveSettingsContent {
     pub(crate) fn new(view: AutoDriveSettingsView) -> Self {
         Self { view }
     }
+
+    pub(crate) fn update_model(&mut self, model: String, effort: ReasoningEffort) {
+        self.view.set_model(model, effort);
+    }
 }
 
 impl SettingsContent for AutoDriveSettingsContent {
@@ -1312,6 +1316,10 @@ impl SettingsOverlayView {
 
     pub(crate) fn review_content_mut(&mut self) -> Option<&mut ReviewSettingsContent> {
         self.review_content.as_mut()
+    }
+
+    pub(crate) fn auto_drive_content_mut(&mut self) -> Option<&mut AutoDriveSettingsContent> {
+        self.auto_drive_content.as_mut()
     }
 
     pub(crate) fn limits_content_mut(&mut self) -> Option<&mut LimitsSettingsContent> {

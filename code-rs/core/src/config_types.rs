@@ -800,6 +800,14 @@ pub struct AutoDriveSettings {
     #[serde(default)]
     pub continue_mode: AutoDriveContinueMode,
 
+    /// Model used for the Auto Drive coordinator and follow-on turns.
+    #[serde(default = "default_auto_drive_model")]
+    pub model: String,
+
+    /// Reasoning effort applied to the Auto Drive model.
+    #[serde(default = "default_auto_drive_reasoning_effort")]
+    pub model_reasoning_effort: ReasoningEffort,
+
     #[serde(default)]
     pub auto_resolve_review_attempts: AutoResolveAttemptLimit,
 }
@@ -814,9 +822,20 @@ impl Default for AutoDriveSettings {
             observer_enabled: true,
             coordinator_routing: true,
             continue_mode: AutoDriveContinueMode::TenSeconds,
+            model: default_auto_drive_model(),
+            model_reasoning_effort: default_auto_drive_reasoning_effort(),
             auto_resolve_review_attempts: AutoResolveAttemptLimit::default(),
         }
     }
+}
+
+fn default_auto_drive_model() -> String {
+    // Keep aligned with the coordinator's preferred model fallback.
+    String::from("gpt-5.1")
+}
+
+const fn default_auto_drive_reasoning_effort() -> ReasoningEffort {
+    ReasoningEffort::High
 }
 
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]

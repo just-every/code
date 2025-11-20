@@ -56,6 +56,7 @@ impl FlatPreset {
 pub(crate) enum ModelSelectionTarget {
     Session,
     Review,
+    AutoDrive,
 }
 
 impl ModelSelectionTarget {
@@ -63,6 +64,7 @@ impl ModelSelectionTarget {
         match self {
             ModelSelectionTarget::Session => "Select Model & Reasoning",
             ModelSelectionTarget::Review => "Select Review Model & Reasoning",
+            ModelSelectionTarget::AutoDrive => "Select Auto Drive Model & Reasoning",
         }
     }
 
@@ -70,6 +72,7 @@ impl ModelSelectionTarget {
         match self {
             ModelSelectionTarget::Session => "Current model",
             ModelSelectionTarget::Review => "Review model",
+            ModelSelectionTarget::AutoDrive => "Auto Drive model",
         }
     }
 
@@ -77,6 +80,7 @@ impl ModelSelectionTarget {
         match self {
             ModelSelectionTarget::Session => "Reasoning effort",
             ModelSelectionTarget::Review => "Review reasoning",
+            ModelSelectionTarget::AutoDrive => "Auto Drive reasoning",
         }
     }
 }
@@ -217,6 +221,12 @@ impl ModelSelectionView {
                 }
                 ModelSelectionTarget::Review => {
                     let _ = self.app_event_tx.send(AppEvent::UpdateReviewModelSelection {
+                        model: flat_preset.model.clone(),
+                        effort: flat_preset.effort,
+                    });
+                }
+                ModelSelectionTarget::AutoDrive => {
+                    let _ = self.app_event_tx.send(AppEvent::UpdateAutoDriveModelSelection {
                         model: flat_preset.model.clone(),
                         effort: flat_preset.effort,
                     });

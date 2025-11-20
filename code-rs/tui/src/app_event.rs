@@ -224,6 +224,12 @@ pub(crate) enum AppEvent {
         effort: ReasoningEffort,
     },
 
+    /// Update the Auto Drive model + reasoning effort
+    UpdateAutoDriveModelSelection {
+        model: String,
+        effort: ReasoningEffort,
+    },
+
     /// Update the text verbosity level
     UpdateTextVerbosity(TextVerbosity),
 
@@ -237,6 +243,8 @@ pub(crate) enum AppEvent {
     UpdateReviewAutoResolveAttempts(u32),
     /// Open the review model selector overlay
     ShowReviewModelSelector,
+    /// Open the Auto Drive model selector overlay
+    ShowAutoDriveModelSelector,
     /// Enable/disable a specific validation tool
     UpdateValidationTool { name: String, enable: bool },
     /// Enable/disable an entire validation group

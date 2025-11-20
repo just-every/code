@@ -188,6 +188,7 @@ impl ModelClient {
         session_id: Uuid,
         debug_logger: Arc<Mutex<DebugLogger>>,
     ) -> Self {
+        let effective_verbosity = clamp_text_verbosity_for_model(config.model.as_str(), verbosity);
         let client = create_client(&config.responses_originator_header);
 
         Self {
@@ -199,7 +200,7 @@ impl ModelClient {
             session_id,
             effort,
             summary,
-            verbosity,
+            verbosity: effective_verbosity,
             debug_logger,
         }
     }
@@ -434,21 +435,25 @@ impl ModelClient {
             })
         });
 
+        let request_model = prompt
+            .model_override
+            .as_deref()
+            .unwrap_or(self.config.model.as_str());
+        let effective_verbosity = clamp_text_verbosity_for_model(request_model, self.verbosity);
+
         let verbosity = match &self.config.model_family.family {
-            family if family == "gpt-5" || family == "gpt-5.1" => {
-                Some(self.config.model_text_verbosity)
-            }
+            family if family == "gpt-5" || family == "gpt-5.1" => Some(effective_verbosity),
             _ => None,
         };
 
         let text = match (auth_mode, want_format, verbosity) {
             (Some(AuthMode::ChatGPT), None, _) => None,
             (_, Some(fmt), _) => Some(crate::client_common::Text {
-                verbosity: self.verbosity.into(),
+                verbosity: effective_verbosity.into(),
                 format: Some(fmt),
             }),
             (_, None, Some(_)) => Some(crate::client_common::Text {
-                verbosity: self.verbosity.into(),
+                verbosity: effective_verbosity.into(),
                 format: None,
             }),
             (_, None, None) => None,
@@ -979,6 +984,44 @@ impl ModelClient {
         let CompactHistoryResponse { output } = serde_json::from_str(&body)?;
         Ok(output)
     }
+}
+
+fn clamp_text_verbosity_for_model(
+    model: &str,
+    requested: TextVerbosityConfig,
+) -> TextVerbosityConfig {
+    let allowed = supported_text_verbosity_for_model(model);
+    if allowed.iter().any(|v| v == &requested) {
+        return requested;
+    }
+
+    if let Some(medium) = allowed.iter().find(|v| matches!(v, TextVerbosityConfig::Medium)) {
+        tracing::debug!(
+            model,
+            requested = ?requested,
+            fallback = ?medium,
+            "text verbosity clamped to supported value for model",
+        );
+        return *medium;
+    }
+
+    let fallback = *allowed.first().unwrap_or(&TextVerbosityConfig::Medium);
+    tracing::debug!(
+        model,
+        requested = ?requested,
+        fallback = ?fallback,
+        "text verbosity clamped to first supported value for model",
+    );
+    fallback
+}
+
+fn supported_text_verbosity_for_model(model: &str) -> &'static [TextVerbosityConfig] {
+    if model.eq_ignore_ascii_case("gpt-5.1-codex-max") {
+        return &[TextVerbosityConfig::Medium];
+    }
+
+    const ALL: &[TextVerbosityConfig] = &[TextVerbosityConfig::Low, TextVerbosityConfig::Medium, TextVerbosityConfig::High];
+    ALL
 }
 
 #[derive(Debug, Deserialize, Serialize)]

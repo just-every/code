@@ -1041,6 +1041,13 @@ pub fn set_auto_drive_settings(
         toml_edit::value(settings.observer_enabled);
     doc["auto_drive"]["coordinator_routing"] =
         toml_edit::value(settings.coordinator_routing);
+    doc["auto_drive"]["model"] = toml_edit::value(settings.model.trim());
+    doc["auto_drive"]["model_reasoning_effort"] = toml_edit::value(
+        settings
+            .model_reasoning_effort
+            .to_string()
+            .to_ascii_lowercase(),
+    );
     doc["auto_drive"]["auto_resolve_review_attempts"] =
         toml_edit::value(settings.auto_resolve_review_attempts.get() as i64);
 
@@ -1659,6 +1666,10 @@ fn apply_toml_override(root: &mut TomlValue, path: &str, value: TomlValue) {
 pub struct ConfigToml {
     /// Optional override of model selection.
     pub model: Option<String>,
+    /// Planning model override used when in Read Only (Plan Mode).
+    pub planning_model: Option<String>,
+    /// Reasoning effort override used for the planning model.
+    pub planning_model_reasoning_effort: Option<ReasoningEffort>,
     /// Review model override used by the `/review` feature.
     pub review_model: Option<String>,
     /// Reasoning effort override used for the review model.

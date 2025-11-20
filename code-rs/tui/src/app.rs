@@ -2297,6 +2297,11 @@ impl App<'_> {
                         widget.apply_review_model_selection(model, effort);
                     }
                 }
+                AppEvent::UpdateAutoDriveModelSelection { model, effort } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.apply_auto_drive_model_selection(model, effort);
+                    }
+                }
                 AppEvent::UpdateTextVerbosity(new_verbosity) => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.set_text_verbosity(new_verbosity);
@@ -2411,6 +2416,11 @@ impl App<'_> {
                 AppEvent::ShowReviewModelSelector => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.show_review_model_selector();
+                    }
+                }
+                AppEvent::ShowAutoDriveModelSelector => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.show_auto_drive_model_selector();
                     }
                 }
                 AppEvent::RunReviewWithScope {

@@ -13918,6 +13918,8 @@ impl ChatWidget<'_> {
     }
 
     fn build_auto_drive_settings_content(&mut self) -> AutoDriveSettingsContent {
+        let model = self.config.auto_drive.model.clone();
+        let model_effort = self.config.auto_drive.model_reasoning_effort;
         let review = self.auto_state.review_enabled;
         let agents = self.auto_state.subagents_enabled;
         let cross = self.auto_state.cross_check_enabled;
@@ -13925,6 +13927,8 @@ impl ChatWidget<'_> {
         let mode = self.auto_state.continue_mode;
         let view = AutoDriveSettingsView::new(
             self.app_event_tx.clone(),
+            model,
+            model_effort,
             review,
             agents,
             cross,
@@ -15061,11 +15065,18 @@ fi\n\
             })
         };
 
+        let mut auto_config = self.config.clone();
+        auto_config.model = self.config.auto_drive.model.trim().to_string();
+        if auto_config.model.is_empty() {
+            auto_config.model = code_auto_drive_core::MODEL_SLUG.to_string();
+        }
+        auto_config.model_reasoning_effort = self.config.auto_drive.model_reasoning_effort;
+
         match start_auto_coordinator(
             coordinator_events,
             goal.clone(),
             conversation,
-            self.config.clone(),
+            auto_config,
             self.config.debug,
             derive_goal_from_history,
         ) {
@@ -18748,11 +18759,34 @@ Have we met every part of this goal and is there no further work to do?"#
             );
             return;
         }
+        if self.settings.overlay.is_some() {
+            self.close_settings_overlay();
+        }
         self.bottom_pane.show_model_selection(
             presets,
             self.config.review_model.clone(),
             self.config.review_model_reasoning_effort,
             ModelSelectionTarget::Review,
+        );
+    }
+
+    pub(crate) fn show_auto_drive_model_selector(&mut self) {
+        let presets = self.available_model_presets();
+        if presets.is_empty() {
+            self.bottom_pane.flash_footer_notice(
+                "No model presets are available for Auto Drive. Update configuration to define models."
+                    .to_string(),
+            );
+            return;
+        }
+        if self.settings.overlay.is_some() {
+            self.close_settings_overlay();
+        }
+        self.bottom_pane.show_model_selection(
+            presets,
+            self.config.auto_drive.model.clone(),
+            self.config.auto_drive.model_reasoning_effort,
+            ModelSelectionTarget::AutoDrive,
         );
     }
 
@@ -18870,6 +18904,62 @@ Have we met every part of this goal and is there no further work to do?"#
         self.bottom_pane.flash_footer_notice(message);
         self.refresh_settings_overview_rows();
         self.update_review_settings_model_row();
+        self.request_redraw();
+    }
+
+    pub(crate) fn apply_auto_drive_model_selection(
+        &mut self,
+        model: String,
+        effort: ReasoningEffort,
+    ) {
+        let trimmed = model.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+
+        let mut updated = false;
+        if !self.config.auto_drive.model.eq_ignore_ascii_case(trimmed) {
+            self.config.auto_drive.model = trimmed.to_string();
+            updated = true;
+        }
+
+        if self.config.auto_drive.model_reasoning_effort != effort {
+            self.config.auto_drive.model_reasoning_effort = effort;
+            updated = true;
+        }
+
+        if !updated {
+            self.bottom_pane
+                .flash_footer_notice("Auto Drive model unchanged.".to_string());
+            return;
+        }
+
+        let message = if let Ok(home) = code_core::config::find_code_home() {
+            match code_core::config::set_auto_drive_settings(&home, &self.config.auto_drive) {
+                Ok(_) => format!(
+                    "Auto Drive model set to {} ({} reasoning)",
+                    self.config.auto_drive.model,
+                    Self::format_reasoning_effort(self.config.auto_drive.model_reasoning_effort)
+                ),
+                Err(err) => {
+                    tracing::warn!("Failed to persist Auto Drive model: {err}");
+                    format!(
+                        "Auto Drive model set for this session (failed to persist): {}",
+                        self.config.auto_drive.model
+                    )
+                }
+            }
+        } else {
+            tracing::warn!("Could not locate Code home to persist Auto Drive model");
+            format!(
+                "Auto Drive model set for this session: {}",
+                self.config.auto_drive.model
+            )
+        };
+
+        self.bottom_pane.flash_footer_notice(message);
+        self.refresh_settings_overview_rows();
+        self.update_auto_drive_settings_model_row();
         self.request_redraw();
     }
 
@@ -19593,14 +19683,16 @@ Have we met every part of this goal and is there no further work to do?"#
     }
 
     fn settings_summary_model(&self) -> Option<String> {
-        let mut parts: Vec<String> = Vec::new();
         let model = self.config.model.trim();
-        let model_display = if model.is_empty() { "—" } else { model };
-        parts.push(format!("Model: {}", model_display));
-        parts.push(format!(
-            "Effort: {}",
-            Self::format_reasoning_effort(self.config.model_reasoning_effort)
-        ));
+        let model_display_storage;
+        let model_display = if model.is_empty() {
+            "—"
+        } else {
+            model_display_storage = Self::format_model_label(model);
+            &model_display_storage
+        };
+        let effort = Self::format_reasoning_effort(self.config.model_reasoning_effort);
+        let mut parts: Vec<String> = vec![format!("Model: {} ({})", model_display, effort)];
         if let Some(profile) = self
             .config
             .active_profile
@@ -19660,8 +19752,16 @@ Have we met every part of this goal and is there no further work to do?"#
     fn settings_summary_auto_drive(&self) -> Option<String> {
         let diagnostics_enabled = self.auto_state.qa_automation_enabled
             && (self.auto_state.review_enabled || self.auto_state.cross_check_enabled);
+        let model_label = if self.config.auto_drive.model.trim().is_empty() {
+            "(default)".to_string()
+        } else {
+            Self::format_model_label(&self.config.auto_drive.model)
+        };
+        let effort = Self::format_reasoning_effort(self.config.auto_drive.model_reasoning_effort);
         Some(format!(
-            "Agents: {} · Diagnostics: {} · Continue: {}",
+            "Model: {} ({}) · Agents: {} · Diagnostics: {} · Continue: {}",
+            model_label,
+            effort,
             Self::on_off_label(self.auto_state.subagents_enabled),
             Self::on_off_label(diagnostics_enabled),
             self.auto_state.continue_mode.label()
@@ -19689,7 +19789,11 @@ Have we met every part of this goal and is there no further work to do?"#
             format!("Auto Resolve: On (max {} re-reviews)", attempts)
         };
         let model = self.config.review_model.trim();
-        let model_display = if model.is_empty() { "(not set)" } else { model };
+        let model_display = if model.is_empty() {
+            "(not set)".to_string()
+        } else {
+            Self::format_model_label(model)
+        };
         let model_part = format!(
             "Model: {} ({})",
             model_display,
@@ -19760,6 +19864,34 @@ Have we met every part of this goal and is there no further work to do?"#
             ReasoningEffort::High => "High",
             ReasoningEffort::XHigh => "XHigh",
         }
+    }
+
+    fn format_model_label(model: &str) -> String {
+        let mut parts = Vec::new();
+        for (idx, part) in model.split('-').enumerate() {
+            if idx == 0 {
+                parts.push(part.to_ascii_uppercase());
+                continue;
+            }
+            let mut chars = part.chars();
+            let formatted = match chars.next() {
+                Some(first) if first.is_ascii_alphabetic() => {
+                    let mut s = String::new();
+                    s.push(first.to_ascii_uppercase());
+                    s.push_str(chars.as_str());
+                    s
+                }
+                Some(first) => {
+                    let mut s = String::new();
+                    s.push(first);
+                    s.push_str(chars.as_str());
+                    s
+                }
+                None => String::new(),
+            };
+            parts.push(formatted);
+        }
+        parts.join("-")
     }
 
     fn on_off_label(value: bool) -> &'static str {
@@ -27815,6 +27947,17 @@ impl ChatWidget<'_> {
                 content.update_review_model(
                     self.config.review_model.clone(),
                     self.config.review_model_reasoning_effort,
+                );
+            }
+        }
+    }
+
+    fn update_auto_drive_settings_model_row(&mut self) {
+        if let Some(overlay) = self.settings.overlay.as_mut() {
+            if let Some(content) = overlay.auto_drive_content_mut() {
+                content.update_model(
+                    self.config.auto_drive.model.clone(),
+                    self.config.auto_drive.model_reasoning_effort,
                 );
             }
         }
