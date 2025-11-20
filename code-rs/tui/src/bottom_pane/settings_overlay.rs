@@ -2,6 +2,7 @@
 pub(crate) enum SettingsSection {
     Model,
     Theme,
+    Planning,
     Updates,
     Agents,
     AutoDrive,
@@ -15,9 +16,10 @@ pub(crate) enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub(crate) const ALL: [SettingsSection; 12] = [
+    pub(crate) const ALL: [SettingsSection; 13] = [
         SettingsSection::Model,
         SettingsSection::Theme,
+        SettingsSection::Planning,
         SettingsSection::Updates,
         SettingsSection::Agents,
         SettingsSection::AutoDrive,
@@ -34,6 +36,7 @@ impl SettingsSection {
         match self {
             SettingsSection::Model => "Model",
             SettingsSection::Theme => "Theme",
+            SettingsSection::Planning => "Planning",
             SettingsSection::Updates => "Updates",
             SettingsSection::Agents => "Agents",
             SettingsSection::AutoDrive => "Auto Drive",
@@ -51,6 +54,7 @@ impl SettingsSection {
         match self {
             SettingsSection::Model => "Choose the language model used for new completions.",
             SettingsSection::Theme => "Switch between preset color palettes and adjust contrast.",
+            SettingsSection::Planning => "Choose the model used in Plan Mode (Read Only).",
             SettingsSection::Updates => "Control CLI auto-update cadence and release channels.",
             SettingsSection::Agents => "Configure linked agents and default task permissions.",
             SettingsSection::AutoDrive => "Manage Auto Drive defaults for review and cadence.",
@@ -68,6 +72,7 @@ impl SettingsSection {
         match self {
             SettingsSection::Model => "Model settings coming soon.",
             SettingsSection::Theme => "Theme settings coming soon.",
+            SettingsSection::Planning => "Planning settings coming soon.",
             SettingsSection::Updates => "Upgrade Codex and manage automatic updates.",
             SettingsSection::Agents => "Agents configuration coming soon.",
             SettingsSection::AutoDrive => "Auto Drive controls coming soon.",
@@ -85,6 +90,7 @@ impl SettingsSection {
         match value.trim().to_ascii_lowercase().as_str() {
             "model" | "models" => Some(SettingsSection::Model),
             "theme" | "themes" => Some(SettingsSection::Theme),
+            "planning" | "plan" => Some(SettingsSection::Planning),
             "update" | "updates" => Some(SettingsSection::Updates),
             "agent" | "agents" => Some(SettingsSection::Agents),
             "auto" | "autodrive" | "drive" => Some(SettingsSection::AutoDrive),

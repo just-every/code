@@ -223,12 +223,23 @@ pub(crate) enum AppEvent {
         model: String,
         effort: ReasoningEffort,
     },
+    /// Toggle review model inheritance from chat model
+    UpdateReviewUseChatModel(bool),
+    /// Update the planning (read-only) model + reasoning effort
+    UpdatePlanningModelSelection {
+        model: String,
+        effort: ReasoningEffort,
+    },
+    /// Toggle planning model inheritance from chat model
+    UpdatePlanningUseChatModel(bool),
 
     /// Update the Auto Drive model + reasoning effort
     UpdateAutoDriveModelSelection {
         model: String,
         effort: ReasoningEffort,
     },
+    /// Toggle Auto Drive model inheritance from chat model
+    UpdateAutoDriveUseChatModel(bool),
 
     /// Update the text verbosity level
     UpdateTextVerbosity(TextVerbosity),
@@ -243,6 +254,8 @@ pub(crate) enum AppEvent {
     UpdateReviewAutoResolveAttempts(u32),
     /// Open the review model selector overlay
     ShowReviewModelSelector,
+    /// Open the planning model selector overlay
+    ShowPlanningModelSelector,
     /// Open the Auto Drive model selector overlay
     ShowAutoDriveModelSelector,
     /// Enable/disable a specific validation tool

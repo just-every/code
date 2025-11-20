@@ -1164,6 +1164,12 @@ impl App<'_> {
                 AppEvent::RequestRedraw => {
                     self.schedule_redraw();
                 }
+                AppEvent::UpdatePlanningUseChatModel(use_chat) => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.set_planning_use_chat_model(use_chat);
+                    }
+                    self.schedule_redraw();
+                }
                 AppEvent::FlushPendingExecEnds => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.flush_pending_exec_ends();
@@ -2297,9 +2303,24 @@ impl App<'_> {
                         widget.apply_review_model_selection(model, effort);
                     }
                 }
+                AppEvent::UpdateReviewUseChatModel(use_chat) => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.set_review_use_chat_model(use_chat);
+                    }
+                }
+                AppEvent::UpdatePlanningModelSelection { model, effort } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.apply_planning_model_selection(model, effort);
+                    }
+                }
                 AppEvent::UpdateAutoDriveModelSelection { model, effort } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.apply_auto_drive_model_selection(model, effort);
+                    }
+                }
+                AppEvent::UpdateAutoDriveUseChatModel(use_chat) => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.set_auto_drive_use_chat_model(use_chat);
                     }
                 }
                 AppEvent::UpdateTextVerbosity(new_verbosity) => {
@@ -2416,6 +2437,11 @@ impl App<'_> {
                 AppEvent::ShowReviewModelSelector => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.show_review_model_selector();
+                    }
+                }
+                AppEvent::ShowPlanningModelSelector => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.show_planning_model_selector();
                     }
                 }
                 AppEvent::ShowAutoDriveModelSelector => {

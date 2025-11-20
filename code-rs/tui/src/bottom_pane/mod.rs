@@ -50,6 +50,7 @@ mod login_accounts_view;
 mod textarea;
 pub mod form_text_field;
 mod theme_selection_view;
+mod planning_settings_view;
 mod verbosity_selection_view;
 pub(crate) mod validation_settings_view;
 mod update_settings_view;
@@ -88,6 +89,7 @@ pub(crate) use update_settings_view::{UpdateSettingsView, UpdateSharedState};
 pub(crate) use notifications_settings_view::{NotificationsMode, NotificationsSettingsView};
 pub(crate) use validation_settings_view::ValidationSettingsView;
 pub(crate) use review_settings_view::ReviewSettingsView;
+pub(crate) use planning_settings_view::PlanningSettingsView;
 use approval_modal_view::ApprovalModalView;
 #[cfg(feature = "code-fork")]
 use approval_ui::ApprovalUi;
@@ -678,12 +680,14 @@ impl BottomPane<'_> {
         presets: Vec<ModelPreset>,
         current_model: String,
         current_effort: ReasoningEffort,
+        use_chat_model: bool,
         target: ModelSelectionTarget,
     ) {
         let view = ModelSelectionView::new(
             presets,
             current_model,
             current_effort,
+            use_chat_model,
             target,
             self.app_event_tx.clone(),
         );

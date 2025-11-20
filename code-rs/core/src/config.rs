@@ -106,11 +106,23 @@ pub struct Config {
     /// Optional override of model selection.
     pub model: String,
 
+    /// Planning model (used when in Plan mode / Read Only access preset). Falls back to `model`.
+    pub planning_model: String,
+
+    /// Reasoning effort for planning model.
+    pub planning_model_reasoning_effort: ReasoningEffort,
+
+    /// Whether planning should inherit the chat model instead of using a dedicated override.
+    pub planning_use_chat_model: bool,
+
     /// Model used specifically for review sessions. Defaults to "gpt-5.1-codex-mini".
     pub review_model: String,
 
     /// Reasoning effort used when running review sessions.
     pub review_model_reasoning_effort: ReasoningEffort,
+
+    /// Whether review should inherit the chat model instead of using a dedicated override.
+    pub review_use_chat_model: bool,
 
     pub model_family: ModelFamily,
 
@@ -255,6 +267,8 @@ pub struct Config {
 
     /// Shared Auto Drive defaults.
     pub auto_drive: AutoDriveSettings,
+    /// Whether Auto Drive should inherit the chat model instead of a dedicated override.
+    pub auto_drive_use_chat_model: bool,
 
     /// Path to the `codex-linux-sandbox` executable. This must be set if
     /// [`crate::exec::SandboxType::LinuxSeccomp`] is used. Note that this
@@ -987,6 +1001,7 @@ pub fn set_review_model(
     code_home: &Path,
     model: &str,
     effort: ReasoningEffort,
+    use_chat_model: bool,
 ) -> anyhow::Result<()> {
     let trimmed = model.trim();
     if trimmed.is_empty() {
@@ -1001,9 +1016,53 @@ pub fn set_review_model(
         Err(e) => return Err(e.into()),
     };
 
-    doc["review_model"] = toml_edit::value(trimmed);
-    doc["review_model_reasoning_effort"] =
-        toml_edit::value(effort.to_string().to_ascii_lowercase());
+    doc["review_use_chat_model"] = toml_edit::value(use_chat_model);
+    if use_chat_model {
+        doc.remove("review_model");
+        doc.remove("review_model_reasoning_effort");
+    } else {
+        doc["review_model"] = toml_edit::value(trimmed);
+        doc["review_model_reasoning_effort"] =
+            toml_edit::value(effort.to_string().to_ascii_lowercase());
+    }
+
+    std::fs::create_dir_all(code_home)?;
+    let tmp_file = NamedTempFile::new_in(code_home)?;
+    std::fs::write(tmp_file.path(), doc.to_string())?;
+    tmp_file.persist(config_path)?;
+
+    Ok(())
+}
+
+/// Persist the planning model + reasoning effort into `CODEX_HOME/config.toml`.
+pub fn set_planning_model(
+    code_home: &Path,
+    model: &str,
+    effort: ReasoningEffort,
+    use_chat_model: bool,
+) -> anyhow::Result<()> {
+    let config_path = code_home.join(CONFIG_TOML_FILE);
+    let read_path = resolve_code_path_for_read(code_home, Path::new(CONFIG_TOML_FILE));
+
+    let mut doc = match std::fs::read_to_string(&read_path) {
+        Ok(contents) => contents.parse::<DocumentMut>()?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentMut::new(),
+        Err(e) => return Err(e.into()),
+    };
+
+    doc["planning_use_chat_model"] = toml_edit::value(use_chat_model);
+    if use_chat_model {
+        doc.remove("planning_model");
+        doc.remove("planning_model_reasoning_effort");
+    } else {
+        let trimmed = model.trim();
+        if trimmed.is_empty() {
+            return Err(anyhow::anyhow!("planning model cannot be empty"));
+        }
+        doc["planning_model"] = toml_edit::value(trimmed);
+        doc["planning_model_reasoning_effort"] =
+            toml_edit::value(effort.to_string().to_ascii_lowercase());
+    }
 
     std::fs::create_dir_all(code_home)?;
     let tmp_file = NamedTempFile::new_in(code_home)?;
@@ -1017,6 +1076,7 @@ pub fn set_review_model(
 pub fn set_auto_drive_settings(
     code_home: &Path,
     settings: &AutoDriveSettings,
+    use_chat_model: bool,
 ) -> anyhow::Result<()> {
     let config_path = code_home.join(CONFIG_TOML_FILE);
     let read_path = resolve_code_path_for_read(code_home, Path::new(CONFIG_TOML_FILE));
@@ -1030,6 +1090,8 @@ pub fn set_auto_drive_settings(
     if let Some(tui_tbl) = doc["tui"].as_table_mut() {
         tui_tbl.remove("auto_drive");
     }
+
+    doc["auto_drive_use_chat_model"] = toml_edit::value(use_chat_model);
 
     doc["auto_drive"]["review_enabled"] = toml_edit::value(settings.review_enabled);
     doc["auto_drive"]["agents_enabled"] = toml_edit::value(settings.agents_enabled);
@@ -1073,8 +1135,9 @@ pub fn set_auto_drive_settings(
 pub fn set_tui_auto_drive_settings(
     code_home: &Path,
     settings: &AutoDriveSettings,
+    use_chat_model: bool,
 ) -> anyhow::Result<()> {
-    set_auto_drive_settings(code_home, settings)
+    set_auto_drive_settings(code_home, settings, use_chat_model)
 }
 
 /// Persist the GitHub workflow check preference under `[github].check_workflows_on_push`.
@@ -1670,10 +1733,16 @@ pub struct ConfigToml {
     pub planning_model: Option<String>,
     /// Reasoning effort override used for the planning model.
     pub planning_model_reasoning_effort: Option<ReasoningEffort>,
+    /// Inherit chat model for planning mode when true.
+    #[serde(default)]
+    pub planning_use_chat_model: bool,
     /// Review model override used by the `/review` feature.
     pub review_model: Option<String>,
     /// Reasoning effort override used for the review model.
     pub review_model_reasoning_effort: Option<ReasoningEffort>,
+    /// Inherit chat model for review flows when true.
+    #[serde(default)]
+    pub review_use_chat_model: bool,
 
     /// Provider to use from the model_providers map.
     pub model_provider: Option<String>,
@@ -1770,6 +1839,9 @@ pub struct ConfigToml {
 
     /// Auto Drive behavioral defaults.
     pub auto_drive: Option<AutoDriveSettings>,
+
+    /// If true, Auto Drive inherits the chat model instead of a dedicated override.
+    pub auto_drive_use_chat_model: Option<bool>,
 
     #[serde(default)]
     pub auto_drive_observer_cadence: Option<u32>,
@@ -2385,10 +2457,49 @@ impl Config {
             .or(cfg.review_model_reasoning_effort)
             .unwrap_or(ReasoningEffort::High);
 
+        let planning_use_chat_model = config_profile
+            .planning_use_chat_model
+            .or(Some(cfg.planning_use_chat_model))
+            .unwrap_or_else(|| {
+                config_profile.planning_model.is_none() && cfg.planning_model.is_none()
+            });
+        let planning_model = if planning_use_chat_model {
+            model.clone()
+        } else {
+            config_profile
+                .planning_model
+                .or(cfg.planning_model)
+                .unwrap_or_else(|| model.clone())
+        };
+        let planning_model_reasoning_effort = config_profile
+            .planning_model_reasoning_effort
+            .or(cfg.planning_model_reasoning_effort)
+            .unwrap_or_else(|| {
+                config_profile
+                    .model_reasoning_effort
+                    .unwrap_or(ReasoningEffort::Medium)
+            });
+
+        let review_use_chat_model = config_profile
+            .review_use_chat_model
+            .or(Some(cfg.review_use_chat_model))
+            .unwrap_or(false);
+        let review_model = if review_use_chat_model {
+            model.clone()
+        } else {
+            review_model
+        };
+
+        let auto_drive_use_chat_model = cfg.auto_drive_use_chat_model.unwrap_or(false);
+
         let config = Self {
             model,
+            planning_model,
+            planning_model_reasoning_effort,
+            planning_use_chat_model,
             review_model,
             review_model_reasoning_effort,
+            review_use_chat_model,
             model_family,
             model_context_window,
             model_max_output_tokens,
@@ -2441,6 +2552,7 @@ impl Config {
                 .clone()
                 .or_else(|| cfg.tui.as_ref().and_then(|t| t.auto_drive.clone()))
                 .unwrap_or_default(),
+            auto_drive_use_chat_model,
             code_linux_sandbox_exe,
             active_profile: active_profile_name,
 

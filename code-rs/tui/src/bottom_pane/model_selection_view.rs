@@ -56,6 +56,7 @@ impl FlatPreset {
 pub(crate) enum ModelSelectionTarget {
     Session,
     Review,
+    Planning,
     AutoDrive,
 }
 
@@ -64,6 +65,7 @@ impl ModelSelectionTarget {
         match self {
             ModelSelectionTarget::Session => "Select Model & Reasoning",
             ModelSelectionTarget::Review => "Select Review Model & Reasoning",
+            ModelSelectionTarget::Planning => "Select Planning Model & Reasoning",
             ModelSelectionTarget::AutoDrive => "Select Auto Drive Model & Reasoning",
         }
     }
@@ -72,6 +74,7 @@ impl ModelSelectionTarget {
         match self {
             ModelSelectionTarget::Session => "Current model",
             ModelSelectionTarget::Review => "Review model",
+            ModelSelectionTarget::Planning => "Planning model",
             ModelSelectionTarget::AutoDrive => "Auto Drive model",
         }
     }
@@ -80,8 +83,13 @@ impl ModelSelectionTarget {
         match self {
             ModelSelectionTarget::Session => "Reasoning effort",
             ModelSelectionTarget::Review => "Review reasoning",
+            ModelSelectionTarget::Planning => "Planning reasoning",
             ModelSelectionTarget::AutoDrive => "Auto Drive reasoning",
         }
+    }
+
+    fn supports_follow_chat(self) -> bool {
+        !matches!(self, ModelSelectionTarget::Session)
     }
 }
 
@@ -90,9 +98,16 @@ pub(crate) struct ModelSelectionView {
     selected_index: usize,
     current_model: String,
     current_effort: ReasoningEffort,
+    use_chat_model: bool,
     app_event_tx: AppEventSender,
     is_complete: bool,
     target: ModelSelectionTarget,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum EntryKind {
+    FollowChat,
+    Preset(usize),
 }
 
 impl ModelSelectionView {
@@ -100,6 +115,7 @@ impl ModelSelectionView {
         presets: Vec<ModelPreset>,
         current_model: String,
         current_effort: ReasoningEffort,
+        use_chat_model: bool,
         target: ModelSelectionTarget,
         app_event_tx: AppEventSender,
     ) -> Self {
@@ -108,12 +124,19 @@ impl ModelSelectionView {
             .flat_map(FlatPreset::from_model_preset)
             .collect();
 
-        let initial_index = Self::initial_selection(&flat_presets, &current_model, current_effort);
+        let initial_index = Self::initial_selection(
+            target.supports_follow_chat(),
+            use_chat_model,
+            &flat_presets,
+            &current_model,
+            current_effort,
+        );
         Self {
             flat_presets,
             selected_index: initial_index,
             current_model,
             current_effort,
+            use_chat_model,
             app_event_tx,
             is_complete: false,
             target,
@@ -121,14 +144,20 @@ impl ModelSelectionView {
     }
 
     fn initial_selection(
+        include_follow_chat: bool,
+        use_chat_model: bool,
         flat_presets: &[FlatPreset],
         current_model: &str,
         current_effort: ReasoningEffort,
     ) -> usize {
+        if include_follow_chat && use_chat_model {
+            return 0;
+        }
+
         if let Some((idx, _)) = flat_presets.iter().enumerate().find(|(_, preset)| {
             preset.model.eq_ignore_ascii_case(current_model) && preset.effort == current_effort
         }) {
-            return idx;
+            return idx + if include_follow_chat { 1 } else { 0 };
         }
 
         if let Some((idx, _)) = flat_presets
@@ -136,10 +165,18 @@ impl ModelSelectionView {
             .enumerate()
             .find(|(_, preset)| preset.model.eq_ignore_ascii_case(current_model))
         {
-            return idx;
+            return idx + if include_follow_chat { 1 } else { 0 };
         }
 
-        0
+        if include_follow_chat {
+            if flat_presets.is_empty() {
+                0
+            } else {
+                1
+            }
+        } else {
+            0
+        }
     }
 
     fn format_model_header(model: &str) -> String {
@@ -172,72 +209,109 @@ impl ModelSelectionView {
         parts.join("-")
     }
 
-    fn move_selection_up(&mut self) {
-        if self.flat_presets.is_empty() {
-            return;
+    fn entries(&self) -> Vec<EntryKind> {
+        let mut entries = Vec::new();
+        if self.target.supports_follow_chat() {
+            entries.push(EntryKind::FollowChat);
         }
-        let sorted = self.sorted_indices();
-        if sorted.is_empty() {
-            return;
+        for idx in self.sorted_indices() {
+            entries.push(EntryKind::Preset(idx));
         }
+        entries
+    }
 
-        let current_pos = sorted
-            .iter()
-            .position(|&idx| idx == self.selected_index)
-            .unwrap_or(0);
-        let new_pos = if current_pos == 0 {
-            sorted.len() - 1
+    fn move_selection_up(&mut self) {
+        let total = self.entries().len();
+        if total == 0 {
+            return;
+        }
+        self.selected_index = if self.selected_index == 0 {
+            total - 1
         } else {
-            current_pos - 1
+            self.selected_index.saturating_sub(1)
         };
-        self.selected_index = sorted[new_pos];
     }
 
     fn move_selection_down(&mut self) {
-        if self.flat_presets.is_empty() {
+        let total = self.entries().len();
+        if total == 0 {
             return;
         }
-        let sorted = self.sorted_indices();
-        if sorted.is_empty() {
-            return;
-        }
-
-        let current_pos = sorted
-            .iter()
-            .position(|&idx| idx == self.selected_index)
-            .unwrap_or(0);
-        let new_pos = (current_pos + 1) % sorted.len();
-        self.selected_index = sorted[new_pos];
+        self.selected_index = (self.selected_index + 1) % total;
     }
 
     fn confirm_selection(&mut self) {
-        if let Some(flat_preset) = self.flat_presets.get(self.selected_index) {
-            match self.target {
-                ModelSelectionTarget::Session => {
-                    let _ = self.app_event_tx.send(AppEvent::UpdateModelSelection {
-                        model: flat_preset.model.clone(),
-                        effort: Some(flat_preset.effort),
-                    });
+        let entries = self.entries();
+        if let Some(entry) = entries.get(self.selected_index) {
+            match entry {
+                EntryKind::FollowChat => {
+                    match self.target {
+                        ModelSelectionTarget::Session => {}
+                        ModelSelectionTarget::Review => {
+                            let _ =
+                                self.app_event_tx.send(AppEvent::UpdateReviewUseChatModel(true));
+                        }
+                        ModelSelectionTarget::Planning => {
+                            let _ = self
+                                .app_event_tx
+                                .send(AppEvent::UpdatePlanningUseChatModel(true));
+                        }
+                        ModelSelectionTarget::AutoDrive => {
+                            let _ = self
+                                .app_event_tx
+                                .send(AppEvent::UpdateAutoDriveUseChatModel(true));
+                        }
+                    }
+                    self.is_complete = true;
+                    return;
                 }
-                ModelSelectionTarget::Review => {
-                    let _ = self.app_event_tx.send(AppEvent::UpdateReviewModelSelection {
-                        model: flat_preset.model.clone(),
-                        effort: flat_preset.effort,
-                    });
-                }
-                ModelSelectionTarget::AutoDrive => {
-                    let _ = self.app_event_tx.send(AppEvent::UpdateAutoDriveModelSelection {
-                        model: flat_preset.model.clone(),
-                        effort: flat_preset.effort,
-                    });
+                EntryKind::Preset(idx) => {
+                    if let Some(flat_preset) = self.flat_presets.get(*idx) {
+                        match self.target {
+                            ModelSelectionTarget::Session => {
+                                let _ = self.app_event_tx.send(AppEvent::UpdateModelSelection {
+                                    model: flat_preset.model.clone(),
+                                    effort: Some(flat_preset.effort),
+                                });
+                            }
+                            ModelSelectionTarget::Review => {
+                                let _ = self
+                                    .app_event_tx
+                                    .send(AppEvent::UpdateReviewModelSelection {
+                                        model: flat_preset.model.clone(),
+                                        effort: flat_preset.effort,
+                                    });
+                            }
+                            ModelSelectionTarget::Planning => {
+                                let _ = self
+                                    .app_event_tx
+                                    .send(AppEvent::UpdatePlanningModelSelection {
+                                        model: flat_preset.model.clone(),
+                                        effort: flat_preset.effort,
+                                    });
+                            }
+                            ModelSelectionTarget::AutoDrive => {
+                                let _ = self
+                                    .app_event_tx
+                                    .send(AppEvent::UpdateAutoDriveModelSelection {
+                                        model: flat_preset.model.clone(),
+                                        effort: flat_preset.effort,
+                                    });
+                            }
+                        }
+                    }
+                    self.is_complete = true;
                 }
             }
         }
-        self.is_complete = true;
     }
 
     fn content_line_count(&self) -> u16 {
         let mut lines: u16 = 3;
+        if self.target.supports_follow_chat() {
+            // Follow row + spacer
+            lines = lines.saturating_add(2);
+        }
 
         let mut previous_model: Option<&str> = None;
         for idx in self.sorted_indices() {
@@ -377,7 +451,11 @@ impl ModelSelectionView {
                 Style::default().fg(crate::colors::text_dim()),
             ),
             Span::styled(
-                self.current_model.clone(),
+                if self.target.supports_follow_chat() && self.use_chat_model {
+                    "Follow Chat model".to_string()
+                } else {
+                    self.current_model.clone()
+                },
                 Style::default()
                     .fg(crate::colors::warning())
                     .add_modifier(Modifier::BOLD),
@@ -389,7 +467,11 @@ impl ModelSelectionView {
                 Style::default().fg(crate::colors::text_dim()),
             ),
             Span::styled(
-                format!("{}", self.current_effort),
+                if self.target.supports_follow_chat() && self.use_chat_model {
+                    "From chat".to_string()
+                } else {
+                    format!("{}", self.current_effort)
+                },
                 Style::default()
                     .fg(crate::colors::warning())
                     .add_modifier(Modifier::BOLD),
@@ -397,9 +479,50 @@ impl ModelSelectionView {
         ]));
         lines.push(Line::from(""));
 
+        if self.target.supports_follow_chat() {
+            let is_selected = self.selected_index == 0;
+            let mut label_style = Style::default().fg(crate::colors::text());
+            if is_selected {
+                label_style = label_style
+                    .bg(crate::colors::selection())
+                    .add_modifier(Modifier::BOLD);
+            }
+            let mut arrow_style = Style::default().fg(crate::colors::text_dim());
+            if is_selected {
+                arrow_style = label_style.clone();
+            }
+            let mut desc_style = Style::default().fg(crate::colors::text_dim());
+            if is_selected {
+                desc_style = desc_style
+                    .bg(crate::colors::selection())
+                    .add_modifier(Modifier::BOLD);
+            }
+            let mut status = String::new();
+            if self.use_chat_model {
+                status.push_str("(current)");
+            }
+            let arrow = if is_selected { "› " } else { "  " };
+            let mut spans = vec![
+                Span::styled(arrow, arrow_style),
+                Span::styled("Follow Chat Model", label_style),
+                Span::raw("  "),
+                Span::styled(
+                    "Uses the same model and reasoning as active chat",
+                    desc_style,
+                ),
+            ];
+            if !status.is_empty() {
+                spans.push(Span::raw(format!("  {}", status)));
+            }
+            lines.push(Line::from(spans));
+            lines.push(Line::from(""));
+        }
+
         let mut previous_model: Option<&str> = None;
-        for preset_index in self.sorted_indices() {
-            let flat_preset = &self.flat_presets[preset_index];
+        let entries = self.entries();
+        for (entry_idx, entry) in entries.iter().enumerate() {
+            let EntryKind::Preset(preset_index) = entry else { continue };
+            let flat_preset = &self.flat_presets[*preset_index];
             if previous_model
                 .map(|m| !m.eq_ignore_ascii_case(&flat_preset.model))
                 .unwrap_or(true)
@@ -422,8 +545,9 @@ impl ModelSelectionView {
                 previous_model = Some(&flat_preset.model);
             }
 
-            let is_selected = preset_index == self.selected_index;
-            let is_current = flat_preset.model.eq_ignore_ascii_case(&self.current_model)
+            let is_selected = entry_idx == self.selected_index;
+            let is_current = !self.use_chat_model
+                && flat_preset.model.eq_ignore_ascii_case(&self.current_model)
                 && flat_preset.effort == self.current_effort;
             let label = Self::effort_label(flat_preset.effort);
             let mut row_text = label.to_string();

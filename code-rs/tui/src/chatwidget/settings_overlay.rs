@@ -19,6 +19,7 @@ use crate::bottom_pane::{
     McpSettingsView,
     ModelSelectionView,
     NotificationsSettingsView,
+    PlanningSettingsView,
     SettingsSection,
     ThemeSelectionView,
     UpdateSettingsView,
@@ -187,9 +188,42 @@ pub(crate) struct ThemeSettingsContent {
     view: ThemeSelectionView,
 }
 
+pub(crate) struct PlanningSettingsContent {
+    view: PlanningSettingsView,
+}
+
 impl ThemeSettingsContent {
     pub(crate) fn new(view: ThemeSelectionView) -> Self {
         Self { view }
+    }
+}
+
+impl PlanningSettingsContent {
+    pub(crate) fn new(view: PlanningSettingsView) -> Self {
+        Self { view }
+    }
+
+    pub(crate) fn update_planning_model(&mut self, model: String, effort: ReasoningEffort) {
+        self.view.set_planning_model(model, effort);
+    }
+
+    pub(crate) fn set_use_chat_model(&mut self, use_chat: bool) {
+        self.view.set_use_chat_model(use_chat);
+    }
+}
+
+impl SettingsContent for PlanningSettingsContent {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        self.view.render(area, buf);
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) -> bool {
+        self.view.handle_key_event_direct(key);
+        true
+    }
+
+    fn is_complete(&self) -> bool {
+        self.view.is_complete()
     }
 }
 
@@ -277,6 +311,10 @@ impl ReviewSettingsContent {
 
     pub(crate) fn update_review_model(&mut self, model: String, effort: ReasoningEffort) {
         self.view.set_review_model(model, effort);
+    }
+
+    pub(crate) fn set_use_chat_model(&mut self, use_chat: bool) {
+        self.view.set_use_chat_model(use_chat);
     }
 }
 
@@ -1168,6 +1206,7 @@ pub(crate) struct SettingsOverlayView {
     last_section: SettingsSection,
     help: Option<SettingsHelpOverlay>,
     model_content: Option<ModelSettingsContent>,
+    planning_content: Option<PlanningSettingsContent>,
     theme_content: Option<ThemeSettingsContent>,
     updates_content: Option<UpdatesSettingsContent>,
     notifications_content: Option<NotificationsSettingsContent>,
@@ -1190,6 +1229,7 @@ impl SettingsOverlayView {
             last_section: section,
             help: None,
             model_content: None,
+            planning_content: None,
             theme_content: None,
             updates_content: None,
             notifications_content: None,
@@ -1261,6 +1301,10 @@ impl SettingsOverlayView {
         self.model_content = Some(content);
     }
 
+    pub(crate) fn set_planning_content(&mut self, content: PlanningSettingsContent) {
+        self.planning_content = Some(content);
+    }
+
     pub(crate) fn set_theme_content(&mut self, content: ThemeSettingsContent) {
         self.theme_content = Some(content);
     }
@@ -1316,6 +1360,10 @@ impl SettingsOverlayView {
 
     pub(crate) fn review_content_mut(&mut self) -> Option<&mut ReviewSettingsContent> {
         self.review_content.as_mut()
+    }
+
+    pub(crate) fn planning_content_mut(&mut self) -> Option<&mut PlanningSettingsContent> {
+        self.planning_content.as_mut()
     }
 
     pub(crate) fn auto_drive_content_mut(&mut self) -> Option<&mut AutoDriveSettingsContent> {
@@ -1764,6 +1812,7 @@ impl SettingsOverlayView {
         match section {
             SettingsSection::Model => "Select Model & Reasoning",
             SettingsSection::Theme => "Theme Settings",
+            SettingsSection::Planning => "Planning Settings",
             SettingsSection::Updates => "Upgrade",
             SettingsSection::Agents => "Agents",
             SettingsSection::AutoDrive => "Auto Drive Settings",
@@ -2056,6 +2105,13 @@ impl SettingsOverlayView {
                 }
                 self.render_placeholder(area, buf, SettingsSection::Model.placeholder());
             }
+            SettingsSection::Planning => {
+                if let Some(content) = self.planning_content.as_ref() {
+                    content.render(area, buf);
+                    return;
+                }
+                self.render_placeholder(area, buf, SettingsSection::Planning.placeholder());
+            }
             SettingsSection::Theme => {
                 if let Some(content) = self.theme_content.as_ref() {
                     content.render(area, buf);
@@ -2151,6 +2207,10 @@ impl SettingsOverlayView {
         match self.active_section() {
             SettingsSection::Model => self
                 .model_content
+                .as_mut()
+                .map(|content| content as &mut dyn SettingsContent),
+            SettingsSection::Planning => self
+                .planning_content
                 .as_mut()
                 .map(|content| content as &mut dyn SettingsContent),
             SettingsSection::Theme => self

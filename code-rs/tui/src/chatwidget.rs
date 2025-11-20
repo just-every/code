@@ -179,6 +179,7 @@ use crate::bottom_pane::{
     ThemeSelectionView,
     agent_editor_view::AgentEditorView,
     AutoDriveSettingsView,
+    PlanningSettingsView,
     UpdateSettingsView,
     ReviewSettingsView,
     ValidationSettingsView,
@@ -1235,6 +1236,7 @@ pub(crate) struct ChatWidget<'a> {
     context_last_sequence: Option<u64>,
     context_browser_sequence: Option<u64>,
     config: Config,
+    planning_restore: Option<(String, ReasoningEffort)>,
     history_debug_events: Option<RefCell<Vec<String>>>,
     latest_upgrade_version: Option<String>,
     initial_user_message: Option<UserMessage>,
@@ -1999,6 +2001,7 @@ use self::settings_overlay::{
     ChromeSettingsContent,
     McpSettingsContent,
     ModelSettingsContent,
+    PlanningSettingsContent,
     NotificationsSettingsContent,
     ReviewSettingsContent,
     ThemeSettingsContent,
@@ -4996,6 +4999,7 @@ impl ChatWidget<'_> {
             active_exec_cell: None,
             history_cells,
             config: config.clone(),
+            planning_restore: None,
             history_debug_events: if history_cell_logging_enabled() {
                 Some(RefCell::new(Vec::new()))
             } else {
@@ -5310,6 +5314,7 @@ impl ChatWidget<'_> {
             active_exec_cell: None,
             history_cells,
             config: config.clone(),
+            planning_restore: None,
             history_debug_events: if history_cell_logging_enabled() {
                 Some(RefCell::new(Vec::new()))
             } else {
@@ -13886,6 +13891,7 @@ impl ChatWidget<'_> {
         let auto_resolve_enabled = self.config.tui.review_auto_resolve;
         let attempts = self.configured_auto_resolve_re_reviews();
         let view = ReviewSettingsView::new(
+            self.config.review_use_chat_model,
             self.config.review_model.clone(),
             self.config.review_model_reasoning_effort,
             auto_resolve_enabled,
@@ -13893,6 +13899,16 @@ impl ChatWidget<'_> {
             self.app_event_tx.clone(),
         );
         ReviewSettingsContent::new(view)
+    }
+
+    fn build_planning_settings_content(&mut self) -> PlanningSettingsContent {
+        let view = PlanningSettingsView::new(
+            self.config.planning_use_chat_model,
+            self.config.planning_model.clone(),
+            self.config.planning_model_reasoning_effort,
+            self.app_event_tx.clone(),
+        );
+        PlanningSettingsContent::new(view)
     }
 
     fn build_github_settings_content(&mut self) -> GithubSettingsContent {
@@ -15222,8 +15238,11 @@ fi\n\
         self.config.auto_drive.continue_mode = auto_continue_to_config(continue_mode);
 
         if let Ok(home) = code_core::config::find_code_home() {
-            if let Err(err) =
-                code_core::config::set_auto_drive_settings(&home, &self.config.auto_drive)
+            if let Err(err) = code_core::config::set_auto_drive_settings(
+                &home,
+                &self.config.auto_drive,
+                self.config.auto_drive_use_chat_model,
+            )
             {
                 tracing::warn!("Failed to persist Auto Drive settings: {err}");
             }
@@ -18746,6 +18765,7 @@ Have we met every part of this goal and is there no further work to do?"#
             presets,
             self.config.model.clone(),
             self.config.model_reasoning_effort,
+            false,
             ModelSelectionTarget::Session,
         );
     }
@@ -18766,8 +18786,37 @@ Have we met every part of this goal and is there no further work to do?"#
             presets,
             self.config.review_model.clone(),
             self.config.review_model_reasoning_effort,
+            self.config.review_use_chat_model,
             ModelSelectionTarget::Review,
         );
+    }
+
+    pub(crate) fn show_planning_model_selector(&mut self) {
+        let presets = self.available_model_presets();
+        if presets.is_empty() {
+            self.bottom_pane.flash_footer_notice(
+                "No model presets are available for planning. Update configuration to define models."
+                    .to_string(),
+            );
+            return;
+        }
+        if self.settings.overlay.is_some() {
+            self.close_settings_overlay();
+        }
+        let current = if self.config.planning_use_chat_model {
+            self.config.model.clone()
+        } else {
+            self.config.planning_model.clone()
+        };
+        let effort = self.config.planning_model_reasoning_effort;
+        self.bottom_pane
+            .show_model_selection(
+                presets,
+                current,
+                effort,
+                self.config.planning_use_chat_model,
+                ModelSelectionTarget::Planning,
+            );
     }
 
     pub(crate) fn show_auto_drive_model_selector(&mut self) {
@@ -18786,6 +18835,7 @@ Have we met every part of this goal and is there no further work to do?"#
             presets,
             self.config.auto_drive.model.clone(),
             self.config.auto_drive.model_reasoning_effort,
+            self.config.auto_drive_use_chat_model,
             ModelSelectionTarget::AutoDrive,
         );
     }
@@ -18857,6 +18907,8 @@ Have we met every part of this goal and is there no further work to do?"#
             return;
         }
 
+        self.config.review_use_chat_model = false;
+
         let mut updated = false;
         if !self.config.review_model.eq_ignore_ascii_case(trimmed) {
             self.config.review_model = trimmed.to_string();
@@ -18879,6 +18931,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 &home,
                 &self.config.review_model,
                 self.config.review_model_reasoning_effort,
+                self.config.review_use_chat_model,
             ) {
                 Ok(_) => format!(
                     "Review model set to {} ({} reasoning)",
@@ -18907,6 +18960,232 @@ Have we met every part of this goal and is there no further work to do?"#
         self.request_redraw();
     }
 
+    pub(crate) fn set_review_use_chat_model(&mut self, use_chat: bool) {
+        if self.config.review_use_chat_model == use_chat {
+            return;
+        }
+        self.config.review_use_chat_model = use_chat;
+        if use_chat {
+            self.config.review_model = self.config.model.clone();
+            self.config.review_model_reasoning_effort = self.config.model_reasoning_effort;
+        }
+
+        if let Ok(home) = code_core::config::find_code_home() {
+            if let Err(err) = code_core::config::set_review_model(
+                &home,
+                &self.config.review_model,
+                self.config.review_model_reasoning_effort,
+                use_chat,
+            ) {
+                tracing::warn!("Failed to persist review use-chat toggle: {err}");
+            }
+        }
+
+        let notice = if use_chat {
+            "Review model now follows Chat model".to_string()
+        } else {
+            format!(
+                "Review model set to {} ({} reasoning)",
+                self.config.review_model,
+                Self::format_reasoning_effort(self.config.review_model_reasoning_effort)
+            )
+        };
+        self.bottom_pane.flash_footer_notice(notice);
+        self.update_review_settings_model_row();
+        self.refresh_settings_overview_rows();
+        self.request_redraw();
+    }
+
+    pub(crate) fn set_auto_drive_use_chat_model(&mut self, use_chat: bool) {
+        if self.config.auto_drive_use_chat_model == use_chat {
+            return;
+        }
+        self.config.auto_drive_use_chat_model = use_chat;
+        if use_chat {
+            self.config.auto_drive.model = self.config.model.clone();
+            self.config.auto_drive.model_reasoning_effort = self.config.model_reasoning_effort;
+        }
+
+        if let Ok(home) = code_core::config::find_code_home() {
+            if let Err(err) = code_core::config::set_auto_drive_settings(
+                &home,
+                &self.config.auto_drive,
+                use_chat,
+            ) {
+                tracing::warn!("Failed to persist Auto Drive use-chat toggle: {err}");
+            }
+        }
+
+        let notice = if use_chat {
+            "Auto Drive model now follows Chat model".to_string()
+        } else {
+            format!(
+                "Auto Drive model set to {} ({} reasoning)",
+                self.config.auto_drive.model,
+                Self::format_reasoning_effort(self.config.auto_drive.model_reasoning_effort)
+            )
+        };
+
+        self.bottom_pane.flash_footer_notice(notice);
+        self.refresh_settings_overview_rows();
+        self.update_auto_drive_settings_model_row();
+        self.request_redraw();
+    }
+
+    pub(crate) fn apply_planning_model_selection(
+        &mut self,
+        model: String,
+        effort: ReasoningEffort,
+    ) {
+        let trimmed = model.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+
+        self.config.planning_use_chat_model = false;
+
+        let mut updated = false;
+        if !self.config.planning_model.eq_ignore_ascii_case(trimmed) {
+            self.config.planning_model = trimmed.to_string();
+            updated = true;
+        }
+        if self.config.planning_model_reasoning_effort != effort {
+            self.config.planning_model_reasoning_effort = effort;
+            updated = true;
+        }
+
+        if !updated {
+            self.bottom_pane
+                .flash_footer_notice("Planning model unchanged.".to_string());
+            return;
+        }
+
+        if let Ok(home) = code_core::config::find_code_home() {
+            if let Err(err) = code_core::config::set_planning_model(
+                &home,
+                &self.config.planning_model,
+                self.config.planning_model_reasoning_effort,
+                false,
+            ) {
+                tracing::warn!("Failed to persist planning model: {err}");
+            }
+        }
+
+        self.bottom_pane.flash_footer_notice(format!(
+            "Planning model set to {} ({} reasoning)",
+            self.config.planning_model,
+            Self::format_reasoning_effort(self.config.planning_model_reasoning_effort)
+        ));
+        self.refresh_settings_overview_rows();
+        self.update_planning_settings_model_row();
+        // If we're currently in plan mode, switch the session model immediately.
+        if matches!(self.config.sandbox_policy, code_core::protocol::SandboxPolicy::ReadOnly) {
+            self.apply_planning_session_model();
+        }
+        self.request_redraw();
+    }
+
+    fn apply_planning_session_model(&mut self) {
+        if self.config.planning_use_chat_model {
+            self.restore_planning_session_model();
+            return;
+        }
+
+        // If we're already on the planning model, do nothing.
+        if self.config.model.eq_ignore_ascii_case(&self.config.planning_model)
+            && self.config.model_reasoning_effort == self.config.planning_model_reasoning_effort
+        {
+            return;
+        }
+
+        // Save current chat model to restore later.
+        self.planning_restore = Some((
+            self.config.model.clone(),
+            self.config.model_reasoning_effort,
+        ));
+
+        self.config.model = self.config.planning_model.clone();
+        self.config.model_reasoning_effort = self.config.planning_model_reasoning_effort;
+
+        let op = Op::ConfigureSession {
+            provider: self.config.model_provider.clone(),
+            model: self.config.model.clone(),
+            model_reasoning_effort: self.config.model_reasoning_effort,
+            model_reasoning_summary: self.config.model_reasoning_summary,
+            model_text_verbosity: self.config.model_text_verbosity,
+            user_instructions: self.config.user_instructions.clone(),
+            base_instructions: self.config.base_instructions.clone(),
+            approval_policy: self.config.approval_policy.clone(),
+            sandbox_policy: self.config.sandbox_policy.clone(),
+            disable_response_storage: self.config.disable_response_storage,
+            notify: self.config.notify.clone(),
+            cwd: self.config.cwd.clone(),
+            resume_path: None,
+        };
+        self.submit_op(op);
+    }
+
+    fn restore_planning_session_model(&mut self) {
+        if let Some((model, effort)) = self.planning_restore.take() {
+            self.config.model = model;
+            self.config.model_reasoning_effort = effort;
+
+            let op = Op::ConfigureSession {
+                provider: self.config.model_provider.clone(),
+                model: self.config.model.clone(),
+                model_reasoning_effort: self.config.model_reasoning_effort,
+                model_reasoning_summary: self.config.model_reasoning_summary,
+                model_text_verbosity: self.config.model_text_verbosity,
+                user_instructions: self.config.user_instructions.clone(),
+                base_instructions: self.config.base_instructions.clone(),
+                approval_policy: self.config.approval_policy.clone(),
+                sandbox_policy: self.config.sandbox_policy.clone(),
+                disable_response_storage: self.config.disable_response_storage,
+                notify: self.config.notify.clone(),
+                cwd: self.config.cwd.clone(),
+                resume_path: None,
+            };
+            self.submit_op(op);
+        }
+    }
+
+    pub(crate) fn set_planning_use_chat_model(&mut self, use_chat: bool) {
+        if self.config.planning_use_chat_model == use_chat {
+            return;
+        }
+        self.config.planning_use_chat_model = use_chat;
+
+        if let Ok(home) = code_core::config::find_code_home() {
+            if let Err(err) = code_core::config::set_planning_model(
+                &home,
+                &self.config.planning_model,
+                self.config.planning_model_reasoning_effort,
+                use_chat,
+            ) {
+                tracing::warn!("Failed to persist planning use-chat toggle: {err}");
+            }
+        }
+
+        if use_chat {
+            self.bottom_pane
+                .flash_footer_notice("Planning model now follows Chat model".to_string());
+        } else {
+            self.bottom_pane.flash_footer_notice(format!(
+                "Planning model set to {} ({} reasoning)",
+                self.config.planning_model,
+                Self::format_reasoning_effort(self.config.planning_model_reasoning_effort)
+            ));
+        }
+
+        self.update_planning_settings_model_row();
+        self.refresh_settings_overview_rows();
+
+        if matches!(self.config.sandbox_policy, code_core::protocol::SandboxPolicy::ReadOnly) {
+            self.apply_planning_session_model();
+        }
+        self.request_redraw();
+    }
+
     pub(crate) fn apply_auto_drive_model_selection(
         &mut self,
         model: String,
@@ -18916,6 +19195,8 @@ Have we met every part of this goal and is there no further work to do?"#
         if trimmed.is_empty() {
             return;
         }
+
+        self.config.auto_drive_use_chat_model = false;
 
         let mut updated = false;
         if !self.config.auto_drive.model.eq_ignore_ascii_case(trimmed) {
@@ -18935,7 +19216,11 @@ Have we met every part of this goal and is there no further work to do?"#
         }
 
         let message = if let Ok(home) = code_core::config::find_code_home() {
-            match code_core::config::set_auto_drive_settings(&home, &self.config.auto_drive) {
+            match code_core::config::set_auto_drive_settings(
+                &home,
+                &self.config.auto_drive,
+                self.config.auto_drive_use_chat_model,
+            ) {
                 Ok(_) => format!(
                     "Auto Drive model set to {} ({} reasoning)",
                     self.config.auto_drive.model,
@@ -19002,6 +19287,7 @@ Have we met every part of this goal and is there no further work to do?"#
             presets,
             self.config.model.clone(),
             self.config.model_reasoning_effort,
+            false,
             ModelSelectionTarget::Session,
         );
             return;
@@ -19309,6 +19595,7 @@ Have we met every part of this goal and is there no further work to do?"#
 
         let mut overlay = SettingsOverlayView::new(initial_section);
         overlay.set_model_content(self.build_model_settings_content());
+        overlay.set_planning_content(self.build_planning_settings_content());
         overlay.set_theme_content(self.build_theme_settings_content());
         if let Some(update_content) = self.build_updates_settings_content() {
             overlay.set_updates_content(update_content);
@@ -19360,6 +19647,7 @@ Have we met every part of this goal and is there no further work to do?"#
             presets,
             current_model,
             current_effort,
+            false,
             ModelSelectionTarget::Session,
             self.app_event_tx.clone(),
         );
@@ -19666,6 +19954,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 let summary = match section {
                     SettingsSection::Model => self.settings_summary_model(),
                     SettingsSection::Theme => self.settings_summary_theme(),
+                    SettingsSection::Planning => self.settings_summary_planning(),
                     SettingsSection::Updates => self.settings_summary_updates(),
                     SettingsSection::Agents => self.settings_summary_agents(),
                     SettingsSection::AutoDrive => self.settings_summary_auto_drive(),
@@ -19703,6 +19992,22 @@ Have we met every part of this goal and is there no further work to do?"#
             parts.push(format!("Profile: {}", profile));
         }
         Some(parts.join(" · "))
+    }
+
+    fn settings_summary_planning(&self) -> Option<String> {
+        if self.config.planning_use_chat_model {
+            return Some("Model: Follow Chat model".to_string());
+        }
+        let model = self.config.planning_model.trim();
+        let model_display_storage;
+        let model_display = if model.is_empty() {
+            "(default)"
+        } else {
+            model_display_storage = Self::format_model_label(model);
+            &model_display_storage
+        };
+        let effort = Self::format_reasoning_effort(self.config.planning_model_reasoning_effort);
+        Some(format!("Model: {} ({})", model_display, effort))
     }
 
     fn settings_summary_theme(&self) -> Option<String> {
@@ -19752,16 +20057,25 @@ Have we met every part of this goal and is there no further work to do?"#
     fn settings_summary_auto_drive(&self) -> Option<String> {
         let diagnostics_enabled = self.auto_state.qa_automation_enabled
             && (self.auto_state.review_enabled || self.auto_state.cross_check_enabled);
-        let model_label = if self.config.auto_drive.model.trim().is_empty() {
-            "(default)".to_string()
+        let (model_text, effort_text) = if self.config.auto_drive_use_chat_model {
+            ("Follow Chat model".to_string(), None)
         } else {
-            Self::format_model_label(&self.config.auto_drive.model)
+            let model_label = if self.config.auto_drive.model.trim().is_empty() {
+                "(default)".to_string()
+            } else {
+                Self::format_model_label(&self.config.auto_drive.model)
+            };
+            let effort = Self::format_reasoning_effort(self.config.auto_drive.model_reasoning_effort);
+            (model_label, Some(effort))
         };
-        let effort = Self::format_reasoning_effort(self.config.auto_drive.model_reasoning_effort);
+        let model_segment = if let Some(effort) = effort_text {
+            format!("Model: {} ({})", model_text, effort)
+        } else {
+            format!("Model: {}", model_text)
+        };
         Some(format!(
-            "Model: {} ({}) · Agents: {} · Diagnostics: {} · Continue: {}",
-            model_label,
-            effort,
+            "{} · Agents: {} · Diagnostics: {} · Continue: {}",
+            model_segment,
             Self::on_off_label(self.auto_state.subagents_enabled),
             Self::on_off_label(diagnostics_enabled),
             self.auto_state.continue_mode.label()
@@ -19788,17 +20102,21 @@ Have we met every part of this goal and is there no further work to do?"#
         } else {
             format!("Auto Resolve: On (max {} re-reviews)", attempts)
         };
-        let model = self.config.review_model.trim();
-        let model_display = if model.is_empty() {
-            "(not set)".to_string()
+        let model_part = if self.config.review_use_chat_model {
+            "Model: Follow Chat model".to_string()
         } else {
-            Self::format_model_label(model)
+            let model = self.config.review_model.trim();
+            let model_display = if model.is_empty() {
+                "(not set)".to_string()
+            } else {
+                Self::format_model_label(model)
+            };
+            format!(
+                "Model: {} ({})",
+                model_display,
+                Self::format_reasoning_effort(self.config.review_model_reasoning_effort)
+            )
         };
-        let model_part = format!(
-            "Model: {} ({})",
-            model_display,
-            Self::format_reasoning_effort(self.config.review_model_reasoning_effort)
-        );
         Some(format!("{} · {}", model_part, auto_label))
     }
 
@@ -19976,6 +20294,7 @@ Have we met every part of this goal and is there no further work to do?"#
         let handled = match section {
             SettingsSection::Model
             | SettingsSection::Theme
+            | SettingsSection::Planning
             | SettingsSection::Updates
             | SettingsSection::Review
             | SettingsSection::Validation
@@ -20176,6 +20495,13 @@ Have we met every part of this goal and is there no further work to do?"#
                 SandboxPolicy::DangerFullAccess,
             ),
         };
+
+        // Apply planning model when entering plan mode; restore when leaving it.
+        if next == 0 {
+            self.apply_planning_session_model();
+        } else if idx == 0 {
+            self.restore_planning_session_model();
+        }
 
         // Update local config
         self.config.approval_policy = approval;
@@ -27938,7 +28264,11 @@ impl ChatWidget<'_> {
         }
 
         let message = if let Ok(home) = code_core::config::find_code_home() {
-            match code_core::config::set_auto_drive_settings(&home, &self.config.auto_drive) {
+            match code_core::config::set_auto_drive_settings(
+                &home,
+                &self.config.auto_drive,
+                self.config.auto_drive_use_chat_model,
+            ) {
                 Ok(_) => {
                     tracing::info!(
                         "Persisted auto resolve attempt limit: {}",
@@ -27971,6 +28301,19 @@ impl ChatWidget<'_> {
                     self.config.review_model.clone(),
                     self.config.review_model_reasoning_effort,
                 );
+                content.set_use_chat_model(self.config.review_use_chat_model);
+            }
+        }
+    }
+
+    fn update_planning_settings_model_row(&mut self) {
+        if let Some(overlay) = self.settings.overlay.as_mut() {
+            if let Some(content) = overlay.planning_content_mut() {
+                content.update_planning_model(
+                    self.config.planning_model.clone(),
+                    self.config.planning_model_reasoning_effort,
+                );
+                content.set_use_chat_model(self.config.planning_use_chat_model);
             }
         }
     }

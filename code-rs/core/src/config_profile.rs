@@ -11,6 +11,9 @@ use crate::protocol::AskForApproval;
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct ConfigProfile {
     pub model: Option<String>,
+    pub planning_model: Option<String>,
+    pub planning_model_reasoning_effort: Option<ReasoningEffort>,
+    pub planning_use_chat_model: Option<bool>,
     pub review_model: Option<String>,
     /// The key in the `model_providers` map identifying the
     /// [`ModelProviderInfo`] to use.
@@ -19,6 +22,7 @@ pub struct ConfigProfile {
     pub disable_response_storage: Option<bool>,
     pub model_reasoning_effort: Option<ReasoningEffort>,
     pub review_model_reasoning_effort: Option<ReasoningEffort>,
+    pub review_use_chat_model: Option<bool>,
     pub model_reasoning_summary: Option<ReasoningSummary>,
     pub model_text_verbosity: Option<TextVerbosity>,
     pub chatgpt_base_url: Option<String>,
