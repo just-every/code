@@ -20000,6 +20000,7 @@ Have we met every part of this goal and is there no further work to do?"#
         SettingsSection::ALL
             .iter()
             .copied()
+            .filter(|section| !matches!(section, SettingsSection::Github))
             .map(|section| {
                 let summary = match section {
                     SettingsSection::Model => self.settings_summary_model(),
@@ -20010,7 +20011,7 @@ Have we met every part of this goal and is there no further work to do?"#
                     SettingsSection::AutoDrive => self.settings_summary_auto_drive(),
                     SettingsSection::Review => self.settings_summary_review(),
                     SettingsSection::Validation => self.settings_summary_validation(),
-                    SettingsSection::Github => self.settings_summary_github(),
+                    SettingsSection::Github => None,
                     SettingsSection::Limits => self.settings_summary_limits(),
                     SettingsSection::Chrome => self.settings_summary_chrome(),
                     SettingsSection::Mcp => self.settings_summary_mcp(),
@@ -20168,13 +20169,6 @@ Have we met every part of this goal and is there no further work to do?"#
             )
         };
         Some(format!("{} · {}", model_part, auto_label))
-    }
-
-    fn settings_summary_github(&self) -> Option<String> {
-        Some(format!(
-            "Workflows on push: {}",
-            if self.config.github.check_workflows_on_push { "On" } else { "Off" }
-        ))
     }
 
     fn settings_summary_limits(&self) -> Option<String> {

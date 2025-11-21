@@ -2121,6 +2121,16 @@ fn popular_commands_lines(_latest_version: Option<&str>) -> Vec<Line<'static>> {
         ),
     ]));
     lines.push(Line::from(vec![
+        Span::styled("/push", Style::default().fg(crate::colors::primary())),
+        Span::from(" - "),
+        Span::from(SlashCommand::Push.description())
+            .style(Style::default().add_modifier(Modifier::DIM)),
+        Span::styled(
+            " NEW",
+            Style::default().fg(crate::colors::primary()),
+        ),
+    ]));
+    lines.push(Line::from(vec![
         Span::styled("/auto", Style::default().fg(crate::colors::primary())),
         Span::from(" - "),
         Span::from(SlashCommand::Auto.description())
