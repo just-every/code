@@ -24712,7 +24712,7 @@ Have we met every part of this goal and is there no further work to do?"#
                     Style::default().fg(crate::colors::text_dim()),
                 ));
                 spans.push(Span::styled(
-                    format!("{}", self.config.model_reasoning_effort),
+                    Self::format_reasoning_effort(self.config.model_reasoning_effort),
                     Style::default().fg(crate::colors::info()),
                 ));
             }
