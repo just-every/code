@@ -1017,10 +1017,7 @@ pub fn set_review_model(
     };
 
     doc["review_use_chat_model"] = toml_edit::value(use_chat_model);
-    if use_chat_model {
-        doc.remove("review_model");
-        doc.remove("review_model_reasoning_effort");
-    } else {
+    if !use_chat_model {
         doc["review_model"] = toml_edit::value(trimmed);
         doc["review_model_reasoning_effort"] =
             toml_edit::value(effort.to_string().to_ascii_lowercase());
@@ -1051,10 +1048,7 @@ pub fn set_planning_model(
     };
 
     doc["planning_use_chat_model"] = toml_edit::value(use_chat_model);
-    if use_chat_model {
-        doc.remove("planning_model");
-        doc.remove("planning_model_reasoning_effort");
-    } else {
+    if !use_chat_model {
         let trimmed = model.trim();
         if trimmed.is_empty() {
             return Err(anyhow::anyhow!("planning model cannot be empty"));
@@ -1734,8 +1728,7 @@ pub struct ConfigToml {
     /// Reasoning effort override used for the planning model.
     pub planning_model_reasoning_effort: Option<ReasoningEffort>,
     /// Inherit chat model for planning mode when true.
-    #[serde(default)]
-    pub planning_use_chat_model: bool,
+    pub planning_use_chat_model: Option<bool>,
     /// Review model override used by the `/review` feature.
     pub review_model: Option<String>,
     /// Reasoning effort override used for the review model.
@@ -2340,6 +2333,12 @@ impl Config {
         let model_family =
             find_family_for_model(&model).unwrap_or_else(|| derive_default_model_family(&model));
 
+        // Chat model reasoning effort (used when other flows follow the chat model).
+        let chat_reasoning_effort = config_profile
+            .model_reasoning_effort
+            .or(cfg.model_reasoning_effort)
+            .unwrap_or(ReasoningEffort::Medium);
+
         let openai_model_info = get_model_info(&model_family);
         let model_context_window = cfg
             .model_context_window
@@ -2459,7 +2458,7 @@ impl Config {
 
         let planning_use_chat_model = config_profile
             .planning_use_chat_model
-            .or(Some(cfg.planning_use_chat_model))
+            .or(cfg.planning_use_chat_model)
             .unwrap_or_else(|| {
                 config_profile.planning_model.is_none() && cfg.planning_model.is_none()
             });
@@ -2471,14 +2470,14 @@ impl Config {
                 .or(cfg.planning_model)
                 .unwrap_or_else(|| model.clone())
         };
-        let planning_model_reasoning_effort = config_profile
-            .planning_model_reasoning_effort
-            .or(cfg.planning_model_reasoning_effort)
-            .unwrap_or_else(|| {
-                config_profile
-                    .model_reasoning_effort
-                    .unwrap_or(ReasoningEffort::Medium)
-            });
+        let planning_model_reasoning_effort = if planning_use_chat_model {
+            chat_reasoning_effort
+        } else {
+            config_profile
+                .planning_model_reasoning_effort
+                .or(cfg.planning_model_reasoning_effort)
+                .unwrap_or(chat_reasoning_effort)
+        };
 
         let review_use_chat_model = config_profile
             .review_use_chat_model
@@ -2489,8 +2488,23 @@ impl Config {
         } else {
             review_model
         };
+        let review_model_reasoning_effort = if review_use_chat_model {
+            chat_reasoning_effort
+        } else {
+            review_model_reasoning_effort
+        };
 
         let auto_drive_use_chat_model = cfg.auto_drive_use_chat_model.unwrap_or(false);
+
+        let mut auto_drive = cfg
+            .auto_drive
+            .clone()
+            .or_else(|| cfg.tui.as_ref().and_then(|t| t.auto_drive.clone()))
+            .unwrap_or_default();
+        if auto_drive_use_chat_model {
+            auto_drive.model = model.clone();
+            auto_drive.model_reasoning_effort = chat_reasoning_effort;
+        }
 
         let config = Self {
             model,
@@ -2547,11 +2561,7 @@ impl Config {
             history,
             file_opener: cfg.file_opener.unwrap_or(UriBasedFileOpener::VsCode),
             tui: cfg.tui.clone().unwrap_or_default(),
-            auto_drive: cfg
-                .auto_drive
-                .clone()
-                .or_else(|| cfg.tui.as_ref().and_then(|t| t.auto_drive.clone()))
-                .unwrap_or_default(),
+            auto_drive,
             auto_drive_use_chat_model,
             code_linux_sandbox_exe,
             active_profile: active_profile_name,
@@ -2561,10 +2571,7 @@ impl Config {
                 .show_raw_agent_reasoning
                 .or(show_raw_agent_reasoning)
                 .unwrap_or(false),
-            model_reasoning_effort: config_profile
-                .model_reasoning_effort
-                .or(cfg.model_reasoning_effort)
-                .unwrap_or(ReasoningEffort::Medium),
+            model_reasoning_effort: chat_reasoning_effort,
             model_reasoning_summary: config_profile
                 .model_reasoning_summary
                 .or(cfg.model_reasoning_summary)
@@ -3601,6 +3608,157 @@ model_verbosity = "high"
             &gpt5_profile_config.model_providers
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn planning_defaults_to_chat_model_when_not_overridden() -> std::io::Result<()> {
+        let fixture = create_test_fixture()?;
+
+        let overrides = ConfigOverrides {
+            cwd: Some(fixture.cwd()),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            fixture.cfg.clone(),
+            overrides,
+            fixture.code_home(),
+        )?;
+
+        assert!(config.planning_use_chat_model);
+        assert_eq!(config.planning_model, config.model);
+        assert_eq!(config.planning_model_reasoning_effort, config.model_reasoning_effort);
+        Ok(())
+    }
+
+    #[test]
+    fn planning_follow_chat_overrides_reasoning_override() -> std::io::Result<()> {
+        let fixture = create_test_fixture()?;
+        let mut cfg = fixture.cfg.clone();
+        cfg.planning_use_chat_model = Some(true);
+        cfg.planning_model_reasoning_effort = Some(ReasoningEffort::High);
+        cfg.model_reasoning_effort = Some(ReasoningEffort::Low);
+
+        let overrides = ConfigOverrides {
+            cwd: Some(fixture.cwd()),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            overrides,
+            fixture.code_home(),
+        )?;
+
+        assert!(config.planning_use_chat_model);
+        assert_eq!(config.planning_model, config.model);
+        assert_eq!(config.model_reasoning_effort, ReasoningEffort::Low);
+        assert_eq!(config.planning_model_reasoning_effort, ReasoningEffort::Low);
+        Ok(())
+    }
+
+    #[test]
+    fn review_follow_chat_preserves_override_on_toggle() -> anyhow::Result<()> {
+        let code_home = tempfile::TempDir::new()?;
+        std::fs::write(
+            code_home.path().join(CONFIG_TOML_FILE),
+            format!(
+                "review_model = \"custom-review\"\nreview_model_reasoning_effort = \"{}\"\n",
+                ReasoningEffort::High.to_string().to_ascii_lowercase()
+            ),
+        )?;
+
+        set_review_model(
+            code_home.path(),
+            "chat-model-unused",
+            ReasoningEffort::Low,
+            true,
+        )?;
+
+        let written = std::fs::read_to_string(code_home.path().join(CONFIG_TOML_FILE))?;
+        let parsed: ConfigToml = toml::from_str(&written)?;
+
+        assert!(parsed.review_use_chat_model);
+        assert_eq!(parsed.review_model.as_deref(), Some("custom-review"));
+        assert_eq!(parsed.review_model_reasoning_effort, Some(ReasoningEffort::High));
+        Ok(())
+    }
+
+    #[test]
+    fn planning_follow_chat_preserves_override_on_toggle() -> anyhow::Result<()> {
+        let code_home = tempfile::TempDir::new()?;
+        std::fs::write(
+            code_home.path().join(CONFIG_TOML_FILE),
+            format!(
+                "planning_model = \"custom-plan\"\nplanning_model_reasoning_effort = \"{}\"\n",
+                ReasoningEffort::High.to_string().to_ascii_lowercase()
+            ),
+        )?;
+
+        set_planning_model(
+            code_home.path(),
+            "chat-model-unused",
+            ReasoningEffort::Low,
+            true,
+        )?;
+
+        let written = std::fs::read_to_string(code_home.path().join(CONFIG_TOML_FILE))?;
+        let parsed: ConfigToml = toml::from_str(&written)?;
+
+        assert!(parsed.planning_use_chat_model.unwrap_or(false));
+        assert_eq!(parsed.planning_model.as_deref(), Some("custom-plan"));
+        assert_eq!(
+            parsed.planning_model_reasoning_effort,
+            Some(ReasoningEffort::High)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn auto_drive_follow_chat_model_applied_on_load() -> std::io::Result<()> {
+        let fixture = create_test_fixture()?;
+        let mut cfg = fixture.cfg.clone();
+        cfg.auto_drive_use_chat_model = Some(true);
+
+        let overrides = ConfigOverrides {
+            cwd: Some(fixture.cwd()),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            overrides,
+            fixture.code_home(),
+        )?;
+
+        assert!(config.auto_drive_use_chat_model);
+        assert_eq!(config.auto_drive.model, config.model);
+        assert_eq!(config.auto_drive.model_reasoning_effort, config.model_reasoning_effort);
+        Ok(())
+    }
+
+    #[test]
+    fn review_follow_chat_model_applies_reasoning_on_load() -> std::io::Result<()> {
+        let fixture = create_test_fixture()?;
+        let mut cfg = fixture.cfg.clone();
+        cfg.review_use_chat_model = true;
+        cfg.review_model_reasoning_effort = Some(ReasoningEffort::High);
+
+        let overrides = ConfigOverrides {
+            cwd: Some(fixture.cwd()),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            overrides,
+            fixture.code_home(),
+        )?;
+
+        assert!(config.review_use_chat_model);
+        assert_eq!(config.review_model, config.model);
+        assert_eq!(config.review_model_reasoning_effort, config.model_reasoning_effort);
         Ok(())
     }
 

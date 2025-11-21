@@ -8,6 +8,8 @@ pub(crate) struct AnimatedWelcomeCell {
     fade_start: RefCell<Option<Instant>>,
     faded_out: Cell<bool>,
     locked_height: Cell<Option<u16>>,
+    variant: Cell<Option<crate::glitch_animation::IntroArtSize>>,
+    version_label: String,
     hidden: Cell<bool>,
 }
 
@@ -19,6 +21,8 @@ impl AnimatedWelcomeCell {
             fade_start: RefCell::new(None),
             faded_out: Cell::new(false),
             locked_height: Cell::new(None),
+            variant: Cell::new(None),
+            version_label: format!("v{}", code_version::version()),
             hidden: Cell::new(false),
         }
     }
@@ -40,6 +44,19 @@ impl AnimatedWelcomeCell {
 
     pub(crate) fn should_remove(&self) -> bool {
         self.faded_out.get()
+    }
+
+    fn ensure_variant(&self, width: u16) -> crate::glitch_animation::IntroArtSize {
+        if let Some(v) = self.variant.get() {
+            return v;
+        }
+        let chosen = crate::glitch_animation::intro_art_size_for_width(width);
+        self.variant.set(Some(chosen));
+        if self.locked_height.get().is_none() {
+            let h = crate::glitch_animation::intro_art_height(chosen);
+            self.locked_height.set(Some(h));
+        }
+        chosen
     }
 }
 
@@ -69,16 +86,8 @@ impl HistoryCell for AnimatedWelcomeCell {
         if let Some(h) = self.locked_height.get() {
             return h.saturating_add(3);
         }
-
-        let cols: u16 = 23;
-        let base_rows: u16 = 7;
-        let max_scale: u16 = 3;
-        let scale = if width >= cols {
-            (width / cols).min(max_scale).max(1)
-        } else {
-            1
-        };
-        let h = base_rows.saturating_mul(scale);
+        let variant = self.ensure_variant(width);
+        let h = crate::glitch_animation::intro_art_height(variant);
         self.locked_height.set(Some(h));
         h.saturating_add(3)
     }
@@ -92,7 +101,27 @@ impl HistoryCell for AnimatedWelcomeCell {
             return;
         }
 
-        let locked_h = self.locked_height.get().unwrap_or(21);
+        let current_variant = crate::glitch_animation::intro_art_size_for_area(area.width, area.height);
+        let variant_changed = self.variant.get() != Some(current_variant);
+        if variant_changed {
+            self.variant.set(Some(current_variant));
+            self.locked_height
+                .set(Some(crate::glitch_animation::intro_art_height(current_variant)));
+            *self.fade_start.borrow_mut() = None;
+            self.faded_out.set(false);
+            self.completed.set(true);
+        } else if self.variant.get().is_none() {
+            self.variant.set(Some(current_variant));
+            self.locked_height
+                .set(Some(crate::glitch_animation::intro_art_height(current_variant)));
+        }
+
+        let variant_for_render = current_variant;
+
+        let locked_h = self
+            .locked_height
+            .get()
+            .unwrap_or_else(|| crate::glitch_animation::intro_art_height(current_variant));
         let height = locked_h.min(area.height);
         let positioned_area = Rect {
             x: area.x,
@@ -108,11 +137,13 @@ impl HistoryCell for AnimatedWelcomeCell {
             if fade_elapsed < fade_duration && !self.faded_out.get() {
                 let fade_progress = fade_elapsed.as_secs_f32() / fade_duration.as_secs_f32();
                 let alpha = 1.0 - fade_progress;
-                crate::glitch_animation::render_intro_animation_with_alpha(
+                crate::glitch_animation::render_intro_animation_with_size_and_alpha(
                     positioned_area,
                     buf,
                     1.0,
                     alpha,
+                    current_variant,
+                    &self.version_label,
                 );
             } else {
                 self.faded_out.set(true);
@@ -120,15 +151,25 @@ impl HistoryCell for AnimatedWelcomeCell {
             return;
         }
 
-        let elapsed = self.start_time.elapsed();
         let animation_duration = Duration::from_secs(2);
-        if elapsed < animation_duration && !self.completed.get() {
-            let progress = elapsed.as_secs_f32() / animation_duration.as_secs_f32();
-            crate::glitch_animation::render_intro_animation(positioned_area, buf, progress);
+
+        let elapsed = self.start_time.elapsed();
+        let progress = if variant_changed {
+            1.0
+        } else if elapsed < animation_duration && !self.completed.get() {
+            elapsed.as_secs_f32() / animation_duration.as_secs_f32()
         } else {
             self.completed.set(true);
-            crate::glitch_animation::render_intro_animation(positioned_area, buf, 1.0);
-        }
+            1.0
+        };
+
+        crate::glitch_animation::render_intro_animation_with_size(
+            positioned_area,
+            buf,
+            progress,
+            variant_for_render,
+            &self.version_label,
+        );
     }
 
     fn is_animating(&self) -> bool {
