@@ -16,7 +16,6 @@ use super::BottomPane;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum PlanningRow {
-    FollowChat,
     CustomModel,
 }
 
@@ -62,17 +61,11 @@ impl PlanningSettingsView {
     }
 
     fn rows(&self) -> Vec<PlanningRow> {
-        vec![PlanningRow::FollowChat, PlanningRow::CustomModel]
+        vec![PlanningRow::CustomModel]
     }
 
     fn handle_enter(&mut self, row: PlanningRow) {
         match row {
-            PlanningRow::FollowChat => {
-                self.use_chat_model = true;
-                let _ = self
-                    .app_event_tx
-                    .send(AppEvent::UpdatePlanningUseChatModel(true));
-            }
             PlanningRow::CustomModel => {
                 if self.use_chat_model {
                     self.use_chat_model = false;
@@ -94,32 +87,6 @@ impl PlanningSettingsView {
         };
 
         match row {
-            PlanningRow::FollowChat => {
-                let label_style = if selected {
-                    Style::default()
-                        .fg(colors::primary())
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(colors::text()).add_modifier(Modifier::BOLD)
-                };
-                let status = if self.use_chat_model {
-                    Span::styled("Active", Style::default().fg(colors::success()))
-                } else {
-                    Span::styled("Select to follow chat model", Style::default().fg(colors::text_dim()))
-                };
-                let mut spans = vec![
-                    Span::styled(arrow, arrow_style),
-                    Span::styled("Follow Chat Mode", label_style),
-                    Span::raw("  "),
-                    status,
-                ];
-                spans.push(Span::raw("  "));
-                spans.push(Span::styled(
-                    "Uses the same model and reasoning as active chat",
-                    Style::default().fg(colors::text_dim()),
-                ));
-                Line::from(spans)
-            }
             PlanningRow::CustomModel => {
                 let label_style = if selected {
                     Style::default()
@@ -138,7 +105,7 @@ impl PlanningSettingsView {
                 let (value_text, hint_text) = if self.use_chat_model {
                     (
                         "Follow Chat Mode".to_string(),
-                        Some("Select to choose a custom planning model".to_string()),
+                        Some("Enter to change".to_string()),
                     )
                 } else {
                     (
@@ -152,7 +119,7 @@ impl PlanningSettingsView {
                 };
                 let mut spans = vec![
                     Span::styled(arrow, arrow_style),
-                    Span::styled("Custom planning model", label_style),
+                    Span::styled("Planning model", label_style),
                     Span::raw("  "),
                     Span::styled(value_text, value_style),
                 ];
