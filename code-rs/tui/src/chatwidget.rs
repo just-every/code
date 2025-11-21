@@ -10878,6 +10878,13 @@ impl ChatWidget<'_> {
         }
 
         if conversation_rewind_requested {
+            // Ensure Auto Drive state does not point at the old session after a conversation rewind.
+            // If we leave it active, subsequent user messages may be routed to a stale coordinator
+            // handle and appear to "not go through".
+            self.auto_stop(Some("Auto Drive reset after /undo restore.".to_string()));
+            self.auto_handle = None;
+            self.auto_history.clear();
+
             // Conversation rewind will reload the chat widget via AppEvent::JumpBack.
             self.reset_after_conversation_restore();
         }
