@@ -1,6 +1,6 @@
-# Code TUI Theme Configuration
+# Every Code TUI Theme Configuration
 
-The Code TUI now supports customizable color themes! You can use predefined themes or create your own custom color scheme.
+The Every Code TUI now supports customizable color themes! You can use predefined themes or create your own custom color scheme.
 
 ## Configuration
 

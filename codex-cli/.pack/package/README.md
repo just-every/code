@@ -1,18 +1,19 @@
-# CODE
+# EVERY CODE (Code)
 
 &ensp;
 
 <p align="center">
-  <img src="docs/logo.png" alt="Code Logo" width="400">
+  <img src="docs/logo.png" alt="Every Code Logo" width="400">
 </p>
 
 &ensp;
 
-**Code** is a fast, local coding agent for your terminal. It's a community-driven fork of `openai/codex` focused on real developer ergonomics: Browser integration, multi-agents, theming, and reasoning control — all while staying compatible with upstream.
+**Every Code** (Code for short) is a fast, local coding agent for your terminal. It's a community-driven fork of `openai/codex` focused on real developer ergonomics: Browser integration, multi-agents, theming, and reasoning control — all while staying compatible with upstream.
 
 &ensp;
-## What's new in v0.4.0 (October 26, 2025)
+## What's new in v0.5.0 (November 2025)
 
+- **Renamed to Every Code** – new name for better discoverability while keeping the `code` shorthand.
 - **Auto Drive upgraded** – hand `/auto` a task and it now plans, coordinates agents, reruns checks, and recovers from hiccups without babysitting.
 - **Unified settings** – `/settings` centralizes limits, model routing, themes, and CLI integrations so you can audit configuration in one place.
 - **Card-based activity** – Agents, browser sessions, web search, and Auto Drive render as compact cards with drill-down overlays for full logs.
@@ -22,7 +23,7 @@
 Read the full notes in `release-notes/RELEASE_NOTES.md`.
 
 &ensp;
-## Why Code
+## Why Every Code
 
 - 🚀 **Auto Drive orchestration** – Multi-agent automation that now self-heals and ships complete tasks.
 - 🌐 **Browser Integration** – CDP support, headless browsing, screenshots captured inline.
@@ -79,7 +80,7 @@ Note: If another tool already provides a `code` command (e.g. VS Code), our CLI 
 
 ### Install Claude & Gemini (optional)
 
-Code supports orchestrating other AI CLI tools. Install these and config to use alongside Code.
+Every Code supports orchestrating other AI CLI tools. Install these and config to use alongside Code.
 
 ```bash
 # Ensure Node.js 20+ is available locally (installs into ~/.n)
@@ -175,7 +176,7 @@ Options:
 &ensp;
 ## Memory & project docs
 
-Code can remember context across sessions:
+Every Code can remember context across sessions:
 
 1. **Create an `AGENTS.md` or `CLAUDE.md` file** in your project root:
 ```markdown
@@ -213,7 +214,7 @@ code --config output_format=json "list all TODO comments"
 &ensp;
 ## Model Context Protocol (MCP)
 
-Code supports MCP for extended capabilities:
+Every Code supports MCP for extended capabilities:
 
 - **File operations**: Advanced file system access
 - **Database connections**: Query and modify databases
@@ -234,7 +235,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/project"]
 Main config file: `~/.code/config.toml`
 
 > [!NOTE]
-> Code reads from both `~/.code/` and `~/.codex/` for backwards compatibility, but it only writes updates to `~/.code/`. If you switch back to Codex and it fails to start, remove `~/.codex/config.toml`. If Code appears to miss settings after upgrading, copy your legacy `~/.codex/config.toml` into `~/.code/`.
+> Every Code reads from both `~/.code/` and `~/.codex/` for backwards compatibility, but it only writes updates to `~/.code/`. If you switch back to Codex and it fails to start, remove `~/.codex/config.toml`. If Every Code appears to miss settings after upgrading, copy your legacy `~/.codex/config.toml` into `~/.code/`.
 
 ```toml
 # Model settings
@@ -273,7 +274,7 @@ model_reasoning_summary = "detailed"
 > This fork adds browser integration, multi-agent commands (`/plan`, `/solve`, `/code`), theme system, and enhanced reasoning controls while maintaining full compatibility.
 
 **Can I use my existing Codex configuration?**
-> Yes. Code reads from both `~/.code/` (primary) and legacy `~/.codex/` directories. We only write to `~/.code/`, so Codex will keep running if you switch back; copy or remove legacy files if you notice conflicts.
+> Yes. Every Code reads from both `~/.code/` (primary) and legacy `~/.codex/` directories. We only write to `~/.code/`, so Codex will keep running if you switch back; copy or remove legacy files if you notice conflicts.
 
 **Does this work with ChatGPT Plus?**
 > Absolutely. Use the same "Sign in with ChatGPT" flow as the original.
@@ -284,7 +285,7 @@ model_reasoning_summary = "detailed"
 &ensp;
 ## Contributing
 
-We welcome contributions! This fork maintains compatibility with upstream while adding community-requested features.
+We welcome contributions! Every Code maintains compatibility with upstream while adding community-requested features.
 
 ### Development workflow
 
@@ -316,10 +317,10 @@ npm install
 
 ### License & attribution
 - This project is a community fork of `openai/codex` under **Apache-2.0**. We preserve upstream LICENSE and NOTICE files.
-- **Code** is **not** affiliated with, sponsored by, or endorsed by OpenAI.
+- **Every Code** (Code) is **not** affiliated with, sponsored by, or endorsed by OpenAI.
 
 ### Your responsibilities
-Using OpenAI, Anthropic or Google services through Code means you agree to **their Terms and policies**. In particular:
+Using OpenAI, Anthropic or Google services through Every Code means you agree to **their Terms and policies**. In particular:
 - **Don't** programmatically scrape/extract content outside intended flows.
 - **Don't** bypass or interfere with rate limits, quotas, or safety mitigations.
 - Use your **own** account; don't share or rotate accounts to evade limits.
@@ -330,14 +331,14 @@ Using OpenAI, Anthropic or Google services through Code means you agree to **the
 - Inputs/outputs you send to AI providers are handled under their Terms and Privacy Policy; consult those documents (and any org-level data-sharing settings).
 
 ### Subject to change
-AI providers can change eligibility, limits, models, or authentication flows. Code supports **both** ChatGPT sign-in and API-key modes so you can pick what fits (local/hobby vs CI/automation).
+AI providers can change eligibility, limits, models, or authentication flows. Every Code supports **both** ChatGPT sign-in and API-key modes so you can pick what fits (local/hobby vs CI/automation).
 
 &ensp;
 ## License
 
 Apache 2.0 - See [LICENSE](LICENSE) file for details.
 
-This project is a community fork of the original Codex CLI. We maintain compatibility while adding enhanced features requested by the developer community.
+Every Code is a community fork of the original Codex CLI. We maintain compatibility while adding enhanced features requested by the developer community.
 
 &ensp;
 ---

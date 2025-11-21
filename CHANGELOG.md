@@ -7,6 +7,16 @@
 
 - (none)
 
+## [0.5.0] - 2025-11-21
+
+- Rebrand the project to **Every Code** while keeping the `code` CLI name and refreshed docs.
+- Auto Drive resilience: compaction and diagnostics, retry/backoff with observer telemetry, resume safety, and clearer cards/status.
+- Default presets upgraded to gpt-5.1 with added codex-mini variants for lighter runs.
+- UX polish: unified settings overlay refinements, /review uncommitted preset, strict streaming order, slash navigation hotkeys, and backtrack improvements.
+- Notifications enabled by default plus clearer browser/exec logging and richer resume/session catalogs.
+- Platform hardening: Nix offline builds, Windows AltGr + PATHEXT fixes, BSD keyring gating, responses proxy tightening, and sandbox/process safeguards.
+- MCP & integrations: sturdier MCP client tooling, streamable HTTP support, improved Zed/ACP guidance, and a hardened responses API proxy.
+
 ## [0.4.20] - 2025-11-18
 
 - Core: serialize `shell_command` tool invocations so concurrent steps no longer trample each other during runs. (497fb4a1)
