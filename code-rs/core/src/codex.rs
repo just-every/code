@@ -5273,12 +5273,12 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
         let turn_input_messages: Vec<String> = turn_input
             .iter()
             .filter_map(|item| match item {
-                ResponseItem::Message { content, .. } => Some(content),
+                ResponseItem::Message { role, content, .. } if role == "user" => Some(content),
                 _ => None,
             })
             .flat_map(|content| {
                 content.iter().filter_map(|item| match item {
-                    ContentItem::OutputText { text } => Some(text.clone()),
+                    ContentItem::InputText { text } => Some(text.clone()),
                     _ => None,
                 })
             })
