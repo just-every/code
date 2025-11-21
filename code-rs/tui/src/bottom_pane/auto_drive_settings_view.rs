@@ -19,6 +19,7 @@ pub(crate) struct AutoDriveSettingsView {
     selected_index: usize,
     model: String,
     model_reasoning: ReasoningEffort,
+    use_chat_model: bool,
     review_enabled: bool,
     agents_enabled: bool,
     cross_check_enabled: bool,
@@ -35,6 +36,7 @@ impl AutoDriveSettingsView {
         app_event_tx: AppEventSender,
         model: String,
         model_reasoning: ReasoningEffort,
+        use_chat_model: bool,
         review_enabled: bool,
         agents_enabled: bool,
         cross_check_enabled: bool,
@@ -48,6 +50,7 @@ impl AutoDriveSettingsView {
             selected_index: 0,
             model,
             model_reasoning,
+            use_chat_model,
             review_enabled,
             agents_enabled,
             cross_check_enabled,
@@ -77,6 +80,14 @@ impl AutoDriveSettingsView {
         self.model_reasoning = effort;
     }
 
+    pub fn set_use_chat_model(&mut self, use_chat: bool, model: String, effort: ReasoningEffort) {
+        self.use_chat_model = use_chat;
+        if use_chat {
+            self.model = model;
+            self.model_reasoning = effort;
+        }
+    }
+
     fn set_diagnostics(&mut self, enabled: bool) {
         self.review_enabled = enabled;
         self.cross_check_enabled = enabled;
@@ -94,6 +105,34 @@ impl AutoDriveSettingsView {
             ReasoningEffort::Minimal => "Minimal",
             ReasoningEffort::None => "None",
         }
+    }
+
+    fn format_model_label(model: &str) -> String {
+        let mut parts = Vec::new();
+        for (idx, part) in model.split('-').enumerate() {
+            if idx == 0 {
+                parts.push(part.to_ascii_uppercase());
+                continue;
+            }
+            let mut chars = part.chars();
+            let formatted = match chars.next() {
+                Some(first) if first.is_ascii_alphabetic() => {
+                    let mut s = String::new();
+                    s.push(first.to_ascii_uppercase());
+                    s.push_str(chars.as_str());
+                    s
+                }
+                Some(first) => {
+                    let mut s = String::new();
+                    s.push(first);
+                    s.push_str(chars.as_str());
+                    s
+                }
+                None => String::new(),
+            };
+            parts.push(formatted);
+        }
+        parts.join("-")
     }
 
     fn cycle_continue_mode(&mut self, forward: bool) {
@@ -179,19 +218,26 @@ impl AutoDriveSettingsView {
         let mut spans = vec![Span::styled(prefix, label_style)];
         match index {
             0 => {
-                let model_label = self.model.trim();
-                let display = if model_label.is_empty() {
-                    "(not set)".to_string()
+                if self.use_chat_model {
+                    spans.push(Span::styled("Follow Chat Mode", label_style));
+                    if selected {
+                        spans.push(Span::raw("  (Enter to change)"));
+                    }
                 } else {
-                    format!(
-                        "{} · {}",
-                        model_label,
-                        Self::reasoning_label(self.model_reasoning)
-                    )
-                };
-                spans.push(Span::styled(display, label_style));
-                if selected {
-                    spans.push(Span::raw("  (Enter to change)"));
+                    let model_label = self.model.trim();
+                    let display = if model_label.is_empty() {
+                        "(not set)".to_string()
+                    } else {
+                        format!(
+                            "{} · {}",
+                            Self::format_model_label(model_label),
+                            Self::reasoning_label(self.model_reasoning)
+                        )
+                    };
+                    spans.push(Span::styled(display, label_style));
+                    if selected {
+                        spans.push(Span::raw("  (Enter to change)"));
+                    }
                 }
             }
             1 | 2 => {

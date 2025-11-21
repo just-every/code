@@ -1,7 +1,7 @@
 use super::bottom_pane_view::BottomPaneView;
 use super::settings_panel::{render_panel, PanelFrameStyle};
 use super::BottomPane;
-use crate::app_event::AppEvent;
+use crate::app_event::{AppEvent, ModelSelectionKind};
 use crate::app_event_sender::AppEventSender;
 use code_common::model_presets::ModelPreset;
 use code_core::config_types::ReasoningEffort;
@@ -58,6 +58,17 @@ pub(crate) enum ModelSelectionTarget {
     Review,
     Planning,
     AutoDrive,
+}
+
+impl From<ModelSelectionTarget> for ModelSelectionKind {
+    fn from(target: ModelSelectionTarget) -> Self {
+        match target {
+            ModelSelectionTarget::Session => ModelSelectionKind::Session,
+            ModelSelectionTarget::Review => ModelSelectionKind::Review,
+            ModelSelectionTarget::Planning => ModelSelectionKind::Planning,
+            ModelSelectionTarget::AutoDrive => ModelSelectionKind::AutoDrive,
+        }
+    }
 }
 
 impl ModelSelectionTarget {
@@ -262,7 +273,7 @@ impl ModelSelectionView {
                                 .send(AppEvent::UpdateAutoDriveUseChatModel(true));
                         }
                     }
-                    self.is_complete = true;
+                    self.send_closed(true);
                     return;
                 }
                 EntryKind::Preset(idx) => {
@@ -300,7 +311,7 @@ impl ModelSelectionView {
                             }
                         }
                     }
-                    self.is_complete = true;
+                    self.send_closed(true);
                 }
             }
         }
@@ -309,8 +320,8 @@ impl ModelSelectionView {
     fn content_line_count(&self) -> u16 {
         let mut lines: u16 = 3;
         if self.target.supports_follow_chat() {
-            // Follow row + spacer
-            lines = lines.saturating_add(2);
+            // Header + description + entry + spacer
+            lines = lines.saturating_add(4);
         }
 
         let mut previous_model: Option<&str> = None;
@@ -432,11 +443,22 @@ impl ModelSelectionView {
                 true
             }
             KeyEvent { code: KeyCode::Esc, modifiers: KeyModifiers::NONE, .. } => {
-                self.is_complete = true;
+                self.send_closed(false);
                 true
             }
             _ => false,
         }
+    }
+
+    fn send_closed(&mut self, accepted: bool) {
+        if self.is_complete {
+            return;
+        }
+        let _ = self.app_event_tx.send(AppEvent::ModelSelectionClosed {
+            target: self.target.into(),
+            accepted,
+        });
+        self.is_complete = true;
     }
 
     fn render_panel_body(&self, area: Rect, buf: &mut Buffer) {
@@ -452,7 +474,7 @@ impl ModelSelectionView {
             ),
             Span::styled(
                 if self.target.supports_follow_chat() && self.use_chat_model {
-                    "Follow Chat model".to_string()
+                    "Follow Chat Mode".to_string()
                 } else {
                     self.current_model.clone()
                 },
@@ -481,6 +503,17 @@ impl ModelSelectionView {
 
         if self.target.supports_follow_chat() {
             let is_selected = self.selected_index == 0;
+
+            let header_style = Style::default()
+                .fg(crate::colors::text_bright())
+                .add_modifier(Modifier::BOLD);
+            let desc_style = Style::default().fg(crate::colors::text_dim());
+            lines.push(Line::from(vec![Span::styled("Follow Chat Mode", header_style)]));
+            lines.push(Line::from(vec![Span::styled(
+                "Use the active chat model and reasoning; stays in sync as chat changes.",
+                desc_style,
+            )]));
+
             let mut label_style = Style::default().fg(crate::colors::text());
             if is_selected {
                 label_style = label_style
@@ -491,12 +524,13 @@ impl ModelSelectionView {
             if is_selected {
                 arrow_style = label_style.clone();
             }
-            let mut desc_style = Style::default().fg(crate::colors::text_dim());
-            if is_selected {
-                desc_style = desc_style
+            let indent_style = if is_selected {
+                Style::default()
                     .bg(crate::colors::selection())
-                    .add_modifier(Modifier::BOLD);
-            }
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
             let mut status = String::new();
             if self.use_chat_model {
                 status.push_str("(current)");
@@ -504,12 +538,8 @@ impl ModelSelectionView {
             let arrow = if is_selected { "› " } else { "  " };
             let mut spans = vec![
                 Span::styled(arrow, arrow_style),
-                Span::styled("Follow Chat Model", label_style),
-                Span::raw("  "),
-                Span::styled(
-                    "Uses the same model and reasoning as active chat",
-                    desc_style,
-                ),
+                Span::styled("   ", indent_style),
+                Span::styled("Use chat model", label_style),
             ];
             if !status.is_empty() {
                 spans.push(Span::raw(format!("  {}", status)));

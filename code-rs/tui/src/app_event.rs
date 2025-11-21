@@ -13,6 +13,14 @@ use crossterm::event::KeyEvent;
 use crossterm::event::MouseEvent;
 use ratatui::text::Line;
 use crate::streaming::StreamKind;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModelSelectionKind {
+    Session,
+    Review,
+    Planning,
+    AutoDrive,
+}
 use crate::history::state::HistorySnapshot;
 use std::time::Duration;
 use uuid::Uuid;
@@ -240,6 +248,12 @@ pub(crate) enum AppEvent {
     },
     /// Toggle Auto Drive model inheritance from chat model
     UpdateAutoDriveUseChatModel(bool),
+
+    /// Model selection UI closed (accepted or cancelled)
+    ModelSelectionClosed {
+        target: ModelSelectionKind,
+        accepted: bool,
+    },
 
     /// Update the text verbosity level
     UpdateTextVerbosity(TextVerbosity),

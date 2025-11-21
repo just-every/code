@@ -2323,6 +2323,11 @@ impl App<'_> {
                         widget.set_auto_drive_use_chat_model(use_chat);
                     }
                 }
+                AppEvent::ModelSelectionClosed { target, accepted } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.handle_model_selection_closed(target, accepted);
+                    }
+                }
                 AppEvent::UpdateTextVerbosity(new_verbosity) => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.set_text_verbosity(new_verbosity);

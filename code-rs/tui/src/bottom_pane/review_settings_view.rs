@@ -25,7 +25,6 @@ enum SelectionKind {
 }
 
 enum RowData {
-    FollowChat,
     CustomModel,
     Toggle,
     Attempts,
@@ -126,14 +125,9 @@ impl ReviewSettingsView {
     }
 
     fn build_rows(&self) -> (Vec<RowData>, Vec<usize>, Vec<SelectionKind>) {
-        let rows = vec![RowData::FollowChat, RowData::CustomModel, RowData::Toggle, RowData::Attempts];
-        let selection_rows = vec![0, 1, 2, 3];
-        let selection_kinds = vec![
-            SelectionKind::Model,
-            SelectionKind::Model,
-            SelectionKind::Toggle,
-            SelectionKind::Attempts,
-        ];
+        let rows = vec![RowData::CustomModel, RowData::Toggle, RowData::Attempts];
+        let selection_rows = vec![0, 1, 2];
+        let selection_kinds = vec![SelectionKind::Model, SelectionKind::Toggle, SelectionKind::Attempts];
         (rows, selection_rows, selection_kinds)
     }
 
@@ -157,6 +151,34 @@ impl ReviewSettingsView {
         }
     }
 
+    fn format_model_label(model: &str) -> String {
+        let mut parts = Vec::new();
+        for (idx, part) in model.split('-').enumerate() {
+            if idx == 0 {
+                parts.push(part.to_ascii_uppercase());
+                continue;
+            }
+            let mut chars = part.chars();
+            let formatted = match chars.next() {
+                Some(first) if first.is_ascii_alphabetic() => {
+                    let mut s = String::new();
+                    s.push(first.to_ascii_uppercase());
+                    s.push_str(chars.as_str());
+                    s
+                }
+                Some(first) => {
+                    let mut s = String::new();
+                    s.push(first);
+                    s.push_str(chars.as_str());
+                    s
+                }
+                None => String::new(),
+            };
+            parts.push(formatted);
+        }
+        parts.join("-")
+    }
+
     fn render_row(&self, row: &RowData, selected: bool) -> Line<'static> {
         let arrow = if selected { "› " } else { "  " };
         let arrow_style = if selected {
@@ -165,32 +187,6 @@ impl ReviewSettingsView {
             Style::default().fg(colors::text_dim())
         };
         match row {
-            RowData::FollowChat => {
-                let label_style = if selected {
-                    Style::default()
-                        .fg(colors::primary())
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(colors::text()).add_modifier(Modifier::BOLD)
-                };
-                let status = if self.use_chat_model {
-                    Span::styled("Active", Style::default().fg(colors::success()))
-                } else {
-                    Span::styled("Select to follow chat model", Style::default().fg(colors::text_dim()))
-                };
-                let mut spans = vec![
-                    Span::styled(arrow, arrow_style),
-                    Span::styled("Follow Chat Model", label_style),
-                    Span::raw("  "),
-                    status,
-                ];
-                spans.push(Span::raw("  "));
-                spans.push(Span::styled(
-                    "Uses the same model and reasoning as active chat",
-                    Style::default().fg(colors::text_dim()),
-                ));
-                Line::from(spans)
-            }
             RowData::CustomModel => {
                 let label_style = if selected {
                     Style::default()
@@ -208,14 +204,14 @@ impl ReviewSettingsView {
                 };
                 let (value_text, hint_text) = if self.use_chat_model {
                     (
-                        "Follow Chat model".to_string(),
-                        Some("Select to choose a custom review model".to_string()),
+                        "Follow Chat Mode".to_string(),
+                        Some("Enter to change".to_string()),
                     )
                 } else {
                     (
                         format!(
                             "{} ({})",
-                            self.review_model,
+                            Self::format_model_label(&self.review_model),
                             Self::reasoning_label(self.review_reasoning)
                         ),
                         Some("Enter to change".to_string()),
@@ -363,19 +359,7 @@ impl ReviewSettingsView {
                             if let Some(sel) = self.state.selected_idx {
                                 if let Some(row) = self.build_rows().0.get(sel) {
                                     match row {
-                                        RowData::FollowChat => {
-                                            if !self.use_chat_model {
-                                                self.use_chat_model = true;
-                                                self.app_event_tx
-                                                    .send(AppEvent::UpdateReviewUseChatModel(true));
-                                            }
-                                        }
                                         RowData::CustomModel => {
-                                            if self.use_chat_model {
-                                                self.use_chat_model = false;
-                                                self.app_event_tx
-                                                    .send(AppEvent::UpdateReviewUseChatModel(false));
-                                            }
                                             self.open_review_model_selector();
                                         }
                                         _ => {}

@@ -882,6 +882,7 @@ use crate::app_event::{
     AppEvent,
     AutoContinueMode,
     BackgroundPlacement,
+    ModelSelectionKind,
     TerminalAfter,
     TerminalCommandGate,
     TerminalLaunch,
@@ -1326,6 +1327,8 @@ pub(crate) struct ChatWidget<'a> {
 
     // Settings overlay state
     settings: SettingsState,
+    // When a standalone picker (model selection) closes, optionally reopen the settings overlay
+    pending_settings_return: Option<SettingsSection>,
 
     // Limits overlay state
     limits: LimitsState,
@@ -5095,6 +5098,7 @@ impl ChatWidget<'_> {
             settings: SettingsState::default(),
             limits: LimitsState::default(),
             terminal: TerminalState::default(),
+            pending_settings_return: None,
             pending_manual_terminal: HashMap::new(),
             agents_overview_selected_index: 0,
             agents_terminal: AgentsTerminalState::new(),
@@ -5421,6 +5425,7 @@ impl ChatWidget<'_> {
                 body_visible_rows: std::cell::Cell::new(0),
             },
             settings: SettingsState::default(),
+            pending_settings_return: None,
             limits: LimitsState::default(),
             terminal: TerminalState::default(),
             pending_manual_terminal: HashMap::new(),
@@ -13936,6 +13941,7 @@ impl ChatWidget<'_> {
     fn build_auto_drive_settings_content(&mut self) -> AutoDriveSettingsContent {
         let model = self.config.auto_drive.model.clone();
         let model_effort = self.config.auto_drive.model_reasoning_effort;
+        let use_chat_model = self.config.auto_drive_use_chat_model;
         let review = self.auto_state.review_enabled;
         let agents = self.auto_state.subagents_enabled;
         let cross = self.auto_state.cross_check_enabled;
@@ -13945,6 +13951,7 @@ impl ChatWidget<'_> {
             self.app_event_tx.clone(),
             model,
             model_effort,
+            use_chat_model,
             review,
             agents,
             cross,
@@ -18780,6 +18787,7 @@ Have we met every part of this goal and is there no further work to do?"#
             return;
         }
         if self.settings.overlay.is_some() {
+            self.pending_settings_return = Some(SettingsSection::Review);
             self.close_settings_overlay();
         }
         self.bottom_pane.show_model_selection(
@@ -18801,6 +18809,7 @@ Have we met every part of this goal and is there no further work to do?"#
             return;
         }
         if self.settings.overlay.is_some() {
+            self.pending_settings_return = Some(SettingsSection::Planning);
             self.close_settings_overlay();
         }
         let current = if self.config.planning_use_chat_model {
@@ -18829,6 +18838,7 @@ Have we met every part of this goal and is there no further work to do?"#
             return;
         }
         if self.settings.overlay.is_some() {
+            self.pending_settings_return = Some(SettingsSection::AutoDrive);
             self.close_settings_overlay();
         }
         self.bottom_pane.show_model_selection(
@@ -18879,6 +18889,8 @@ Have we met every part of this goal and is there no further work to do?"#
                 resume_path: None,
             };
             self.submit_op(op);
+
+            self.sync_follow_chat_models();
             self.refresh_settings_overview_rows();
         }
 
@@ -18895,6 +18907,26 @@ Have we met every part of this goal and is there no further work to do?"#
         );
 
         self.request_redraw();
+    }
+
+    fn sync_follow_chat_models(&mut self) {
+        if self.config.review_use_chat_model {
+            self.config.review_model = self.config.model.clone();
+            self.config.review_model_reasoning_effort = self.config.model_reasoning_effort;
+            self.update_review_settings_model_row();
+        }
+
+        if self.config.planning_use_chat_model {
+            self.config.planning_model = self.config.model.clone();
+            self.config.planning_model_reasoning_effort = self.config.model_reasoning_effort;
+            self.update_planning_settings_model_row();
+        }
+
+        if self.config.auto_drive_use_chat_model {
+            self.config.auto_drive.model = self.config.model.clone();
+            self.config.auto_drive.model_reasoning_effort = self.config.model_reasoning_effort;
+            self.update_auto_drive_settings_model_row();
+        }
     }
 
     pub(crate) fn apply_review_model_selection(
@@ -19029,6 +19061,24 @@ Have we met every part of this goal and is there no further work to do?"#
         self.bottom_pane.flash_footer_notice(notice);
         self.refresh_settings_overview_rows();
         self.update_auto_drive_settings_model_row();
+        self.request_redraw();
+    }
+
+    pub(crate) fn handle_model_selection_closed(&mut self, target: ModelSelectionKind, _accepted: bool) {
+        let expected_section = match target {
+            ModelSelectionKind::Session => SettingsSection::Model,
+            ModelSelectionKind::Review => SettingsSection::Review,
+            ModelSelectionKind::Planning => SettingsSection::Planning,
+            ModelSelectionKind::AutoDrive => SettingsSection::AutoDrive,
+        };
+
+        if let Some(section) = self.pending_settings_return {
+            if section == expected_section {
+                self.ensure_settings_overlay_section(section);
+            }
+            self.pending_settings_return = None;
+        }
+
         self.request_redraw();
     }
 
@@ -19996,7 +20046,7 @@ Have we met every part of this goal and is there no further work to do?"#
 
     fn settings_summary_planning(&self) -> Option<String> {
         if self.config.planning_use_chat_model {
-            return Some("Model: Follow Chat model".to_string());
+            return Some("Model: Follow Chat Mode".to_string());
         }
         let model = self.config.planning_model.trim();
         let model_display_storage;
@@ -20058,7 +20108,7 @@ Have we met every part of this goal and is there no further work to do?"#
         let diagnostics_enabled = self.auto_state.qa_automation_enabled
             && (self.auto_state.review_enabled || self.auto_state.cross_check_enabled);
         let (model_text, effort_text) = if self.config.auto_drive_use_chat_model {
-            ("Follow Chat model".to_string(), None)
+            ("Follow Chat Mode".to_string(), None)
         } else {
             let model_label = if self.config.auto_drive.model.trim().is_empty() {
                 "(default)".to_string()
@@ -20103,7 +20153,7 @@ Have we met every part of this goal and is there no further work to do?"#
             format!("Auto Resolve: On (max {} re-reviews)", attempts)
         };
         let model_part = if self.config.review_use_chat_model {
-            "Model: Follow Chat model".to_string()
+            "Model: Follow Chat Mode".to_string()
         } else {
             let model = self.config.review_model.trim();
             let model_display = if model.is_empty() {
@@ -28324,6 +28374,11 @@ impl ChatWidget<'_> {
                 content.update_model(
                     self.config.auto_drive.model.clone(),
                     self.config.auto_drive.model_reasoning_effort,
+                );
+                content.set_use_chat_model(
+                    self.config.auto_drive_use_chat_model,
+                    self.config.model.clone(),
+                    self.config.model_reasoning_effort,
                 );
             }
         }

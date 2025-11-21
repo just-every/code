@@ -109,7 +109,7 @@ impl PlanningSettingsView {
                 };
                 let mut spans = vec![
                     Span::styled(arrow, arrow_style),
-                    Span::styled("Follow Chat Model", label_style),
+                    Span::styled("Follow Chat Mode", label_style),
                     Span::raw("  "),
                     status,
                 ];
@@ -137,14 +137,14 @@ impl PlanningSettingsView {
                 };
                 let (value_text, hint_text) = if self.use_chat_model {
                     (
-                        "Follow Chat model".to_string(),
+                        "Follow Chat Mode".to_string(),
                         Some("Select to choose a custom planning model".to_string()),
                     )
                 } else {
                     (
                         format!(
                             "{} ({})",
-                            self.planning_model,
+                            Self::format_model_label(&self.planning_model),
                             Self::reasoning_label(self.planning_reasoning)
                         ),
                         Some("Enter to change".to_string()),
@@ -176,6 +176,34 @@ impl PlanningSettingsView {
             ReasoningEffort::Minimal => "Minimal",
             ReasoningEffort::None => "None",
         }
+    }
+
+    fn format_model_label(model: &str) -> String {
+        let mut parts = Vec::new();
+        for (idx, part) in model.split('-').enumerate() {
+            if idx == 0 {
+                parts.push(part.to_ascii_uppercase());
+                continue;
+            }
+            let mut chars = part.chars();
+            let formatted = match chars.next() {
+                Some(first) if first.is_ascii_alphabetic() => {
+                    let mut s = String::new();
+                    s.push(first.to_ascii_uppercase());
+                    s.push_str(chars.as_str());
+                    s
+                }
+                Some(first) => {
+                    let mut s = String::new();
+                    s.push(first);
+                    s.push_str(chars.as_str());
+                    s
+                }
+                None => String::new(),
+            };
+            parts.push(formatted);
+        }
+        parts.join("-")
     }
 
     fn handle_key(&mut self, key: KeyEvent) {

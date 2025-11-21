@@ -385,6 +385,10 @@ impl AutoDriveSettingsContent {
     pub(crate) fn update_model(&mut self, model: String, effort: ReasoningEffort) {
         self.view.set_model(model, effort);
     }
+
+    pub(crate) fn set_use_chat_model(&mut self, use_chat: bool, model: String, effort: ReasoningEffort) {
+        self.view.set_use_chat_model(use_chat, model, effort);
+    }
 }
 
 impl SettingsContent for AutoDriveSettingsContent {
