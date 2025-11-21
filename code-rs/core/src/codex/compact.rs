@@ -441,7 +441,7 @@ fn truncate_for_compact(text: String, max_bytes: usize) -> String {
     truncate_middle(&text, max_bytes).0
 }
 
-pub(super) fn sanitize_items_for_compact(items: Vec<ResponseItem>) -> Vec<ResponseItem> {
+pub fn sanitize_items_for_compact(items: Vec<ResponseItem>) -> Vec<ResponseItem> {
     items
         .into_iter()
         .filter_map(|item| match item {

@@ -6,9 +6,10 @@ use tokio::time::timeout;
 use code_core::codex::compact::{
     collect_compaction_snippets,
     make_compaction_summary_message,
+    sanitize_items_for_compact,
 };
 use code_core::model_family::{derive_default_model_family, find_family_for_model};
-use code_core::{ModelClient, Prompt, ResponseEvent, TextFormat};
+use code_core::{content_items_to_text, ModelClient, Prompt, ResponseEvent, TextFormat};
 use code_protocol::models::{ContentItem, ResponseItem};
 
 
@@ -21,6 +22,90 @@ const SUMMARY_TIMEOUT_SECONDS: u64 = 45;
 pub(crate) struct CheckpointSummary {
     pub message: ResponseItem,
     pub text: String,
+}
+
+pub(crate) fn compact_with_endpoint(
+    runtime: &tokio::runtime::Runtime,
+    client: &ModelClient,
+    conversation: &[ResponseItem],
+    model_slug: &str,
+    compact_prompt: &str,
+) -> Result<Vec<ResponseItem>> {
+    let goal_marker = conversation
+        .iter()
+        .position(|item| matches!(item, ResponseItem::Message { role, .. } if role == "user"))
+        .and_then(|idx| conversation.get(idx).cloned().map(|msg| (idx, msg)));
+
+    let sanitized_input = sanitize_items_for_compact(conversation.to_vec());
+
+    let prompt_instructions = compact_prompt.trim();
+    let mut compacted = runtime
+        .block_on(async {
+            timeout(Duration::from_secs(SUMMARY_TIMEOUT_SECONDS), async {
+                let mut prompt = Prompt::default();
+                prompt.input = sanitized_input;
+                prompt.include_additional_instructions = false;
+                if !prompt_instructions.is_empty() {
+                    prompt.base_instructions_override = Some(prompt_instructions.to_string());
+                }
+                prompt.model_override = Some(model_slug.to_string());
+                let family = find_family_for_model(model_slug)
+                    .unwrap_or_else(|| derive_default_model_family(model_slug));
+                prompt.model_family_override = Some(family);
+                prompt.set_log_tag("auto/remote-compact");
+                client.compact_conversation_history(&prompt).await
+            })
+            .await
+        })
+        .map_err(|_| {
+            anyhow!(
+                "remote compaction request timed out after {SUMMARY_TIMEOUT_SECONDS}s"
+            )
+        })??;
+
+    if let Some((goal_idx, goal_item)) = goal_marker {
+        ensure_goal_is_present(&mut compacted, goal_item, goal_idx);
+    }
+
+    Ok(compacted)
+}
+
+fn ensure_goal_is_present(
+    conversation: &mut Vec<ResponseItem>,
+    goal_item: ResponseItem,
+    original_idx: usize,
+) {
+    let Some(goal_item) = sanitize_items_for_compact(vec![goal_item]).into_iter().next() else {
+        return;
+    };
+    let Some(goal_text) = message_text(&goal_item) else {
+        return;
+    };
+
+    let already_present = conversation.iter().any(|item| {
+        matches!(item, ResponseItem::Message { role, .. } if role == "user")
+            && message_text(item).as_deref() == Some(goal_text.as_str())
+    });
+
+    if already_present {
+        return;
+    }
+
+    let insert_at = original_idx.min(conversation.len());
+    conversation.insert(insert_at, goal_item);
+}
+
+fn message_text(item: &ResponseItem) -> Option<String> {
+    let ResponseItem::Message { content, .. } = item else {
+        return None;
+    };
+    let text = content_items_to_text(content)?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 pub(crate) fn compute_slice_bounds(conversation: &[ResponseItem]) -> Option<(usize, usize)> {
@@ -525,6 +610,34 @@ mod tests {
         } else {
             panic!("expected message");
         }
+    }
+
+    #[test]
+    fn ensure_goal_reinserted_when_missing_after_compaction() {
+        let goal = user_message("Rewrite parser");
+        let mut compacted = vec![assistant_message("Checkpoint summary")];
+
+        ensure_goal_is_present(&mut compacted, goal.clone(), 1);
+
+        let goal_count = compacted
+            .iter()
+            .filter(|item| message_text(item).as_deref() == Some("Rewrite parser"))
+            .count();
+        assert_eq!(goal_count, 1);
+    }
+
+    #[test]
+    fn ensure_goal_not_duplicated_when_already_present() {
+        let goal = user_message("Rewrite parser");
+        let mut compacted = vec![goal.clone(), assistant_message("Checkpoint summary")];
+
+        ensure_goal_is_present(&mut compacted, goal.clone(), 0);
+
+        let goal_count = compacted
+            .iter()
+            .filter(|item| message_text(item).as_deref() == Some("Rewrite parser"))
+            .count();
+        assert_eq!(goal_count, 1);
     }
 
     #[test]

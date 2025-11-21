@@ -30,6 +30,7 @@ use uuid::Uuid;
 use crate::auto_compact::{
     apply_compaction,
     build_checkpoint_summary,
+    compact_with_endpoint,
     compute_slice_bounds,
     estimate_item_tokens,
 };
@@ -1068,7 +1069,7 @@ fn run_auto_loop(
             }
 
             let mut conv = filter_popular_commands(conv);
-            if let Some(summary) = maybe_compact(
+            match maybe_compact(
                 &runtime,
                 client.as_ref(),
                 &event_tx,
@@ -1078,7 +1079,10 @@ fn run_auto_loop(
                 &active_model_slug,
                 &compact_prompt_text,
             ) {
-                prev_compact_summary = Some(summary);
+                CompactionResult::Completed { summary_text } => {
+                    prev_compact_summary = summary_text;
+                }
+                CompactionResult::Skipped => {}
             }
             let developer_intro = base_developer_intro.as_str();
             let mut retry_conversation = Some(conv.clone());
@@ -2724,6 +2728,11 @@ fn emit_auto_drive_metrics(event_tx: &AutoCoordinatorEventSender, metrics: &Sess
     event_tx.send(event);
 }
 
+enum CompactionResult {
+    Skipped,
+    Completed { summary_text: Option<String> },
+}
+
 fn maybe_compact(
     runtime: &tokio::runtime::Runtime,
     client: &ModelClient,
@@ -2733,7 +2742,7 @@ fn maybe_compact(
     prev_summary: Option<&str>,
     model_slug: &str,
     compact_prompt: &str,
-) -> Option<String> {
+) -> CompactionResult {
     let transcript_tokens: u64 = conversation
         .iter()
         .map(|item| estimate_item_tokens(item) as u64)
@@ -2749,18 +2758,52 @@ fn maybe_compact(
         message_count,
         has_recorded_turns,
     ) {
-        return None;
+        return CompactionResult::Skipped;
     }
 
     let Some(bounds) = compute_slice_bounds(conversation) else {
-        return None;
+        return CompactionResult::Skipped;
     };
 
-    let slice: Vec<ResponseItem> = conversation[bounds.0..bounds.1].to_vec();
     event_tx.send(AutoCoordinatorEvent::Thinking {
         delta: "Compacting history to stay within the context window…".to_string(),
         summary_index: None,
     });
+
+    let original_len = conversation.len();
+    match compact_with_endpoint(runtime, client, conversation, model_slug, compact_prompt) {
+        Ok(compacted) => {
+            let removed = original_len.saturating_sub(compacted.len());
+            let plural = if removed == 1 { "" } else { "s" };
+            *conversation = compacted;
+            event_tx.send(AutoCoordinatorEvent::CompactedHistory {
+                conversation: conversation.clone(),
+            });
+            event_tx.send(AutoCoordinatorEvent::Thinking {
+                delta: format!(
+                    "Finished compacting history ({removed} message{plural} -> {} total).",
+                    conversation.len()
+                ),
+                summary_index: None,
+            });
+            debug!(
+                "[Auto coordinator] remote compacted {removed} messages; new conversation length {}",
+                conversation.len()
+            );
+            return CompactionResult::Completed {
+                summary_text: None,
+            };
+        }
+        Err(err) => {
+            warn!("[Auto coordinator] remote compaction failed: {err:#}");
+            event_tx.send(AutoCoordinatorEvent::Thinking {
+                delta: "Remote compaction failed; falling back to local summary.".to_string(),
+                summary_index: None,
+            });
+        }
+    }
+
+    let slice: Vec<ResponseItem> = conversation[bounds.0..bounds.1].to_vec();
 
     let (checkpoint, summary_warning) = build_checkpoint_summary(
         runtime,
@@ -2789,7 +2832,7 @@ fn maybe_compact(
             delta: "Failed to compact history because the conversation changed while applying the summary. Continuing without compaction.".to_string(),
             summary_index: None,
         });
-        return None;
+        return CompactionResult::Skipped;
     }
 
     event_tx.send(AutoCoordinatorEvent::CompactedHistory {
@@ -2811,7 +2854,9 @@ fn maybe_compact(
         slice.len(),
         conversation.len()
     );
-    Some(checkpoint.text)
+    CompactionResult::Completed {
+        summary_text: Some(checkpoint.text),
+    }
 }
 
 /// Determine if compaction should occur based on token usage.
