@@ -820,7 +820,7 @@ pub(crate) fn is_test_mode() -> bool {
     }
 }
 use serde_json::{self, Value as JsonValue};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 // use image::GenericImageView;
 
 const TOKENS_PER_MILLION: f64 = 1_000_000.0;
@@ -11069,6 +11069,9 @@ impl ChatWidget<'_> {
                     self.submit_user_message(user_message);
                 }
 
+                // Ask core for custom prompts so the slash menu can show them.
+                self.submit_op(Op::ListCustomPrompts);
+
                 if self.resume_placeholder_visible && event.history_entry_count == 0 {
                     self.replace_resume_placeholder_with_notice(RESUME_NO_HISTORY_NOTICE);
                 }
@@ -12426,6 +12429,11 @@ impl ChatWidget<'_> {
                 // Inform bottom pane / composer.
                 self.bottom_pane
                     .on_history_entry_response(log_id, offset, entry.map(|e| e.text));
+            }
+            EventMsg::ListCustomPromptsResponse(ev) => {
+                let len = ev.custom_prompts.len();
+                debug!("received {len} custom prompts");
+                self.bottom_pane.set_custom_prompts(ev.custom_prompts);
             }
             EventMsg::ShutdownComplete => {
                 self.push_background_tail("🟡 ShutdownComplete".to_string());

@@ -38,6 +38,7 @@ pub use code_protocol::protocol::GitInfo;
 pub use code_protocol::protocol::RolloutItem;
 pub use code_protocol::protocol::RolloutLine;
 pub use code_protocol::protocol::ConversationPathResponseEvent;
+pub use code_protocol::protocol::ListCustomPromptsResponseEvent;
 pub use code_protocol::protocol::ENVIRONMENT_CONTEXT_OPEN_TAG;
 pub use code_protocol::protocol::ExitedReviewModeEvent;
 
@@ -207,6 +208,10 @@ pub enum Op {
 
     /// Request a single history entry identified by `log_id` + `offset`.
     GetHistoryEntryRequest { offset: usize, log_id: u64 },
+
+    /// Request the list of available custom prompts.
+    /// Reply is delivered via `EventMsg::ListCustomPromptsResponse`.
+    ListCustomPrompts,
 
     /// Request the agent to summarize the current conversation context.
     /// The agent will use its existing context (either conversation history or previous response id)
@@ -767,6 +772,9 @@ pub enum EventMsg {
 
     /// Response to GetHistoryEntryRequest.
     GetHistoryEntryResponse(GetHistoryEntryResponseEvent),
+
+    /// List of custom prompts available to the agent.
+    ListCustomPromptsResponse(ListCustomPromptsResponseEvent),
 
     PlanUpdate(UpdatePlanArgs),
 

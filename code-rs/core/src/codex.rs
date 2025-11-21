@@ -896,6 +896,7 @@ use crate::protocol::BrowserScreenshotUpdateEvent;
 use crate::protocol::ErrorEvent;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
+use crate::protocol::ListCustomPromptsResponseEvent;
 use crate::protocol::{BrowserSnapshotEvent, EnvironmentContextDeltaEvent, EnvironmentContextFullEvent};
 use crate::protocol::ExecApprovalRequestEvent;
 use crate::protocol::ExecCommandBeginEvent;
@@ -4851,6 +4852,33 @@ async fn submission_loop(
                 });
             }
             // Upstream protocol no longer includes ListMcpTools; skip handling here.
+            Op::ListCustomPrompts => {
+                let sess = match sess.as_ref() {
+                    Some(sess) => Arc::clone(sess),
+                    None => {
+                        send_no_session_event(sub.id).await;
+                        continue;
+                    }
+                };
+
+                let custom_prompts: Vec<code_protocol::custom_prompts::CustomPrompt> =
+                    if let Some(dir) = crate::custom_prompts::default_prompts_dir() {
+                        crate::custom_prompts::discover_prompts_in(&dir).await
+                    } else {
+                        Vec::new()
+                    };
+
+                let event = Event {
+                    id: sub.id.clone(),
+                    event_seq: 0,
+                    msg: EventMsg::ListCustomPromptsResponse(ListCustomPromptsResponseEvent {
+                        custom_prompts,
+                    }),
+                    order: None,
+                };
+
+                sess.send_event(event).await;
+            }
             Op::Compact => {
                 let sess = match sess.as_ref() {
                     Some(sess) => sess,
@@ -5273,12 +5301,12 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
         let turn_input_messages: Vec<String> = turn_input
             .iter()
             .filter_map(|item| match item {
-                ResponseItem::Message { content, .. } => Some(content),
+                ResponseItem::Message { role, content, .. } if role == "user" => Some(content),
                 _ => None,
             })
             .flat_map(|content| {
                 content.iter().filter_map(|item| match item {
-                    ContentItem::OutputText { text } => Some(text.clone()),
+                    ContentItem::InputText { text } => Some(text.clone()),
                     _ => None,
                 })
             })

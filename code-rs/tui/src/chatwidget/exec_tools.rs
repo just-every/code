@@ -504,38 +504,100 @@ pub(super) fn finalize_all_running_as_interrupted(chat: &mut ChatWidget<'_>) {
 }
 
 pub(super) fn finalize_all_running_due_to_answer(chat: &mut ChatWidget<'_>) {
-    let running: Vec<(super::ExecCallId, Option<usize>, Option<(usize, usize)>)> = chat
+    const STALE_MSG: &str = "Command ended without a completion event; marking as interrupted.";
+
+    // Drain running execs so we can mark them stale and stop the spinner.
+    let mut agg_was_updated = false;
+    let running_keys: Vec<super::ExecCallId> = chat
         .exec
         .running_commands
-        .iter()
-        .map(|(k, v)| (k.clone(), v.history_index, v.explore_entry))
+        .keys()
+        .cloned()
         .collect();
-    let mut remove_after_finalize: Vec<super::ExecCallId> = Vec::new();
-    let mut agg_was_updated = false;
-    for (call_id, maybe_idx, explore_entry) in &running {
-        // Keep streaming Exec cells alive so background commands continue to surface output.
-        if maybe_idx.is_some() {
-            continue;
-        }
 
-        if let Some((agg_idx, entry_idx)) = explore_entry {
-            let updated = update_explore_entry_status(
-                chat,
-                Some(*agg_idx),
-                *entry_idx,
-                history_cell::ExploreEntryStatus::Success,
-            )
-            .is_some();
-            agg_was_updated |= updated;
-        }
+    for call_id in running_keys {
+        if let Some(running) = chat.exec.running_commands.remove(&call_id) {
+            // Update any explore aggregation entry tied to this exec.
+            if let Some((agg_idx, entry_idx)) = running.explore_entry {
+                let updated = update_explore_entry_status(
+                    chat,
+                    Some(agg_idx),
+                    entry_idx,
+                    history_cell::ExploreEntryStatus::Error { exit_code: Some(130) },
+                )
+                .is_some();
+                agg_was_updated |= updated;
+            }
 
-        remove_after_finalize.push(call_id.clone());
+            let exit_code = 130;
+            let now = SystemTime::now();
+            let wait_notes_pairs = running.wait_notes.clone();
+            let wait_notes_record = exec_wait_notes_from_pairs(&wait_notes_pairs);
+            let stdout_tail_event = stream_tail("", &running.stdout);
+            let stderr_tail_event = stream_tail(STALE_MSG, &running.stderr);
+
+            let history_id = running
+                .history_id
+                .or_else(|| chat.history_state.history_id_for_exec_call(call_id.as_ref()))
+                .or_else(|| {
+                    running
+                        .history_index
+                        .and_then(|idx| chat.history_cell_ids.get(idx).and_then(|h| *h))
+                });
+
+            let finish_mutation = chat.history_state.apply_domain_event(
+                HistoryDomainEvent::FinishExec {
+                    id: history_id,
+                    call_id: Some(call_id.as_ref().to_string()),
+                    status: ExecStatus::Error,
+                    exit_code: Some(exit_code),
+                    completed_at: Some(now),
+                    wait_total: running.wait_total,
+                    wait_active: false,
+                    wait_notes: wait_notes_record,
+                    stdout_tail: stdout_tail_event,
+                    stderr_tail: stderr_tail_event,
+                },
+            );
+
+            let mut handled_via_state = false;
+            if let HistoryMutation::Replaced {
+                id,
+                record: HistoryRecord::Exec(exec_record),
+                ..
+            } = finish_mutation
+            {
+                chat.update_cell_from_record(id, HistoryRecord::Exec(exec_record.clone()));
+                if let Some(idx) = chat.cell_index_for_history_id(id) {
+                    crate::chatwidget::exec_tools::try_merge_completed_exec_at(chat, idx);
+                }
+                handled_via_state = true;
+            }
+
+            if !handled_via_state {
+                let mut completed_cell = history_cell::new_completed_exec_command(
+                    running.command.clone(),
+                    running.parsed.clone(),
+                    CommandOutput {
+                        exit_code,
+                        stdout: running.stdout.clone(),
+                        stderr: STALE_MSG.to_string(),
+                    },
+                );
+                // Preserve linkage to the original call id when possible.
+                completed_cell.record.call_id = Some(call_id.as_ref().to_string());
+
+                if let Some(idx) = running.history_index {
+                    chat.history_replace_and_maybe_merge(idx, Box::new(completed_cell));
+                } else {
+                    let key = chat.next_internal_key();
+                    let idx = chat.history_insert_with_key_global(Box::new(completed_cell), key);
+                    crate::chatwidget::exec_tools::try_merge_completed_exec_at(chat, idx);
+                }
+            }
+        }
     }
 
-    for call_id in remove_after_finalize {
-        chat.exec.suppress_exec_end(call_id.clone());
-        chat.exec.running_commands.remove(&call_id);
-    }
     if agg_was_updated {
         chat.exec.running_explore_agg_index = None;
         chat.invalidate_height_cache();

@@ -3,6 +3,7 @@ use code_core::protocol::{
     EventMsg,
     ExecCommandBeginEvent,
     ExecCommandEndEvent,
+    TaskCompleteEvent,
     McpInvocation,
     McpToolCallBeginEvent,
     OrderMeta,
@@ -242,5 +243,48 @@ fn exec_begin_upgrades_running_tool_cell() {
     assert!(
         output.contains("upgraded"),
         "exec output should remain attached to the upgraded cell:\n{output}",
+    );
+}
+
+#[test]
+fn stale_exec_is_finalized_on_task_complete() {
+    let mut harness = ChatWidgetHarness::new();
+    let mut seq = 0_u64;
+    let call_id = "call_stale".to_string();
+    let cwd = PathBuf::from("/tmp");
+
+    // Begin a command but never send ExecCommandEnd.
+    harness.handle_event(Event {
+        id: "exec-begin-stale".to_string(),
+        event_seq: 0,
+        msg: EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
+            call_id: call_id.clone(),
+            command: vec!["bash".into(), "-lc".into(), "git diff".into()],
+            cwd: cwd.clone(),
+            parsed_cmd: Vec::new(),
+        }),
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    // Simulate the backend finishing the turn without ever emitting ExecEnd.
+    harness.handle_event(Event {
+        id: "task-complete".to_string(),
+        event_seq: 1,
+        msg: EventMsg::TaskComplete(TaskCompleteEvent {
+            last_agent_message: None,
+        }),
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    let output = render_chat_widget_to_vt100(&mut harness, 80, 14);
+    assert!(
+        !output.contains("Running"),
+        "stale exec should be finalized after TaskComplete:\n{}",
+        output
+    );
+    assert!(
+        output.contains("completion event") || output.contains("interrupted"),
+        "stale exec should surface a clear completion notice:\n{}",
+        output
     );
 }

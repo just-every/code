@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(git rev-parse --show-toplevel)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+# Prefer git to locate the repository root when available, but gracefully fall
+# back to the script directory so source tarballs without .git still work.
+ROOT_DIR="$(cd -- "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd)"
+if command -v git >/dev/null 2>&1; then
+  if git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    ROOT_DIR="$(git -C "$ROOT_DIR" rev-parse --show-toplevel)"
+  fi
+fi
+
 CODE_RS_DIR="$ROOT_DIR/code-rs"
 FORBIDDEN_DIR="$ROOT_DIR/codex-rs"
 
