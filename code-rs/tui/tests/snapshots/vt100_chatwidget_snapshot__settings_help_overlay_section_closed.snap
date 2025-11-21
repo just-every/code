@@ -9,12 +9,12 @@ expression: section_closed
  |                                                                                                |
  | ›  Model              + Select Model & Reasoning --------------------------------------------+ |
  |    Theme              |                                                                      | |
- |    Updates            |  Current model: gpt-5.1-codex                                        | |
- |    Agents             |  Reasoning effort: medium                                            | |
+ |    Updates            |  Current model: GPT-5.1-Codex                                        | |
+ |    Agents             |  Reasoning effort: Medium                                            | |
  |    Auto Drive         |                                                                      | |
  |    Review             |  GPT-5.1-Codex                                                       | |
- |    Validation         |  Optimized for Code.                                                 | |
- |    GitHub             |     High - Maximizes reasoning depth for complex or ambiguous proble | |
+ |    Planning           |  Optimized for Code.                                                 | |
+ |    Validation         |     High - Maximizes reasoning depth for complex or ambiguous proble | |
  |    Chrome             |     Medium (current) - Dynamically adjusts reasoning based on the ta | |
  |    MCP                |     Low - Fastest responses with limited reasoning                   | |
  |    Notifications      |                                                                      | |
