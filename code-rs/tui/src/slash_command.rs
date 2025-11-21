@@ -79,7 +79,6 @@ pub enum SlashCommand {
     Branch,
     Merge,
     Push,
-    Github,
     Validation,
     Mcp,
     Resume,
@@ -131,7 +130,6 @@ impl SlashCommand {
             }
             SlashCommand::Merge => "merge current worktree branch back to default",
             SlashCommand::Push => "commit, push, and monitor workflows",
-            SlashCommand::Github => "GitHub Actions watcher (status/on/off)",
             SlashCommand::Validation => "control validation harness (status/on/off)",
             SlashCommand::Mcp => "manage MCP servers",
             SlashCommand::Perf => "performance tracing (on/off/show/reset)",

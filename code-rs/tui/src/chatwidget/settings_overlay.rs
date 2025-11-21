@@ -15,7 +15,6 @@ use crate::bottom_pane::{
     BottomPaneView,
     ConditionalUpdate,
     settings_panel::{render_panel, PanelFrameStyle},
-    GithubSettingsView,
     McpSettingsView,
     ModelSelectionView,
     NotificationsSettingsView,
@@ -334,31 +333,6 @@ impl SettingsContent for ReviewSettingsContent {
 }
 
 impl SettingsContent for ValidationSettingsContent {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
-        self.view.render(area, buf);
-    }
-
-    fn handle_key(&mut self, key: KeyEvent) -> bool {
-        self.view.handle_key_event_direct(key);
-        true
-    }
-
-    fn is_complete(&self) -> bool {
-        self.view.is_view_complete()
-    }
-}
-
-pub(crate) struct GithubSettingsContent {
-    view: GithubSettingsView,
-}
-
-impl GithubSettingsContent {
-    pub(crate) fn new(view: GithubSettingsView) -> Self {
-        Self { view }
-    }
-}
-
-impl SettingsContent for GithubSettingsContent {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         self.view.render(area, buf);
     }
@@ -1218,7 +1192,6 @@ pub(crate) struct SettingsOverlayView {
     agents_content: Option<AgentsSettingsContent>,
     review_content: Option<ReviewSettingsContent>,
     validation_content: Option<ValidationSettingsContent>,
-    github_content: Option<GithubSettingsContent>,
     auto_drive_content: Option<AutoDriveSettingsContent>,
     limits_content: Option<LimitsSettingsContent>,
     chrome_content: Option<ChromeSettingsContent>,
@@ -1241,7 +1214,6 @@ impl SettingsOverlayView {
             agents_content: None,
             review_content: None,
             validation_content: None,
-            github_content: None,
             auto_drive_content: None,
             limits_content: None,
             chrome_content: None,
@@ -1335,10 +1307,6 @@ impl SettingsOverlayView {
 
     pub(crate) fn set_validation_content(&mut self, content: ValidationSettingsContent) {
         self.validation_content = Some(content);
-    }
-
-    pub(crate) fn set_github_content(&mut self, content: GithubSettingsContent) {
-        self.github_content = Some(content);
     }
 
     pub(crate) fn set_auto_drive_content(&mut self, content: AutoDriveSettingsContent) {
@@ -1822,7 +1790,6 @@ impl SettingsOverlayView {
             SettingsSection::AutoDrive => "Auto Drive Settings",
             SettingsSection::Review => "Review Settings",
             SettingsSection::Validation => "Validation Settings",
-            SettingsSection::Github => "GitHub Settings",
             SettingsSection::Limits => "Rate Limits",
             SettingsSection::Chrome => "Chrome Launch Options",
             SettingsSection::Notifications => "Notifications",
@@ -2158,13 +2125,6 @@ impl SettingsOverlayView {
                 }
                 self.render_placeholder(area, buf, SettingsSection::Validation.placeholder());
             }
-            SettingsSection::Github => {
-                if let Some(content) = self.github_content.as_ref() {
-                    content.render(area, buf);
-                    return;
-                }
-                self.render_placeholder(area, buf, SettingsSection::Github.placeholder());
-            }
             SettingsSection::Limits => {
                 if let Some(content) = self.limits_content.as_ref() {
                     content.render(area, buf);
@@ -2239,10 +2199,6 @@ impl SettingsOverlayView {
                 .map(|content| content as &mut dyn SettingsContent),
             SettingsSection::Validation => self
                 .validation_content
-                .as_mut()
-                .map(|content| content as &mut dyn SettingsContent),
-            SettingsSection::Github => self
-                .github_content
                 .as_mut()
                 .map(|content| content as &mut dyn SettingsContent),
             SettingsSection::Limits => self

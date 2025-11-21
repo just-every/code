@@ -170,7 +170,6 @@ use crate::bottom_pane::{
     AutoCoordinatorButton,
     AutoCoordinatorViewModel,
     CountdownState,
-    GithubSettingsView,
     McpSettingsView,
     ModelSelectionView,
     NotificationsMode,
@@ -969,7 +968,6 @@ use code_browser::BrowserManager;
 use code_core::config::find_code_home;
 use code_core::config::resolve_code_path_for_read;
 use code_core::config::set_github_actionlint_on_patch;
-use code_core::config::set_github_check_on_push;
 use code_core::config::set_validation_group_enabled;
 use code_core::config::set_validation_tool_enabled;
 use code_file_search::FileMatch;
@@ -1999,7 +1997,6 @@ use self::settings_overlay::{
     AgentOverviewRow,
     AutoDriveSettingsContent,
     AgentsSettingsContent,
-    GithubSettingsContent,
     LimitsSettingsContent,
     ChromeSettingsContent,
     McpSettingsContent,
@@ -13916,28 +13913,6 @@ impl ChatWidget<'_> {
         PlanningSettingsContent::new(view)
     }
 
-    fn build_github_settings_content(&mut self) -> GithubSettingsContent {
-        let enabled = self.config.github.check_workflows_on_push;
-        let token_info = gh_actions::get_github_token().map(|(_, src)| src);
-        let (ready, token_status) = match token_info {
-            Some(gh_actions::TokenSource::Env) => (
-                true,
-                "Token: detected (env: GITHUB_TOKEN/GH_TOKEN)".to_string(),
-            ),
-            Some(gh_actions::TokenSource::GhCli) => (
-                true,
-                "Token: detected via gh auth".to_string(),
-            ),
-            None => (
-                false,
-                "Token: not set (set GH_TOKEN/GITHUB_TOKEN or run 'gh auth login')".to_string(),
-            ),
-        };
-
-        let view = GithubSettingsView::new(enabled, token_status, ready, self.app_event_tx.clone());
-        GithubSettingsContent::new(view)
-    }
-
     fn build_auto_drive_settings_content(&mut self) -> AutoDriveSettingsContent {
         let model = self.config.auto_drive.model.clone();
         let model_effort = self.config.auto_drive.model_reasoning_effort;
@@ -13985,19 +13960,6 @@ impl ChatWidget<'_> {
             overlay.set_validation_content(content);
         }
         self.ensure_settings_overlay_section(SettingsSection::Validation);
-        self.request_redraw();
-    }
-
-    fn ensure_github_settings_overlay(&mut self) {
-        if self.settings.overlay.is_none() {
-            self.show_settings_overlay(Some(SettingsSection::Github));
-            return;
-        }
-        let content = self.build_github_settings_content();
-        if let Some(overlay) = self.settings.overlay.as_mut() {
-            overlay.set_github_content(content);
-        }
-        self.ensure_settings_overlay_section(SettingsSection::Github);
         self.request_redraw();
     }
 
@@ -19658,7 +19620,6 @@ Have we met every part of this goal and is there no further work to do?"#
         overlay.set_auto_drive_content(self.build_auto_drive_settings_content());
         overlay.set_review_content(self.build_review_settings_content());
         overlay.set_validation_content(self.build_validation_settings_content());
-        overlay.set_github_content(self.build_github_settings_content());
         overlay.set_limits_content(self.build_limits_settings_content());
         overlay.set_chrome_content(self.build_chrome_settings_content(None));
         let overview_rows = self.build_settings_overview_rows();
@@ -20000,7 +19961,6 @@ Have we met every part of this goal and is there no further work to do?"#
         SettingsSection::ALL
             .iter()
             .copied()
-            .filter(|section| !matches!(section, SettingsSection::Github))
             .map(|section| {
                 let summary = match section {
                     SettingsSection::Model => self.settings_summary_model(),
@@ -20011,7 +19971,6 @@ Have we met every part of this goal and is there no further work to do?"#
                     SettingsSection::AutoDrive => self.settings_summary_auto_drive(),
                     SettingsSection::Review => self.settings_summary_review(),
                     SettingsSection::Validation => self.settings_summary_validation(),
-                    SettingsSection::Github => None,
                     SettingsSection::Limits => self.settings_summary_limits(),
                     SettingsSection::Chrome => self.settings_summary_chrome(),
                     SettingsSection::Mcp => self.settings_summary_mcp(),
@@ -20342,7 +20301,6 @@ Have we met every part of this goal and is there no further work to do?"#
             | SettingsSection::Updates
             | SettingsSection::Review
             | SettingsSection::Validation
-            | SettingsSection::Github
             | SettingsSection::AutoDrive
             | SettingsSection::Mcp
             | SettingsSection::Notifications => false,
@@ -23470,57 +23428,6 @@ Have we met every part of this goal and is there no further work to do?"#
         // the originating slash command turn.
         self.app_event_tx
             .send_background_event_with_ticket(&browser_ticket, response);
-    }
-
-    pub(crate) fn handle_github_command(&mut self, command_text: String) {
-        let trimmed = command_text.trim();
-        self.consume_pending_prompt_for_ui_only_turn();
-        // If no args or 'status', show interactive settings in the footer
-        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("status") {
-            self.ensure_github_settings_overlay();
-            return;
-        }
-
-        let response = if trimmed.eq_ignore_ascii_case("on") {
-            self.config.github.check_workflows_on_push = true;
-            match find_code_home() {
-                Ok(home) => {
-                    if let Err(e) = set_github_check_on_push(&home, true) {
-                        tracing::warn!("Failed to persist /github on: {}", e);
-                        "✅ Enabled GitHub watcher (persist failed; see logs)".to_string()
-                    } else {
-                        "✅ Enabled GitHub watcher (persisted)".to_string()
-                    }
-                }
-                Err(_) => {
-                    "✅ Enabled GitHub watcher (not persisted: CODE_HOME/CODEX_HOME not found)"
-                        .to_string()
-                }
-            }
-        } else if trimmed.eq_ignore_ascii_case("off") {
-            self.config.github.check_workflows_on_push = false;
-            match find_code_home() {
-                Ok(home) => {
-                    if let Err(e) = set_github_check_on_push(&home, false) {
-                        tracing::warn!("Failed to persist /github off: {}", e);
-                        "✅ Disabled GitHub watcher (persist failed; see logs)".to_string()
-                    } else {
-                        "✅ Disabled GitHub watcher (persisted)".to_string()
-                    }
-                }
-                Err(_) => {
-                    "✅ Disabled GitHub watcher (not persisted: CODE_HOME/CODEX_HOME not found)"
-                        .to_string()
-                }
-            }
-        } else {
-            "Usage: /github [status|on|off]".to_string()
-        };
-
-        let lines: Vec<String> = response.lines().map(|line| line.to_string()).collect();
-        self.push_background_tail(lines.join("\n"));
-
-        self.ensure_github_settings_overlay();
     }
 
     fn validation_tool_flag_mut(
@@ -33830,36 +33737,7 @@ impl ChatWidget<'_> {
             }
         }
     }
-    pub(crate) fn set_github_watcher(&mut self, enabled: bool) {
-        self.config.github.check_workflows_on_push = enabled;
-        match find_code_home() {
-            Ok(home) => {
-                if let Err(e) = set_github_check_on_push(&home, enabled) {
-                    tracing::warn!("Failed to persist GitHub watcher setting: {}", e);
-                    let msg = format!(
-                        "✅ {} GitHub watcher (persist failed; see logs)",
-                        if enabled { "Enabled" } else { "Disabled" }
-                    );
-                    self.push_background_tail(msg);
-                } else {
-                    let msg = format!(
-                        "✅ {} GitHub watcher (persisted)",
-                        if enabled { "Enabled" } else { "Disabled" }
-                    );
-                    self.push_background_tail(msg);
-                }
-            }
-            Err(_) => {
-                let msg = format!(
-                    "✅ {} GitHub watcher (not persisted: CODE_HOME/CODEX_HOME not found)",
-                    if enabled { "Enabled" } else { "Disabled" }
-                );
-                self.push_background_tail(msg);
-            }
-        }
-
-        self.refresh_settings_overview_rows();
-    }
+    
 
     pub(crate) fn set_tui_notifications(&mut self, enabled: bool) {
         let new_state = Notifications::Enabled(enabled);

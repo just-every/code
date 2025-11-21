@@ -258,8 +258,6 @@ pub(crate) enum AppEvent {
     /// Update the text verbosity level
     UpdateTextVerbosity(TextVerbosity),
 
-    /// Update GitHub workflow monitoring toggle
-    UpdateGithubWatcher(bool),
     /// Update the TUI notifications toggle
     UpdateTuiNotifications(bool),
     /// Enable or disable Auto Resolve for review flows

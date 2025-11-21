@@ -43,7 +43,6 @@ mod cloud_tasks_view;
 pub(crate) use cloud_tasks_view::CloudTasksView;
 pub mod resume_selection_view;
 pub mod agents_settings_view;
-mod github_settings_view;
 pub mod mcp_settings_view;
 mod login_accounts_view;
 // no direct use of list_selection_view or its items here
@@ -77,7 +76,6 @@ pub(crate) use auto_coordinator_view::{
     CountdownState,
 };
 pub(crate) use auto_drive_settings_view::AutoDriveSettingsView;
-pub(crate) use github_settings_view::GithubSettingsView;
 pub(crate) use login_accounts_view::{
     LoginAccountsState,
     LoginAccountsView,

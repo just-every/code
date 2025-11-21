@@ -2116,7 +2116,7 @@ fn popular_commands_lines(_latest_version: Option<&str>) -> Vec<Line<'static>> {
         Span::from(SlashCommand::Settings.description())
             .style(Style::default().add_modifier(Modifier::DIM)),
         Span::styled(
-            " NEW",
+            " UPDATED",
             Style::default().fg(crate::colors::primary()),
         ),
     ]));
