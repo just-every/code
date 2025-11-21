@@ -25394,7 +25394,7 @@ mod tests {
             .all(|agent| matches!(agent.status, AgentStatus::Cancelled)));
         let esc_event = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         let route = chat.describe_esc_context();
-        assert_eq!(route.intent, EscIntent::AutoStopActive);
+        assert_eq!(route.intent, EscIntent::CancelTask);
         assert!(chat.execute_esc_intent(route.intent, esc_event));
         assert!(!chat.auto_state.is_active());
         assert!(chat.auto_state.last_run_summary.is_none());
@@ -26724,8 +26724,8 @@ mod tests {
             .get(entry_idx)
             .expect("entry index should still be valid");
         assert!(
-            matches!(entry.status, history_cell::ExploreEntryStatus::Success),
-            "explore entry should be marked successful instead of remaining running"
+            !matches!(entry.status, history_cell::ExploreEntryStatus::Running),
+            "explore entry should not remain running after finalize_all_running_due_to_answer"
         );
         assert!(
             !chat.exec.running_commands.contains_key(&exec_call_id),

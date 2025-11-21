@@ -13,8 +13,8 @@ expression: section_open
  |    Agents             |  Reason|Model Shortcuts               |                              | |
  |    Auto Drive         |        |                              |                              | |
  |    Review             |  GPT-5.|• Esc    Return to overview   |                              | |
- |    Validation         |  Optimi|• Tab    Cycle sections       |                              | |
- |    GitHub             |     Hig|• Shift+Tab  Cycle backwards  |r complex or ambiguous proble | |
+ |    Planning           |  Optimi|• Tab    Cycle sections       |                              | |
+ |    Validation         |     Hig|• Shift+Tab  Cycle backwards  |r complex or ambiguous proble | |
  |    Chrome             |     Med|• ?      Toggle this help     |sts reasoning based on the ta | |
  |    MCP                |     Low|                              |d reasoning                   | |
  |    Notifications      |        |Press Esc to close            |                              | |

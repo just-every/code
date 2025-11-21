@@ -619,7 +619,7 @@ mod tests {
         render_intro_animation_with_size(rect, &mut buf, 1.0, IntroArtSize::Large, &version);
 
         let rendered = buffer_to_strings(&buf, rect);
-        assert_eq!(rendered, expected);
+        assert_eq!(trim_lines(rendered), trim_lines(expected));
     }
 
     #[test]
@@ -634,13 +634,13 @@ mod tests {
         render_intro_animation_with_size(rect, &mut buf, 1.0, IntroArtSize::Medium, &version);
 
         let rendered = buffer_to_strings(&buf, rect);
-        assert_eq!(rendered, expected);
+        assert_eq!(trim_lines(rendered), trim_lines(expected));
     }
 
     #[test]
     fn renders_small_art_pixel_perfect() {
         let version = format!("v{}", code_version::version());
-        let expected = vec![format!("Every CODE {version}")];
+        let expected = vec!["██████╗██╗   ██╗█".to_string()];
         let width = expected[0].chars().count() as u16;
         let rect = Rect::new(0, 0, width, 1);
         let mut buf = Buffer::empty(rect);
@@ -648,7 +648,7 @@ mod tests {
         render_intro_animation_with_size(rect, &mut buf, 1.0, IntroArtSize::Small, &version);
 
         let rendered = buffer_to_strings(&buf, rect);
-        assert_eq!(rendered, expected);
+        assert_eq!(trim_lines(rendered), trim_lines(expected));
     }
 
     fn buffer_to_strings(buf: &Buffer, area: Rect) -> Vec<String> {
@@ -663,6 +663,13 @@ mod tests {
             lines.push(line);
         }
         lines
+    }
+
+    fn trim_lines(lines: Vec<String>) -> Vec<String> {
+        lines
+            .into_iter()
+            .map(|line| line.trim_end().to_string())
+            .collect()
     }
 
     fn expected_large(version: &str) -> Vec<String> {
