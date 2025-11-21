@@ -476,7 +476,7 @@ impl ModelSelectionView {
                 if self.target.supports_follow_chat() && self.use_chat_model {
                     "Follow Chat Mode".to_string()
                 } else {
-                    self.current_model.clone()
+                    Self::format_model_header(&self.current_model)
                 },
                 Style::default()
                     .fg(crate::colors::warning())
@@ -492,7 +492,7 @@ impl ModelSelectionView {
                 if self.target.supports_follow_chat() && self.use_chat_model {
                     "From chat".to_string()
                 } else {
-                    format!("{}", self.current_effort)
+                    Self::effort_label(self.current_effort).to_string()
                 },
                 Style::default()
                     .fg(crate::colors::warning())
