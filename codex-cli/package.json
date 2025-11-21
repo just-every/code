@@ -35,10 +35,10 @@
     "prettier": "^3.3.3"
   },
   "optionalDependencies": {
-    "@just-every/code-darwin-arm64": "0.4.20",
-    "@just-every/code-darwin-x64": "0.4.20",
-    "@just-every/code-linux-x64-musl": "0.4.20",
-    "@just-every/code-linux-arm64-musl": "0.4.20",
-    "@just-every/code-win32-x64": "0.4.20"
+    "@just-every/code-darwin-arm64": "0.5.0",
+    "@just-every/code-darwin-x64": "0.5.0",
+    "@just-every/code-linux-x64-musl": "0.5.0",
+    "@just-every/code-linux-arm64-musl": "0.5.0",
+    "@just-every/code-win32-x64": "0.5.0"
   }
 }
