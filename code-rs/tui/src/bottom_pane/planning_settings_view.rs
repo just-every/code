@@ -67,12 +67,6 @@ impl PlanningSettingsView {
     fn handle_enter(&mut self, row: PlanningRow) {
         match row {
             PlanningRow::CustomModel => {
-                if self.use_chat_model {
-                    self.use_chat_model = false;
-                    let _ = self
-                        .app_event_tx
-                        .send(AppEvent::UpdatePlanningUseChatModel(false));
-                }
                 let _ = self.app_event_tx.send(AppEvent::ShowPlanningModelSelector);
             }
         }
