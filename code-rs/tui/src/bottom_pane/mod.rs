@@ -10,6 +10,7 @@ use crate::thread_spawner;
 pub(crate) use bottom_pane_view::BottomPaneView;
 pub(crate) use bottom_pane_view::ConditionalUpdate;
 use crate::util::buffer::fill_rect;
+use code_protocol::custom_prompts::CustomPrompt;
 use code_core::protocol::TokenUsage;
 use code_file_search::FileMatch;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
@@ -530,6 +531,10 @@ impl BottomPane<'_> {
             Some(view) => !view.is_complete(),
             None => false,
         }
+    }
+
+    pub(crate) fn set_custom_prompts(&mut self, prompts: Vec<CustomPrompt>) {
+        self.composer.set_custom_prompts(prompts);
     }
 
     /// Enable or disable compact compose mode. When enabled, the spacer line
