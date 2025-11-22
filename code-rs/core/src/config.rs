@@ -2387,6 +2387,8 @@ impl Config {
                 let command_trimmed = a.command.trim();
                 if command_trimmed.is_empty() {
                     if let Some(spec) = agent_model_spec(&a.name) {
+                        // Normalize legacy aliases to canonical slugs and default CLI.
+                        a.name = spec.slug.to_string();
                         a.command = spec.cli.to_string();
                     } else {
                         a.command = a.name.clone();
