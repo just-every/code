@@ -23,7 +23,7 @@ use code_app_server_protocol::ClientRequest;
 use code_protocol::ConversationId;
 use code_protocol::protocol::SessionSource;
 
-use code_common::model_presets::{builtin_model_presets, ModelPreset};
+use code_common::model_presets::{builtin_model_presets, clamp_reasoning_effort_for_model, ModelPreset};
 use code_core::AuthManager;
 use code_core::ConversationManager;
 use code_core::config_types::{ClientTools, McpServerConfig, McpServerTransportConfig, ReasoningEffort};
@@ -1592,6 +1592,10 @@ fn resolve_model_selection(model_id: &acp::ModelId, config: &Config) -> Option<M
 }
 
 fn apply_model_selection(config: &mut Config, model: &str, effort: ReasoningEffort) -> bool {
+    let requested_effort: code_protocol::config_types::ReasoningEffort = effort.into();
+    let clamped_effort: ReasoningEffort =
+        clamp_reasoning_effort_for_model(model, requested_effort).into();
+
     let mut updated = false;
     if !config.model.eq_ignore_ascii_case(model) {
         config.model = model.to_string();
@@ -1600,8 +1604,8 @@ fn apply_model_selection(config: &mut Config, model: &str, effort: ReasoningEffo
         updated = true;
     }
 
-    if config.model_reasoning_effort != effort {
-        config.model_reasoning_effort = effort;
+    if config.model_reasoning_effort != clamped_effort {
+        config.model_reasoning_effort = clamped_effort;
         updated = true;
     }
 

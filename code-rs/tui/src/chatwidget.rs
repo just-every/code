@@ -28,8 +28,9 @@ use crate::spinner;
 use crate::thread_spawner;
 
 use code_common::elapsed::format_duration;
-use code_common::model_presets::ModelPreset;
 use code_common::model_presets::builtin_model_presets;
+use code_common::model_presets::clamp_reasoning_effort_for_model;
+use code_common::model_presets::ModelPreset;
 use code_core::ConversationManager;
 use code_core::agent_defaults::{agent_model_spec, enabled_agent_model_specs};
 use code_core::smoke_test_agent_blocking;
@@ -18655,6 +18656,12 @@ Have we met every part of this goal and is there no further work to do?"#
         preset.default_reasoning_effort.into()
     }
 
+    fn clamp_reasoning_for_model(model: &str, requested: ReasoningEffort) -> ReasoningEffort {
+        let protocol_effort: code_protocol::config_types::ReasoningEffort = requested.into();
+        let clamped = clamp_reasoning_effort_for_model(model, protocol_effort);
+        ReasoningEffort::from(clamped)
+    }
+
     fn find_model_preset(&self, input: &str, presets: &[ModelPreset]) -> Option<ModelPreset> {
         if presets.is_empty() {
             return None;
@@ -18848,11 +18855,12 @@ Have we met every part of this goal and is there no further work to do?"#
             updated = true;
         }
 
-        if let Some(new_effort) = effort {
-            if self.config.model_reasoning_effort != new_effort {
-                self.config.model_reasoning_effort = new_effort;
-                updated = true;
-            }
+        let requested_effort = effort.unwrap_or(self.config.model_reasoning_effort);
+        let clamped_effort = Self::clamp_reasoning_for_model(trimmed, requested_effort);
+
+        if self.config.model_reasoning_effort != clamped_effort {
+            self.config.model_reasoning_effort = clamped_effort;
+            updated = true;
         }
 
         if updated {
@@ -18924,14 +18932,16 @@ Have we met every part of this goal and is there no further work to do?"#
 
         self.config.review_use_chat_model = false;
 
+        let clamped_effort = Self::clamp_reasoning_for_model(trimmed, effort);
+
         let mut updated = false;
         if !self.config.review_model.eq_ignore_ascii_case(trimmed) {
             self.config.review_model = trimmed.to_string();
             updated = true;
         }
 
-        if self.config.review_model_reasoning_effort != effort {
-            self.config.review_model_reasoning_effort = effort;
+        if self.config.review_model_reasoning_effort != clamped_effort {
+            self.config.review_model_reasoning_effort = clamped_effort;
             updated = true;
         }
 
@@ -19077,13 +19087,15 @@ Have we met every part of this goal and is there no further work to do?"#
 
         self.config.planning_use_chat_model = false;
 
+        let clamped_effort = Self::clamp_reasoning_for_model(trimmed, effort);
+
         let mut updated = false;
         if !self.config.planning_model.eq_ignore_ascii_case(trimmed) {
             self.config.planning_model = trimmed.to_string();
             updated = true;
         }
-        if self.config.planning_model_reasoning_effort != effort {
-            self.config.planning_model_reasoning_effort = effort;
+        if self.config.planning_model_reasoning_effort != clamped_effort {
+            self.config.planning_model_reasoning_effort = clamped_effort;
             updated = true;
         }
 
@@ -19231,14 +19243,16 @@ Have we met every part of this goal and is there no further work to do?"#
 
         self.config.auto_drive_use_chat_model = false;
 
+        let clamped_effort = Self::clamp_reasoning_for_model(trimmed, effort);
+
         let mut updated = false;
         if !self.config.auto_drive.model.eq_ignore_ascii_case(trimmed) {
             self.config.auto_drive.model = trimmed.to_string();
             updated = true;
         }
 
-        if self.config.auto_drive.model_reasoning_effort != effort {
-            self.config.auto_drive.model_reasoning_effort = effort;
+        if self.config.auto_drive.model_reasoning_effort != clamped_effort {
+            self.config.auto_drive.model_reasoning_effort = clamped_effort;
             updated = true;
         }
 
@@ -19489,14 +19503,25 @@ Have we met every part of this goal and is there no further work to do?"#
     }
 
     pub(crate) fn set_reasoning_effort(&mut self, new_effort: ReasoningEffort) {
+        let clamped_effort = Self::clamp_reasoning_for_model(&self.config.model, new_effort);
+
+        if clamped_effort != new_effort {
+            let requested = Self::format_reasoning_effort(new_effort);
+            let applied = Self::format_reasoning_effort(clamped_effort);
+            self.bottom_pane.flash_footer_notice(format!(
+                "{} does not support {} reasoning; using {} instead.",
+                self.config.model, requested, applied
+            ));
+        }
+
         // Update the config
-        self.config.model_reasoning_effort = new_effort;
+        self.config.model_reasoning_effort = clamped_effort;
 
         // Send ConfigureSession op to update the backend
         let op = Op::ConfigureSession {
             provider: self.config.model_provider.clone(),
             model: self.config.model.clone(),
-            model_reasoning_effort: new_effort,
+            model_reasoning_effort: clamped_effort,
             model_reasoning_summary: self.config.model_reasoning_summary,
             model_text_verbosity: self.config.model_text_verbosity,
             user_instructions: self.config.user_instructions.clone(),
@@ -19513,7 +19538,7 @@ Have we met every part of this goal and is there no further work to do?"#
 
         // Add status message to history (replaceable system notice)
         let placement = self.ui_placement_for_now();
-        let state = history_cell::new_reasoning_output(&new_effort);
+        let state = history_cell::new_reasoning_output(&self.config.model_reasoning_effort);
         let cell = crate::history_cell::PlainHistoryCell::from_state(state.clone());
         self.push_system_cell(
             Box::new(cell),

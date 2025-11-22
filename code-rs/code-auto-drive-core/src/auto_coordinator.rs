@@ -17,6 +17,7 @@ use code_core::protocol::SandboxPolicy;
 use code_core::slash_commands::get_enabled_agents;
 use code_core::{AuthManager, ModelClient, Prompt, ResponseEvent, TextFormat};
 use code_core::error::CodexErr;
+use code_common::model_presets::clamp_reasoning_effort_for_model;
 use code_protocol::models::{ContentItem, ReasoningItemContent, ResponseItem};
 use code_core::protocol::TokenUsage;
 use futures::StreamExt;
@@ -922,6 +923,11 @@ fn run_auto_loop(
     if matches!(config.model_reasoning_effort, ReasoningEffort::None) {
         config.model_reasoning_effort = ReasoningEffort::High;
     }
+    let requested_effort: code_protocol::config_types::ReasoningEffort =
+        config.model_reasoning_effort.into();
+    let clamped_effort =
+        clamp_reasoning_effort_for_model(&config.model, requested_effort);
+    config.model_reasoning_effort = ReasoningEffort::from(clamped_effort);
     let allowed_verbosity = supported_text_verbosity_for_model(&config.model);
     config.model_text_verbosity = allowed_verbosity
         .iter()

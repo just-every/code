@@ -268,14 +268,57 @@ pub fn all_model_presets() -> &'static Vec<ModelPreset> {
     &PRESETS
 }
 
-pub fn allowed_text_verbosity_for_model(model: &str) -> &'static [TextVerbosityConfig] {
+fn find_preset_for_model(model: &str) -> Option<&'static ModelPreset> {
     let model_lower = model.to_ascii_lowercase();
-    PRESETS
+
+    PRESETS.iter().find(|preset| {
+        preset.model.eq_ignore_ascii_case(&model_lower)
+            || preset.id.eq_ignore_ascii_case(&model_lower)
+            || preset.display_name.eq_ignore_ascii_case(&model_lower)
+    })
+}
+
+fn reasoning_effort_rank(effort: ReasoningEffort) -> u8 {
+    match effort {
+        ReasoningEffort::Minimal => 0,
+        ReasoningEffort::Low => 1,
+        ReasoningEffort::Medium => 2,
+        ReasoningEffort::High => 3,
+        ReasoningEffort::XHigh => 4,
+    }
+}
+
+pub fn clamp_reasoning_effort_for_model(
+    model: &str,
+    requested: ReasoningEffort,
+) -> ReasoningEffort {
+    let Some(preset) = find_preset_for_model(model) else {
+        return requested;
+    };
+
+    if preset
+        .supported_reasoning_efforts
         .iter()
-        .find(|preset| {
-            preset.model.eq_ignore_ascii_case(&model_lower)
-                || preset.id.eq_ignore_ascii_case(&model_lower)
+        .any(|opt| opt.effort == requested)
+    {
+        return requested;
+    }
+
+    let requested_rank = reasoning_effort_rank(requested);
+
+    preset
+        .supported_reasoning_efforts
+        .iter()
+        .min_by_key(|opt| {
+            let rank = reasoning_effort_rank(opt.effort);
+            (requested_rank.abs_diff(rank), u8::MAX - rank)
         })
+        .map(|opt| opt.effort)
+        .unwrap_or(requested)
+}
+
+pub fn allowed_text_verbosity_for_model(model: &str) -> &'static [TextVerbosityConfig] {
+    find_preset_for_model(model)
         .map(|preset| preset.supported_text_verbosity)
         .unwrap_or(ALL_TEXT_VERBOSITY)
 }
@@ -295,5 +338,18 @@ mod tests {
         assert!(presets
             .iter()
             .all(|preset| preset.id != "gpt-5.1-codex-max"));
+    }
+
+    #[test]
+    fn clamp_reasoning_effort_downgrades_to_supported_level() {
+        let clamped = clamp_reasoning_effort_for_model(
+            "gpt-5.1-codex",
+            ReasoningEffort::XHigh,
+        );
+        assert_eq!(clamped, ReasoningEffort::High);
+
+        let clamped_minimal =
+            clamp_reasoning_effort_for_model("gpt-5.1-codex-mini", ReasoningEffort::Minimal);
+        assert_eq!(clamped_minimal, ReasoningEffort::Medium);
     }
 }
