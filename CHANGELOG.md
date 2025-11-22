@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.5.2] - 2025-11-22
+
+- Agents: default automation flows to gpt-5.1-codex-max and add gemini-3-pro as an option for higher-capacity runs. (f0f99f2e)
+- Models: clamp reasoning effort to supported bands so prompts no longer fail with invalid request errors. (6a7cac9d)
+
 ## [0.5.0] - 2025-11-21
 
 - Rebrand the project to **Every Code** while keeping the `code` CLI name and refreshed docs.
