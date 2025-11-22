@@ -26058,7 +26058,7 @@ mod tests {
 
         chat.auto_on_assistant_final();
 
-        // With cloud-gpt-5.1-codex gated off, the review request is still queued but
+        // With cloud-gpt-5.1-codex-max gated off, the review request is still queued but
         // may be processed synchronously; ensure the review slot was populated.
         if chat.auto_state.awaiting_review() {
             // Review remains pending; nothing else to assert.
