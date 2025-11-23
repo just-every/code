@@ -93,7 +93,7 @@ enum Subcommand {
     #[clap(visible_alias = "e")]
     Exec(ExecCli),
 
-    /// Run Auto Drive in headless mode (alias for `exec --auto`).
+    /// Run Auto Drive in headless mode (alias for `exec --auto --full-auto`).
     #[clap(name = "auto")]
     Auto(ExecCli),
 
@@ -326,6 +326,9 @@ async fn cli_main(code_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()>
         }
         Some(Subcommand::Auto(mut exec_cli)) => {
             exec_cli.auto_drive = true;
+            if !exec_cli.full_auto && !exec_cli.dangerously_bypass_approvals_and_sandbox {
+                exec_cli.full_auto = true;
+            }
             prepend_config_flags(
                 &mut exec_cli.config_overrides,
                 root_config_overrides.clone(),
