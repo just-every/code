@@ -4,10 +4,21 @@ mod event_processor_with_human_output;
 mod event_processor_with_json_output;
 
 pub use cli::Cli;
+use code_auto_drive_core::start_auto_coordinator;
+use code_auto_drive_core::AutoCoordinatorCommand;
+use code_auto_drive_core::AutoCoordinatorEvent;
+use code_auto_drive_core::AutoCoordinatorEventSender;
+use code_auto_drive_core::AutoCoordinatorStatus;
+use code_auto_drive_core::AutoDriveHistory;
+use code_auto_drive_core::AutoTurnAgentsAction;
+use code_auto_drive_core::AutoTurnAgentsTiming;
+use code_auto_drive_core::AutoTurnCliAction;
+use code_auto_drive_core::MODEL_SLUG;
 use code_core::AuthManager;
 use code_core::BUILT_IN_OSS_MODEL_PROVIDER_ID;
 use code_core::ConversationManager;
 use code_core::NewConversation;
+use code_core::CodexConversation;
 use code_core::config::set_default_originator;
 use code_core::config::Config;
 use code_core::config::ConfigOverrides;
@@ -18,15 +29,19 @@ use code_core::protocol::EventMsg;
 use code_core::protocol::InputItem;
 use code_core::protocol::Op;
 use code_core::protocol::TaskCompleteEvent;
+use code_protocol::models::ContentItem;
+use code_protocol::models::ResponseItem;
 use code_protocol::protocol::SessionSource;
 use code_ollama::DEFAULT_OSS_MODEL;
 use code_protocol::config_types::SandboxMode;
 use event_processor_with_human_output::EventProcessorWithHumanOutput;
 use event_processor_with_json_output::EventProcessorWithJsonOutput;
+use event_processor::handle_last_message;
 use serde_json::Value;
 use std::io::IsTerminal;
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::Arc;
 use supports_color::Stream;
 use tracing::debug;
 use tracing::error;
@@ -62,6 +77,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         output_schema: output_schema_path,
         include_plan_tool,
         config_overrides,
+        auto_drive,
         ..
     } = cli;
 
@@ -106,6 +122,37 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
             buffer
         }
     };
+
+    let mut auto_drive_goal: Option<String> = None;
+    let trimmed_prompt = prompt.trim();
+    if trimmed_prompt.starts_with("/auto") {
+        auto_drive_goal = Some(trimmed_prompt.trim_start_matches("/auto").trim().to_string());
+    }
+    if auto_drive {
+        if trimmed_prompt.is_empty() {
+            eprintln!("Auto Drive requires a goal. Provide one after --auto or prefix the prompt with /auto.");
+            std::process::exit(1);
+        }
+        if auto_drive_goal
+            .as_ref()
+            .is_some_and(|goal| goal.is_empty())
+        {
+            auto_drive_goal = Some(trimmed_prompt.to_string());
+        } else if auto_drive_goal.is_none() {
+            auto_drive_goal = Some(trimmed_prompt.to_string());
+        }
+    }
+
+    let summary_prompt = if let Some(goal) = auto_drive_goal.as_ref() {
+        format!("/auto {}", goal)
+    } else {
+        prompt.clone()
+    };
+
+    if auto_drive_goal.as_ref().is_some_and(|g| g.is_empty()) {
+        eprintln!("Auto Drive requires a goal. Provide one after /auto or --auto.");
+        std::process::exit(1);
+    }
 
     let _output_schema = load_output_schema(output_schema_path);
 
@@ -192,6 +239,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
     };
 
     let config = Config::load_with_cli_overrides(cli_kv_overrides, overrides)?;
+    let stop_on_task_complete = auto_drive_goal.is_none();
     let mut event_processor: Box<dyn EventProcessor> = if json_mode {
         Box::new(EventProcessorWithJsonOutput::new(last_message_file.clone()))
     } else {
@@ -199,6 +247,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
             stdout_with_ansi,
             &config,
             last_message_file.clone(),
+            stop_on_task_complete,
         ))
     };
 
@@ -210,7 +259,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
 
     // Print the effective configuration and prompt so users can see what Codex
     // is using.
-    event_processor.print_config_summary(&config, &prompt);
+    event_processor.print_config_summary(&config, &summary_prompt);
 
     let default_cwd = config.cwd.to_path_buf();
     let _default_approval_policy = config.approval_policy;
@@ -253,8 +302,20 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
             .new_conversation(config.clone())
             .await?
     };
-    event_processor.print_config_summary(&config, &prompt);
+    event_processor.print_config_summary(&config, &summary_prompt);
     info!("Codex initialized with event: {session_configured:?}");
+
+    if let Some(goal) = auto_drive_goal {
+        return run_auto_drive_session(
+            goal,
+            images,
+            config,
+            conversation,
+            event_processor,
+            last_message_file,
+        )
+        .await;
+    }
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
     {
@@ -468,6 +529,332 @@ async fn resolve_resume_path(
         Ok(entry.map(|entry| entry_to_rollout_path(&config.code_home, &entry)))
     } else {
         Ok(None)
+    }
+}
+
+struct TurnResult {
+    last_agent_message: Option<String>,
+    error_seen: bool,
+}
+
+async fn run_auto_drive_session(
+    goal: String,
+    images: Vec<PathBuf>,
+    config: Config,
+    conversation: Arc<CodexConversation>,
+    mut event_processor: Box<dyn EventProcessor>,
+    last_message_path: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let mut final_last_message: Option<String> = None;
+    let mut error_seen = false;
+
+    if !images.is_empty() {
+        let items: Vec<InputItem> = images
+            .into_iter()
+            .map(|path| InputItem::LocalImage { path })
+            .collect();
+        let initial_images_event_id = conversation.submit(Op::UserInput { items }).await?;
+        while let Ok(event) = conversation.next_event().await {
+            let is_complete = event.id == initial_images_event_id
+                && matches!(
+                    event.msg,
+                    EventMsg::TaskComplete(TaskCompleteEvent {
+                        last_agent_message: _,
+                    })
+                );
+            let status = event_processor.process_event(event);
+            if is_complete || matches!(status, CodexStatus::Shutdown) {
+                break;
+            }
+        }
+    }
+
+    let mut history = AutoDriveHistory::new();
+
+    let mut auto_config = config.clone();
+    auto_config.model = config.auto_drive.model.trim().to_string();
+    if auto_config.model.is_empty() {
+        auto_config.model = MODEL_SLUG.to_string();
+    }
+    auto_config.model_reasoning_effort = config.auto_drive.model_reasoning_effort;
+
+    let (auto_tx, mut auto_rx) = tokio::sync::mpsc::unbounded_channel();
+    let sender = AutoCoordinatorEventSender::new(move |event| {
+        let _ = auto_tx.send(event);
+    });
+
+    let handle = start_auto_coordinator(
+        sender,
+        goal.clone(),
+        history.raw_snapshot(),
+        auto_config,
+        config.debug,
+        false,
+    )?;
+
+    while let Some(event) = auto_rx.recv().await {
+        match event {
+            AutoCoordinatorEvent::Thinking { delta, .. } => {
+                println!("[auto] {delta}");
+            }
+            AutoCoordinatorEvent::TokenMetrics {
+                total_usage,
+                last_turn_usage,
+                turn_count,
+                ..
+            } => {
+                println!(
+                    "[auto] turn {} tokens (turn/total): {}/{}",
+                    turn_count,
+                    last_turn_usage.blended_total(),
+                    total_usage.blended_total()
+                );
+            }
+            AutoCoordinatorEvent::CompactedHistory { conversation } => {
+                history.replace_all(conversation);
+            }
+            AutoCoordinatorEvent::UserReply {
+                user_response,
+                cli_command,
+            } => {
+                if let Some(text) = user_response.filter(|s| !s.trim().is_empty()) {
+                    history.append_raw(&[make_assistant_message(text.clone())]);
+                    final_last_message = Some(text);
+                }
+
+                if let Some(cmd) = cli_command {
+                    let prompt_text = cmd.trim();
+                    if !prompt_text.is_empty() {
+                        history.append_raw(&[make_user_message(prompt_text.to_string())]);
+                        let TurnResult {
+                            last_agent_message,
+                            error_seen: turn_error,
+                        } = submit_and_wait(&conversation, event_processor.as_mut(), prompt_text.to_string()).await?;
+                        error_seen |= turn_error;
+                        if let Some(text) = last_agent_message {
+                            history.append_raw(&[make_assistant_message(text.clone())]);
+                            final_last_message = Some(text);
+                        }
+                        let _ = handle
+                            .send(AutoCoordinatorCommand::UpdateConversation(history.raw_snapshot()));
+                    }
+                }
+            }
+            AutoCoordinatorEvent::Decision {
+                seq,
+                status,
+                status_title,
+                status_sent_to_user,
+                goal: maybe_goal,
+                cli,
+                agents_timing,
+                agents,
+                transcript,
+            } => {
+                history.append_raw(&transcript);
+                let _ = handle.send(AutoCoordinatorCommand::AckDecision { seq });
+
+                if let Some(title) = status_title.filter(|s| !s.trim().is_empty()) {
+                    println!("[auto] status: {title}");
+                }
+                if let Some(sent) = status_sent_to_user.filter(|s| !s.trim().is_empty()) {
+                    println!("[auto] update: {sent}");
+                }
+                if let Some(goal_text) = maybe_goal.filter(|s| !s.trim().is_empty()) {
+                    println!("[auto] goal: {goal_text}");
+                }
+
+                let Some(cli_action) = cli else {
+                    if matches!(status, AutoCoordinatorStatus::Success | AutoCoordinatorStatus::Failed)
+                    {
+                        let _ = handle.send(AutoCoordinatorCommand::Stop);
+                    }
+                    continue;
+                };
+
+                let prompt_text = build_auto_prompt(&cli_action, &agents, agents_timing);
+                history.append_raw(&[make_user_message(prompt_text.clone())]);
+
+                let TurnResult {
+                    last_agent_message,
+                    error_seen: turn_error,
+                } = submit_and_wait(&conversation, event_processor.as_mut(), prompt_text).await?;
+                error_seen |= turn_error;
+                if let Some(text) = last_agent_message {
+                    history.append_raw(&[make_assistant_message(text.clone())]);
+                    final_last_message = Some(text);
+                }
+
+                if handle
+                    .send(AutoCoordinatorCommand::UpdateConversation(history.raw_snapshot()))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            AutoCoordinatorEvent::StopAck => {
+                break;
+            }
+        }
+    }
+
+    handle.cancel();
+    let _ = conversation.submit(Op::Shutdown).await;
+    while let Ok(event) = conversation.next_event().await {
+        if matches!(event.msg, EventMsg::ShutdownComplete) {
+            break;
+        }
+        let status = event_processor.process_event(event);
+        if matches!(status, CodexStatus::Shutdown) {
+            break;
+        }
+    }
+
+    if let Some(path) = last_message_path.as_deref() {
+        handle_last_message(final_last_message.as_deref(), path);
+    }
+
+    if error_seen {
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+fn build_auto_prompt(
+    cli_action: &AutoTurnCliAction,
+    agents: &[AutoTurnAgentsAction],
+    agents_timing: Option<AutoTurnAgentsTiming>,
+) -> String {
+    let mut sections: Vec<String> = Vec::new();
+
+    if let Some(ctx) = cli_action
+        .context
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        sections.push(ctx.to_string());
+    }
+
+    let cli_prompt = cli_action.prompt.trim();
+    if !cli_prompt.is_empty() {
+        sections.push(cli_prompt.to_string());
+    }
+
+    if !agents.is_empty() {
+        let mut lines: Vec<String> = Vec::new();
+        lines.push("<agents>".to_string());
+        lines.push("Please use agents to help you complete this task.".to_string());
+
+        for action in agents {
+            let prompt = action
+                .prompt
+                .trim()
+                .replace('\n', " ")
+                .replace('"', "\\\"");
+            let write_text = if action.write { "write: true" } else { "write: false" };
+
+            lines.push(String::new());
+            lines.push(format!("prompt: \"{prompt}\" ({write_text})"));
+
+            if let Some(ctx) = action
+                .context
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                lines.push(format!("context: {}", ctx.replace('\n', " ")));
+            }
+
+            if let Some(models) = action.models.as_ref().filter(|list| !list.is_empty()) {
+                lines.push(format!("models: {}", models.join(", ")));
+            }
+        }
+
+        let timing_line = match agents_timing {
+            Some(AutoTurnAgentsTiming::Parallel) =>
+                "Timing: parallel — continue the CLI prompt while agents run; call agent.wait when ready to merge results.".to_string(),
+            Some(AutoTurnAgentsTiming::Blocking) =>
+                "Timing: blocking — launch agents first, wait with agent.wait, then continue the CLI prompt.".to_string(),
+            None =>
+                "Timing: blocking — wait for agent.wait before continuing the CLI prompt.".to_string(),
+        };
+        lines.push(String::new());
+        lines.push(timing_line);
+        lines.push("</agents>".to_string());
+
+        sections.push(lines.join("\n"));
+    }
+
+    sections.join("\n\n")
+}
+
+fn make_user_message(text: String) -> ResponseItem {
+    ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText { text }],
+    }
+}
+
+fn make_assistant_message(text: String) -> ResponseItem {
+    ResponseItem::Message {
+        id: None,
+        role: "assistant".to_string(),
+        content: vec![ContentItem::OutputText { text }],
+    }
+}
+
+async fn submit_and_wait(
+    conversation: &Arc<CodexConversation>,
+    event_processor: &mut dyn EventProcessor,
+    prompt_text: String,
+) -> anyhow::Result<TurnResult> {
+    let mut error_seen = false;
+
+    let submit_id = conversation
+        .submit(Op::UserInput {
+            items: vec![InputItem::Text { text: prompt_text }],
+        })
+        .await?;
+
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                let _ = conversation.submit(Op::Interrupt).await;
+                return Err(anyhow::anyhow!("Interrupted"));
+            }
+            res = conversation.next_event() => {
+                let event = res?;
+                let event_id = event.id.clone();
+                if matches!(event.msg, EventMsg::Error(_)) {
+                    error_seen = true;
+                }
+
+                let last_agent_message = if let EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) = &event.msg {
+                    last_agent_message.clone()
+                } else {
+                    None
+                };
+
+                let status = event_processor.process_event(event);
+
+                if matches!(status, CodexStatus::Shutdown) {
+                    return Ok(TurnResult {
+                        last_agent_message: None,
+                        error_seen,
+                    });
+                }
+
+                if last_agent_message.is_some() && event_id == submit_id {
+                    return Ok(TurnResult {
+                        last_agent_message,
+                        error_seen,
+                    });
+                }
+            }
+        }
     }
 }
 

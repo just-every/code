@@ -10,6 +10,10 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
 
+    /// Run Auto Drive instead of a single non-interactive turn.
+    #[arg(long = "auto", default_value_t = false)]
+    pub auto_drive: bool,
+
     /// Optional image(s) to attach to the initial prompt.
     #[arg(
         long = "image",

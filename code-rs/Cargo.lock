@@ -1224,6 +1224,7 @@ dependencies = [
  "clap",
  "code-app-server-protocol",
  "code-arg0",
+ "code-auto-drive-core",
  "code-common",
  "code-core",
  "code-ollama",

@@ -65,6 +65,11 @@ pub(crate) struct EventProcessorWithHumanOutput {
     reasoning_started: bool,
     raw_reasoning_started: bool,
     last_message_path: Option<PathBuf>,
+
+    /// If true, stop after the first TaskComplete event (default exec mode).
+    /// Auto Drive sessions keep running across multiple turns, so they leave
+    /// this false and handle shutdown themselves.
+    stop_on_task_complete: bool,
 }
 
 impl EventProcessorWithHumanOutput {
@@ -72,6 +77,7 @@ impl EventProcessorWithHumanOutput {
         with_ansi: bool,
         config: &Config,
         last_message_path: Option<PathBuf>,
+        stop_on_task_complete: bool,
     ) -> Self {
         let call_id_to_command = HashMap::new();
         let call_id_to_patch = HashMap::new();
@@ -93,6 +99,7 @@ impl EventProcessorWithHumanOutput {
                 reasoning_started: false,
                 raw_reasoning_started: false,
                 last_message_path,
+                stop_on_task_complete,
             }
         } else {
             Self {
@@ -111,9 +118,11 @@ impl EventProcessorWithHumanOutput {
                 reasoning_started: false,
                 raw_reasoning_started: false,
                 last_message_path,
+                stop_on_task_complete,
             }
         }
     }
+
 }
 
 struct ExecCommandBegin {
@@ -191,7 +200,10 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 if let Some(output_file) = self.last_message_path.as_deref() {
                     handle_last_message(last_agent_message.as_deref(), output_file);
                 }
-                return CodexStatus::InitiateShutdown;
+                if self.stop_on_task_complete {
+                    return CodexStatus::InitiateShutdown;
+                }
+                return CodexStatus::Running;
             }
             EventMsg::TokenCount(ev) => {
                 if let Some(usage_info) = ev.info {

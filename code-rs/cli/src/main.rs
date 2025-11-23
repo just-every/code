@@ -79,6 +79,10 @@ struct MultitoolCli {
     #[clap(flatten)]
     interactive: TuiCli,
 
+    /// Run Auto Drive when executing non-interactive sessions.
+    #[clap(long = "auto", global = true, default_value_t = false)]
+    auto_drive: bool,
+
     #[clap(subcommand)]
     subcommand: Option<Subcommand>,
 }
@@ -88,6 +92,10 @@ enum Subcommand {
     /// Run Codex non-interactively.
     #[clap(visible_alias = "e")]
     Exec(ExecCli),
+
+    /// Run Auto Drive in headless mode (alias for `exec --auto`).
+    #[clap(name = "auto")]
+    Auto(ExecCli),
 
     /// Manage login.
     Login(LoginCommand),
@@ -276,6 +284,7 @@ async fn cli_main(code_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()>
     let MultitoolCli {
         config_overrides: root_config_overrides,
         mut interactive,
+        auto_drive,
         subcommand,
     } = MultitoolCli::parse();
 
@@ -306,6 +315,17 @@ async fn cli_main(code_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()>
             }
         }
         Some(Subcommand::Exec(mut exec_cli)) => {
+            if auto_drive {
+                exec_cli.auto_drive = true;
+            }
+            prepend_config_flags(
+                &mut exec_cli.config_overrides,
+                root_config_overrides.clone(),
+            );
+            code_exec::run_main(exec_cli, code_linux_sandbox_exe).await?;
+        }
+        Some(Subcommand::Auto(mut exec_cli)) => {
+            exec_cli.auto_drive = true;
             prepend_config_flags(
                 &mut exec_cli.config_overrides,
                 root_config_overrides.clone(),
@@ -1080,6 +1100,7 @@ mod tests {
         let MultitoolCli {
             interactive,
             config_overrides: root_overrides,
+            auto_drive: _,
             subcommand,
         } = cli;
 
