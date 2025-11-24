@@ -536,7 +536,11 @@ async fn process_chat_sse<S>(
             Ok(Some(Ok(ev))) => ev,
             Ok(Some(Err(e))) => {
                 let _ = tx_event
-                    .send(Err(CodexErr::Stream(e.to_string(), None)))
+                    .send(Err(CodexErr::Stream(
+                        format!("[transport] {e}"),
+                        None,
+                        Some(request_id.clone()),
+                    )))
                     .await;
                 return;
             }
@@ -567,8 +571,9 @@ async fn process_chat_sse<S>(
             Err(_) => {
                 let _ = tx_event
                     .send(Err(CodexErr::Stream(
-                        "idle timeout waiting for SSE".into(),
+                        "[idle] timeout waiting for SSE".into(),
                         None,
+                        Some(request_id.clone()),
                     )))
                     .await;
                 return;

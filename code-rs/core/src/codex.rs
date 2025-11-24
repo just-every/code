@@ -5699,7 +5699,7 @@ async fn run_turn(
             Err(e) => {
                 // Detect context-window overflow and auto-run a compact summarization once
                 if !did_auto_compact {
-                    if let CodexErr::Stream(msg, _maybe_delay) = &e {
+                    if let CodexErr::Stream(msg, _maybe_delay, _req_id) = &e {
                         let lower = msg.to_ascii_lowercase();
                         let looks_like_context_overflow =
                             lower.contains("exceeds the context window")
@@ -5769,10 +5769,14 @@ async fn run_turn(
 
                 // Use the configured provider-specific stream retry budget.
                 let max_retries = tc.client.get_provider().stream_max_retries();
+                let req_id = match &e {
+                    CodexErr::Stream(_, _, req) => req.clone(),
+                    _ => None,
+                };
                 if retries < max_retries {
                     retries += 1;
                     let (delay, retry_eta) = match e {
-                        CodexErr::Stream(_, Some(ref retry_after)) => {
+                        CodexErr::Stream(_, Some(ref retry_after), _) => {
                             let eta = format_retry_eta(&retry_after);
                             (retry_after.delay, eta)
                         }
@@ -5780,6 +5784,7 @@ async fn run_turn(
                     };
                     warn!(
                         error = %e,
+                        request_id = req_id.as_deref(),
                         "stream disconnected - retrying turn ({retries}/{max_retries} in {delay:?})...",
                     );
 
@@ -5877,6 +5882,14 @@ async fn run_turn(
 
                     tokio::time::sleep(delay).await;
                 } else {
+                    error!(
+                        retries,
+                        max_retries,
+                        auto_compact_attempted = did_auto_compact,
+                        request_id = req_id.as_deref(),
+                        error = %e,
+                        "stream disconnected - retries exhausted"
+                    );
                     return Err(e);
                 }
             }
@@ -6086,6 +6099,7 @@ async fn try_run_turn(
                 .mark_failed(Some("stream_closed_before_completed".to_string()));
             return Err(CodexErr::Stream(
                 "stream closed before response.completed".into(),
+                None,
                 None,
             ));
         };

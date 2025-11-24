@@ -515,7 +515,7 @@ fn looks_like_context_overflow(message: &str) -> bool {
 pub(super) fn is_context_overflow_error(err: &CodexErr) -> bool {
     match err {
         CodexErr::UnexpectedStatus(resp) => looks_like_context_overflow(&resp.body),
-        CodexErr::Stream(msg, _) => looks_like_context_overflow(msg),
+        CodexErr::Stream(msg, _, _) => looks_like_context_overflow(msg),
         _ => false,
     }
 }
@@ -665,6 +665,7 @@ async fn drain_to_completed(
         let Some(event) = maybe_event else {
             return Err(CodexErr::Stream(
                 "stream closed before response.completed".into(),
+                None,
                 None,
             ));
         };

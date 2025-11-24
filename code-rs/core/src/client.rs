@@ -1361,7 +1361,11 @@ async fn process_sse<S>(
             Ok(Some(Ok(sse))) => sse,
             Ok(Some(Err(e))) => {
                 debug!("SSE Error: {e:#}");
-                let event = CodexErr::Stream(e.to_string(), None);
+                let event = CodexErr::Stream(
+                    format!("[transport] {e}"),
+                    None,
+                    Some(request_id.clone()),
+                );
                 let _ = tx_event.send(Err(event)).await;
                 return;
             }
@@ -1396,6 +1400,7 @@ async fn process_sse<S>(
                         let error = response_error.unwrap_or(CodexErr::Stream(
                             "stream closed before response.completed".into(),
                             None,
+                            Some(request_id.clone()),
                         ));
                         if let Some(manager) = otel_event_manager.as_ref() {
                             manager.see_event_completed_failed(&error);
@@ -1412,8 +1417,9 @@ async fn process_sse<S>(
             Err(_) => {
                 let _ = tx_event
                     .send(Err(CodexErr::Stream(
-                        "idle timeout waiting for SSE".into(),
+                        "[idle] timeout waiting for SSE".into(),
                         None,
+                        Some(request_id.clone()),
                     )))
                     .await;
                 return;
@@ -1648,6 +1654,7 @@ async fn process_sse<S>(
                     response_error = Some(CodexErr::Stream(
                         "response.failed event received".to_string(),
                         None,
+                        Some(request_id.clone()),
                     ));
 
                     let error = resp_val.get("error");
@@ -1660,7 +1667,11 @@ async fn process_sse<S>(
                                 } else {
                                     let retry_after = try_parse_retry_after(&error, Utc::now());
                                     let message = error.message.unwrap_or_default();
-                                    response_error = Some(CodexErr::Stream(message, retry_after));
+                                    response_error = Some(CodexErr::Stream(
+                                        message,
+                                        retry_after,
+                                        Some(request_id.clone()),
+                                    ));
                                 }
                             }
                             Err(e) => {
@@ -2145,7 +2156,7 @@ mod tests {
         );
 
         match &events[1] {
-            Err(CodexErr::Stream(msg, _)) => {
+            Err(CodexErr::Stream(msg, _, _)) => {
                 assert_eq!(msg, "stream closed before response.completed")
             }
             other => panic!("unexpected second event: {other:?}"),
@@ -2178,7 +2189,7 @@ mod tests {
         assert_eq!(events.len(), 1);
 
         match &events[0] {
-            Err(CodexErr::Stream(msg, Some(retry))) => {
+            Err(CodexErr::Stream(msg, Some(retry), _)) => {
                 assert_eq!(
                     msg,
                     "Rate limit reached for gpt-5.1 in organization org-AAA on tokens per min (TPM): Limit 30000, Used 22999, Requested 12528. Please try again in 11.054s. Visit https://platform.openai.com/account/rate-limits to learn more."

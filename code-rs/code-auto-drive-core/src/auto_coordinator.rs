@@ -2076,7 +2076,7 @@ fn should_retry_with_default_model(err: &anyhow::Error) -> bool {
 pub(crate) fn classify_model_error(error: &anyhow::Error) -> RetryDecision {
     if let Some(code_err) = find_in_chain::<CodexErr>(error) {
         match code_err {
-            CodexErr::Stream(message, _) => {
+            CodexErr::Stream(message, _, _) => {
                 return RetryDecision::RetryAfterBackoff {
                     reason: format!("model stream error: {message}"),
                 };

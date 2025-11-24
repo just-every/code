@@ -78,7 +78,7 @@ pub enum CodexErr {
     ///
     /// Optionally includes the requested delay before retrying the turn.
     #[error("stream disconnected before completion: {0}")]
-    Stream(String, Option<RetryAfter>),
+    Stream(String, Option<RetryAfter>, Option<String>),
 
     #[error("no conversation with id: {0}")]
     ConversationNotFound(Uuid),
