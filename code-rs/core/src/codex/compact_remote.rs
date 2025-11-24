@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use super::compact::{
+    is_context_overflow_error,
     response_input_from_core_items,
     sanitize_items_for_compact,
     send_compaction_checkpoint_warning,
@@ -17,6 +18,7 @@ use code_protocol::models::ResponseInputItem;
 use code_protocol::models::ResponseItem;
 use code_protocol::protocol::CompactedItem;
 use code_protocol::protocol::RolloutItem;
+use crate::util::backoff;
 
 pub(super) async fn run_inline_remote_auto_compact_task(
     sess: Arc<Session>,
@@ -81,17 +83,63 @@ async fn run_remote_compact_task_inner(
     });
 
     turn_items = sanitize_items_for_compact(turn_items);
+    let mut truncated_count = 0usize;
+    let max_retries = turn_context.client.get_provider().stream_max_retries();
+    let mut retries = 0;
+    let new_history = loop {
+        let mut prompt = Prompt::default();
+        prompt.input = turn_items.clone();
+        prompt.base_instructions_override = turn_context.base_instructions.clone();
+        prompt.include_additional_instructions = false;
+        prompt.log_tag = Some("codex/remote-compact".to_string());
 
-    let mut prompt = Prompt::default();
-    prompt.input = turn_items;
-    prompt.base_instructions_override = turn_context.base_instructions.clone();
-    prompt.include_additional_instructions = false;
-    prompt.log_tag = Some("codex/remote-compact".to_string());
+        match turn_context
+            .client
+            .compact_conversation_history(&prompt)
+            .await
+        {
+            Ok(history) => {
+                if truncated_count > 0 {
+                    tracing::warn!(
+                        "Context window exceeded during remote compact; trimmed {truncated_count} item(s) from prompt"
+                    );
+                }
+                break history;
+            }
+            Err(err) if is_context_overflow_error(&err) => {
+                if turn_items.len() > 1 {
+                    tracing::warn!(
+                        "Context window exceeded while remote compacting; dropping oldest item ({} remaining)",
+                        turn_items.len().saturating_sub(1)
+                    );
+                    turn_items.remove(0);
+                    truncated_count = truncated_count.saturating_add(1);
+                    retries = 0;
+                    continue;
+                }
 
-    let new_history = turn_context
-        .client
-        .compact_conversation_history(&prompt)
-        .await?;
+                return Err(err);
+            }
+            Err(err) => {
+                if retries < max_retries {
+                    retries += 1;
+                    let delay = backoff(retries);
+                    sess
+                        .notify_stream_error(
+                            sub_id,
+                            format!(
+                                "remote compact error: {err}; retrying {retries}/{max_retries} in {delay:?}…"
+                            ),
+                        )
+                        .await;
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
+
+                return Err(err);
+            }
+        }
+    };
 
     sess.replace_history(new_history.clone());
     {

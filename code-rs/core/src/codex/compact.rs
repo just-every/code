@@ -221,33 +221,62 @@ pub(super) async fn perform_compaction(
 ) -> CodexResult<()> {
     // Convert core InputItem -> ResponseInputItem using the same logic as the main turn flow
     let initial_input_for_turn: ResponseInputItem = response_input_from_core_items(input);
-    let turn_input = sess.turn_input_with_history(vec![initial_input_for_turn.clone().into()]);
+    let mut turn_input = sess.turn_input_with_history(vec![initial_input_for_turn.clone().into()]);
 
-    let turn_input = sanitize_items_for_compact(turn_input);
-
-    let mut prompt = Prompt::default();
-    prompt.input = turn_input;
-    prompt.store = !sess.disable_response_storage;
-    prompt.user_instructions = turn_context.user_instructions.clone();
-    prompt.environment_context = Some(EnvironmentContext::new(
-        Some(turn_context.cwd.clone()),
-        Some(turn_context.approval_policy),
-        Some(turn_context.sandbox_policy.clone()),
-        Some(sess.user_shell.clone()),
-    ));
-    prompt.model_descriptions = sess.model_descriptions.clone();
-    prompt.log_tag = Some("codex/compact".to_string());
+    turn_input = sanitize_items_for_compact(turn_input);
 
     let max_retries = turn_context.client.get_provider().stream_max_retries();
     let mut retries = 0;
+    let mut truncated_count = 0usize;
 
     // Do not persist a TurnContext rollout item here; inline compaction is a
     // background maintenance task and should not affect rollout reconstruction.
 
     loop {
+        let mut prompt = Prompt::default();
+        prompt.input = turn_input.clone();
+        prompt.store = !sess.disable_response_storage;
+        prompt.user_instructions = turn_context.user_instructions.clone();
+        prompt.environment_context = Some(EnvironmentContext::new(
+            Some(turn_context.cwd.clone()),
+            Some(turn_context.approval_policy),
+            Some(turn_context.sandbox_policy.clone()),
+            Some(sess.user_shell.clone()),
+        ));
+        prompt.model_descriptions = sess.model_descriptions.clone();
+        prompt.log_tag = Some("codex/compact".to_string());
+
         match drain_to_completed(&sess, turn_context.as_ref(), &prompt).await {
-            Ok(()) => break,
+            Ok(()) => {
+                if truncated_count > 0 {
+                    tracing::warn!(
+                        "Context window exceeded during compact; trimmed {truncated_count} item(s) from prompt"
+                    );
+                }
+                break;
+            }
             Err(CodexErr::Interrupted) => return Err(CodexErr::Interrupted),
+            Err(e) if is_context_overflow_error(&e) => {
+                if turn_input.len() > 1 {
+                    tracing::warn!(
+                        "Context window exceeded while compacting; dropping oldest item ({} remaining)",
+                        turn_input.len().saturating_sub(1)
+                    );
+                    turn_input.remove(0);
+                    truncated_count = truncated_count.saturating_add(1);
+                    retries = 0;
+                    continue;
+                }
+
+                let event = sess.make_event(
+                    &sub_id,
+                    EventMsg::Error(ErrorEvent {
+                        message: e.to_string(),
+                    }),
+                );
+                sess.send_event(event).await;
+                return Err(e);
+            }
             Err(e) => {
                 if retries < max_retries {
                     retries += 1;
@@ -325,29 +354,58 @@ async fn run_compact_task_inner_inline(
 ) -> Vec<ResponseItem> {
     // Convert core InputItem -> ResponseInputItem and build prompt
     let initial_input_for_turn: ResponseInputItem = response_input_from_core_items(input);
-    let turn_input = sess.turn_input_with_history(vec![initial_input_for_turn.clone().into()]);
+    let mut turn_input = sess.turn_input_with_history(vec![initial_input_for_turn.clone().into()]);
 
-    let turn_input = sanitize_items_for_compact(turn_input);
-
-    let mut prompt = Prompt::default();
-    prompt.input = turn_input;
-    prompt.store = !sess.disable_response_storage;
-    prompt.user_instructions = turn_context.user_instructions.clone();
-    prompt.environment_context = Some(EnvironmentContext::new(
-        Some(turn_context.cwd.clone()),
-        Some(turn_context.approval_policy),
-        Some(turn_context.sandbox_policy.clone()),
-        Some(sess.user_shell.clone()),
-    ));
-    prompt.model_descriptions = sess.model_descriptions.clone();
-    prompt.log_tag = Some("codex/compact".to_string());
+    turn_input = sanitize_items_for_compact(turn_input);
 
     let max_retries = turn_context.client.get_provider().stream_max_retries();
     let mut retries = 0;
+    let mut truncated_count = 0usize;
     loop {
+        let mut prompt = Prompt::default();
+        prompt.input = turn_input.clone();
+        prompt.store = !sess.disable_response_storage;
+        prompt.user_instructions = turn_context.user_instructions.clone();
+        prompt.environment_context = Some(EnvironmentContext::new(
+            Some(turn_context.cwd.clone()),
+            Some(turn_context.approval_policy),
+            Some(turn_context.sandbox_policy.clone()),
+            Some(sess.user_shell.clone()),
+        ));
+        prompt.model_descriptions = sess.model_descriptions.clone();
+        prompt.log_tag = Some("codex/compact".to_string());
+
         match drain_to_completed(&sess, turn_context.as_ref(), &prompt).await {
-            Ok(()) => break,
+            Ok(()) => {
+                if truncated_count > 0 {
+                    tracing::warn!(
+                        "Context window exceeded during inline compact; trimmed {truncated_count} item(s) from prompt"
+                    );
+                }
+                break;
+            }
             Err(CodexErr::Interrupted) => return Vec::new(),
+            Err(e) if is_context_overflow_error(&e) => {
+                if turn_input.len() > 1 {
+                    tracing::warn!(
+                        "Context window exceeded while compacting; dropping oldest item ({} remaining)",
+                        turn_input.len().saturating_sub(1)
+                    );
+                    turn_input.remove(0);
+                    truncated_count = truncated_count.saturating_add(1);
+                    retries = 0;
+                    continue;
+                }
+
+                let event = sess.make_event(
+                    &sub_id,
+                    EventMsg::Error(ErrorEvent {
+                        message: e.to_string(),
+                    }),
+                );
+                sess.send_event(event).await;
+                return Vec::new();
+            }
             Err(e) => {
                 if retries < max_retries {
                     retries += 1;
@@ -439,6 +497,27 @@ fn truncate_for_compact(text: String, max_bytes: usize) -> String {
         return text;
     }
     truncate_middle(&text, max_bytes).0
+}
+
+fn looks_like_context_overflow(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("context_length_exceeded")
+        || lower.contains("context length exceeded")
+        || lower.contains("context window")
+            && (lower.contains("exceed")
+                || lower.contains("exceeded")
+                || lower.contains("full")
+                || lower.contains("too long"))
+        || lower.contains("maximum context length")
+        || lower.contains("exceeds the context window")
+}
+
+pub(super) fn is_context_overflow_error(err: &CodexErr) -> bool {
+    match err {
+        CodexErr::UnexpectedStatus(resp) => looks_like_context_overflow(&resp.body),
+        CodexErr::Stream(msg, _) => looks_like_context_overflow(msg),
+        _ => false,
+    }
 }
 
 pub fn sanitize_items_for_compact(items: Vec<ResponseItem>) -> Vec<ResponseItem> {
