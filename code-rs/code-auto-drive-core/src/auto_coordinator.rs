@@ -343,6 +343,7 @@ mod tests {
     use super::*;
     use anyhow::anyhow;
     use code_core::agent_defaults::DEFAULT_AGENT_NAMES;
+    use code_core::error::RetryLimitReachedError;
     use serde_json::json;
 
     #[test]
@@ -433,6 +434,22 @@ mod tests {
 
         assert!(!props.contains_key("code_review"));
         assert!(!props.contains_key("cross_check"));
+    }
+
+    #[test]
+    fn retry_limit_marked_retryable_is_retried() {
+        let err = CodexErr::RetryLimit(RetryLimitReachedError {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            request_id: None,
+            retryable: true,
+        });
+
+        match classify_model_error(&anyhow!(err)) {
+            RetryDecision::RetryAfterBackoff { reason } => {
+                assert!(reason.contains("retry limit"));
+            }
+            other => panic!("expected retry, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2129,7 +2146,12 @@ pub(crate) fn classify_model_error(error: &anyhow::Error) -> RetryDecision {
                 };
             }
             CodexErr::RetryLimit(status) => {
-                return RetryDecision::Fatal(anyhow!("retry limit exceeded (status {status})"));
+                if status.retryable {
+                    return RetryDecision::RetryAfterBackoff {
+                        reason: format!("retry limit exceeded (status {}), treating as transient", status.status),
+                    };
+                }
+                return RetryDecision::Fatal(anyhow!("retry limit exceeded (status {})", status.status));
             }
             CodexErr::Reqwest(req_err) => {
                 return classify_reqwest_error(req_err);

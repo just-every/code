@@ -415,6 +415,12 @@ impl ModelProviderInfo {
             .map(Duration::from_millis)
             .unwrap_or(Duration::from_millis(DEFAULT_STREAM_IDLE_TIMEOUT_MS))
     }
+
+    pub fn base_url_for_probe(&self) -> String {
+        self.base_url
+            .clone()
+            .unwrap_or_else(|| "https://api.openai.com".to_string())
+    }
 }
 
 const DEFAULT_OLLAMA_PORT: u32 = 11434;

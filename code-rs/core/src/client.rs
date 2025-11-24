@@ -60,13 +60,20 @@ use crate::protocol::RateLimitSnapshotEvent;
 use crate::protocol::SandboxPolicy;
 use crate::protocol::TokenUsage;
 use crate::slash_commands::get_enabled_agents;
-use crate::util::backoff;
+use crate::util::{backoff, wait_for_connectivity};
 use code_otel::otel_event_manager::{OtelEventManager, TurnLatencyPayload};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::RwLock;
 
 const RESPONSES_BETA_HEADER_V1: &str = "responses=v1";
 const RESPONSES_BETA_HEADER_EXPERIMENTAL: &str = "responses=experimental";
+
+#[derive(Default, Debug)]
+struct StreamCheckpoint {
+    /// Highest sequence_number observed across attempts. Used to drop replayed deltas.
+    last_sequence: Option<u64>,
+}
 
 #[derive(Debug, Deserialize)]
 struct ErrorResponse {
@@ -661,6 +668,7 @@ impl ModelClient {
                         debug_logger,
                         request_id_clone,
                         otel_event_manager,
+                        Arc::new(RwLock::new(StreamCheckpoint::default())),
                     ));
 
                     return Ok(ResponseStream { rx_event });
@@ -831,6 +839,7 @@ impl ModelClient {
                         return Err(CodexErr::RetryLimit(RetryLimitReachedError {
                             status,
                             request_id: None,
+                            retryable: status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS,
                         }));
                     }
 
@@ -848,7 +857,13 @@ impl ModelClient {
                     tokio::time::sleep(delay).await;
                 }
                 Err(e) => {
+                    let is_connectivity = e.is_connect() || e.is_timeout() || e.is_request();
                     if attempt > max_retries {
+                        if is_connectivity {
+                            wait_for_connectivity(&self.provider.base_url_for_probe()).await;
+                            attempt = 0;
+                            continue;
+                        }
                         // Log network error
                         if let Ok(logger) = self.debug_logger.lock() {
                             let _ = logger.log_error(&endpoint, &format!("Network error: {}", e), log_tag);
@@ -1216,6 +1231,7 @@ async fn process_sse<S>(
     debug_logger: Arc<Mutex<DebugLogger>>,
     request_id: String,
     otel_event_manager: Option<OtelEventManager>,
+    checkpoint: Arc<RwLock<StreamCheckpoint>>,
 ) where
     S: Stream<Item = Result<Bytes>> + Unpin,
 {
@@ -1238,6 +1254,7 @@ async fn process_sse<S>(
     // Best-effort duplicate text guard when sequence_number is unavailable.
     let mut last_text_reasoning_summary: HashMap<(String, u32, u32), String> = HashMap::new();
     let mut last_text_reasoning_content: HashMap<(String, u32, u32), String> = HashMap::new();
+    let mut global_last_seq: Option<u64> = checkpoint.read().ok().and_then(|c| c.last_sequence);
 
     loop {
         let next_event = if let Some(manager) = otel_event_manager.as_ref() {
@@ -1344,6 +1361,18 @@ async fn process_sse<S>(
                 continue;
             }
         };
+
+        if let Some(seq) = event.sequence_number {
+            if let Some(last) = global_last_seq {
+                if seq <= last {
+                    continue;
+                }
+            }
+            global_last_seq = Some(seq);
+            if let Ok(mut guard) = checkpoint.write() {
+                guard.last_sequence = Some(seq);
+            }
+        }
 
         match event.kind.as_str() {
             // Individual output item finalised. Forward immediately so the
@@ -1630,6 +1659,7 @@ async fn stream_from_fixture(
         debug_logger,
         String::new(), // Empty request_id for test fixture
         otel_event_manager,
+        Arc::new(RwLock::new(StreamCheckpoint::default())),
     ));
     Ok(ResponseStream { rx_event })
 }
@@ -1838,6 +1868,7 @@ mod tests {
         let stream = ReaderStream::new(reader).map_err(CodexErr::Io);
         let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent>>(16);
         let debug_logger = Arc::new(Mutex::new(DebugLogger::new(false).unwrap()));
+        let checkpoint = Arc::new(RwLock::new(StreamCheckpoint::default()));
         tokio::spawn(process_sse(
             stream,
             tx,
@@ -1845,6 +1876,7 @@ mod tests {
             debug_logger,
             String::new(),
             None,
+            checkpoint,
         ));
 
         let mut events = Vec::new();
@@ -1876,6 +1908,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent>>(8);
         let stream = ReaderStream::new(std::io::Cursor::new(body)).map_err(CodexErr::Io);
         let debug_logger = Arc::new(Mutex::new(DebugLogger::new(false).unwrap()));
+        let checkpoint = Arc::new(RwLock::new(StreamCheckpoint::default()));
         tokio::spawn(process_sse(
             stream,
             tx,
@@ -1883,6 +1916,7 @@ mod tests {
             debug_logger,
             String::new(),
             None,
+            checkpoint,
         ));
 
         let mut out = Vec::new();
