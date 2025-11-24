@@ -975,6 +975,25 @@ impl ChatComposer {
             return (InputResult::None, true);
         }
 
+        // Treat Tab as literal input while we're inside a paste-like burst to
+        // avoid launching file search or other Tab handlers mid-paste. This
+        // keeps per-key pastes containing tabs (common in code blocks) intact.
+        if matches!(
+            key_event,
+            KeyEvent {
+                code: KeyCode::Tab,
+                modifiers: KeyModifiers::NONE,
+                kind: KeyEventKind::Press | KeyEventKind::Repeat,
+                ..
+            }
+        ) && self.paste_burst.enter_should_insert_newline(now)
+        {
+            self.insert_str("\t");
+            self.history.reset_navigation();
+            self.paste_burst.extend_enter_window(now);
+            return (InputResult::None, true);
+        }
+
         // Any non-Down key clears the sticky flag; handled before popup routing
         if !matches!(key_event.code, KeyCode::Down) {
             self.next_down_scrolls_history = false;
