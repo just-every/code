@@ -125,11 +125,18 @@ impl Prompt {
             .as_deref()
             .unwrap_or(effective_model.base_instructions.deref());
         let _sections: Vec<&str> = vec![base];
-        // When there are no custom instructions, add apply_patch_tool_instructions if the
-        // model needs the extra guidance. We no longer skip this when the tool is present so
-        // Windows / codex flows still receive the grammar guidance the model expects.
+        // When there are no custom instructions, add apply_patch_tool_instructions if:
+        // - the model needs special instructions (4.1)
+        // AND
+        // - there is no apply_patch tool present
+        let is_apply_patch_tool_present = self.tools.iter().any(|tool| match tool {
+            OpenAiTool::Function(f) => f.name == "apply_patch",
+            OpenAiTool::Freeform(f) => f.name == "apply_patch",
+            _ => false,
+        });
         if self.base_instructions_override.is_none()
             && effective_model.needs_special_apply_patch_instructions
+            && !is_apply_patch_tool_present
         {
             Cow::Owned(format!("{base}\n{APPLY_PATCH_TOOL_INSTRUCTIONS}"))
         } else {
@@ -526,11 +533,7 @@ mod tests {
             },
             InstructionsTestCase {
                 slug: "gpt-5.1-codex",
-                expects_apply_patch_instructions: true,
-            },
-            InstructionsTestCase {
-                slug: "gpt-5.1-codex-max",
-                expects_apply_patch_instructions: true,
+                expects_apply_patch_instructions: false,
             },
         ];
         for test_case in test_cases {

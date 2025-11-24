@@ -107,7 +107,6 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             supports_reasoning_summaries: true,
             reasoning_summary_format: ReasoningSummaryFormat::Experimental,
             base_instructions: GPT_5_1_CODEX_MAX_INSTRUCTIONS.to_string(),
-            needs_special_apply_patch_instructions: true,
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
         )
     } else if slug.starts_with("codex-")
@@ -119,7 +118,6 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             supports_reasoning_summaries: true,
             reasoning_summary_format: ReasoningSummaryFormat::Experimental,
             base_instructions: GPT_5_CODEX_INSTRUCTIONS.to_string(),
-            needs_special_apply_patch_instructions: true,
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
         )
     } else if slug.starts_with("gpt-5.1") {
