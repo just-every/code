@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.5.3] - 2025-11-24
+
+- Auto Drive: add CLI aliases for automation runs and force headless sessions into full-auto so release flows stay hands-free. (288b1d94, 0bb2f8dd)
+- TUI: keep tab characters intact during paste bursts and block stray Enter submits from per-key pastes for reliable composer input. (92625277, 019adc32)
+- Connectivity: harden CLI/TUI retry paths so transient network drops automatically reconnect active sessions. (f0cb7afd, a7e4d25a)
+- Config: honor CODE_HOME and CODEX_HOME entries from .env and retry without reasoning summaries when providers reject them. (5970ac52, 16ead0ec)
+
 ## [0.5.2] - 2025-11-22
 
 - Agents: default automation flows to gpt-5.1-codex-max and add gemini-3-pro as an option for higher-capacity runs. (f0f99f2e)
