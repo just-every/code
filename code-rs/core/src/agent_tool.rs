@@ -824,7 +824,7 @@ async fn execute_model_with_permissions(
 
     let built_in_cloud = family == "cloud" && config.is_none();
 
-    // Clamp reasoning effort to what the target model supports and pass it through.
+    // Clamp reasoning effort to what the target model supports.
     let clamped_effort = match reasoning_effort {
         code_protocol::config_types::ReasoningEffort::XHigh => {
             let lower = slug_for_defaults.to_ascii_lowercase();
@@ -836,14 +836,24 @@ async fn execute_model_with_permissions(
         }
         other => other,
     };
+
+    // Configuration overrides for Codex CLI families. External CLIs (claude,
+    // gemini, qwen) do not understand our config flags, so only attach these
+    // when launching Codex binaries.
+    let effort_override = format!(
+        "model_reasoning_effort={}",
+        clamped_effort.to_string().to_ascii_lowercase()
+    );
+    let auto_effort_override = format!(
+        "auto_drive.model_reasoning_effort={}",
+        clamped_effort.to_string().to_ascii_lowercase()
+    );
     match family {
         "claude" | "gemini" | "qwen" => {
             let mut defaults = default_params_for(slug_for_defaults, read_only);
             strip_model_flags(&mut defaults);
             final_args.extend(defaults);
             final_args.extend(spec_model_args.iter().cloned());
-            final_args.push("--reasoning-effort".into());
-            final_args.push(clamped_effort.to_string().to_ascii_lowercase());
             final_args.push("-p".into());
             final_args.push(prompt.to_string());
         }
@@ -858,8 +868,10 @@ async fn execute_model_with_permissions(
                 final_args.extend(defaults);
             }
             final_args.extend(spec_model_args.iter().cloned());
-            final_args.push("--reasoning-effort".into());
-            final_args.push(clamped_effort.to_string().to_ascii_lowercase());
+            final_args.push("-c".into());
+            final_args.push(effort_override.clone());
+            final_args.push("-c".into());
+            final_args.push(auto_effort_override.clone());
             final_args.push(prompt.to_string());
         }
         "cloud" => {
@@ -876,14 +888,14 @@ async fn execute_model_with_permissions(
                 final_args.extend(defaults);
             }
             final_args.extend(spec_model_args.iter().cloned());
-            final_args.push("--reasoning-effort".into());
-            final_args.push(clamped_effort.to_string().to_ascii_lowercase());
+            final_args.push("-c".into());
+            final_args.push(effort_override.clone());
+            final_args.push("-c".into());
+            final_args.push(auto_effort_override);
             final_args.push(prompt.to_string());
         }
         _ => {
             final_args.extend(spec_model_args.iter().cloned());
-            final_args.push("--reasoning-effort".into());
-            final_args.push(clamped_effort.to_string().to_ascii_lowercase());
             final_args.push(prompt.to_string());
         }
     }
