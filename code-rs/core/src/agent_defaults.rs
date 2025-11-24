@@ -164,7 +164,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         model_args: &["--model", "gemini-3-pro-preview"],
         description: "Gemini 3 Pro via the Gemini app CLI. Use for newest Gemini capabilities; mapped from the preview model name under the hood.",
         enabled_by_default: true,
-        aliases: &["gemini-3-pro-preview", "gemini-3", "gemini3"],
+        aliases: &["gemini-3-pro-preview", "gemini-3", "gemini3", "gemini"],
         gating_env: None,
     },
     AgentModelSpec {
@@ -176,7 +176,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         model_args: &["--model", "gemini-2.5-pro"],
         description: "Use when you require huge context or multimodal grounding (repo-scale inputs, or search grounding); good for alternative architecture opinions.",
         enabled_by_default: true,
-        aliases: &["gemini"],
+        aliases: &[],
         gating_env: None,
     },
     AgentModelSpec {
