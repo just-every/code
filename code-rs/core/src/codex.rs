@@ -5779,6 +5779,7 @@ async fn run_turn(
                         _ => (backoff(retries), None),
                     };
                     warn!(
+                        error = %e,
                         "stream disconnected - retrying turn ({retries}/{max_retries} in {delay:?})...",
                     );
 
