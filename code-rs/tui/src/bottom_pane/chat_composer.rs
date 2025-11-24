@@ -913,6 +913,68 @@ impl ChatComposer {
 
     /// Handle a key event coming from the main UI.
     pub fn handle_key_event(&mut self, key_event: KeyEvent) -> (InputResult, bool) {
+        let now = Instant::now();
+
+        // Track rapid plain-character bursts (common when bracketed paste is
+        // unavailable) so we can suppress Enter-based submissions and insert
+        // literal newlines instead.
+        if matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+            match key_event.code {
+                KeyCode::Char(_) => {
+                    let unmodified = key_event.modifiers.is_empty()
+                        || key_event.modifiers == KeyModifiers::SHIFT;
+                    if unmodified {
+                        self.paste_burst.record_plain_char_for_enter_window(now);
+                    } else {
+                        self.paste_burst.clear_enter_window();
+                    }
+                }
+                KeyCode::Tab => {
+                    // Tabs often appear in per-key pastes of code; treat as pastey input.
+                    self.paste_burst.record_plain_char_for_enter_window(now);
+                }
+                KeyCode::Enter => {
+                    // handled below
+                }
+                _ => self.paste_burst.clear_enter_window(),
+            }
+        } else if key_event.kind == KeyEventKind::Release {
+            // Ignore releases to keep burst window intact when enhanced keys
+            // emit press+release for every character.
+        } else {
+            self.paste_burst.clear_enter_window();
+        }
+
+        let enter_should_newline = matches!(
+            key_event,
+            KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+                kind: KeyEventKind::Press | KeyEventKind::Repeat,
+                ..
+            }
+        ) && (self.paste_burst.enter_should_insert_newline(now) || self.paste_burst.recent_plain_char(now));
+
+        if enter_should_newline {
+            // Enter is a non-Down key, so clear the sticky scroll flag.
+            self.next_down_scrolls_history = false;
+
+            // Treat Enter as literal newline when a paste-like burst is active.
+            self.insert_str("\n");
+            self.history.reset_navigation();
+            self.paste_burst.extend_enter_window(now);
+
+            // Keep popups in sync just like the main path.
+            self.sync_command_popup();
+            if matches!(self.active_popup, ActivePopup::Command(_)) {
+                self.dismissed_file_popup_token = None;
+            } else {
+                self.sync_file_search_popup();
+            }
+
+            return (InputResult::None, true);
+        }
+
         // Any non-Down key clears the sticky flag; handled before popup routing
         if !matches!(key_event.code, KeyCode::Down) {
             self.next_down_scrolls_history = false;
@@ -1561,6 +1623,7 @@ impl ChatComposer {
             KeyEvent {
                 code: KeyCode::Enter,
                 modifiers: KeyModifiers::NONE,
+                kind: KeyEventKind::Press | KeyEventKind::Repeat,
                 ..
             } => {
                 if self.handle_backslash_continuation() {

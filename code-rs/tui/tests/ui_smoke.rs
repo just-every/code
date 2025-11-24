@@ -55,6 +55,15 @@ fn make_key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
     }
 }
 
+fn make_key_with_kind(code: KeyCode, modifiers: KeyModifiers, kind: crossterm::event::KeyEventKind) -> KeyEvent {
+    KeyEvent {
+        code,
+        modifiers,
+        kind,
+        state: crossterm::event::KeyEventState::empty(),
+    }
+}
+
 #[test]
 fn cli_web_search_flag_defaults() {
     // Default behavior: web search should be enabled after finalization
@@ -215,6 +224,92 @@ fn composer_input_shift_enter_no_submit() {
             panic!("Shift+Enter should not submit text");
         }
     }
+}
+
+#[test]
+fn composer_input_fast_multiline_key_stream_does_not_submit_lines() {
+    // Simulate a terminal that emits per-key events (no bracketed paste) while
+    // pasting multi-line content. Enter should insert a newline, not submit.
+    let mut composer = ComposerInput::new();
+
+    let events = [
+        // Press+Release pairs to mirror enhanced keyboard reporting
+        make_key(KeyCode::Char('l'), KeyModifiers::NONE),
+        make_key_with_kind(KeyCode::Char('l'), KeyModifiers::NONE, crossterm::event::KeyEventKind::Release),
+        make_key(KeyCode::Char('s'), KeyModifiers::NONE),
+        make_key_with_kind(KeyCode::Char('s'), KeyModifiers::NONE, crossterm::event::KeyEventKind::Release),
+        make_key(KeyCode::Char(' '), KeyModifiers::NONE),
+        make_key_with_kind(KeyCode::Char(' '), KeyModifiers::NONE, crossterm::event::KeyEventKind::Release),
+        make_key(KeyCode::Char('-'), KeyModifiers::NONE),
+        make_key_with_kind(KeyCode::Char('-'), KeyModifiers::NONE, crossterm::event::KeyEventKind::Release),
+        make_key(KeyCode::Char('l'), KeyModifiers::NONE),
+        make_key_with_kind(KeyCode::Char('l'), KeyModifiers::NONE, crossterm::event::KeyEventKind::Release),
+        make_key(KeyCode::Enter, KeyModifiers::NONE),
+        make_key_with_kind(KeyCode::Enter, KeyModifiers::NONE, crossterm::event::KeyEventKind::Release),
+        make_key(KeyCode::Char('a'), KeyModifiers::NONE),
+        make_key_with_kind(KeyCode::Char('a'), KeyModifiers::NONE, crossterm::event::KeyEventKind::Release),
+        make_key(KeyCode::Char('b'), KeyModifiers::NONE),
+        make_key_with_kind(KeyCode::Char('b'), KeyModifiers::NONE, crossterm::event::KeyEventKind::Release),
+    ];
+
+    for event in events {
+        if let ComposerAction::Submitted(text) = composer.input(event) {
+            panic!("paste-like key stream should not submit early (submitted: {text})");
+        }
+    }
+
+    assert_eq!(composer.text(), "ls -l\nab");
+}
+
+#[test]
+fn composer_input_short_line_multiline_key_stream_does_not_submit() {
+    // Per-key paste where the first newline arrives after a single character
+    // should still suppress submission.
+    let mut composer = ComposerInput::new();
+
+    let events = [
+        make_key(KeyCode::Char('a'), KeyModifiers::NONE),
+        make_key_with_kind(KeyCode::Char('a'), KeyModifiers::NONE, crossterm::event::KeyEventKind::Release),
+        make_key(KeyCode::Enter, KeyModifiers::NONE),
+        make_key_with_kind(KeyCode::Enter, KeyModifiers::NONE, crossterm::event::KeyEventKind::Release),
+        make_key(KeyCode::Char('b'), KeyModifiers::NONE),
+        make_key_with_kind(KeyCode::Char('b'), KeyModifiers::NONE, crossterm::event::KeyEventKind::Release),
+    ];
+
+    for event in events {
+        if let ComposerAction::Submitted(text) = composer.input(event) {
+            panic!("short-line per-key paste should not submit early (submitted: {text})");
+        }
+    }
+
+    assert_eq!(composer.text(), "a\nb");
+}
+
+#[test]
+fn composer_input_tabbed_multiline_key_stream_does_not_submit() {
+    // Per-key paste containing tabs should keep Enter suppression active.
+    let mut composer = ComposerInput::new();
+
+    let events = [
+        make_key(KeyCode::Char('a'), KeyModifiers::NONE),
+        make_key_with_kind(KeyCode::Char('a'), KeyModifiers::NONE, crossterm::event::KeyEventKind::Release),
+        make_key(KeyCode::Tab, KeyModifiers::NONE),
+        make_key_with_kind(KeyCode::Tab, KeyModifiers::NONE, crossterm::event::KeyEventKind::Release),
+        make_key(KeyCode::Char('b'), KeyModifiers::NONE),
+        make_key_with_kind(KeyCode::Char('b'), KeyModifiers::NONE, crossterm::event::KeyEventKind::Release),
+        make_key(KeyCode::Enter, KeyModifiers::NONE),
+        make_key_with_kind(KeyCode::Enter, KeyModifiers::NONE, crossterm::event::KeyEventKind::Release),
+        make_key(KeyCode::Char('c'), KeyModifiers::NONE),
+        make_key_with_kind(KeyCode::Char('c'), KeyModifiers::NONE, crossterm::event::KeyEventKind::Release),
+    ];
+
+    for event in events {
+        if let ComposerAction::Submitted(text) = composer.input(event) {
+            panic!("tabbed per-key paste should not submit early (submitted: {text})");
+        }
+    }
+
+    assert_eq!(composer.text(), "a\tb\nc");
 }
 
 #[test]
