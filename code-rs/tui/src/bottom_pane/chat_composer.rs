@@ -488,6 +488,9 @@ impl ChatComposer {
             || lower.contains("stream error")
             || lower.contains("stream closed")
             || lower.contains("timeout")
+            || lower.contains("transport")
+            || lower.contains("network")
+            || lower.contains("connection")
         {
             "Reconnecting".to_string()
         }

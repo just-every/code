@@ -6082,6 +6082,12 @@ async fn try_run_turn(
         Ok(stream) => stream,
         Err(e) => {
             turn_latency_guard.mark_failed(Some(format!("stream_init_failed: {e}")));
+            sess
+                .notify_stream_error(
+                    &sub_id,
+                    format!("[transport] failed to start stream: {e}"),
+                )
+                .await;
             return Err(e);
         }
     };
