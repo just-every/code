@@ -2622,6 +2622,14 @@ impl Session {
         let _ = self.tx_event.send(event).await;
     }
 
+    async fn notify_background(&self, sub_id: &str, message: impl Into<String>) {
+        let event = self.make_event(
+            sub_id,
+            EventMsg::BackgroundEvent(BackgroundEventEvent { message: message.into() }),
+        );
+        let _ = self.tx_event.send(event).await;
+    }
+
     fn resolve_internal_sandbox(&self, with_escalated_permissions: bool) -> SandboxType {
         match assess_safety_for_untrusted_command(
             self.approval_policy,
@@ -5797,7 +5805,13 @@ async fn run_turn(
                         retry_message.push_str(&format!(" (next attempt at {eta})"));
                     }
                     retry_message.push('…');
-                    sess.notify_stream_error(&sub_id, retry_message).await;
+                    sess.notify_stream_error(&sub_id, retry_message.clone()).await;
+                    // Also surface in history for visibility during long waits
+                    sess.notify_background(
+                        &sub_id,
+                        format!("Reconnecting… {retry_message}"),
+                    )
+                    .await;
                     // Pull any partial progress from this attempt and append to
                     // the next request's input so we do not lose tool progress
                     // or already-finalized items.
