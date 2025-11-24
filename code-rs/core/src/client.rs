@@ -50,7 +50,7 @@ use crate::error::RetryLimitReachedError;
 use crate::error::UnexpectedResponseError;
 use crate::error::UsageLimitReachedError;
 use crate::flags::CODEX_RS_SSE_FIXTURE;
-use crate::model_family::ModelFamily;
+use crate::model_family::{find_family_for_model, ModelFamily};
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
 use crate::openai_model_info::get_model_info;
@@ -60,6 +60,7 @@ use crate::openai_tools::ToolsConfig;
 use crate::protocol::RateLimitSnapshotEvent;
 use crate::protocol::SandboxPolicy;
 use crate::protocol::TokenUsage;
+use crate::reasoning::clamp_reasoning_effort_for_model;
 use crate::slash_commands::get_enabled_agents;
 use crate::util::{backoff, wait_for_connectivity};
 use code_otel::otel_event_manager::{OtelEventManager, TurnLatencyPayload};
@@ -154,9 +155,8 @@ fn is_quota_exceeded_http_error(status: StatusCode, error: &Error) -> bool {
 }
 
 fn is_reasoning_summary_rejected(error: &Error) -> bool {
-    if matches!(error.param.as_deref(), Some("reasoning.summary")) {
-        return true;
-    }
+    let param_matches = matches!(error.param.as_deref(), Some("reasoning.summary"));
+    let code_matches = matches!(error.code.as_deref(), Some("unsupported_value"));
 
     let message_matches = error
         .message
@@ -167,9 +167,10 @@ fn is_reasoning_summary_rejected(error: &Error) -> bool {
         })
         .unwrap_or(false);
 
-    let code_matches = matches!(error.code.as_deref(), Some("unsupported_value"));
-
-    code_matches && message_matches
+    // Only treat as rejection if it's specifically an "unsupported_value" error
+    // for the reasoning.summary parameter, or if the message explicitly says
+    // the organization must be verified for reasoning summaries.
+    (param_matches && code_matches) || (code_matches && message_matches)
 }
 
 fn map_unauthorized_outcome(
@@ -240,6 +241,7 @@ impl ModelClient {
         debug_logger: Arc<Mutex<DebugLogger>>,
     ) -> Self {
         let effective_verbosity = clamp_text_verbosity_for_model(config.model.as_str(), verbosity);
+        let clamped_effort = clamp_reasoning_effort_for_model(config.model.as_str(), effort);
         let client = create_client(&config.responses_originator_header);
 
         Self {
@@ -249,7 +251,7 @@ impl ModelClient {
             client,
             provider,
             session_id,
-            effort,
+            effort: clamped_effort,
             summary,
             reasoning_summary_disabled: AtomicBool::new(false),
             verbosity: effective_verbosity,
@@ -271,14 +273,18 @@ impl ModelClient {
         }
     }
 
-    fn current_reasoning_param(&self) -> Option<crate::client_common::Reasoning> {
+    fn current_reasoning_param(
+        &self,
+        family: &ModelFamily,
+        effort: ReasoningEffortConfig,
+    ) -> Option<crate::client_common::Reasoning> {
         if self.reasoning_summary_disabled.load(Ordering::Relaxed) {
             return None;
         }
 
         create_reasoning_param_for_request(
-            &self.config.model_family,
-            Some(self.effort),
+            family,
+            Some(effort),
             self.summary,
         )
     }
@@ -469,15 +475,23 @@ impl ModelClient {
         // Use non-stored turns on all paths for stability.
         let store = false;
 
+        let request_model = prompt
+            .model_override
+            .as_deref()
+            .unwrap_or(self.config.model.as_str());
+        let effective_effort = clamp_reasoning_effort_for_model(request_model, self.effort);
+        let request_family = find_family_for_model(request_model)
+            .unwrap_or_else(|| self.config.model_family.clone());
+
         let full_instructions = prompt.get_full_instructions(&self.config.model_family);
         let mut tools_json = create_tools_json_for_responses_api(&prompt.tools)?;
-        if matches!(self.effort, ReasoningEffortConfig::Minimal) {
+        if matches!(effective_effort, ReasoningEffortConfig::Minimal) {
             tools_json.retain(|tool| {
                 tool.get("type")
                     .and_then(|value| value.as_str())
                     .map(|tool_type| tool_type != "web_search")
                     .unwrap_or(true)
-            });
+                });
         }
 
         let input_with_instructions = prompt.get_formatted_input();
@@ -495,13 +509,9 @@ impl ModelClient {
             })
         });
 
-        let request_model = prompt
-            .model_override
-            .as_deref()
-            .unwrap_or(self.config.model.as_str());
         let effective_verbosity = clamp_text_verbosity_for_model(request_model, self.verbosity);
 
-        let verbosity = match &self.config.model_family.family {
+        let verbosity = match &request_family.family {
             family if family == "gpt-5" || family == "gpt-5.1" => Some(effective_verbosity),
             _ => None,
         };
@@ -528,10 +538,7 @@ impl ModelClient {
         // For Azure, we send `store: true` and preserve reasoning item IDs.
         let azure_workaround = self.provider.is_azure_responses_endpoint();
 
-        let model_slug = prompt
-            .model_override
-            .as_deref()
-            .unwrap_or(self.config.model.as_str());
+        let model_slug = request_model;
 
         let session_id = prompt
             .session_id_override
@@ -550,7 +557,7 @@ impl ModelClient {
         loop {
             attempt += 1;
 
-            let reasoning = self.current_reasoning_param();
+            let reasoning = self.current_reasoning_param(&request_family, effective_effort);
             // Request encrypted COT if we are not storing responses,
             // otherwise reasoning items will be referenced by ID
             let include: Vec<String> = if !store && reasoning.is_some() {
@@ -562,7 +569,7 @@ impl ModelClient {
             let text = text_template.clone();
 
             let payload = ResponsesApiRequest {
-                model: &self.config.model,
+                model: model_slug,
                 instructions: &full_instructions,
                 input: &input_with_instructions,
                 tools: &tools_json,
@@ -2475,6 +2482,19 @@ mod tests {
         };
 
         assert!(is_reasoning_summary_rejected(&error_by_message));
+
+        // An error with param="reasoning.summary" but a different error code
+        // (e.g., rate_limit_exceeded) should NOT be treated as a rejection.
+        let rate_limit_error = Error {
+            r#type: Some("rate_limit_error".to_string()),
+            message: Some("Rate limit reached for reasoning.summary requests.".to_string()),
+            code: Some("rate_limit_exceeded".to_string()),
+            param: Some("reasoning.summary".to_string()),
+            plan_type: None,
+            resets_in_seconds: None,
+        };
+
+        assert!(!is_reasoning_summary_rejected(&rate_limit_error));
     }
 
     #[tokio::test]

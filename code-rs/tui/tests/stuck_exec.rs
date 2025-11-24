@@ -283,7 +283,7 @@ fn stale_exec_is_finalized_on_task_complete() {
         output
     );
     assert!(
-        output.contains("completion event") || output.contains("interrupted"),
+        output.contains("background") || output.contains("turn end"),
         "stale exec should surface a clear completion notice:\n{}",
         output
     );

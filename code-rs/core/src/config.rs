@@ -41,6 +41,7 @@ use crate::model_family::find_family_for_model;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::built_in_model_providers;
 use crate::openai_model_info::get_model_info;
+use crate::reasoning::clamp_reasoning_effort_for_model;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
 use crate::config_types::ReasoningEffort;
@@ -2338,6 +2339,8 @@ impl Config {
             .model_reasoning_effort
             .or(cfg.model_reasoning_effort)
             .unwrap_or(ReasoningEffort::Medium);
+        let chat_reasoning_effort =
+            clamp_reasoning_effort_for_model(&model, chat_reasoning_effort);
 
         let openai_model_info = get_model_info(&model_family);
         let model_context_window = cfg
@@ -2480,6 +2483,10 @@ impl Config {
                 .or(cfg.planning_model_reasoning_effort)
                 .unwrap_or(chat_reasoning_effort)
         };
+        let planning_model_reasoning_effort = clamp_reasoning_effort_for_model(
+            &planning_model,
+            planning_model_reasoning_effort,
+        );
 
         let review_use_chat_model = config_profile
             .review_use_chat_model
@@ -2495,6 +2502,10 @@ impl Config {
         } else {
             review_model_reasoning_effort
         };
+        let review_model_reasoning_effort = clamp_reasoning_effort_for_model(
+            &review_model,
+            review_model_reasoning_effort,
+        );
 
         let auto_drive_use_chat_model = cfg.auto_drive_use_chat_model.unwrap_or(false);
 
@@ -2507,6 +2518,11 @@ impl Config {
             auto_drive.model = model.clone();
             auto_drive.model_reasoning_effort = chat_reasoning_effort;
         }
+
+        auto_drive.model_reasoning_effort = clamp_reasoning_effort_for_model(
+            &auto_drive.model,
+            auto_drive.model_reasoning_effort,
+        );
 
         let config = Self {
             model,

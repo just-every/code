@@ -29,6 +29,7 @@ pub mod acp;
 pub mod custom_prompts;
 pub mod debug_logger;
 mod environment_context;
+mod reasoning;
 pub mod retention;
 pub mod telemetry;
 pub use environment_context::BrowserSnapshot;

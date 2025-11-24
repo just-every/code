@@ -504,7 +504,7 @@ pub(super) fn finalize_all_running_as_interrupted(chat: &mut ChatWidget<'_>) {
 }
 
 pub(super) fn finalize_all_running_due_to_answer(chat: &mut ChatWidget<'_>) {
-    const STALE_MSG: &str = "Command ended without a completion event; marking as interrupted.";
+    const STALE_MSG: &str = "Running in background after turn end.";
 
     // Drain running execs so we can mark them stale and stop the spinner.
     let mut agg_was_updated = false;
@@ -523,13 +523,13 @@ pub(super) fn finalize_all_running_due_to_answer(chat: &mut ChatWidget<'_>) {
                     chat,
                     Some(agg_idx),
                     entry_idx,
-                    history_cell::ExploreEntryStatus::Error { exit_code: Some(130) },
+                    history_cell::ExploreEntryStatus::Success,
                 )
                 .is_some();
                 agg_was_updated |= updated;
             }
 
-            let exit_code = 130;
+            let exit_code = 0;
             let now = SystemTime::now();
             let wait_notes_pairs = running.wait_notes.clone();
             let wait_notes_record = exec_wait_notes_from_pairs(&wait_notes_pairs);
@@ -549,7 +549,7 @@ pub(super) fn finalize_all_running_due_to_answer(chat: &mut ChatWidget<'_>) {
                 HistoryDomainEvent::FinishExec {
                     id: history_id,
                     call_id: Some(call_id.as_ref().to_string()),
-                    status: ExecStatus::Error,
+                    status: ExecStatus::Success,
                     exit_code: Some(exit_code),
                     completed_at: Some(now),
                     wait_total: running.wait_total,

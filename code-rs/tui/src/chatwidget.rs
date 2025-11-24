@@ -11167,9 +11167,6 @@ impl ChatWidget<'_> {
                     message.chars().take(80).collect::<String>()
                 );
 
-                // Close out any running tool/exec indicators before inserting final answer.
-                self.finalize_all_running_due_to_answer();
-
                 // Route final message through streaming controller so AppEvent::InsertFinalAnswer
                 // is the single source of truth for assistant content.
                 let sink = AppEventHistorySink(self.app_event_tx.clone());
@@ -11319,8 +11316,6 @@ impl ChatWidget<'_> {
                 };
                 tracing::info!("[order] EventMsg::AgentReasoning id={} key={:?}", id, ok);
                 self.seed_stream_order_key(StreamKind::Reasoning, &id, ok);
-                // Fallback: if any tools/execs are still marked running, complete them now.
-                self.finalize_all_running_due_to_answer();
                 // Use StreamController for final reasoning
                 let sink = AppEventHistorySink(self.app_event_tx.clone());
                 streaming::begin(self, StreamKind::Reasoning, Some(id.clone()));
