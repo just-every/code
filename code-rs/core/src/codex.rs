@@ -1358,6 +1358,9 @@ pub(crate) struct Session {
     /// Configuration for available agent models
     agents: Vec<crate::config_types::AgentConfig>,
 
+    /// Default reasoning effort for spawned agents and model calls in this session
+    model_reasoning_effort: ReasoningEffortConfig,
+
     /// External notifier command (will be passed as args to exec()). When
     /// `None` this feature is disabled.
     notify: Option<Vec<String>>,
@@ -4523,10 +4526,11 @@ async fn submission_loop(
                     shell_environment_policy: config.shell_environment_policy.clone(),
                     cwd,
                     _writable_roots: writable_roots,
-            mcp_connection_manager,
-            client_tools: config.experimental_client_tools.clone(),
-            session_manager: crate::exec_command::ExecSessionManager::default(),
+                    mcp_connection_manager,
+                    client_tools: config.experimental_client_tools.clone(),
+                    session_manager: crate::exec_command::ExecSessionManager::default(),
                     agents: config.agents.clone(),
+                    model_reasoning_effort: config.model_reasoning_effort,
                     notify,
                     state: Mutex::new(state),
                     rollout: Mutex::new(rollout_recorder),
@@ -8529,6 +8533,7 @@ pub(crate) async fn handle_run_agent(
                             read_only,
                             Some(batch_id.clone()),
                             config.clone(),
+                            sess.model_reasoning_effort.into(),
                         )
                         .await;
                     agent_ids.push(agent_id);
@@ -8552,6 +8557,7 @@ pub(crate) async fn handle_run_agent(
                             params.files.clone().unwrap_or_default(),
                             read_only,
                             Some(batch_id.clone()),
+                            sess.model_reasoning_effort.into(),
                         )
                         .await;
                     agent_ids.push(agent_id);
@@ -8573,6 +8579,7 @@ pub(crate) async fn handle_run_agent(
                         params.files.clone().unwrap_or_default(),
                         read_only,
                         Some(batch_id.clone()),
+                        sess.model_reasoning_effort.into(),
                     )
                     .await;
                 agent_ids.push(agent_id);

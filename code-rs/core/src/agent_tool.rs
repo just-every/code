@@ -26,6 +26,13 @@ use crate::openai_tools::OpenAiTool;
 use crate::openai_tools::ResponsesApiTool;
 use crate::protocol::AgentInfo;
 
+fn current_code_binary_path() -> Result<std::path::PathBuf, String> {
+    if let Ok(path) = std::env::var("CODE_BINARY_PATH") {
+        return Ok(std::path::PathBuf::from(path));
+    }
+    std::env::current_exe().map_err(|e| format!("Failed to resolve current executable: {}", e))
+}
+
 // Agent status enum
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -62,6 +69,7 @@ pub struct Agent {
     #[serde(skip)]
     #[allow(dead_code)]
     pub config: Option<AgentConfig>,
+    pub reasoning_effort: code_protocol::config_types::ReasoningEffort,
 }
 
 // Global agent manager
@@ -167,6 +175,7 @@ impl AgentManager {
         files: Vec<String>,
         read_only: bool,
         batch_id: Option<String>,
+        reasoning_effort: code_protocol::config_types::ReasoningEffort,
     ) -> String {
         self.create_agent_internal(
             model,
@@ -178,6 +187,7 @@ impl AgentManager {
             read_only,
             batch_id,
             None,
+            reasoning_effort,
         )
         .await
     }
@@ -193,6 +203,7 @@ impl AgentManager {
         read_only: bool,
         batch_id: Option<String>,
         config: AgentConfig,
+        reasoning_effort: code_protocol::config_types::ReasoningEffort,
     ) -> String {
         self.create_agent_internal(
             model,
@@ -204,6 +215,7 @@ impl AgentManager {
             read_only,
             batch_id,
             Some(config),
+            reasoning_effort,
         )
         .await
     }
@@ -219,6 +231,7 @@ impl AgentManager {
         read_only: bool,
         batch_id: Option<String>,
         config: Option<AgentConfig>,
+        reasoning_effort: code_protocol::config_types::ReasoningEffort,
     ) -> String {
         let agent_id = Uuid::new_v4().to_string();
 
@@ -242,6 +255,7 @@ impl AgentManager {
             worktree_path: None,
             branch_name: None,
             config: config.clone(),
+            reasoning_effort,
         };
 
         self.agents.insert(agent_id.clone(), agent.clone());
@@ -480,6 +494,7 @@ async fn execute_agent(agent_id: String, config: Option<AgentConfig>) {
     let context = agent.context.clone();
     let output_goal = agent.output_goal.clone();
     let files = agent.files.clone();
+    let reasoning_effort = agent.reasoning_effort;
 
     drop(manager); // Release the lock before executing
 
@@ -582,6 +597,7 @@ async fn execute_agent(agent_id: String, config: Option<AgentConfig>) {
                                 false,
                                 Some(worktree_path),
                                 config.clone(),
+                                reasoning_effort,
                             )
                             .await
                         }
@@ -613,7 +629,15 @@ async fn execute_agent(agent_id: String, config: Option<AgentConfig>) {
                 execute_cloud_built_in_streaming(&agent_id, &full_prompt, None, config, model.as_str()).await
             }
         } else {
-            execute_model_with_permissions(&model, &full_prompt, true, None, config).await
+            execute_model_with_permissions(
+                &model,
+                &full_prompt,
+                true,
+                None,
+                config,
+                reasoning_effort,
+            )
+            .await
         }
     };
 
@@ -628,6 +652,7 @@ async fn execute_model_with_permissions(
     read_only: bool,
     working_dir: Option<PathBuf>,
     config: Option<AgentConfig>,
+    reasoning_effort: code_protocol::config_types::ReasoningEffort,
 ) -> Result<String, String> {
     // Helper: cross‑platform check whether an executable is available in PATH
     // and is directly spawnable by std::process::Command (no shell wrappers).
@@ -747,9 +772,9 @@ async fn execute_model_with_permissions(
     }
 
     let mut cmd = if use_current_exe {
-        match std::env::current_exe() {
+        match current_code_binary_path() {
             Ok(path) => Command::new(path),
-            Err(e) => return Err(format!("Failed to resolve current executable: {}", e)),
+            Err(e) => return Err(e),
         }
     } else {
         Command::new(command_for_spawn.clone())
@@ -798,12 +823,27 @@ async fn execute_model_with_permissions(
     };
 
     let built_in_cloud = family == "cloud" && config.is_none();
+
+    // Clamp reasoning effort to what the target model supports and pass it through.
+    let clamped_effort = match reasoning_effort {
+        code_protocol::config_types::ReasoningEffort::XHigh => {
+            let lower = slug_for_defaults.to_ascii_lowercase();
+            if lower.contains("max") {
+                reasoning_effort
+            } else {
+                code_protocol::config_types::ReasoningEffort::High
+            }
+        }
+        other => other,
+    };
     match family {
         "claude" | "gemini" | "qwen" => {
             let mut defaults = default_params_for(slug_for_defaults, read_only);
             strip_model_flags(&mut defaults);
             final_args.extend(defaults);
             final_args.extend(spec_model_args.iter().cloned());
+            final_args.push("--reasoning-effort".into());
+            final_args.push(clamped_effort.to_string().to_ascii_lowercase());
             final_args.push("-p".into());
             final_args.push(prompt.to_string());
         }
@@ -818,6 +858,8 @@ async fn execute_model_with_permissions(
                 final_args.extend(defaults);
             }
             final_args.extend(spec_model_args.iter().cloned());
+            final_args.push("--reasoning-effort".into());
+            final_args.push(clamped_effort.to_string().to_ascii_lowercase());
             final_args.push(prompt.to_string());
         }
         "cloud" => {
@@ -834,10 +876,14 @@ async fn execute_model_with_permissions(
                 final_args.extend(defaults);
             }
             final_args.extend(spec_model_args.iter().cloned());
+            final_args.push("--reasoning-effort".into());
+            final_args.push(clamped_effort.to_string().to_ascii_lowercase());
             final_args.push(prompt.to_string());
         }
         _ => {
             final_args.extend(spec_model_args.iter().cloned());
+            final_args.push("--reasoning-effort".into());
+            final_args.push(clamped_effort.to_string().to_ascii_lowercase());
             final_args.push(prompt.to_string());
         }
     }
@@ -920,8 +966,8 @@ async fn execute_model_with_permissions(
 
         // Resolve the command and args we prepared above into Vec<String> for spawn helpers.
         let program = if ((model_lower == "code" || model_lower == "codex") || model_lower == "cloud") && config.is_none() {
-            // Use current exe path
-            std::env::current_exe().map_err(|e| format!("Failed to resolve current executable: {}", e))?
+            // Use current exe path (or overridden path) to avoid JS bootstrap on Windows.
+            current_code_binary_path()?
         } else {
             // Use program name; PATH resolution will be handled by spawn helper with provided env.
             std::path::PathBuf::from(&command_for_spawn)
@@ -972,12 +1018,14 @@ async fn execute_model_with_permissions(
                 if family == "codex" || family == "code" {
                     return Err(format!("Failed to execute {}: {}", model, e));
                 }
-                let mut fb = match std::env::current_exe() {
+                let mut fb = match current_code_binary_path() {
                     Ok(p) => Command::new(p),
-                    Err(e2) => return Err(format!(
-                        "Failed to execute {} and could not resolve built-in fallback: {} / {}",
-                        model, e, e2
-                    )),
+                    Err(e2) => {
+                        return Err(format!(
+                            "Failed to execute {} and could not resolve built-in fallback: {} / {}",
+                            model, e, e2
+                        ))
+                    }
                 };
                 fb.args(final_args.clone());
                 fb.output().await.map_err(|e2| {
@@ -1055,7 +1103,15 @@ async fn run_agent_smoke_test(cfg: AgentConfig) -> Result<String, String> {
     let model_name = cfg.name.clone();
     let read_only = should_validate_in_read_only(&cfg);
     let mut task = tokio::spawn(async move {
-        execute_model_with_permissions(&model_name, AGENT_SMOKE_TEST_PROMPT, read_only, None, Some(cfg)).await
+        execute_model_with_permissions(
+            &model_name,
+            AGENT_SMOKE_TEST_PROMPT,
+            read_only,
+            None,
+            Some(cfg),
+            code_protocol::config_types::ReasoningEffort::High,
+        )
+        .await
     });
     let timer = tokio::time::sleep(AGENT_SMOKE_TEST_TIMEOUT);
     tokio::pin!(timer);
@@ -1146,8 +1202,7 @@ async fn execute_cloud_built_in_streaming(
     model_slug: &str,
 ) -> Result<String, String> {
     // Program and argv
-    let program = std::env::current_exe()
-        .map_err(|e| format!("Failed to resolve current executable: {}", e))?;
+    let program = current_code_binary_path()?;
     let mut args: Vec<String> = vec!["cloud".into(), "submit".into(), "--wait".into()];
     if let Some(spec) = agent_model_spec(model_slug) {
         args.extend(spec.model_args.iter().map(|arg| (*arg).to_string()));
