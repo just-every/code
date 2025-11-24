@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::io::BufRead;
 use std::path::Path;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::AuthManager;
@@ -85,6 +86,9 @@ struct Error {
     r#type: Option<String>,
     #[allow(dead_code)]
     code: Option<String>,
+    /// Optional parameter that triggered the error (e.g. "reasoning.summary").
+    #[allow(dead_code)]
+    param: Option<String>,
     message: Option<String>,
 
     // Optional fields available on "usage_limit_reached" and "usage_not_included" errors
@@ -149,6 +153,25 @@ fn is_quota_exceeded_http_error(status: StatusCode, error: &Error) -> bool {
     status.is_client_error() && is_quota_exceeded_error(error)
 }
 
+fn is_reasoning_summary_rejected(error: &Error) -> bool {
+    if matches!(error.param.as_deref(), Some("reasoning.summary")) {
+        return true;
+    }
+
+    let message_matches = error
+        .message
+        .as_deref()
+        .map(|msg| {
+            let msg = msg.to_ascii_lowercase();
+            msg.contains("organization must be verified") && msg.contains("reasoning summar")
+        })
+        .unwrap_or(false);
+
+    let code_matches = matches!(error.code.as_deref(), Some("unsupported_value"));
+
+    code_matches && message_matches
+}
+
 fn map_unauthorized_outcome(
     had_auth: bool,
     refresh_error: Option<&RefreshTokenError>,
@@ -169,7 +192,7 @@ fn map_unauthorized_outcome(
     None
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ModelClient {
     config: Arc<Config>,
     auth_manager: Option<Arc<AuthManager>>,
@@ -179,8 +202,29 @@ pub struct ModelClient {
     session_id: Uuid,
     effort: ReasoningEffortConfig,
     summary: ReasoningSummaryConfig,
+    reasoning_summary_disabled: AtomicBool,
     verbosity: TextVerbosityConfig,
     debug_logger: Arc<Mutex<DebugLogger>>,
+}
+
+impl Clone for ModelClient {
+    fn clone(&self) -> Self {
+        Self {
+            config: Arc::clone(&self.config),
+            auth_manager: self.auth_manager.clone(),
+            otel_event_manager: self.otel_event_manager.clone(),
+            client: self.client.clone(),
+            provider: self.provider.clone(),
+            session_id: self.session_id,
+            effort: self.effort,
+            summary: self.summary,
+            reasoning_summary_disabled: AtomicBool::new(
+                self.reasoning_summary_disabled.load(Ordering::Relaxed),
+            ),
+            verbosity: self.verbosity,
+            debug_logger: Arc::clone(&self.debug_logger),
+        }
+    }
 }
 
 impl ModelClient {
@@ -207,6 +251,7 @@ impl ModelClient {
             session_id,
             effort,
             summary,
+            reasoning_summary_disabled: AtomicBool::new(false),
             verbosity: effective_verbosity,
             debug_logger,
         }
@@ -219,7 +264,29 @@ impl ModelClient {
 
     /// Get the reasoning summary configuration
     pub fn get_reasoning_summary(&self) -> ReasoningSummaryConfig {
-        self.summary
+        if self.reasoning_summary_disabled.load(Ordering::Relaxed) {
+            ReasoningSummaryConfig::None
+        } else {
+            self.summary
+        }
+    }
+
+    fn current_reasoning_param(&self) -> Option<crate::client_common::Reasoning> {
+        if self.reasoning_summary_disabled.load(Ordering::Relaxed) {
+            return None;
+        }
+
+        create_reasoning_param_for_request(
+            &self.config.model_family,
+            Some(self.effort),
+            self.summary,
+        )
+    }
+
+    fn disable_reasoning_summary(&self) {
+        if !self.reasoning_summary_disabled.swap(true, Ordering::Relaxed) {
+            tracing::warn!("disabling reasoning summaries after API rejection");
+        }
     }
 
     /// Get the text verbosity configuration
@@ -413,20 +480,6 @@ impl ModelClient {
             });
         }
 
-        let reasoning = create_reasoning_param_for_request(
-            &self.config.model_family,
-            Some(self.effort),
-            self.summary,
-        );
-
-        // Request encrypted COT if we are not storing responses,
-        // otherwise reasoning items will be referenced by ID
-        let include: Vec<String> = if !store && reasoning.is_some() {
-            vec!["reasoning.encrypted_content".to_string()]
-        } else {
-            vec![]
-        };
-
         let input_with_instructions = prompt.get_formatted_input();
 
         // Build `text` parameter with conditional verbosity and optional format.
@@ -453,7 +506,7 @@ impl ModelClient {
             _ => None,
         };
 
-        let text = match (auth_mode, want_format, verbosity) {
+        let text_template = match (auth_mode, want_format, verbosity) {
             (Some(AuthMode::ChatGPT), None, _) => None,
             (_, Some(fmt), _) => Some(crate::client_common::Text {
                 verbosity: effective_verbosity.into(),
@@ -485,47 +538,6 @@ impl ModelClient {
             .unwrap_or(self.session_id);
         let session_id_str = session_id.to_string();
 
-        let payload = ResponsesApiRequest {
-            model: &self.config.model,
-            instructions: &full_instructions,
-            input: &input_with_instructions,
-            tools: &tools_json,
-            tool_choice: "auto",
-            parallel_tool_calls: true,
-            reasoning,
-            text,
-            store: azure_workaround,
-            stream: true,
-            include,
-            // Use a stable per-process cache key (session id). With store=false this is inert.
-            prompt_cache_key: Some(session_id_str.clone()),
-        };
-
-        let mut payload_json = serde_json::to_value(&payload)?;
-        if let Some(model_value) = payload_json.get_mut("model") {
-            *model_value = serde_json::Value::String(model_slug.to_string());
-        }
-        if azure_workaround {
-            attach_item_ids(&mut payload_json, &input_with_instructions);
-        }
-        if let Some(openrouter_cfg) = self.provider.openrouter_config() {
-            if let Some(obj) = payload_json.as_object_mut() {
-                if let Some(provider) = &openrouter_cfg.provider {
-                    obj.insert(
-                        "provider".to_string(),
-                        serde_json::to_value(provider)?
-                    );
-                }
-                if let Some(route) = &openrouter_cfg.route {
-                    obj.insert("route".to_string(), route.clone());
-                }
-                for (key, value) in &openrouter_cfg.extra {
-                    obj.entry(key.clone()).or_insert(value.clone());
-                }
-            }
-        }
-        let payload_body = serde_json::to_string(&payload_json)?;
-
         let mut attempt = 0;
         let max_retries = self.provider.request_max_retries();
         let mut request_id = String::new();
@@ -534,14 +546,61 @@ impl ModelClient {
         let endpoint = self
             .provider
             .get_full_url(&auth_manager.as_ref().and_then(|m| m.auth()));
-        trace!(
-            "POST to {}: {}",
-            endpoint,
-            serde_json::to_string(&payload_json)?
-        );
 
         loop {
             attempt += 1;
+
+            let reasoning = self.current_reasoning_param();
+            // Request encrypted COT if we are not storing responses,
+            // otherwise reasoning items will be referenced by ID
+            let include: Vec<String> = if !store && reasoning.is_some() {
+                vec!["reasoning.encrypted_content".to_string()]
+            } else {
+                Vec::new()
+            };
+
+            let text = text_template.clone();
+
+            let payload = ResponsesApiRequest {
+                model: &self.config.model,
+                instructions: &full_instructions,
+                input: &input_with_instructions,
+                tools: &tools_json,
+                tool_choice: "auto",
+                parallel_tool_calls: true,
+                reasoning,
+                text,
+                store: azure_workaround,
+                stream: true,
+                include,
+                // Use a stable per-process cache key (session id). With store=false this is inert.
+                prompt_cache_key: Some(session_id_str.clone()),
+            };
+
+            let mut payload_json = serde_json::to_value(&payload)?;
+            if let Some(model_value) = payload_json.get_mut("model") {
+                *model_value = serde_json::Value::String(model_slug.to_string());
+            }
+            if azure_workaround {
+                attach_item_ids(&mut payload_json, &input_with_instructions);
+            }
+            if let Some(openrouter_cfg) = self.provider.openrouter_config() {
+                if let Some(obj) = payload_json.as_object_mut() {
+                    if let Some(provider) = &openrouter_cfg.provider {
+                        obj.insert(
+                            "provider".to_string(),
+                            serde_json::to_value(provider)?
+                        );
+                    }
+                    if let Some(route) = &openrouter_cfg.route {
+                        obj.insert("route".to_string(), route.clone());
+                    }
+                    for (key, value) in &openrouter_cfg.extra {
+                        obj.entry(key.clone()).or_insert(value.clone());
+                    }
+                }
+            }
+            let payload_body = serde_json::to_string(&payload_json)?;
 
             let mut auth_refresh_error: Option<RefreshTokenError> = None;
 
@@ -712,6 +771,34 @@ impl ModelClient {
 
                     // Read the response body once for diagnostics across error branches.
                     let body_text = res.text().await.unwrap_or_default();
+                    let body = serde_json::from_str::<ErrorResponse>(&body_text).ok();
+
+                    if status == StatusCode::BAD_REQUEST {
+                        if let Some(ErrorResponse { ref error }) = body {
+                            if !self.reasoning_summary_disabled.load(Ordering::Relaxed)
+                                && is_reasoning_summary_rejected(error)
+                            {
+                                self.disable_reasoning_summary();
+
+                                if let Ok(logger) = self.debug_logger.lock() {
+                                    let _ = logger.append_response_event(
+                                        &request_id,
+                                        "reasoning_summary_disabled",
+                                        &serde_json::json!({
+                                            "status": status.as_u16(),
+                                            "message": error.message.clone(),
+                                            "code": error.code.clone(),
+                                            "param": error.param.clone(),
+                                        }),
+                                    );
+                                }
+
+                                // Retry immediately with reasoning summaries removed.
+                                attempt = 0;
+                                continue;
+                            }
+                        }
+                    }
 
                     // The OpenAI Responses endpoint returns structured JSON bodies even for 4xx/5xx
                     // errors. When we bubble early with only the HTTP status the caller sees an opaque
@@ -742,8 +829,6 @@ impl ModelClient {
                             request_id: None,
                         }));
                     }
-
-                    let body = serde_json::from_str::<ErrorResponse>(&body_text).ok();
 
                     if let Some(ErrorResponse { ref error }) = body {
                         if is_quota_exceeded_http_error(status, error) {
@@ -2208,6 +2293,7 @@ mod tests {
             r#type: None,
             message: Some("Rate limit reached for gpt-5.1 in organization org- on tokens per min (TPM): Limit 1, Used 1, Requested 19304. Please try again in 28ms. Visit https://platform.openai.com/account/rate-limits to learn more.".to_string()),
             code: Some("rate_limit_exceeded".to_string()),
+            param: None,
             plan_type: None,
             resets_in_seconds: None,
         };
@@ -2224,6 +2310,7 @@ mod tests {
             r#type: None,
             message: Some("Rate limit reached for gpt-5.1 in organization <ORG> on tokens per min (TPM): Limit 30000, Used 6899, Requested 24050. Please try again in 1.898s. Visit https://platform.openai.com/account/rate-limits to learn more.".to_string()),
             code: Some("rate_limit_exceeded".to_string()),
+            param: None,
             plan_type: None,
             resets_in_seconds: None,
         };
@@ -2238,6 +2325,7 @@ mod tests {
             r#type: None,
             message: Some("Rate limit exceeded. Retry after 35 seconds.".to_string()),
             code: Some("rate_limit_exceeded".to_string()),
+            param: None,
             plan_type: None,
             resets_in_seconds: None,
         };
@@ -2252,6 +2340,7 @@ mod tests {
             r#type: None,
             message: Some("Some other error".to_string()),
             code: None,
+            param: None,
             plan_type: None,
             resets_in_seconds: None,
         };
@@ -2304,6 +2393,7 @@ mod tests {
                     "Rate limit reached for gpt-5.1. Please try again in 30 seconds.".to_string(),
                 ),
                 code: Some("rate_limit_exceeded".to_string()),
+                param: None,
                 plan_type: None,
                 resets_in_seconds: None,
             };
@@ -2329,6 +2419,7 @@ mod tests {
             r#type: Some("invalid_request_error".to_string()),
             message: Some("You exceeded your current quota".to_string()),
             code: Some("insufficient_quota".to_string()),
+            param: None,
             plan_type: None,
             resets_in_seconds: None,
         };
@@ -2353,11 +2444,37 @@ mod tests {
             r#type: Some("invalid_request_error".to_string()),
             message: Some("missing code".to_string()),
             code: None,
+            param: None,
             plan_type: None,
             resets_in_seconds: None,
         };
 
         assert!(!is_quota_exceeded_http_error(StatusCode::BAD_REQUEST, &error));
+    }
+
+    #[test]
+    fn reasoning_summary_rejection_is_detected() {
+        let error_with_param = Error {
+            r#type: Some("invalid_request_error".to_string()),
+            message: Some("Your organization must be verified to generate reasoning summaries.".to_string()),
+            code: Some("unsupported_value".to_string()),
+            param: Some("reasoning.summary".to_string()),
+            plan_type: None,
+            resets_in_seconds: None,
+        };
+
+        assert!(is_reasoning_summary_rejected(&error_with_param));
+
+        let error_by_message = Error {
+            r#type: Some("invalid_request_error".to_string()),
+            message: Some("Your organization must be verified to generate reasoning summaries. If you just verified, it can take up to 15 minutes for access to propagate.".to_string()),
+            code: Some("unsupported_value".to_string()),
+            param: None,
+            plan_type: None,
+            resets_in_seconds: None,
+        };
+
+        assert!(is_reasoning_summary_rejected(&error_by_message));
     }
 
     #[tokio::test]

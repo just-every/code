@@ -318,7 +318,7 @@ pub(crate) struct Reasoning {
 }
 
 /// Text configuration for verbosity/format in OpenAI API responses.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Text {
     pub(crate) verbosity: OpenAiTextVerbosity,
     pub(crate) format: Option<TextFormat>,
