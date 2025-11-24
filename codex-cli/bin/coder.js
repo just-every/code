@@ -18,7 +18,7 @@ const { platform, arch } = process;
 // When users run via `npx @just-every/code`, we must always execute our
 // packaged native binary by absolute path to avoid PATH collisions.
 
-const isWSL = () => {
+function isWSL() {
   if (platform !== "linux") return false;
   try {
     const txt = readFileSync("/proc/version", "utf8").toLowerCase();
@@ -26,7 +26,7 @@ const isWSL = () => {
   } catch {
     return false;
   }
-};
+}
 
 let targetTriple = null;
 switch (platform) {
@@ -394,9 +394,12 @@ try {
 // receives a fatal signal, both processes exit in a predictable manner.
 const { spawn } = await import("child_process");
 
+// Make the resolved native binary path visible to spawned agents/subprocesses.
+process.env.CODE_BINARY_PATH = binaryPath;
+
 const child = spawn(binaryPath, process.argv.slice(2), {
   stdio: "inherit",
-  env: { ...process.env, CODER_MANAGED_BY_NPM: "1", CODEX_MANAGED_BY_NPM: "1" },
+  env: { ...process.env, CODER_MANAGED_BY_NPM: "1", CODEX_MANAGED_BY_NPM: "1", CODE_BINARY_PATH: binaryPath },
 });
 
 child.on("error", (err) => {

@@ -428,7 +428,7 @@ export async function runPostinstall(options = {}) {
     // - Windows: .zip
     // - macOS/Linux: prefer .zst if `zstd` CLI is available; otherwise use .tar.gz
     const isWin = isWindows;
-    const isWSL = (() => {
+    const detectedWSL = (() => {
       if (platform() !== 'linux') return false;
       try {
         const ver = readFileSync('/proc/version', 'utf8').toLowerCase();
@@ -436,7 +436,7 @@ export async function runPostinstall(options = {}) {
       } catch { return false; }
     })();
     const binDirReal = (() => { try { return realpathSync(binDir); } catch { return binDir; } })();
-    const mirrorToLocal = !(isWin || (isWSL && isPathOnWindowsFs(binDirReal)));
+    const mirrorToLocal = !(isWin || (detectedWSL && isPathOnWindowsFs(binDirReal)));
     let useZst = false;
     if (!isWin) {
       try {
