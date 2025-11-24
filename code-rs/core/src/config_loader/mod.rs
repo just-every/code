@@ -44,7 +44,7 @@ pub(crate) struct LoaderOverrides {
 //
 // (*) Only available on macOS via managed device profiles.
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 pub async fn load_config_as_toml(code_home: &Path) -> io::Result<TomlValue> {
     load_config_as_toml_with_overrides(code_home, LoaderOverrides::default()).await
 }
@@ -53,7 +53,7 @@ fn default_empty_table() -> TomlValue {
     TomlValue::Table(Default::default())
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 pub(crate) async fn load_config_layers_with_overrides(
     code_home: &Path,
     overrides: LoaderOverrides,

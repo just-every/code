@@ -11,7 +11,9 @@ use crate::model_family::ModelFamily;
 use crate::plan_tool::PLAN_TOOL;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
-use crate::tool_apply_patch::ApplyPatchToolType;
+use crate::tool_apply_patch::{
+    create_apply_patch_freeform_tool, create_apply_patch_json_tool, ApplyPatchToolType,
+};
 // apply_patch tools are not currently surfaced; keep imports out to avoid warnings.
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -130,7 +132,19 @@ impl ToolsConfig {
         }
 
         let apply_patch_tool_type = if include_apply_patch_tool {
-            model_family.apply_patch_tool_type.clone()
+            // On Windows, grammar-based apply_patch invocations rely on heredocs
+            // the shell cannot parse. Force the JSON/function variant instead.
+            #[cfg(target_os = "windows")]
+            {
+                model_family
+                    .apply_patch_tool_type
+                    .clone()
+                    .map(|_| ApplyPatchToolType::Function)
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                model_family.apply_patch_tool_type.clone()
+            }
         } else {
             None
         };
@@ -673,6 +687,14 @@ pub fn get_openai_tools(
                 crate::exec_command::create_write_stdin_tool_for_responses_api(),
             ));
         }
+    }
+
+    if let Some(apply_patch_tool_type) = &config.apply_patch_tool_type {
+        let apply_patch_tool = match apply_patch_tool_type {
+            ApplyPatchToolType::Function => create_apply_patch_json_tool(),
+            ApplyPatchToolType::Freeform => create_apply_patch_freeform_tool(),
+        };
+        tools.push(apply_patch_tool);
     }
 
     if config.plan_tool {
