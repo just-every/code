@@ -4,6 +4,7 @@ use std::time::Duration;
 use std::sync::Arc;
 
 use rand::Rng;
+use reqwest;
 use shlex::try_join;
 use tokio::sync::Notify;
 use tracing::debug;
@@ -18,6 +19,28 @@ pub(crate) fn backoff(attempt: u64) -> Duration {
     let base = (INITIAL_DELAY_MS as f64 * exp) as u64;
     let jitter = rand::rng().random_range(0.9..1.1);
     Duration::from_millis((base as f64 * jitter) as u64)
+}
+
+/// Blocks until the given endpoint responds, pausing between attempts with
+/// exponential backoff (capped). Used to pause retries while the user is
+/// offline so we resume immediately once connectivity returns.
+pub(crate) async fn wait_for_connectivity(probe_url: &str) {
+    // Cap individual waits to avoid very long sleeps while still backing off.
+    const MAX_DELAY: Duration = Duration::from_secs(30);
+    let client = reqwest::Client::new();
+    let mut attempt: u64 = 1;
+    loop {
+        // Treat any HTTP response as proof that DNS + TLS + routing are back.
+        // Servers like api.openai.com respond 4xx/421 to bare HEADs, so do
+        // not gate on status here.
+        if client.head(probe_url).send().await.is_ok() {
+            return;
+        }
+
+        let delay = backoff(attempt).min(MAX_DELAY);
+        attempt = attempt.saturating_add(1);
+        tokio::time::sleep(delay).await;
+    }
 }
 
 pub fn escape_command(command: &[String]) -> String {

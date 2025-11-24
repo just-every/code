@@ -30,7 +30,7 @@ use crate::error::RetryLimitReachedError;
 use crate::error::UnexpectedResponseError;
 use crate::model_family::ModelFamily;
 use crate::openai_tools::create_tools_json_for_chat_completions_api;
-use crate::util::backoff;
+use crate::util::{backoff, wait_for_connectivity};
 use std::sync::{Arc, Mutex};
 use code_app_server_protocol::AuthMode;
 use code_protocol::models::ContentItem;
@@ -447,6 +447,7 @@ pub(crate) async fn stream_chat_completions(
                     return Err(CodexErr::RetryLimit(RetryLimitReachedError {
                         status,
                         request_id: None,
+                        retryable: status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS,
                     }));
                 }
 
@@ -462,7 +463,13 @@ pub(crate) async fn stream_chat_completions(
                 tokio::time::sleep(delay).await;
             }
             Err(e) => {
+                let is_connectivity = e.is_connect() || e.is_timeout() || e.is_request();
                 if attempt > max_retries {
+                    if is_connectivity {
+                        wait_for_connectivity(&provider.base_url_for_probe()).await;
+                        attempt = 0;
+                        continue;
+                    }
                     // Log network error
                     if let Ok(logger) = debug_logger.lock() {
                         let _ = logger.append_response_event(

@@ -1239,6 +1239,7 @@ pub(crate) struct ChatWidget<'a> {
     planning_restore: Option<(String, ReasoningEffort)>,
     history_debug_events: Option<RefCell<Vec<String>>>,
     latest_upgrade_version: Option<String>,
+    reconnect_notice_active: bool,
     initial_user_message: Option<UserMessage>,
     total_token_usage: TokenUsage,
     last_token_usage: TokenUsage,
@@ -4810,15 +4811,16 @@ impl ChatWidget<'_> {
             || lower.contains("temporar");
 
         if is_transient {
-            // Keep task running and surface a concise status in the input header.
-            self.bottom_pane.set_task_running(true);
-            self.bottom_pane.update_status_text(message.clone());
-            // Add a dim background event instead of a hard error cell to avoid
-            // alarming users during auto-retries.
-            self.push_background_tail(message);
-            // Do NOT clear running state or streams; the retry will resume them.
-            self.request_redraw();
+            self.mark_reconnecting(message);
             return;
+        }
+
+        // Ensure reconnect banners are cleared once we pivot to a fatal error
+        // without emitting the "Reconnected" toast (which would be misleading).
+        if self.reconnect_notice_active {
+            self.reconnect_notice_active = false;
+            self.bottom_pane.update_status_text(String::new());
+            self.request_redraw();
         }
 
         // Fatal error path: show an error cell and clear running state.
@@ -4840,6 +4842,35 @@ impl ChatWidget<'_> {
         self.active_task_ids.clear();
         self.maybe_hide_spinner();
         self.mark_needs_redraw();
+    }
+
+    fn mark_reconnecting(&mut self, message: String) {
+        // Keep task running and surface a concise status in the input header.
+        self.bottom_pane.set_task_running(true);
+        self.bottom_pane.update_status_text(message.clone());
+
+        if !self.reconnect_notice_active {
+            self.reconnect_notice_active = true;
+            self.push_background_tail("Connection lost. Auto-retrying…".to_string());
+        }
+
+        // Brief toast so users notice recovery attempts.
+        self.bottom_pane
+            .flash_footer_notice_for("Reconnecting…".to_string(), Duration::from_secs(2));
+
+        // Do NOT clear running state or streams; the retry will resume them.
+        self.request_redraw();
+    }
+
+    fn clear_reconnecting(&mut self) {
+        if !self.reconnect_notice_active {
+            return;
+        }
+        self.reconnect_notice_active = false;
+        self.bottom_pane.update_status_text(String::new());
+        self.bottom_pane
+            .flash_footer_notice_for("Reconnected, resuming".to_string(), Duration::from_secs(2));
+        self.request_redraw();
     }
 
     fn interrupt_running_task(&mut self) {
@@ -5007,6 +5038,7 @@ impl ChatWidget<'_> {
                 None
             },
             latest_upgrade_version: latest_upgrade_version.clone(),
+            reconnect_notice_active: false,
             initial_user_message: create_initial_user_message(
                 initial_prompt.unwrap_or_default(),
                 initial_images,
@@ -5323,6 +5355,7 @@ impl ChatWidget<'_> {
                 None
             },
             latest_upgrade_version: latest_upgrade_version.clone(),
+            reconnect_notice_active: false,
             initial_user_message: None,
             total_token_usage: TokenUsage::default(),
             last_token_usage: TokenUsage::default(),
@@ -11367,6 +11400,7 @@ impl ChatWidget<'_> {
                 self.stream.insert_reasoning_section_break(&sink);
             }
             EventMsg::TaskStarted => {
+                self.clear_reconnecting();
                 // This begins the new turn; clear the pending prompt anchor count
                 // so subsequent background events use standard placement.
                 self.pending_user_prompts_for_next_turn = 0;
@@ -11395,6 +11429,7 @@ impl ChatWidget<'_> {
                 self.mark_needs_redraw();
             }
             EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
+                self.clear_reconnecting();
                 // Finalize any active streams
                 if self.stream.is_write_cycle_active() {
                     // Finalize both streams via streaming facade
@@ -25052,15 +25087,15 @@ Have we met every part of this goal and is there no further work to do?"#
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use super::{
-        CAPTURE_AUTO_TURN_COMMIT_STUB,
-        GIT_DIFF_NAME_ONLY_BETWEEN_STUB,
-    };
-    use crate::bottom_pane::AutoCoordinatorViewModel;
-    use crate::chatwidget::message::UserMessage;
-    use crate::chatwidget::smoke_helpers::{enter_test_runtime_guard, ChatWidgetHarness};
+    mod tests {
+        use super::*;
+        use super::{
+            CAPTURE_AUTO_TURN_COMMIT_STUB,
+            GIT_DIFF_NAME_ONLY_BETWEEN_STUB,
+        };
+        use crate::bottom_pane::AutoCoordinatorViewModel;
+        use crate::chatwidget::message::UserMessage;
+        use crate::chatwidget::smoke_helpers::{enter_test_runtime_guard, ChatWidgetHarness};
     use crate::history_cell::{self, ExploreAggregationCell, HistoryCellType};
     use code_auto_drive_core::{
         AutoContinueMode,
@@ -25127,6 +25162,20 @@ mod tests {
         assert!(ChatWidget::multiline_slash_command_requires_split("/auto"));
         assert!(!ChatWidget::multiline_slash_command_requires_split("/plan"));
         assert!(!ChatWidget::multiline_slash_command_requires_split("/solve add context"));
+    }
+
+    #[test]
+    fn transient_error_sets_reconnect_ui() {
+        let _guard = enter_test_runtime_guard();
+        let mut harness = ChatWidgetHarness::new();
+
+        harness
+            .chat()
+            .on_error("stream error: retrying 1/5".to_string());
+
+        assert!(harness.chat().reconnect_notice_active);
+        harness.chat().clear_reconnecting();
+        assert!(!harness.chat().reconnect_notice_active);
     }
     use ratatui::backend::TestBackend;
     use ratatui::text::Line;

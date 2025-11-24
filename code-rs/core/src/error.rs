@@ -198,6 +198,9 @@ impl std::error::Error for UnexpectedResponseError {}
 pub struct RetryLimitReachedError {
     pub status: StatusCode,
     pub request_id: Option<String>,
+    /// Whether the underlying failure looked transient (network/5xx/429/etc.).
+    /// Callers can use this to decide if longer-horizon retries are safe.
+    pub retryable: bool,
 }
 
 impl std::fmt::Display for RetryLimitReachedError {
