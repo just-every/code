@@ -4804,11 +4804,16 @@ impl ChatWidget<'_> {
         // from fatal errors so the status spinner remains visible while we wait.
         let lower = message.to_lowercase();
         let is_transient = lower.contains("retrying")
-            || lower.contains("stream disconnected")
+            || lower.contains("reconnecting")
+            || lower.contains("disconnected")
             || lower.contains("stream error")
             || lower.contains("stream closed")
             || lower.contains("timeout")
-            || lower.contains("temporar");
+            || lower.contains("temporar")
+            || lower.contains("transport")
+            || lower.contains("network")
+            || lower.contains("connection")
+            || lower.contains("failed to start stream");
 
         if is_transient {
             self.mark_reconnecting(message);
