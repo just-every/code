@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::error::Error as StdError;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -481,7 +482,7 @@ pub(crate) async fn stream_chat_completions(
                         );
                         let _ = logger.end_request_log(&request_id);
                     }
-                    return Err(e.into());
+                    return Err(enrich_reqwest_error(e));
                 }
                 let delay = backoff(attempt);
                 tokio::time::sleep(delay).await;
@@ -861,6 +862,120 @@ async fn process_chat_sse<S>(
                 return; // End processing for this SSE stream.
             }
         }
+    }
+}
+
+fn enrich_reqwest_error(err: reqwest::Error) -> CodexErr {
+    let url_hint = err
+        .url()
+        .map(|u| format!(" while requesting {u}"))
+        .unwrap_or_default();
+    let root_msg = deepest_error_message(&err);
+    let full_msg = err.to_string();
+
+    if err.is_timeout() {
+        let message = format!(
+            "network timeout{url_hint}: {root_msg}. Please check your internet connection and try again."
+        );
+        return CodexErr::Stream(message, None);
+    }
+
+    if err.is_connect() {
+        let hint = dns_resolution_hint(&root_msg)
+            .or_else(|| dns_resolution_hint(&full_msg))
+            .unwrap_or(
+                "Verify that you have an active internet connection and that outbound HTTPS access to the model endpoint is allowed.",
+            );
+        let message = format!("network error{url_hint}: {root_msg}. {hint}");
+        return CodexErr::Stream(message, None);
+    }
+
+    CodexErr::Reqwest(err)
+}
+
+fn deepest_error_message(err: &dyn StdError) -> String {
+    let mut current: &dyn StdError = err;
+    let mut last = current.to_string();
+    while let Some(source) = current.source() {
+        let candidate = source.to_string();
+        if !candidate.is_empty() {
+            last = candidate;
+        }
+        current = source;
+    }
+    if last.is_empty() {
+        err.to_string()
+    } else {
+        last
+    }
+}
+
+fn dns_resolution_hint(message: &str) -> Option<&'static str> {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("dns error")
+        || lower.contains("failed to lookup address information")
+        || lower.contains("temporary failure in name resolution")
+        || lower.contains("name or service not known")
+        || lower.contains("no such host")
+        || lower.contains("failed host lookup")
+        || lower.contains("nodename nor servname provided")
+        || lower.contains("getaddrinfo failed")
+        || lower.contains("could not resolve host")
+        || lower.contains("name resolution failed")
+    {
+        Some(
+            "Check that your DNS configuration is working (for example verify /etc/resolv.conf or your system resolver settings) and then retry.",
+        )
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dns_resolution_hint;
+    use super::deepest_error_message;
+    use std::error::Error as StdError;
+
+    #[test]
+    fn dns_hint_matches_common_messages() {
+        assert!(dns_resolution_hint("dns error: failed to lookup address information").is_some());
+        assert!(dns_resolution_hint("Temporary failure in name resolution").is_some());
+        assert!(dns_resolution_hint("Name or service not known").is_some());
+        assert!(dns_resolution_hint("No such host is known").is_some());
+        assert!(dns_resolution_hint("nodename nor servname provided, or not known").is_some());
+        assert!(dns_resolution_hint("getaddrinfo failed: Name or service not known").is_some());
+    }
+
+    #[test]
+    fn dns_hint_ignores_non_dns_errors() {
+        assert!(dns_resolution_hint("connection refused").is_none());
+        assert!(dns_resolution_hint("TLS handshake timeout").is_none());
+    }
+
+    #[test]
+    fn deepest_error_message_prefers_innermost_source() {
+        let err = anyhow::anyhow!("lowest cause")
+            .context("wrapper level 1")
+            .context("wrapper level 2");
+        let message = deepest_error_message(err.as_ref());
+        assert_eq!(message, "lowest cause");
+    }
+
+    #[test]
+    fn deepest_error_message_handles_empty_source_messages() {
+        #[derive(Debug)]
+        struct EmptySourceError;
+        impl std::fmt::Display for EmptySourceError {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "")
+            }
+        }
+        impl StdError for EmptySourceError {}
+
+        let err = anyhow::anyhow!("top level").context(EmptySourceError);
+        let message = deepest_error_message(err.as_ref());
+        assert_eq!(message, "top level");
     }
 }
 
