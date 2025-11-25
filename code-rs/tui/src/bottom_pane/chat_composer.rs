@@ -135,6 +135,7 @@ pub(crate) struct ChatComposer {
     // Animation thread for spinning icon when task is running
     animation_running: Option<Arc<AtomicBool>>,
     using_chatgpt_auth: bool,
+    custom_prompts: Vec<CustomPrompt>,
     // Ephemeral footer notice and its expiry
     footer_notice: Option<(String, std::time::Instant)>,
     // Persistent hint for specific modes (e.g., standard terminal mode)
@@ -204,6 +205,7 @@ impl ChatComposer {
             status_message: String::from("coding"),
             animation_running: None,
             using_chatgpt_auth,
+            custom_prompts: Vec::new(),
             footer_notice: None,
             standard_terminal_hint: None,
             access_mode_label: None,
@@ -1856,6 +1858,9 @@ impl ChatComposer {
             _ => {
                 if input_starts_with_slash && in_slash_head {
                     let mut command_popup = CommandPopup::new_with_filter(self.using_chatgpt_auth);
+                    if !self.custom_prompts.is_empty() {
+                        command_popup.set_prompts(self.custom_prompts.clone());
+                    }
                     // Load saved subagent commands to include in autocomplete (exclude built-ins)
                     if let Ok(cfg) = code_core::config::Config::load_with_cli_overrides(vec![], code_core::config::ConfigOverrides::default()) {
                         let mut names: Vec<String> = cfg
@@ -1882,6 +1887,7 @@ impl ChatComposer {
 
     #[allow(dead_code)]
     pub(crate) fn set_custom_prompts(&mut self, prompts: Vec<CustomPrompt>) {
+        self.custom_prompts = prompts.clone();
         if let ActivePopup::Command(popup) = &mut self.active_popup {
             popup.set_prompts(prompts);
         }
