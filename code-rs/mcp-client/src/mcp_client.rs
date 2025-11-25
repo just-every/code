@@ -433,12 +433,26 @@ const DEFAULT_ENV_VARS: &[&str] = &[
 
 #[cfg(windows)]
 const DEFAULT_ENV_VARS: &[&str] = &[
-    // TODO: More research is necessary to curate this list.
+    // Keep Windows process defaults that many launchers depend on (Python/uv,
+    // MSVC-linked binaries, etc.). Missing values like SYSTEMROOT or
+    // LOCALAPPDATA can cause child processes to exit immediately, which then
+    // surfaces as a timeout in the MCP handshake.
     "PATH",
     "PATHEXT",
+    "SYSTEMROOT",
+    "WINDIR",
+    "COMSPEC",
     "USERNAME",
     "USERDOMAIN",
     "USERPROFILE",
+    "LOCALAPPDATA",
+    "APPDATA",
+    "PROGRAMDATA",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "PROGRAMW6432",
+    "HOMEDRIVE",
+    "HOMEPATH",
     "TEMP",
     "TMP",
 ];
