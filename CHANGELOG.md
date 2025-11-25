@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.5.4] - 2025-11-24
+
+- Core/Agent: pass reasoning effort overrides through config so automation consistently honors requested budgets. (d6a7666b)
+- Compact: trim chat history when context overflows and automatically retry to keep long sessions running. (2014c10d)
+
 ## [0.5.3] - 2025-11-24
 
 - Auto Drive: add CLI aliases for automation runs and force headless sessions into full-auto so release flows stay hands-free. (288b1d94, 0bb2f8dd)
