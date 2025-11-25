@@ -71,7 +71,7 @@ use crate::protocol::WebSearchCompleteEvent;
 use code_protocol::mcp_protocol::AuthMode;
 use crate::account_usage;
 use crate::auth_accounts;
-use crate::agent_defaults::{default_agent_configs, enabled_agent_model_specs};
+use crate::agent_defaults::{agent_model_spec, default_agent_configs, enabled_agent_model_specs};
 use code_protocol::models::WebSearchAction;
 use code_protocol::protocol::RolloutItem;
 use shlex::split as shlex_split;
@@ -8479,25 +8479,41 @@ pub(crate) async fn handle_run_agent(
 
             // Helper: derive the command to check for a given model/config pair.
             fn resolve_command_for_check(model: &str, cfg: Option<&crate::config_types::AgentConfig>) -> (String, bool) {
-                if let Some(c) = cfg {
+                let spec = agent_model_spec(model)
+                    .or_else(|| cfg.and_then(|c| agent_model_spec(&c.name)))
+                    .or_else(|| cfg.and_then(|c| agent_model_spec(&c.command)));
+
+                let cfg_trimmed = cfg.map(|c| {
                     let (base, _) = split_command_and_args(&c.command);
                     let trimmed = base.trim();
-                    if !trimmed.is_empty() {
-                        return (trimmed.to_string(), false);
+                    if trimmed.is_empty() { c.command.trim().to_string() } else { trimmed.to_string() }
+                });
+
+                if let Some(spec) = spec {
+                    let is_builtin_family = matches!(spec.family, "code" | "codex" | "cloud");
+                    let uses_default_cli = cfg_trimmed
+                        .as_ref()
+                        .map(|cmd| cmd.is_empty() || cmd.eq_ignore_ascii_case(spec.cli))
+                        .unwrap_or(true);
+
+                    if is_builtin_family && uses_default_cli {
+                        return (spec.cli.to_string(), true);
                     }
-                    return (c.command.clone(), false);
                 }
+
+                if let Some(cmd) = cfg_trimmed {
+                    if !cmd.is_empty() {
+                        return (cmd, false);
+                    }
+                }
+
                 let m = model.to_lowercase();
                 match m.as_str() {
-                    // Built-in: always available via current_exe fallback.
-                    "code" | "codex" => (m, true),
-                    // External CLIs expected to be in PATH
+                    "code" | "codex" | "cloud" => ("coder".to_string(), true),
                     "claude" => ("claude".to_string(), false),
                     "gemini" => ("gemini".to_string(), false),
                     "qwen" => ("qwen".to_string(), false),
-                    // Cloud agent: treat as built-in via current executable (code cloud submit)
-                    "cloud" => ("cloud".to_string(), true),
-                    _ => (m, false),
+                    other => (other.to_string(), false),
                 }
             }
 
