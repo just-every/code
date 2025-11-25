@@ -26,6 +26,8 @@ enum Focus {
     Name,
     Body,
     Save,
+    Delete,
+    Cancel,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,7 +53,7 @@ impl PromptsSettingsView {
         let mut name_field = FormTextField::new_single_line();
         name_field.set_filter(InputFilter::Id);
         let body_field = FormTextField::new_multi_line();
-        let mut view = Self {
+        let view = Self {
             prompts,
             selected: 0,
             focus: Focus::List,
@@ -91,6 +93,7 @@ impl PromptsSettingsView {
                 KeyEvent { code: KeyCode::Esc, .. } => {
                     self.mode = Mode::List;
                     self.focus = Focus::List;
+                    self.status = None;
                     true
                 }
                 KeyEvent { code: KeyCode::Tab, .. } => {
@@ -102,8 +105,15 @@ impl PromptsSettingsView {
                     true
                 }
                 KeyEvent { code: KeyCode::Enter, modifiers: KeyModifiers::NONE, .. } => {
-                    if matches!(self.focus, Focus::Save) {
-                        self.save_current();
+                    match self.focus {
+                        Focus::Save => self.save_current(),
+                        Focus::Delete => self.delete_current(),
+                        Focus::Cancel => {
+                            self.mode = Mode::List;
+                            self.focus = Focus::List;
+                            self.status = None;
+                        }
+                        _ => {}
                     }
                     true
                 }
@@ -122,7 +132,7 @@ impl PromptsSettingsView {
                         self.body_field.handle_key(key);
                         true
                     }
-                    Focus::Save => false,
+                    Focus::Save | Focus::Delete | Focus::Cancel => false,
                     Focus::List => self.handle_list_key(key),
                 },
             },
@@ -148,9 +158,9 @@ impl PromptsSettingsView {
                 self.render_list(area, buf);
             }
             Mode::Edit => {
-                self.render_form(area, buf);
-            }
+            self.render_form(area, buf);
         }
+    }
     }
 
     fn render_list(&self, area: Rect, buf: &mut Buffer) {
@@ -198,35 +208,49 @@ impl PromptsSettingsView {
         let vertical = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),
-                Constraint::Min(5),
-                Constraint::Length(2),
-                Constraint::Length(1),
+                Constraint::Length(1), // name label
+                Constraint::Length(1), // name field
+                Constraint::Length(1), // body label
+                Constraint::Min(6),    // body field
+                Constraint::Length(1), // buttons
+                Constraint::Length(1), // status
             ])
             .split(area);
 
         // Name field
         let name_title = if matches!(self.focus, Focus::Name) { "Name (slug) • Enter to save" } else { "Name (slug)" };
-        let name_block = Block::default().borders(Borders::ALL).title(name_title);
-        let inner = name_block.inner(vertical[0]);
-        name_block.render(vertical[0], buf);
-        self.name_field.render(inner, buf, matches!(self.focus, Focus::Name));
+        Paragraph::new(Line::from(Span::styled(
+            name_title,
+            Style::default()
+                .fg(colors::primary())
+                .add_modifier(Modifier::BOLD),
+        )))
+        .render(vertical[0], buf);
+        self.name_field.render(vertical[1], buf, matches!(self.focus, Focus::Name));
 
         // Body field
         let body_title = if matches!(self.focus, Focus::Body) { "Content (multiline)" } else { "Content" };
-        let body_block = Block::default().borders(Borders::ALL).title(body_title);
-        let inner_body = body_block.inner(vertical[1]);
-        body_block.render(vertical[1], buf);
-        self.body_field.render(inner_body, buf, matches!(self.focus, Focus::Body));
+        Paragraph::new(Line::from(Span::styled(
+            body_title,
+            Style::default()
+                .fg(colors::primary())
+                .add_modifier(Modifier::BOLD),
+        )))
+        .render(vertical[2], buf);
+        self.body_field.render(vertical[3], buf, matches!(self.focus, Focus::Body));
 
         // Buttons
-        let buttons_area = vertical[2];
+        let buttons_area = vertical[4];
         let save_label = if matches!(self.focus, Focus::Save) { "[Save]" } else { "Save" };
-        let help = "Tab cycle • Ctrl+N new • Enter Save";
+        let delete_label = if matches!(self.focus, Focus::Delete) { "[Delete]" } else { "Delete" };
+        let cancel_label = if matches!(self.focus, Focus::Cancel) { "[Cancel]" } else { "Cancel" };
         let line = Line::from(vec![
             Span::styled(save_label, Style::default().fg(colors::success()).add_modifier(Modifier::BOLD)),
-            Span::raw("    "),
-            Span::styled(help, Style::default().fg(colors::text_dim())),
+            Span::raw("   "),
+            Span::styled(delete_label, Style::default().fg(colors::error()).add_modifier(Modifier::BOLD)),
+            Span::raw("   "),
+            Span::styled(cancel_label, Style::default().fg(colors::text_dim()).add_modifier(Modifier::BOLD)),
+            Span::raw("    Tab cycle • Enter activates"),
         ]);
         Paragraph::new(line).render(buttons_area, buf);
 
@@ -234,24 +258,8 @@ impl PromptsSettingsView {
         if let Some((msg, style)) = &self.status {
             Paragraph::new(Line::from(Span::styled(msg.clone(), *style)))
                 .alignment(Alignment::Left)
-                .render(vertical[3], buf);
+                .render(vertical[5], buf);
         }
-    }
-
-    fn render_hint(&self, area: Rect, buf: &mut Buffer) {
-        let hint = vec![
-            Line::from(Span::styled(
-                "Select a prompt to edit, or choose Add new…",
-                Style::default().fg(colors::text()),
-            )),
-            Line::from(Span::styled(
-                "Saving writes to $CODE_HOME/prompts/<name>.md and reloads prompts immediately.",
-                Style::default().fg(colors::text_dim()),
-            )),
-        ];
-        Paragraph::new(hint)
-            .alignment(Alignment::Left)
-            .render(area, buf);
     }
 
     fn handle_list_key(&mut self, key: KeyEvent) -> bool {
@@ -301,7 +309,7 @@ impl PromptsSettingsView {
     }
 
     fn cycle_focus(&mut self, forward: bool) {
-        let order = [Focus::List, Focus::Name, Focus::Body, Focus::Save];
+        let order = [Focus::List, Focus::Name, Focus::Body, Focus::Save, Focus::Delete, Focus::Cancel];
         let mut idx = order.iter().position(|f| *f == self.focus).unwrap_or(0);
         if forward {
             idx = (idx + 1) % order.len();
@@ -386,6 +394,31 @@ impl PromptsSettingsView {
         self.status = Some(("Saved.".to_string(), Style::default().fg(colors::success())));
 
         // Trigger reload so composer autocomplete picks it up.
+        self.app_event_tx.send(AppEvent::CodexOp(Op::ListCustomPrompts));
+    }
+
+    fn delete_current(&mut self) {
+        if self.selected >= self.prompts.len() {
+            self.status = Some(("Nothing to delete".to_string(), Style::default().fg(colors::warning())));
+            self.mode = Mode::List;
+            self.focus = Focus::List;
+            return;
+        }
+        let prompt = self.prompts[self.selected].clone();
+        if let Err(e) = fs::remove_file(&prompt.path) {
+            // Ignore missing file but surface other errors
+            if e.kind() != std::io::ErrorKind::NotFound {
+                self.status = Some((format!("Delete failed: {e}"), Style::default().fg(colors::error())));
+                return;
+            }
+        }
+        self.prompts.remove(self.selected);
+        if self.selected > 0 && self.selected >= self.prompts.len() {
+            self.selected -= 1;
+        }
+        self.mode = Mode::List;
+        self.focus = Focus::List;
+        self.status = Some(("Deleted.".to_string(), Style::default().fg(colors::success())));
         self.app_event_tx.send(AppEvent::CodexOp(Op::ListCustomPrompts));
     }
 }
