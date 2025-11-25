@@ -102,15 +102,7 @@ pub(super) fn handle_settings_key(chat: &mut ChatWidget<'_>, key_event: KeyEvent
         return handled;
     }
 
-    match key_event.code {
-        KeyCode::Esc if key_event.modifiers.is_empty() => {
-            overlay.set_mode_menu(None);
-            chat.request_redraw();
-            return true;
-        }
-        _ => {}
-    }
-
+    // Give the active content first chance to handle keys (including Esc)
     let mut handled_by_content = false;
     let mut should_close = false;
 
@@ -129,6 +121,15 @@ pub(super) fn handle_settings_key(chat: &mut ChatWidget<'_>, key_event: KeyEvent
             chat.close_settings_overlay();
         }
         return true;
+    }
+
+    match key_event.code {
+        KeyCode::Esc if key_event.modifiers.is_empty() => {
+            overlay.set_mode_menu(None);
+            chat.request_redraw();
+            return true;
+        }
+        _ => {}
     }
 
     let mut handled = true;
