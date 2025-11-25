@@ -2149,9 +2149,9 @@ fn popular_commands_lines(_latest_version: Option<&str>) -> Vec<Line<'static>> {
             .style(Style::default().add_modifier(Modifier::DIM)),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("/push", Style::default().fg(crate::colors::primary())),
+        Span::styled("/prompts", Style::default().fg(crate::colors::primary())),
         Span::from(" - "),
-        Span::from(SlashCommand::Push.description())
+        Span::from(SlashCommand::Prompts.description())
             .style(Style::default().add_modifier(Modifier::DIM)),
         Span::styled(
             " NEW",

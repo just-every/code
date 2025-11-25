@@ -13562,8 +13562,16 @@ impl ChatWidget<'_> {
         }
     }
 
-    pub(crate) fn add_prompts_output(&mut self) {
-        self.history_push_plain_state(history_cell::new_prompts_output());
+    pub(crate) fn handle_prompts_command(&mut self, args: &str) {
+        if !args.trim().is_empty() {
+            self.history_push_plain_state(history_cell::new_error_event(
+                "Usage: /prompts".to_string(),
+            ));
+            return;
+        }
+
+        self.submit_op(Op::ListCustomPrompts);
+        self.show_settings_overlay(Some(SettingsSection::Prompts));
     }
 
     #[allow(dead_code)]
