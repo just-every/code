@@ -1247,6 +1247,16 @@ fn run_auto_loop(
                             consecutive_decision_failures.saturating_add(1);
                         if consecutive_decision_failures <= MAX_DECISION_RECOVERY_ATTEMPTS {
                             let attempt = consecutive_decision_failures;
+
+                            if let Some(raw) = raw_output.as_ref() {
+                                // Surface the invalid model output in the transcript so the
+                                // coordinator can see exactly what failed (e.g., an overlong
+                                // prompt_sent_to_cli) instead of only a developer note.
+                                let _ = event_tx.send(AutoCoordinatorEvent::CompactedHistory {
+                                    conversation: vec![make_message("assistant", raw.clone())],
+                                });
+                            }
+
                             warn!(
                                 "auto coordinator decision validation failed (attempt {}/{}): {:#}",
                                 attempt,
