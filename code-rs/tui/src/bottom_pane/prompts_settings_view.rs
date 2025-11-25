@@ -28,6 +28,12 @@ enum Focus {
     Save,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    List,
+    Edit,
+}
+
 pub(crate) struct PromptsSettingsView {
     prompts: Vec<CustomPrompt>,
     selected: usize,
@@ -37,7 +43,7 @@ pub(crate) struct PromptsSettingsView {
     status: Option<(String, Style)>,
     app_event_tx: AppEventSender,
     is_complete: bool,
-    in_editor: bool,
+    mode: Mode,
 }
 
 impl PromptsSettingsView {
@@ -54,7 +60,7 @@ impl PromptsSettingsView {
             status: None,
             app_event_tx,
             is_complete: false,
-            in_editor: false,
+            mode: Mode::List,
         };
         view
     }
@@ -63,46 +69,63 @@ impl PromptsSettingsView {
         if self.is_complete {
             return true;
         }
-        match key {
-            KeyEvent { code: KeyCode::Esc, .. } => {
-                self.is_complete = true;
-                return true;
-            }
-            KeyEvent { code: KeyCode::Tab, .. } => {
-                self.cycle_focus(true);
-                return true;
-            }
-            KeyEvent { code: KeyCode::BackTab, .. } => {
-                self.cycle_focus(false);
-                return true;
-            }
-            KeyEvent { code: KeyCode::Enter, modifiers: KeyModifiers::NONE, .. } => {
-                if !self.in_editor {
-                    self.enter_editor();
-                    return true;
+        match self.mode {
+            Mode::List => match key {
+                KeyEvent { code: KeyCode::Esc, .. } => {
+                    self.is_complete = true;
+                    true
                 }
-                match self.focus {
-                    Focus::Save => {
+                KeyEvent { code: KeyCode::Enter, modifiers: KeyModifiers::NONE, .. } => {
+                    self.enter_editor();
+                    true
+                }
+                KeyEvent { code: KeyCode::Char('n'), modifiers, .. }
+                    if modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    self.start_new_prompt();
+                    true
+                }
+                other => self.handle_list_key(other),
+            },
+            Mode::Edit => match key {
+                KeyEvent { code: KeyCode::Esc, .. } => {
+                    self.mode = Mode::List;
+                    self.focus = Focus::List;
+                    true
+                }
+                KeyEvent { code: KeyCode::Tab, .. } => {
+                    self.cycle_focus(true);
+                    true
+                }
+                KeyEvent { code: KeyCode::BackTab, .. } => {
+                    self.cycle_focus(false);
+                    true
+                }
+                KeyEvent { code: KeyCode::Enter, modifiers: KeyModifiers::NONE, .. } => {
+                    if matches!(self.focus, Focus::Save) {
                         self.save_current();
                     }
-                    _ => {}
+                    true
                 }
-            }
-            KeyEvent { code: KeyCode::Char('n'), modifiers, .. } if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.start_new_prompt();
-                return true;
-            }
-            _ => {}
-        }
-
-        if !self.in_editor {
-            return self.handle_list_key(key);
-        }
-        match self.focus {
-            Focus::List => self.handle_list_key(key),
-            Focus::Name => { self.name_field.handle_key(key); true }
-            Focus::Body => { self.body_field.handle_key(key); true }
-            Focus::Save => false,
+                KeyEvent { code: KeyCode::Char('n'), modifiers, .. }
+                    if modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    self.start_new_prompt();
+                    true
+                }
+                _ => match self.focus {
+                    Focus::Name => {
+                        self.name_field.handle_key(key);
+                        true
+                    }
+                    Focus::Body => {
+                        self.body_field.handle_key(key);
+                        true
+                    }
+                    Focus::Save => false,
+                    Focus::List => self.handle_list_key(key),
+                },
+            },
         }
     }
 
@@ -120,16 +143,13 @@ impl PromptsSettingsView {
     }
 
     fn render_body(&self, area: Rect, buf: &mut Buffer) {
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-            .split(area);
-
-        self.render_list(chunks[0], buf);
-        if self.in_editor {
-            self.render_form(chunks[1], buf);
-        } else {
-            self.render_hint(chunks[1], buf);
+        match self.mode {
+            Mode::List => {
+                self.render_list(area, buf);
+            }
+            Mode::Edit => {
+                self.render_form(area, buf);
+            }
         }
     }
 
@@ -149,7 +169,7 @@ impl PromptsSettingsView {
             let mut spans = vec![name_span];
             if !preview.is_empty() { spans.push(preview_span); }
             let mut line = Line::from(spans);
-            if idx == self.selected && matches!(self.focus, Focus::List) {
+            if idx == self.selected {
                 line = line.style(Style::default().add_modifier(Modifier::REVERSED));
             }
             lines.push(line);
@@ -162,7 +182,7 @@ impl PromptsSettingsView {
         let mut add_line = Line::from(vec![
             Span::styled("Add new…", Style::default().fg(colors::success()).add_modifier(Modifier::BOLD)),
         ]);
-        if self.selected == self.prompts.len() && matches!(self.focus, Focus::List) {
+        if self.selected == self.prompts.len() {
             add_line = add_line.style(Style::default().add_modifier(Modifier::REVERSED));
         }
         lines.push(add_line);
@@ -260,7 +280,7 @@ impl PromptsSettingsView {
         self.body_field.set_text("");
         self.focus = Focus::Name;
         self.status = Some(("New prompt".to_string(), Style::default().fg(colors::info())));
-        self.in_editor = true;
+        self.mode = Mode::Edit;
     }
 
     fn load_selected_into_form(&mut self) {
@@ -276,7 +296,7 @@ impl PromptsSettingsView {
             self.start_new_prompt();
         } else {
             self.load_selected_into_form();
-            self.in_editor = true;
+            self.mode = Mode::Edit;
         }
     }
 
