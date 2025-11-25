@@ -1306,6 +1306,11 @@ fn run_auto_loop(
                                     developer_note.push_str(OVERLONG_MSG);
                                 }
                                 conv.push(make_message("developer", developer_note));
+                                // Persist a short action note so the Auto Drive card history shows the retry context.
+                                conv.push(make_message(
+                                    "assistant",
+                                    "Coordinator retrying: last prompt_sent_to_cli exceeded 600 chars; keep prompts <=600 so the CLI can act autonomously.".to_string(),
+                                ));
                             }
                             pending_conversation = retry_conversation.take();
                             continue;
