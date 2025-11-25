@@ -121,7 +121,7 @@ impl SlashCommand {
             SlashCommand::Notifications => "manage notification settings",
             SlashCommand::Theme => "customize the app theme",
             SlashCommand::Settings => "manage all settings in one place",
-            SlashCommand::Prompts => "open Prompts settings (manage custom prompts)",
+            SlashCommand::Prompts => "manage custom prompts",
             SlashCommand::Model => "choose your default model",
             SlashCommand::Agents => "configure agents",
             SlashCommand::Auto => "work autonomously on long tasks with Auto Drive",

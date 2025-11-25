@@ -10,7 +10,7 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::prelude::Widget;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
@@ -192,22 +192,31 @@ impl PromptsSettingsView {
         let add_line = Line::from(vec![Span::styled(format!("{add_arrow} Add new…"), add_style)]);
         lines.push(add_line);
 
-        let mut note_and_lines: Vec<Line> = Vec::new();
-        note_and_lines.push(Line::from(Span::styled(
-            "Custom prompts live in $CODE_HOME/prompts and are invoked via /name or /prompts:name.",
+        let title = Paragraph::new(vec![Line::from(Span::styled(
+            "Custom prompts allow you to save reusable prompts initiated with a simple slash command. They are invoked with /name. Create and update your custom prompts below.",
             Style::default().fg(colors::text_dim()),
-        )));
-        note_and_lines.push(Line::from(Span::styled(
-            "Saving here writes the file and refreshes autocomplete immediately.",
-            Style::default().fg(colors::text_dim()),
-        )));
-        note_and_lines.push(Line::from("")); // spacer
-        note_and_lines.extend(lines);
+        ))])
+        .alignment(Alignment::Left)
+        .wrap(Wrap { trim: true })
+        .style(Style::default().bg(colors::background()));
 
-        let list = Paragraph::new(note_and_lines)
+        let list = Paragraph::new(lines)
             .alignment(Alignment::Left)
-            .block(Block::default().borders(Borders::ALL).style(Style::default().bg(colors::background())));
-        list.render(area, buf);
+            .style(Style::default().bg(colors::background()));
+
+        let outer = Block::default().borders(Borders::ALL).style(Style::default().bg(colors::background()));
+        let inner = outer.inner(area);
+        outer.render(area, buf);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(1),
+            ])
+            .split(inner);
+
+        title.render(chunks[0], buf);
+        list.render(chunks[1], buf);
     }
 
     fn render_form(&self, area: Rect, buf: &mut Buffer) {

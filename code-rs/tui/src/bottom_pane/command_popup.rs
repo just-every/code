@@ -166,21 +166,39 @@ impl CommandPopup {
                 out.push((CommandItem::UserPrompt(idx), Some(indices), score));
             }
         }
-        // When filtering, sort by ascending score and then by name for stability.
+        // When filtering, sort by ascending score, then prefer built-ins over
+        // subagents over prompts to keep core commands easy to reach on exact
+        // matches (e.g., `/prompts` should not auto-select a custom prompt),
+        // and finally fall back to name for stability.
         out.sort_by(|a, b| {
-            a.2.cmp(&b.2).then_with(|| {
-                let an = match a.0 {
-                    CommandItem::Builtin(c) => c.command(),
-                    CommandItem::UserPrompt(i) => &self.prompts[i].name,
-                    CommandItem::Subagent(i) => &self.subagents[i],
-                };
-                let bn = match b.0 {
-                    CommandItem::Builtin(c) => c.command(),
-                    CommandItem::UserPrompt(i) => &self.prompts[i].name,
-                    CommandItem::Subagent(i) => &self.subagents[i],
-                };
-                an.cmp(bn)
-            })
+            use std::cmp::Ordering;
+
+            let score_cmp = a.2.cmp(&b.2);
+            if score_cmp != Ordering::Equal {
+                return score_cmp;
+            }
+
+            let rank = |item: &CommandItem| match item {
+                CommandItem::Builtin(_) => 0,
+                CommandItem::Subagent(_) => 1,
+                CommandItem::UserPrompt(_) => 2,
+            };
+            let rank_cmp = rank(&a.0).cmp(&rank(&b.0));
+            if rank_cmp != Ordering::Equal {
+                return rank_cmp;
+            }
+
+            let an = match a.0 {
+                CommandItem::Builtin(c) => c.command(),
+                CommandItem::UserPrompt(i) => &self.prompts[i].name,
+                CommandItem::Subagent(i) => &self.subagents[i],
+            };
+            let bn = match b.0 {
+                CommandItem::Builtin(c) => c.command(),
+                CommandItem::UserPrompt(i) => &self.prompts[i].name,
+                CommandItem::Subagent(i) => &self.subagents[i],
+            };
+            an.cmp(bn)
         });
         out
     }
@@ -277,5 +295,34 @@ impl WidgetRef for CommandPopup {
             MAX_POPUP_ROWS,
             false,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn prompt(name: &str, content: &str) -> CustomPrompt {
+        CustomPrompt {
+            name: name.to_string(),
+            path: PathBuf::new(),
+            content: content.to_string(),
+            description: None,
+            argument_hint: None,
+        }
+    }
+
+    #[test]
+    fn prefers_builtin_over_prompt_with_identical_score() {
+        let mut popup = CommandPopup::new_with_filter(false);
+        popup.set_prompts(vec![prompt("issues", "do something")]);
+
+        // Filter to the prompts command; both the built-in "/prompts" and the
+        // custom prompt (via "prompts:issues") are perfect prefix matches.
+        popup.on_composer_text_change("/prompts".to_string());
+
+        let first = popup.filtered_items().first().copied();
+        assert!(matches!(first, Some(CommandItem::Builtin(SlashCommand::Prompts))));
     }
 }
