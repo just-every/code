@@ -51,7 +51,7 @@ const MAX_DECISION_RECOVERY_ATTEMPTS: u32 = 3;
 const MESSAGE_LIMIT_FALLBACK: usize = 120;
 const DEBUG_JSON_MAX_CHARS: usize = 1200;
 const CLI_PROMPT_MIN_CHARS: usize = 4;
-const CLI_PROMPT_MAX_CHARS: usize = 140;
+const CLI_PROMPT_MAX_CHARS: usize = 600;
 
 #[derive(Debug, thiserror::Error)]
 #[error("auto coordinator cancelled")]
@@ -1584,8 +1584,8 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
         "prompt_sent_to_cli".to_string(),
         json!({
             "type": ["string", "null"],
-            "pattern": "^.{4,140}$",
-            "description": "Instruction sent to the CLI to push it forward with the task (4-140 chars). Write this like a human maintainer pushing the CLI forwards, without digging too deep into the technical side. Provide when finish_status is 'continue'. Keep it high-level; the CLI has more context and tools than you do. e.g. 'Execute the first two steps of the plan you provided in parellel using agents.' NEVER ask the CLI to show you files so you solve problems directly. ALWAYS allow the CLI to take control. You are the COORDINATOR not the WORKER. Prompts longer than 140 characters will be rejected."
+            "minLength": CLI_PROMPT_MIN_CHARS,
+            "description": "Instruction sent to the CLI to push it forward with the task (4-600 chars). Write this like a human maintainer pushing the CLI forwards, without digging too deep into the technical side. Provide when finish_status is 'continue'. Keep it high-level; the CLI has more context and tools than you do. e.g. 'Execute the first two steps of the plan you provided in parellel using agents.' NEVER ask the CLI to show you files so you solve problems directly. ALWAYS allow the CLI to take control. You are the COORDINATOR not the WORKER. Prompts over 600 characters will be rejected as this indicates the CLI is not being given sufficient autonomy."
         }),
     );
     required.push(Value::String("prompt_sent_to_cli".to_string()));
@@ -2324,6 +2324,16 @@ fn classify_recoverable_decision_error(err: &anyhow::Error) -> Option<Recoverabl
         });
     }
 
+    if lower.contains("length limit") || lower.contains("cut off") {
+        return Some(RecoverableDecisionError {
+            summary: "model output was cut off by a length cap".to_string(),
+            guidance: Some(
+                "Regenerate with a shorter `prompt_sent_to_cli` (<=600 chars) and more concise status text so the response fits within provider limits."
+                    .to_string(),
+            ),
+        });
+    }
+
     if lower.contains("legacy model response missing cli_prompt for continue") {
         return Some(RecoverableDecisionError {
             summary: "legacy response omitted `cli_prompt` for continue turn".to_string(),
@@ -2667,7 +2677,7 @@ fn ensure_cli_prompt_length(prompt: &str) -> Result<()> {
     }
     if len > CLI_PROMPT_MAX_CHARS {
         return Err(anyhow!(
-            "prompt_sent_to_cli exceeds {CLI_PROMPT_MAX_CHARS} characters; keep prompts minimal (<=140 chars) and let the CLI decide how to execute the task"
+            "prompt_sent_to_cli exceeds {CLI_PROMPT_MAX_CHARS} characters; keep prompts succinct (<=600 chars) and let the CLI decide how to execute the task"
         ));
     }
 
