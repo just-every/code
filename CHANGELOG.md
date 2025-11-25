@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.5.5] - 2025-11-25
+
+- Auto Drive: restore 600-char CLI prompts, enforce sane bounds, add fallback to the current binary, and append test guidance to each goal for smoother automation handoffs. (24a0dd4c, 3651bc85, 15745f0a, f8f5c5b4)
+- TUI/Prompts: add a full management section with save/reload, slash access, and alias autocomplete so custom prompts stay at your fingertips. (814fa485, 8d9e08c8, 079046e2)
+- Streaming: show reconnecting spinners, log retry causes, and classify more transient errors so network hiccups stay visible without noise. (64a98b6b, 47e3cc76, 936cca8f)
+- Agents: retier frontline options, upgrade opus/gemini defaults, and tighten descriptions to highlight the recommended models. (fa58356c, 58c83225, 884d008f)
+
 ## [0.5.4] - 2025-11-24
 
 - Core/Agent: pass reasoning effort overrides through config so automation consistently honors requested budgets. (d6a7666b)
