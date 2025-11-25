@@ -18,7 +18,7 @@ use crate::colors;
 use crate::slash_command::built_in_slash_commands;
 
 use super::form_text_field::{FormTextField, InputFilter};
-use super::settings_panel::{render_panel, PanelFrameStyle};
+// Panel helpers unused now that we render inline
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Focus {
@@ -143,13 +143,7 @@ impl PromptsSettingsView {
 
     pub fn render(&self, area: Rect, buf: &mut Buffer) {
         if area.width == 0 || area.height == 0 { return; }
-        render_panel(
-            area,
-            buf,
-            "Prompts",
-            PanelFrameStyle::overlay(),
-            |inner, buf| self.render_body(inner, buf),
-        );
+        self.render_body(area, buf);
     }
 
     fn render_body(&self, area: Rect, buf: &mut Buffer) {
@@ -208,39 +202,29 @@ impl PromptsSettingsView {
         let vertical = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1), // name label
-                Constraint::Length(1), // name field
-                Constraint::Length(1), // body label
-                Constraint::Min(6),    // body field
+                Constraint::Length(3), // name block
+                Constraint::Min(6),    // body block
                 Constraint::Length(1), // buttons
                 Constraint::Length(1), // status
             ])
             .split(area);
 
-        // Name field
+        // Name field with border
         let name_title = if matches!(self.focus, Focus::Name) { "Name (slug) • Enter to save" } else { "Name (slug)" };
-        Paragraph::new(Line::from(Span::styled(
-            name_title,
-            Style::default()
-                .fg(colors::primary())
-                .add_modifier(Modifier::BOLD),
-        )))
-        .render(vertical[0], buf);
-        self.name_field.render(vertical[1], buf, matches!(self.focus, Focus::Name));
+        let name_block = Block::default().borders(Borders::ALL).title(name_title);
+        let name_inner = name_block.inner(vertical[0]);
+        name_block.render(vertical[0], buf);
+        self.name_field.render(name_inner, buf, matches!(self.focus, Focus::Name));
 
-        // Body field
+        // Body field with border
         let body_title = if matches!(self.focus, Focus::Body) { "Content (multiline)" } else { "Content" };
-        Paragraph::new(Line::from(Span::styled(
-            body_title,
-            Style::default()
-                .fg(colors::primary())
-                .add_modifier(Modifier::BOLD),
-        )))
-        .render(vertical[2], buf);
-        self.body_field.render(vertical[3], buf, matches!(self.focus, Focus::Body));
+        let body_block = Block::default().borders(Borders::ALL).title(body_title);
+        let body_inner = body_block.inner(vertical[1]);
+        body_block.render(vertical[1], buf);
+        self.body_field.render(body_inner, buf, matches!(self.focus, Focus::Body));
 
         // Buttons
-        let buttons_area = vertical[4];
+        let buttons_area = vertical[2];
         let save_label = if matches!(self.focus, Focus::Save) { "[Save]" } else { "Save" };
         let delete_label = if matches!(self.focus, Focus::Delete) { "[Delete]" } else { "Delete" };
         let cancel_label = if matches!(self.focus, Focus::Cancel) { "[Cancel]" } else { "Cancel" };
@@ -258,7 +242,7 @@ impl PromptsSettingsView {
         if let Some((msg, style)) = &self.status {
             Paragraph::new(Line::from(Span::styled(msg.clone(), *style)))
                 .alignment(Alignment::Left)
-                .render(vertical[5], buf);
+                .render(vertical[3], buf);
         }
     }
 
