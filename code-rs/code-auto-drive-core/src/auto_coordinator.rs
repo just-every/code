@@ -50,6 +50,8 @@ const MAX_RETRY_ELAPSED: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const MAX_DECISION_RECOVERY_ATTEMPTS: u32 = 3;
 const MESSAGE_LIMIT_FALLBACK: usize = 120;
 const DEBUG_JSON_MAX_CHARS: usize = 1200;
+const CLI_PROMPT_MIN_CHARS: usize = 4;
+const CLI_PROMPT_MAX_CHARS: usize = 140;
 
 #[derive(Debug, thiserror::Error)]
 #[error("auto coordinator cancelled")]
@@ -1582,9 +1584,8 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
         "prompt_sent_to_cli".to_string(),
         json!({
             "type": ["string", "null"],
-            "minLength": 4,
-            "maxLength": 600,
-            "description": "Instruction sent to the CLI to push it forward with the task. Write this like a human maintainer pushing the CLI forwards, without digging too deep into the technical side. Provide when finish_status is 'continue'. Keep it high-level; the CLI has more context and tools than you do. e.g. 'Execute the first two steps of the plan you provided in parellel using agents.' NEVER ask the CLI to show you files so you solve problems directly. ALWAYS allow the CLI to take control. You are the COORDINATOR not the WORKER."
+            "pattern": "^.{4,140}$",
+            "description": "Instruction sent to the CLI to push it forward with the task (4-140 chars). Write this like a human maintainer pushing the CLI forwards, without digging too deep into the technical side. Provide when finish_status is 'continue'. Keep it high-level; the CLI has more context and tools than you do. e.g. 'Execute the first two steps of the plan you provided in parellel using agents.' NEVER ask the CLI to show you files so you solve problems directly. ALWAYS allow the CLI to take control. You are the COORDINATOR not the WORKER. Prompts longer than 140 characters will be rejected."
         }),
     );
     required.push(Value::String("prompt_sent_to_cli".to_string()));
@@ -2480,11 +2481,16 @@ fn convert_decision_new(
     let cli_prompt = clean_optional(prompt_sent_to_cli);
 
     let cli = match (status, cli_prompt) {
-        (AutoCoordinatorStatus::Continue, Some(prompt)) => Some(CliAction {
-            prompt: clean_required(&prompt, "prompt_sent_to_cli")?,
-            context: None,
-            suppress_ui_context: false,
-        }),
+        (AutoCoordinatorStatus::Continue, Some(prompt)) => {
+            let prompt = clean_required(&prompt, "prompt_sent_to_cli")?;
+            ensure_cli_prompt_length(&prompt)?;
+
+            Some(CliAction {
+                prompt,
+                context: None,
+                suppress_ui_context: false,
+            })
+        }
         (AutoCoordinatorStatus::Continue, None) => {
             return Err(anyhow!(
                 "model response missing prompt_sent_to_cli for continue"
@@ -2650,6 +2656,22 @@ fn clean_required(value: &str, field: &str) -> Result<String> {
             Ok(final_trimmed.to_string())
         }
     }
+}
+
+fn ensure_cli_prompt_length(prompt: &str) -> Result<()> {
+    let len = prompt.chars().count();
+    if len < CLI_PROMPT_MIN_CHARS {
+        return Err(anyhow!(
+            "prompt_sent_to_cli must be at least {CLI_PROMPT_MIN_CHARS} characters; keep it concise but not empty"
+        ));
+    }
+    if len > CLI_PROMPT_MAX_CHARS {
+        return Err(anyhow!(
+            "prompt_sent_to_cli exceeds {CLI_PROMPT_MAX_CHARS} characters; keep prompts minimal (<=140 chars) and let the CLI decide how to execute the task"
+        ));
+    }
+
+    Ok(())
 }
 
 fn cli_action_to_event(action: &CliAction) -> AutoTurnCliAction {
