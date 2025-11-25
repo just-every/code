@@ -54,6 +54,8 @@ use crate::event_processor::CodexStatus;
 use crate::event_processor::EventProcessor;
 use code_core::{entry_to_rollout_path, SessionCatalog, SessionQuery};
 
+const AUTO_DRIVE_TEST_SUFFIX: &str = "After planning, but before you start, please ensure you can test the outcome of your changes. Test first to ensure it's failing, then again at the end to ensure it passes. Do not use work arounds or mock code to pass - solve the underlying issue. Create new tests as you work if needed. Once done, clean up your tests unless added to an existing test suite.";
+
 pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()> {
     if let Err(err) = set_default_originator("code_exec") {
         tracing::warn!(?err, "Failed to set codex exec originator override {err:?}");
@@ -143,16 +145,23 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         }
     }
 
-    let summary_prompt = if let Some(goal) = auto_drive_goal.as_ref() {
-        format!("/auto {}", goal)
-    } else {
-        prompt.clone()
-    };
-
-    if auto_drive_goal.as_ref().is_some_and(|g| g.is_empty()) {
+    if auto_drive_goal
+        .as_ref()
+        .is_some_and(|g| g.trim().is_empty())
+    {
         eprintln!("Auto Drive requires a goal. Provide one after /auto or --auto.");
         std::process::exit(1);
     }
+
+    if let Some(goal) = auto_drive_goal.as_mut() {
+        *goal = append_auto_drive_test_suffix(goal);
+    }
+
+    let summary_prompt = if let Some(goal) = auto_drive_goal.as_ref() {
+        format!("/auto {goal}")
+    } else {
+        prompt.clone()
+    };
 
     let _output_schema = load_output_schema(output_schema_path);
 
@@ -719,6 +728,15 @@ async fn run_auto_drive_session(
     }
 
     Ok(())
+}
+
+fn append_auto_drive_test_suffix(goal: &str) -> String {
+    let trimmed_goal = goal.trim();
+    if trimmed_goal.is_empty() {
+        return AUTO_DRIVE_TEST_SUFFIX.to_string();
+    }
+
+    format!("{trimmed_goal}\n\n{AUTO_DRIVE_TEST_SUFFIX}")
 }
 
 fn build_auto_prompt(
