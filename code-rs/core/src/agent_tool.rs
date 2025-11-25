@@ -852,11 +852,7 @@ fn command_exists(cmd: &str) -> bool {
     strip_model_flags(&mut final_args);
 
     let spec_model_args: Vec<String> = if let Some(spec) = spec_opt {
-        if matches!(spec.family, "code" | "codex" | "cloud") && use_current_exe {
-            Vec::new()
-        } else {
-            spec.model_args.iter().map(|arg| (*arg).to_string()).collect()
-        }
+        spec.model_args.iter().map(|arg| (*arg).to_string()).collect()
     } else {
         Vec::new()
     };
@@ -1119,14 +1115,29 @@ pub(crate) fn should_use_current_exe_for_agent(
         return false;
     }
 
+    // If the command is missing/empty, always use the current binary.
     if command_missing {
         return true;
     }
 
     if let Some(cfg) = config {
-        cfg.command.trim().is_empty()
-    } else {
+        let trimmed = cfg.command.trim();
+        if trimmed.is_empty() {
+            return true;
+        }
+
+        // If the configured command matches the canonical CLI for this spec, prefer self.
+        if let Some(spec) = agent_model_spec(&cfg.name).or_else(|| agent_model_spec(trimmed)) {
+            if trimmed.eq_ignore_ascii_case(spec.cli) {
+                return true;
+            }
+        }
+
+        // Otherwise assume the user intentionally set a custom command; do not override.
         false
+    } else {
+        // No explicit config: built-in families should use the current binary.
+        true
     }
 }
 
@@ -1883,6 +1894,20 @@ mod tests {
         let cfg = agent_with_command("definitely-not-present-429");
         let use_current = should_use_current_exe_for_agent("code", true, Some(&cfg));
         assert!(use_current);
+    }
+
+    #[test]
+    fn code_family_prefers_current_exe_even_if_coder_in_path() {
+        let cfg = agent_with_command("coder");
+        let use_current = should_use_current_exe_for_agent("code", false, Some(&cfg));
+        assert!(use_current);
+    }
+
+    #[test]
+    fn code_family_respects_custom_command_override() {
+        let cfg = agent_with_command("/usr/local/bin/my-coder");
+        let use_current = should_use_current_exe_for_agent("code", false, Some(&cfg));
+        assert!(!use_current);
     }
 
     #[test]
