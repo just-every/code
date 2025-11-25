@@ -192,25 +192,22 @@ impl PromptsSettingsView {
         let add_line = Line::from(vec![Span::styled(format!("{add_arrow} Add new…"), add_style)]);
         lines.push(add_line);
 
-        let note = Paragraph::new(vec![
-            Line::from("Custom prompts are saved in $CODE_HOME/prompts and can be used with /name or /prompts:name."),
-            Line::from("Save here to write the file and refresh autocomplete immediately."),
-        ])
-        .style(Style::default().fg(colors::text_dim()));
-        note.render(area, buf);
+        let mut note_and_lines: Vec<Line> = Vec::new();
+        note_and_lines.push(Line::from(Span::styled(
+            "Custom prompts live in $CODE_HOME/prompts and are invoked via /name or /prompts:name.",
+            Style::default().fg(colors::text_dim()),
+        )));
+        note_and_lines.push(Line::from(Span::styled(
+            "Saving here writes the file and refreshes autocomplete immediately.",
+            Style::default().fg(colors::text_dim()),
+        )));
+        note_and_lines.push(Line::from("")); // spacer
+        note_and_lines.extend(lines);
 
-        // List sits below the note
-        let list_area = Rect {
-            x: area.x,
-            y: area.y.saturating_add(2),
-            width: area.width,
-            height: area.height.saturating_sub(2),
-        };
-
-        let list = Paragraph::new(lines)
+        let list = Paragraph::new(note_and_lines)
             .alignment(Alignment::Left)
             .block(Block::default().borders(Borders::ALL).style(Style::default().bg(colors::background())));
-        list.render(list_area, buf);
+        list.render(area, buf);
     }
 
     fn render_form(&self, area: Rect, buf: &mut Buffer) {
