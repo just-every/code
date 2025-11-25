@@ -2051,7 +2051,7 @@ fn upgrade_legacy_model_slugs(cfg: &mut ConfigToml) {
                     target: "code.config",
                     old,
                     new,
-                    "upgrading legacy gpt-5 model slug to gpt-5.1",
+                    "upgrading legacy model slug to newer default",
                 );
                 *field = Some(new);
             }
@@ -2070,6 +2070,16 @@ fn upgrade_legacy_model_slugs(cfg: &mut ConfigToml) {
 fn upgrade_legacy_model_slug(slug: &str) -> Option<String> {
     if slug.starts_with("gpt-5.1") || slug.starts_with("test-gpt-5.1") {
         return None;
+    }
+
+    // Upgrade Anthropic Opus 4.1 to 4.5
+    if slug.eq_ignore_ascii_case("claude-opus-4.1") {
+        return Some("claude-opus-4.5".to_string());
+    }
+
+    // Upgrade Gemini 2.5 Pro to Gemini 3 Pro (or preview alias)
+    if slug.eq_ignore_ascii_case("gemini-2.5-pro") || slug.eq_ignore_ascii_case("gemini-3-pro-preview") {
+        return Some("gemini-3-pro".to_string());
     }
 
     if let Some(rest) = slug.strip_prefix("test-gpt-5-codex") {
@@ -3900,7 +3910,6 @@ model_verbosity = "high"
         assert!(enabled_names.contains("code-gpt-5.1-codex-max"));
         assert!(enabled_names.contains("claude-sonnet-4.5"));
         assert!(enabled_names.contains("gemini-3-pro"));
-        assert!(enabled_names.contains("gemini-2.5-pro"));
         assert!(enabled_names.contains("qwen-3-coder"));
         Ok(())
     }

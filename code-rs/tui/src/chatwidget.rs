@@ -26640,7 +26640,7 @@ Have we met every part of this goal and is there no further work to do?"#
             write_requested: Some(false),
             models: Some(vec![
                 "claude-sonnet-4.5".to_string(),
-                "gemini-2.5-pro".to_string(),
+                "gemini-3-pro".to_string(),
             ]),
         }];
         chat.auto_state.pending_agent_timing = Some(AutoTurnAgentsTiming::Blocking);
@@ -26654,7 +26654,7 @@ Have we met every part of this goal and is there no further work to do?"#
         assert!(message.contains("Run diagnostics"));
         assert!(message.contains("Please run agent.create"));
         assert!(message.contains("write: false"));
-        assert!(message.contains("Models: [claude-sonnet-4.5, gemini-2.5-pro]"));
+        assert!(message.contains("Models: [claude-sonnet-4.5, gemini-3-pro]"));
         assert!(message.contains("Draft alternative fix"));
         assert!(message.contains("Focus on parser module"));
         assert!(message.contains("agent.wait"));
