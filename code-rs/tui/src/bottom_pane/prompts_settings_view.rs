@@ -189,7 +189,7 @@ impl PromptsSettingsView {
 
         let list = Paragraph::new(lines)
             .alignment(Alignment::Left)
-            .block(Block::default().borders(Borders::ALL).title("Custom Prompts"));
+            .block(Block::default().borders(Borders::ALL));
         list.render(area, buf);
     }
 
