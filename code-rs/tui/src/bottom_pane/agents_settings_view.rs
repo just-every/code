@@ -138,7 +138,7 @@ impl SubagentEditorView {
 
         match key_event {
             KeyEvent { code: KeyCode::Esc, .. } => {
-                self.is_complete = true;
+                self.is_complete = false;
                 self.app_event_tx.send(AppEvent::ShowAgentsOverview);
                 true
             }
