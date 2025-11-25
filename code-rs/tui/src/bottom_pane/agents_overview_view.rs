@@ -13,7 +13,7 @@ use super::BottomPane;
 
 #[derive(Clone, Debug)]
 pub(crate) struct AgentsOverviewView {
-    agents: Vec<(String, bool /*enabled*/ , bool /*installed*/ , bool /*self_resolved*/ , String /*command*/ )>,
+    agents: Vec<(String, bool /*enabled*/ , bool /*installed*/ , String /*command*/ )>,
     commands: Vec<String>,
     selected: usize,
     is_complete: bool,
@@ -22,7 +22,7 @@ pub(crate) struct AgentsOverviewView {
 
 impl AgentsOverviewView {
     pub fn new(
-        agents: Vec<(String, bool, bool, bool, String)>,
+        agents: Vec<(String, bool, bool, String)>,
         commands: Vec<String>,
         selected_index: usize,
         app_event_tx: AppEventSender,
@@ -50,12 +50,10 @@ impl AgentsOverviewView {
             .map(|(name, _, _, _)| name.len())
             .max()
             .unwrap_or(0);
-        for (i, (name, enabled, installed, self_resolved, _cmd)) in self.agents.iter().enumerate() {
+        for (i, (name, enabled, installed, _cmd)) in self.agents.iter().enumerate() {
             let sel = i == self.selected;
             let (status_text, status_color) = if !*enabled {
                 ("disabled", crate::colors::error())
-            } else if *self_resolved {
-                ("available", crate::colors::success())
             } else if !*installed {
                 ("not installed", crate::colors::warning())
             } else {
@@ -76,9 +74,7 @@ impl AgentsOverviewView {
             ];
             if sel {
                 spans.push(Span::raw("  "));
-                let hint = if *self_resolved {
-                    "(press Enter to configure)"
-                } else if !*installed {
+                let hint = if !*installed {
                     "(press Enter to install)"
                 } else {
                     "(press Enter to configure)"
@@ -211,10 +207,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_agent_shows_available_status() {
+    fn builtin_agent_shows_enabled_status() {
         let app_event_tx = AppEventSender::new(|_| {});
         let mut view = AgentsOverviewView::new(
-            vec![("code".to_string(), true, true, true, "coder".to_string())],
+            vec![("code".to_string(), true, true, "coder".to_string())],
             Vec::new(),
             0,
             app_event_tx,
@@ -227,7 +223,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(combined.contains("available"), "expected status text to show 'available', got: {combined}");
+        assert!(combined.contains("enabled"), "expected status text to show 'enabled', got: {combined}");
         assert!(!combined.contains("not installed"));
     }
 }

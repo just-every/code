@@ -434,7 +434,6 @@ pub(crate) struct AgentOverviewRow {
     pub(crate) name: String,
     pub(crate) enabled: bool,
     pub(crate) installed: bool,
-    pub(crate) self_resolved: bool,
     pub(crate) description: Option<String>,
 }
 
@@ -547,8 +546,6 @@ impl AgentsSettingsContent {
             let selected = idx == state.selected;
             let status = if !row.enabled {
                 ("disabled", crate::colors::error())
-            } else if row.self_resolved {
-                ("available", crate::colors::success())
             } else if !row.installed {
                 ("not installed", crate::colors::warning())
             } else {
@@ -608,9 +605,7 @@ impl AgentsSettingsContent {
 
             if selected && !showed_desc {
                 spans.push(Span::raw("  "));
-                let hint = if row.self_resolved {
-                    "Enter to configure"
-                } else if !row.installed {
+                let hint = if !row.installed {
                     "Enter to install"
                 } else {
                     "Enter to configure"

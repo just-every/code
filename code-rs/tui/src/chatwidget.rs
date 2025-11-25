@@ -20027,7 +20027,6 @@ Have we met every part of this goal and is there no further work to do?"#
                     name: cfg.name.clone(),
                     enabled: cfg.enabled,
                     installed,
-                    self_resolved: builtin,
                     description: Self::agent_description_for(
                         &cfg.name,
                         Some(&cfg.command),
@@ -20053,7 +20052,6 @@ Have we met every part of this goal and is there no further work to do?"#
                     name: cfg.name.clone(),
                     enabled: cfg.enabled,
                     installed,
-                    self_resolved: builtin,
                     description: Self::agent_description_for(
                         &cfg.name,
                         Some(&cfg.command),
@@ -20075,7 +20073,6 @@ Have we met every part of this goal and is there no further work to do?"#
                     name: name.clone(),
                     enabled: true,
                     installed,
-                    self_resolved: builtin,
                     description: Self::agent_description_for(name, Some(&cmd), None),
                 });
             }
