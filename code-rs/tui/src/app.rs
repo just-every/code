@@ -2147,7 +2147,7 @@ impl App<'_> {
                         }
                         SlashCommand::Prompts => {
                             if let AppState::Chat { widget } = &mut self.app_state {
-                                widget.add_prompts_output();
+                                widget.handle_prompts_command(command_args.as_str());
                             }
                         }
                         SlashCommand::Perf => {
