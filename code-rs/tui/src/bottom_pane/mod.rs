@@ -29,6 +29,7 @@ mod chat_composer;
 mod chat_composer_history;
 mod diff_popup;
 mod custom_prompt_view;
+pub(crate) mod prompt_args;
 mod command_popup;
 mod file_search_popup;
 mod paste_burst;
@@ -138,6 +139,8 @@ pub(crate) struct BottomPane<'a> {
     auto_drive_variant: AutoDriveVariant,
     auto_drive_active: bool,
 
+    custom_prompts: Vec<CustomPrompt>,
+
 }
 
 pub(crate) struct BottomPaneParams {
@@ -173,6 +176,7 @@ impl BottomPane<'_> {
             using_chatgpt_auth: params.using_chatgpt_auth,
             auto_drive_variant: params.auto_drive_variant,
             auto_drive_active: false,
+            custom_prompts: Vec::new(),
         }
     }
 
@@ -532,7 +536,12 @@ impl BottomPane<'_> {
     }
 
     pub(crate) fn set_custom_prompts(&mut self, prompts: Vec<CustomPrompt>) {
+        self.custom_prompts = prompts.clone();
         self.composer.set_custom_prompts(prompts);
+    }
+
+    pub(crate) fn custom_prompts(&self) -> &[CustomPrompt] {
+        &self.custom_prompts
     }
 
     /// Enable or disable compact compose mode. When enabled, the spacer line

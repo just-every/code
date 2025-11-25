@@ -149,8 +149,20 @@ impl CommandPopup {
             }
         }
         for (idx, p) in self.prompts.iter().enumerate() {
-            let display = format!("{PROMPTS_CMD_PREFIX}:{}", p.name);
-            if let Some((indices, score)) = fuzzy_match(&display, filter) {
+            let prefixed = format!("{PROMPTS_CMD_PREFIX}:{}", p.name);
+            let mut best: Option<(Vec<usize>, i32)> = None;
+            if let Some((indices, score)) = fuzzy_match(&prefixed, filter) {
+                best = Some((indices, score));
+            }
+            if let Some((indices, score)) = fuzzy_match(&p.name, filter) {
+                match best {
+                    Some((_, s)) if score < s => best = Some((indices, score)),
+                    Some((_, s)) if score == s => best = Some((indices, score)),
+                    None => best = Some((indices, score)),
+                    _ => {}
+                }
+            }
+            if let Some((indices, score)) = best {
                 out.push((CommandItem::UserPrompt(idx), Some(indices), score));
             }
         }
@@ -225,10 +237,21 @@ impl WidgetRef for CommandPopup {
                             format!("/{}", cmd.command()),
                             Some(cmd.description().to_string()),
                         ),
-                        CommandItem::UserPrompt(i) => (
-                            format!("/{}", self.prompts[i].name),
-                            None,
-                        ),
+                        CommandItem::UserPrompt(i) => {
+                            let prompt = &self.prompts[i];
+                            let preview = prompt
+                                .content
+                                .lines()
+                                .next()
+                                .unwrap_or("")
+                                .trim();
+                            let desc = if preview.is_empty() {
+                                None
+                            } else {
+                                Some(format!("[custom] {preview}"))
+                            };
+                            (format!("/{}", prompt.name), desc)
+                        }
                         CommandItem::Subagent(i) => (
                             format!("/{}", self.subagents[i]),
                             Some("custom subagent".to_string()),

@@ -5,6 +5,7 @@ use regex_lite::Regex;
 use shlex::Shlex;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use crate::slash_command::built_in_slash_commands;
 
 lazy_static! {
     static ref PROMPT_ARG_REGEX: Regex =
@@ -77,6 +78,7 @@ pub fn parse_slash_name(line: &str) -> Option<(&str, &str)> {
 }
 
 /// Parse positional arguments using shlex semantics (supports quoted tokens).
+#[allow(dead_code)]
 pub fn parse_positional_args(rest: &str) -> Vec<String> {
     Shlex::new(rest).collect()
 }
@@ -142,8 +144,23 @@ pub fn expand_custom_prompt(
         return Ok(None);
     };
 
-    // Only handle custom prompts when using the explicit prompts prefix with a colon.
-    let Some(prompt_name) = name.strip_prefix(&format!("{PROMPTS_CMD_PREFIX}:")) else {
+    let mut prompt_name = None;
+
+    // Explicit prefix takes priority for backwards compatibility.
+    if let Some(after_prefix) = name.strip_prefix(&format!("{PROMPTS_CMD_PREFIX}:")) {
+        prompt_name = Some(after_prefix);
+    } else {
+        // Allow bare `/name` form when it does not shadow a built-in command.
+        let builtins: HashSet<String> = built_in_slash_commands()
+            .into_iter()
+            .map(|(n, _)| n.to_string())
+            .collect();
+        if !builtins.contains(name) {
+            prompt_name = Some(name);
+        }
+    }
+
+    let Some(prompt_name) = prompt_name else {
         return Ok(None);
     };
 
@@ -151,6 +168,7 @@ pub fn expand_custom_prompt(
         Some(prompt) => prompt,
         None => return Ok(None),
     };
+
     // If there are named placeholders, expect key=value inputs.
     let required = prompt_argument_names(&prompt.content);
     if !required.is_empty() {
@@ -186,10 +204,24 @@ pub fn expand_custom_prompt(
         return Ok(Some(replaced.into_owned()));
     }
 
-    // Otherwise, treat it as numeric/positional placeholder prompt (or none).
+    // Numeric or positional placeholders
     let pos_args: Vec<String> = Shlex::new(rest).collect();
-    let expanded = expand_numeric_placeholders(&prompt.content, &pos_args);
-    Ok(Some(expanded))
+    if prompt_has_numeric_placeholders(&prompt.content) {
+        let expanded = expand_numeric_placeholders(&prompt.content, &pos_args);
+        return Ok(Some(expanded));
+    }
+
+    // No placeholders: append arguments verbatim (if any) to keep user input.
+    if !rest.trim().is_empty() {
+        let mut combined = prompt.content.clone();
+        if !combined.ends_with('\n') {
+            combined.push('\n');
+        }
+        combined.push_str(rest.trim());
+        return Ok(Some(combined));
+    }
+
+    Ok(Some(prompt.content.clone()))
 }
 
 /// Detect whether `content` contains numeric placeholders ($1..$9) or `$ARGUMENTS`.
@@ -213,6 +245,7 @@ pub fn prompt_has_numeric_placeholders(content: &str) -> bool {
 
 /// Extract positional arguments from a composer first line like "/name a b" for a given prompt name.
 /// Returns empty when the command name does not match or when there are no args.
+#[allow(dead_code)]
 pub fn extract_positional_args_for_prompt_line(line: &str, prompt_name: &str) -> Vec<String> {
     let trimmed = line.trim_start();
     let Some(rest) = trimmed.strip_prefix('/') else {
@@ -236,6 +269,7 @@ pub fn extract_positional_args_for_prompt_line(line: &str, prompt_name: &str) ->
 
 /// If the prompt only uses numeric placeholders and the first line contains
 /// positional args for it, expand and return Some(expanded); otherwise None.
+#[allow(dead_code)]
 pub fn expand_if_numeric_with_positional_args(
     prompt: &CustomPrompt,
     first_line: &str,
@@ -298,6 +332,7 @@ pub fn expand_numeric_placeholders(content: &str, args: &[String]) -> String {
 
 /// Constructs a command text for a custom prompt with arguments.
 /// Returns the text and the cursor position (inside the first double quote).
+#[allow(dead_code)]
 pub fn prompt_command_with_arg_placeholders(name: &str, args: &[String]) -> (String, usize) {
     let mut text = format!("/{PROMPTS_CMD_PREFIX}:{name}");
     let mut cursor: usize = text.len();
@@ -308,4 +343,45 @@ pub fn prompt_command_with_arg_placeholders(name: &str, args: &[String]) -> (Str
         }
     }
     (text, cursor)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_prompt(name: &str, content: &str) -> CustomPrompt {
+        CustomPrompt {
+            name: name.to_string(),
+            path: std::path::PathBuf::new(),
+            content: content.to_string(),
+            description: None,
+            argument_hint: None,
+        }
+    }
+
+    #[test]
+    fn expands_bare_alias_and_appends_rest_when_no_placeholders() {
+        let prompts = vec![make_prompt("issues", "/auto do it")];
+        let expanded = expand_custom_prompt("/issues https://example.com/42", &prompts)
+            .unwrap()
+            .unwrap();
+        assert!(expanded.starts_with("/auto do it"));
+        assert!(expanded.contains("https://example.com/42"));
+    }
+
+    #[test]
+    fn keeps_prefixed_form_working() {
+        let prompts = vec![make_prompt("issues", "Fix $ARGUMENTS")];
+        let expanded = expand_custom_prompt("/prompts:issues one two", &prompts)
+            .unwrap()
+            .unwrap();
+        assert_eq!(expanded, "Fix one two");
+    }
+
+    #[test]
+    fn skips_builtin_conflicts() {
+        let prompts = vec![make_prompt("plan", "custom")];
+        let expanded = expand_custom_prompt("/plan do it", &prompts).unwrap();
+        assert!(expanded.is_none());
+    }
 }

@@ -1076,13 +1076,18 @@ impl ChatComposer {
                         CommandItem::UserPrompt(idx) => {
                             if let Some(prompt) = popup.prompt(idx) {
                                 let name = prompt.name.clone();
-                                let starts_with_cmd = first_line
-                                    .trim_start()
-                                    .starts_with(format!("/{PROMPTS_CMD_PREFIX}:{name}").as_str());
+                                let trimmed = first_line.trim_start();
+                                let wants_prefixed = trimmed.starts_with(&format!(
+                                    "/{PROMPTS_CMD_PREFIX}:{name}"
+                                )) || trimmed.starts_with(&format!("/{PROMPTS_CMD_PREFIX}:"));
+                                let target = if wants_prefixed {
+                                    format!("/{PROMPTS_CMD_PREFIX}:{name} ")
+                                } else {
+                                    format!("/{name} ")
+                                };
+                                let starts_with_cmd = trimmed.starts_with(target.trim_end());
                                 if !starts_with_cmd {
-                                    self.textarea.set_text(
-                                        format!("/{PROMPTS_CMD_PREFIX}:{name} ").as_str(),
-                                    );
+                                    self.textarea.set_text(target.as_str());
                                 }
                             }
                         }

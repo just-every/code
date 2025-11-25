@@ -183,6 +183,7 @@ use crate::bottom_pane::{
     UpdateSettingsView,
     ReviewSettingsView,
     ValidationSettingsView,
+    prompt_args,
 };
 use crate::bottom_pane::agents_settings_view::SubagentEditorView;
 use crate::bottom_pane::mcp_settings_view::{McpServerRow, McpServerRows};
@@ -9304,6 +9305,24 @@ impl ChatWidget<'_> {
                     text_only.push('\n');
                 }
                 text_only.push_str(text);
+            }
+        }
+
+        // Expand user-defined custom prompts, supporting both "/prompts:name" and "/name" forms.
+        match prompt_args::expand_custom_prompt(&text_only, self.bottom_pane.custom_prompts()) {
+            Ok(Some(expanded)) => {
+                text_only = expanded.clone();
+                message
+                    .ordered_items
+                    .clear();
+                message
+                    .ordered_items
+                    .push(InputItem::Text { text: expanded });
+            }
+            Ok(None) => {}
+            Err(err) => {
+                self.history_push_plain_state(history_cell::new_error_event(err.user_message()));
+                return;
             }
         }
 
