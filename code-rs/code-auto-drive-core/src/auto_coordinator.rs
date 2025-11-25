@@ -1251,14 +1251,14 @@ fn run_auto_loop(
                             const OVERLONG_MSG: &str = "ERROR: Your last prompt_sent_to_cli was greater than 600 characters and was not sent to the CLI. Please try again with a shorter prompt. You must keep prompts succinct (<=600 chars) to give the CLI autonomy to decide how to best execute the task.";
 
                             let mut already_shared_raw = false;
-                            if raw_output.is_some() {
-                                // Surface a clear assistant message instead of echoing the raw overlong prompt.
-                                let msg = make_message("assistant", OVERLONG_MSG.to_string());
+                            if let Some(raw) = raw_output.as_ref() {
+                                // Assistant message should show the model's raw output so the UI sees the failed response.
+                                let assistant_msg = make_message("assistant", raw.clone());
                                 let _ = event_tx.send(AutoCoordinatorEvent::CompactedHistory {
-                                    conversation: vec![msg.clone()],
+                                    conversation: vec![assistant_msg.clone()],
                                 });
                                 if let Some(conv) = retry_conversation.as_mut() {
-                                    conv.push(msg);
+                                    conv.push(assistant_msg);
                                 }
                                 already_shared_raw = true;
                             }
@@ -1297,12 +1297,13 @@ fn run_auto_loop(
                                     developer_note.push_str(guidance);
                                 }
                                 if already_shared_raw {
-                                    developer_note.push_str(
-                                        "\nFull model output was attached as an assistant message; see above for details."
-                                    );
+                                    developer_note.push_str("\n");
+                                    developer_note.push_str(OVERLONG_MSG);
                                 } else if let Some(excerpt) = raw_excerpt {
                                     developer_note.push_str("\nLast JSON:\n");
                                     developer_note.push_str(&indent_lines(&excerpt, "    "));
+                                    developer_note.push_str("\n");
+                                    developer_note.push_str(OVERLONG_MSG);
                                 }
                                 conv.push(make_message("developer", developer_note));
                             }
