@@ -60,6 +60,7 @@ pub struct AgentModelSpec {
     pub enabled_by_default: bool,
     pub aliases: &'static [&'static str],
     pub gating_env: Option<&'static str>,
+    pub is_frontline: bool,
 }
 
 impl AgentModelSpec {
@@ -96,6 +97,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         enabled_by_default: true,
         aliases: &["code-gpt-5-codex-mini", "codex-mini", "coder-mini"],
         gating_env: None,
+        is_frontline: false,
     },
     AgentModelSpec {
         slug: "code-gpt-5.1-codex-max",
@@ -108,6 +110,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         enabled_by_default: true,
         aliases: &["code-gpt-5.1-codex", "code-gpt-5-codex", "coder", "code", "codex"],
         gating_env: None,
+        is_frontline: true,
     },
     AgentModelSpec {
         slug: "code-gpt-5.1",
@@ -120,6 +123,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         enabled_by_default: true,
         aliases: &["code-gpt-5", "coder-gpt-5"],
         gating_env: None,
+        is_frontline: false,
     },
     AgentModelSpec {
         slug: "claude-sonnet-4.5",
@@ -132,6 +136,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         enabled_by_default: true,
         aliases: &["claude", "claude-sonnet"],
         gating_env: None,
+        is_frontline: false,
     },
     AgentModelSpec {
         slug: "claude-opus-4.5",
@@ -144,6 +149,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         enabled_by_default: true,
         aliases: &["claude-opus", "claude-opus-4.1"],
         gating_env: None,
+        is_frontline: true,
     },
     AgentModelSpec {
         slug: "claude-haiku-4.5",
@@ -156,6 +162,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         enabled_by_default: true,
         aliases: &["claude-haiku"],
         gating_env: None,
+        is_frontline: false,
     },
     AgentModelSpec {
         slug: "gemini-3-pro",
@@ -168,6 +175,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         enabled_by_default: true,
         aliases: &["gemini-3-pro-preview", "gemini-3", "gemini3", "gemini", "gemini-2.5-pro"],
         gating_env: None,
+        is_frontline: true,
     },
     AgentModelSpec {
         slug: "gemini-2.5-flash",
@@ -180,6 +188,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         enabled_by_default: true,
         aliases: &["gemini-flash"],
         gating_env: None,
+        is_frontline: false,
     },
     AgentModelSpec {
         slug: "qwen-3-coder",
@@ -192,6 +201,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         enabled_by_default: true,
         aliases: &["qwen", "qwen3"],
         gating_env: None,
+        is_frontline: false,
     },
     AgentModelSpec {
         slug: "cloud-gpt-5.1-codex-max",
@@ -204,6 +214,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         enabled_by_default: false,
         aliases: &["cloud-gpt-5.1-codex", "cloud-gpt-5-codex", "cloud"],
         gating_env: Some(CLOUD_MODEL_ENV_FLAG),
+        is_frontline: false,
     },
 ];
 
@@ -233,36 +244,26 @@ pub fn agent_model_spec(identifier: &str) -> Option<&'static AgentModelSpec> {
 }
 
 fn model_guide_intro(active_agents: &[String]) -> String {
-    let available: std::collections::HashSet<String> = active_agents
+    let mut present_frontline: Vec<String> = active_agents
         .iter()
-        .map(|s| s.to_ascii_lowercase())
+        .filter_map(|id| {
+            agent_model_spec(id)
+                .filter(|spec| spec.is_frontline)
+                .map(|spec| spec.slug.to_string())
+        })
         .collect();
 
-    let frontliners = [
-        "code-gpt-5.1-codex-max",
-        "claude-opus-4.5",
-        "gemini-3-pro",
-    ];
-    let mut present_frontline: Vec<&str> = frontliners
-        .iter()
-        .copied()
-        .filter(|m| available.contains(&m.to_ascii_lowercase()))
-        .collect();
     if present_frontline.is_empty() {
-        present_frontline.push("code-gpt-5.1-codex-max");
+        present_frontline.push("code-gpt-5.1-codex-max".to_string());
     }
 
-    let fallbacks = [
-        "code-gpt-5.1-codex-mini",
-        "claude-sonnet-4.5",
-        "gemini-2.5-flash",
-        "claude-haiku-4.5",
-        "qwen-3-coder",
-    ];
-    let present_fallbacks: Vec<&str> = fallbacks
+    let present_fallbacks: Vec<String> = active_agents
         .iter()
-        .copied()
-        .filter(|m| available.contains(&m.to_ascii_lowercase()))
+        .filter_map(|id| {
+            agent_model_spec(id)
+                .filter(|spec| !spec.is_frontline)
+                .map(|spec| spec.slug.to_string())
+        })
         .collect();
 
     let frontline_str = present_frontline.join(", ");
