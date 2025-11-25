@@ -656,7 +656,7 @@ async fn execute_model_with_permissions(
 ) -> Result<String, String> {
     // Helper: cross‑platform check whether an executable is available in PATH
     // and is directly spawnable by std::process::Command (no shell wrappers).
-    fn command_exists(cmd: &str) -> bool {
+fn command_exists(cmd: &str) -> bool {
         // Absolute/relative path with separators: check directly (files only).
         if cmd.contains(std::path::MAIN_SEPARATOR) || cmd.contains('/') || cmd.contains('\\') {
             return std::fs::metadata(cmd).map(|m| m.is_file()).unwrap_or(false);
@@ -757,19 +757,8 @@ async fn execute_model_with_permissions(
         model_lower.as_str()
     };
 
-    let mut use_current_exe = false;
-
-    if matches!(family, "code" | "codex" | "cloud") {
-        if config.is_none() {
-            if !command_exists(&command_for_spawn) {
-                use_current_exe = true;
-            }
-        } else if let Some(ref cfg) = config {
-            if cfg.command.trim().is_empty() {
-                use_current_exe = true;
-            }
-        }
-    }
+    let command_missing = !command_exists(&command_for_spawn);
+    let use_current_exe = should_use_current_exe_for_agent(family, command_missing, config.as_ref());
 
     let mut cmd = if use_current_exe {
         match current_code_binary_path() {
@@ -1063,6 +1052,26 @@ async fn execute_model_with_permissions(
             format!("{}\n{}", stderr.trim(), stdout.trim())
         };
         Err(format!("Command failed: {}", combined))
+    }
+}
+
+pub(crate) fn should_use_current_exe_for_agent(
+    family: &str,
+    command_missing: bool,
+    config: Option<&AgentConfig>,
+) -> bool {
+    if !matches!(family, "code" | "codex" | "cloud") {
+        return false;
+    }
+
+    if command_missing {
+        return true;
+    }
+
+    if let Some(cfg) = config {
+        cfg.command.trim().is_empty()
+    } else {
+        false
     }
 }
 
@@ -1768,6 +1777,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::normalize_agent_name;
+    use super::should_use_current_exe_for_agent;
+    use crate::config_types::AgentConfig;
 
     #[test]
     fn drops_empty_names() {
@@ -1793,6 +1804,28 @@ mod tests {
             normalize_agent_name(Some("shipCloudAPI".into())),
             Some("Ship Cloud API".into())
         );
+    }
+
+    fn agent_with_command(command: &str) -> AgentConfig {
+        AgentConfig {
+            name: "code-gpt-5.1-codex-max".to_string(),
+            command: command.to_string(),
+            args: Vec::new(),
+            read_only: false,
+            enabled: true,
+            description: None,
+            env: None,
+            args_read_only: None,
+            args_write: None,
+            instructions: None,
+        }
+    }
+
+    #[test]
+    fn code_family_falls_back_when_command_missing() {
+        let cfg = agent_with_command("definitely-not-present-429");
+        let use_current = should_use_current_exe_for_agent("code", true, Some(&cfg));
+        assert!(use_current);
     }
 }
 

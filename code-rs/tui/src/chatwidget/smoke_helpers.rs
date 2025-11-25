@@ -119,7 +119,7 @@ impl ChatWidgetHarness {
         self.chat.handle_code_event(event);
     }
 
-    pub(crate) fn flush_into_widget(&mut self) {
+    pub fn flush_into_widget(&mut self) {
         let mut queue: VecDeque<AppEvent> = self
             .drain_events()
             .into_iter()
@@ -248,6 +248,16 @@ impl ChatWidgetHarness {
 
     pub(crate) fn chat(&mut self) -> &mut ChatWidget<'static> {
         &mut self.chat
+    }
+
+    pub fn open_auto_drive_settings(&mut self) {
+        self.chat().show_auto_drive_settings();
+        self.flush_into_widget();
+    }
+
+    pub fn close_auto_drive_settings(&mut self) {
+        self.chat().close_auto_drive_settings();
+        self.flush_into_widget();
     }
 
     pub(crate) fn with_chat<R>(&mut self, f: impl FnOnce(&mut ChatWidget<'static>) -> R) -> R {

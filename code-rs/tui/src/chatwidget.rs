@@ -15217,6 +15217,7 @@ fi\n\
     }
 
     pub(crate) fn show_auto_drive_settings(&mut self) {
+        self.history_render.invalidate_all();
         self.ensure_auto_drive_settings_overlay();
     }
 
@@ -15230,6 +15231,7 @@ fi\n\
         ) {
             self.close_settings_overlay();
         }
+        self.history_render.invalidate_all();
         let should_rebuild_view = if self.auto_state.is_active() {
             !self.auto_state.is_paused_manual()
         } else {
@@ -19886,12 +19888,18 @@ Have we met every part of this goal and is there no further work to do?"#
         }
 
         fn is_builtin_agent(name: &str, command: &str) -> bool {
+            if let Some(spec) = agent_model_spec(name).or_else(|| agent_model_spec(command)) {
+                return matches!(spec.family, "code" | "codex" | "cloud");
+            }
+
             name.eq_ignore_ascii_case("code")
                 || name.eq_ignore_ascii_case("codex")
                 || name.eq_ignore_ascii_case("cloud")
+                || name.eq_ignore_ascii_case("coder")
                 || command.eq_ignore_ascii_case("code")
                 || command.eq_ignore_ascii_case("codex")
                 || command.eq_ignore_ascii_case("cloud")
+                || command.eq_ignore_ascii_case("coder")
         }
 
         let mut agent_rows: Vec<AgentOverviewRow> = Vec::new();
@@ -25128,8 +25136,8 @@ Have we met every part of this goal and is there no further work to do?"#
             GIT_DIFF_NAME_ONLY_BETWEEN_STUB,
         };
         use crate::bottom_pane::AutoCoordinatorViewModel;
-        use crate::chatwidget::message::UserMessage;
-        use crate::chatwidget::smoke_helpers::{enter_test_runtime_guard, ChatWidgetHarness};
+    use crate::chatwidget::message::UserMessage;
+    use crate::chatwidget::smoke_helpers::{enter_test_runtime_guard, ChatWidgetHarness};
     use crate::history_cell::{self, ExploreAggregationCell, HistoryCellType};
     use code_auto_drive_core::{
         AutoContinueMode,
@@ -25176,6 +25184,29 @@ Have we met every part of this goal and is there no further work to do?"#
         let mut harness = ChatWidgetHarness::new();
         let formatted = harness.chat().format_model_name("gpt-5.1-codex-mini");
         assert_eq!(formatted, "GPT-5.1-Codex-Mini");
+    }
+
+    #[test]
+    fn auto_drive_ctrl_s_overlay_keeps_screen_readable() {
+        use crate::test_helpers::AutoContinueModeFixture;
+        let _guard = enter_test_runtime_guard();
+        let mut harness = ChatWidgetHarness::new();
+        harness.auto_drive_activate(
+            "write some code",
+            false,
+            true,
+            AutoContinueModeFixture::Immediate,
+        );
+
+        harness.open_auto_drive_settings();
+        let frame_with_settings = crate::test_helpers::render_chat_widget_to_vt100(&mut harness, 90, 24);
+        assert!(frame_with_settings.contains("Auto Drive Settings"));
+        assert!(!frame_with_settings.contains('\u{fffd}'));
+
+        harness.close_auto_drive_settings();
+        let frame_after_close = crate::test_helpers::render_chat_widget_to_vt100(&mut harness, 90, 24);
+        assert!(!frame_after_close.contains("Auto Drive Settings"));
+        assert!(!frame_after_close.contains('\u{fffd}'));
     }
 
     #[test]

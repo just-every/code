@@ -101,6 +101,47 @@ fn default_responses_originator() -> String {
         .unwrap_or_else(|| DEFAULT_RESPONSES_ORIGINATOR_HEADER.to_owned())
 }
 
+fn merge_with_default_agents(mut agents: Vec<AgentConfig>) -> Vec<AgentConfig> {
+    agents = agents
+        .into_iter()
+        .map(|mut a| {
+            if let Some(spec) = agent_model_spec(&a.name) {
+                // Normalize legacy aliases to canonical slugs.
+                a.name = spec.slug.to_string();
+                if a.command.trim().is_empty() {
+                    a.command = spec.cli.to_string();
+                }
+            } else if a.command.trim().is_empty() {
+                a.command = a.name.clone();
+            }
+            a
+        })
+        .collect();
+
+    if agents.is_empty() {
+        return default_agent_configs();
+    }
+
+    let mut seen = HashSet::new();
+    for agent in &agents {
+        let canonical = agent_model_spec(&agent.name)
+            .or_else(|| agent_model_spec(&agent.command))
+            .map(|spec| spec.slug.to_ascii_lowercase())
+            .unwrap_or_else(|| agent.name.to_ascii_lowercase());
+        seen.insert(canonical);
+    }
+
+    for default_agent in default_agent_configs() {
+        let key = default_agent.name.to_ascii_lowercase();
+        if !seen.contains(&key) {
+            seen.insert(key);
+            agents.push(default_agent);
+        }
+    }
+
+    agents
+}
+
 /// Application configuration loaded from disk and merged with overrides.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -2392,45 +2433,7 @@ impl Config {
             .responses_originator_header_internal_override
             .unwrap_or_else(|| default_responses_originator());
 
-        // Normalize agents: when `command` is missing/empty, default to `name`.
-        let mut agents: Vec<AgentConfig> = cfg
-            .agents
-            .into_iter()
-            .map(|mut a| {
-                let command_trimmed = a.command.trim();
-                if command_trimmed.is_empty() {
-                    if let Some(spec) = agent_model_spec(&a.name) {
-                        // Normalize legacy aliases to canonical slugs and default CLI.
-                        a.name = spec.slug.to_string();
-                        a.command = spec.cli.to_string();
-                    } else {
-                        a.command = a.name.clone();
-                    }
-                }
-
-                a
-            })
-            .collect();
-
-        if agents.is_empty() {
-            agents = default_agent_configs();
-        } else {
-            let mut seen = HashSet::new();
-            for agent in &agents {
-                let canonical = agent_model_spec(&agent.name)
-                    .map(|spec| spec.slug.to_ascii_lowercase())
-                    .unwrap_or_else(|| agent.name.to_ascii_lowercase());
-                seen.insert(canonical);
-            }
-
-            for default_agent in default_agent_configs() {
-                let key = default_agent.name.to_ascii_lowercase();
-                if !seen.contains(&key) {
-                    seen.insert(key);
-                    agents.push(default_agent);
-                }
-            }
-        }
+        let agents: Vec<AgentConfig> = merge_with_default_agents(cfg.agents);
 
         for agent in &agents {
             if agent.name.eq_ignore_ascii_case("code")
@@ -4002,6 +4005,54 @@ model_verbosity = "high"
 }
 
 #[cfg(test)]
+mod agent_merge_tests {
+    use super::merge_with_default_agents;
+    use crate::config_types::AgentConfig;
+
+    fn agent(name: &str, command: &str, enabled: bool) -> AgentConfig {
+        AgentConfig {
+            name: name.to_string(),
+            command: command.to_string(),
+            args: Vec::new(),
+            read_only: false,
+            enabled,
+            description: None,
+            env: None,
+            args_read_only: None,
+            args_write: None,
+            instructions: None,
+        }
+    }
+
+    #[test]
+    fn disabled_codex_mini_alias_is_preserved() {
+        let agents = vec![agent("codex-mini", "coder", false)];
+        let merged = merge_with_default_agents(agents);
+
+        let mini = merged
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case("code-gpt-5.1-codex-mini"))
+            .expect("mini present");
+
+        assert!(!mini.enabled, "disabled state should persist for alias");
+        assert!(merged.len() >= 1);
+    }
+
+    #[test]
+    fn disabled_codex_mini_slug_is_preserved_with_command() {
+        let agents = vec![agent("code-gpt-5.1-codex-mini", "coder", false)];
+        let merged = merge_with_default_agents(agents);
+
+        let mini = merged
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case("code-gpt-5.1-codex-mini"))
+            .expect("mini present");
+
+        assert!(!mini.enabled, "disabled state should persist for canonical slug");
+        assert!(merged.len() >= 1);
+    }
+}
+
 #[cfg(test)]
 mod notifications_tests {
     use crate::config_types::Notifications;
