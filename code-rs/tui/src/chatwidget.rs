@@ -1257,6 +1257,10 @@ pub(crate) struct ChatWidget<'a> {
     // at once into scrollback so the history contains a single message.
     // Cache of the last finalized assistant message to suppress immediate duplicates
     last_assistant_message: Option<String>,
+    // Tracks whether lingering running exec/tool cells have been cleared for the
+    // current turn. Reset on TaskStarted; set after the first assistant message
+    // (delta or final) arrives, which is more reliable than TaskComplete.
+    cleared_lingering_execs_this_turn: bool,
     // Track the ID of the current streaming message to prevent duplicates
     // Track the ID of the current streaming reasoning to prevent duplicates
     exec: ExecState,
@@ -3303,6 +3307,26 @@ impl ChatWidget<'_> {
     fn finalize_all_running_due_to_answer(&mut self) {
         exec_tools::finalize_all_running_due_to_answer(self);
     }
+
+    fn ensure_lingering_execs_cleared(&mut self) {
+        if self.cleared_lingering_execs_this_turn {
+            return;
+        }
+
+        let nothing_running = self.exec.running_commands.is_empty()
+            && self.tools_state.running_custom_tools.is_empty()
+            && self.tools_state.running_wait_tools.is_empty()
+            && self.tools_state.running_kill_tools.is_empty()
+            && self.tools_state.web_search_sessions.is_empty();
+
+        if nothing_running {
+            self.cleared_lingering_execs_this_turn = true;
+            return;
+        }
+
+        self.finalize_all_running_due_to_answer();
+        self.cleared_lingering_execs_this_turn = true;
+    }
     fn perf_label_for_item(&self, item: &dyn HistoryCell) -> String {
         use crate::history_cell::ExecKind;
         use crate::history::state::ExecStatus;
@@ -5060,6 +5084,7 @@ impl ChatWidget<'_> {
             rate_limit_secondary_next_reset_at: None,
             content_buffer: String::new(),
             last_assistant_message: None,
+            cleared_lingering_execs_this_turn: true,
             exec: ExecState {
                 running_commands: HashMap::new(),
                 running_explore_agg_index: None,
@@ -5374,6 +5399,7 @@ impl ChatWidget<'_> {
             rate_limit_secondary_next_reset_at: None,
             content_buffer: String::new(),
             last_assistant_message: None,
+            cleared_lingering_execs_this_turn: true,
             exec: ExecState {
                 running_commands: HashMap::new(),
                 running_explore_agg_index: None,
@@ -11174,6 +11200,9 @@ impl ChatWidget<'_> {
                     self.stop_spinner();
                     return;
                 }
+
+                self.ensure_lingering_execs_cleared();
+
                 self.stream_state.seq_answer_final = Some(event.event_seq);
                 // Strict order for the stream id
                 let ok = match event.order.as_ref() {
@@ -11275,6 +11304,9 @@ impl ChatWidget<'_> {
                     self.stop_spinner();
                     return;
                 }
+
+                self.ensure_lingering_execs_cleared();
+
                 if self.strict_stream_ids_enabled() && id.trim().is_empty() {
                     self.warn_missing_stream_id("assistant answer delta");
                     return;
@@ -11420,12 +11452,13 @@ impl ChatWidget<'_> {
                 self.stream.insert_reasoning_section_break(&sink);
             }
             EventMsg::TaskStarted => {
-                // If the previous turn failed to emit a TaskComplete (e.g. the
-                // provider stopped early), clear any lingering running exec/tool
-                // cells so they don't keep spinning into the next turn. This is
-                // intentionally later than ToolEnd to avoid the earlier regression
-                // where we finalized after every tool call.
-                self.finalize_all_running_due_to_answer();
+                // Reset per-turn cleanup guard and clear any lingering running
+                // exec/tool cells if the prior turn never sent TaskComplete.
+                // This runs once per turn and is intentionally later than
+                // ToolEnd to avoid the earlier regression where we finalized
+                // after every tool call.
+                self.cleared_lingering_execs_this_turn = false;
+                self.ensure_lingering_execs_cleared();
 
                 self.clear_reconnecting();
                 // This begins the new turn; clear the pending prompt anchor count
