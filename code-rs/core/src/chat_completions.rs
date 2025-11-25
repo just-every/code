@@ -30,7 +30,7 @@ use crate::error::RetryLimitReachedError;
 use crate::error::UnexpectedResponseError;
 use crate::model_family::ModelFamily;
 use crate::openai_tools::create_tools_json_for_chat_completions_api;
-use crate::util::{backoff, wait_for_connectivity};
+use crate::util::backoff;
 use std::sync::{Arc, Mutex};
 use code_app_server_protocol::AuthMode;
 use code_protocol::models::ContentItem;
@@ -465,12 +465,6 @@ pub(crate) async fn stream_chat_completions(
             Err(e) => {
                 let is_connectivity = e.is_connect() || e.is_timeout() || e.is_request();
                 if attempt > max_retries {
-                    if is_connectivity {
-                        wait_for_connectivity(&provider.base_url_for_probe()).await;
-                        attempt = 0;
-                        continue;
-                    }
-                    // Log network error
                     if let Ok(logger) = debug_logger.lock() {
                         let _ = logger.append_response_event(
                             &request_id,
@@ -480,6 +474,14 @@ pub(crate) async fn stream_chat_completions(
                             }),
                         );
                         let _ = logger.end_request_log(&request_id);
+                    }
+                    if is_connectivity {
+                        let req_id = (!request_id.is_empty()).then(|| request_id.clone());
+                        return Err(CodexErr::Stream(
+                            format!("[transport] network unavailable: {e}"),
+                            None,
+                            req_id,
+                        ));
                     }
                     return Err(e.into());
                 }

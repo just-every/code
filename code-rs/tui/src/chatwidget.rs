@@ -4862,12 +4862,6 @@ impl ChatWidget<'_> {
             ));
         }
 
-        // Brief toast so users notice recovery attempts.
-        self.bottom_pane.flash_footer_notice_for(
-            format!("Reconnecting… ({})", message),
-            Duration::from_secs(2),
-        );
-
         // Do NOT clear running state or streams; the retry will resume them.
         self.request_redraw();
     }

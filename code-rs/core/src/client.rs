@@ -62,7 +62,7 @@ use crate::protocol::SandboxPolicy;
 use crate::protocol::TokenUsage;
 use crate::reasoning::clamp_reasoning_effort_for_model;
 use crate::slash_commands::get_enabled_agents;
-use crate::util::{backoff, wait_for_connectivity};
+use crate::util::backoff;
 use code_otel::otel_event_manager::{OtelEventManager, TurnLatencyPayload};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -951,14 +951,17 @@ impl ModelClient {
                 Err(e) => {
                     let is_connectivity = e.is_connect() || e.is_timeout() || e.is_request();
                     if attempt > max_retries {
-                        if is_connectivity {
-                            wait_for_connectivity(&self.provider.base_url_for_probe()).await;
-                            attempt = 0;
-                            continue;
-                        }
-                        // Log network error
+                        // Log network error before surfacing.
                         if let Ok(logger) = self.debug_logger.lock() {
                             let _ = logger.log_error(&endpoint, &format!("Network error: {}", e), log_tag);
+                        }
+                        if is_connectivity {
+                            let req_id = (!request_id.is_empty()).then(|| request_id.clone());
+                            return Err(CodexErr::Stream(
+                                format!("[transport] network unavailable: {e}"),
+                                None,
+                                req_id,
+                            ));
                         }
                         return Err(e.into());
                     }

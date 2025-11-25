@@ -928,7 +928,7 @@ use crate::safety::assess_safety_for_untrusted_command;
 use crate::shell;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use crate::user_notification::UserNotification;
-use crate::util::backoff;
+use crate::util::{backoff, wait_for_connectivity};
 use code_protocol::protocol::SessionSource;
 use crate::rollout::recorder::SessionStateSnapshot;
 use serde_json::Value;
@@ -1313,6 +1313,22 @@ fn format_retry_eta(retry_after: &RetryAfter) -> Option<String> {
         local.format("%b %-d, %Y %-I:%M %p %Z").to_string()
     };
     Some(formatted)
+}
+
+fn is_connectivity_error(err: &CodexErr) -> bool {
+    match err {
+        CodexErr::Reqwest(e) => e.is_connect() || e.is_timeout() || e.is_request(),
+        CodexErr::Stream(msg, _, _) => {
+            let lower = msg.to_ascii_lowercase();
+            msg.starts_with("[transport]")
+                || lower.contains("network")
+                || lower.contains("connection")
+                || lower.contains("connectivity")
+                || lower.contains("timeout")
+                || lower.contains("transport")
+        }
+        _ => false,
+    }
 }
 
 #[derive(Debug)]
@@ -2618,14 +2634,6 @@ impl Session {
         let event = self.make_event(
             sub_id,
             EventMsg::Error(ErrorEvent { message: message.into() }),
-        );
-        let _ = self.tx_event.send(event).await;
-    }
-
-    async fn notify_background(&self, sub_id: &str, message: impl Into<String>) {
-        let event = self.make_event(
-            sub_id,
-            EventMsg::BackgroundEvent(BackgroundEventEvent { message: message.into() }),
         );
         let _ = self.tx_event.send(event).await;
     }
@@ -5781,40 +5789,8 @@ async fn run_turn(
                     CodexErr::Stream(_, _, req) => req.clone(),
                     _ => None,
                 };
-                if retries < max_retries {
-                    retries += 1;
-                    let (delay, retry_eta) = match e {
-                        CodexErr::Stream(_, Some(ref retry_after), _) => {
-                            let eta = format_retry_eta(&retry_after);
-                            (retry_after.delay, eta)
-                        }
-                        _ => (backoff(retries), None),
-                    };
-                    warn!(
-                        error = %e,
-                        request_id = req_id.as_deref(),
-                        "stream disconnected - retrying turn ({retries}/{max_retries} in {delay:?})...",
-                    );
-
-                    // Surface retry information to any UI/front‑end so the
-                    // user understands what is happening instead of staring
-                    // at a seemingly frozen screen.
-                    let mut retry_message =
-                        format!("stream error: {e}; retrying {retries}/{max_retries} in {delay:?}");
-                    if let Some(eta) = retry_eta {
-                        retry_message.push_str(&format!(" (next attempt at {eta})"));
-                    }
-                    retry_message.push('…');
-                    sess.notify_stream_error(&sub_id, retry_message.clone()).await;
-                    // Also surface in history for visibility during long waits
-                    sess.notify_background(
-                        &sub_id,
-                        format!("Reconnecting… {retry_message}"),
-                    )
-                    .await;
-                    // Pull any partial progress from this attempt and append to
-                    // the next request's input so we do not lose tool progress
-                    // or already-finalized items.
+                let is_connectivity = is_connectivity_error(&e);
+                let drain_scratchpad_into_attempt = |attempt_input: &mut Vec<ResponseItem>| {
                     if let Some(sp) = sess.take_scratchpad() {
                         // Build a set of call_ids we have already included to avoid duplicate calls
                         let mut seen_calls: std::collections::HashSet<String> = attempt_input
@@ -5893,6 +5869,49 @@ async fn run_turn(
                             });
                         }
                     }
+                };
+
+                if is_connectivity && retries >= max_retries {
+                    let probe = tc.client.get_provider().base_url_for_probe();
+                    let wait_message = format!(
+                        "Network unavailable; waiting to reconnect to {probe} ({e})"
+                    );
+                    sess.notify_stream_error(&sub_id, wait_message).await;
+                    drain_scratchpad_into_attempt(&mut attempt_input);
+                    wait_for_connectivity(&probe).await;
+                    retries = 0;
+                    continue;
+                }
+
+                if retries < max_retries {
+                    retries += 1;
+                    let (delay, retry_eta) = match e {
+                        CodexErr::Stream(_, Some(ref retry_after), _) => {
+                            let eta = format_retry_eta(&retry_after);
+                            (retry_after.delay, eta)
+                        }
+                        _ => (backoff(retries), None),
+                    };
+                    warn!(
+                        error = %e,
+                        request_id = req_id.as_deref(),
+                        "stream disconnected - retrying turn in {delay:?} (attempt {retries}/{max_retries})",
+                    );
+
+                    // Surface retry information to any UI/front‑end so the
+                    // user understands what is happening instead of staring
+                    // at a seemingly frozen screen.
+                    let mut retry_message =
+                        format!("stream error: {e}; retrying in {delay:?}");
+                    if let Some(eta) = retry_eta {
+                        retry_message.push_str(&format!(" (next attempt at {eta})"));
+                    }
+                    retry_message.push('…');
+                    sess.notify_stream_error(&sub_id, retry_message.clone()).await;
+                    // Pull any partial progress from this attempt and append to
+                    // the next request's input so we do not lose tool progress
+                    // or already-finalized items.
+                    drain_scratchpad_into_attempt(&mut attempt_input);
 
                     tokio::time::sleep(delay).await;
                 } else {
