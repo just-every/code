@@ -166,7 +166,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         model_args: &["--model", "gemini-3-pro"],
         description: "Frontline Gemini for moderate/challenging work; broad multimodal + coding strength with improved rollout.",
         enabled_by_default: true,
-        aliases: &["gemini-3-pro-preview", "gemini-3", "gemini3", "gemini", "gemini-2.5-pro"],
+        aliases: &["gemini-3", "gemini3", "gemini", "gemini-2.5-pro"],
         gating_env: None,
     },
     AgentModelSpec {
