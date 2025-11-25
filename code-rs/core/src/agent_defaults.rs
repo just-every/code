@@ -232,7 +232,52 @@ pub fn agent_model_spec(identifier: &str) -> Option<&'static AgentModelSpec> {
         })
 }
 
-const MODEL_GUIDE_INTRO: &str = "Preferred agent models (frontline → fallback): use gpt-5.1-codex-max, claude-opus-4.5, or gemini-3-pro for challenging coding/agentic work; minis/sonnet/flash/haiku/qwen are fast fallbacks for straightforward tasks.";
+fn model_guide_intro(active_agents: &[String]) -> String {
+    let available: std::collections::HashSet<String> = active_agents
+        .iter()
+        .map(|s| s.to_ascii_lowercase())
+        .collect();
+
+    let frontliners = [
+        "code-gpt-5.1-codex-max",
+        "claude-opus-4.5",
+        "gemini-3-pro",
+    ];
+    let mut present_frontline: Vec<&str> = frontliners
+        .iter()
+        .copied()
+        .filter(|m| available.contains(&m.to_ascii_lowercase()))
+        .collect();
+    if present_frontline.is_empty() {
+        present_frontline.push("code-gpt-5.1-codex-max");
+    }
+
+    let fallbacks = [
+        "code-gpt-5.1-codex-mini",
+        "claude-sonnet-4.5",
+        "gemini-2.5-flash",
+        "claude-haiku-4.5",
+        "qwen-3-coder",
+    ];
+    let present_fallbacks: Vec<&str> = fallbacks
+        .iter()
+        .copied()
+        .filter(|m| available.contains(&m.to_ascii_lowercase()))
+        .collect();
+
+    let frontline_str = present_frontline.join(", ");
+    let fallback_str = if present_fallbacks.is_empty() {
+        "fallback models".to_string()
+    } else {
+        present_fallbacks.join(", ")
+    };
+
+    format!(
+        "Preferred agent models (frontline → fallback): use {frontline} for challenging coding/agentic work; {fallbacks} are fast fallbacks for straightforward tasks.",
+        frontline = frontline_str,
+        fallbacks = fallback_str
+    )
+}
 
 fn model_guide_line(spec: &AgentModelSpec) -> String {
     format!("- `{}`: {}", spec.slug, spec.description)
@@ -243,7 +288,7 @@ fn custom_model_guide_line(name: &str, description: &str) -> String {
 }
 
 pub fn build_model_guide_description(active_agents: &[String]) -> String {
-    let mut description = String::from(MODEL_GUIDE_INTRO);
+    let mut description = model_guide_intro(active_agents);
 
     let mut canonical: HashSet<String> = HashSet::new();
     for name in active_agents {
