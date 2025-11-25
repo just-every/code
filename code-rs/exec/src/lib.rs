@@ -606,6 +606,9 @@ async fn run_auto_drive_session(
             AutoCoordinatorEvent::Thinking { delta, .. } => {
                 println!("[auto] {delta}");
             }
+            AutoCoordinatorEvent::Action { message } => {
+                println!("[auto] {message}");
+            }
             AutoCoordinatorEvent::TokenMetrics {
                 total_usage,
                 last_turn_usage,
@@ -619,7 +622,7 @@ async fn run_auto_drive_session(
                     total_usage.blended_total()
                 );
             }
-            AutoCoordinatorEvent::CompactedHistory { conversation } => {
+            AutoCoordinatorEvent::CompactedHistory { conversation, .. } => {
                 history.replace_all(conversation);
             }
             AutoCoordinatorEvent::UserReply {

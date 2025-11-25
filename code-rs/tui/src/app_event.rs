@@ -162,6 +162,9 @@ pub(crate) enum AppEvent {
         delta: String,
         summary_index: Option<u32>,
     },
+    AutoCoordinatorAction {
+        message: String,
+    },
     AutoCoordinatorTokenMetrics {
         total_usage: TokenUsage,
         last_turn_usage: TokenUsage,
@@ -171,6 +174,7 @@ pub(crate) enum AppEvent {
     },
     AutoCoordinatorCompactedHistory {
         conversation: Vec<ResponseItem>,
+        show_notice: bool,
     },
     AutoCoordinatorStopAck,
     AutoCoordinatorCountdown {

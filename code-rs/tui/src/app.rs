@@ -1886,6 +1886,11 @@ impl App<'_> {
                         widget.auto_handle_thinking(delta, summary_index);
                     }
                 }
+                AppEvent::AutoCoordinatorAction { message } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.auto_handle_action(message);
+                    }
+                }
                 AppEvent::AutoCoordinatorTokenMetrics {
                     total_usage,
                     last_turn_usage,
@@ -1906,9 +1911,9 @@ impl App<'_> {
                 AppEvent::AutoCoordinatorStopAck => {
                     // Coordinator acknowledged stop; no additional action required currently.
                 }
-                AppEvent::AutoCoordinatorCompactedHistory { conversation } => {
+                AppEvent::AutoCoordinatorCompactedHistory { conversation, show_notice } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.auto_handle_compacted_history(conversation);
+                        widget.auto_handle_compacted_history(conversation, show_notice);
                     }
                 }
                 AppEvent::AutoCoordinatorCountdown { countdown_id, seconds_left } => {

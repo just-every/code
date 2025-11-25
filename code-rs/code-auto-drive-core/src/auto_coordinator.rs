@@ -141,6 +141,9 @@ pub enum AutoCoordinatorEvent {
         delta: String,
         summary_index: Option<u32>,
     },
+    Action {
+        message: String,
+    },
     UserReply {
         user_response: Option<String>,
         cli_command: Option<String>,
@@ -154,6 +157,7 @@ pub enum AutoCoordinatorEvent {
     },
     CompactedHistory {
         conversation: Vec<ResponseItem>,
+        show_notice: bool,
     },
     StopAck,
 }
@@ -163,6 +167,7 @@ impl AutoCoordinatorEvent {
         match self {
             Self::Decision { .. } => "decision",
             Self::Thinking { .. } => "thinking",
+            Self::Action { .. } => "action",
             Self::UserReply { .. } => "user_reply",
             Self::TokenMetrics { .. } => "token_metrics",
             Self::CompactedHistory { .. } => "compacted_history",
@@ -926,14 +931,24 @@ pub fn start_auto_coordinator(
     debug_enabled: bool,
     derive_goal_from_history: bool,
 ) -> Result<AutoCoordinatorHandle> {
+    if std::env::var_os("CODEX_DEBUG_AUTO_COORDINATOR").is_some() {
+        eprintln!(
+            "start_auto_coordinator invoked\n{:?}",
+            std::backtrace::Backtrace::force_capture()
+        );
+    }
+
     let (cmd_tx, cmd_rx) = mpsc::channel();
     let thread_tx = cmd_tx.clone();
     let cancel_token = CancellationToken::new();
     let thread_cancel = cancel_token.clone();
 
+    // Keep plenty of stack headroom for deep JSON Schema validation stacks and
+    // large coordinator transcripts. The previous 256 KiB budget could
+    // overflow when validation recursed through long assistant responses.
     let builder = std::thread::Builder::new()
         .name("code-auto-coordinator".to_string())
-        .stack_size(256 * 1024);
+        .stack_size(1 * 1024 * 1024);
     let handle = builder.spawn(move || {
         if let Err(err) = run_auto_loop(
             event_tx,
@@ -1254,9 +1269,6 @@ fn run_auto_loop(
                             if let Some(raw) = raw_output.as_ref() {
                                 // Assistant message should show the model's raw output so the UI sees the failed response.
                                 let assistant_msg = make_message("assistant", raw.clone());
-                                let _ = event_tx.send(AutoCoordinatorEvent::CompactedHistory {
-                                    conversation: vec![assistant_msg.clone()],
-                                });
                                 if let Some(conv) = retry_conversation.as_mut() {
                                     conv.push(assistant_msg);
                                 }
@@ -1307,10 +1319,16 @@ fn run_auto_loop(
                                 }
                                 conv.push(make_message("developer", developer_note));
                             }
+                            if let Some(conv) = retry_conversation.as_ref() {
+                                // Keep the model and UI in sync with the full conversation, but avoid spamming a compaction notice.
+                                let _ = event_tx.send(AutoCoordinatorEvent::CompactedHistory {
+                                    conversation: conv.clone(),
+                                    show_notice: false,
+                                });
+                            }
                             // Show a user-facing action entry in the Auto Drive card (does not go to the model).
-                            let _ = event_tx.send(AutoCoordinatorEvent::Thinking {
-                                delta: "Retrying prompt generation after the previous response exceeded the allowed length.".to_string(),
-                                summary_index: None,
+                            let _ = event_tx.send(AutoCoordinatorEvent::Action {
+                                message: "Retrying prompt generation after the previous response was too long to send to the CLI.".to_string(),
                             });
                             pending_conversation = retry_conversation.take();
                             continue;
@@ -2911,6 +2929,7 @@ fn maybe_compact(
             *conversation = compacted;
             event_tx.send(AutoCoordinatorEvent::CompactedHistory {
                 conversation: conversation.clone(),
+                show_notice: true,
             });
             event_tx.send(AutoCoordinatorEvent::Thinking {
                 delta: format!(
@@ -2970,6 +2989,7 @@ fn maybe_compact(
 
     event_tx.send(AutoCoordinatorEvent::CompactedHistory {
         conversation: conversation.clone(),
+        show_notice: true,
     });
 
     let removed = slice.len();

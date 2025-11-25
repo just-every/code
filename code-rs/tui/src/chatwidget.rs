@@ -15147,6 +15147,9 @@ fi\n\
                     AutoCoordinatorEvent::Thinking { delta, summary_index } => {
                         app_event_tx.send(AppEvent::AutoCoordinatorThinking { delta, summary_index });
                     }
+                    AutoCoordinatorEvent::Action { message } => {
+                        app_event_tx.send(AppEvent::AutoCoordinatorAction { message });
+                    }
                     AutoCoordinatorEvent::UserReply {
                         user_response,
                         cli_command,
@@ -15171,9 +15174,10 @@ fi\n\
                             replay_updates,
                         });
                     }
-                    AutoCoordinatorEvent::CompactedHistory { conversation } => {
+                    AutoCoordinatorEvent::CompactedHistory { conversation, show_notice } => {
                         app_event_tx.send(AppEvent::AutoCoordinatorCompactedHistory {
                             conversation,
+                            show_notice,
                         });
                     }
                     AutoCoordinatorEvent::StopAck => {
@@ -15793,15 +15797,21 @@ Have we met every part of this goal and is there no further work to do?"#
         (total > 0).then_some(total)
     }
 
-    pub(crate) fn auto_handle_compacted_history(&mut self, conversation: Vec<ResponseItem>) {
+    pub(crate) fn auto_handle_compacted_history(
+        &mut self,
+        conversation: Vec<ResponseItem>,
+        show_notice: bool,
+    ) {
         let (previous_items, previous_indices) = self.export_auto_drive_items_with_indices();
         self.auto_history.replace_all(conversation.clone());
         self.auto_compaction_overlay =
             self.derive_compaction_overlay(&previous_items, &previous_indices, &conversation);
-        self.history_push_plain_paragraphs(
-            PlainMessageKind::Notice,
-            [COMPACTION_CHECKPOINT_MESSAGE],
-        );
+        if show_notice {
+            self.history_push_plain_paragraphs(
+                PlainMessageKind::Notice,
+                [COMPACTION_CHECKPOINT_MESSAGE],
+            );
+        }
         self.auto_rebuild_live_ring();
         self.request_redraw();
     }
@@ -16098,6 +16108,13 @@ Have we met every part of this goal and is there no further work to do?"#
             return;
         }
         self.auto_on_reasoning_delta(&delta, summary_index);
+    }
+
+    pub(crate) fn auto_handle_action(&mut self, message: String) {
+        if !self.auto_state.is_active() {
+            return;
+        }
+        self.auto_card_add_action(message, AutoDriveActionKind::Info);
     }
 
     #[cfg(any(test, feature = "test-helpers"))]
@@ -25906,6 +25923,55 @@ Have we met every part of this goal and is there no further work to do?"#
             .as_ref()
             .expect("auto drive tracker should be present");
         assert_eq!(tracker.cell.goal_text(), Some("Document release tasks"));
+    }
+
+    #[test]
+    fn auto_action_events_land_in_auto_drive_card() {
+        let mut harness = ChatWidgetHarness::new();
+        let note = "Retrying prompt generation after the previous response was too long to send to the CLI.";
+
+        let chat = harness.chat();
+        chat.auto_state.set_phase(AutoRunPhase::Active);
+        chat.auto_card_start(Some("Ship feature".to_string()));
+        chat.auto_handle_action(note.to_string());
+
+        let tracker = chat
+            .tools_state
+            .auto_drive_tracker
+            .as_ref()
+            .expect("auto drive tracker should be present");
+        let actions = tracker.cell.action_texts();
+        assert!(
+            actions.iter().any(|text| text == note),
+            "auto drive action card should record retry note"
+        );
+    }
+
+    #[test]
+    fn auto_compacted_history_without_notice_skips_checkpoint_banner() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.auto_state.set_phase(AutoRunPhase::Active);
+        let conversation = vec![
+            ChatWidget::auto_drive_make_assistant_message("overlong prompt raw output".to_string())
+                .expect("assistant message"),
+        ];
+
+        chat.auto_handle_compacted_history(conversation, false);
+
+        let has_checkpoint = chat.history_cells.iter().any(|cell| {
+            cell.display_lines_trimmed().iter().any(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.contains(COMPACTION_CHECKPOINT_MESSAGE))
+            })
+        });
+
+        assert!(
+            !has_checkpoint,
+            "compaction notice should not be shown when show_notice is false"
+        );
     }
 
     #[test]
