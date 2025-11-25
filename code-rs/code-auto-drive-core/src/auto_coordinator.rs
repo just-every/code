@@ -1306,12 +1306,12 @@ fn run_auto_loop(
                                     developer_note.push_str(OVERLONG_MSG);
                                 }
                                 conv.push(make_message("developer", developer_note));
-                                // Persist a short action note so the Auto Drive card history shows the retry context.
-                                conv.push(make_message(
-                                    "assistant",
-                                    "Coordinator retrying: last prompt_sent_to_cli exceeded 600 chars; keep prompts <=600 so the CLI can act autonomously.".to_string(),
-                                ));
                             }
+                            // Show a user-facing action entry in the Auto Drive card (does not go to the model).
+                            let _ = event_tx.send(AutoCoordinatorEvent::Thinking {
+                                delta: "Retrying prompt generation after the previous response exceeded the allowed length.".to_string(),
+                                summary_index: None,
+                            });
                             pending_conversation = retry_conversation.take();
                             continue;
                         }
