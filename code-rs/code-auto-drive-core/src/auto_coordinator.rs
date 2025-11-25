@@ -1248,13 +1248,19 @@ fn run_auto_loop(
                         if consecutive_decision_failures <= MAX_DECISION_RECOVERY_ATTEMPTS {
                             let attempt = consecutive_decision_failures;
 
-                            if let Some(raw) = raw_output.as_ref() {
-                                // Surface the invalid model output in the transcript so the
-                                // coordinator can see exactly what failed (e.g., an overlong
-                                // prompt_sent_to_cli) instead of only a developer note.
+                            const OVERLONG_MSG: &str = "ERROR: Your last prompt_sent_to_cli was greater than 600 characters and was not sent to the CLI. Please try again with a shorter prompt. You must keep prompts succinct (<=600 chars) to give the CLI autonomy to decide how to best execute the task.";
+
+                            let mut already_shared_raw = false;
+                            if raw_output.is_some() {
+                                // Surface a clear assistant message instead of echoing the raw overlong prompt.
+                                let msg = make_message("assistant", OVERLONG_MSG.to_string());
                                 let _ = event_tx.send(AutoCoordinatorEvent::CompactedHistory {
-                                    conversation: vec![make_message("assistant", raw.clone())],
+                                    conversation: vec![msg.clone()],
                                 });
+                                if let Some(conv) = retry_conversation.as_mut() {
+                                    conv.push(msg);
+                                }
+                                already_shared_raw = true;
                             }
 
                             warn!(
@@ -1263,9 +1269,11 @@ fn run_auto_loop(
                                 MAX_DECISION_RECOVERY_ATTEMPTS,
                                 error
                             );
-                            let raw_excerpt = raw_output
-                                .as_deref()
-                                .map(summarize_json_for_debug);
+                            let raw_excerpt = if already_shared_raw {
+                                None
+                            } else {
+                                raw_output.as_deref().map(summarize_json_for_debug)
+                            };
                             let mut message = format!(
                                 "Coordinator response invalid (attempt {attempt}/{MAX_DECISION_RECOVERY_ATTEMPTS}): {}. Retrying…\nSchema: {schema_label}",
                                 recoverable.summary
@@ -1273,6 +1281,8 @@ fn run_auto_loop(
                             if let Some(excerpt) = raw_excerpt.as_ref() {
                                 message.push_str("\nLast JSON:\n");
                                 message.push_str(&indent_lines(excerpt, "    "));
+                            } else if already_shared_raw {
+                                message.push_str("\nSee assistant message above for the full model output that failed validation.");
                             }
                             let _ = event_tx.send(AutoCoordinatorEvent::Thinking {
                                 delta: message,
@@ -1286,7 +1296,11 @@ fn run_auto_loop(
                                     developer_note.push_str("\nGuidance: ");
                                     developer_note.push_str(guidance);
                                 }
-                                if let Some(excerpt) = raw_excerpt {
+                                if already_shared_raw {
+                                    developer_note.push_str(
+                                        "\nFull model output was attached as an assistant message; see above for details."
+                                    );
+                                } else if let Some(excerpt) = raw_excerpt {
                                     developer_note.push_str("\nLast JSON:\n");
                                     developer_note.push_str(&indent_lines(&excerpt, "    "));
                                 }
