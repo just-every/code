@@ -11420,6 +11420,13 @@ impl ChatWidget<'_> {
                 self.stream.insert_reasoning_section_break(&sink);
             }
             EventMsg::TaskStarted => {
+                // If the previous turn failed to emit a TaskComplete (e.g. the
+                // provider stopped early), clear any lingering running exec/tool
+                // cells so they don't keep spinning into the next turn. This is
+                // intentionally later than ToolEnd to avoid the earlier regression
+                // where we finalized after every tool call.
+                self.finalize_all_running_due_to_answer();
+
                 self.clear_reconnecting();
                 // This begins the new turn; clear the pending prompt anchor count
                 // so subsequent background events use standard placement.
