@@ -162,20 +162,20 @@ impl PromptsSettingsView {
         let mut lines: Vec<Line> = Vec::new();
         for (idx, p) in self.prompts.iter().enumerate() {
             let preview = p.content.lines().next().unwrap_or("").trim();
-            let name_span = Span::styled(
-                format!("/{}", p.name),
-                Style::default().fg(colors::primary()).add_modifier(Modifier::BOLD),
-            );
+            let arrow = if idx == self.selected { "›" } else { " " };
+            let name_style = if idx == self.selected {
+                Style::default().fg(colors::primary()).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(colors::text())
+            };
+            let name_span = Span::styled(format!("{arrow} /{}", p.name), name_style);
             let preview_span = Span::styled(
                 format!("  {}", preview),
                 Style::default().fg(colors::text_dim()),
             );
             let mut spans = vec![name_span];
             if !preview.is_empty() { spans.push(preview_span); }
-            let mut line = Line::from(spans);
-            if idx == self.selected {
-                line = line.style(Style::default().add_modifier(Modifier::REVERSED));
-            }
+            let line = Line::from(spans);
             lines.push(line);
         }
         if lines.is_empty() {
@@ -183,17 +183,18 @@ impl PromptsSettingsView {
         }
 
         // Add new row
-        let mut add_line = Line::from(vec![
-            Span::styled("Add new…", Style::default().fg(colors::success()).add_modifier(Modifier::BOLD)),
-        ]);
-        if self.selected == self.prompts.len() {
-            add_line = add_line.style(Style::default().add_modifier(Modifier::REVERSED));
-        }
+        let add_arrow = if self.selected == self.prompts.len() { "›" } else { " " };
+        let add_style = if self.selected == self.prompts.len() {
+            Style::default().fg(colors::primary()).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(colors::success()).add_modifier(Modifier::BOLD)
+        };
+        let add_line = Line::from(vec![Span::styled(format!("{add_arrow} Add new…"), add_style)]);
         lines.push(add_line);
 
         let list = Paragraph::new(lines)
             .alignment(Alignment::Left)
-            .block(Block::default().borders(Borders::ALL));
+            .block(Block::default().borders(Borders::ALL).style(Style::default().bg(colors::background())));
         list.render(area, buf);
     }
 
@@ -211,14 +212,20 @@ impl PromptsSettingsView {
 
         // Name field with border
         let name_title = if matches!(self.focus, Focus::Name) { "Name (slug) • Enter to save" } else { "Name (slug)" };
-        let name_block = Block::default().borders(Borders::ALL).title(name_title);
+        let mut name_block = Block::default().borders(Borders::ALL).title(name_title);
+        if matches!(self.focus, Focus::Name) {
+            name_block = name_block.border_style(Style::default().fg(colors::primary()));
+        }
         let name_inner = name_block.inner(vertical[0]);
         name_block.render(vertical[0], buf);
         self.name_field.render(name_inner, buf, matches!(self.focus, Focus::Name));
 
         // Body field with border
         let body_title = if matches!(self.focus, Focus::Body) { "Content (multiline)" } else { "Content" };
-        let body_block = Block::default().borders(Borders::ALL).title(body_title);
+        let mut body_block = Block::default().borders(Borders::ALL).title(body_title);
+        if matches!(self.focus, Focus::Body) {
+            body_block = body_block.border_style(Style::default().fg(colors::primary()));
+        }
         let body_inner = body_block.inner(vertical[1]);
         body_block.render(vertical[1], buf);
         self.body_field.render(body_inner, buf, matches!(self.focus, Focus::Body));
@@ -228,12 +235,19 @@ impl PromptsSettingsView {
         let save_label = if matches!(self.focus, Focus::Save) { "[Save]" } else { "Save" };
         let delete_label = if matches!(self.focus, Focus::Delete) { "[Delete]" } else { "Delete" };
         let cancel_label = if matches!(self.focus, Focus::Cancel) { "[Cancel]" } else { "Cancel" };
+        let btn_span = |label: &str, focus: Focus, color: Style| {
+            if self.focus == focus {
+                Span::styled(label.to_string(), color.bg(colors::primary()).fg(colors::background()))
+            } else {
+                Span::styled(label.to_string(), color)
+            }
+        };
         let line = Line::from(vec![
-            Span::styled(save_label, Style::default().fg(colors::success()).add_modifier(Modifier::BOLD)),
+            btn_span(save_label, Focus::Save, Style::default().fg(colors::success()).add_modifier(Modifier::BOLD)),
             Span::raw("   "),
-            Span::styled(delete_label, Style::default().fg(colors::error()).add_modifier(Modifier::BOLD)),
+            btn_span(delete_label, Focus::Delete, Style::default().fg(colors::error()).add_modifier(Modifier::BOLD)),
             Span::raw("   "),
-            Span::styled(cancel_label, Style::default().fg(colors::text_dim()).add_modifier(Modifier::BOLD)),
+            btn_span(cancel_label, Focus::Cancel, Style::default().fg(colors::text_dim()).add_modifier(Modifier::BOLD)),
             Span::raw("    Tab cycle • Enter activates"),
         ]);
         Paragraph::new(line).render(buttons_area, buf);
