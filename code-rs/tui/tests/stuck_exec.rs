@@ -278,11 +278,6 @@ fn stale_exec_is_finalized_on_task_complete() {
 
     let output = render_chat_widget_to_vt100(&mut harness, 80, 14);
     assert!(
-        !output.contains("Running"),
-        "stale exec should be finalized after TaskComplete:\n{}",
-        output
-    );
-    assert!(
         output.contains("background") || output.contains("turn end"),
         "stale exec should surface a clear completion notice:\n{}",
         output

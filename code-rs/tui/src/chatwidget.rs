@@ -11490,6 +11490,7 @@ impl ChatWidget<'_> {
             }
             EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
                 self.clear_reconnecting();
+                let had_running_execs = !self.exec.running_commands.is_empty();
                 // Finalize any active streams
                 if self.stream.is_write_cycle_active() {
                     // Finalize both streams via streaming facade
@@ -11510,6 +11511,13 @@ impl ChatWidget<'_> {
                     self,
                     "Search cancelled before completion",
                 );
+                if had_running_execs {
+                    self.insert_background_event_with_placement(
+                        "Running commands finalized after turn end.".to_string(),
+                        BackgroundPlacement::Tail,
+                        event.order.clone(),
+                    );
+                }
                 // Now that streaming is complete, flush any queued interrupts
         self.flush_interrupt_queue();
 

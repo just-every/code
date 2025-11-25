@@ -1,5 +1,6 @@
 ---
 source: tui/tests/vt100_chatwidget_snapshot.rs
+assertion_line: 2134
 expression: section_open
 ---
  +------------------------------------------------------------------------------------------------+
@@ -11,15 +12,15 @@ expression: section_open
  |    Theme              |                                                                      | |
  |    Updates            |  Curren+------------------------------+                              | |
  |    Agents             |  Reason|Model Shortcuts               |                              | |
- |    Auto Drive         |        |                              |                              | |
- |    Review             |  GPT-5.|• Esc    Return to overview   |                              | |
- |    Planning           |  Optimi|• Tab    Cycle sections       |                              | |
- |    Validation         |     Hig|• Shift+Tab  Cycle backwards  |r complex or ambiguous proble | |
- |    Chrome             |     Med|• ?      Toggle this help     |sts reasoning based on the ta | |
- |    MCP                |     Low|                              |d reasoning                   | |
- |    Notifications      |        |Press Esc to close            |                              | |
- |    Limits             |  GPT-5.+------------------------------+                              | |
- |                       |                                                                      | |
+ |    Prompts            |        |                              |                              | |
+ |    Auto Drive         |  GPT-5.|• Esc    Return to overview   |                              | |
+ |    Review             |  Optimi|• Tab    Cycle sections       |                              | |
+ |    Planning           |     Hig|• Shift+Tab  Cycle backwards  |r complex or ambiguous proble | |
+ |    Validation         |     Med|• ?      Toggle this help     |sts reasoning based on the ta | |
+ |    Chrome             |     Low|                              |d reasoning                   | |
+ |    MCP                |        |Press Esc to close            |                              | |
+ |    Notifications      |  GPT-5.+------------------------------+                              | |
+ |    Limits             |                                                                      | |
  |                       +----------------------------------------------------------------------+ |
  | ↑ ↓ Move    Enter Open    Esc Close    ? Help                                                  |
  |                                                                                                |
