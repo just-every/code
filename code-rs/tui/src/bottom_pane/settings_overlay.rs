@@ -4,6 +4,7 @@ pub(crate) enum SettingsSection {
     Theme,
     Updates,
     Agents,
+    Prompts,
     AutoDrive,
     Review,
     Planning,
@@ -12,7 +13,6 @@ pub(crate) enum SettingsSection {
     Chrome,
     Mcp,
     Notifications,
-    Prompts,
 }
 
 impl SettingsSection {
@@ -21,15 +21,15 @@ impl SettingsSection {
         SettingsSection::Theme,
         SettingsSection::Updates,
         SettingsSection::Agents,
+        SettingsSection::Prompts,
         SettingsSection::AutoDrive,
         SettingsSection::Review,
         SettingsSection::Planning,
         SettingsSection::Validation,
-        SettingsSection::Limits,
         SettingsSection::Chrome,
         SettingsSection::Mcp,
         SettingsSection::Notifications,
-        SettingsSection::Prompts,
+        SettingsSection::Limits,
     ];
 
     pub(crate) const fn label(self) -> &'static str {

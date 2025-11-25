@@ -20076,14 +20076,14 @@ Have we met every part of this goal and is there no further work to do?"#
                     SettingsSection::Planning => self.settings_summary_planning(),
                     SettingsSection::Updates => self.settings_summary_updates(),
                     SettingsSection::Agents => self.settings_summary_agents(),
+                    SettingsSection::Prompts => self.settings_summary_prompts(),
                     SettingsSection::AutoDrive => self.settings_summary_auto_drive(),
                     SettingsSection::Review => self.settings_summary_review(),
                     SettingsSection::Validation => self.settings_summary_validation(),
-                    SettingsSection::Limits => self.settings_summary_limits(),
                     SettingsSection::Chrome => self.settings_summary_chrome(),
                     SettingsSection::Mcp => self.settings_summary_mcp(),
                     SettingsSection::Notifications => self.settings_summary_notifications(),
-                    SettingsSection::Prompts => self.settings_summary_prompts(),
+                    SettingsSection::Limits => self.settings_summary_limits(),
                 };
                 SettingsOverviewRow::new(section, summary)
             })

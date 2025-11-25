@@ -37,6 +37,7 @@ pub(crate) struct PromptsSettingsView {
     status: Option<(String, Style)>,
     app_event_tx: AppEventSender,
     is_complete: bool,
+    in_editor: bool,
 }
 
 impl PromptsSettingsView {
@@ -53,8 +54,8 @@ impl PromptsSettingsView {
             status: None,
             app_event_tx,
             is_complete: false,
+            in_editor: false,
         };
-        view.load_selected_into_form();
         view
     }
 
@@ -76,16 +77,15 @@ impl PromptsSettingsView {
                 return true;
             }
             KeyEvent { code: KeyCode::Enter, modifiers: KeyModifiers::NONE, .. } => {
+                if !self.in_editor {
+                    self.enter_editor();
+                    return true;
+                }
                 match self.focus {
-                    Focus::List => {
-                        self.load_selected_into_form();
-                    }
                     Focus::Save => {
                         self.save_current();
                     }
-                    _ => {
-                        // fall through to field handling
-                    }
+                    _ => {}
                 }
             }
             KeyEvent { code: KeyCode::Char('n'), modifiers, .. } if modifiers.contains(KeyModifiers::CONTROL) => {
@@ -95,6 +95,9 @@ impl PromptsSettingsView {
             _ => {}
         }
 
+        if !self.in_editor {
+            return self.handle_list_key(key);
+        }
         match self.focus {
             Focus::List => self.handle_list_key(key),
             Focus::Name => { self.name_field.handle_key(key); true }
@@ -123,7 +126,11 @@ impl PromptsSettingsView {
             .split(area);
 
         self.render_list(chunks[0], buf);
-        self.render_form(chunks[1], buf);
+        if self.in_editor {
+            self.render_form(chunks[1], buf);
+        } else {
+            self.render_hint(chunks[1], buf);
+        }
     }
 
     fn render_list(&self, area: Rect, buf: &mut Buffer) {
@@ -150,6 +157,15 @@ impl PromptsSettingsView {
         if lines.is_empty() {
             lines.push(Line::from("No prompts yet. Press Ctrl+N to create."));
         }
+
+        // Add new row
+        let mut add_line = Line::from(vec![
+            Span::styled("Add new…", Style::default().fg(colors::success()).add_modifier(Modifier::BOLD)),
+        ]);
+        if self.selected == self.prompts.len() && matches!(self.focus, Focus::List) {
+            add_line = add_line.style(Style::default().add_modifier(Modifier::REVERSED));
+        }
+        lines.push(add_line);
 
         let list = Paragraph::new(lines)
             .alignment(Alignment::Left)
@@ -202,6 +218,22 @@ impl PromptsSettingsView {
         }
     }
 
+    fn render_hint(&self, area: Rect, buf: &mut Buffer) {
+        let hint = vec![
+            Line::from(Span::styled(
+                "Select a prompt to edit, or choose Add new…",
+                Style::default().fg(colors::text()),
+            )),
+            Line::from(Span::styled(
+                "Saving writes to $CODE_HOME/prompts/<name>.md and reloads prompts immediately.",
+                Style::default().fg(colors::text_dim()),
+            )),
+        ];
+        Paragraph::new(hint)
+            .alignment(Alignment::Left)
+            .render(area, buf);
+    }
+
     fn handle_list_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
             KeyCode::Up => {
@@ -209,7 +241,8 @@ impl PromptsSettingsView {
                 return true;
             }
             KeyCode::Down => {
-                if self.selected + 1 < self.prompts.len() { self.selected += 1; }
+                let max = self.prompts.len();
+                if self.selected < max { self.selected += 1; }
                 return true;
             }
             KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -227,6 +260,7 @@ impl PromptsSettingsView {
         self.body_field.set_text("");
         self.focus = Focus::Name;
         self.status = Some(("New prompt".to_string(), Style::default().fg(colors::info())));
+        self.in_editor = true;
     }
 
     fn load_selected_into_form(&mut self) {
@@ -234,6 +268,15 @@ impl PromptsSettingsView {
             self.name_field.set_text(&p.name);
             self.body_field.set_text(&p.content);
             self.focus = Focus::Name;
+        }
+    }
+
+    fn enter_editor(&mut self) {
+        if self.selected >= self.prompts.len() {
+            self.start_new_prompt();
+        } else {
+            self.load_selected_into_form();
+            self.in_editor = true;
         }
     }
 

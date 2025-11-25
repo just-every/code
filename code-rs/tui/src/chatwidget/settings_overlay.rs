@@ -2136,6 +2136,13 @@ impl SettingsOverlayView {
                 }
                 self.render_placeholder(area, buf, SettingsSection::Agents.placeholder());
             }
+            SettingsSection::Prompts => {
+                if let Some(content) = self.prompts_content.as_ref() {
+                    content.render(area, buf);
+                    return;
+                }
+                self.render_placeholder(area, buf, SettingsSection::Prompts.placeholder());
+            }
             SettingsSection::AutoDrive => {
                 if let Some(content) = self.auto_drive_content.as_ref() {
                     content.render(area, buf);
@@ -2226,6 +2233,10 @@ impl SettingsOverlayView {
                 .map(|content| content as &mut dyn SettingsContent),
             SettingsSection::Agents => self
                 .agents_content
+                .as_mut()
+                .map(|content| content as &mut dyn SettingsContent),
+            SettingsSection::Prompts => self
+                .prompts_content
                 .as_mut()
                 .map(|content| content as &mut dyn SettingsContent),
             SettingsSection::AutoDrive => self
