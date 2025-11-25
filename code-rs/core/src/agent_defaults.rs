@@ -232,7 +232,7 @@ pub fn agent_model_spec(identifier: &str) -> Option<&'static AgentModelSpec> {
         })
 }
 
-const MODEL_GUIDE_INTRO: &str = "Preferred agent models (frontline → fallback): use gpt-5.1-codex-max, claude-opus-4.5, or gemini-3-pro-preview for challenging coding/agentic work; minis/sonnet/flash/haiku/qwen are fast fallbacks for straightforward tasks.";
+const MODEL_GUIDE_INTRO: &str = "Preferred agent models (frontline → fallback): use gpt-5.1-codex-max, claude-opus-4.5, or gemini-3-pro for challenging coding/agentic work; minis/sonnet/flash/haiku/qwen are fast fallbacks for straightforward tasks.";
 
 fn model_guide_line(spec: &AgentModelSpec) -> String {
     format!("- `{}`: {}", spec.slug, spec.description)
