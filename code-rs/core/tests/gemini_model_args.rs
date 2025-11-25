@@ -3,7 +3,7 @@ use code_core::agent_defaults::agent_model_spec;
 #[test]
 fn gemini_specs_use_long_model_flag() {
     let latest = agent_model_spec("gemini-3-pro").expect("spec present");
-    assert_eq!(latest.model_args, ["--model", "gemini-3-pro"]);
+    assert_eq!(latest.model_args, ["--model", "gemini-3-pro-preview"]);
     // Legacy shorthand and older slugs should resolve to the newest Gemini 3 Pro.
     let alias = agent_model_spec("gemini").expect("alias present");
     assert_eq!(alias.slug, "gemini-3-pro");

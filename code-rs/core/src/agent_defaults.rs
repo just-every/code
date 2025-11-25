@@ -140,7 +140,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         read_only_args: CLAUDE_OPUS_READ_ONLY,
         write_args: CLAUDE_OPUS_WRITE,
         model_args: &["--model", "opus-4.5"],
-        description: "Frontline Claude for challenging or high-stakes tasks; faster and more capable than Opus 4.1 with stronger agent/tool use.",
+        description: "Frontline Claude for challenging or high-stakes tasks; excels at deep reasoning and tool use.",
         enabled_by_default: true,
         aliases: &["claude-opus", "claude-opus-4.1"],
         gating_env: None,
@@ -163,10 +163,10 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         cli: "gemini",
         read_only_args: GEMINI_PRO_READ_ONLY,
         write_args: GEMINI_PRO_WRITE,
-        model_args: &["--model", "gemini-3-pro"],
-        description: "Frontline Gemini for moderate/challenging work; broad multimodal + coding strength with improved rollout.",
+        model_args: &["--model", "gemini-3-pro-preview"],
+        description: "Frontline Gemini for challenging work; strong multimodal + coding with current preview rollout.",
         enabled_by_default: true,
-        aliases: &["gemini-3", "gemini3", "gemini", "gemini-2.5-pro"],
+        aliases: &["gemini-3-pro-preview", "gemini-3", "gemini3", "gemini", "gemini-2.5-pro"],
         gating_env: None,
     },
     AgentModelSpec {
@@ -232,8 +232,7 @@ pub fn agent_model_spec(identifier: &str) -> Option<&'static AgentModelSpec> {
         })
 }
 
-const MODEL_GUIDE_INTRO: &str =
-    "Preferred agent models for this helper (choose from the valid agent list). Selection guide:";
+const MODEL_GUIDE_INTRO: &str = "Preferred agent models (frontline → fallback): use gpt-5.1-codex-max, claude-opus-4.5, or gemini-3-pro-preview for challenging coding/agentic work; minis/sonnet/flash/haiku/qwen are fast fallbacks for straightforward tasks.";
 
 fn model_guide_line(spec: &AgentModelSpec) -> String {
     format!("- `{}`: {}", spec.slug, spec.description)
