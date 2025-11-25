@@ -192,10 +192,25 @@ impl PromptsSettingsView {
         let add_line = Line::from(vec![Span::styled(format!("{add_arrow} Add new…"), add_style)]);
         lines.push(add_line);
 
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(2),
+                Constraint::Min(1),
+            ])
+            .split(area);
+
+        let note = Paragraph::new(vec![
+            Line::from("Custom prompts are saved in $CODE_HOME/prompts and can be used with /name or /prompts:name."),
+            Line::from("Save here to write the file and refresh autocomplete immediately."),
+        ])
+        .style(Style::default().fg(colors::text_dim()));
+        note.render(rows[0], buf);
+
         let list = Paragraph::new(lines)
             .alignment(Alignment::Left)
             .block(Block::default().borders(Borders::ALL).style(Style::default().bg(colors::background())));
-        list.render(area, buf);
+        list.render(rows[1], buf);
     }
 
     fn render_form(&self, area: Rect, buf: &mut Buffer) {
