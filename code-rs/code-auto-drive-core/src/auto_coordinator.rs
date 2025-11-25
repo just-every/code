@@ -439,6 +439,28 @@ mod tests {
     }
 
     #[test]
+    fn schema_sets_prompt_sent_to_cli_min_but_no_max_length() {
+        let active_agents: Vec<String> = Vec::new();
+        let schema = build_schema(&active_agents, SchemaFeatures::default());
+        let prompt_schema = schema
+            .get("properties")
+            .and_then(|v| v.as_object())
+            .and_then(|obj| obj.get("prompt_sent_to_cli"))
+            .and_then(|v| v.as_object())
+            .expect("prompt_sent_to_cli schema");
+
+        assert_eq!(
+            prompt_schema.get("minLength"),
+            Some(&json!(CLI_PROMPT_MIN_CHARS)),
+            "schema minLength should match CLI_PROMPT_MIN_CHARS"
+        );
+        assert!(
+            !prompt_schema.contains_key("maxLength"),
+            "schema should omit maxLength to avoid provider truncation"
+        );
+    }
+
+    #[test]
     fn retry_limit_marked_retryable_is_retried() {
         let err = CodexErr::RetryLimit(RetryLimitReachedError {
             status: StatusCode::SERVICE_UNAVAILABLE,
@@ -678,6 +700,20 @@ mod tests {
             .as_ref()
             .expect("guidance")
             .contains("agents[*].prompt"));
+    }
+
+    #[test]
+    fn classify_overlong_cli_prompt_is_recoverable_and_guided() {
+        let err = ensure_cli_prompt_length(&"x".repeat(CLI_PROMPT_MAX_CHARS + 1))
+            .expect_err("length check should fail");
+        let info = classify_recoverable_decision_error(&err).expect("recoverable error");
+
+        assert!(
+            info.summary.contains("length cap"),
+            "summary should mention length issue"
+        );
+        let guidance = info.guidance.expect("guidance");
+        assert!(guidance.contains("<=600"), "guidance should include limit");
     }
 
     #[test]
@@ -1580,6 +1616,10 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
     );
     required.push(Value::String("status_sent_to_user".to_string()));
 
+    // NOTE: We intentionally omit `maxLength` here. Some providers truncate
+    // responses to satisfy schema length caps, which would hide overlong
+    // prompts. We validate length after parsing and treat >600 as recoverable
+    // so the coordinator can retry with guidance instead of silently chopping.
     properties.insert(
         "prompt_sent_to_cli".to_string(),
         json!({
@@ -2324,7 +2364,10 @@ fn classify_recoverable_decision_error(err: &anyhow::Error) -> Option<Recoverabl
         });
     }
 
-    if lower.contains("length limit") || lower.contains("cut off") {
+    if lower.contains("length limit")
+        || lower.contains("cut off")
+        || lower.contains("exceeds") && lower.contains("prompt_sent_to_cli")
+    {
         return Some(RecoverableDecisionError {
             summary: "model output was cut off by a length cap".to_string(),
             guidance: Some(

@@ -26,7 +26,7 @@ where
         ShellEnvironmentPolicyInherit::None => HashMap::new(),
         ShellEnvironmentPolicyInherit::Core => {
             const CORE_VARS: &[&str] = &[
-                "HOME", "LOGNAME", "PATH", "SHELL", "USER", "USERNAME", "TMPDIR", "TEMP", "TMP",
+                "HOME", "LOGNAME", "PATH", "PATHEXT", "SHELL", "USER", "USERNAME", "TMPDIR", "TEMP", "TMP",
             ];
             let allow: HashSet<&str> = CORE_VARS.iter().copied().collect();
             vars.into_iter()
@@ -95,6 +95,7 @@ mod tests {
     fn test_core_inherit_and_default_excludes() {
         let vars = make_vars(&[
             ("PATH", "/usr/bin"),
+            ("PATHEXT", ".EXE;.CMD"),
             ("HOME", "/home/user"),
             ("API_KEY", "secret"),
             ("SECRET_TOKEN", "t"),
@@ -105,6 +106,7 @@ mod tests {
 
         let expected: HashMap<String, String> = hashmap! {
             "PATH".to_string() => "/usr/bin".to_string(),
+            "PATHEXT".to_string() => ".EXE;.CMD".to_string(),
             "HOME".to_string() => "/home/user".to_string(),
             "PAGER".to_string() => "cat".to_string(),
             "GIT_PAGER".to_string() => "cat".to_string(),

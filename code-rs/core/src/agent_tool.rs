@@ -18,6 +18,20 @@ use tokio::task::JoinHandle;
 use tokio::time::Duration as TokioDuration;
 use std::thread;
 
+#[cfg(target_os = "windows")]
+fn default_pathext_or_default() -> Vec<String> {
+    std::env::var("PATHEXT")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(|v| {
+            v.split(';')
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_ascii_lowercase())
+                .collect()
+        })
+        .unwrap_or_else(|| vec![".com".into(), ".exe".into(), ".bat".into(), ".cmd".into()])
+}
+
 use crate::agent_defaults::{agent_model_spec, default_params_for};
 use shlex::split as shlex_split;
 use crate::config_types::AgentConfig;
@@ -659,22 +673,58 @@ async fn execute_model_with_permissions(
 fn command_exists(cmd: &str) -> bool {
         // Absolute/relative path with separators: check directly (files only).
         if cmd.contains(std::path::MAIN_SEPARATOR) || cmd.contains('/') || cmd.contains('\\') {
-            return std::fs::metadata(cmd).map(|m| m.is_file()).unwrap_or(false);
+            let path = std::path::Path::new(cmd);
+            if path.extension().is_some() {
+                return std::fs::metadata(path).map(|m| m.is_file()).unwrap_or(false);
+            }
+
+            #[cfg(target_os = "windows")]
+            {
+                const DEFAULT_EXTS: &[&str] = &[".exe", ".com", ".cmd", ".bat"];
+                for ext in default_pathext_or_default() {
+                    let candidate = path.with_extension("");
+                    let candidate = candidate.with_extension(ext.trim_start_matches('.'));
+                    if std::fs::metadata(&candidate)
+                        .map(|m| m.is_file())
+                        .unwrap_or(false)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return std::fs::metadata(path).map(|m| m.is_file()).unwrap_or(false);
         }
 
         #[cfg(target_os = "windows")]
         {
-            // On Windows, ensure we only accept spawnable extensions. PowerShell
-            // scripts like .ps1 are not directly spawnable via Command::new.
-            if let Ok(p) = which::which(cmd) {
-                if !p.is_file() { return false; }
-                match p.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) {
-                    Some(ext) if matches!(ext.as_str(), "exe" | "com" | "cmd" | "bat") => true,
-                    _ => false,
-                }
+            let exts = default_pathext_or_default();
+            let path_var = std::env::var_os("PATH");
+            let path_iter = path_var
+                .as_ref()
+                .map(std::env::split_paths)
+                .into_iter()
+                .flatten();
+
+            let candidates: Vec<String> = if std::path::Path::new(cmd).extension().is_some() {
+                vec![cmd.to_string()]
             } else {
-                false
+                exts
+                    .iter()
+                    .map(|ext| format!("{cmd}{ext}"))
+                    .collect()
+            };
+
+            for dir in path_iter {
+                for candidate in &candidates {
+                    let p = dir.join(candidate);
+                    if p.is_file() {
+                        return true;
+                    }
+                }
             }
+
+            false
         }
 
         #[cfg(not(target_os = "windows"))]
@@ -951,17 +1001,7 @@ fn command_exists(cmd: &str) -> bool {
         // discovery (Gemini CLI supports GEMINI_CONFIG_DIR). We keep HOME as-is so
         // CLIs that require ~/.gemini and ~/.claude continue to work with your
         // existing config.
-        if env.get("GEMINI_API_KEY").is_none() {
-            if let Some(h) = orig_home.clone() {
-                let host_gem_cfg = std::path::PathBuf::from(&h).join(".gemini");
-                if host_gem_cfg.is_dir() {
-                    env.insert(
-                        "GEMINI_CONFIG_DIR".to_string(),
-                        host_gem_cfg.to_string_lossy().to_string(),
-                    );
-                }
-            }
-        }
+        maybe_set_gemini_config_dir(&mut env, orig_home.clone());
 
         // No OS sandbox.
 
@@ -1052,6 +1092,21 @@ fn command_exists(cmd: &str) -> bool {
             format!("{}\n{}", stderr.trim(), stdout.trim())
         };
         Err(format!("Command failed: {}", combined))
+    }
+}
+
+fn maybe_set_gemini_config_dir(env: &mut HashMap<String, String>, orig_home: Option<String>) {
+    if env.get("GEMINI_API_KEY").is_some() {
+        return;
+    }
+
+    let Some(home) = orig_home else { return; };
+    let host_gem_cfg = std::path::PathBuf::from(&home).join(".gemini");
+    if host_gem_cfg.is_dir() {
+        env.insert(
+            "GEMINI_CONFIG_DIR".to_string(),
+            host_gem_cfg.to_string_lossy().to_string(),
+        );
     }
 }
 
@@ -1777,8 +1832,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::normalize_agent_name;
+    use super::maybe_set_gemini_config_dir;
     use super::should_use_current_exe_for_agent;
     use crate::config_types::AgentConfig;
+    use std::collections::HashMap;
 
     #[test]
     fn drops_empty_names() {
@@ -1826,6 +1883,32 @@ mod tests {
         let cfg = agent_with_command("definitely-not-present-429");
         let use_current = should_use_current_exe_for_agent("code", true, Some(&cfg));
         assert!(use_current);
+    }
+
+    #[test]
+    fn gemini_config_dir_is_injected_when_missing_api_key() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let gem_dir = tmp.path().join(".gemini");
+        std::fs::create_dir_all(&gem_dir).expect("create .gemini");
+
+        let mut env: HashMap<String, String> = HashMap::new();
+        maybe_set_gemini_config_dir(&mut env, Some(tmp.path().to_string_lossy().to_string()));
+
+        assert_eq!(
+            env.get("GEMINI_CONFIG_DIR"),
+            Some(&gem_dir.to_string_lossy().to_string())
+        );
+    }
+
+    #[test]
+    fn gemini_config_dir_not_overwritten_when_api_key_present() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut env: HashMap<String, String> = HashMap::new();
+        env.insert("GEMINI_API_KEY".to_string(), "abc".to_string());
+
+        maybe_set_gemini_config_dir(&mut env, Some(tmp.path().to_string_lossy().to_string()));
+
+        assert!(!env.contains_key("GEMINI_CONFIG_DIR"));
     }
 }
 

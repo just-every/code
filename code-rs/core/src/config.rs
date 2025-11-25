@@ -4,7 +4,7 @@ use crate::config_loader::{load_config_as_toml_blocking, LoaderOverrides};
 use crate::config_profile::ConfigProfile;
 use crate::config_types::AgentConfig;
 use crate::agent_defaults::{agent_model_spec, default_agent_configs};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use crate::config_types::AutoDriveContinueMode;
 use crate::config_types::AutoDriveSettings;
 use crate::config_types::AllowedCommand;
@@ -56,7 +56,6 @@ use dirs::home_dir;
 use serde::Deserialize;
 use serde::de::{self, Unexpected};
 use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
@@ -101,45 +100,58 @@ fn default_responses_originator() -> String {
         .unwrap_or_else(|| DEFAULT_RESPONSES_ORIGINATOR_HEADER.to_owned())
 }
 
-fn merge_with_default_agents(mut agents: Vec<AgentConfig>) -> Vec<AgentConfig> {
-    agents = agents
-        .into_iter()
-        .map(|mut a| {
-            if let Some(spec) = agent_model_spec(&a.name) {
-                // Normalize legacy aliases to canonical slugs.
-                a.name = spec.slug.to_string();
-                if a.command.trim().is_empty() {
-                    a.command = spec.cli.to_string();
-                }
-            } else if a.command.trim().is_empty() {
-                a.command = a.name.clone();
-            }
-            a
-        })
-        .collect();
+fn normalize_agent(mut agent: AgentConfig) -> AgentConfig {
+    if let Some(spec) = agent_model_spec(&agent.name).or_else(|| agent_model_spec(&agent.command)) {
+        agent.name = spec.slug.to_string();
+        if agent.command.trim().is_empty() {
+            agent.command = spec.cli.to_string();
+        }
+    } else if agent.command.trim().is_empty() {
+        agent.command = agent.name.clone();
+    }
 
-    if agents.is_empty() {
+    agent
+}
+
+fn canonical_agent_key(agent: &AgentConfig) -> String {
+    agent_model_spec(&agent.name)
+        .or_else(|| agent_model_spec(&agent.command))
+        .map(|spec| spec.slug.to_ascii_lowercase())
+        .unwrap_or_else(|| agent.name.to_ascii_lowercase())
+}
+
+fn merge_with_default_agents(agents: Vec<AgentConfig>) -> Vec<AgentConfig> {
+    let mut deduped: Vec<AgentConfig> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
+
+    for agent in agents.into_iter().map(normalize_agent) {
+        let key = canonical_agent_key(&agent);
+        if let Some(idx) = index.get(&key).copied() {
+            deduped[idx] = agent;
+        } else {
+            index.insert(key, deduped.len());
+            deduped.push(agent);
+        }
+    }
+
+    if deduped.is_empty() {
         return default_agent_configs();
     }
 
     let mut seen = HashSet::new();
-    for agent in &agents {
-        let canonical = agent_model_spec(&agent.name)
-            .or_else(|| agent_model_spec(&agent.command))
-            .map(|spec| spec.slug.to_ascii_lowercase())
-            .unwrap_or_else(|| agent.name.to_ascii_lowercase());
-        seen.insert(canonical);
+    for agent in &deduped {
+        seen.insert(canonical_agent_key(agent));
     }
 
     for default_agent in default_agent_configs() {
-        let key = default_agent.name.to_ascii_lowercase();
+        let key = canonical_agent_key(&default_agent);
         if !seen.contains(&key) {
-            seen.insert(key);
-            agents.push(default_agent);
+            seen.insert(key.clone());
+            deduped.push(default_agent);
         }
     }
 
-    agents
+    deduped
 }
 
 /// Application configuration loaded from disk and merged with overrides.
@@ -4035,7 +4047,14 @@ mod agent_merge_tests {
             .expect("mini present");
 
         assert!(!mini.enabled, "disabled state should persist for alias");
-        assert!(merged.len() >= 1);
+        assert_eq!(
+            merged
+                .iter()
+                .filter(|a| a.name.eq_ignore_ascii_case("code-gpt-5.1-codex-mini"))
+                .count(),
+            1,
+            "should dedupe alias/canonical"
+        );
     }
 
     #[test]
@@ -4049,7 +4068,110 @@ mod agent_merge_tests {
             .expect("mini present");
 
         assert!(!mini.enabled, "disabled state should persist for canonical slug");
-        assert!(merged.len() >= 1);
+        assert_eq!(
+            merged
+                .iter()
+                .filter(|a| a.name.eq_ignore_ascii_case("code-gpt-5.1-codex-mini"))
+                .count(),
+            1,
+            "should dedupe canonical entry"
+        );
+    }
+
+    #[test]
+    fn codex_mini_alias_then_canonical_last_wins_disabled() {
+        let agents = vec![
+            agent("codex-mini", "coder", true),
+            agent("code-gpt-5.1-codex-mini", "coder", false),
+        ];
+        let merged = merge_with_default_agents(agents);
+
+        let mini = merged
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case("code-gpt-5.1-codex-mini"))
+            .expect("mini present");
+
+        assert!(!mini.enabled, "later canonical disable should win");
+        assert_eq!(
+            merged
+                .iter()
+                .filter(|a| a.name.eq_ignore_ascii_case("code-gpt-5.1-codex-mini"))
+                .count(),
+            1,
+            "should dedupe alias and canonical"
+        );
+    }
+
+    #[test]
+    fn codex_mini_canonical_then_alias_last_wins_disabled() {
+        let agents = vec![
+            agent("code-gpt-5.1-codex-mini", "coder", true),
+            agent("codex-mini", "coder", false),
+        ];
+        let merged = merge_with_default_agents(agents);
+
+        let mini = merged
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case("code-gpt-5.1-codex-mini"))
+            .expect("mini present");
+
+        assert!(!mini.enabled, "later alias disable should win");
+        assert_eq!(
+            merged
+                .iter()
+                .filter(|a| a.name.eq_ignore_ascii_case("code-gpt-5.1-codex-mini"))
+                .count(),
+            1,
+            "should dedupe alias and canonical"
+        );
+    }
+
+    #[test]
+    fn gemini_alias_and_canonical_dedupe_prefers_last_state() {
+        let agents = vec![
+            agent("gemini-2.5-pro", "gemini", true),
+            agent("gemini-3-pro", "gemini", false),
+        ];
+        let merged = merge_with_default_agents(agents);
+
+        let gemini = merged
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case("gemini-3-pro"))
+            .expect("gemini present");
+
+        assert!(!gemini.enabled, "later canonical disable should win");
+        assert_eq!(
+            merged
+                .iter()
+                .filter(|a| a.name.eq_ignore_ascii_case("gemini-3-pro"))
+                .count(),
+            1,
+            "should dedupe gemini alias/canonical"
+        );
+    }
+
+    #[test]
+    fn gemini_alias_disable_overrides_prior_canonical_enable() {
+        let agents = vec![
+            agent("gemini-3-pro", "gemini", true),
+            agent("gemini-2.5-pro", "gemini", false),
+        ];
+        let merged = merge_with_default_agents(agents);
+
+        let gemini = merged
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case("gemini-3-pro"))
+            .expect("gemini present");
+
+        assert!(!gemini.enabled, "later alias disable should win");
+        assert_eq!(
+            merged
+                .iter()
+                .filter(|a| a.name.eq_ignore_ascii_case("gemini-3-pro"))
+                .count(),
+            1,
+            "should dedupe gemini alias/canonical"
+        );
     }
 }
 
