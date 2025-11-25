@@ -256,27 +256,11 @@ fn model_guide_intro(active_agents: &[String]) -> String {
     if present_frontline.is_empty() {
         present_frontline.push("code-gpt-5.1-codex-max".to_string());
     }
-
-    let present_fallbacks: Vec<String> = active_agents
-        .iter()
-        .filter_map(|id| {
-            agent_model_spec(id)
-                .filter(|spec| !spec.is_frontline)
-                .map(|spec| spec.slug.to_string())
-        })
-        .collect();
-
     let frontline_str = present_frontline.join(", ");
-    let fallback_str = if present_fallbacks.is_empty() {
-        "fallback models".to_string()
-    } else {
-        present_fallbacks.join(", ")
-    };
 
     format!(
-        "Preferred agent models (frontline → fallback): use {frontline} for challenging coding/agentic work; {fallbacks} are fast fallbacks for straightforward tasks.",
+        "Preferred agent models: use {frontline} for challenging coding/agentic work.",
         frontline = frontline_str,
-        fallbacks = fallback_str
     )
 }
 
