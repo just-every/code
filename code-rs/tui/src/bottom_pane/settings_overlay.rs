@@ -12,10 +12,11 @@ pub(crate) enum SettingsSection {
     Chrome,
     Mcp,
     Notifications,
+    Prompts,
 }
 
 impl SettingsSection {
-    pub(crate) const ALL: [SettingsSection; 12] = [
+    pub(crate) const ALL: [SettingsSection; 13] = [
         SettingsSection::Model,
         SettingsSection::Theme,
         SettingsSection::Updates,
@@ -24,10 +25,11 @@ impl SettingsSection {
         SettingsSection::Review,
         SettingsSection::Planning,
         SettingsSection::Validation,
+        SettingsSection::Limits,
         SettingsSection::Chrome,
         SettingsSection::Mcp,
         SettingsSection::Notifications,
-        SettingsSection::Limits,
+        SettingsSection::Prompts,
     ];
 
     pub(crate) const fn label(self) -> &'static str {
@@ -44,6 +46,7 @@ impl SettingsSection {
             SettingsSection::Chrome => "Chrome",
             SettingsSection::Mcp => "MCP",
             SettingsSection::Notifications => "Notifications",
+            SettingsSection::Prompts => "Prompts",
         }
     }
 
@@ -61,6 +64,7 @@ impl SettingsSection {
             SettingsSection::Chrome => "Connect to Chrome or switch browser integrations.",
             SettingsSection::Mcp => "Enable and manage local MCP servers for tooling.",
             SettingsSection::Notifications => "Adjust desktop and terminal notification preferences.",
+            SettingsSection::Prompts => "Create and edit custom prompt snippets.",
         }
     }
 
@@ -78,6 +82,7 @@ impl SettingsSection {
             SettingsSection::Chrome => "Chrome integration settings coming soon.",
             SettingsSection::Mcp => "MCP server management coming soon.",
             SettingsSection::Notifications => "Notification preferences coming soon.",
+            SettingsSection::Prompts => "Manage custom prompts.",
         }
     }
 

@@ -171,6 +171,7 @@ use crate::bottom_pane::{
     AutoCoordinatorButton,
     AutoCoordinatorViewModel,
     CountdownState,
+    prompts_settings_view::PromptsSettingsView,
     McpSettingsView,
     ModelSelectionView,
     NotificationsMode,
@@ -2006,6 +2007,7 @@ use self::settings_overlay::{
     ModelSettingsContent,
     PlanningSettingsContent,
     NotificationsSettingsContent,
+    PromptsSettingsContent,
     ReviewSettingsContent,
     ThemeSettingsContent,
     UpdatesSettingsContent,
@@ -19712,6 +19714,7 @@ Have we met every part of this goal and is there no further work to do?"#
             overlay.set_updates_content(update_content);
         }
         overlay.set_notifications_content(self.build_notifications_settings_content());
+        overlay.set_prompts_content(self.build_prompts_settings_content());
         if let Some(mcp_content) = self.build_mcp_settings_content() {
             overlay.set_mcp_content(mcp_content);
         }
@@ -19787,6 +19790,12 @@ Have we met every part of this goal and is there no further work to do?"#
 
     fn build_notifications_settings_content(&mut self) -> NotificationsSettingsContent {
         NotificationsSettingsContent::new(self.build_notifications_settings_view())
+    }
+
+    fn build_prompts_settings_content(&mut self) -> PromptsSettingsContent {
+        let prompts = self.bottom_pane.custom_prompts().to_vec();
+        let view = PromptsSettingsView::new(prompts, self.app_event_tx.clone());
+        PromptsSettingsContent::new(view)
     }
 
     fn build_chrome_settings_content(&self, port: Option<u16>) -> ChromeSettingsContent {
@@ -20074,6 +20083,7 @@ Have we met every part of this goal and is there no further work to do?"#
                     SettingsSection::Chrome => self.settings_summary_chrome(),
                     SettingsSection::Mcp => self.settings_summary_mcp(),
                     SettingsSection::Notifications => self.settings_summary_notifications(),
+                    SettingsSection::Prompts => self.settings_summary_prompts(),
                 };
                 SettingsOverviewRow::new(section, summary)
             })
@@ -20265,6 +20275,11 @@ Have we met every part of this goal and is there no further work to do?"#
         }
     }
 
+    fn settings_summary_prompts(&self) -> Option<String> {
+        let count = self.bottom_pane.custom_prompts().len();
+        Some(format!("Prompts enabled: {}", count))
+    }
+
     fn refresh_settings_overview_rows(&mut self) {
         if self.settings.overlay.is_none() {
             return;
@@ -20402,7 +20417,8 @@ Have we met every part of this goal and is there no further work to do?"#
             | SettingsSection::Validation
             | SettingsSection::AutoDrive
             | SettingsSection::Mcp
-            | SettingsSection::Notifications => false,
+            | SettingsSection::Notifications
+            | SettingsSection::Prompts => false,
             SettingsSection::Agents => {
                 self.show_agents_overview_ui();
                 false

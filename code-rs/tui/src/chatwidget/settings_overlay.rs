@@ -18,6 +18,7 @@ use crate::bottom_pane::{
     McpSettingsView,
     ModelSelectionView,
     NotificationsSettingsView,
+    prompts_settings_view::PromptsSettingsView,
     PlanningSettingsView,
     SettingsSection,
     ThemeSelectionView,
@@ -244,13 +245,37 @@ pub(crate) struct NotificationsSettingsContent {
     view: NotificationsSettingsView,
 }
 
+pub(crate) struct PromptsSettingsContent {
+    view: PromptsSettingsView,
+}
+
 impl NotificationsSettingsContent {
     pub(crate) fn new(view: NotificationsSettingsView) -> Self {
         Self { view }
     }
 }
 
+impl PromptsSettingsContent {
+    pub(crate) fn new(view: PromptsSettingsView) -> Self {
+        Self { view }
+    }
+}
+
 impl SettingsContent for NotificationsSettingsContent {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        self.view.render(area, buf);
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) -> bool {
+        self.view.handle_key_event_direct(key)
+    }
+
+    fn is_complete(&self) -> bool {
+        self.view.is_complete()
+    }
+}
+
+impl SettingsContent for PromptsSettingsContent {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         self.view.render(area, buf);
     }
@@ -1188,6 +1213,7 @@ pub(crate) struct SettingsOverlayView {
     theme_content: Option<ThemeSettingsContent>,
     updates_content: Option<UpdatesSettingsContent>,
     notifications_content: Option<NotificationsSettingsContent>,
+    prompts_content: Option<PromptsSettingsContent>,
     mcp_content: Option<McpSettingsContent>,
     agents_content: Option<AgentsSettingsContent>,
     review_content: Option<ReviewSettingsContent>,
@@ -1210,6 +1236,7 @@ impl SettingsOverlayView {
             theme_content: None,
             updates_content: None,
             notifications_content: None,
+            prompts_content: None,
             mcp_content: None,
             agents_content: None,
             review_content: None,
@@ -1291,6 +1318,10 @@ impl SettingsOverlayView {
 
     pub(crate) fn set_notifications_content(&mut self, content: NotificationsSettingsContent) {
         self.notifications_content = Some(content);
+    }
+
+    pub(crate) fn set_prompts_content(&mut self, content: PromptsSettingsContent) {
+        self.prompts_content = Some(content);
     }
 
     pub(crate) fn set_mcp_content(&mut self, content: McpSettingsContent) {
@@ -1794,6 +1825,7 @@ impl SettingsOverlayView {
             SettingsSection::Chrome => "Chrome Launch Options",
             SettingsSection::Notifications => "Notifications",
             SettingsSection::Mcp => "MCP Servers",
+            SettingsSection::Prompts => "Custom Prompts",
         }
     }
 
@@ -2146,6 +2178,13 @@ impl SettingsOverlayView {
                 }
                 self.render_placeholder(area, buf, SettingsSection::Notifications.placeholder());
             }
+            SettingsSection::Prompts => {
+                if let Some(content) = self.prompts_content.as_ref() {
+                    content.render(area, buf);
+                    return;
+                }
+                self.render_placeholder(area, buf, SettingsSection::Prompts.placeholder());
+            }
             SettingsSection::Mcp => {
                 if let Some(content) = self.mcp_content.as_ref() {
                     content.render(area, buf);
@@ -2211,6 +2250,10 @@ impl SettingsOverlayView {
                 .map(|content| content as &mut dyn SettingsContent),
             SettingsSection::Notifications => self
                 .notifications_content
+                .as_mut()
+                .map(|content| content as &mut dyn SettingsContent),
+            SettingsSection::Prompts => self
+                .prompts_content
                 .as_mut()
                 .map(|content| content as &mut dyn SettingsContent),
             SettingsSection::Mcp => self

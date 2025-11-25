@@ -50,6 +50,7 @@ mod login_accounts_view;
 // no direct use of list_selection_view or its items here
 mod textarea;
 pub mod form_text_field;
+pub mod prompts_settings_view;
 mod theme_selection_view;
 mod planning_settings_view;
 mod verbosity_selection_view;
