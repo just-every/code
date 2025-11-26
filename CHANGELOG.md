@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.5.8] - 2025-11-26
+
+- Docs: publish the new CLAUDE guidance and move working references into docs/working for quicker updates. (da89924b)
+- CLI: bump the npm package metadata to 0.5.8 so installs pick up the latest build. (44c59ddd)
+
 ## [0.5.7] - 2025-11-26
 
 - Core/Exec: decode shell output with detected encodings so Unicode logs stay readable across platforms. (4aaba9b1, ae000766)
