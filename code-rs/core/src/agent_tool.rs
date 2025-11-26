@@ -47,6 +47,45 @@ fn current_code_binary_path() -> Result<std::path::PathBuf, String> {
     std::env::current_exe().map_err(|e| format!("Failed to resolve current executable: {}", e))
 }
 
+/// Format a helpful error message when an agent command is not found.
+/// Provides platform-specific guidance for resolving PATH issues.
+fn format_agent_not_found_error(agent_name: &str, command: &str) -> String {
+    let mut msg = format!("Agent '{}' could not be found.", agent_name);
+
+    #[cfg(target_os = "windows")]
+    {
+        msg.push_str(&format!(
+            "\n\nTroubleshooting steps:\n\
+            1. Check if '{}' is installed and available in your PATH\n\
+            2. Try using an absolute path in your config.toml:\n\
+               [[agents]]\n\
+               name = \"{}\"\n\
+               command = \"C:\\\\Users\\\\YourUser\\\\AppData\\\\Roaming\\\\npm\\\\{}.cmd\"\n\
+            3. Verify your PATH includes the directory containing '{}'\n\
+            4. On Windows, ensure the file has a valid extension (.exe, .cmd, .bat, .com)\n\n\
+            For more information, see: https://github.com/just-every/code/blob/main/code-rs/config.md",
+            command, agent_name, command, command
+        ));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        msg.push_str(&format!(
+            "\n\nTroubleshooting steps:\n\
+            1. Check if '{}' is installed: which {}\n\
+            2. Verify '{}' is in your PATH: echo $PATH\n\
+            3. Try using an absolute path in your config.toml:\n\
+               [[agents]]\n\
+               name = \"{}\"\n\
+               command = \"/absolute/path/to/{}\"\n\n\
+            For more information, see: https://github.com/just-every/code/blob/main/code-rs/config.md",
+            command, command, command, agent_name, command
+        ));
+    }
+
+    msg
+}
+
 // Agent status enum
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -941,7 +980,7 @@ fn command_exists(cmd: &str) -> bool {
     if !(family == "codex" || family == "code" || (family == "cloud" && config.is_none()))
         && !command_exists(&command_for_spawn)
     {
-        return Err(format!("Required agent '{}' is not installed or not in PATH", command));
+        return Err(format_agent_not_found_error(&command, &command_for_spawn));
     }
 
     // Agents: run without OS sandboxing; rely on per-branch worktrees for isolation.
@@ -1031,10 +1070,7 @@ fn command_exists(cmd: &str) -> bool {
                 .map_err(|e| format!("Failed to read output: {}", e))?,
             Err(e) => {
                 if e.kind() == std::io::ErrorKind::NotFound {
-                    return Err(format!(
-                        "Required agent '{}' is not installed or not in PATH",
-                        command
-                    ));
+                    return Err(format_agent_not_found_error(&command, &command_for_spawn));
                 }
                 return Err(format!("Failed to spawn sandboxed agent: {}", e));
             }

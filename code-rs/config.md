@@ -379,6 +379,153 @@ args = ["-y", "mcp-server"]
 env = { "API_KEY" = "value" }
 ```
 
+## agents
+
+Agents are external CLI programs that Code can invoke to handle subtasks. Code includes built-in support for several agents (Claude, Gemini, Qwen, etc.) and allows you to configure custom agents as well.
+
+Each agent is configured using an `[[agents]]` section in your `config.toml`. Here's the basic structure:
+
+```toml
+[[agents]]
+name = "claude"           # Agent identifier (required)
+command = "claude"        # Command to execute (required)
+enabled = true            # Enable/disable this agent (default: true)
+read-only = false         # Restrict to read-only operations (default: false)
+description = "Claude AI assistant"  # Description shown in UI
+args = ["--dangerously-skip-permissions"]  # Default arguments
+env = { API_KEY = "value" }  # Environment variables
+```
+
+### Configuring agent commands
+
+The `command` field specifies how to invoke the agent. Code supports three approaches:
+
+**1. Command name (PATH lookup):**
+```toml
+[[agents]]
+name = "claude"
+command = "claude"  # Code will search for "claude" in your PATH
+```
+
+**2. Absolute path (recommended for Windows):**
+```toml
+[[agents]]
+name = "gemini"
+command = "C:\\Users\\YourUser\\AppData\\Roaming\\npm\\gemini.cmd"
+```
+
+**3. Relative path:**
+```toml
+[[agents]]
+name = "custom"
+command = "./bin/custom-agent"  # Relative to working directory
+```
+
+### Windows considerations
+
+On Windows, agent command discovery follows these rules:
+
+1. Code checks the `PATHEXT` environment variable for valid executable extensions (`.exe`, `.cmd`, `.bat`, `.com`)
+2. If using PATH lookup, ensure the agent's directory is in your `PATH` environment variable
+3. For npm-installed agents, the typical location is `C:\Users\YourUser\AppData\Roaming\npm\`
+4. **Recommended:** Use absolute paths to avoid PATH issues:
+
+```toml
+[[agents]]
+name = "coder"
+command = "C:\\Users\\YourUser\\AppData\\Roaming\\npm\\coder.cmd"
+enabled = true
+
+[[agents]]
+name = "claude"
+command = "C:\\Users\\YourUser\\AppData\\Roaming\\npm\\claude.cmd"
+enabled = true
+```
+
+### Per-agent arguments
+
+You can specify different arguments for read-only vs. write modes:
+
+```toml
+[[agents]]
+name = "custom-agent"
+command = "custom-agent"
+args = ["--base-arg"]           # Always included
+args_read_only = ["--read-only"]  # Added in read-only mode
+args_write = ["--allow-writes"]   # Added in write mode
+```
+
+### Environment variables
+
+Agents inherit your current environment and can have custom variables:
+
+```toml
+[[agents]]
+name = "gemini"
+command = "gemini"
+env = { GEMINI_API_KEY = "your-key-here" }
+```
+
+Code automatically mirrors common API key environment variables for convenience:
+- `GOOGLE_API_KEY` ↔ `GEMINI_API_KEY`
+- `CLAUDE_API_KEY` ↔ `ANTHROPIC_API_KEY`
+- `QWEN_API_KEY` ↔ `DASHSCOPE_API_KEY`
+
+### Built-in agents
+
+Code includes built-in support for these agents:
+
+- **code/codex** - Built-in Code CLI agents (use current executable)
+- **claude** - Claude AI assistant (requires `claude` CLI)
+- **gemini** - Google Gemini (requires `gemini` CLI)
+- **qwen** - Qwen AI assistant (requires `qwen` CLI)
+- **cloud** - Cloud-based agents (optional, gated by `CODE_ENABLE_CLOUD_AGENT_MODEL`)
+
+### Custom agent example
+
+```toml
+[[agents]]
+name = "custom-llm"
+command = "/usr/local/bin/custom-llm"
+enabled = true
+read-only = false
+description = "Custom LLM implementation"
+args = ["--config", "/path/to/config.json"]
+env = { MODEL_PATH = "/models/custom.bin", TEMP = "0.7" }
+```
+
+### Troubleshooting
+
+**Agent not found errors:**
+
+If you see errors like `Agent 'xyz' could not be found`, try these steps:
+
+1. **Verify installation:** Check if the command exists
+   - Unix/Linux/macOS: `which claude`
+   - Windows: `where claude`
+
+2. **Check PATH:** Ensure the agent's directory is in your PATH
+   - Unix/Linux/macOS: `echo $PATH`
+   - Windows: `echo %PATH%` (cmd) or `$env:PATH` (PowerShell)
+
+3. **Use absolute paths:** Especially on Windows, specify the full path:
+   ```toml
+   [[agents]]
+   name = "claude"
+   command = "C:\\Users\\YourUser\\AppData\\Roaming\\npm\\claude.cmd"
+   ```
+
+4. **Windows file extensions:** Ensure your command includes the proper extension (`.cmd`, `.exe`, `.bat`)
+
+**Git not found in agents:**
+
+If subagents can't detect Git, ensure:
+1. Git is in your PATH
+2. You're running Code from a Git repository
+3. The `.git` directory is accessible
+
+For more details, see the [FAQ](https://github.com/just-every/code/blob/main/docs/faq.md).
+
 ## disable_response_storage
 
 Currently, customers whose accounts are set to use Zero Data Retention (ZDR) must set `disable_response_storage` to `true` so that Codex uses an alternative to the Responses API that works with ZDR:
