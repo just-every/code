@@ -16570,6 +16570,9 @@ Have we met every part of this goal and is there no further work to do?"#
     }
 
     fn auto_agents_can_write(&self) -> bool {
+        if code_core::git_info::get_git_repo_root(&self.config.cwd).is_none() {
+            return false;
+        }
         matches!(
             self.config.sandbox_policy,
             SandboxPolicy::DangerFullAccess | SandboxPolicy::WorkspaceWrite { .. }

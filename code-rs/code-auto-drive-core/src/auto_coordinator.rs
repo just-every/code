@@ -1068,12 +1068,21 @@ fn run_auto_loop(
     };
     let environment_details = format_environment_details(sandbox_label);
     let coordinator_prompt = read_coordinator_prompt(config.as_ref());
-    let (coordinator_prompt_message, base_developer_intro, mut primary_goal_message) = build_developer_message(
+    let (coordinator_prompt_message, mut base_developer_intro, mut primary_goal_message) = build_developer_message(
         &goal_text,
         &environment_details,
         coordinator_prompt.as_deref(),
         derive_goal_from_history,
     );
+    let git_repo_present = run_git_command(["rev-parse", "--is-inside-work-tree"])
+        .as_deref()
+        .map(|value| value == "true")
+        .unwrap_or(false);
+    if !git_repo_present {
+        base_developer_intro.push_str(
+            "\n\nThe current working directory is not a git repository. Auto Drive must only launch read-only agents. If a request includes write: true, downgrade it to read-only.",
+        );
+    }
     let mut schema_features = SchemaFeatures::from_auto_settings(&config.auto_drive);
     if derive_goal_from_history {
         schema_features.include_goal_field = true;
@@ -1220,7 +1229,15 @@ fn run_auto_loop(
                             goal: goal.clone(),
                             cli: cli.as_ref().map(cli_action_to_event),
                             agents_timing,
-                            agents: agents.iter().map(agent_action_to_event).collect(),
+                            agents: agents
+                                .iter()
+                                .map(|action| {
+                                    agent_action_to_event_with_write_guard(
+                                        action,
+                                        git_repo_present,
+                                    )
+                                })
+                                .collect(),
                             transcript: std::mem::take(&mut response_items),
                         };
                         pending_ack_seq = Some(current_seq);
@@ -1236,7 +1253,12 @@ fn run_auto_loop(
                         goal: goal.clone(),
                         cli: cli.as_ref().map(cli_action_to_event),
                         agents_timing,
-                        agents: agents.iter().map(agent_action_to_event).collect(),
+                        agents: agents
+                            .iter()
+                            .map(|action| {
+                                agent_action_to_event_with_write_guard(action, git_repo_present)
+                            })
+                            .collect(),
                         transcript: response_items,
                     };
 
@@ -2791,6 +2813,17 @@ fn agent_action_to_event(action: &AgentAction) -> AutoTurnAgentsAction {
         write_requested: action.write,
         models: action.models.clone(),
     }
+}
+
+fn agent_action_to_event_with_write_guard(
+    action: &AgentAction,
+    allow_write: bool,
+) -> AutoTurnAgentsAction {
+    let mut event = agent_action_to_event(action);
+    if !allow_write && event.write {
+        event.write = false;
+    }
+    event
 }
 
 pub(crate) fn extract_first_json_object(input: &str) -> Option<String> {
