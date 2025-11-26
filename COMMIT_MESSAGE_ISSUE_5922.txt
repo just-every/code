@@ -1,1 +1,0 @@
-fix(tui): allow AltGr printable keys on Windows (#5922)
