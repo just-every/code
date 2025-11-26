@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.5.7] - 2025-11-26
+
+- Core/Exec: decode shell output with detected encodings so Unicode logs stay readable across platforms. (4aaba9b1, ae000766)
+- Auto Drive: force read-only agents when no git repo exists to avoid accidental writes during automation. (13226204)
+- App Server: emit token usage, compaction, and turn diff events plus thread metadata to improve monitoring. (401f94ca, caf2749d, 9ba27cfa, 157a16ce)
+- Shell MCP: declare capabilities, add login support, and publish the npm package to keep tool integrations healthy. (c6f68c9d, e8ef6d3c, af63e6ec)
+
 ## [0.5.5] - 2025-11-25
 
 - Auto Drive: restore 600-char CLI prompts, enforce sane bounds, add fallback to the current binary, and append test guidance to each goal for smoother automation handoffs. (24a0dd4c, 3651bc85, 15745f0a, f8f5c5b4)
