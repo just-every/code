@@ -21,6 +21,7 @@ use crate::error::CodexErr;
 use crate::error::Result;
 use crate::error::SandboxErr;
 use crate::landlock::spawn_command_under_linux_sandbox;
+use crate::text_encoding::bytes_to_string_smart;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
 use crate::protocol::OrderMeta;
@@ -281,7 +282,7 @@ impl StreamOutput<String> {
 impl StreamOutput<Vec<u8>> {
     pub fn from_utf8_lossy(&self) -> StreamOutput<String> {
         StreamOutput {
-            text: String::from_utf8_lossy(&self.text).to_string(),
+            text: bytes_to_string_smart(&self.text),
             truncated_after_lines: self.truncated_after_lines,
             truncated_before_bytes: self.truncated_before_bytes,
         }
