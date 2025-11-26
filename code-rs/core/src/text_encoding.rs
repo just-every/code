@@ -8,14 +8,8 @@
 
 use chardetng::EncodingDetector;
 use encoding_rs::Encoding;
-use encoding_rs::GB18030;
 use encoding_rs::IBM866;
-use encoding_rs::ISO_8859_3;
-use encoding_rs::WINDOWS_1250;
 use encoding_rs::WINDOWS_1252;
-use encoding_rs::WINDOWS_1254;
-use encoding_rs::WINDOWS_1256;
-use encoding_rs::WINDOWS_874;
 
 /// Attempts to convert arbitrary bytes to UTF-8 with best-effort encoding detection.
 pub fn bytes_to_string_smart(bytes: &[u8]) -> String {
@@ -28,7 +22,7 @@ pub fn bytes_to_string_smart(bytes: &[u8]) -> String {
     }
 
     let encoding = detect_encoding(bytes);
-    choose_best_decoding(bytes, encoding)
+    decode_bytes(bytes, encoding)
 }
 
 // Windows-1252 reassigns a handful of 0x80-0x9F slots to smart punctuation (curly quotes, dashes,
@@ -73,180 +67,14 @@ fn detect_encoding(bytes: &[u8]) -> &'static Encoding {
     encoding
 }
 
-fn choose_best_decoding(bytes: &[u8], detected: &'static Encoding) -> String {
-    // Very short, non-ASCII payloads are often junk rather than a real code page; in those cases
-    // prefer the lossy UTF-8 fallback instead of over-confident guesses (e.g., IBM866).
-    if bytes.len() <= 3 && bytes.iter().all(|b| *b >= 0x80) && !bytes.iter().any(|b| b.is_ascii()) {
-        return decode_lossy(bytes);
+fn decode_bytes(bytes: &[u8], encoding: &'static Encoding) -> String {
+    let (decoded, _, had_errors) = encoding.decode(bytes);
+
+    if had_errors {
+        return String::from_utf8_lossy(bytes).into_owned();
     }
 
-    let utf8_lossy = decode_lossy(bytes);
-    let ascii_bytes = bytes.iter().filter(|b| b.is_ascii()).count();
-
-    // Candidate order matters: start from the detector guess, then try targeted legacy code pages
-    // that commonly show up in shells and are easy to confuse on short inputs.
-    const CANDIDATES: [&Encoding; 8] = [
-        &WINDOWS_874,
-        &WINDOWS_1250,
-        &WINDOWS_1254,
-        &WINDOWS_1256,
-        &WINDOWS_1252,
-        &GB18030,
-        &ISO_8859_3,
-        &IBM866,
-    ];
-
-    let mut encodings: Vec<&Encoding> = vec![detected];
-    for enc in CANDIDATES {
-        if !encodings.iter().any(|&e| e == enc) {
-            encodings.push(enc);
-        }
-    }
-
-    let mut best_score = score_decoded(&utf8_lossy, encoding_rs::UTF_8, detected, ascii_bytes);
-    let mut best_text = utf8_lossy;
-
-    for enc in encodings {
-        if let Some(decoded) = enc.decode_without_bom_handling_and_without_replacement(bytes) {
-            let owned = decoded.into_owned();
-            let score = score_decoded(&owned, enc, detected, ascii_bytes);
-            if score > best_score {
-                best_score = score;
-                best_text = owned;
-            }
-        }
-    }
-
-    best_text
-}
-
-fn score_decoded(
-    text: &str,
-    candidate: &'static Encoding,
-    detected: &'static Encoding,
-    ascii_byte_count: usize,
-) -> i32 {
-    let mut ascii_char_count = 0usize;
-    let mut replacement_count = 0usize;
-    let mut latin = 0usize;
-    let mut cyrillic = 0usize;
-    let mut arabic = 0usize;
-    let mut han = 0usize;
-    let mut thai = 0usize;
-    let mut greek = 0usize;
-    let mut hebrew = 0usize;
-
-    let mut char_len = 0usize;
-
-    for ch in text.chars() {
-        char_len += 1;
-        if ch == '\u{FFFD}' {
-            replacement_count += 1;
-            continue;
-        }
-        if ch.is_ascii() {
-            if ch.is_ascii_alphabetic() {
-                latin += 1;
-            }
-            ascii_char_count += 1;
-            continue;
-        }
-
-        match script_tag(ch) {
-            Script::Latin => latin += 1,
-            Script::Cyrillic => cyrillic += 1,
-            Script::Arabic => arabic += 1,
-            Script::Han => han += 1,
-            Script::Thai => thai += 1,
-            Script::Greek => greek += 1,
-            Script::Hebrew => hebrew += 1,
-            Script::Other => {}
-        }
-    }
-
-    let ascii_penalty = ascii_byte_count.saturating_sub(ascii_char_count) as i32 * 5;
-    let mut score = 0i32;
-    score -= ascii_penalty;
-    score -= (replacement_count as i32) * 6;
-
-    let primary = *[latin, cyrillic, arabic, han, thai, greek, hebrew]
-        .iter()
-        .max()
-        .unwrap_or(&0) as i32;
-    score += primary * 2;
-
-    if candidate == detected {
-        score += 1;
-    }
-
-    // Encoding-specific boosts to break ties.
-    if candidate == GB18030 {
-        score += han as i32 * 4;
-        if han > 0 && ascii_byte_count == 0 && char_len <= 4 {
-            // Small, entirely non-ASCII blobs are more likely to be GBK/GB18030 than Thai when we
-            // successfully produce CJK ideographs.
-            score += 15;
-        }
-    }
-    if candidate == WINDOWS_874 {
-        score += thai as i32 * 4;
-    }
-    if candidate == WINDOWS_1256 {
-        score += arabic as i32 * 3;
-    }
-    if candidate == WINDOWS_1250 || candidate == ISO_8859_3 {
-        score += central_euro_count(text) as i32 * 8;
-    }
-    if candidate == WINDOWS_1254 {
-        score += turkish_letter_count(text) as i32 * 6;
-    }
-
-    score
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Script {
-    Latin,
-    Cyrillic,
-    Arabic,
-    Han,
-    Thai,
-    Greek,
-    Hebrew,
-    Other,
-}
-
-fn script_tag(ch: char) -> Script {
-    match ch {
-        'a'..='z' | 'A'..='Z' => Script::Latin,
-        '\u{00C0}'..='\u{024F}' => Script::Latin,
-        '\u{0370}'..='\u{03FF}' => Script::Greek,
-        '\u{0400}'..='\u{052F}' => Script::Cyrillic,
-        '\u{0590}'..='\u{05FF}' => Script::Hebrew,
-        '\u{0600}'..='\u{06FF}' | '\u{0750}'..='\u{077F}' => Script::Arabic,
-        '\u{0E00}'..='\u{0E7F}' => Script::Thai,
-        '\u{3400}'..='\u{4DBF}' | '\u{4E00}'..='\u{9FFF}' | '\u{20000}'..='\u{2EBEF}' => {
-            Script::Han
-        }
-        _ => Script::Other,
-    }
-}
-
-fn central_euro_count(text: &str) -> usize {
-    const CENTRAL: &[char] = &[
-        'á', 'č', 'ď', 'é', 'ě', 'í', 'ň', 'ó', 'ř', 'š', 'ť', 'ú', 'ů', 'ý', 'ž', 'Á', 'Č', 'Ď',
-        'É', 'Ě', 'Í', 'Ň', 'Ó', 'Ř', 'Š', 'Ť', 'Ú', 'Ů', 'Ý', 'Ž', 'Ħ', 'ħ',
-    ];
-    text.chars().filter(|c| CENTRAL.contains(c)).count()
-}
-
-fn turkish_letter_count(text: &str) -> usize {
-    const TURKISH: &[char] = &['ğ', 'Ğ', 'ş', 'Ş', 'ı', 'İ', 'ç', 'Ç', 'ö', 'Ö', 'ü', 'Ü'];
-    text.chars().filter(|c| TURKISH.contains(c)).count()
-}
-
-fn decode_lossy(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).into_owned()
+    decoded.into_owned()
 }
 
 /// Detect whether the byte stream looks like Windows-1252 “smart punctuation” wrapped around
