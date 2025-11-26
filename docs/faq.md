@@ -21,3 +21,59 @@ By default, Codex can modify files in your current working directory (Auto mode)
 ### Does it work on Windows?
 
 Running Codex directly on Windows may work, but is not officially supported. We recommend using [Windows Subsystem for Linux (WSL2)](https://learn.microsoft.com/en-us/windows/wsl/install).
+
+### Why can't Code find my agents on Windows?
+
+On Windows, agent discovery can be affected by PATH configuration and file extensions. If you see errors like `Agent 'xyz' could not be found`, try these solutions:
+
+**1. Use absolute paths (recommended):**
+
+Edit your `~/.code/config.toml` to use full paths to agent executables:
+
+```toml
+[[agents]]
+name = "claude"
+command = "C:\\Users\\YourUser\\AppData\\Roaming\\npm\\claude.cmd"
+enabled = true
+
+[[agents]]
+name = "gemini"
+command = "C:\\Users\\YourUser\\AppData\\Roaming\\npm\\gemini.cmd"
+enabled = true
+```
+
+Replace `YourUser` with your actual Windows username.
+
+**2. Find your npm global install location:**
+
+Run this command to find where npm installs global packages:
+```cmd
+npm config get prefix
+```
+
+The executables will be in the returned directory. For example, if it returns `C:\Users\YourUser\AppData\Roaming\npm`, your agent commands will be at:
+- `C:\Users\YourUser\AppData\Roaming\npm\claude.cmd`
+- `C:\Users\YourUser\AppData\Roaming\npm\gemini.cmd`
+- `C:\Users\YourUser\AppData\Roaming\npm\coder.cmd`
+
+**3. Verify PATH includes npm directory:**
+
+In PowerShell:
+```powershell
+$env:PATH -split ';' | Select-String "npm"
+```
+
+In Command Prompt:
+```cmd
+echo %PATH% | findstr npm
+```
+
+If npm's directory isn't in your PATH, you can either:
+- Add it to your system PATH (requires restart)
+- Use absolute paths in your config (recommended)
+
+**4. Check file extensions:**
+
+On Windows, Code looks for executables with these extensions: `.exe`, `.cmd`, `.bat`, `.com`. Ensure your agent command includes the correct extension when using absolute paths.
+
+**Related:** See the [Agent Configuration Guide](https://github.com/just-every/code/blob/main/code-rs/config.md#agents) for more details.

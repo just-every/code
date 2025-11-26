@@ -252,6 +252,7 @@ impl AgentEditorView {
         instructions: Option<String>,
         description: Option<String>,
         command: String,
+        builtin: bool,
         app_event_tx: AppEventSender,
     ) -> Self {
         // Simple PATH check similar to the core executor’s logic
@@ -292,7 +293,7 @@ impl AgentEditorView {
         name_field.set_filter(InputFilter::Id);
         let mut command_field = FormTextField::new_single_line();
         command_field.set_text(&command);
-        let command_exists_flag = !command.trim().is_empty() && command_exists(&command);
+        let command_exists_flag = builtin || (!command.trim().is_empty() && command_exists(&command));
         let mut description_field = FormTextField::new_multi_line();
         if let Some(desc) = description
             .as_ref()
@@ -331,7 +332,7 @@ impl AgentEditorView {
         if let Some(s) = instructions { v.instr.set_text(&s); v.instr.move_cursor_to_start(); }
 
         // OS-specific short hint
-        if !v.command.trim().is_empty() {
+        if !builtin && !v.command.trim().is_empty() {
             #[cfg(target_os = "macos")]
             {
                 let brew_formula = macos_brew_formula_for_command(&v.command);

@@ -102,13 +102,42 @@ env = { MODEL_PATH = "/models/custom.bin", TEMP = "0.7" }
 name = "cloud"    # keep name = "cloud" so built-in /plan,/solve default lists include it
 command = "cloud"  # can be any CLI or path (e.g., "cloud-agent"); behavior keys off the agent name
 enabled = true
-read-only = true   # cloud work typically runs remotely; local writes aren’t needed
+read-only = true   # cloud work typically runs remotely; local writes aren't needed
 description = "Submit tasks to a remote cloud worker"
 # By default no extra flags are passed; the prompt is appended positionally.
 # If your CLI expects a flag before the prompt, specify it here, e.g.:
 # args = ["submit", "-p"]
 # Optional environment:
 # env = { CODEX_CLOUD_ENV = "prod" }
+
+# Windows-specific agent configuration examples
+# On Windows, it's recommended to use absolute paths to avoid PATH issues.
+# Typical npm global install location: C:\Users\YourUser\AppData\Roaming\npm\
+
+# [[agents]]
+# name = "claude"
+# command = "C:\\Users\\YourUser\\AppData\\Roaming\\npm\\claude.cmd"
+# enabled = true
+# description = "Claude AI assistant (Windows absolute path)"
+# args = ["--dangerously-skip-permissions"]
+
+# [[agents]]
+# name = "gemini"
+# command = "C:\\Users\\YourUser\\AppData\\Roaming\\npm\\gemini.cmd"
+# enabled = true
+# description = "Gemini assistant (Windows absolute path)"
+# args = ["-y"]
+# env = { GEMINI_API_KEY = "your-key-here" }
+
+# [[agents]]
+# name = "coder"
+# command = "C:\\Users\\YourUser\\AppData\\Roaming\\npm\\coder.cmd"
+# enabled = true
+# description = "Code assistant (Windows absolute path)"
+# args = ["-y"]
+
+# Note: Replace "YourUser" with your actual Windows username.
+# To find your npm global install location, run: npm config get prefix
 
 # Sandbox Configuration
 # Controls file system access and permissions

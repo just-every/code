@@ -268,13 +268,33 @@ pub(super) async fn perform_compaction(
                     continue;
                 }
 
+                // Compaction cannot fit even with minimal input. Apply emergency
+                // fallback to prevent infinite retry loops: reset history to just
+                // initial context with a warning message.
+                tracing::error!(
+                    "Compaction failed: context overflow even with minimal input. \
+                     Applying emergency fallback history to prevent retry loop."
+                );
+
+                let emergency_message = "⚠️ Compaction failed: The conversation history is too large \
+                    to compact within the model's context limits. The history has been reset to prevent \
+                    further errors. Please start a new session or manually reduce context by clearing history.";
+
                 let event = sess.make_event(
                     &sub_id,
                     EventMsg::Error(ErrorEvent {
-                        message: e.to_string(),
+                        message: emergency_message.to_string(),
                     }),
                 );
                 sess.send_event(event).await;
+
+                // Apply emergency fallback: reset history to minimal state
+                let initial_context = sess.build_initial_context(turn_context.as_ref());
+                let emergency_history = build_emergency_compacted_history(initial_context, emergency_message);
+                sess.replace_history(emergency_history);
+
+                // Still return error to signal compaction didn't complete normally,
+                // but history has been reset to prevent retry loops
                 return Err(e);
             }
             Err(e) => {
@@ -397,14 +417,40 @@ async fn run_compact_task_inner_inline(
                     continue;
                 }
 
+                // Compaction cannot fit even with minimal input. Return an emergency
+                // fallback history with just the initial context and a clear warning.
+                // This prevents infinite loops where compaction repeatedly fails and
+                // the system keeps retrying with the same oversized input.
+                tracing::error!(
+                    "Compaction failed: context overflow even with minimal input. \
+                     Returning emergency fallback history to prevent retry loop."
+                );
+
+                let emergency_message = "⚠️ Compaction failed: The conversation history is too large \
+                    to compact within the model's context limits. The history has been reset to prevent \
+                    further errors. Please start a new session or manually reduce context by clearing history.";
+
                 let event = sess.make_event(
                     &sub_id,
                     EventMsg::Error(ErrorEvent {
-                        message: e.to_string(),
+                        message: emergency_message.to_string(),
                     }),
                 );
                 sess.send_event(event).await;
-                return Vec::new();
+
+                // Return minimal emergency history: just initial context + warning message
+                let initial_context = sess.build_initial_context(turn_context.as_ref());
+                let emergency_history = build_emergency_compacted_history(initial_context, emergency_message);
+
+                // Update session history with emergency fallback
+                {
+                    let mut state = sess.state.lock().unwrap();
+                    state.history = crate::conversation_history::ConversationHistory::new();
+                    state.history.record_items(emergency_history.iter());
+                    state.token_usage_info = None;
+                }
+
+                return emergency_history;
             }
             Err(e) => {
                 if retries < max_retries {
@@ -651,6 +697,24 @@ pub(crate) fn build_compacted_history(
 ) -> Vec<ResponseItem> {
     let mut history = initial_context;
     history.push(make_compaction_summary_message(snippets, summary_text));
+    history
+}
+
+/// Build an emergency fallback history when compaction fails catastrophically.
+/// This returns just the initial context plus a warning message, ensuring the
+/// session can continue without hitting infinite retry loops.
+pub(crate) fn build_emergency_compacted_history(
+    initial_context: Vec<ResponseItem>,
+    warning_message: &str,
+) -> Vec<ResponseItem> {
+    let mut history = initial_context;
+    history.push(ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: warning_message.to_string(),
+        }],
+    });
     history
 }
 
@@ -926,6 +990,58 @@ mod tests {
         assert!(bridge_text.contains("Key takeaways"));
         assert!(bridge_text.contains("SUMMARY"));
         assert!(bridge_text.len() < big.len());
+    }
+
+    #[test]
+    fn build_emergency_compacted_history_creates_minimal_history() {
+        let initial_context = vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "<user_instructions>test</user_instructions>".to_string(),
+                }],
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "<ENVIRONMENT_CONTEXT>cwd=/tmp</ENVIRONMENT_CONTEXT>".to_string(),
+                }],
+            },
+        ];
+
+        let warning = "Emergency fallback";
+        let history = build_emergency_compacted_history(initial_context.clone(), warning);
+
+        assert_eq!(history.len(), initial_context.len() + 1);
+
+        if let ResponseItem::Message { role, content, .. } = &history[history.len() - 1] {
+            assert_eq!(role, "user");
+            let text = content_items_to_text(content).unwrap();
+            assert_eq!(text, warning);
+        } else {
+            panic!("Expected warning message");
+        }
+
+        assert_eq!(history[0], initial_context[0]);
+        assert_eq!(history[1], initial_context[1]);
+    }
+
+    #[test]
+    fn build_emergency_compacted_history_with_empty_context() {
+        let warning = "Emergency fallback";
+        let history = build_emergency_compacted_history(Vec::new(), warning);
+
+        assert_eq!(history.len(), 1);
+
+        if let ResponseItem::Message { role, content, .. } = &history[0] {
+            assert_eq!(role, "user");
+            let text = content_items_to_text(content).unwrap();
+            assert_eq!(text, warning);
+        } else {
+            panic!("Expected warning message");
+        }
     }
 
     #[test]
