@@ -87,6 +87,91 @@ pub(crate) mod tool_cards;
 mod running_tools;
 #[cfg(any(test, feature = "test-helpers"))]
 pub mod smoke_helpers;
+
+fn agent_summary_counts(config_agents: &[AgentConfig]) -> (usize, usize) {
+    use std::collections::HashMap;
+
+    let mut enabled = 0usize;
+    let mut total = 0usize;
+
+    let mut config_by_name: HashMap<String, &AgentConfig> = HashMap::new();
+    for cfg in config_agents {
+        config_by_name.insert(cfg.name.to_ascii_lowercase(), cfg);
+    }
+
+    for spec in code_core::agent_defaults::agent_model_specs() {
+        total += 1;
+        let key = spec.slug.to_ascii_lowercase();
+        if let Some(cfg) = config_by_name.get(&key) {
+            if cfg.enabled {
+                enabled += 1;
+            }
+        }
+    }
+
+    for cfg in config_agents {
+        let key = cfg.name.to_ascii_lowercase();
+        if code_core::agent_defaults::agent_model_spec(&key).is_some() {
+            continue;
+        }
+        total += 1;
+        if cfg.enabled {
+            enabled += 1;
+        }
+    }
+
+    (enabled, total)
+}
+
+#[cfg(test)]
+mod agent_summary_counts_tests {
+    use super::agent_summary_counts;
+    use code_core::config_types::AgentConfig;
+
+    fn make_agent(name: &str, enabled: bool) -> AgentConfig {
+        AgentConfig {
+            name: name.to_string(),
+            command: name.to_string(),
+            args: Vec::new(),
+            read_only: false,
+            enabled,
+            description: None,
+            env: None,
+            args_read_only: None,
+            args_write: None,
+            instructions: None,
+        }
+    }
+
+    #[test]
+    fn missing_builtins_default_to_disabled() {
+        let agents = vec![
+            make_agent("code-gpt-5.1-codex-max", true),
+            make_agent("code-gpt-5.1", true),
+        ];
+
+        let (enabled, total) = agent_summary_counts(&agents);
+        let builtins = code_core::agent_defaults::agent_model_specs().len();
+
+        assert_eq!(enabled, 2);
+        assert_eq!(total, builtins);
+    }
+
+    #[test]
+    fn custom_agents_are_counted() {
+        let agents = vec![
+            make_agent("code-gpt-5.1-codex-max", true),
+            make_agent("my-custom-agent", false),
+        ];
+
+        let (enabled, total) = agent_summary_counts(&agents);
+        let builtins = code_core::agent_defaults::agent_model_specs().len();
+
+        assert_eq!(enabled, 1);
+        assert_eq!(total, builtins + 1);
+    }
+}
+
 use self::agent_install::{
     start_agent_install_session,
     start_direct_terminal_session,
@@ -18177,6 +18262,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 Some(cfg.command.as_str()),
                 Some(cfg.command.as_str()),
             );
+            let builtin = Self::is_builtin_agent(&cfg.name, &cfg_command);
             let description = Self::agent_description_for(
                 &cfg.name,
                 Some(&cfg_command),
@@ -18191,6 +18277,7 @@ Have we met every part of this goal and is there no further work to do?"#
                     cfg_instructions.clone(),
                     description.clone(),
                     cfg_command.clone(),
+                    builtin,
                     app_event_tx.clone(),
                 )
             };
@@ -18211,6 +18298,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 code_core::agent_defaults::default_params_for(&name, false /*read_only*/);
             let app_event_tx = self.app_event_tx.clone();
             let description = Self::agent_description_for(&name, Some(&cmd), None);
+            let builtin = Self::is_builtin_agent(&name, &cmd);
             let build_editor = || {
                 AgentEditorView::new(
                     name.clone(),
@@ -18220,6 +18308,7 @@ Have we met every part of this goal and is there no further work to do?"#
                     None,
                     description.clone(),
                     cmd.clone(),
+                    builtin,
                     app_event_tx.clone(),
                 )
             };
@@ -18246,6 +18335,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 None,
                 None,
                 String::new(),
+                false,
                 app_event_tx.clone(),
             )
         };
@@ -18462,6 +18552,7 @@ Have we met every part of this goal and is there no further work to do?"#
         let instructions = cfg.instructions.clone();
         let description = cfg.description.clone();
         let command = cfg.command.clone();
+        let builtin = Self::is_builtin_agent(&cfg.name, &command);
         let build_editor = || {
             AgentEditorView::new(
                 name_value.clone(),
@@ -18471,6 +18562,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 instructions.clone(),
                 description.clone(),
                 command.clone(),
+                builtin,
                 app_event_tx.clone(),
             )
         };
@@ -19924,6 +20016,21 @@ Have we met every part of this goal and is there no further work to do?"#
         Some(McpSettingsContent::new(view))
     }
 
+    fn is_builtin_agent(name: &str, command: &str) -> bool {
+        if let Some(spec) = agent_model_spec(name).or_else(|| agent_model_spec(command)) {
+            return matches!(spec.family, "code" | "codex" | "cloud");
+        }
+
+        name.eq_ignore_ascii_case("code")
+            || name.eq_ignore_ascii_case("codex")
+            || name.eq_ignore_ascii_case("cloud")
+            || name.eq_ignore_ascii_case("coder")
+            || command.eq_ignore_ascii_case("code")
+            || command.eq_ignore_ascii_case("codex")
+            || command.eq_ignore_ascii_case("cloud")
+            || command.eq_ignore_ascii_case("coder")
+    }
+
     fn collect_agents_overview_rows(&self) -> (Vec<AgentOverviewRow>, Vec<String>) {
         fn command_exists(cmd: &str) -> bool {
             if cmd.contains(std::path::MAIN_SEPARATOR) || cmd.contains('/') || cmd.contains('\\') {
@@ -19963,21 +20070,6 @@ Have we met every part of this goal and is there no further work to do?"#
             }
         }
 
-        fn is_builtin_agent(name: &str, command: &str) -> bool {
-            if let Some(spec) = agent_model_spec(name).or_else(|| agent_model_spec(command)) {
-                return matches!(spec.family, "code" | "codex" | "cloud");
-            }
-
-            name.eq_ignore_ascii_case("code")
-                || name.eq_ignore_ascii_case("codex")
-                || name.eq_ignore_ascii_case("cloud")
-                || name.eq_ignore_ascii_case("coder")
-                || command.eq_ignore_ascii_case("code")
-                || command.eq_ignore_ascii_case("codex")
-                || command.eq_ignore_ascii_case("cloud")
-                || command.eq_ignore_ascii_case("coder")
-        }
-
         let mut agent_rows: Vec<AgentOverviewRow> = Vec::new();
         let mut ordered: Vec<String> = enabled_agent_model_specs()
             .into_iter()
@@ -20012,7 +20104,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 .iter()
                 .find(|a| a.name.eq_ignore_ascii_case(name))
             {
-                let builtin = is_builtin_agent(&cfg.name, &cfg.command);
+                let builtin = Self::is_builtin_agent(&cfg.name, &cfg.command);
                     let spec_cli = agent_model_spec(&cfg.name)
                         .or_else(|| agent_model_spec(&cfg.command))
                         .map(|spec| spec.cli);
@@ -20037,7 +20129,7 @@ Have we met every part of this goal and is there no further work to do?"#
                     ),
                 });
             } else if let Some(cfg) = pending_agents.get(&name_lower) {
-                let builtin = is_builtin_agent(&cfg.name, &cfg.command);
+                let builtin = Self::is_builtin_agent(&cfg.name, &cfg.command);
                 let spec_cli = agent_model_spec(&cfg.name)
                     .or_else(|| agent_model_spec(&cfg.command))
                     .map(|spec| spec.cli);
@@ -20063,7 +20155,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 });
             } else {
                 let cmd = name.clone();
-                let builtin = is_builtin_agent(name, &cmd);
+                let builtin = Self::is_builtin_agent(name, &cmd);
                 let spec_cli = agent_model_spec(name).map(|spec| spec.cli);
                 let installed = if builtin {
                     true
@@ -20242,13 +20334,7 @@ Have we met every part of this goal and is there no further work to do?"#
     }
 
     fn settings_summary_agents(&self) -> Option<String> {
-        let total = self.config.agents.len();
-        let enabled = self
-            .config
-            .agents
-            .iter()
-            .filter(|agent| agent.enabled)
-            .count();
+        let (enabled, total) = agent_summary_counts(&self.config.agents);
         let commands = self.config.subagent_commands.len();
         let mut parts = vec![format!("Enabled: {}/{}", enabled, total)];
         if commands > 0 {
