@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.5.13] - 2025-11-27
+
+- CLI: bump the npm package and platform binaries to 0.5.13 so installs grab the latest build. (285c8ca7)
+- CI: add a placeholder rust-ci workflow so required checks stay green during migration. (6d6ee6cf)
+
 ## [0.5.12] - 2025-11-27
 
 - CLI: bump npm metadata to 0.5.12 so fresh installs pull the latest binaries. (9f79140)
