@@ -29,7 +29,56 @@ fn default_pathext_or_default() -> Vec<String> {
                 .map(|s| s.to_ascii_lowercase())
                 .collect()
         })
-        .unwrap_or_else(|| vec![".com".into(), ".exe".into(), ".bat".into(), ".cmd".into()])
+        // Keep a sane default set even if PATHEXT is missing or empty. Include
+        // .ps1 because PowerShell users can invoke scripts without specifying
+        // the extension; CreateProcess still resolves fine when we provide the
+        // full path with extension.
+        .unwrap_or_else(|| vec![
+            ".com".into(),
+            ".exe".into(),
+            ".bat".into(),
+            ".cmd".into(),
+            ".ps1".into(),
+        ])
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_in_path(command: &str) -> Option<std::path::PathBuf> {
+    use std::path::Path;
+
+    let cmd_path = Path::new(command);
+
+    // Absolute or contains separators: respect it directly if it points to a file.
+    if cmd_path.is_absolute() || command.contains(['\\', '/']) {
+        if cmd_path.is_file() {
+            return Some(cmd_path.to_path_buf());
+        }
+    }
+
+    // Search PATH with PATHEXT semantics and return the first hit.
+    let exts = default_pathext_or_default();
+    let Some(path_os) = std::env::var_os("PATH") else { return None; };
+    let has_ext = cmd_path.extension().is_some();
+    for dir in std::env::split_paths(&path_os) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        if has_ext {
+            let candidate = dir.join(command);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        } else {
+            for ext in &exts {
+                let candidate = dir.join(format!("{command}{ext}"));
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+
+    None
 }
 
 use crate::agent_defaults::{agent_model_spec, default_params_for};
@@ -1077,30 +1126,23 @@ fn command_exists(cmd: &str) -> bool {
         }
     } else {
         // Read-only path: use prior behavior
+        // On Windows, proactively resolve the command to an absolute path so
+        // we bypass PATHEXT quirks (e.g., missing PATHEXT or PowerShell-only
+        // shims). This mirrors the write-path resolver above.
+        #[cfg(target_os = "windows")]
+        if let Some(resolved) = resolve_in_path(&command_for_spawn) {
+            cmd = Command::new(resolved);
+        }
+
         cmd.args(final_args.clone());
         match cmd.output().await {
             Ok(o) => o,
             Err(e) => {
-                // Only fall back for external CLIs (not the built-in code/codex path)
-                if family == "codex" || family == "code" {
-                    return Err(format!("Failed to execute {}: {}", model, e));
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    return Err(format_agent_not_found_error(&command, &command_for_spawn));
                 }
-                let mut fb = match current_code_binary_path() {
-                    Ok(p) => Command::new(p),
-                    Err(e2) => {
-                        return Err(format!(
-                            "Failed to execute {} and could not resolve built-in fallback: {} / {}",
-                            model, e, e2
-                        ))
-                    }
-                };
-                fb.args(final_args.clone());
-                fb.output().await.map_err(|e2| {
-                    format!(
-                        "Failed to execute {} ({}). Built-in fallback also failed: {}",
-                        model, e, e2
-                    )
-                })?
+
+                return Err(format!("Failed to execute {}: {}", model, e));
             }
         }
     };
@@ -1173,10 +1215,17 @@ pub(crate) fn should_use_current_exe_for_agent(
 
 fn resolve_program_path(use_current_exe: bool, command_for_spawn: &str) -> Result<std::path::PathBuf, String> {
     if use_current_exe {
-        current_code_binary_path()
-    } else {
-        Ok(std::path::PathBuf::from(command_for_spawn))
+        return current_code_binary_path();
     }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(p) = resolve_in_path(command_for_spawn) {
+            return Ok(p);
+        }
+    }
+
+    Ok(std::path::PathBuf::from(command_for_spawn))
 }
 
 fn strip_model_flags(args: &mut Vec<String>) {
