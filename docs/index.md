@@ -1,6 +1,6 @@
 # Codex Documentation
 
-Use these docs to install, configure, and operate Codex. Internal plans and work-in-progress notes live in `docs/archive/`.
+Use these docs to install, configure, and operate Codex.
 
 ## Start Here
 - [Getting started](getting-started.md)
