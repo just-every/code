@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.5.12] - 2025-11-27
+
+- CLI: bump npm metadata to 0.5.12 so fresh installs pull the latest binaries. (9f79140)
+- CI: drop the redundant CodeQL workflow to stop conflicting security scans. (ff71e00)
+
 ## [0.5.10] - 2025-11-27
 
 - CLI: bump the npm package metadata to 0.5.10 so installs pick up the latest build. (16b47ef)
