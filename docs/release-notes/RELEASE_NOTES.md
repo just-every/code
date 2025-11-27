@@ -1,15 +1,17 @@
-## @just-every/code v0.5.10
+## @just-every/code v0.5.12
 
-Another small maintenance release that keeps the CLI aligned with the latest package metadata and maintains security coverage in CI.
+Last-minute polish ahead of the 0.5.12 release.
 
 ### Changes
-- CLI: bump the npm package metadata to 0.5.10 so installs pick up the latest build.
-- CI: add a Ruby-free CodeQL workflow to keep security scanning enabled without extra dependencies.
+
+- CLI: bump npm metadata to 0.5.12 so fresh installs pull the latest binaries.
+- CI: drop the redundant CodeQL workflow to stop conflicting security scans.
 
 ### Install
+
 ```
 npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.5.9...v0.5.10
+Compare: https://github.com/just-every/code/compare/v0.5.11...v0.5.12
