@@ -12,9 +12,9 @@ Save frequently used prompts as Markdown files and reuse them quickly from the s
   - `$$` is preserved literally
   - Quoted args: Wrap a single argument in double quotes to include spaces, e.g. `/review "docs/My File.md"`.
 - How to use:
-  - Start a new session (Codex loads custom prompts on session start).
+  - Start a new session (Code loads custom prompts on session start).
   - In the composer, type `/` to open the slash popup and begin typing your prompt name.
   - Use Up/Down to select it. Press Enter to submit its contents, or Tab to autocomplete the name.
 - Notes:
   - Files with names that collide with built‑in commands (e.g. `/init`) are ignored and won’t appear.
-  - New or changed files are discovered on session start. If you add a new prompt while Codex is running, start a new session to pick it up.
+  - New or changed files are discovered on session start. If you add a new prompt while Code is running, start a new session to pick it up.

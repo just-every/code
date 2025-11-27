@@ -2,25 +2,25 @@
 
 ### OpenAI released a model called Codex in 2021 - is this related?
 
-In 2021, OpenAI released Codex, an AI system designed to generate code from natural language prompts. That original Codex model was deprecated as of March 2023 and is separate from the CLI tool.
+Only by name. The 2021 Codex model was deprecated in March 2023. Every Code is a community fork of the `openai/codex` CLI and continues to evolve separately.
 
 ### Which models are supported?
 
-We recommend using Codex with GPT-5, our best coding model. The default reasoning level is medium, and you can upgrade to high for complex tasks with the `/model` command.
+We recommend the built-in Code presets that wrap GPT-5.1 (for example `code-gpt-5.1-codex-max`). The default reasoning level is medium, and you can upgrade to high for complex tasks with `/model`.
 
-You can also use older models by using API-based auth and launching codex with the `--model` flag.
+You can also use older models by using API-based auth and launching Code with the `--model` flag.
 
 ### Why does `o3` or `o4-mini` not work for me?
 
 It's possible that your [API account needs to be verified](https://help.openai.com/en/articles/10910291-api-organization-verification) in order to start streaming responses and seeing chain of thought summaries from the API. If you're still running into issues, please let us know!
 
-### How do I stop Codex from editing my files?
+### How do I stop Code from editing my files?
 
-By default, Codex can modify files in your current working directory (Auto mode). To prevent edits, run `codex` in read-only mode with the CLI flag `--sandbox read-only`. Alternatively, you can change the approval level mid-conversation with `/approvals`.
+By default, Code can modify files in your current working directory (Auto mode). To prevent edits, run `code` in read-only mode with the CLI flag `--sandbox read-only`. Alternatively, you can change the approval level mid-conversation with `/approvals`.
 
 ### Does it work on Windows?
 
-Running Codex directly on Windows may work, but is not officially supported. We recommend using [Windows Subsystem for Linux (WSL2)](https://learn.microsoft.com/en-us/windows/wsl/install).
+Running Code directly on Windows may work, but is not officially supported. We recommend using [Windows Subsystem for Linux (WSL2)](https://learn.microsoft.com/en-us/windows/wsl/install).
 
 ### Why can't Code find my agents on Windows?
 

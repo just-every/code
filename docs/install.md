@@ -10,31 +10,25 @@
 
 ### DotSlash
 
-The GitHub Release also contains a [DotSlash](https://dotslash-cli.com/) file for the Codex CLI named `codex`. Using a DotSlash file makes it possible to make a lightweight commit to source control to ensure all contributors use the same version of an executable, regardless of what platform they use for development.
+GitHub Releases also contain a [DotSlash](https://dotslash-cli.com/) shim named `code`. Checking the DotSlash file into your repo pins contributors to the same binary across platforms.
 
 ### Build from source
 
 ```bash
-# Clone the repository and navigate to the root of the Cargo workspace.
-git clone https://github.com/openai/codex.git
-cd codex/code-rs
+# Clone the repository and navigate to the workspace root.
+git clone https://github.com/just-every/code.git
+cd code
 
 # Install the Rust toolchain, if necessary.
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
-rustup component add rustfmt
-rustup component add clippy
 
-# Build Code.
-cargo build
+# Build everything (CLI, TUI, MCP servers). This is the same check CI runs.
+./build-fast.sh
 
 # Launch the TUI with a sample prompt.
-cargo run --bin code -- "explain this codebase to me"
+./target/debug/code -- "explain this codebase to me"
+```
 
-# After making changes, ensure the code is clean.
-cargo fmt -- --config imports_granularity=Item
-cargo clippy --tests
-
-# Run the tests.
-cargo test
-``` 
+> [!NOTE]
+> The project treats compiler warnings as errors. The only required local check is `./build-fast.sh`; skip `rustfmt`/`clippy` unless asked.

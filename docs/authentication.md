@@ -11,7 +11,7 @@ export OPENAI_API_KEY="your-api-key-here"
 Alternatively, read from a file:
 
 ```shell
-codex login --with-api-key < my_key.txt
+code login --with-api-key < my_key.txt
 ```
 
 The legacy `--api-key` flag now exits with an error instructing you to use `--with-api-key` so that the key never appears in shell history or process listings.
@@ -20,15 +20,15 @@ This key must, at minimum, have write access to the Responses API.
 
 ## Migrating to ChatGPT login from API key
 
-If you've used the Codex CLI before with usage-based billing via an API key and want to switch to using your ChatGPT plan, follow these steps:
+If you've used the Code CLI before with usage-based billing via an API key and want to switch to using your ChatGPT plan, follow these steps:
 
-1. Update the CLI and ensure `codex --version` is `0.20.0` or later
+1. Update the CLI and ensure `code --version` is `0.5.0` or later
 2. Delete `~/.code/auth.json` (and remove the legacy `~/.codex/auth.json` if it exists; on Windows these live under `C:\\Users\\USERNAME\\.code\\auth.json` and `C:\\Users\\USERNAME\\.codex\\auth.json`)
-3. Run `codex login` again
+3. Run `code login` again
 
 ## Forcing a specific auth method (advanced)
 
-You can explicitly choose which authentication Codex should prefer when both are available.
+You can explicitly choose which authentication Code should prefer when both are available.
 
 - To always use your API key (even when ChatGPT auth exists), set:
 
@@ -40,7 +40,7 @@ preferred_auth_method = "apikey"
 Or override ad-hoc via CLI:
 
 ```bash
-codex --config preferred_auth_method="apikey"
+code --config preferred_auth_method="apikey"
 ```
 
 - To prefer ChatGPT auth (default), set:
@@ -53,14 +53,14 @@ preferred_auth_method = "chatgpt"
 Notes:
 
 - When `preferred_auth_method = "apikey"` and an API key is available, the login screen is skipped.
-- When `preferred_auth_method = "chatgpt"` (default), Codex prefers ChatGPT auth if present; if only an API key is present, it will use the API key. Certain account types may also require API-key mode.
+- When `preferred_auth_method = "chatgpt"` (default), Code prefers ChatGPT auth if present; if only an API key is present, it will use the API key. Certain account types may also require API-key mode.
 - To check which auth method is being used during a session, use the `/status` command in the TUI.
 
 ## Project .env safety (OPENAI_API_KEY)
 
-By default, Codex will no longer read `OPENAI_API_KEY` or `AZURE_OPENAI_API_KEY` from a project’s local `.env` file.
+By default, Code will no longer read `OPENAI_API_KEY` or `AZURE_OPENAI_API_KEY` from a project’s local `.env` file.
 
-Why: many repos include an API key in `.env` for unrelated tooling, which could cause Codex to silently use the API key instead of your ChatGPT plan in that folder.
+Why: many repos include an API key in `.env` for unrelated tooling, which could cause Code to silently use the API key instead of your ChatGPT plan in that folder.
 
 What still works:
 
@@ -71,7 +71,7 @@ Project `.env` provider keys are always ignored — there is no opt‑in.
 
 UI clarity:
 
-- When Codex is using an API key, the chat footer shows a bold “Auth: API key” badge so it’s obvious which mode you’re in.
+- When Code is using an API key, the chat footer shows a bold “Auth: API key” badge so it’s obvious which mode you’re in.
 
 ## Connecting on a "Headless" Machine
 
@@ -79,9 +79,9 @@ Today, the login process entails running a server on `localhost:1455`. If you ar
 
 ### Authenticate locally and copy your credentials to the "headless" machine
 
-The easiest solution is likely to run through the `codex login` process on your local machine such that `localhost:1455` _is_ accessible in your web browser. When you complete the authentication process, an `auth.json` file should be available at `$CODE_HOME/auth.json` (defaults to `~/.code/auth.json`; Code will still read `$CODEX_HOME`/`~/.codex/auth.json` if present).
+The easiest solution is likely to run through the `code login` process on your local machine such that `localhost:1455` _is_ accessible in your web browser. When you complete the authentication process, an `auth.json` file should be available at `$CODE_HOME/auth.json` (defaults to `~/.code/auth.json`; Code will still read `$CODEX_HOME`/`~/.codex/auth.json` if present).
 
-Because the `auth.json` file is not tied to a specific host, once you complete the authentication flow locally, you can copy the `$CODEX_HOME/auth.json` file to the headless machine and then `codex` should "just work" on that machine. Note to copy a file to a Docker container, you can do:
+Because the `auth.json` file is not tied to a specific host, once you complete the authentication flow locally, you can copy the `$CODE_HOME/auth.json` file to the headless machine and then `code` should "just work" on that machine. Note to copy a file to a Docker container, you can do:
 
 ```shell
 # substitute MY_CONTAINER with the name or id of your Docker container:
@@ -105,11 +105,11 @@ ssh user@remote 'mkdir -p ~/.code && cat > ~/.code/auth.json' < ~/.code/auth.jso
 
 ### Connecting through VPS or remote
 
-If you run Codex on a remote machine (VPS/server) without a local browser, the login helper starts a server on `localhost:1455` on the remote host. To complete login in your local browser, forward that port to your machine before starting the login flow:
+If you run Code on a remote machine (VPS/server) without a local browser, the login helper starts a server on `localhost:1455` on the remote host. To complete login in your local browser, forward that port to your machine before starting the login flow:
 
 ```bash
 # From your local machine
 ssh -L 1455:localhost:1455 <user>@<remote-host>
 ```
 
-Then, in that SSH session, run `codex` and select "Sign in with ChatGPT". When prompted, open the printed URL (it will be `http://localhost:1455/...`) in your local browser. The traffic will be tunneled to the remote server.
+Then, in that SSH session, run `code` and select "Sign in with ChatGPT". When prompted, open the printed URL (it will be `http://localhost:1455/...`) in your local browser. The traffic will be tunneled to the remote server.

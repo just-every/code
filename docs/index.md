@@ -1,6 +1,6 @@
-# Codex Documentation
+# Every Code Documentation
 
-Use these docs to install, configure, and operate Codex.
+Use these docs to install, configure, and operate Every Code (Code).
 
 ## Start Here
 - [Getting started](getting-started.md)
@@ -8,7 +8,7 @@ Use these docs to install, configure, and operate Codex.
 - [Authentication](authentication.md)
 - [FAQ](faq.md)
 
-## Using Codex
+## Using Code
 - [Executing commands](exec.md)
 - [Execution policy](execpolicy.md)
 - [Slash commands](slash-commands.md)
