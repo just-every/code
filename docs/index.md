@@ -14,15 +14,10 @@ Use these docs to install, configure, and operate Codex. Internal plans and work
 - [Slash commands](slash-commands.md)
 - [Prompts](prompts.md)
 - [Advanced usage](advanced.md)
+- [Zed integration](integration-zed.md)
 
 ## Configuration & Security
 - [Configuration](config.md)
 - [Sandboxing overview](sandbox.md)
 - [Platform sandboxing](platform-sandboxing.md)
 - [Windows sandbox security](platform-sandboxing.md#windows)
-
-## Integrations
-- [Zed integration](integration-zed.md)
-## Visuals
-- Logos: `images/logo.png`, `images/every-logo.png`
-- UI screenshots: `images/`
