@@ -2538,7 +2538,14 @@ impl Config {
             .auto_drive
             .clone()
             .or_else(|| cfg.tui.as_ref().and_then(|t| t.auto_drive.clone()))
-            .unwrap_or_default();
+            .unwrap_or_else(|| {
+                let mut defaults = AutoDriveSettings::default();
+                if using_chatgpt_auth {
+                    defaults.model = GPT_5_CODEX_MEDIUM_MODEL.to_string();
+                    defaults.model_reasoning_effort = ReasoningEffort::XHigh;
+                }
+                defaults
+            });
         if auto_drive_use_chat_model {
             auto_drive.model = model.clone();
             auto_drive.model_reasoning_effort = chat_reasoning_effort;
