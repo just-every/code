@@ -452,7 +452,6 @@
 
 ## [0.2.137] - 2025-09-12
 
-- Dev: add `scripts/test-responses.js` to probe Responses API with ChatGPT/API key auth; includes schema/tools/store tests. (79c69f96)
 - Proxy: default Responses v1; fail-fast on 5xx; add STRICT_HEADERS and RESPONSES_BETA override. (acfaeb7d, 1ddedb8b)
 
 ## [0.2.133] - 2025-09-12
