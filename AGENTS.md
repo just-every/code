@@ -22,6 +22,13 @@ Optional regression checks (recommended when touching the Rust workspace):
 
 When debugging regressions or bugs, write a failing test (or targeted reproduction script) first and confirm it captures the issue before touching code—if it can’t fail, you can’t be confident the fix works.
 
+## Documentation hygiene
+
+- Keep docs clean, clear, and current; prune stale instructions instead of piling on caveats.
+- Avoid excessive verbosity; prioritize concise guidance over long narratives.
+- Do not document minor or non-core features; focus on system-critical flows and expectations.
+- Never commit temporary "working" docs, plans, or scratch notes.
+
 ## Strict Ordering In The TUI History
 
 The TUI enforces strict, per‑turn ordering for all streamed content. Every
