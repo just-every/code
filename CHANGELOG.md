@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.5.9] - 2025-11-27
+
+- Auto Drive: prefer codex max by default for ChatGPT automation so complex runs start with maximum capacity. (c1bbe60)
+- Agents: run code-family agents with the currently installed binary to eliminate version drift mid-execution. (e0a332b9)
+- Compaction: add an emergency fallback when trimming exceeds budget so long sessions keep progressing. (7575d33)
+- Docs: ship refreshed Auto Drive, agents, settings, and CLI guides aligned with the Every Code rebrand. (e21c1aa, 1bb03d7)
+
 ## [0.5.8] - 2025-11-26
 
 - Docs: publish the new CLAUDE guidance and move working references into docs/working for quicker updates. (da89924b)
