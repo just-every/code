@@ -2,7 +2,7 @@
 
 &ensp;
 
-<img src="docs/every-logo.png" alt="Every Code Logo" width="400">
+<img src="docs/images/every-logo.png" alt="Every Code Logo" width="400">
 
 &ensp;
 
