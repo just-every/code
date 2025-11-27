@@ -1181,6 +1181,7 @@ dependencies = [
  "filetime",
  "fs2",
  "futures",
+ "futures-util",
  "htmd",
  "httpdate",
  "img_hash",
@@ -1213,7 +1214,9 @@ dependencies = [
  "thiserror 2.0.17",
  "time",
  "tokio",
+ "tokio-stream",
  "tokio-test",
+ "tokio-tungstenite",
  "tokio-util",
  "toml 0.9.8",
  "toml_edit 0.23.7",
@@ -2948,7 +2951,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
- "webpki-roots",
+ "webpki-roots 1.0.3",
 ]
 
 [[package]]
@@ -5143,7 +5146,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams",
  "web-sys",
- "webpki-roots",
+ "webpki-roots 1.0.3",
 ]
 
 [[package]]
@@ -6581,6 +6584,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-tungstenite"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6989540ced10490aaf14e6bad2e3d33728a2813310a0c71d1574304c49631cd"
+dependencies = [
+ "futures-util",
+ "log",
+ "rustls",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls",
+ "tungstenite",
+ "webpki-roots 0.26.11",
+]
+
+[[package]]
 name = "tokio-util"
 version = "0.7.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6957,6 +6976,8 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.8.5",
+ "rustls",
+ "rustls-pki-types",
  "sha1",
  "thiserror 1.0.69",
  "utf-8",
@@ -7328,6 +7349,15 @@ dependencies = [
  "objc2-foundation",
  "url",
  "web-sys",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "0.26.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
+dependencies = [
+ "webpki-roots 1.0.3",
 ]
 
 [[package]]

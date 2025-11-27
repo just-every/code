@@ -22,6 +22,7 @@ use async_channel::Sender;
 use base64::Engine;
 use code_apply_patch::ApplyPatchAction;
 use code_apply_patch::MaybeApplyPatchVerified;
+use crate::bridge_client::spawn_bridge_listener;
 use code_browser::BrowserConfig as CodexBrowserConfig;
 use code_browser::BrowserManager;
 use code_otel::otel_event_manager::{
@@ -1494,6 +1495,15 @@ impl Session {
 
     pub(crate) fn get_cwd(&self) -> &Path {
         &self.cwd
+    }
+
+    pub(crate) async fn record_bridge_event(&self, text: String) {
+        let message = ResponseItem::Message {
+            id: None,
+            role: "developer".to_string(),
+            content: vec![ContentItem::InputText { text }],
+        };
+        self.record_conversation_items(&[message]).await;
     }
 
     pub(crate) fn get_sandbox_policy(&self) -> &SandboxPolicy {
@@ -4655,6 +4665,7 @@ async fn submission_loop(
                 }
 
                 if let Some(sess_arc) = &sess {
+                    spawn_bridge_listener(sess_arc.clone());
                     sess_arc.run_session_hooks(ProjectHookEvent::SessionStart).await;
                 }
 

@@ -36,6 +36,7 @@ env-flags = { workspace = true }
 encoding_rs = { workspace = true }
 eventsource-stream = { workspace = true }
 futures = { workspace = true }
+futures-util = "0.3"
 indexmap = { workspace = true }
 lazy_static = { workspace = true }
 libc = { workspace = true }
@@ -75,7 +76,9 @@ tokio = { workspace = true, features = [
     "rt-multi-thread",
     "signal",
 ] }
+tokio-tungstenite = { version = "0.23", features = ["rustls-tls-webpki-roots"] }
 tokio-util = { workspace = true }
+tokio-stream = { workspace = true }
 toml = { workspace = true }
 toml_edit = { workspace = true }
 tracing = { workspace = true, features = ["log"] }

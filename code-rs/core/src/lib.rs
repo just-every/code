@@ -15,6 +15,7 @@ mod client;
 mod client_common;
 pub mod codex;
 mod code_conversation;
+mod bridge_client;
 pub mod token_data;
 pub use code_conversation::CodexConversation;
 mod command_safety;
