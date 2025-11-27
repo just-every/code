@@ -64,6 +64,10 @@ code-rs/bin/
 /npm-binaries/
 /.github/auto/
 
+# Homebrew formula staging (generated)
+Formula/Code.rb
+homebrew-tap/Formula/Code.rb
+
 # Local GitHub Actions runners and caches
 .act/
 actions-runner/
