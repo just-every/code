@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.5.10] - 2025-11-27
+
+- CLI: bump the npm package metadata to 0.5.10 so installs pick up the latest build. (16b47ef)
+- CI: add a Ruby-free CodeQL workflow to keep security scanning enabled without extra dependencies. (ae6a8d3)
+
 ## [0.5.8] - 2025-11-26
 
 - Docs: publish the new CLAUDE guidance and move working references into docs/working for quicker updates. (da89924b)
