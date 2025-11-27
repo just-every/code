@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 
-notes_file="${REPO_ROOT}/release-notes/RELEASE_NOTES.md"
+notes_file="${REPO_ROOT}/docs/release-notes/RELEASE_NOTES.md"
 pkg_json="${REPO_ROOT}/codex-cli/package.json"
 
 if [ ! -f "$notes_file" ]; then

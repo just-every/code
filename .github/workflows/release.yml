@@ -14,7 +14,7 @@ on:
       - 'test/**'
       - '*.md'
       - 'CHANGELOG.md'
-      - 'release-notes/**'
+      - 'docs/release-notes/**'
       - 'codex-cli/package.json'
 
 concurrency:
@@ -657,7 +657,7 @@ jobs:
       # It will:
       #  - Review changes between the previous tag and the new version
       #  - Update CHANGELOG.md with a new section for vNEW_VERSION
-      #  - Write rich release notes to release-notes/RELEASE_NOTES.md
+      #  - Write rich release notes to docs/release-notes/RELEASE_NOTES.md
       - name: Install zstd (CHANGELOG generation)
         if: runner.os == 'Linux' && env.OPENAI_API_KEY != ''
         shell: bash
@@ -685,16 +685,16 @@ jobs:
           echo "Previous tag: ${PREV_TAG:-<none>}"
           echo "Range: $RANGE"
 
-          if [ -f CHANGELOG.md ] && [ -f release-notes/RELEASE_NOTES.md ] \
+          if [ -f CHANGELOG.md ] && [ -f docs/release-notes/RELEASE_NOTES.md ] \
              && grep -qF "## [${NEW_VERSION}]" CHANGELOG.md 2>/dev/null \
-             && grep -qF "## @just-every/code v${NEW_VERSION}" release-notes/RELEASE_NOTES.md 2>/dev/null; then
-            echo "CHANGELOG.md and release-notes/RELEASE_NOTES.md already contain v${NEW_VERSION}; skipping regeneration."
+             && grep -qF "## @just-every/code v${NEW_VERSION}" docs/release-notes/RELEASE_NOTES.md 2>/dev/null; then
+            echo "CHANGELOG.md and docs/release-notes/RELEASE_NOTES.md already contain v${NEW_VERSION}; skipping regeneration."
             exit 0
           fi
 
           # Extract a Linux x86_64 Code binary from artifacts and make it runnable.
-          mkdir -p .code-bin release-notes
-          : > release-notes/RELEASE_NOTES.md
+          mkdir -p .code-bin docs/release-notes
+          : > docs/release-notes/RELEASE_NOTES.md
           LNX_ZST=$(ls -1 release-assets/code-x86_64-unknown-linux-musl.* 2>/dev/null | head -n1 || true)
           if [ -z "$LNX_ZST" ]; then
             echo "Could not find linux x86_64 Code artifact in release-assets/" >&2
@@ -714,11 +714,11 @@ jobs:
 
           # Prepare context for the model.
           DATE=$(date -u +%Y-%m-%d)
-          echo "# Commit log ($RANGE)" > release-notes/context.md
-          git log --no-color --format='* %h %s (%an)' --abbrev=8 --no-merges $RANGE >> release-notes/context.md || true
+          echo "# Commit log ($RANGE)" > docs/release-notes/context.md
+          git log --no-color --format='* %h %s (%an)' --abbrev=8 --no-merges $RANGE >> docs/release-notes/context.md || true
 
           # Build the task prompt (with variables expanded by bash).
-          cat > release-notes/prompt.expanded.txt <<PROMPT
+          cat > docs/release-notes/prompt.expanded.txt <<PROMPT
           You are Code running headless in CI to prepare a new release.
 
           Inputs
@@ -730,7 +730,7 @@ jobs:
 
           Primary Tasks
           1) Update CHANGELOG.md with a new entry for this version using the EXACT house style below.
-          2) Generate GitHub release notes at release-notes/RELEASE_NOTES.md (concise, user‑facing), derived from the same changes.
+          2) Generate GitHub release notes at docs/release-notes/RELEASE_NOTES.md (concise, user‑facing), derived from the same changes.
 
           CHANGELOG.md House Style (strict)
           - File header stays as-is ("Changelog"). Do not rewrite older sections.
@@ -745,7 +745,7 @@ jobs:
           - Do NOT add any extra headers inside the changelog entry; only bullets under the version header.
           - Idempotent: if a section for ${NEW_VERSION} already exists, replace only that section’s body with the newly generated bullets and keep the header intact.
 
-          Release Notes (release-notes/RELEASE_NOTES.md)
+          Release Notes (docs/release-notes/RELEASE_NOTES.md)
           - Write exactly these sections in order; include the optional Thanks section only when applicable:
             1) Title: ## @just-every/code v${NEW_VERSION}
             2) One brief intro sentence (1–2 lines max).
@@ -774,12 +774,12 @@ jobs:
 
           Context (git log excerpt follows):
           PROMPT
-          cat release-notes/context.md >> release-notes/prompt.expanded.txt
+          cat docs/release-notes/context.md >> docs/release-notes/prompt.expanded.txt
 
           # Run Code in fully automated exec mode against the repo root.
           # Note: the working-directory flag is `--cd` on the `exec` subcommand.
           OPENAI_BASE_URL="http://127.0.0.1:5058/v1" \
-          ./.code-bin/code exec --cd "$GITHUB_WORKSPACE" --full-auto --skip-git-repo-check < release-notes/prompt.expanded.txt | tee .github/auto/RELEASE_AGENT_OUT.txt || {
+          ./.code-bin/code exec --cd "$GITHUB_WORKSPACE" --full-auto --skip-git-repo-check < docs/release-notes/prompt.expanded.txt | tee .github/auto/RELEASE_AGENT_OUT.txt || {
             echo "Code exec returned non-zero; continuing to check for outputs..." >&2
           }
 
@@ -793,10 +793,10 @@ jobs:
           fi
 
           # Post-process: scrub upstream contributors from the Thanks section (e.g., usernames ending with -oai)
-          if [ -s release-notes/RELEASE_NOTES.md ]; then
+          if [ -s docs/release-notes/RELEASE_NOTES.md ]; then
             node - <<'JS'
             const fs = require('fs');
-            const p = 'release-notes/RELEASE_NOTES.md';
+            const p = 'docs/release-notes/RELEASE_NOTES.md';
             if (!fs.existsSync(p)) process.exit(0);
             const src = fs.readFileSync(p,'utf8');
             const lines = src.split(/\r?\n/);
@@ -832,16 +832,16 @@ jobs:
           fi
 
           # If the agent forgot to write release notes, synthesize a minimal one from CHANGELOG.
-          if [ ! -s release-notes/RELEASE_NOTES.md ]; then
-            awk -v v="${NEW_VERSION}" '/^## /{p=($2==("v"v)||$2==v)} p{print}' CHANGELOG.md > release-notes/RELEASE_NOTES.md || true
+          if [ ! -s docs/release-notes/RELEASE_NOTES.md ]; then
+            awk -v v="${NEW_VERSION}" '/^## /{p=($2==("v"v)||$2==v)} p{print}' CHANGELOG.md > docs/release-notes/RELEASE_NOTES.md || true
           fi
-          if [ ! -s release-notes/RELEASE_NOTES.md ]; then
-            printf "## @just-every/code v%s\n\nSee CHANGELOG.md for details." "${NEW_VERSION}" > release-notes/RELEASE_NOTES.md
+          if [ ! -s docs/release-notes/RELEASE_NOTES.md ]; then
+            printf "## @just-every/code v%s\n\nSee CHANGELOG.md for details." "${NEW_VERSION}" > docs/release-notes/RELEASE_NOTES.md
           fi
 
           # Commit CHANGELOG changes if any.
           if ! git diff --quiet -- CHANGELOG.md; then
-            git add CHANGELOG.md release-notes/RELEASE_NOTES.md || true
+            git add CHANGELOG.md docs/release-notes/RELEASE_NOTES.md || true
             git commit -m "docs(changelog): update for v${NEW_VERSION} [skip ci]" || true
           fi
 
@@ -855,7 +855,7 @@ jobs:
           for f in "${files[@]}"; do
             [ -z "$f" ] && continue
             case "$f" in
-              CHANGELOG.md|release-notes/RELEASE_NOTES.md) ;; # allowed
+              CHANGELOG.md|docs/release-notes/RELEASE_NOTES.md) ;; # allowed
               *) notes_only=false ;;
             esac
           done
@@ -874,18 +874,18 @@ jobs:
           NEW_VERSION: ${{ needs.determine-version.outputs.version }}
         run: |
           set -euo pipefail
-          mkdir -p release-notes
+          mkdir -p docs/release-notes
           if [ -f CHANGELOG.md ]; then
-            awk -v v="${NEW_VERSION}" '/^## /{p=($2==("v"v)||$2==v)} p{print}' CHANGELOG.md > release-notes/RELEASE_NOTES.md || true
+            awk -v v="${NEW_VERSION}" '/^## /{p=($2==("v"v)||$2==v)} p{print}' CHANGELOG.md > docs/release-notes/RELEASE_NOTES.md || true
           fi
-          if [ ! -s release-notes/RELEASE_NOTES.md ]; then
-            printf "## @just-every/code v%s\n\nSee CHANGELOG.md for details." "${NEW_VERSION}" > release-notes/RELEASE_NOTES.md
+          if [ ! -s docs/release-notes/RELEASE_NOTES.md ]; then
+            printf "## @just-every/code v%s\n\nSee CHANGELOG.md for details." "${NEW_VERSION}" > docs/release-notes/RELEASE_NOTES.md
           fi
 
       - name: Assert release notes exist
         shell: bash
         run: |
-          test -s release-notes/RELEASE_NOTES.md || { echo "release-notes/RELEASE_NOTES.md missing" >&2; exit 1; }
+          test -s docs/release-notes/RELEASE_NOTES.md || { echo "docs/release-notes/RELEASE_NOTES.md missing" >&2; exit 1; }
 
       - name: Check if we should publish
         id: should_publish
@@ -954,7 +954,7 @@ jobs:
         with:
           tag_name: v${{ steps.version.outputs.version }}
           name: Release v${{ steps.version.outputs.version }}
-          body_path: release-notes/RELEASE_NOTES.md
+          body_path: docs/release-notes/RELEASE_NOTES.md
           files: |
             release-assets/*
         env:

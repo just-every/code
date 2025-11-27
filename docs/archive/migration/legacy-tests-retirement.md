@@ -195,7 +195,7 @@ cargo run -p code-cli -- chat "read the file README.md and summarize it"
 cargo run -p code-cli -- chat "list files, then read the largest one"
 
 # Image tools (if applicable)
-cargo run -p code-cli -- chat "show me the image at docs/logo.png"
+cargo run -p code-cli -- chat "show me the image at docs/images/logo.png"
 ```
 
 **Expected:**

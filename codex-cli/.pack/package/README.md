@@ -20,7 +20,7 @@
 - **Turbocharged performance** – History rendering and streaming were optimized to stay smooth even during long multi-agent sessions.
 - **Smarter agents** – Mix and match orchestrator CLIs (Claude, Gemini, GPT-5, Qwen, and more) per `/plan`, `/code`, or `/solve` run.
 
-Read the full notes in `release-notes/RELEASE_NOTES.md`.
+Read the full notes in `docs/release-notes/RELEASE_NOTES.md`.
 
 &ensp;
 ## Why Every Code

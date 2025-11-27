@@ -19,7 +19,7 @@
 - **Turbocharged performance** – History rendering and streaming were optimized to stay smooth even during long multi-agent sessions.
 - **Smarter agents** – Mix and match orchestrator CLIs (Claude, Gemini, GPT-5, Qwen, and more) per `/plan`, `/code`, or `/solve` run.
 
-Read the full notes in `release-notes/RELEASE_NOTES.md`.
+Read the full notes in `docs/release-notes/RELEASE_NOTES.md`.
 
 &ensp;
 ## Why Every Code
@@ -38,7 +38,7 @@ Read the full notes in `release-notes/RELEASE_NOTES.md`.
 &ensp;
 <p align="center">
   <a href="https://youtu.be/UOASHZPruQk">
-    <img src="docs/screenshots/video-auto-drive-new-play.jpg" alt="Play Introducing Auto Drive video" width="100%">
+    <img src="docs/images/video-auto-drive-new-play.jpg" alt="Play Introducing Auto Drive video" width="100%">
   </a><br>
   <strong>Auto Drive Overview</strong>
 </p>
@@ -46,7 +46,7 @@ Read the full notes in `release-notes/RELEASE_NOTES.md`.
 &ensp;
 <p align="center">
   <a href="https://youtu.be/sV317OhiysQ">
-    <img src="docs/screenshots/video-v03-play.jpg" alt="Play Multi-Agent Support video" width="100%">
+    <img src="docs/images/video-v03-play.jpg" alt="Play Multi-Agent Support video" width="100%">
   </a><br>
   <strong>Multi-Agent Promo</strong>
 </p>
