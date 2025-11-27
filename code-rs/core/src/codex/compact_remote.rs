@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use super::compact::{
     is_context_overflow_error,
+    prune_orphan_tool_outputs,
     response_input_from_core_items,
     sanitize_items_for_compact,
     send_compaction_checkpoint_warning,
@@ -87,6 +88,8 @@ async fn run_remote_compact_task_inner(
     let max_retries = turn_context.client.get_provider().stream_max_retries();
     let mut retries = 0;
     let new_history = loop {
+        prune_orphan_tool_outputs(&mut turn_items);
+
         let mut prompt = Prompt::default();
         prompt.input = turn_items.clone();
         prompt.base_instructions_override = turn_context.base_instructions.clone();

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::AgentTask;
@@ -233,6 +234,8 @@ pub(super) async fn perform_compaction(
     // background maintenance task and should not affect rollout reconstruction.
 
     loop {
+        prune_orphan_tool_outputs(&mut turn_input);
+
         let mut prompt = Prompt::default();
         prompt.input = turn_input.clone();
         prompt.store = !sess.disable_response_storage;
@@ -661,6 +664,51 @@ pub fn sanitize_items_for_compact(items: Vec<ResponseItem>) -> Vec<ResponseItem>
             other => Some(other),
         })
         .collect()
+}
+
+/// Remove tool outputs that no longer have a matching tool call in the
+/// conversation slice. This can happen if earlier items are trimmed for
+/// context overflow, leaving orphaned outputs that will be rejected by the
+/// compact endpoint.
+pub fn prune_orphan_tool_outputs(items: &mut Vec<ResponseItem>) -> usize {
+    let mut seen_calls: HashSet<String> = HashSet::new();
+
+    for item in items.iter() {
+        match item {
+            ResponseItem::FunctionCall { call_id, .. }
+            | ResponseItem::CustomToolCall { call_id, .. } => {
+                seen_calls.insert(call_id.clone());
+            }
+            ResponseItem::LocalShellCall {
+                id,
+                call_id,
+                ..
+            } => {
+                if let Some(call_id) = call_id {
+                    seen_calls.insert(call_id.clone());
+                }
+                if let Some(id) = id {
+                    // Chat Completions flow sets only `id`; outputs use that value as call_id.
+                    seen_calls.insert(id.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let before = items.len();
+    items.retain(|item| match item {
+        ResponseItem::FunctionCallOutput { call_id, .. }
+        | ResponseItem::CustomToolCallOutput { call_id, .. } => seen_calls.contains(call_id),
+        _ => true,
+    });
+
+    let removed = before.saturating_sub(items.len());
+    if removed > 0 {
+        tracing::warn!("Dropping {removed} orphaned tool output(s) during compaction");
+    }
+
+    removed
 }
 
 fn compaction_checkpoint_warning_event() -> EventMsg {
