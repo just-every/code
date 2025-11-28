@@ -620,6 +620,7 @@ impl ChatComposer {
         };
         self.textarea.set_text(&text);
         self.textarea.set_cursor(0);
+        self.resync_popups();
         true
     }
 
@@ -970,12 +971,7 @@ impl ChatComposer {
             self.paste_burst.extend_enter_window(now);
 
             // Keep popups in sync just like the main path.
-            self.sync_command_popup();
-            if matches!(self.active_popup, ActivePopup::Command(_)) {
-                self.dismissed_file_popup_token = None;
-            } else {
-                self.sync_file_search_popup();
-            }
+            self.resync_popups();
 
             return (InputResult::None, true);
         }
@@ -1010,12 +1006,7 @@ impl ChatComposer {
         };
 
         // Update (or hide/show) popup after processing the key.
-        self.sync_command_popup();
-        if matches!(self.active_popup, ActivePopup::Command(_)) {
-            self.dismissed_file_popup_token = None;
-        } else {
-            self.sync_file_search_popup();
-        }
+        self.resync_popups();
 
         result
     }
@@ -1970,6 +1961,17 @@ impl ChatComposer {
         }
     }
 
+    /// Refresh popup state after a text change that didn't flow through the
+    /// main key-event path (e.g., history navigation or async fetches).
+    fn resync_popups(&mut self) {
+        self.sync_command_popup();
+        if matches!(self.active_popup, ActivePopup::Command(_)) {
+            self.dismissed_file_popup_token = None;
+        } else {
+            self.sync_file_search_popup();
+        }
+    }
+
     pub(crate) fn set_has_focus(&mut self, has_focus: bool) {
         self.has_focus = has_focus;
     }
@@ -1987,6 +1989,7 @@ impl ChatComposer {
         if let Some(text) = self.history.navigate_up(self.textarea.text(), &self.app_event_tx) {
             self.textarea.set_text(&text);
             self.textarea.set_cursor(0);
+            self.resync_popups();
         }
         true
     }
@@ -2002,6 +2005,7 @@ impl ChatComposer {
         if let Some(text) = self.history.navigate_down(&self.app_event_tx) {
             self.textarea.set_text(&text);
             self.textarea.set_cursor(0);
+            self.resync_popups();
         }
         true
     }
