@@ -4,6 +4,7 @@ use ratatui::layout::{Alignment, Rect, Margin};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
+use unicode_width::UnicodeWidthStr;
 
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
@@ -292,6 +293,68 @@ impl SubagentEditorView {
     pub(crate) fn handle_key_event_direct(&mut self, key_event: KeyEvent) -> bool {
         self.handle_key_event_internal(key_event)
     }
+
+    fn agent_lines(&self, max_width: u16) -> Vec<Line<'static>> {
+        let max_width = max_width.max(1) as usize;
+        let sel = |idx: usize| {
+            if self.field == idx {
+                Style::default()
+                    .bg(crate::colors::selection())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            }
+        };
+        let label = |idx: usize| {
+            if self.field == idx {
+                Style::default()
+                    .fg(crate::colors::primary())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            }
+        };
+
+        let mut spans: Vec<Span> = Vec::new();
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled("Agents:", label(2)));
+        spans.push(Span::raw("  "));
+
+        for (idx, a) in self.available_agents.iter().enumerate() {
+            let checked = if self.selected_agent_indices.contains(&idx) { "[x]" } else { "[ ]" };
+            let mut style = sel(2);
+            if self.field == 2 && idx == self.agent_cursor {
+                style = style.fg(crate::colors::primary()).add_modifier(Modifier::BOLD);
+            }
+            spans.push(Span::styled(format!("{} {}", checked, a), style));
+            spans.push(Span::raw("  "));
+        }
+
+        Self::wrap_spans(spans, max_width)
+    }
+
+    fn wrap_spans(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Line<'static>> {
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        let mut current: Vec<Span> = Vec::new();
+        let mut width: usize = 0;
+
+        for span in spans.into_iter() {
+            let span_width = UnicodeWidthStr::width(span.content.as_ref());
+            if !current.is_empty() && width + span_width > max_width {
+                lines.push(Line::from(current));
+                current = Vec::new();
+                width = 0;
+            }
+            current.push(span);
+            width = width.saturating_add(span_width);
+        }
+
+        if current.is_empty() {
+            current.push(Span::raw(""));
+        }
+        lines.push(Line::from(current));
+        lines
+    }
 }
 
 impl<'a> BottomPaneView<'a> for SubagentEditorView {
@@ -307,24 +370,21 @@ impl<'a> BottomPaneView<'a> for SubagentEditorView {
     }
 
     fn desired_height(&self, width: u16) -> u16 {
-        // Compute content width consistent with render: inner = width-2; content = inner-1
         let inner_w = width.saturating_sub(2);
         let content_w = inner_w.saturating_sub(1).max(10) as usize;
-        // Static rows (with spacing and title):
-        // top(1) + title(1) + spacer(1) + name box(3) + spacer(1) + mode(1) + spacer(1)
-        // + agents(1) + spacer(1) + orch box(dynamic) + spacer(1) + buttons(1) + bottom(1)
+        let agent_rows = self.agent_lines(content_w as u16).len() as u16;
         let name_box_h: u16 = 3;
-        // Orchestrator inner width accounts for borders (2) and left/right padding (2)
         let orch_inner_w = (content_w as u16).saturating_sub(4);
         let desired_orch_inner = self.orch_field.desired_height(orch_inner_w).max(1);
         let orch_box_h = desired_orch_inner.min(8).saturating_add(2).max(3);
+
         let base_rows: u16 = 1  // title
             + 1  // spacer after title
             + name_box_h
             + 1  // spacer
             + 1  // mode row
             + 1  // spacer before agents
-            + 1  // agents row
+            + agent_rows.max(1)
             + 1; // spacer before instructions box
         let rows_after_orch: u16 = 1  // spacer after instructions box
             + 1; // buttons row
@@ -374,25 +434,12 @@ impl<'a> BottomPaneView<'a> for SubagentEditorView {
             lines.push(Line::from(spans));
         }
 
-        // Agents selection with cursor highlight
-        let mut spans: Vec<Span> = Vec::new();
-        for (idx, a) in self.available_agents.iter().enumerate() {
-            let checked = if self.selected_agent_indices.contains(&idx) { "[x]" } else { "[ ]" };
-            let mut style = sel(2);
-            if self.field == 2 && idx == self.agent_cursor { style = style.fg(crate::colors::primary()).add_modifier(Modifier::BOLD); }
-            spans.push(Span::styled(format!("{} {}", checked, a), style));
-            spans.push(Span::raw("  "));
-        }
         // Spacer between inputs
         lines.push(Line::from(""));
         // Agents on the same line as label (left padding to align with boxed inputs)
         {
-            let mut line_spans: Vec<Span> = Vec::new();
-            line_spans.push(Span::raw(" "));
-            line_spans.push(Span::styled("Agents:", label(2)));
-            line_spans.push(Span::raw("  "));
-            line_spans.extend(spans);
-            lines.push(Line::from(line_spans));
+            let agent_lines = self.agent_lines(content_rect.width.saturating_sub(1));
+            lines.extend(agent_lines);
         }
 
         // Spacer between inputs
@@ -468,12 +515,13 @@ impl<'a> BottomPaneView<'a> for SubagentEditorView {
         name_block.render(name_box_rect, buf);
         self.name_field.render(name_padded, buf, self.field == 0);
 
-        // After name box + spacer + mode row + spacer + agents row + spacer
+        // After name box + spacer + mode row + spacer + agents rows + spacer
         y = y.saturating_add(name_box_h);
         y = y.saturating_add(1); // spacer
         y = y.saturating_add(1); // mode row
         y = y.saturating_add(1); // spacer
-        y = y.saturating_add(1); // agents row
+        let agent_rows = self.agent_lines(content_rect.width.saturating_sub(1)).len() as u16;
+        y = y.saturating_add(agent_rows.max(1));
         y = y.saturating_add(1); // spacer
         // Orchestrator box: height = inner content + 2 borders, with title as label
         // Use the same clamped height for the actual box we render
