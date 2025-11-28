@@ -3,7 +3,6 @@
 use super::{ChatWidget, ExecCallId, RunningCommand};
 use crate::app_event::{AppEvent, AutoContinueMode};
 use crate::app_event_sender::AppEventSender;
-use crate::auto_drive_strings;
 use crate::history_cell::{self, HistoryCellType};
 use crate::markdown_render::render_markdown_text;
 use crate::tui::TerminalInfo;
@@ -37,6 +36,9 @@ pub struct ChatWidgetHarness {
     events: Receiver<AppEvent>,
     helper_seq: u64,
 }
+
+// Use a deterministic Auto Drive placeholder so VT100 snapshots stay stable.
+const TEST_AUTO_DRIVE_PLACEHOLDER: &str = "Mapping strategy…";
 
 #[derive(Debug, Clone, Copy)]
 pub struct LayoutMetrics {
@@ -425,7 +427,7 @@ impl ChatWidgetHarness {
         let goal = goal.into();
         {
             let chat = self.chat();
-            let placeholder = auto_drive_strings::next_auto_drive_phrase().to_string();
+            let placeholder = TEST_AUTO_DRIVE_PLACEHOLDER.to_string();
             let mode = continue_mode.into_internal();
             chat.auto_state.reset();
             chat.auto_state.elapsed_override = Some(Duration::from_secs(1));

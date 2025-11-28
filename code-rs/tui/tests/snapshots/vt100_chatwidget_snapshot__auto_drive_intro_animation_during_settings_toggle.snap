@@ -1,5 +1,6 @@
 ---
 source: tui/tests/vt100_chatwidget_snapshot.rs
+assertion_line: 2457
 expression: "frames.join(\"\\n---FRAME---\\n\")"
 ---
  +----------------------------------------------------------------------------+
@@ -14,7 +15,7 @@ expression: "frames.join(\"\\n---FRAME---\\n\")"
 
 
 
-  Auto Drive > Charting map...  ✶ Running (Xs)
+  Auto Drive > Mapping strategy...  ✶ Running (Xs)
  +----------------------------------------------------------------------------+
  | What can I code for you today?                                             |
  +----------------------------------------------------------------------------+
@@ -33,7 +34,7 @@ expression: "frames.join(\"\\n---FRAME---\\n\")"
 
 
 
-  Auto Drive > Charting map...  ✶ Running (Xs)
+  Auto Drive > Mapping strategy...  ✶ Running (Xs)
  +----------------------------------------------------------------------------+
  | What can I code for you today?                                             |
  +----------------------------------------------------------------------------+
