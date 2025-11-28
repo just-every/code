@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Enforce running the full pre-release pipeline before pushing to main.
+# The hook is scoped to pushes that target refs/heads/main only.
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+while read -r local_ref _ remote_ref _; do
+    if [[ "$remote_ref" == "refs/heads/main" ]]; then
+        echo "[pre-push] Running ./pre-release.sh before pushing to main..."
+        ./pre-release.sh
+        echo "[pre-push] pre-release.sh completed successfully. Proceeding with push."
+    fi
+done
+
+exit 0
