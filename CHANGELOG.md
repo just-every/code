@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.5.15] - 2025-11-28
+
+- CLI: bump npm metadata to 0.5.15 so fresh installs pull the latest binaries. (0e5d3f9)
+- CI: enforce running ./pre-release.sh before pushes to main to keep release checks green. (3af8354)
+
 ## [0.5.14] - 2025-11-28
 
 - Core/Bridge: surface code-bridge events directly in sessions so runs show live bridge activity. (ca8f0efa)
