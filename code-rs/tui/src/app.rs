@@ -203,6 +203,8 @@ pub(crate) struct App<'a> {
     /// Set if a redraw request arrived while another frame was in flight. Ensures we
     /// queue one more frame immediately after the current draw completes.
     post_frame_redraw: Arc<AtomicBool>,
+    /// Count of consecutive redraws skipped because stdout/PTY was not writable.
+    stdout_backpressure_skips: u32,
     /// Shared scheduler for future animation frames. Ensures the shortest
     /// requested interval wins while preserving later deadlines.
     frame_timer: Arc<FrameTimer>,
@@ -520,6 +522,7 @@ impl App<'_> {
             pending_redraw,
             redraw_inflight,
             post_frame_redraw,
+            stdout_backpressure_skips: 0,
             frame_timer,
             input_running,
             enhanced_keys_supported,
@@ -1179,6 +1182,22 @@ impl App<'_> {
                 AppEvent::Redraw => {
                     if self.timing_enabled { self.timing.on_redraw_begin(); }
                     let t0 = Instant::now();
+                    if !tui::stdout_ready_for_writes() {
+                        self.stdout_backpressure_skips = self.stdout_backpressure_skips.saturating_add(1);
+                        if self.stdout_backpressure_skips == 1
+                            || self.stdout_backpressure_skips % 25 == 0
+                        {
+                            tracing::warn!(
+                                skips = self.stdout_backpressure_skips,
+                                "stdout not writable; deferring redraw to avoid blocking"
+                            );
+                        }
+                        self.redraw_inflight.store(false, Ordering::Release);
+                        self.app_event_tx
+                            .send(AppEvent::ScheduleFrameIn(Duration::from_millis(120)));
+                        continue;
+                    }
+                    self.stdout_backpressure_skips = 0;
                     let draw_result = std::io::stdout().sync_update(|_| self.draw_next_frame(terminal));
                     self.redraw_inflight.store(false, Ordering::Release);
                     let needs_follow_up = self.post_frame_redraw.swap(false, Ordering::AcqRel);

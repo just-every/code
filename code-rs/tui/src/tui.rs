@@ -29,6 +29,8 @@ use ratatui::crossterm::terminal::disable_raw_mode;
 use ratatui::crossterm::terminal::enable_raw_mode;
 use crossterm::terminal::supports_keyboard_enhancement;
 use ratatui_image::picker::Picker;
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 
 /// A type alias for the terminal type used in this application
 pub type Tui = Terminal<CrosstermBackend<BufWriter<Stdout>>>;
@@ -316,6 +318,31 @@ fn disable_alternate_scroll_mode() -> Result<()> {
     handle.write_all(b"\x1b[?1007l")?;
     handle.flush()?;
     Ok(())
+}
+
+/// Best-effort readiness check to avoid blocking writes when the terminal/PTY
+/// consumer is paused (e.g., when the display sleeps). Falls back to writable
+/// on poll errors or non-Unix platforms.
+#[cfg(unix)]
+pub fn stdout_ready_for_writes() -> bool {
+    use libc::{poll, pollfd, POLLOUT};
+
+    let fd = std::io::stdout().as_raw_fd();
+    let mut fds = pollfd {
+        fd,
+        events: POLLOUT,
+        revents: 0,
+    };
+    let rc = unsafe { poll(&mut fds, 1, 0) };
+    if rc < 0 {
+        return true;
+    }
+    fds.revents & POLLOUT != 0
+}
+
+#[cfg(not(unix))]
+pub fn stdout_ready_for_writes() -> bool {
+    true
 }
 
 fn should_enable_alternate_scroll_mode() -> bool {
