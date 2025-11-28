@@ -1,0 +1,24 @@
+name: rust-ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  noop:
+    name: No-op CI (placeholder)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Success
+        run: echo "rust-ci placeholder job succeeded"
+
+  results:
+    name: CI results (required)
+    needs: [noop]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - run: |
+          [[ "${{ needs.noop.result }}" == "success" ]] || exit 1
