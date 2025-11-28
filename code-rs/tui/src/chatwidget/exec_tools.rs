@@ -1406,7 +1406,10 @@ pub(super) fn handle_exec_end_now(
                     .downcast_ref::<history_cell::ExecCell>()
                     .map(|e| {
                         if let Some(ref c) = completed_opt {
-                            e.output.is_none() && e.command == c.command
+                            // Match by command OR call_id to reliably update the correct cell
+                            let command_matches = e.command == c.command;
+                            let call_id_matches = e.record.call_id.as_deref() == Some(call_id.as_ref());
+                            (command_matches || call_id_matches) && e.output.is_none()
                         } else {
                             false
                         }
@@ -1427,7 +1430,10 @@ pub(super) fn handle_exec_end_now(
                         .downcast_ref::<history_cell::ExecCell>()
                     {
                         let is_same = if let Some(ref c) = completed_opt {
-                            exec.command == c.command
+                            // Match by command OR call_id to avoid leaving exec cells stuck running
+                            let command_matches = exec.command == c.command;
+                            let call_id_matches = exec.record.call_id.as_deref() == Some(call_id.as_ref());
+                            command_matches || call_id_matches
                         } else {
                             false
                         };

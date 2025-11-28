@@ -16906,6 +16906,12 @@ Have we met every part of this goal and is there no further work to do?"#
         return;
     }
 
+    // AutoDrive is active: if intro animation was mid-flight, force reduced motion
+    // so a rebuild cannot leave the header half-rendered (issue #431).
+    if self.auto_state.intro_started_at.is_some() && !self.auto_state.intro_reduced_motion {
+        self.auto_state.intro_reduced_motion = true;
+    }
+
     if self.auto_state.is_paused_manual() {
         self.bottom_pane.clear_auto_coordinator_view(false);
         self.bottom_pane.clear_live_ring();

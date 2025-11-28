@@ -628,6 +628,19 @@ impl ChatWidgetHarness {
         self.flush_into_widget();
     }
 
+    pub fn simulate_settings_toggle_during_auto(&mut self) {
+        {
+            let chat = self.chat();
+            // Simulate opening and closing settings during the AutoDrive intro animation.
+            // This exercises the auto_rebuild_live_ring path that previously left the
+            // header partially rendered and scrambled.
+            chat.history_render.invalidate_all();
+            chat.auto_rebuild_live_ring();
+            chat.request_redraw();
+        }
+        self.flush_into_widget();
+    }
+
     pub(crate) fn set_standard_terminal_mode(&mut self, enabled: bool) {
         self.chat.set_standard_terminal_mode(enabled);
     }

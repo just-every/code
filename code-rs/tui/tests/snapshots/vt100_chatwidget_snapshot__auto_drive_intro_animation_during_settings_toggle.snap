@@ -1,0 +1,59 @@
+---
+source: tui/tests/vt100_chatwidget_snapshot.rs
+expression: "frames.join(\"\\n---FRAME---\\n\")"
+---
+ +----------------------------------------------------------------------------+
+ |                                    Code                                    |
+ +----------------------------------------------------------------------------+
+
+ • I can help with various tasks including:
+
+   - Writing code
+   - Reading files
+   - Running commands
+
+
+
+  Auto Drive > Charting map...  ✶ Running (Xs)
+ +----------------------------------------------------------------------------+
+ | What can I code for you today?                                             |
+ +----------------------------------------------------------------------------+
+   Agents Enabled  •  Diagnostics Enabled Ctrl+S settings • Esc stop Auto Drive
+
+---FRAME---
+ +----------------------------------------------------------------------------+
+ |                                    Code                                    |
+ +----------------------------------------------------------------------------+
+
+ • I can help with various tasks including:
+
+   - Writing code
+   - Reading files
+   - Running commands
+
+
+
+  Auto Drive > Charting map...  ✶ Running (Xs)
+ +----------------------------------------------------------------------------+
+ | What can I code for you today?                                             |
+ +----------------------------------------------------------------------------+
+   Agents Enabled  •  Diagnostics Enabled Ctrl+S settings • Esc stop Auto Drive
+
+---FRAME---
+ +----------------------------------------------------------------------------+
+ |                                    Code                                    |
+ +----------------------------------------------------------------------------+
+
+ • I can help with various tasks including:
+
+   - Writing code
+   - Reading files
+   - Running commands
+
+
+
+  Auto Drive > Coordinator is thinking...  ✶ Thinking (Xs)
+ +----------------------------------------------------------------------------+
+ | What can I code for you today?                                             |
+ +----------------------------------------------------------------------------+
+   Agents Enabled  •  Diagnostics Enabled Ctrl+S settings • Esc stop Auto Drive

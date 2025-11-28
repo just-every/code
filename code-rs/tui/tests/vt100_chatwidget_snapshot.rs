@@ -2425,3 +2425,37 @@ fn agent_parallel_batches_do_not_duplicate_cells() {
     );
     assert!(!output.contains("batch-pizza"), "raw pizza batch id leaked into header\n{output}");
 }
+
+#[test]
+fn auto_drive_intro_animation_during_settings_toggle() {
+    // Regression test for issue #431: unreadable terminal after Ctrl+S during AutoDrive intro
+    let mut harness = ChatWidgetHarness::new();
+
+    harness.auto_drive_activate(
+        "Test goal for settings interaction",
+        true,
+        true,
+        AutoContinueModeFixture::TenSeconds,
+    );
+
+    let mut frames = Vec::new();
+    frames.push(normalize_output(render_chat_widget_to_vt100(&mut harness, 80, 18)));
+
+    // Simulate Ctrl+S to open and close settings (triggers auto_rebuild_live_ring)
+    harness.simulate_settings_toggle_during_auto();
+
+    frames.push(normalize_output(render_chat_widget_to_vt100(&mut harness, 80, 18)));
+
+    harness.auto_drive_set_waiting_for_response(
+        "Processing request",
+        Some("Coordinator is thinking...".to_string()),
+        None,
+    );
+
+    frames.push(normalize_output(render_chat_widget_to_vt100(&mut harness, 80, 18)));
+
+    insta::assert_snapshot!(
+        "auto_drive_intro_animation_during_settings_toggle",
+        frames.join("\n---FRAME---\n"),
+    );
+}
