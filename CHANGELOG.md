@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.5.14] - 2025-11-28
+
+- Core/Bridge: surface code-bridge events directly in sessions so runs show live bridge activity. (ca8f0efa)
+- TUI: keep composer popups aligned after history navigation and wrap the agent list inside the command editor for better readability. (bb4a43cf, b890eac3)
+- Auto Drive: stabilize the intro placeholder and ensure exec completions render in order so automation transcripts stay coherent. (7a652b74, d9e5ddbd)
+- Core/Compact: prune orphan tool outputs before compaction to shrink bloated histories and speed up resumes. (8ba5f744)
+
 ## [0.5.13] - 2025-11-27
 
 - CLI: bump the npm package and platform binaries to 0.5.13 so installs grab the latest build. (285c8ca7)
