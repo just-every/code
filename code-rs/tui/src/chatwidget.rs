@@ -28987,8 +28987,6 @@ impl ChatWidget<'_> {
             } else {
                 self.pending_agent_notes.push(note.clone());
             }
-            // Also surface in the current history pane immediately.
-            self.push_background_before_next_output(message);
         }
 
         self.background_review = None;
