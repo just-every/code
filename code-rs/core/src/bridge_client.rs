@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -11,10 +11,13 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use anyhow::bail;
 
 use crate::codex::Session;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 struct BridgeMeta {
     url: String,
     secret: String,
@@ -24,7 +27,11 @@ struct BridgeMeta {
     workspace_path: Option<String>,
     #[allow(dead_code)]
     started_at: Option<String>,
+    #[allow(dead_code)]
+    heartbeat_at: Option<String>,
 }
+
+const HEARTBEAT_STALE_MS: i64 = 20_000;
 
 static DESIRED_LEVELS: Lazy<Mutex<Vec<String>>> = Lazy::new(|| Mutex::new(vec!["errors".to_string()]));
 static DESIRED_CAPABILITIES: Lazy<Mutex<Vec<String>>> = Lazy::new(|| Mutex::new(Vec::new()));
@@ -69,24 +76,88 @@ pub(crate) fn send_bridge_control(action: &str, args: serde_json::Value) {
 /// Spawn a background task that watches `.code/code-bridge.json` and
 /// connects as a consumer to the external bridge host when available.
 pub(crate) fn spawn_bridge_listener(session: std::sync::Arc<Session>) {
-    let meta_path = session.get_cwd().join(".code/code-bridge.json");
+    let cwd = session.get_cwd().to_path_buf();
     tokio::spawn(async move {
+        let mut last_notice: Option<&str> = None;
         loop {
-            if let Ok(meta) = read_meta(&meta_path) {
-                info!("[bridge] host metadata found, connecting");
-                if let Err(err) = connect_and_listen(meta, &session).await {
-                    warn!("[bridge] connect failed: {err:?}");
+            match find_meta_path(&cwd) {
+                None => {
+                    if last_notice != Some("missing") {
+                        session
+                            .record_bridge_event(
+                                "Code Bridge metadata not found (.code/code-bridge.json); waiting for host..."
+                                    .to_string(),
+                            )
+                            .await;
+                        last_notice = Some("missing");
+                    }
                 }
+                Some(meta_path) => match read_meta(meta_path.as_path()) {
+                    Ok(meta) => {
+                        last_notice = None;
+                        info!("[bridge] host metadata found, connecting");
+                        if let Err(err) = connect_and_listen(meta, &session).await {
+                            warn!("[bridge] connect failed: {err:?}");
+                        }
+                    }
+                    Err(err) => {
+                        if last_notice != Some("stale") {
+                            session
+                                .record_bridge_event(format!(
+                                    "Code Bridge metadata is stale at {} ({err}); waiting for a fresh host...",
+                                    meta_path.display()
+                                ))
+                                .await;
+                            last_notice = Some("stale");
+                        }
+                    }
+                },
             }
             sleep(Duration::from_secs(5)).await;
         }
     });
 }
 
-fn read_meta(path: &PathBuf) -> Result<BridgeMeta> {
+fn read_meta(path: &Path) -> Result<BridgeMeta> {
     let data = std::fs::read_to_string(path)?;
     let meta: BridgeMeta = serde_json::from_str(&data)?;
+
+    if is_meta_stale(&meta, path) {
+        bail!("heartbeat missing or stale");
+    }
+
     Ok(meta)
+}
+
+fn find_meta_path(start: &Path) -> Option<PathBuf> {
+    let mut current = Some(start);
+    while let Some(dir) = current {
+        let candidate = dir.join(".code/code-bridge.json");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        current = dir.parent();
+    }
+    None
+}
+
+fn is_meta_stale(meta: &BridgeMeta, path: &Path) -> bool {
+    if let Some(hb) = &meta.heartbeat_at {
+        if let Ok(ts) = DateTime::parse_from_rfc3339(hb) {
+            let age = Utc::now().signed_duration_since(ts.with_timezone(&Utc));
+            return age.num_milliseconds() > HEARTBEAT_STALE_MS;
+        }
+    }
+
+    // Fallback for hosts that don't emit heartbeat: use file mtime as staleness signal
+    if let Ok(stat) = std::fs::metadata(path) {
+        if let Ok(modified) = stat.modified() {
+            let modified: DateTime<Utc> = modified.into();
+            let age = Utc::now().signed_duration_since(modified);
+            return age > ChronoDuration::milliseconds(HEARTBEAT_STALE_MS);
+        }
+    }
+    false
 }
 
 async fn connect_and_listen(meta: BridgeMeta, session: &Session) -> Result<()> {
