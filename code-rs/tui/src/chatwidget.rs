@@ -28931,7 +28931,13 @@ impl ChatWidget<'_> {
         summary: Option<String>,
         error: Option<String>,
     ) {
-        let message = if let Some(err) = error {
+        let mut developer_note: Option<String> = None;
+
+        let message: String = if let Some(err) = error {
+            developer_note = Some(format!(
+                "[developer] Background auto-review failed in worktree '{branch}'. Error: {err}. Worktree path: {}.",
+                worktree_path.display()
+            ));
             format!(
                 "Auto review in worktree '{}' failed: {}",
                 branch,
@@ -28943,18 +28949,25 @@ impl ChatWidget<'_> {
                 findings.max(1),
                 branch
             );
-            if let Some(summary_text) = summary.as_ref().and_then(|s| {
+            let summary_text = summary.as_ref().and_then(|s| {
                 let trimmed = s.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed)
-                }
-            }) {
+                if trimmed.is_empty() { None } else { Some(trimmed) }
+            });
+            if let Some(text) = summary_text {
                 base.push_str(" Summary: ");
-                base.push_str(summary_text);
+                base.push_str(text);
             }
             base.push_str(&format!(" Path: {}", worktree_path.display()));
+            developer_note = Some(match summary_text {
+                Some(text) => format!(
+                    "[developer] Background auto-review found issues in worktree '{branch}'. Summary: {text}. Merge the worktree at {} if you want the fixes.",
+                    worktree_path.display()
+                ),
+                None => format!(
+                    "[developer] Background auto-review found issues in worktree '{branch}'. Merge the worktree at {} if you want the fixes.",
+                    worktree_path.display()
+                ),
+            });
             base
         } else {
             format!(
@@ -28964,7 +28977,22 @@ impl ChatWidget<'_> {
             )
         };
 
-        self.push_background_tail(message);
+        self.push_background_tail(message.clone());
+
+        if let Some(note) = developer_note {
+            if !self.is_task_running() && !self.auto_state.is_active() {
+                // Start a new turn so the model sees the failure/findings.
+                self.submit_hidden_text_message_with_preface(
+                    "Auto review follow-up".to_string(),
+                    note.clone(),
+                );
+            } else {
+                self.pending_agent_notes.push(note.clone());
+            }
+            // Also surface in the current history pane immediately.
+            self.push_background_before_next_output(message);
+        }
+
         self.background_review = None;
         self.maybe_resume_auto_after_review();
         self.request_redraw();
