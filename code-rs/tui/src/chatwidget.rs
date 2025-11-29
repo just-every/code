@@ -28887,8 +28887,6 @@ impl ChatWidget<'_> {
             branch: String::new(),
         });
 
-        self.push_background_tail("Auto review: preparing background worktree...".to_string());
-
         #[cfg(test)]
         if let Some(stub) = AUTO_REVIEW_STUB.lock().unwrap().as_mut() {
             (stub)();
