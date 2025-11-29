@@ -430,8 +430,8 @@ async fn _ensure_origin_remote(git_root: &Path) -> Result<(), String> {
     Err("no suitable remote to alias as origin".to_string())
 }
 
-/// Copy uncommitted (modified + untracked) files from `src_root` into the `worktree_path`.
-/// Returns the number of files copied.
+/// Copy uncommitted (modified + untracked) files from `src_root` into the `worktree_path`
+/// and mirror deletions. Returns the number of touched paths (copies + deletions).
 pub async fn copy_uncommitted_to_worktree(src_root: &Path, worktree_path: &Path) -> Result<usize, String> {
     // List modified and other (untracked) files relative to repo root
     let output = Command::new("git")
@@ -460,6 +460,29 @@ pub async fn copy_uncommitted_to_worktree(src_root: &Path, worktree_path: &Path)
         match tokio::fs::copy(&from, &to).await {
             Ok(_) => count += 1,
             Err(e) => return Err(format!("Failed to copy {} -> {}: {}", from.display(), to.display(), e)),
+        }
+    }
+
+    // Also mirror tracked deletions so the worktree matches current workspace state.
+    let deleted = Command::new("git")
+        .current_dir(src_root)
+        .args(["ls-files", "-d", "-z"])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to list deletions: {}", e))?;
+    if !deleted.status.success() {
+        let stderr = String::from_utf8_lossy(&deleted.stderr);
+        return Err(format!("git ls-files -d failed: {}", stderr));
+    }
+    for path_bytes in deleted.stdout.split(|b| *b == 0) {
+        if path_bytes.is_empty() { continue; }
+        let rel = match String::from_utf8(path_bytes.to_vec()) { Ok(s) => s, Err(_) => continue };
+        if rel.starts_with(".git/") { continue; }
+        let target = worktree_path.join(&rel);
+        match tokio::fs::remove_file(&target).await {
+            Ok(_) => count += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+            Err(e) => return Err(format!("Failed to remove deleted path {}: {}", target.display(), e)),
         }
     }
 
