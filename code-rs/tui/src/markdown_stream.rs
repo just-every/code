@@ -55,6 +55,10 @@ impl MarkdownStreamCollector {
         self.committed_line_count
     }
 
+    pub fn has_buffered_content(&self) -> bool {
+        !self.buffer.is_empty()
+    }
+
     pub fn clear(&mut self) {
         self.buffer.clear();
         self.committed_line_count = 0;

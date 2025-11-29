@@ -79,6 +79,16 @@ impl StreamController {
     pub(crate) fn is_write_cycle_active(&self) -> bool {
         self.current_stream.is_some()
     }
+
+    pub(crate) fn is_current_stream_idle(&self) -> bool {
+        match self.current_stream {
+            Some(kind) => {
+                let state = self.state(kind);
+                state.is_idle() && !state.collector.has_buffered_content()
+            }
+            None => true,
+        }
+    }
     
 
     pub(crate) fn clear_all(&mut self) {
@@ -810,4 +820,3 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
         self.finalize(kind, immediate, sink)
     }
 }
-

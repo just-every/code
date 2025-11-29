@@ -26,6 +26,9 @@ use code_responses_api_proxy::Args as ResponsesApiProxyArgs;
 use code_tui::Cli as TuiCli;
 use code_tui::ExitSummary;
 use code_tui::resume_command_name;
+use serde::{Deserialize, Serialize};
+use serde_json;
+use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process;
@@ -149,6 +152,9 @@ enum Subcommand {
 
     /// Side-channel LLM utilities (no TUI events).
     Llm(LlmCli),
+
+    /// Manage Code Bridge subscription for this workspace.
+    Bridge(BridgeCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -177,6 +183,62 @@ struct ResumeCommand {
 struct DebugArgs {
     #[command(subcommand)]
     cmd: DebugCommand,
+}
+
+#[derive(Debug, Parser)]
+struct BridgeCommand {
+    #[command(subcommand)]
+    action: BridgeAction,
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum BridgeAction {
+    /// View or change the bridge subscription for the current workspace.
+    Subscription(BridgeSubscriptionCommand),
+}
+
+#[derive(Debug, Parser)]
+struct BridgeSubscriptionCommand {
+    /// Show the current desired subscription (defaults if no override file).
+    #[arg(long, default_value_t = false)]
+    show: bool,
+
+    /// CSV list of levels: errors,warn,info,trace (default: errors).
+    #[arg(long, value_delimiter = ',')]
+    levels: Option<Vec<String>>,
+
+    /// CSV list of capabilities: screenshot,pageview,control,console,error.
+    #[arg(long, value_delimiter = ',')]
+    capabilities: Option<Vec<String>>,
+
+    /// LLM overload filter: off|minimal|aggressive.
+    #[arg(long, value_name = "FILTER")]
+    filter: Option<String>,
+
+    /// Remove the override file and revert to defaults (errors only).
+    #[arg(long, default_value_t = false)]
+    clear: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SubscriptionOverride {
+    #[serde(default = "default_levels")]
+    levels: Vec<String>,
+    #[serde(default)]
+    capabilities: Vec<String>,
+    #[serde(default = "default_filter", alias = "llm_filter")]
+    llm_filter: String,
+}
+
+const SUBSCRIPTION_OVERRIDE_FILE: &str = "code-bridge.subscription.json";
+
+fn default_levels() -> Vec<String> {
+    vec!["errors".to_string()]
+}
+
+fn default_filter() -> String {
+    "off".to_string()
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -472,6 +534,9 @@ async fn cli_main(code_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()>
         Some(Subcommand::Preview(args)) => {
             preview_main(args).await?;
         }
+        Some(Subcommand::Bridge(bridge_cli)) => {
+            run_bridge_command(bridge_cli)?;
+        }
         Some(Subcommand::Llm(mut llm_cli)) => {
             prepend_config_flags(
                 &mut llm_cli.config_overrides,
@@ -493,6 +558,145 @@ fn prepend_config_flags(
     subcommand_config_overrides
         .raw_overrides
         .splice(0..0, cli_config_overrides.raw_overrides);
+}
+
+fn run_bridge_command(cmd: BridgeCommand) -> anyhow::Result<()> {
+    match cmd.action {
+        BridgeAction::Subscription(sub_cmd) => run_bridge_subscription(sub_cmd),
+    }
+}
+
+fn run_bridge_subscription(cmd: BridgeSubscriptionCommand) -> anyhow::Result<()> {
+    let cwd = std::env::current_dir().context("cannot read current dir")?;
+    let override_path = resolve_subscription_override_path(&cwd);
+
+    if cmd.clear {
+        if override_path.exists() {
+            fs::remove_file(&override_path).context("failed to remove subscription override")?;
+            println!(
+                "Removed {}. The running Code session will revert to defaults (errors only) within a few seconds.",
+                override_path.display()
+            );
+        } else {
+            println!("No override file to remove at {}", override_path.display());
+        }
+        return Ok(());
+    }
+
+    if cmd.show && cmd.levels.is_none() && cmd.capabilities.is_none() && cmd.filter.is_none() {
+        let sub = read_subscription_file(&override_path)?;
+        println!("Subscription override path: {}", override_path.display());
+        println!("levels       : {}", sub.levels.join(", "));
+        println!("capabilities : {}", sub.capabilities.join(", "));
+        println!("llm_filter   : {}", sub.llm_filter);
+        println!("(Running Code picks up changes every ~5s.)");
+        return Ok(());
+    }
+
+    let mut sub = read_subscription_file(&override_path)?;
+
+    if let Some(levels) = cmd.levels {
+        sub.levels = normalise_cli_vec(levels, default_levels());
+    }
+    if let Some(caps) = cmd.capabilities {
+        sub.capabilities = normalise_cli_vec(caps, Vec::new());
+    }
+    if let Some(filter) = cmd.filter {
+        sub.llm_filter = filter.trim().to_lowercase();
+    }
+
+    if let Some(parent) = override_path.parent() {
+        fs::create_dir_all(parent).context("failed to create .code dir")?;
+    }
+    let data = serde_json::to_string_pretty(&sub).context("serialize subscription")?;
+    fs::write(&override_path, data).context("write subscription override")?;
+
+    println!("Updated {}", override_path.display());
+    println!("levels       : {}", sub.levels.join(", "));
+    println!("capabilities : {}", sub.capabilities.join(", "));
+    println!("llm_filter   : {}", sub.llm_filter);
+    println!("Running Code session will resubscribe within ~5s.");
+    Ok(())
+}
+
+fn read_subscription_file(path: &Path) -> anyhow::Result<SubscriptionOverride> {
+    if path.exists() {
+        let data = fs::read_to_string(path).context("read subscription override")?;
+        let sub: SubscriptionOverride = serde_json::from_str(&data).context("parse subscription override")?;
+        Ok(sub)
+    } else {
+        Ok(SubscriptionOverride {
+            levels: default_levels(),
+            capabilities: Vec::new(),
+            llm_filter: "off".to_string(),
+        })
+    }
+}
+
+fn normalise_cli_vec(values: Vec<String>, fallback: Vec<String>) -> Vec<String> {
+    let mut vals: Vec<String> = values
+        .into_iter()
+        .map(|v| v.trim().to_lowercase())
+        .filter(|v| !v.is_empty())
+        .collect();
+    if vals.is_empty() {
+        return fallback;
+    }
+    vals.sort();
+    vals.dedup();
+    vals
+}
+
+fn find_subscription_override_path(start: &Path) -> Option<PathBuf> {
+    let mut current = Some(start);
+    while let Some(dir) = current {
+        let candidate = dir.join(".code").join(SUBSCRIPTION_OVERRIDE_FILE);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        current = dir.parent();
+    }
+    None
+}
+
+fn resolve_subscription_override_path(start: &Path) -> PathBuf {
+    if let Some(path) = find_subscription_override_path(start) {
+        return path;
+    }
+
+    if let Some(dir) = find_meta_dir(start) {
+        return dir.join(SUBSCRIPTION_OVERRIDE_FILE);
+    }
+
+    if let Some(dir) = find_code_dir(start) {
+        return dir.join(SUBSCRIPTION_OVERRIDE_FILE);
+    }
+
+    start.join(".code").join(SUBSCRIPTION_OVERRIDE_FILE)
+}
+
+fn find_meta_dir(start: &Path) -> Option<PathBuf> {
+    let mut current = Some(start);
+    while let Some(dir) = current {
+        let candidate = dir.join(".code").join("code-bridge.json");
+        if candidate.exists() {
+            return candidate.parent().map(Path::to_path_buf);
+        }
+        current = dir.parent();
+    }
+    None
+}
+
+fn find_code_dir(start: &Path) -> Option<PathBuf> {
+    let mut current = Some(start);
+    while let Some(dir) = current {
+        let candidate = dir.join(".code");
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+        current = dir.parent();
+    }
+    None
 }
 
 /// Build the final `TuiCli` for a `codex resume` invocation.

@@ -4,6 +4,7 @@ use code_core::protocol::{
     ExecCommandBeginEvent,
     ExecCommandEndEvent,
     TaskCompleteEvent,
+    AgentReasoningDeltaEvent,
     McpInvocation,
     McpToolCallBeginEvent,
     OrderMeta,
@@ -280,6 +281,51 @@ fn stale_exec_is_finalized_on_task_complete() {
     assert!(
         output.contains("background") || output.contains("turn end"),
         "stale exec should surface a clear completion notice:\n{}",
+        output
+    );
+}
+
+#[test]
+fn exec_interrupts_flush_when_stream_idles() {
+    let mut harness = ChatWidgetHarness::new();
+    let mut seq = 0_u64;
+    let call_id = "call_idle".to_string();
+    let cwd = PathBuf::from("/tmp");
+
+    // Kick off a reasoning stream so write-cycle is active.
+    harness.handle_event(Event {
+        id: "reasoning-delta".to_string(),
+        event_seq: 0,
+        msg: EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+            delta: "Thinking through the next steps.\n".into(),
+        }),
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+    harness.flush_into_widget();
+    // Drain any pending commits so the stream is idle but still marked active.
+    harness.drive_commit_tick();
+
+    // Queue an Exec begin; it should not stay deferred once the stream is idle.
+    harness.handle_event(Event {
+        id: "exec-begin-idle".to_string(),
+        event_seq: 1,
+        msg: EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
+            call_id: call_id.clone(),
+            command: vec!["bash".into(), "-lc".into(), "echo idle".into()],
+            cwd: cwd.clone(),
+            parsed_cmd: Vec::new(),
+        }),
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    // Allow the flush timer to run and deliver the queued interrupt.
+    std::thread::sleep(Duration::from_millis(260));
+    harness.flush_into_widget();
+
+    let output = render_chat_widget_to_vt100(&mut harness, 80, 12);
+    assert!(
+        output.contains("echo idle"),
+        "exec begin should render after idle stream flush:\n{}",
         output
     );
 }

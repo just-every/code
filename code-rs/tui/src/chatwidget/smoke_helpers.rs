@@ -173,6 +173,9 @@ impl ChatWidgetHarness {
                 AppEvent::UpdateReviewAutoResolveAttempts(attempts) => {
                     self.chat.set_review_auto_resolve_attempts(attempts);
                 }
+                AppEvent::FlushInterruptsIfIdle => {
+                    self.chat.flush_interrupts_if_stream_idle();
+                }
                 AppEvent::ShowAgentsOverview => {
                     self.chat.ensure_settings_overlay_section(SettingsSection::Agents);
                     self.chat.show_agents_overview_ui();
@@ -212,6 +215,11 @@ impl ChatWidgetHarness {
                 );
             }
         }
+    }
+
+    pub fn drive_commit_tick(&mut self) {
+        self.chat.on_commit_tick();
+        self.flush_into_widget();
     }
 
     pub fn send_key(&mut self, key_event: KeyEvent) {

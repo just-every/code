@@ -68,6 +68,10 @@ impl InterruptManager {
         self.queue.push(QueuedInterrupt::PatchEnd { seq, ev });
     }
 
+    pub(crate) fn has_queued(&self) -> bool {
+        !self.queue.is_empty()
+    }
+
     // Plan updates are inserted near-time immediately; no interrupt queue entry needed.
 
     pub(crate) fn flush_all(&mut self, chat: &mut ChatWidget<'_>) {
@@ -116,9 +120,9 @@ impl InterruptManager {
     }
 }
 
-fn seq_of(q: &QueuedInterrupt) -> u64 {
-    match q {
-        QueuedInterrupt::ExecApproval { seq, .. }
+    fn seq_of(q: &QueuedInterrupt) -> u64 {
+        match q {
+            QueuedInterrupt::ExecApproval { seq, .. }
         | QueuedInterrupt::ApplyPatchApproval { seq, .. }
         | QueuedInterrupt::ExecBegin { seq, .. }
         | QueuedInterrupt::ExecEnd { seq, .. }

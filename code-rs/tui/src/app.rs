@@ -1179,6 +1179,11 @@ impl App<'_> {
                     }
                     self.schedule_redraw();
                 }
+                AppEvent::FlushInterruptsIfIdle => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.flush_interrupts_if_stream_idle();
+                    }
+                }
                 AppEvent::Redraw => {
                     if self.timing_enabled { self.timing.on_redraw_begin(); }
                     let t0 = Instant::now();

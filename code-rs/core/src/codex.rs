@@ -50,7 +50,7 @@ use code_protocol::protocol::TurnAbortReason;
 use code_protocol::protocol::TurnAbortedEvent;
 use futures::prelude::*;
 use mcp_types::CallToolResult;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::oneshot;
 use tokio::task::AbortHandle;
@@ -833,6 +833,10 @@ use crate::agent_tool::WaitForAgentParams;
 use crate::apply_patch::convert_apply_patch_to_protocol;
 use crate::apply_patch::get_writable_roots;
 use crate::apply_patch::{self, ApplyPatchResult};
+use crate::bridge_client::{
+    get_effective_subscription, get_workspace_subscription, persist_workspace_subscription,
+    set_session_subscription, set_workspace_subscription,
+};
 use crate::client::ModelClient;
 use crate::client_common::{Prompt, ResponseEvent, TextFormat, REVIEW_PROMPT};
 use crate::context_timeline::ContextTimeline;
@@ -6601,6 +6605,7 @@ async fn handle_function_call(
         "web_fetch" => handle_web_fetch(sess, &ctx, arguments).await,
         "wait" => handle_wait(sess, &ctx, arguments).await,
         "kill" => handle_kill(sess, &ctx, arguments).await,
+        "code_bridge_subscription" => handle_bridge_subscription(sess, &ctx, arguments).await,
         _ => {
             match sess.mcp_connection_manager.parse_tool_name(&name) {
                 Some((server, tool_name)) => {
@@ -6650,6 +6655,199 @@ async fn handle_browser_cleanup(sess: &Session, ctx: &ToolCallCtx) -> ResponseIn
             }
         }
     ).await
+}
+
+#[derive(Deserialize)]
+struct BridgeSubscriptionArgs {
+    action: String,
+    #[serde(default)]
+    levels: Option<Vec<String>>,
+    #[serde(default)]
+    capabilities: Option<Vec<String>>,
+    #[serde(default)]
+    llm_filter: Option<String>,
+    #[serde(default)]
+    persist: Option<bool>,
+}
+
+fn norm_vec(vals: &Option<Vec<String>>) -> Option<Vec<String>> {
+    vals.as_ref().map(|v| {
+        let mut out: Vec<String> = v
+            .iter()
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    })
+}
+
+async fn handle_bridge_subscription(
+    sess: &Session,
+    ctx: &ToolCallCtx,
+    arguments: String,
+) -> ResponseInputItem {
+    handle_bridge_subscription_with_cwd(sess.get_cwd(), ctx, arguments).await
+}
+
+async fn handle_bridge_subscription_with_cwd(
+    cwd: &Path,
+    ctx: &ToolCallCtx,
+    arguments: String,
+) -> ResponseInputItem {
+    let parsed: Result<BridgeSubscriptionArgs, _> = serde_json::from_str(&arguments);
+    let args = match parsed {
+        Ok(a) => a,
+        Err(e) => {
+            return ResponseInputItem::FunctionCallOutput {
+                call_id: ctx.call_id.clone(),
+                output: FunctionCallOutputPayload {
+                    content: format!("invalid arguments: {e}"),
+                    success: Some(false),
+                },
+            };
+        }
+    };
+
+    let action = args.action.to_lowercase();
+    let persist = args.persist.unwrap_or(false);
+
+    match action.as_str() {
+        "show" => {
+            let eff = get_effective_subscription();
+            let ws = get_workspace_subscription();
+            let content = serde_json::json!({
+                "effective": eff,
+                "workspace": ws,
+            })
+            .to_string();
+            ResponseInputItem::FunctionCallOutput {
+                call_id: ctx.call_id.clone(),
+                output: FunctionCallOutputPayload {
+                    content,
+                    success: Some(true),
+                },
+            }
+        }
+        "set" => {
+            let mut sub = get_effective_subscription();
+            if let Some(levels) = norm_vec(&args.levels) {
+                sub.levels = if levels.is_empty() { sub.levels } else { levels };
+            }
+            if let Some(caps) = norm_vec(&args.capabilities) {
+                sub.capabilities = caps;
+            }
+            if let Some(filter) = args.llm_filter.as_ref() {
+                sub.llm_filter = filter.trim().to_lowercase();
+            }
+
+            set_session_subscription(Some(sub.clone()));
+
+            if persist {
+                if let Err(e) = persist_workspace_subscription(&cwd, Some(sub.clone())) {
+                    return ResponseInputItem::FunctionCallOutput {
+                        call_id: ctx.call_id.clone(),
+                        output: FunctionCallOutputPayload {
+                            content: format!("persist failed: {e}"),
+                            success: Some(false),
+                        },
+                    };
+                }
+                set_workspace_subscription(Some(sub.clone()));
+            }
+
+            ResponseInputItem::FunctionCallOutput {
+                call_id: ctx.call_id.clone(),
+                output: FunctionCallOutputPayload {
+                    content: "ok".to_string(),
+                    success: Some(true),
+                },
+            }
+        }
+        "clear" => {
+            set_session_subscription(None);
+            if persist {
+                if let Err(e) = persist_workspace_subscription(&cwd, None) {
+                    return ResponseInputItem::FunctionCallOutput {
+                        call_id: ctx.call_id.clone(),
+                        output: FunctionCallOutputPayload {
+                            content: format!("persist failed: {e}"),
+                            success: Some(false),
+                        },
+                    };
+                }
+                set_workspace_subscription(None);
+            }
+
+            ResponseInputItem::FunctionCallOutput {
+                call_id: ctx.call_id.clone(),
+                output: FunctionCallOutputPayload {
+                    content: "ok".to_string(),
+                    success: Some(true),
+                },
+            }
+        }
+        _ => ResponseInputItem::FunctionCallOutput {
+            call_id: ctx.call_id.clone(),
+            output: FunctionCallOutputPayload {
+                content: format!("unsupported action: {}", action),
+                success: Some(false),
+            },
+        },
+    }
+}
+
+#[cfg(test)]
+mod bridge_tool_tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use tempfile::TempDir;
+
+    fn call_tool_with_cwd(cwd: &Path, args: &str) -> ResponseInputItem {
+        // Build a minimal ToolCallCtx (sub_id/call_id arbitrary for tests)
+        let ctx = ToolCallCtx::new("sub".into(), "call".into(), None, None);
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async { handle_bridge_subscription_with_cwd(cwd, &ctx, args.to_string()).await })
+    }
+
+    #[test]
+    fn bridge_tool_show_set_clear() {
+        let tmp = TempDir::new().unwrap();
+        let cwd = tmp.path();
+
+        // set (session-only)
+        let out = call_tool_with_cwd(
+            cwd,
+            r#"{"action":"set","levels":["trace"],"capabilities":["console"],"llm_filter":"off"}"#,
+        );
+        match out {
+            ResponseInputItem::FunctionCallOutput { output, .. } => {
+                assert_eq!(output.success, Some(true));
+            }
+            _ => panic!("unexpected output"),
+        }
+
+        // show
+        let out = call_tool_with_cwd(cwd, r#"{"action":"show"}"#);
+        let content = match out {
+            ResponseInputItem::FunctionCallOutput { output, .. } => output.content,
+            _ => panic!("unexpected output"),
+        };
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(v["effective"]["levels"], serde_json::json!(["trace"]));
+        assert_eq!(v["effective"]["capabilities"], serde_json::json!(["console"]));
+
+        // clear session override and persist removal
+        let out = call_tool_with_cwd(cwd, r#"{"action":"clear","persist":true}"#);
+        match out {
+            ResponseInputItem::FunctionCallOutput { output, .. } => {
+                assert_eq!(output.success, Some(true));
+            }
+            _ => panic!("unexpected output"),
+        }
+    }
 }
 
 async fn handle_web_fetch(sess: &Session, ctx: &ToolCallCtx, arguments: String) -> ResponseInputItem {

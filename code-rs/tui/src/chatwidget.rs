@@ -1403,6 +1403,8 @@ pub(crate) struct ChatWidget<'a> {
     stream_state: StreamState,
     // Interrupt manager for handling cancellations
     interrupts: interrupts::InterruptManager,
+    // Guard to avoid spamming flush timers while interrupts wait behind a stalled stream
+    interrupt_flush_scheduled: bool,
 
     // Guard for out-of-order exec events: track call_ids that already ended
     ended_call_ids: HashSet<ExecCallId>,
@@ -3385,6 +3387,43 @@ impl ChatWidget<'_> {
         }
     }
 
+    /// Schedule a short-delay check to flush queued interrupts if the current
+    /// stream stalls in an idle state. Avoids the UI appearing frozen when the
+    /// model stops streaming before sending TaskComplete.
+    fn schedule_interrupt_flush_check(&mut self) {
+        if self.interrupt_flush_scheduled || !self.interrupts.has_queued() {
+            return;
+        }
+        self.interrupt_flush_scheduled = true;
+        let tx = self.app_event_tx.clone();
+        let fallback_tx = tx.clone();
+        if thread_spawner::spawn_lightweight("interrupt-flush", move || {
+            std::thread::sleep(std::time::Duration::from_millis(180));
+            tx.send(AppEvent::FlushInterruptsIfIdle);
+        })
+        .is_none()
+        {
+            let _ = fallback_tx.send(AppEvent::FlushInterruptsIfIdle);
+        }
+    }
+
+    /// Finalize a stalled stream and flush queued interrupts once the stream is idle.
+    /// Re-arms itself until either the stream clears or the queue drains.
+    pub(crate) fn flush_interrupts_if_stream_idle(&mut self) {
+        self.interrupt_flush_scheduled = false;
+        if !self.stream.is_write_cycle_active() {
+            return;
+        }
+        if self.stream.is_current_stream_idle() {
+            streaming::finalize_active_stream(self);
+            self.flush_interrupt_queue();
+            self.request_redraw();
+        } else if self.interrupts.has_queued() {
+            // Still busy; try again shortly so we don't leave Exec/Tool updates stuck.
+            self.schedule_interrupt_flush_check();
+        }
+    }
+
     fn finalize_all_running_as_interrupted(&mut self) {
         exec_tools::finalize_all_running_as_interrupted(self);
     }
@@ -4047,6 +4086,7 @@ impl ChatWidget<'_> {
     {
         if self.is_write_cycle_active() {
             defer_fn(&mut self.interrupts);
+            self.schedule_interrupt_flush_check();
         } else {
             handle_fn(self);
         }
@@ -5230,6 +5270,7 @@ impl ChatWidget<'_> {
                 drop_streaming: false,
             },
             interrupts: interrupts::InterruptManager::new(),
+            interrupt_flush_scheduled: false,
             ended_call_ids: HashSet::new(),
             diffs: DiffsState {
                 session_patch_sets: Vec::new(),
@@ -5561,6 +5602,7 @@ impl ChatWidget<'_> {
                 drop_streaming: false,
             },
             interrupts: interrupts::InterruptManager::new(),
+            interrupt_flush_scheduled: false,
             ended_call_ids: HashSet::new(),
             diffs: DiffsState {
                 session_patch_sets: Vec::new(),

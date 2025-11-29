@@ -709,6 +709,7 @@ pub fn get_openai_tools(
     // Add general wait tool for background completions
     tools.push(create_wait_tool());
     tools.push(create_kill_tool());
+    tools.push(create_bridge_subscription_tool());
 
     if config.web_search_request {
         let tool = match &config.web_search_allowed_domains {
@@ -798,6 +799,70 @@ pub fn create_kill_tool() -> OpenAiTool {
     })
 }
 
+pub fn create_bridge_subscription_tool() -> OpenAiTool {
+    let mut properties = BTreeMap::new();
+
+    properties.insert(
+        "action".to_string(),
+        JsonSchema::String {
+            description: Some("show | set | clear".to_string()),
+            allowed_values: Some(vec![
+                "show".to_string(),
+                "set".to_string(),
+                "clear".to_string(),
+            ]),
+        },
+    );
+
+    properties.insert(
+        "levels".to_string(),
+        JsonSchema::Array {
+            items: Box::new(JsonSchema::String {
+                description: Some("log levels: errors|warn|info|trace".to_string()),
+                allowed_values: None,
+            }),
+            description: Some("Optional list of log levels to subscribe".to_string()),
+        },
+    );
+
+    properties.insert(
+        "capabilities".to_string(),
+        JsonSchema::Array {
+            items: Box::new(JsonSchema::String {
+                description: Some("capabilities: console,error,pageview,screenshot,control".to_string()),
+                allowed_values: None,
+            }),
+            description: Some("Optional list of capabilities to include".to_string()),
+        },
+    );
+
+    properties.insert(
+        "llm_filter".to_string(),
+        JsonSchema::String {
+            description: Some("llm filter: off|minimal|aggressive".to_string()),
+            allowed_values: None,
+        },
+    );
+
+    properties.insert(
+        "persist".to_string(),
+        JsonSchema::Boolean {
+            description: Some("when true, also write .code/code-bridge.subscription.json".to_string()),
+        },
+    );
+
+    OpenAiTool::Function(ResponsesApiTool {
+        name: "code_bridge_subscription".to_string(),
+        description: "Show/set/clear this session's Code Bridge subscription; optional persist to workspace file.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["action".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
@@ -870,6 +935,7 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
+                "code_bridge_subscription",
                 "web_search",
             ],
         );
@@ -901,6 +967,7 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
+                "code_bridge_subscription",
                 "web_search",
             ],
         );
@@ -931,6 +998,7 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
+                "code_bridge_subscription",
                 "web_search",
             ],
         );
@@ -998,13 +1066,14 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
+                "code_bridge_subscription",
                 "web_search",
                 "test_server/do_something_cool",
             ],
         );
 
         assert_eq!(
-            tools[6],
+            tools[7],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "test_server/do_something_cool".to_string(),
                 parameters: JsonSchema::Object {
@@ -1118,13 +1187,14 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
+                "code_bridge_subscription",
                 "web_search",
                 "test_server/do_something_cool",
             ],
         );
 
         assert_eq!(
-            tools[6],
+            tools[7],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "test_server/do_something_cool".to_string(),
                 parameters: JsonSchema::Object {
@@ -1240,13 +1310,14 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
+                "code_bridge_subscription",
                 "web_search",
                 "dash/search",
             ],
         );
 
         assert_eq!(
-            tools[6],
+            tools[7],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "dash/search".to_string(),
                 parameters: JsonSchema::Object {
@@ -1312,6 +1383,7 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
+                "code_bridge_subscription",
                 "web_search",
                 "dash/paginate",
             ],
@@ -1385,12 +1457,13 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
+                "code_bridge_subscription",
                 "web_search",
                 "dash/tags",
             ],
         );
         assert_eq!(
-            tools[6],
+            tools[7],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "dash/tags".to_string(),
                 parameters: JsonSchema::Object {
@@ -1456,12 +1529,13 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
+                "code_bridge_subscription",
                 "web_search",
                 "dash/value",
             ],
         );
         assert_eq!(
-            tools[6],
+            tools[7],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "dash/value".to_string(),
                 parameters: JsonSchema::Object {
