@@ -22,12 +22,14 @@ enum SelectionKind {
     Model,
     Toggle,
     Attempts,
+    AutoReview,
 }
 
 enum RowData {
     CustomModel,
     Toggle,
     Attempts,
+    AutoReview,
 }
 
 pub(crate) struct ReviewSettingsView {
@@ -37,6 +39,7 @@ pub(crate) struct ReviewSettingsView {
     auto_resolve_enabled: bool,
     auto_resolve_attempts: u32,
     auto_attempt_index: usize,
+    auto_review_enabled: bool,
     app_event_tx: AppEventSender,
     state: ScrollState,
     is_complete: bool,
@@ -60,6 +63,7 @@ impl ReviewSettingsView {
         review_reasoning: ReasoningEffort,
         auto_resolve_enabled: bool,
         auto_resolve_attempts: u32,
+        auto_review_enabled: bool,
         app_event_tx: AppEventSender,
     ) -> Self {
         let mut state = ScrollState::new();
@@ -79,6 +83,7 @@ impl ReviewSettingsView {
             auto_resolve_enabled,
             auto_resolve_attempts,
             auto_attempt_index: attempt_index,
+            auto_review_enabled,
             app_event_tx,
             state,
             is_complete: false,
@@ -119,15 +124,31 @@ impl ReviewSettingsView {
             .send(AppEvent::UpdateReviewAutoResolveAttempts(self.auto_resolve_attempts));
     }
 
+    fn toggle_auto_review(&mut self) {
+        self.auto_review_enabled = !self.auto_review_enabled;
+        self.app_event_tx
+            .send(AppEvent::UpdateAutoReviewEnabled(self.auto_review_enabled));
+    }
+
     fn open_review_model_selector(&self) {
         self.app_event_tx
             .send(AppEvent::ShowReviewModelSelector);
     }
 
     fn build_rows(&self) -> (Vec<RowData>, Vec<usize>, Vec<SelectionKind>) {
-        let rows = vec![RowData::CustomModel, RowData::Toggle, RowData::Attempts];
-        let selection_rows = vec![0, 1, 2];
-        let selection_kinds = vec![SelectionKind::Model, SelectionKind::Toggle, SelectionKind::Attempts];
+        let rows = vec![
+            RowData::CustomModel,
+            RowData::Toggle,
+            RowData::Attempts,
+            RowData::AutoReview,
+        ];
+        let selection_rows = vec![0, 1, 2, 3];
+        let selection_kinds = vec![
+            SelectionKind::Model,
+            SelectionKind::Toggle,
+            SelectionKind::Attempts,
+            SelectionKind::AutoReview,
+        ];
         (rows, selection_rows, selection_kinds)
     }
 
@@ -296,6 +317,36 @@ impl ReviewSettingsView {
                 }
                 Line::from(spans)
             }
+            RowData::AutoReview => {
+                let label_style = if selected {
+                    Style::default()
+                        .fg(colors::primary())
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(colors::text()).add_modifier(Modifier::BOLD)
+                };
+                let status_span = if self.auto_review_enabled {
+                    Span::styled("On", Style::default().fg(colors::success()))
+                } else {
+                    Span::styled("Off", Style::default().fg(colors::text_dim()))
+                };
+                let mut spans = vec![
+                    Span::styled(arrow, arrow_style),
+                    Span::styled("Auto Review", label_style),
+                    Span::raw("  "),
+                    status_span,
+                ];
+                if selected {
+                    let hint = if self.auto_review_enabled {
+                        "(press Enter to disable)"
+                    } else {
+                        "(press Enter to enable)"
+                    };
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled(hint, Style::default().fg(colors::text_dim())));
+                }
+                Line::from(spans)
+            }
         }
     }
 
@@ -336,6 +387,7 @@ impl ReviewSettingsView {
                     match kind {
                         SelectionKind::Toggle => self.toggle_auto_resolve(),
                         SelectionKind::Attempts => self.adjust_auto_resolve_attempts(false),
+                        SelectionKind::AutoReview => self.toggle_auto_review(),
                         SelectionKind::Model => {}
                     }
                 }
@@ -345,6 +397,7 @@ impl ReviewSettingsView {
                     match kind {
                         SelectionKind::Toggle => self.toggle_auto_resolve(),
                         SelectionKind::Attempts => self.adjust_auto_resolve_attempts(true),
+                        SelectionKind::AutoReview => self.toggle_auto_review(),
                         SelectionKind::Model => {}
                     }
                 }
@@ -355,6 +408,7 @@ impl ReviewSettingsView {
                     match kind {
                         SelectionKind::Toggle => self.toggle_auto_resolve(),
                         SelectionKind::Attempts => self.adjust_auto_resolve_attempts(true),
+                        SelectionKind::AutoReview => self.toggle_auto_review(),
                         SelectionKind::Model => {
                             if let Some(sel) = self.state.selected_idx {
                                 if let Some(row) = self.build_rows().0.get(sel) {

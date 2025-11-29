@@ -705,6 +705,10 @@ pub struct Tui {
     /// Remember whether Auto Resolve is enabled for `/review` flows.
     #[serde(default)]
     pub review_auto_resolve: bool,
+
+    /// Run a background `/review` after turns that modify code.
+    #[serde(default)]
+    pub auto_review_enabled: bool,
 }
 
 // Important: Provide a manual Default so that when no config file exists and we
@@ -725,6 +729,7 @@ impl Default for Tui {
             notifications: Notifications::default(),
             alternate_screen: true,
             review_auto_resolve: false,
+            auto_review_enabled: false,
         }
     }
 }

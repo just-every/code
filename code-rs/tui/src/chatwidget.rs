@@ -31,7 +31,6 @@ use code_common::elapsed::format_duration;
 use code_common::model_presets::builtin_model_presets;
 use code_common::model_presets::clamp_reasoning_effort_for_model;
 use code_common::model_presets::ModelPreset;
-use code_core::ConversationManager;
 use code_core::agent_defaults::{agent_model_spec, enabled_agent_model_specs};
 use code_core::smoke_test_agent_blocking;
 use code_core::config::Config;
@@ -250,6 +249,7 @@ use code_core::protocol::PatchApplyEndEvent;
 use code_core::protocol::TaskCompleteEvent;
 use code_core::protocol::TokenUsage;
 use code_core::protocol::TurnDiffEvent;
+use code_core::ConversationManager;
 use code_core::codex::compact::COMPACTION_CHECKPOINT_MESSAGE;
 use crate::bottom_pane::{
     AutoActiveViewModel,
@@ -1303,6 +1303,12 @@ impl PendingAgentUpdate {
     fn key(&self) -> String { format!("{}:{}", self.cfg.name.to_ascii_lowercase(), self.id) }
 }
 
+#[derive(Clone, Debug)]
+struct BackgroundReviewState {
+    worktree_path: std::path::PathBuf,
+    branch: String,
+}
+
 pub(crate) struct ChatWidget<'a> {
     app_event_tx: AppEventSender,
     code_op_tx: UnboundedSender<Op>,
@@ -1385,6 +1391,9 @@ pub(crate) struct ChatWidget<'a> {
     active_review_hint: Option<String>,
     active_review_prompt: Option<String>,
     auto_resolve_state: Option<AutoResolveState>,
+    auto_resolve_attempts_baseline: u32,
+    turn_had_code_edits: bool,
+    background_review: Option<BackgroundReviewState>,
     // New: coordinator-provided hints for the next Auto turn
     pending_turn_descriptor: Option<TurnDescriptor>,
     pending_auto_turn_config: Option<TurnConfig>,
@@ -5213,6 +5222,9 @@ impl ChatWidget<'_> {
             active_review_hint: None,
             active_review_prompt: None,
             auto_resolve_state: None,
+            auto_resolve_attempts_baseline: config.auto_drive.auto_resolve_review_attempts.get(),
+            turn_had_code_edits: false,
+            background_review: None,
             pending_turn_descriptor: None,
             pending_auto_turn_config: None,
             overall_task_status: "preparing".to_string(),
@@ -5544,6 +5556,9 @@ impl ChatWidget<'_> {
             active_review_hint: None,
             active_review_prompt: None,
             auto_resolve_state: None,
+            auto_resolve_attempts_baseline: config.auto_drive.auto_resolve_review_attempts.get(),
+            turn_had_code_edits: false,
+            background_review: None,
             pending_turn_descriptor: None,
             pending_auto_turn_config: None,
             overall_task_status: "preparing".to_string(),
@@ -11542,6 +11557,7 @@ impl ChatWidget<'_> {
                 // This runs once per turn and is intentionally later than
                 // ToolEnd to avoid the earlier regression where we finalized
                 // after every tool call.
+                self.turn_had_code_edits = false;
                 self.cleared_lingering_execs_this_turn = false;
                 self.ensure_lingering_execs_cleared();
 
@@ -11622,6 +11638,7 @@ impl ChatWidget<'_> {
                 self.stream_state.current_kind = None;
                 // Final re-check for idle state
                 self.maybe_hide_spinner();
+                self.maybe_trigger_auto_review();
                 self.emit_turn_complete_notification(last_agent_message);
                 self.suppress_next_agent_hint = false;
                 self.mark_needs_redraw();
@@ -12643,6 +12660,7 @@ impl ChatWidget<'_> {
             }
             EventMsg::TurnDiff(TurnDiffEvent { unified_diff }) => {
                 info!("TurnDiffEvent: {unified_diff}");
+                self.turn_had_code_edits = true;
             }
             EventMsg::BackgroundEvent(BackgroundEventEvent { message }) => {
                 info!("BackgroundEvent: {message}");
@@ -14109,6 +14127,7 @@ impl ChatWidget<'_> {
 
     fn build_review_settings_content(&mut self) -> ReviewSettingsContent {
         let auto_resolve_enabled = self.config.tui.review_auto_resolve;
+        let auto_review_enabled = self.config.tui.auto_review_enabled;
         let attempts = self.configured_auto_resolve_re_reviews();
         let view = ReviewSettingsView::new(
             self.config.review_use_chat_model,
@@ -14116,6 +14135,7 @@ impl ChatWidget<'_> {
             self.config.review_model_reasoning_effort,
             auto_resolve_enabled,
             attempts,
+            auto_review_enabled,
             self.app_event_tx.clone(),
         );
         ReviewSettingsContent::new(view)
@@ -15429,6 +15449,7 @@ fi\n\
         self.config.auto_drive.cross_check_enabled = cross_check_enabled;
         self.config.auto_drive.qa_automation_enabled = qa_automation_enabled;
         self.config.auto_drive.continue_mode = auto_continue_to_config(continue_mode);
+        self.restore_auto_resolve_attempts_if_lost();
 
         if let Ok(home) = code_core::config::find_code_home() {
             if let Err(err) = code_core::config::set_auto_drive_settings(
@@ -19262,6 +19283,8 @@ Have we met every part of this goal and is there no further work to do?"#
             self.config.auto_drive.model_reasoning_effort = self.config.model_reasoning_effort;
         }
 
+        self.restore_auto_resolve_attempts_if_lost();
+
         if let Ok(home) = code_core::config::find_code_home() {
             if let Err(err) = code_core::config::set_auto_drive_settings(
                 &home,
@@ -20397,6 +20420,10 @@ Have we met every part of this goal and is there no further work to do?"#
         } else {
             format!("Auto Resolve: On (max {} re-reviews)", attempts)
         };
+        let auto_review_label = format!(
+            "Auto Review: {}",
+            Self::on_off_label(self.config.tui.auto_review_enabled)
+        );
         let model_part = if self.config.review_use_chat_model {
             "Model: Follow Chat Mode".to_string()
         } else {
@@ -20412,7 +20439,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 Self::format_reasoning_effort(self.config.review_model_reasoning_effort)
             )
         };
-        Some(format!("{} · {}", model_part, auto_label))
+        Some(format!("{} · {} · {}", model_part, auto_label, auto_review_label))
     }
 
     fn settings_summary_limits(&self) -> Option<String> {
@@ -25296,8 +25323,162 @@ Have we met every part of this goal and is there no further work to do?"#
     }
 }
 
+fn summarize_review_output(output: &ReviewOutputEvent) -> Option<String> {
+    let explanation = output.overall_explanation.trim();
+    if !explanation.is_empty() {
+        return Some(explanation.to_string());
+    }
+    output
+        .findings
+        .first()
+        .and_then(|finding| {
+            let title = finding.title.trim();
+            if !title.is_empty() {
+                return Some(title.to_string());
+            }
+            let body = finding.body.trim();
+            if !body.is_empty() {
+                return Some(body.to_string());
+            }
+            None
+        })
+}
+
+async fn run_background_review(
+    mut config: Config,
+    auth_manager: Arc<AuthManager>,
+    app_event_tx: AppEventSender,
+    auto_resolve: bool,
+) {
+    let outcome = async {
+        let git_root = code_core::git_worktree::get_git_root_from(&config.cwd)
+            .await
+            .map_err(|e| format!("failed to detect git root: {e}"))?;
+
+        let branch_name = format!("auto-review-{}", Utc::now().format("%Y%m%d-%H%M%S"));
+        let (worktree_path, branch) = code_core::git_worktree::setup_worktree(&git_root, &branch_name)
+            .await
+            .map_err(|e| format!("failed to create worktree: {e}"))?;
+
+        code_core::git_worktree::copy_uncommitted_to_worktree(&git_root, &worktree_path)
+            .await
+            .map_err(|e| format!("failed to copy uncommitted changes into auto review worktree: {e}"))?;
+
+        app_event_tx.send(AppEvent::BackgroundReviewStarted {
+            worktree_path: worktree_path.clone(),
+            branch: branch.clone(),
+        });
+
+        config.cwd = worktree_path.clone();
+        config.tui.review_auto_resolve = auto_resolve;
+
+        let manager = ConversationManager::new(auth_manager.clone(), SessionSource::Cli);
+        let convo = manager
+            .new_conversation(config)
+            .await
+            .map_err(|e| format!("failed to start background session: {e}"))?;
+        let conversation = convo.conversation;
+
+        let review_request = ReviewRequest {
+            prompt: "Review the current workspace changes and highlight bugs, regressions, risky patterns, and missing tests before merge.".to_string(),
+            user_facing_hint: "current workspace changes".to_string(),
+            metadata: Some(ReviewContextMetadata {
+                scope: Some("workspace".to_string()),
+                ..Default::default()
+            }),
+        };
+
+        conversation
+            .submit(Op::Review { review_request })
+            .await
+            .map_err(|e| format!("failed to submit review: {e}"))?;
+
+        let mut findings: Option<ReviewOutputEvent> = None;
+        let mut error: Option<String> = None;
+
+        while let Ok(event) = conversation.next_event().await {
+            match event.msg {
+                EventMsg::ExitedReviewMode(output) => {
+                    if let Some(out) = output {
+                        findings = Some(out);
+                    }
+                }
+                EventMsg::Error(ErrorEvent { message }) => {
+                    error = Some(message);
+                    break;
+                }
+                EventMsg::TaskComplete(_) => break,
+                _ => {}
+            }
+        }
+
+        let (has_findings, count, summary) = if let Some(out) = findings {
+            let count = out.findings.len();
+            let summary = summarize_review_output(&out);
+            (count > 0, count, summary)
+        } else {
+            (false, 0, None)
+        };
+
+        if let Some(err) = error {
+            Err(err)
+        } else {
+            Ok((worktree_path, branch, has_findings, count, summary))
+        }
+    }
+    .await;
+
+    match outcome {
+        Ok((worktree_path, branch, has_findings, findings, summary)) => {
+            app_event_tx.send(AppEvent::BackgroundReviewFinished {
+                worktree_path,
+                branch,
+                has_findings,
+                findings,
+                summary,
+                error: None,
+            });
+        }
+        Err(err) => {
+            app_event_tx.send(AppEvent::BackgroundReviewFinished {
+                worktree_path: std::path::PathBuf::new(),
+                branch: String::new(),
+                has_findings: false,
+                findings: 0,
+                summary: None,
+                error: Some(err),
+            });
+        }
+    }
+}
+
 #[cfg(test)]
-    mod tests {
+static AUTO_REVIEW_STUB: once_cell::sync::Lazy<std::sync::Mutex<Option<Box<dyn FnMut() + Send>>>> =
+    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(None));
+
+#[cfg(test)]
+struct AutoReviewStubGuard;
+
+#[cfg(test)]
+impl AutoReviewStubGuard {
+    fn install<F: FnMut() + Send + 'static>(f: F) -> Self {
+        let mut guard = AUTO_REVIEW_STUB.lock().unwrap();
+        *guard = Some(Box::new(f));
+        AutoReviewStubGuard
+    }
+}
+
+#[cfg(test)]
+impl Drop for AutoReviewStubGuard {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = AUTO_REVIEW_STUB.lock() {
+            *guard = None;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
         use super::*;
         use super::{
             CAPTURE_AUTO_TURN_COMMIT_STUB,
@@ -25346,12 +25527,88 @@ Have we met every part of this goal and is there no further work to do?"#
         TaskCompleteEvent,
     };
     use code_core::protocol::AgentInfo as CoreAgentInfo;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::path::PathBuf;
 
     #[test]
     fn format_model_name_capitalizes_codex_mini() {
         let mut harness = ChatWidgetHarness::new();
         let formatted = harness.chat().format_model_name("gpt-5.1-codex-mini");
         assert_eq!(formatted, "GPT-5.1-Codex-Mini");
+    }
+
+    #[test]
+    fn auto_review_triggers_when_enabled_and_diff_seen() {
+        let _guard = AutoReviewStubGuard::install(|| {});
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+        chat.config.tui.auto_review_enabled = true;
+        chat.turn_had_code_edits = true;
+        chat.background_review = None;
+
+        chat.maybe_trigger_auto_review();
+
+        assert!(chat.background_review.is_some(), "background review should start");
+    }
+
+    #[test]
+    fn auto_review_does_not_duplicate_while_running() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_clone = calls.clone();
+        let _guard = AutoReviewStubGuard::install(move || {
+            calls_clone.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+        chat.config.tui.auto_review_enabled = true;
+        chat.turn_had_code_edits = true;
+        chat.background_review = None;
+
+        chat.maybe_trigger_auto_review();
+        // Already running; second trigger should no-op
+        chat.turn_had_code_edits = true;
+        chat.maybe_trigger_auto_review();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn background_review_completion_resumes_auto_and_posts_summary() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.config.tui.auto_review_enabled = true;
+        chat.auto_state.on_begin_review(false);
+
+        chat.background_review = Some(BackgroundReviewState {
+            worktree_path: PathBuf::from("/tmp/wt"),
+            branch: "auto-review-branch".to_string(),
+        });
+
+        chat.on_background_review_finished(
+            PathBuf::from("/tmp/wt"),
+            "auto-review-branch".to_string(),
+            true,
+            2,
+            Some("Short summary".to_string()),
+            None,
+        );
+
+        assert!(
+            !chat.auto_state.awaiting_review(),
+            "auto drive should resume after background review completes"
+        );
+
+        let summary_present = chat.history_cells.iter().any(|cell| {
+            cell.display_lines_trimmed().iter().any(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.contains("Short summary"))
+            })
+        });
+        assert!(summary_present, "summary should be posted to history");
     }
 
     #[test]
@@ -28564,6 +28821,155 @@ impl ChatWidget<'_> {
         self.request_redraw();
     }
 
+    pub(crate) fn set_auto_review_enabled(&mut self, enabled: bool) {
+        if self.config.tui.auto_review_enabled == enabled {
+            return;
+        }
+
+        self.config.tui.auto_review_enabled = enabled;
+
+        let message = if let Ok(home) = code_core::config::find_code_home() {
+            match code_core::config::set_tui_auto_review_enabled(&home, enabled) {
+                Ok(_) => {
+                    tracing::info!("Persisted auto review toggle: {}", enabled);
+                    if enabled {
+                        "Auto Review enabled."
+                    } else {
+                        "Auto Review disabled."
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to persist auto review toggle: {}", e);
+                    if enabled {
+                        "Auto Review enabled for this session (failed to persist)."
+                    } else {
+                        "Auto Review disabled for this session (failed to persist)."
+                    }
+                }
+            }
+        } else {
+            tracing::warn!("Could not locate Codex home to persist auto review toggle");
+            if enabled {
+                "Auto Review enabled for this session."
+            } else {
+                "Auto Review disabled for this session."
+            }
+        };
+
+        self.bottom_pane.flash_footer_notice(message.to_string());
+        self.refresh_settings_overview_rows();
+        self.request_redraw();
+    }
+
+    fn maybe_trigger_auto_review(&mut self) {
+        if !self.config.tui.auto_review_enabled {
+            return;
+        }
+        if self.background_review.is_some() {
+            return;
+        }
+        if !self.turn_had_code_edits {
+            return;
+        }
+        if self.is_review_flow_active() {
+            return;
+        }
+
+        self.launch_background_review();
+    }
+
+    fn launch_background_review(&mut self) {
+        // Record state immediately to avoid duplicate launches when multiple
+        // TaskComplete events fire in quick succession.
+        self.turn_had_code_edits = false;
+        self.background_review = Some(BackgroundReviewState {
+            worktree_path: std::path::PathBuf::new(),
+            branch: String::new(),
+        });
+
+        self.push_background_tail("Auto review: preparing background worktree...".to_string());
+
+        #[cfg(test)]
+        if let Some(stub) = AUTO_REVIEW_STUB.lock().unwrap().as_mut() {
+            (stub)();
+            return;
+        }
+
+        let config = self.config.clone();
+        let auth_manager = self.auth_manager.clone();
+        let app_event_tx = self.app_event_tx.clone();
+        let auto_resolve = self.config.tui.review_auto_resolve;
+        tokio::spawn(async move {
+            run_background_review(config, auth_manager, app_event_tx, auto_resolve).await;
+        });
+    }
+
+    pub(crate) fn on_background_review_started(
+        &mut self,
+        worktree_path: std::path::PathBuf,
+        branch: String,
+    ) {
+        if let Some(state) = self.background_review.as_mut() {
+            state.worktree_path = worktree_path.clone();
+            state.branch = branch.clone();
+        }
+        let msg = format!(
+            "Auto review running in background worktree '{}' ({}).",
+            branch,
+            worktree_path.display()
+        );
+        self.push_background_tail(msg);
+        self.request_redraw();
+    }
+
+    pub(crate) fn on_background_review_finished(
+        &mut self,
+        worktree_path: std::path::PathBuf,
+        branch: String,
+        has_findings: bool,
+        findings: usize,
+        summary: Option<String>,
+        error: Option<String>,
+    ) {
+        let message = if let Some(err) = error {
+            format!(
+                "Auto review in worktree '{}' failed: {}",
+                branch,
+                err
+            )
+        } else if has_findings {
+            let mut base = format!(
+                "Auto review found {} issue(s) in '{}'. Merge that worktree to apply fixes.",
+                findings.max(1),
+                branch
+            );
+            if let Some(summary_text) = summary.as_ref().and_then(|s| {
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            }) {
+                base.push_str(" Summary: ");
+                base.push_str(summary_text);
+            }
+            base.push_str(&format!(" Path: {}", worktree_path.display()));
+            base
+        } else {
+            format!(
+                "Auto review in '{}' completed with no blocking issues ({}).",
+                branch,
+                worktree_path.display()
+            )
+        };
+
+        self.push_background_tail(message);
+        self.background_review = None;
+        self.maybe_resume_auto_after_review();
+        self.request_redraw();
+    }
+
     pub(crate) fn set_review_auto_resolve_attempts(&mut self, attempts: u32) {
         use code_core::config_types::AutoResolveAttemptLimit;
 
@@ -28571,6 +28977,8 @@ impl ChatWidget<'_> {
             tracing::warn!("Ignoring invalid auto-resolve attempt value: {}", attempts);
             return;
         };
+
+        self.auto_resolve_attempts_baseline = limit.get();
 
         if self
             .config
@@ -28620,6 +29028,24 @@ impl ChatWidget<'_> {
         self.bottom_pane.flash_footer_notice(message);
         self.refresh_settings_overview_rows();
         self.request_redraw();
+    }
+
+    fn restore_auto_resolve_attempts_if_lost(&mut self) {
+        if self.auto_resolve_attempts_baseline == 0 {
+            return;
+        }
+        let current = self
+            .config
+            .auto_drive
+            .auto_resolve_review_attempts
+            .get();
+        if current == 0 {
+            if let Ok(limit) = code_core::config_types::AutoResolveAttemptLimit::try_new(
+                self.auto_resolve_attempts_baseline,
+            ) {
+                self.config.auto_drive.auto_resolve_review_attempts = limit;
+            }
+        }
     }
 
     fn update_review_settings_model_row(&mut self) {

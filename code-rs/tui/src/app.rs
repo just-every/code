@@ -2448,6 +2448,11 @@ impl App<'_> {
                         widget.set_review_auto_resolve_enabled(enabled);
                     }
                 }
+                AppEvent::UpdateAutoReviewEnabled(enabled) => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.set_auto_review_enabled(enabled);
+                    }
+                }
                 AppEvent::UpdateReviewAutoResolveAttempts(attempts) => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.set_review_auto_resolve_attempts(attempts);
@@ -2482,6 +2487,23 @@ impl App<'_> {
                             preparation_label,
                             metadata,
                             auto_resolve,
+                        );
+                    }
+                }
+                AppEvent::BackgroundReviewStarted { worktree_path, branch } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.on_background_review_started(worktree_path, branch);
+                    }
+                }
+                AppEvent::BackgroundReviewFinished { worktree_path, branch, has_findings, findings, summary, error } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.on_background_review_finished(
+                            worktree_path,
+                            branch,
+                            has_findings,
+                            findings,
+                            summary.clone(),
+                            error.clone(),
                         );
                     }
                 }
