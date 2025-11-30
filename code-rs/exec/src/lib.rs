@@ -59,6 +59,7 @@ use code_auto_drive_core::AUTO_RESOLVE_REVIEW_FOLLOWUP;
 use code_auto_drive_core::AutoResolvePhase;
 use code_auto_drive_core::AutoResolveState;
 use code_core::{entry_to_rollout_path, SessionCatalog, SessionQuery};
+use code_core::protocol::SandboxPolicy;
 
 const AUTO_DRIVE_TEST_SUFFIX: &str = "After planning, but before you start, please ensure you can test the outcome of your changes. Test first to ensure it's failing, then again at the end to ensure it passes. Do not use work arounds or mock code to pass - solve the underlying issue. Create new tests as you work if needed. Once done, clean up your tests unless added to an existing test suite.";
 
@@ -256,7 +257,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         }
     };
 
-    let config = Config::load_with_cli_overrides(cli_kv_overrides, overrides)?;
+    let mut config = Config::load_with_cli_overrides(cli_kv_overrides, overrides)?;
     let slash_context = SlashContext {
         agents: &config.agents,
         subagent_commands: &config.subagent_commands,
@@ -280,6 +281,14 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
             eprintln!("{msg}");
             std::process::exit(1);
         }
+    }
+
+    let review_auto_resolve_requested = review_request.is_some() && config.tui.review_auto_resolve;
+    if review_auto_resolve_requested && matches!(config.sandbox_policy, SandboxPolicy::ReadOnly) {
+        config.sandbox_policy = SandboxPolicy::new_workspace_write_policy();
+        eprintln!(
+            "Auto-resolve enabled for /review; upgrading sandbox to workspace-write so fixes can be applied."
+        );
     }
 
     let mut final_review_output: Option<code_core::protocol::ReviewOutputEvent> = None;
