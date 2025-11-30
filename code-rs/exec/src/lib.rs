@@ -55,6 +55,7 @@ use crate::cli::Command as ExecCommand;
 use crate::event_processor::CodexStatus;
 use crate::event_processor::EventProcessor;
 use crate::slash::{process_exec_slash_command, SlashContext, SlashDispatch};
+use code_auto_drive_core::AUTO_RESOLVE_REVIEW_FOLLOWUP;
 use code_core::{entry_to_rollout_path, SessionCatalog, SessionQuery};
 
 const AUTO_DRIVE_TEST_SUFFIX: &str = "After planning, but before you start, please ensure you can test the outcome of your changes. Test first to ensure it's failing, then again at the end to ensure it passes. Do not use work arounds or mock code to pass - solve the underlying issue. Create new tests as you work if needed. Once done, clean up your tests unless added to an existing test suite.";
@@ -278,7 +279,11 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         }
     }
 
-    let stop_on_task_complete = auto_drive_goal.is_none();
+    let mut auto_resolve_enabled = review_request.is_some() && config.tui.review_auto_resolve;
+    let mut auto_resolve_attempts: u32 = 0;
+    let max_auto_resolve_attempts: u32 = config.auto_drive.auto_resolve_review_attempts.get();
+    let base_review_request = review_request.clone();
+    let stop_on_task_complete = auto_drive_goal.is_none() && !auto_resolve_enabled;
     let mut event_processor: Box<dyn EventProcessor> = if json_mode {
         Box::new(EventProcessorWithJsonOutput::new(last_message_file.clone()))
     } else {
@@ -518,15 +523,61 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
     // Track whether a fatal error was reported by the server so we can
     // exit with a non-zero status for automation-friendly signaling.
     let mut error_seen = false;
+    let mut shutdown_requested = false;
+    let mut task_complete_seen = false;
     while let Some(event) = rx.recv().await {
         if matches!(event.msg, EventMsg::Error(_)) {
             error_seen = true;
         }
+
+        // Handle review auto-resolve: chain follow-up reviews when enabled.
+        match &event.msg {
+            EventMsg::ExitedReviewMode(Some(output)) if auto_resolve_enabled => {
+                auto_resolve_attempts = auto_resolve_attempts.saturating_add(1);
+
+                let has_findings = !output.findings.is_empty();
+                let attempts_left = auto_resolve_attempts < max_auto_resolve_attempts;
+
+                if has_findings && attempts_left {
+                    if let Some(req) = base_review_request.clone() {
+                        // Re-run review with a follow-up hint to continue searching.
+                        let mut prompt = req.prompt.clone();
+                        prompt.push_str("\n\n");
+                        prompt.push_str(AUTO_RESOLVE_REVIEW_FOLLOWUP);
+                        let followup_request = ReviewRequest {
+                            prompt,
+                            user_facing_hint: req.user_facing_hint.clone(),
+                            metadata: req.metadata.clone(),
+                        };
+                        let _ = conversation.submit(Op::Review { review_request: followup_request }).await?;
+                        // Continue processing this event so it still renders.
+                    }
+                } else {
+                    auto_resolve_enabled = false;
+                    if task_complete_seen && !shutdown_requested {
+                        shutdown_requested = true;
+                        conversation.submit(Op::Shutdown).await?;
+                    }
+                }
+            }
+            EventMsg::TaskComplete(_) => {
+                task_complete_seen = true;
+                if !auto_resolve_enabled && !shutdown_requested {
+                    shutdown_requested = true;
+                    conversation.submit(Op::Shutdown).await?;
+                }
+            }
+            _ => {}
+        }
+
         let shutdown: CodexStatus = event_processor.process_event(event);
         match shutdown {
             CodexStatus::Running => continue,
             CodexStatus::InitiateShutdown => {
-                conversation.submit(Op::Shutdown).await?;
+                if !shutdown_requested {
+                    shutdown_requested = true;
+                    conversation.submit(Op::Shutdown).await?;
+                }
             }
             CodexStatus::Shutdown => {
                 break;
