@@ -25518,7 +25518,7 @@ async fn run_background_review(config: Config, app_event_tx: AppEventSender) {
                 review_model,
                 Some("Auto Review".to_string()),
                 review_prompt,
-                Some(format!("Snapshot {snapshot_id}")),
+                None,
                 None,
                 Vec::new(),
                 false,
