@@ -56,6 +56,8 @@ use crate::event_processor::CodexStatus;
 use crate::event_processor::EventProcessor;
 use crate::slash::{process_exec_slash_command, SlashContext, SlashDispatch};
 use code_auto_drive_core::AUTO_RESOLVE_REVIEW_FOLLOWUP;
+use code_auto_drive_core::AutoResolvePhase;
+use code_auto_drive_core::AutoResolveState;
 use code_core::{entry_to_rollout_path, SessionCatalog, SessionQuery};
 
 const AUTO_DRIVE_TEST_SUFFIX: &str = "After planning, but before you start, please ensure you can test the outcome of your changes. Test first to ensure it's failing, then again at the end to ensure it passes. Do not use work arounds or mock code to pass - solve the underlying issue. Create new tests as you work if needed. Once done, clean up your tests unless added to an existing test suite.";
@@ -280,12 +282,22 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         }
     }
 
-    let mut auto_resolve_enabled = review_request.is_some() && config.tui.review_auto_resolve;
     let mut final_review_output: Option<code_core::protocol::ReviewOutputEvent> = None;
-    let mut auto_resolve_attempts: u32 = 0;
+    let mut review_runs: u32 = 0;
     let max_auto_resolve_attempts: u32 = config.auto_drive.auto_resolve_review_attempts.get();
-    let base_review_request = review_request.clone();
-    let stop_on_task_complete = auto_drive_goal.is_none() && !auto_resolve_enabled;
+    let mut auto_resolve_state: Option<AutoResolveState> = review_request.as_ref().and_then(|req| {
+        if config.tui.review_auto_resolve {
+            Some(AutoResolveState::new_with_limit(
+                req.prompt.clone(),
+                req.user_facing_hint.clone(),
+                req.metadata.clone(),
+                max_auto_resolve_attempts,
+            ))
+        } else {
+            None
+        }
+    });
+    let stop_on_task_complete = auto_drive_goal.is_none() && auto_resolve_state.is_none();
     let mut event_processor: Box<dyn EventProcessor> = if json_mode {
         Box::new(EventProcessorWithJsonOutput::new(last_message_file.clone()))
     } else {
@@ -526,7 +538,6 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
     // exit with a non-zero status for automation-friendly signaling.
     let mut error_seen = false;
     let mut shutdown_requested = false;
-    let mut task_complete_seen = false;
     while let Some(event) = rx.recv().await {
         if matches!(event.msg, EventMsg::Error(_)) {
             error_seen = true;
@@ -534,43 +545,169 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
 
         // Handle review auto-resolve: chain follow-up reviews when enabled.
         match &event.msg {
-            EventMsg::ExitedReviewMode(Some(output)) => {
-                final_review_output = Some(output.clone());
-
-                if !auto_resolve_enabled {
-                    // fall through to normal processing
-                } else {
-                auto_resolve_attempts = auto_resolve_attempts.saturating_add(1);
-
-                let has_findings = !output.findings.is_empty();
-                let attempts_left = auto_resolve_attempts < max_auto_resolve_attempts;
-
-                if has_findings && attempts_left {
-                    if let Some(req) = base_review_request.clone() {
-                        // Re-run review with a follow-up hint to continue searching.
-                        let mut prompt = req.prompt.clone();
-                        prompt.push_str("\n\n");
-                        prompt.push_str(AUTO_RESOLVE_REVIEW_FOLLOWUP);
-                        let followup_request = ReviewRequest {
-                            prompt,
-                            user_facing_hint: req.user_facing_hint.clone(),
-                            metadata: req.metadata.clone(),
-                        };
-                        let _ = conversation.submit(Op::Review { review_request: followup_request }).await?;
-                        // Continue processing this event so it still renders.
-                    }
-                } else {
-                    auto_resolve_enabled = false;
-                    if task_complete_seen && !shutdown_requested {
-                        shutdown_requested = true;
-                        conversation.submit(Op::Shutdown).await?;
-                    }
+            EventMsg::ExitedReviewMode(output_opt) => {
+                review_runs = review_runs.saturating_add(1);
+                if let Some(output) = output_opt {
+                    final_review_output = Some(output.clone());
                 }
+
+                if let Some(state) = auto_resolve_state.as_mut() {
+                    state.attempt = state.attempt.saturating_add(1);
+                    state.last_review = output_opt.clone();
+                    state.last_fix_message = None;
+
+                    match output_opt {
+                        Some(output) if output.findings.is_empty() => {
+                            eprintln!("Auto-resolve: review reported no actionable findings. Exiting.");
+                            auto_resolve_state = None;
+                        }
+                        Some(_) if state.max_attempts > 0 && state.attempt > state.max_attempts => {
+                            let limit = state.max_attempts;
+                            let msg = if limit == 1 {
+                                "Auto-resolve: reached the review attempt limit (1 allowed re-review). Handing control back.".to_string()
+                            } else {
+                                format!(
+                                    "Auto-resolve: reached the review attempt limit ({limit} allowed re-reviews). Handing control back."
+                                )
+                            };
+                            eprintln!("{msg}");
+                            auto_resolve_state = None;
+                        }
+                        Some(output) => {
+                            state.phase = AutoResolvePhase::PendingFix {
+                                review: output.clone(),
+                            };
+                        }
+                        None => {
+                            eprintln!(
+                                "Auto-resolve: review ended without findings. Please inspect manually."
+                            );
+                            auto_resolve_state = None;
+                        }
+                    }
                 }
             }
-            EventMsg::TaskComplete(_) => {
-                task_complete_seen = true;
-                if !auto_resolve_enabled && !shutdown_requested {
+            EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
+                if let Some(state_snapshot) = auto_resolve_state.clone() {
+                    match state_snapshot.phase {
+                        AutoResolvePhase::PendingFix { review } => {
+                            if let Some(state) = auto_resolve_state.as_mut() {
+                                state.phase = AutoResolvePhase::AwaitingFix {
+                                    review: review.clone(),
+                                };
+                            }
+                            dispatch_auto_fix(&conversation, &review).await?;
+                        }
+                        AutoResolvePhase::AwaitingFix { review } => {
+                            if let Some(state) = auto_resolve_state.as_mut() {
+                                state.last_fix_message = last_agent_message.clone();
+                                state.phase = AutoResolvePhase::AwaitingJudge {
+                                    review: review.clone(),
+                                };
+                            }
+                            dispatch_auto_judge(&conversation, &review, last_agent_message.clone()).await?;
+                        }
+                        AutoResolvePhase::AwaitingJudge { ref review } => {
+                            let review = review.clone();
+                            let decision = last_agent_message
+                                .as_deref()
+                                .and_then(parse_auto_resolve_decision);
+
+                            let Some(decision) = decision else {
+                                eprintln!(
+                                    "Auto-resolve: expected JSON status but received something else. Stopping automation."
+                                );
+                                auto_resolve_state = None;
+                                continue;
+                            };
+
+                            let status = decision.status.to_ascii_lowercase();
+                            let rationale = decision.rationale.unwrap_or_default();
+                            match status.as_str() {
+                                "no_issue" => {
+                                    let allowed_reviews = state_snapshot.max_attempts.saturating_add(1);
+                                    let limit = state_snapshot.max_attempts;
+                                    let attempt_limit_reached = state_snapshot.attempt >= allowed_reviews;
+                                    if attempt_limit_reached {
+                                        let msg = match limit {
+                                            0 => "Auto-resolve: agent reported no remaining issues but automation is disabled (limit 0). Handing control back.".to_string(),
+                                            1 => "Auto-resolve: agent reported no remaining issues but reached the single allowed re-review. Handing control back.".to_string(),
+                                            _ => format!(
+                                                "Auto-resolve: agent reported no remaining issues but reached the review attempt limit ({limit} allowed re-reviews). Handing control back."
+                                            ),
+                                        };
+                                        eprintln!("{msg}");
+                                        auto_resolve_state = None;
+                                    } else {
+                                        if rationale.trim().is_empty() {
+                                            eprintln!(
+                                                "Auto-resolve: no remaining issues. Running follow-up /review to confirm."
+                                            );
+                                        } else {
+                                            eprintln!(
+                                                "Auto-resolve: no remaining issues. {rationale} Running follow-up /review to confirm."
+                                            );
+                                        }
+                                        if let Some(state) = auto_resolve_state.as_mut() {
+                                            state.phase = AutoResolvePhase::WaitingForReview;
+                                        }
+                                        let followup_request = build_followup_review_request(&state_snapshot);
+                                        let _ = conversation
+                                            .submit(Op::Review {
+                                                review_request: followup_request,
+                                            })
+                                            .await?;
+                                    }
+                                }
+                                "continue_fix" => {
+                                    if let Some(state) = auto_resolve_state.as_mut() {
+                                        state.phase = AutoResolvePhase::AwaitingFix {
+                                            review: review.clone(),
+                                        };
+                                    }
+                                    dispatch_auto_continue(&conversation, &review).await?;
+                                }
+                                "review_again" => {
+                                    let allowed_reviews = state_snapshot.max_attempts.saturating_add(1);
+                                    if state_snapshot.attempt >= allowed_reviews {
+                                        let limit = state_snapshot.max_attempts;
+                                        let msg = match limit {
+                                            0 => "Auto-resolve: review-again requested but automation is disabled (limit 0). Stopping.".to_string(),
+                                            1 => "Auto-resolve: review-again requested but the attempt limit has been reached (1 allowed re-review). Stopping.".to_string(),
+                                            _ => format!(
+                                                "Auto-resolve: review-again requested but the attempt limit has been reached ({limit} allowed re-reviews). Stopping."
+                                            ),
+                                        };
+                                        eprintln!("{msg}");
+                                        auto_resolve_state = None;
+                                    } else {
+                                        eprintln!("Auto-resolve: running another /review pass.");
+                                        if let Some(state) = auto_resolve_state.as_mut() {
+                                            state.phase = AutoResolvePhase::WaitingForReview;
+                                        }
+                                        let followup_request = build_followup_review_request(&state_snapshot);
+                                        let _ = conversation
+                                            .submit(Op::Review {
+                                                review_request: followup_request,
+                                            })
+                                            .await?;
+                                    }
+                                }
+                                other => {
+                                    eprintln!(
+                                        "Auto-resolve: unexpected status '{other}'. Stopping automation."
+                                    );
+                                    auto_resolve_state = None;
+                                }
+                            }
+                        }
+                        AutoResolvePhase::WaitingForReview => {
+                            // Task complete from a review; handled in ExitedReviewMode.
+                        }
+                    }
+                }
+
+                if auto_resolve_state.is_none() && !shutdown_requested {
                     shutdown_requested = true;
                     conversation.submit(Op::Shutdown).await?;
                 }
@@ -596,6 +733,9 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         if let Ok(json) = serde_json::to_string_pretty(&output) {
             let _ = std::fs::write(path, json);
         }
+    }
+    if review_runs > 0 {
+        eprintln!("Review runs: {} (auto_resolve={} max_attempts={})", review_runs, config.tui.review_auto_resolve, max_auto_resolve_attempts);
     }
     if error_seen {
         std::process::exit(1);
@@ -908,6 +1048,153 @@ fn build_auto_prompt(
     }
 
     sections.join("\n\n")
+}
+
+async fn dispatch_auto_fix(
+    conversation: &Arc<CodexConversation>,
+    review: &code_core::protocol::ReviewOutputEvent,
+) -> anyhow::Result<()> {
+    let fix_prompt = build_fix_prompt(review);
+    let items: Vec<InputItem> = vec![InputItem::Text { text: fix_prompt }];
+    let _ = conversation.submit(Op::UserInput { items }).await?;
+    Ok(())
+}
+
+async fn dispatch_auto_judge(
+    conversation: &Arc<CodexConversation>,
+    review: &code_core::protocol::ReviewOutputEvent,
+    fix_message: Option<String>,
+) -> anyhow::Result<()> {
+    let judge_prompt = build_judge_prompt(review, fix_message);
+    let items: Vec<InputItem> = vec![InputItem::Text { text: judge_prompt }];
+    let _ = conversation.submit(Op::UserInput { items }).await?;
+    Ok(())
+}
+
+async fn dispatch_auto_continue(
+    conversation: &Arc<CodexConversation>,
+    review: &code_core::protocol::ReviewOutputEvent,
+) -> anyhow::Result<()> {
+    let continue_prompt = build_continue_prompt(review);
+    let items: Vec<InputItem> = vec![InputItem::Text { text: continue_prompt }];
+    let _ = conversation.submit(Op::UserInput { items }).await?;
+    Ok(())
+}
+
+fn build_followup_review_request(state: &AutoResolveState) -> ReviewRequest {
+    let mut prompt = state.prompt.trim_end().to_string();
+    if let Some(idx) = prompt.find(AUTO_RESOLVE_REVIEW_FOLLOWUP) {
+        prompt = prompt[..idx].trim_end().to_string();
+    }
+
+    if let Some(last_review) = state.last_review.as_ref() {
+        let recap = format_review_findings(last_review);
+        if !recap.is_empty() {
+            prompt.push_str("\n\nPreviously reported findings to re-validate:\n");
+            prompt.push_str(&recap);
+        }
+    }
+
+    if !prompt.contains(AUTO_RESOLVE_REVIEW_FOLLOWUP) {
+        prompt.push_str("\n\n");
+        prompt.push_str(AUTO_RESOLVE_REVIEW_FOLLOWUP);
+    }
+
+    ReviewRequest {
+        prompt,
+        user_facing_hint: state.hint.clone(),
+        metadata: state.metadata.clone(),
+    }
+}
+
+fn build_fix_prompt(review: &code_core::protocol::ReviewOutputEvent) -> String {
+    let summary = format_review_findings(review);
+    let mut preface = String::from(
+        "You are continuing an automated /review resolution loop. Review the listed findings and determine whether they represent real issues introduced by our changes. If they are, apply the necessary fixes and resolve any similar issues you can identify before responding."
+    );
+    if !summary.is_empty() {
+        preface.push_str("\n\nFindings:\n");
+        preface.push_str(&summary);
+    }
+    format!(
+        "Is this a real issue introduced by our changes? If so, please fix and resolve all similar issues.\n\n{preface}"
+    )
+}
+
+#[derive(serde::Deserialize)]
+struct AutoResolveDecision {
+    status: String,
+    #[serde(default)]
+    rationale: Option<String>,
+}
+
+fn parse_auto_resolve_decision(raw: &str) -> Option<AutoResolveDecision> {
+    if let Ok(decision) = serde_json::from_str::<AutoResolveDecision>(raw) {
+        return Some(decision);
+    }
+    if let Some(start) = raw.find('{') {
+        if let Some(end) = raw.rfind('}') {
+            let slice = &raw[start..=end];
+            if let Ok(decision) = serde_json::from_str::<AutoResolveDecision>(slice) {
+                return Some(decision);
+            }
+        }
+    }
+    if let Some(json_start) = raw.find("```") {
+        if let Some(rest) = raw[json_start + 3..].split_once("```") {
+            let candidate = rest.0.trim_start_matches("json").trim();
+            if let Ok(decision) = serde_json::from_str::<AutoResolveDecision>(candidate) {
+                return Some(decision);
+            }
+        }
+    }
+    None
+}
+
+fn format_review_findings(output: &code_core::protocol::ReviewOutputEvent) -> String {
+    if output.findings.is_empty() {
+        return String::new();
+    }
+    let mut parts = Vec::new();
+    for (idx, f) in output.findings.iter().enumerate() {
+        let title = f.title.trim();
+        let body = f.body.trim();
+        if body.is_empty() {
+            parts.push(format!("{}. {}", idx + 1, title));
+        } else {
+            parts.push(format!("{}. {}\n{}", idx + 1, title, body));
+        }
+    }
+    parts.join("\n\n")
+}
+
+fn build_judge_prompt(review: &code_core::protocol::ReviewOutputEvent, fix_message: Option<String>) -> String {
+    let summary = format_review_findings(review);
+    let mut preface = String::from(
+        "You are evaluating whether the latest fixes resolved the findings from `/review`. Respond with a strict JSON object containing `status` and optional `rationale`. Valid `status` values: `review_again`, `no_issue`, `continue_fix`. Do not include any additional text before or after the JSON."
+    );
+    if !summary.is_empty() {
+        preface.push_str("\n\nOriginal findings:\n");
+        preface.push_str(&summary);
+    }
+    if let Some(fix) = fix_message.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        preface.push_str("\n\nLatest agent response:\n");
+        preface.push_str(fix);
+    }
+    preface.push_str("\n\nReturn JSON: {\"status\": \"...\", \"rationale\": \"optional explanation\"}.");
+    preface
+}
+
+fn build_continue_prompt(review: &code_core::protocol::ReviewOutputEvent) -> String {
+    let summary = format_review_findings(review);
+    let mut preface = String::from(
+        "The previous status check indicated more work is required on the review findings. Continue addressing the remaining issues before responding."
+    );
+    if !summary.is_empty() {
+        preface.push_str("\n\nOutstanding findings:\n");
+        preface.push_str(&summary);
+    }
+    preface
 }
 
 fn make_user_message(text: String) -> ResponseItem {
