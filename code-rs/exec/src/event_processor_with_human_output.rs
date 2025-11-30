@@ -153,9 +153,18 @@ impl EventProcessor for EventProcessorWithHumanOutput {
         const VERSION: &str = env!("CARGO_PKG_VERSION");
         ts_println!(
             self,
-            "OpenAI Codex v{} (research preview)\n--------",
+            "OpenAI Codex v{} (research preview)",
             VERSION
         );
+
+        // Show which binary is being used to execute sub-agents so users can
+        // confirm path mismatches when testing new builds.
+        let exe_path = std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "<unknown>".to_string());
+        ts_println!(self, "binary: {}", exe_path);
+
+        println!("--------");
 
         let entries = create_config_summary_entries(config);
 
