@@ -60,6 +60,7 @@ use code_auto_drive_core::AutoResolvePhase;
 use code_auto_drive_core::AutoResolveState;
 use code_core::{entry_to_rollout_path, SessionCatalog, SessionQuery};
 use code_core::protocol::SandboxPolicy;
+use code_core::git_info::current_branch_name;
 
 const AUTO_DRIVE_TEST_SUFFIX: &str = "After planning, but before you start, please ensure you can test the outcome of your changes. Test first to ensure it's failing, then again at the end to ensure it passes. Do not use work arounds or mock code to pass - solve the underlying issue. Create new tests as you work if needed. Once done, clean up your tests unless added to an existing test suite.";
 
@@ -528,7 +529,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
     }
 
     // Send the prompt.
-    let _initial_prompt_task_id = if let Some(review_request) = review_request {
+    let _initial_prompt_task_id = if let Some(review_request) = review_request.clone() {
         let event_id = conversation.submit(Op::Review { review_request }).await?;
         info!("Sent /review with event ID: {event_id}");
         event_id
@@ -558,6 +559,26 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                 review_runs = review_runs.saturating_add(1);
                 if let Some(output) = output_opt {
                     final_review_output = Some(output.clone());
+                }
+
+                // Surface review result back to the parent conversation so Auto Drive/CLI can react.
+                if review_request.is_some() {
+                    let findings_count = output_opt.as_ref().map(|o| o.findings.len()).unwrap_or(0);
+                    let branch = current_branch_name(&config.cwd).await.unwrap_or_else(|| "unknown".to_string());
+                    let worktree = config.cwd.clone();
+                    let note = if findings_count == 0 {
+                        format!(
+                            "[developer] Auto-review completed on branch '{branch}' (worktree: {}). No issues reported.",
+                            worktree.display()
+                        )
+                    } else {
+                        format!(
+                            "[developer] Auto-review found {findings_count} issue(s) on branch '{branch}'. Worktree: {}. Merge this worktree/branch to apply fixes.",
+                            worktree.display()
+                        )
+                    };
+                    let items: Vec<InputItem> = vec![InputItem::Text { text: note }];
+                    let _ = conversation.submit(Op::UserInput { items }).await?;
                 }
 
                 if let Some(state) = auto_resolve_state.as_mut() {
