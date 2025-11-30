@@ -629,8 +629,64 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::ShutdownComplete => return CodexStatus::Shutdown,
             EventMsg::ConversationPath(_) => {}
             EventMsg::UserMessage(_) => {}
-            EventMsg::EnteredReviewMode(_) => {}
-            EventMsg::ExitedReviewMode(_) => {}
+            EventMsg::EnteredReviewMode(request) => {
+                ts_println!(
+                    self,
+                    "{} {}",
+                    "review".style(self.magenta),
+                    "started".style(self.bold),
+                );
+                if let Some(scope) = request
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.scope.as_ref())
+                {
+                    println!("{} {}", "scope:".style(self.dimmed), scope.style(self.dimmed));
+                }
+                if !request.user_facing_hint.trim().is_empty() {
+                    println!("{}", request.user_facing_hint.trim().style(self.dimmed));
+                }
+            }
+            EventMsg::ExitedReviewMode(output_opt) => {
+                ts_println!(
+                    self,
+                    "{} {}",
+                    "review".style(self.magenta),
+                    "finished".style(self.bold),
+                );
+                match output_opt {
+                    Some(output) => {
+                        if !output.overall_explanation.trim().is_empty() {
+                            println!("{}", output.overall_explanation.trim());
+                        }
+
+                        if output.findings.is_empty() {
+                            println!("{}", "no findings reported".style(self.dimmed));
+                        } else {
+                            for (idx, finding) in output.findings.iter().enumerate() {
+                                println!(
+                                    "{} {}",
+                                    format!("#{}", idx + 1).style(self.bold),
+                                    finding.title.trim(),
+                                );
+                                if !finding.body.trim().is_empty() {
+                                    for line in finding.body.lines() {
+                                        println!("  {}", line.trim());
+                                    }
+                                }
+                            }
+                        }
+
+                        if output.overall_confidence_score > 0.0 {
+                            println!(
+                                "confidence: {:.1}",
+                                output.overall_confidence_score,
+                            );
+                        }
+                    }
+                    None => println!("{}", "review ended without results".style(self.dimmed)),
+                }
+            }
             EventMsg::CompactionCheckpointWarning(_) => {}
         }
         CodexStatus::Running

@@ -2,6 +2,7 @@ mod cli;
 mod event_processor;
 mod event_processor_with_human_output;
 mod event_processor_with_json_output;
+mod slash;
 
 pub use cli::Cli;
 use code_auto_drive_core::start_auto_coordinator;
@@ -28,6 +29,7 @@ use code_core::protocol::Event;
 use code_core::protocol::EventMsg;
 use code_core::protocol::InputItem;
 use code_core::protocol::Op;
+use code_core::protocol::ReviewRequest;
 use code_core::protocol::TaskCompleteEvent;
 use code_protocol::models::ContentItem;
 use code_protocol::models::ResponseItem;
@@ -52,6 +54,7 @@ use anyhow::Context;
 use crate::cli::Command as ExecCommand;
 use crate::event_processor::CodexStatus;
 use crate::event_processor::EventProcessor;
+use crate::slash::{process_exec_slash_command, SlashContext, SlashDispatch};
 use code_core::{entry_to_rollout_path, SessionCatalog, SessionQuery};
 
 const AUTO_DRIVE_TEST_SUFFIX: &str = "After planning, but before you start, please ensure you can test the outcome of your changes. Test first to ensure it's failing, then again at the end to ensure it passes. Do not use work arounds or mock code to pass - solve the underlying issue. Create new tests as you work if needed. Once done, clean up your tests unless added to an existing test suite.";
@@ -157,11 +160,13 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         *goal = append_auto_drive_test_suffix(goal);
     }
 
-    let summary_prompt = if let Some(goal) = auto_drive_goal.as_ref() {
+    let mut prompt_to_send = prompt.clone();
+    let mut summary_prompt = if let Some(goal) = auto_drive_goal.as_ref() {
         format!("/auto {goal}")
     } else {
         prompt.clone()
     };
+    let mut review_request: Option<ReviewRequest> = None;
 
     let _output_schema = load_output_schema(output_schema_path);
 
@@ -248,6 +253,31 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
     };
 
     let config = Config::load_with_cli_overrides(cli_kv_overrides, overrides)?;
+    let slash_context = SlashContext {
+        agents: &config.agents,
+        subagent_commands: &config.subagent_commands,
+    };
+
+    match process_exec_slash_command(prompt_to_send.trim(), slash_context) {
+        Ok(SlashDispatch::NotSlash) => {}
+        Ok(SlashDispatch::ExpandedPrompt { prompt, summary }) => {
+            prompt_to_send = prompt;
+            if auto_drive_goal.is_none() {
+                summary_prompt = summary;
+            }
+        }
+        Ok(SlashDispatch::Review { request, summary }) => {
+            review_request = Some(request);
+            if auto_drive_goal.is_none() {
+                summary_prompt = summary;
+            }
+        }
+        Err(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(1);
+        }
+    }
+
     let stop_on_task_complete = auto_drive_goal.is_none();
     let mut event_processor: Box<dyn EventProcessor> = if json_mode {
         Box::new(EventProcessorWithJsonOutput::new(last_message_file.clone()))
@@ -472,12 +502,19 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
     }
 
     // Send the prompt.
-    let items: Vec<InputItem> = vec![InputItem::Text { text: prompt }];
-    // Fallback for older core protocol: send only user input items.
-    let initial_prompt_task_id = conversation
-        .submit(Op::UserInput { items })
-        .await?;
-    info!("Sent prompt with event ID: {initial_prompt_task_id}");
+    let _initial_prompt_task_id = if let Some(review_request) = review_request {
+        let event_id = conversation.submit(Op::Review { review_request }).await?;
+        info!("Sent /review with event ID: {event_id}");
+        event_id
+    } else {
+        let items: Vec<InputItem> = vec![InputItem::Text { text: prompt_to_send }];
+        // Fallback for older core protocol: send only user input items.
+        let event_id = conversation
+            .submit(Op::UserInput { items })
+            .await?;
+        info!("Sent prompt with event ID: {event_id}");
+        event_id
+    };
 
     // Run the loop until the task is complete.
     // Track whether a fatal error was reported by the server so we can
