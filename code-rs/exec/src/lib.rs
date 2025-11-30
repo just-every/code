@@ -84,6 +84,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         include_plan_tool,
         config_overrides,
         auto_drive,
+        review_output_json,
         ..
     } = cli;
 
@@ -280,6 +281,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
     }
 
     let mut auto_resolve_enabled = review_request.is_some() && config.tui.review_auto_resolve;
+    let mut final_review_output: Option<code_core::protocol::ReviewOutputEvent> = None;
     let mut auto_resolve_attempts: u32 = 0;
     let max_auto_resolve_attempts: u32 = config.auto_drive.auto_resolve_review_attempts.get();
     let base_review_request = review_request.clone();
@@ -532,7 +534,12 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
 
         // Handle review auto-resolve: chain follow-up reviews when enabled.
         match &event.msg {
-            EventMsg::ExitedReviewMode(Some(output)) if auto_resolve_enabled => {
+            EventMsg::ExitedReviewMode(Some(output)) => {
+                final_review_output = Some(output.clone());
+
+                if !auto_resolve_enabled {
+                    // fall through to normal processing
+                } else {
                 auto_resolve_attempts = auto_resolve_attempts.saturating_add(1);
 
                 let has_findings = !output.findings.is_empty();
@@ -559,6 +566,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                         conversation.submit(Op::Shutdown).await?;
                     }
                 }
+                }
             }
             EventMsg::TaskComplete(_) => {
                 task_complete_seen = true;
@@ -582,6 +590,11 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
             CodexStatus::Shutdown => {
                 break;
             }
+        }
+    }
+    if let (Some(path), Some(output)) = (review_output_json, final_review_output) {
+        if let Ok(json) = serde_json::to_string_pretty(&output) {
+            let _ = std::fs::write(path, json);
         }
     }
     if error_seen {
