@@ -656,14 +656,26 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     println!("{}", request.user_facing_hint.trim().style(self.dimmed));
                 }
             }
-            EventMsg::ExitedReviewMode(output_opt) => {
+            EventMsg::ExitedReviewMode(event) => {
                 ts_println!(
                     self,
                     "{} {}",
                     "review".style(self.magenta),
                     "finished".style(self.bold),
                 );
-                match output_opt {
+                if let Some(snapshot) = &event.snapshot {
+                    if let Some(branch) = &snapshot.branch {
+                        println!("{} {}", "branch:".style(self.dimmed), branch);
+                    }
+                    if let Some(path) = &snapshot.worktree_path {
+                        println!("{} {}", "worktree:".style(self.dimmed), path.display());
+                    }
+                    if let Some(commit) = &snapshot.snapshot_commit {
+                        let short = commit.chars().take(12).collect::<String>();
+                        println!("{} {}", "snapshot:".style(self.dimmed), short);
+                    }
+                }
+                match &event.review_output {
                     Some(output) => {
                         if !output.overall_explanation.trim().is_empty() {
                             println!("{}", output.overall_explanation.trim());

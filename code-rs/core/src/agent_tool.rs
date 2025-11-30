@@ -691,6 +691,9 @@ async fn execute_agent(agent_id: String, config: Option<AgentConfig>) {
         }
     };
 
+    // Track optional review output path for /review agents (AutoReview)
+    let mut review_output_json_path_capture: Option<PathBuf> = None;
+
     let result = if !read_only {
         // Check git and setup worktree for non-read-only mode
         match get_git_root().await {
@@ -723,6 +726,16 @@ async fn execute_agent(agent_id: String, config: Option<AgentConfig>) {
                             )
                             .await;
                         drop(manager);
+
+                        // Prepare optional review-output JSON path for /review agents
+                        let review_output_json_path: Option<PathBuf> = agent
+                            .source_kind
+                            .as_ref()
+                            .and_then(|kind| matches!(kind, AgentSourceKind::AutoReview).then(|| {
+                                let filename = format!("{}.review-output.json", agent_id);
+                                std::env::temp_dir().join(filename)
+                            }));
+                        review_output_json_path_capture = review_output_json_path.clone();
 
                         // Execute with full permissions in the worktree
                         let use_built_in_cloud = config.is_none()
@@ -762,6 +775,7 @@ async fn execute_agent(agent_id: String, config: Option<AgentConfig>) {
                                 Some(worktree_path),
                                 config.clone(),
                                 reasoning_effort,
+                                review_output_json_path.as_ref(),
                             )
                             .await
                         }
@@ -800,14 +814,25 @@ async fn execute_agent(agent_id: String, config: Option<AgentConfig>) {
                 None,
                 config,
                 reasoning_effort,
+                None,
             )
             .await
         }
     };
 
-    // Update result
+    // Update result; if a review-output JSON was produced, prefer its contents.
+    let final_result = prefer_json_result(review_output_json_path_capture.as_ref(), result);
     let mut manager = AGENT_MANAGER.write().await;
-    manager.update_agent_result(&agent_id, result).await;
+    manager.update_agent_result(&agent_id, final_result).await;
+}
+
+fn prefer_json_result(path: Option<&PathBuf>, fallback: Result<String, String>) -> Result<String, String> {
+    if let Some(p) = path {
+        if let Ok(json) = std::fs::read_to_string(p) {
+            return Ok(json);
+        }
+    }
+    fallback
 }
 
 async fn execute_model_with_permissions(
@@ -817,6 +842,7 @@ async fn execute_model_with_permissions(
     working_dir: Option<PathBuf>,
     config: Option<AgentConfig>,
     reasoning_effort: code_protocol::config_types::ReasoningEffort,
+    review_output_json_path: Option<&PathBuf>,
 ) -> Result<String, String> {
     // Helper: cross‑platform check whether an executable is available in PATH
     // and is directly spawnable by std::process::Command (no shell wrappers).
@@ -995,8 +1021,13 @@ fn command_exists(cmd: &str) -> bool {
         } else if let Some(w) = cfg.args_write.as_ref() {
             final_args.extend(w.iter().cloned());
         } else {
-                final_args.extend(cfg.args.iter().cloned());
+            final_args.extend(cfg.args.iter().cloned());
         }
+    }
+
+    if let Some(path) = review_output_json_path {
+        final_args.push("--review-output-json".to_string());
+        final_args.push(path.display().to_string());
     }
 
     strip_model_flags(&mut final_args);
@@ -1153,7 +1184,11 @@ fn command_exists(cmd: &str) -> bool {
 
         // Resolve the command and args we prepared above into Vec<String> for spawn helpers.
         let program = resolve_program_path(use_current_exe, &command_for_spawn)?;
-        let args = final_args.clone();
+        let mut args = final_args.clone();
+        if let Some(path) = review_output_json_path {
+            args.push("--review-output-json".to_string());
+            args.push(path.display().to_string());
+        }
 
         // Always run agents without OS sandboxing.
         let sandbox_type = crate::exec::SandboxType::None;
@@ -1346,6 +1381,7 @@ async fn run_agent_smoke_test(cfg: AgentConfig) -> Result<String, String> {
             None,
             Some(cfg),
             code_protocol::config_types::ReasoningEffort::High,
+            None,
         )
         .await
     });
@@ -1995,9 +2031,12 @@ mod tests {
     use super::maybe_set_gemini_config_dir;
     use super::resolve_program_path;
     use super::should_use_current_exe_for_agent;
+    use super::prefer_json_result;
     use super::current_code_binary_path;
     use crate::config_types::AgentConfig;
     use std::collections::HashMap;
+    use tempfile::tempdir;
+    use std::path::PathBuf;
 
     #[test]
     fn drops_empty_names() {
@@ -2023,6 +2062,24 @@ mod tests {
             normalize_agent_name(Some("shipCloudAPI".into())),
             Some("Ship Cloud API".into())
         );
+    }
+
+    #[test]
+    fn prefer_json_result_uses_json_when_available() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("out.json");
+        let payload = "{\"findings\":[],\"overall_explanation\":\"ok\"}";
+        std::fs::write(&path, payload).unwrap();
+
+        let res = prefer_json_result(Some(&path), Err("fallback".to_string()));
+        assert_eq!(res.unwrap(), payload);
+    }
+
+    #[test]
+    fn prefer_json_result_falls_back_when_missing() {
+        let missing = PathBuf::from("/nonexistent/path.json");
+        let res = prefer_json_result(Some(&missing), Ok("orig".to_string()));
+        assert_eq!(res.unwrap(), "orig");
     }
 
     fn agent_with_command(command: &str) -> AgentConfig {

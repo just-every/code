@@ -293,6 +293,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
     }
 
     let mut final_review_output: Option<code_core::protocol::ReviewOutputEvent> = None;
+    let mut final_review_snapshot: Option<code_core::protocol::ReviewSnapshotInfo> = None;
     let mut review_runs: u32 = 0;
     let max_auto_resolve_attempts: u32 = config.auto_drive.auto_resolve_review_attempts.get();
     let mut auto_resolve_state: Option<AutoResolveState> = review_request.as_ref().and_then(|req| {
@@ -555,18 +556,21 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
 
         // Handle review auto-resolve: chain follow-up reviews when enabled.
         match &event.msg {
-            EventMsg::ExitedReviewMode(output_opt) => {
+            EventMsg::ExitedReviewMode(event) => {
                 review_runs = review_runs.saturating_add(1);
-                if let Some(output) = output_opt {
+                if let Some(output) = event.review_output.as_ref() {
                     final_review_output = Some(output.clone());
+                }
+                if let Some(snapshot) = event.snapshot.as_ref() {
+                    final_review_snapshot = Some(snapshot.clone());
                 }
 
                 // Surface review result back to the parent conversation so Auto Drive/CLI can react.
                 if review_request.is_some() {
-                    let findings_count = output_opt.as_ref().map(|o| o.findings.len()).unwrap_or(0);
+                    let findings_count = event.review_output.as_ref().map(|o| o.findings.len()).unwrap_or(0);
                     let branch = current_branch_name(&config.cwd).await.unwrap_or_else(|| "unknown".to_string());
                     let worktree = config.cwd.clone();
-                    let summary = output_opt.as_ref().and_then(review_summary_line);
+                    let summary = event.review_output.as_ref().and_then(review_summary_line);
                     let note = if findings_count == 0 {
                         format!(
                             "[developer] Auto-review completed on branch '{branch}' (worktree: {}). No issues reported.",
@@ -590,10 +594,10 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
 
                 if let Some(state) = auto_resolve_state.as_mut() {
                     state.attempt = state.attempt.saturating_add(1);
-                    state.last_review = output_opt.clone();
+                    state.last_review = event.review_output.clone();
                     state.last_fix_message = None;
 
-                    match output_opt {
+                    match event.review_output.as_ref() {
                         Some(output) if output.findings.is_empty() => {
                             eprintln!("Auto-resolve: review reported no actionable findings. Exiting.");
                             auto_resolve_state = None;
@@ -766,9 +770,9 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
             }
         }
     }
-    if let (Some(path), Some(output)) = (review_output_json, final_review_output) {
-        if let Ok(json) = serde_json::to_string_pretty(&output) {
-            let _ = std::fs::write(path, json);
+    if let Some(path) = review_output_json {
+        if let Some(output) = final_review_output {
+            let _ = write_review_json(path, &output, final_review_snapshot.as_ref());
         }
     }
     if review_runs > 0 {
@@ -1278,6 +1282,25 @@ fn make_assistant_message(text: String) -> ResponseItem {
     }
 }
 
+fn write_review_json(
+    path: PathBuf,
+    output: &code_core::protocol::ReviewOutputEvent,
+    snapshot: Option<&code_core::protocol::ReviewSnapshotInfo>,
+) -> std::io::Result<()> {
+    #[derive(serde::Serialize)]
+    struct ReviewJsonOutput<'a> {
+        #[serde(flatten)]
+        output: &'a code_core::protocol::ReviewOutputEvent,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        snapshot: Option<&'a code_core::protocol::ReviewSnapshotInfo>,
+    }
+
+    let payload = ReviewJsonOutput { output, snapshot };
+    let json = serde_json::to_string_pretty(&payload)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+    std::fs::write(path, json)
+}
+
 async fn submit_and_wait(
     conversation: &Arc<CodexConversation>,
     event_processor: &mut dyn EventProcessor,
@@ -1373,6 +1396,44 @@ mod tests {
     use filetime::{set_file_mtime, FileTime};
     use tempfile::TempDir;
     use uuid::Uuid;
+
+    #[test]
+    fn write_review_json_includes_snapshot() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("out.json");
+
+        let output = code_core::protocol::ReviewOutputEvent {
+            findings: vec![code_core::protocol::ReviewFinding {
+                title: "bug".into(),
+                body: "details".into(),
+                confidence_score: 0.5,
+                priority: 1,
+                code_location: code_core::protocol::ReviewCodeLocation {
+                    absolute_file_path: PathBuf::from("src/lib.rs"),
+                    line_range: code_core::protocol::ReviewLineRange { start: 1, end: 2 },
+                },
+            }],
+            overall_correctness: "incorrect".into(),
+            overall_explanation: "needs fixes".into(),
+            overall_confidence_score: 0.7,
+        };
+
+        let snapshot = code_core::protocol::ReviewSnapshotInfo {
+            snapshot_commit: Some("abc123".into()),
+            branch: Some("auto-review-branch".into()),
+            worktree_path: Some(PathBuf::from("/tmp/wt")),
+            repo_root: Some(PathBuf::from("/tmp/repo")),
+        };
+
+        write_review_json(path.clone(), &output, Some(&snapshot)).unwrap();
+
+        let content = std::fs::read_to_string(path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(v["branch"], "auto-review-branch");
+        assert_eq!(v["snapshot_commit"], "abc123");
+        assert_eq!(v["worktree_path"], "/tmp/wt");
+        assert_eq!(v["findings"].as_array().unwrap().len(), 1);
+    }
 
     fn test_config(code_home: &Path) -> Config {
         let mut overrides = ConfigOverrides::default();

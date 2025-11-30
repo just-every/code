@@ -41,6 +41,7 @@ pub use code_protocol::protocol::ConversationPathResponseEvent;
 pub use code_protocol::protocol::ListCustomPromptsResponseEvent;
 pub use code_protocol::protocol::ENVIRONMENT_CONTEXT_OPEN_TAG;
 pub use code_protocol::protocol::ExitedReviewModeEvent;
+pub use code_protocol::protocol::ReviewSnapshotInfo;
 
 /// Submission Queue Entry - requests from user
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -800,7 +801,7 @@ pub enum EventMsg {
     EnteredReviewMode(code_protocol::protocol::ReviewRequest),
 
     /// Exited review mode with an optional final result to apply.
-    ExitedReviewMode(Option<code_protocol::protocol::ReviewOutputEvent>),
+    ExitedReviewMode(code_protocol::protocol::ExitedReviewModeEvent),
 
     /// Replay a previously recorded transcript into the UI.
     /// Used after resuming from a rollout file so the user sees the full

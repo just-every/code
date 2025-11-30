@@ -13069,13 +13069,13 @@ impl ChatWidget<'_> {
                 }
                 self.request_redraw();
             }
-            EventMsg::ExitedReviewMode(review_output) => {
+            EventMsg::ExitedReviewMode(review_event) => {
                 if self.auto_resolve_enabled() {
-                    self.auto_resolve_handle_review_exit(review_output.clone());
+                    self.auto_resolve_handle_review_exit(review_event.review_output.clone());
                 }
                 let hint = self.active_review_hint.take();
                 let prompt = self.active_review_prompt.take();
-                match review_output {
+                match review_event.review_output {
                     Some(output) => {
                         let summary_cell = self.build_review_summary_cell(
                             hint.as_deref(),
@@ -25583,7 +25583,7 @@ impl Drop for AutoReviewStubGuard {
 }
 
 #[cfg(test)]
-mod tests {
+    mod tests {
         use super::*;
         use super::{
             CAPTURE_AUTO_TURN_COMMIT_STUB,
@@ -25635,6 +25635,40 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::path::PathBuf;
+
+    #[test]
+    fn parse_agent_review_result_json_clean() {
+        let json = r#"{
+            "findings": [],
+            "overall_correctness": "ok",
+            "overall_explanation": "looks clean",
+            "overall_confidence_score": 0.9
+        }"#;
+
+        let (has_findings, findings, summary) = ChatWidget::parse_agent_review_result(Some(json));
+        assert!(!has_findings);
+        assert_eq!(findings, 0);
+        assert_eq!(summary.as_deref(), Some("looks clean"));
+    }
+
+    #[test]
+    fn parse_agent_review_result_json_with_findings() {
+        let json = r#"{
+            "findings": [
+                {"title": "bug", "body": "fix", "confidence_score": 0.5, "priority": 1, "code_location": {"absolute_file_path": "foo", "line_range": {"start":1,"end":1}}}
+            ],
+            "overall_correctness": "incorrect",
+            "overall_explanation": "needs work",
+            "overall_confidence_score": 0.6
+        }"#;
+
+        let (has_findings, findings, summary) = ChatWidget::parse_agent_review_result(Some(json));
+        assert!(has_findings);
+        assert_eq!(findings, 1);
+        let summary_text = summary.unwrap();
+        assert!(summary_text.contains("needs work"));
+        assert!(summary_text.contains("bug"));
+    }
 
     #[test]
     fn format_model_name_capitalizes_codex_mini() {
@@ -25718,6 +25752,151 @@ mod tests {
             })
         });
         assert!(summary_present, "summary should be posted to history");
+        assert!(chat.pending_agent_notes.is_empty(), "idle path should inject via hidden message, not queue notes");
+        let developer_seen = chat
+            .pending_dispatched_user_messages
+            .iter()
+            .any(|msg| msg.contains("[developer]"));
+        assert!(developer_seen, "developer note should be sent in hidden message");
+    }
+
+    #[test]
+    fn background_review_busy_path_enqueues_developer_note_with_merge_hint() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.config.tui.auto_review_enabled = true;
+        chat.bottom_pane.set_task_running(true); // simulate busy state so note is queued
+
+        chat.background_review = Some(BackgroundReviewState {
+            worktree_path: PathBuf::from("/tmp/wt"),
+            branch: "auto-review-branch".to_string(),
+            agent_id: Some("agent-123".to_string()),
+            snapshot: Some("ghost123".to_string()),
+        });
+
+        // Agent.result will be parsed; provide structured JSON with findings
+        let review_json = r#"{
+            "findings": [
+                {"title": "bug", "body": "fix", "confidence_score": 0.5, "priority": 1, "code_location": {"absolute_file_path": "foo", "line_range": {"start":1,"end":1}}}
+            ],
+            "overall_correctness": "incorrect",
+            "overall_explanation": "needs work",
+            "overall_confidence_score": 0.6
+        }"#;
+
+        // Simulate agent status observation completion path
+        chat.on_background_review_finished(
+            PathBuf::from("/tmp/wt"),
+            "auto-review-branch".to_string(),
+            true,
+            1,
+            Some(review_json.to_string()),
+            None,
+            Some("agent-123".to_string()),
+            Some("ghost123".to_string()),
+        );
+
+        let queued = chat.pending_agent_notes.iter().any(|note| {
+            note.contains("Merge the worktree") && note.contains("auto-review-branch") && note.contains("needs work")
+        });
+        assert!(queued, "developer note with merge hint should be queued while busy");
+    }
+
+    #[test]
+    fn background_review_observe_idle_injects_note_from_agent_result() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.config.tui.auto_review_enabled = true;
+        chat.background_review = Some(BackgroundReviewState {
+            worktree_path: PathBuf::from("/tmp/wt"),
+            branch: "auto-review-branch".to_string(),
+            agent_id: None,
+            snapshot: Some("ghost123".to_string()),
+        });
+
+        let agent = code_core::protocol::AgentInfo {
+            id: "agent-1".to_string(),
+            batch_id: Some("auto-review-branch".to_string()),
+            model: Some("code-review".to_string()),
+            name: Some("Auto Review".to_string()),
+            status: "completed".to_string(),
+            source_kind: Some(AgentSourceKind::AutoReview),
+            result: Some(
+                r#"{
+                    "findings":[{"title":"bug","body":"details","confidence_score":0.5,"priority":1,"code_location":{"absolute_file_path":"src/lib.rs","line_range":{"start":1,"end":1}}}],
+                    "overall_correctness":"incorrect",
+                    "overall_explanation":"needs work",
+                    "overall_confidence_score":0.6
+                }"#
+                .to_string(),
+            ),
+            error: None,
+            worktree_path: Some("/tmp/wt".to_string()),
+            branch_name: Some("auto-review-branch".to_string()),
+            progress: Vec::new(),
+            created_at: None,
+            started_at: None,
+            completed_at: None,
+        };
+
+        chat.observe_auto_review_status(&[agent]);
+
+        // Idle path: should send hidden developer note immediately (not queued)
+        assert!(chat.pending_agent_notes.is_empty());
+        let developer_sent = chat
+            .pending_dispatched_user_messages
+            .iter()
+            .any(|msg| msg.contains("[developer]") && msg.contains("Merge the worktree") && msg.contains("auto-review-branch"));
+        assert!(developer_sent, "developer merge-hint note should be injected when idle");
+    }
+
+    #[test]
+    fn background_review_observe_busy_queues_note_from_agent_result() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.config.tui.auto_review_enabled = true;
+        chat.bottom_pane.set_task_running(true);
+        chat.background_review = Some(BackgroundReviewState {
+            worktree_path: PathBuf::from("/tmp/wt"),
+            branch: "auto-review-branch".to_string(),
+            agent_id: None,
+            snapshot: Some("ghost123".to_string()),
+        });
+
+        let agent = code_core::protocol::AgentInfo {
+            id: "agent-1".to_string(),
+            batch_id: Some("auto-review-branch".to_string()),
+            model: Some("code-review".to_string()),
+            name: Some("Auto Review".to_string()),
+            status: "completed".to_string(),
+            source_kind: Some(AgentSourceKind::AutoReview),
+            result: Some(
+                r#"{
+                    "findings":[{"title":"bug","body":"details","confidence_score":0.5,"priority":1,"code_location":{"absolute_file_path":"src/lib.rs","line_range":{"start":1,"end":1}}}],
+                    "overall_correctness":"incorrect",
+                    "overall_explanation":"needs work",
+                    "overall_confidence_score":0.6
+                }"#
+                .to_string(),
+            ),
+            error: None,
+            worktree_path: Some("/tmp/wt".to_string()),
+            branch_name: Some("auto-review-branch".to_string()),
+            progress: Vec::new(),
+            created_at: None,
+            started_at: None,
+            completed_at: None,
+        };
+
+        chat.observe_auto_review_status(&[agent]);
+
+        let queued = chat.pending_agent_notes.iter().any(|note| {
+            note.contains("[developer]") && note.contains("Merge the worktree") && note.contains("auto-review-branch")
+        });
+        assert!(queued, "developer merge-hint note should be queued when busy");
     }
 
     #[test]
@@ -25781,7 +25960,6 @@ mod tests {
     use ratatui::Terminal;
     use std::collections::HashMap;
     use std::time::{Duration, SystemTime};
-    use std::path::PathBuf;
 
     use code_core::protocol::{ReviewFinding, ReviewCodeLocation, ReviewLineRange};
 
@@ -29131,30 +29309,6 @@ impl ChatWidget<'_> {
         (has_findings, findings_len, summary)
     }
 
-    fn build_review_handoff_json(
-        branch: &str,
-        worktree_path: &std::path::Path,
-        snapshot: Option<&str>,
-        findings: usize,
-        summary: Option<&str>,
-    ) -> String {
-        let mut obj = serde_json::json!({
-            "type": "auto_review_result",
-            "branch": branch,
-            "worktree_path": worktree_path,
-            "findings": findings,
-        });
-
-        if let Some(s) = snapshot {
-            obj["snapshot"] = serde_json::Value::String(s.to_string());
-        }
-        if let Some(s) = summary {
-            obj["summary"] = serde_json::Value::String(s.to_string());
-        }
-
-        obj.to_string()
-    }
-
     pub(crate) fn on_background_review_started(
         &mut self,
         worktree_path: std::path::PathBuf,
@@ -29205,17 +29359,9 @@ impl ChatWidget<'_> {
             .map(|id| format!(" Agent #{:.8}.", id))
             .unwrap_or_default();
 
-        let handoff_json = Self::build_review_handoff_json(
-            &branch,
-            &worktree_path,
-            snapshot.as_deref(),
-            findings,
-            summary.as_deref(),
-        );
-
         let message: String = if let Some(err) = error {
             developer_note = Some(format!(
-                "[developer] Background auto-review failed in worktree '{branch}'. Error: {err}. Worktree path: {}.{snapshot_note}{agent_note}\n{handoff_json}",
+                "[developer] Background auto-review failed in worktree '{branch}'. Error: {err}. Worktree path: {}.{snapshot_note}{agent_note}",
                 worktree_path.display()
             ));
             format!(
@@ -29240,11 +29386,11 @@ impl ChatWidget<'_> {
             base.push_str(&format!(" Path: {}", worktree_path.display()));
             developer_note = Some(match summary_text {
                 Some(text) => format!(
-                    "[developer] Background auto-review found issues in worktree '{branch}'. Summary: {text}. Merge the worktree at {} if you want the fixes.{snapshot_note}{agent_note}\n{handoff_json}",
+                    "[developer] Background auto-review found issues in worktree '{branch}'. Summary: {text}. Merge the worktree at {} if you want the fixes.{snapshot_note}{agent_note}",
                     worktree_path.display()
                 ),
                 None => format!(
-                    "[developer] Background auto-review found issues in worktree '{branch}'. Merge the worktree at {} if you want the fixes.{snapshot_note}{agent_note}\n{handoff_json}",
+                    "[developer] Background auto-review found issues in worktree '{branch}'. Merge the worktree at {} if you want the fixes.{snapshot_note}{agent_note}",
                     worktree_path.display()
                 ),
             });

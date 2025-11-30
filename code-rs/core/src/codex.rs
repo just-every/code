@@ -897,6 +897,8 @@ use crate::protocol::BrowserScreenshotUpdateEvent;
 use crate::protocol::ErrorEvent;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
+use crate::protocol::ExitedReviewModeEvent;
+use crate::protocol::ReviewSnapshotInfo;
 use crate::protocol::ListCustomPromptsResponseEvent;
 use crate::protocol::{BrowserSnapshotEvent, EnvironmentContextDeltaEvent, EnvironmentContextFullEvent};
 use crate::protocol::ExecApprovalRequestEvent;
@@ -5112,7 +5114,14 @@ async fn exit_review_mode(
     task_sub_id: String,
     review_output: Option<ReviewOutputEvent>,
 ) {
-    let event = session.make_event(&task_sub_id, EventMsg::ExitedReviewMode(review_output.clone()));
+    let snapshot = capture_review_snapshot(&session).await;
+    let event = session.make_event(
+        &task_sub_id,
+        EventMsg::ExitedReviewMode(ExitedReviewModeEvent {
+            review_output: review_output.clone(),
+            snapshot,
+        }),
+    );
     session.send_event(event).await;
 
     let _active_request = session.take_active_review();
@@ -5165,6 +5174,23 @@ async fn exit_review_mode(
     session
         .record_conversation_items(&[developer_message])
         .await;
+}
+
+async fn capture_review_snapshot(session: &Session) -> Option<ReviewSnapshotInfo> {
+    let cwd = session.cwd.clone();
+    let repo_root = crate::git_info::get_git_repo_root(&cwd);
+    let branch = crate::git_info::current_branch_name(&cwd).await;
+
+    if repo_root.is_none() && branch.is_none() {
+        return None;
+    }
+
+    Some(ReviewSnapshotInfo {
+        snapshot_commit: None,
+        branch,
+        worktree_path: Some(cwd),
+        repo_root,
+    })
 }
 
 fn parse_review_output_event(text: &str) -> ReviewOutputEvent {
