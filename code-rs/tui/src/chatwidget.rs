@@ -29054,23 +29054,81 @@ impl ChatWidget<'_> {
                 )
             };
 
-            let has_findings = agent
-                .result
-                .as_ref()
-                .map(|s| !s.trim().is_empty())
-                .unwrap_or(false);
+            let (has_findings, findings, summary) = Self::parse_agent_review_result(agent.result.as_deref());
 
             self.on_background_review_finished(
                 worktree_path,
                 branch,
                 has_findings,
-                0,
-                agent.result.clone(),
+                findings,
+                summary,
                 agent.error.clone(),
                 Some(agent.id.clone()),
                 snapshot,
             );
         }
+    }
+
+    /// Parse the auto-review agent result to derive findings count and a concise summary.
+    /// Tries to deserialize `ReviewOutputEvent` JSON (direct or fenced). Falls back to heuristics.
+    fn parse_agent_review_result(raw: Option<&str>) -> (bool, usize, Option<String>) {
+        let Some(text) = raw else { return (false, 0, None); };
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return (false, 0, None);
+        }
+
+        // Try direct JSON first.
+        if let Ok(output) = serde_json::from_str::<ReviewOutputEvent>(trimmed) {
+            return Self::review_result_from_output(&output);
+        }
+
+        // Try to extract JSON from fenced code blocks.
+        if let Some(start) = trimmed.find("```") {
+            if let Some((body, _)) = trimmed[start + 3..].split_once("```") {
+                let candidate = body.trim_start_matches("json").trim();
+                if let Ok(output) = serde_json::from_str::<ReviewOutputEvent>(candidate) {
+                    return Self::review_result_from_output(&output);
+                }
+            }
+        }
+
+        // Heuristic: treat plain text as summary; infer "no findings" if it contains a common clean phrase.
+        let lowered = trimmed.to_ascii_lowercase();
+        let clean_phrases = ["no issues", "no findings", "clean", "looks good", "nothing to fix"];
+        let has_findings = !clean_phrases.iter().any(|p| lowered.contains(p));
+        (has_findings, 0, Some(trimmed.to_string()))
+    }
+
+    fn review_result_from_output(output: &ReviewOutputEvent) -> (bool, usize, Option<String>) {
+        let findings_len = output.findings.len();
+        let has_findings = findings_len > 0;
+
+        let mut summary_parts: Vec<String> = Vec::new();
+        if !output.overall_explanation.trim().is_empty() {
+            summary_parts.push(output.overall_explanation.trim().to_string());
+        }
+        if findings_len > 0 {
+            let titles: Vec<String> = output
+                .findings
+                .iter()
+                .filter_map(|f| {
+                    let title = f.title.trim();
+                    (!title.is_empty()).then_some(title.to_string())
+                })
+                .collect();
+            if !titles.is_empty() {
+                summary_parts.push(format!("Findings: {}", titles.join("; ")));
+            }
+        }
+
+        let summary = if summary_parts.is_empty() {
+            None
+        } else {
+            Some(summary_parts.join(" \n"))
+        };
+
+        (has_findings, findings_len, summary)
     }
 
     pub(crate) fn on_background_review_started(
