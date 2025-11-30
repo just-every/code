@@ -566,16 +566,23 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                     let findings_count = output_opt.as_ref().map(|o| o.findings.len()).unwrap_or(0);
                     let branch = current_branch_name(&config.cwd).await.unwrap_or_else(|| "unknown".to_string());
                     let worktree = config.cwd.clone();
+                    let summary = output_opt.as_ref().and_then(review_summary_line);
                     let note = if findings_count == 0 {
                         format!(
                             "[developer] Auto-review completed on branch '{branch}' (worktree: {}). No issues reported.",
                             worktree.display()
                         )
                     } else {
-                        format!(
-                            "[developer] Auto-review found {findings_count} issue(s) on branch '{branch}'. Worktree: {}. Merge this worktree/branch to apply fixes.",
-                            worktree.display()
-                        )
+                        match summary {
+                            Some(ref text) if !text.is_empty() => format!(
+                                "[developer] Auto-review found {findings_count} issue(s) on branch '{branch}'. Summary: {text}. Worktree: {}. Merge this worktree/branch to apply fixes.",
+                                worktree.display()
+                            ),
+                            _ => format!(
+                                "[developer] Auto-review found {findings_count} issue(s) on branch '{branch}'. Worktree: {}. Merge this worktree/branch to apply fixes.",
+                                worktree.display()
+                            ),
+                        }
                     };
                     let items: Vec<InputItem> = vec![InputItem::Text { text: note }];
                     let _ = conversation.submit(Op::UserInput { items }).await?;
@@ -1225,6 +1232,34 @@ fn build_continue_prompt(review: &code_core::protocol::ReviewOutputEvent) -> Str
         preface.push_str(&summary);
     }
     preface
+}
+
+fn review_summary_line(output: &code_core::protocol::ReviewOutputEvent) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    let explanation = output.overall_explanation.trim();
+    if !explanation.is_empty() {
+        parts.push(explanation.to_string());
+    }
+
+    if !output.findings.is_empty() {
+        let titles: Vec<String> = output
+            .findings
+            .iter()
+            .filter_map(|f| {
+                let title = f.title.trim();
+                (!title.is_empty()).then_some(title.to_string())
+            })
+            .collect();
+        if !titles.is_empty() {
+            parts.push(format!("Findings: {}", titles.join("; ")));
+        }
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" \n"))
+    }
 }
 
 fn make_user_message(text: String) -> ResponseItem {
