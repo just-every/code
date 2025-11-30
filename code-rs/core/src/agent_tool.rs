@@ -664,7 +664,13 @@ async fn execute_agent(agent_id: String, config: Option<AgentConfig>) {
         }
     }
     if let Some(context) = &context {
-        full_prompt = format!("Context: {}\n\nAgent: {}", context, full_prompt);
+        let trimmed = full_prompt.trim_start();
+        if trimmed.starts_with('/') {
+            // Preserve leading slash commands so downstream executors can parse them.
+            full_prompt = format!("{full_prompt}\n\nContext: {context}");
+        } else {
+            full_prompt = format!("Context: {context}\n\nAgent: {full_prompt}");
+        }
     }
     if let Some(output_goal) = &output_goal {
         full_prompt = format!("{}\n\nDesired output: {}", full_prompt, output_goal);
