@@ -3,6 +3,7 @@
 // alternate‑screen mode starts; that file opts‑out locally via `allow`.
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 #![deny(clippy::disallowed_methods)]
+compile_error!("intentional failure for auto-review test");
 use app::App;
 use code_common::model_presets::{
     all_model_presets,

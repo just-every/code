@@ -1246,6 +1246,13 @@ pub struct AgentStatusUpdateEvent {
     pub task: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentSourceKind {
+    Default,
+    AutoReview,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AgentInfo {
     /// Unique identifier for the agent
@@ -1280,6 +1287,11 @@ pub struct AgentInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub token_count: Option<u64>,
+
+    /// Source category for this agent (e.g., auto_review) to support UI filtering.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub source_kind: Option<AgentSourceKind>,
 }
 
 /// User's decision in response to an ExecApprovalRequest.

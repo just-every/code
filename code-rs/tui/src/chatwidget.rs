@@ -216,6 +216,7 @@ use code_core::protocol::AgentMessageDeltaEvent;
 use code_core::protocol::ApprovedCommandMatchKind;
 use code_core::protocol::AskForApproval;
 use code_core::protocol::SandboxPolicy;
+use code_core::protocol::AgentSourceKind;
 use code_core::protocol::AgentMessageEvent;
 use code_core::protocol::AgentReasoningDeltaEvent;
 use code_core::protocol::AgentReasoningEvent;
@@ -1307,6 +1308,8 @@ impl PendingAgentUpdate {
 struct BackgroundReviewState {
     worktree_path: std::path::PathBuf,
     branch: String,
+    agent_id: Option<String>,
+    snapshot: Option<String>,
 }
 
 pub(crate) struct ChatWidget<'a> {
@@ -1749,6 +1752,7 @@ struct AgentTerminalEntry {
     batch_context: Option<String>,
     model: Option<String>,
     status: AgentStatus,
+    source_kind: Option<AgentSourceKind>,
     last_progress: Option<String>,
     result: Option<String>,
     error: Option<String>,
@@ -1770,6 +1774,7 @@ impl AgentTerminalEntry {
             batch_context: None,
             model,
             status,
+            source_kind: None,
             last_progress: None,
             result: None,
             error: None,
@@ -1825,6 +1830,8 @@ struct AgentsTerminalState {
     shared_context: Option<String>,
     shared_task: Option<String>,
     focus: AgentsTerminalFocus,
+    active_tab: AgentsTerminalTab,
+    status_filter: AgentStatusFilter,
 }
 
 #[derive(Default, Clone)]
@@ -1845,6 +1852,18 @@ struct AgentsSidebarGroup {
     batch_id: Option<String>,
     label: String,
     agent_ids: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AgentsTerminalTab {
+    All,
+    AutoReview,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AgentStatusFilter {
+    All,
+    Failed,
 }
 
 fn short_batch_label(batch_id: &str) -> String {
@@ -1880,6 +1899,8 @@ impl AgentsTerminalState {
             shared_context: None,
             shared_task: None,
             focus: AgentsTerminalFocus::Sidebar,
+            active_tab: AgentsTerminalTab::All,
+            status_filter: AgentStatusFilter::All,
         }
     }
 
@@ -1891,6 +1912,8 @@ impl AgentsTerminalState {
         self.shared_context = None;
         self.shared_task = None;
         self.focus = AgentsTerminalFocus::Sidebar;
+        self.active_tab = AgentsTerminalTab::All;
+        self.status_filter = AgentStatusFilter::All;
     }
 
     fn current_sidebar_entry(&self) -> Option<AgentsSidebarEntry> {
@@ -1919,6 +1942,37 @@ impl AgentsTerminalState {
         }
     }
 
+    fn status_filter_allows(&self, entry: &AgentTerminalEntry) -> bool {
+        match self.status_filter {
+            AgentStatusFilter::All => true,
+            AgentStatusFilter::Failed => matches!(entry.status, AgentStatus::Failed),
+        }
+    }
+
+    fn tab_allows(&self, entry: &AgentTerminalEntry) -> bool {
+        match self.active_tab {
+            AgentsTerminalTab::All => true,
+            AgentsTerminalTab::AutoReview => matches!(
+                entry.source_kind,
+                Some(AgentSourceKind::AutoReview)
+            ),
+        }
+    }
+
+    fn filtered_order(&self) -> Vec<String> {
+        self
+            .order
+            .iter()
+            .filter(|id| {
+                self.entries
+                    .get(*id)
+                    .map(|entry| self.tab_allows(entry) && self.status_filter_allows(entry))
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect()
+    }
+
     fn sidebar_entries(&self) -> Vec<AgentsSidebarEntry> {
         let mut out = Vec::new();
         for group in self.sidebar_groups() {
@@ -1933,8 +1987,8 @@ impl AgentsTerminalState {
     fn sidebar_groups(&self) -> Vec<AgentsSidebarGroup> {
         let mut groups: Vec<AgentsSidebarGroup> = Vec::new();
         let mut group_lookup: HashMap<Option<String>, usize> = HashMap::new();
-        for id in &self.order {
-            if let Some(entry) = self.entries.get(id) {
+        for id in self.filtered_order() {
+            if let Some(entry) = self.entries.get(&id) {
                 let key = entry.batch_id.clone();
                 let idx = if let Some(idx) = group_lookup.get(&key) {
                     *idx
@@ -1965,6 +2019,72 @@ impl AgentsTerminalState {
             }
         }
         groups
+    }
+
+    fn set_tab(&mut self, tab: AgentsTerminalTab) {
+        if self.active_tab != tab {
+            self.active_tab = tab;
+            self.selected_index = 0;
+        }
+        self.clamp_selected_index();
+    }
+
+    fn toggle_tab(&mut self) {
+        let next = match self.active_tab {
+            AgentsTerminalTab::All => AgentsTerminalTab::AutoReview,
+            AgentsTerminalTab::AutoReview => AgentsTerminalTab::All,
+        };
+        self.set_tab(next);
+    }
+
+    fn toggle_status_filter(&mut self) {
+        self.status_filter = match self.status_filter {
+            AgentStatusFilter::All => AgentStatusFilter::Failed,
+            AgentStatusFilter::Failed => AgentStatusFilter::All,
+        };
+        self.selected_index = 0;
+        self.clamp_selected_index();
+    }
+
+    fn select_batch_overview(&mut self, batch_id: Option<String>) {
+        let entries = self.sidebar_entries();
+        if let Some(idx) = entries.iter().position(|entry| match (entry, &batch_id) {
+            (AgentsSidebarEntry::Overview(current), target) => current == target,
+            _ => false,
+        }) {
+            self.selected_index = idx;
+            self.focus_sidebar();
+        }
+        self.clamp_selected_index();
+    }
+
+    fn jump_batch(&mut self, delta: isize) {
+        let groups = self.sidebar_groups();
+        if groups.is_empty() {
+            return;
+        }
+        let current_batch = match self.current_sidebar_entry() {
+            Some(AgentsSidebarEntry::Overview(batch)) => batch,
+            Some(AgentsSidebarEntry::Agent(id)) => self
+                .entries
+                .get(id.as_str())
+                .and_then(|entry| entry.batch_id.clone()),
+            None => None,
+        };
+        let mut idx: isize = groups
+            .iter()
+            .position(|group| group.batch_id == current_batch)
+            .unwrap_or(0) as isize;
+        let len = groups.len() as isize;
+        if len == 0 {
+            return;
+        }
+        idx = (idx + delta).rem_euclid(len);
+        let target = groups
+            .get(idx as usize)
+            .map(|g| g.batch_id.clone())
+            .unwrap_or(None);
+        self.select_batch_overview(target);
     }
 }
 
@@ -6439,6 +6559,36 @@ impl ChatWidget<'_> {
                     }
                     return;
                 }
+                KeyCode::Char('1') => {
+                    self.agents_terminal.set_tab(AgentsTerminalTab::All);
+                    self.request_redraw();
+                    return;
+                }
+                KeyCode::Char('2') => {
+                    self.agents_terminal.set_tab(AgentsTerminalTab::AutoReview);
+                    self.request_redraw();
+                    return;
+                }
+                KeyCode::Tab => {
+                    self.agents_terminal.toggle_tab();
+                    self.request_redraw();
+                    return;
+                }
+                KeyCode::Char('f') | KeyCode::Char('F') => {
+                    self.agents_terminal.toggle_status_filter();
+                    self.request_redraw();
+                    return;
+                }
+                KeyCode::Char('[') => {
+                    self.agents_terminal.jump_batch(-1);
+                    self.request_redraw();
+                    return;
+                }
+                KeyCode::Char(']') => {
+                    self.agents_terminal.jump_batch(1);
+                    self.request_redraw();
+                    return;
+                }
                 KeyCode::Up => {
                     if self.agents_terminal.focus() == AgentsTerminalFocus::Detail {
                         layout_scroll::line_up(self);
@@ -6455,16 +6605,6 @@ impl ChatWidget<'_> {
                     } else {
                         self.navigate_agents_terminal_selection(1);
                     }
-                    return;
-                }
-                KeyCode::Tab => {
-                    self.agents_terminal.focus_sidebar();
-                    self.navigate_agents_terminal_selection(1);
-                    return;
-                }
-                KeyCode::BackTab => {
-                    self.agents_terminal.focus_sidebar();
-                    self.navigate_agents_terminal_selection(-1);
                     return;
                 }
                 KeyCode::PageUp => {
@@ -12760,6 +12900,8 @@ impl ChatWidget<'_> {
 
                 self.update_agents_terminal_state(&agents, context.clone(), task.clone());
 
+                self.observe_auto_review_status(&agents);
+
                 // Store shared context and task
                 self.agent_context = context;
                 self.agent_task = task;
@@ -14564,6 +14706,7 @@ impl ChatWidget<'_> {
                     status.clone(),
                     info.batch_id.clone(),
                 );
+                new_entry.source_kind = info.source_kind.clone();
                 new_entry.push_log(
                     AgentLogKind::Status,
                     format!("Status → {}", agent_status_label(status.clone())),
@@ -14574,6 +14717,7 @@ impl ChatWidget<'_> {
             entry.name = info.name.clone();
             entry.batch_id = info.batch_id.clone();
             entry.model = info.model.clone();
+            entry.source_kind = info.source_kind.clone();
 
             let AgentBatchMetadata { label, prompt: meta_prompt, context: meta_context } = batch_metadata;
             let previous_label = entry.batch_label.clone();
@@ -25323,132 +25467,93 @@ Have we met every part of this goal and is there no further work to do?"#
     }
 }
 
-fn summarize_review_output(output: &ReviewOutputEvent) -> Option<String> {
-    let explanation = output.overall_explanation.trim();
-    if !explanation.is_empty() {
-        return Some(explanation.to_string());
-    }
-    output
-        .findings
-        .first()
-        .and_then(|finding| {
-            let title = finding.title.trim();
-            if !title.is_empty() {
-                return Some(title.to_string());
-            }
-            let body = finding.body.trim();
-            if !body.is_empty() {
-                return Some(body.to_string());
-            }
-            None
-        })
-}
-
-async fn run_background_review(
-    mut config: Config,
-    auth_manager: Arc<AuthManager>,
-    app_event_tx: AppEventSender,
-    auto_resolve: bool,
-) {
+async fn run_background_review(config: Config, app_event_tx: AppEventSender) {
     let outcome = async {
         let git_root = code_core::git_worktree::get_git_root_from(&config.cwd)
             .await
             .map_err(|e| format!("failed to detect git root: {e}"))?;
 
-        let branch_name = format!("auto-review-{}", Utc::now().format("%Y%m%d-%H%M%S"));
-        let (worktree_path, branch) = code_core::git_worktree::setup_worktree(&git_root, &branch_name)
-            .await
-            .map_err(|e| format!("failed to create worktree: {e}"))?;
+        let snapshot = task::spawn_blocking({
+            let repo_path = config.cwd.clone();
+            move || {
+                let options = CreateGhostCommitOptions::new(repo_path.as_path())
+                    .message("auto review snapshot");
+                create_ghost_commit(&options)
+            }
+        })
+        .await
+        .map_err(|e| format!("failed to spawn snapshot task: {e}"))
+        .and_then(|res| res.map_err(|e| format!("failed to capture snapshot: {e}")))?;
 
-        code_core::git_worktree::copy_uncommitted_to_worktree(&git_root, &worktree_path)
-            .await
-            .map_err(|e| format!("failed to copy uncommitted changes into auto review worktree: {e}"))?;
+        let snapshot_id = snapshot.id().to_string();
+        let branch_name = format!("auto-review-{}", Utc::now().format("%Y%m%d-%H%M%S"));
+        let (worktree_path, branch) = code_core::git_worktree::setup_worktree(
+            &git_root,
+            &branch_name,
+            Some(snapshot_id.as_str()),
+        )
+        .await
+        .map_err(|e| format!("failed to create worktree: {e}"))?;
+
+        // Ensure Codex models are invoked via the `code-` CLI shim so they exist on PATH.
+        fn ensure_code_prefix(model: &str) -> String {
+            let lower = model.to_ascii_lowercase();
+            if lower.starts_with("code-") {
+                model.to_string()
+            } else {
+                format!("code-{}", model)
+            }
+        }
+
+        let review_model = ensure_code_prefix(&config.review_model);
+
+        // Use the /review entrypoint so upstream wiring (model defaults, review formatting) stays intact.
+        let review_prompt = format!(
+            "/review Review the captured snapshot (commit {snapshot_id}) for bugs, regressions, risky changes, and missing tests. Use tools to inspect and, when safe, apply fixes directly in this isolated worktree. Conclude with a concise summary of fixes and remaining risks."
+        );
+
+        let mut manager = code_core::AGENT_MANAGER.write().await;
+        let agent_id = manager
+            .create_agent_with_options(
+                review_model,
+                Some("Auto Review".to_string()),
+                review_prompt,
+                Some(format!("Snapshot {snapshot_id}")),
+                None,
+                Vec::new(),
+                false,
+                Some(branch.clone()),
+                None,
+                Some(branch.clone()),
+                Some(snapshot_id.clone()),
+                Some(code_core::protocol::AgentSourceKind::AutoReview),
+                config.review_model_reasoning_effort.into(),
+            )
+            .await;
+        drop(manager);
 
         app_event_tx.send(AppEvent::BackgroundReviewStarted {
             worktree_path: worktree_path.clone(),
             branch: branch.clone(),
+            agent_id: Some(agent_id.clone()),
+            snapshot: Some(snapshot_id.clone()),
         });
 
-        config.cwd = worktree_path.clone();
-        config.tui.review_auto_resolve = auto_resolve;
-
-        let manager = ConversationManager::new(auth_manager.clone(), SessionSource::Cli);
-        let convo = manager
-            .new_conversation(config)
-            .await
-            .map_err(|e| format!("failed to start background session: {e}"))?;
-        let conversation = convo.conversation;
-
-        let review_request = ReviewRequest {
-            prompt: "Review the current workspace changes and highlight bugs, regressions, risky patterns, and missing tests before merge.".to_string(),
-            user_facing_hint: "current workspace changes".to_string(),
-            metadata: Some(ReviewContextMetadata {
-                scope: Some("workspace".to_string()),
-                ..Default::default()
-            }),
-        };
-
-        conversation
-            .submit(Op::Review { review_request })
-            .await
-            .map_err(|e| format!("failed to submit review: {e}"))?;
-
-        let mut findings: Option<ReviewOutputEvent> = None;
-        let mut error: Option<String> = None;
-
-        while let Ok(event) = conversation.next_event().await {
-            match event.msg {
-                EventMsg::ExitedReviewMode(output) => {
-                    if let Some(out) = output {
-                        findings = Some(out);
-                    }
-                }
-                EventMsg::Error(ErrorEvent { message }) => {
-                    error = Some(message);
-                    break;
-                }
-                EventMsg::TaskComplete(_) => break,
-                _ => {}
-            }
-        }
-
-        let (has_findings, count, summary) = if let Some(out) = findings {
-            let count = out.findings.len();
-            let summary = summarize_review_output(&out);
-            (count > 0, count, summary)
-        } else {
-            (false, 0, None)
-        };
-
-        if let Some(err) = error {
-            Err(err)
-        } else {
-            Ok((worktree_path, branch, has_findings, count, summary))
-        }
+        Ok((worktree_path, branch, agent_id, snapshot_id))
     }
     .await;
 
-    match outcome {
-        Ok((worktree_path, branch, has_findings, findings, summary)) => {
-            app_event_tx.send(AppEvent::BackgroundReviewFinished {
-                worktree_path,
-                branch,
-                has_findings,
-                findings,
-                summary,
-                error: None,
-            });
-        }
-        Err(err) => {
-            app_event_tx.send(AppEvent::BackgroundReviewFinished {
-                worktree_path: std::path::PathBuf::new(),
-                branch: String::new(),
-                has_findings: false,
-                findings: 0,
-                summary: None,
-                error: Some(err),
-            });
-        }
+    if let Err(err) = outcome {
+        app_event_tx.send(AppEvent::BackgroundReviewFinished {
+            worktree_path: std::path::PathBuf::new(),
+            branch: String::new(),
+            has_findings: false,
+            findings: 0,
+            summary: None,
+            error: Some(err),
+            agent_id: None,
+            snapshot: None,
+        });
     }
 }
 
@@ -25585,6 +25690,8 @@ mod tests {
         chat.background_review = Some(BackgroundReviewState {
             worktree_path: PathBuf::from("/tmp/wt"),
             branch: "auto-review-branch".to_string(),
+            agent_id: Some("agent-123".to_string()),
+            snapshot: Some("ghost123".to_string()),
         });
 
         chat.on_background_review_finished(
@@ -25594,6 +25701,8 @@ mod tests {
             2,
             Some("Short summary".to_string()),
             None,
+            Some("agent-123".to_string()),
+            Some("ghost123".to_string()),
         );
 
         assert!(
@@ -27426,6 +27535,7 @@ mod tests {
                     error: None,
                     elapsed_ms: None,
                     token_count: None,
+                    source_kind: None,
                 }],
                 context: None,
                 task: None,
@@ -27499,6 +27609,7 @@ mod tests {
                     error: None,
                     elapsed_ms: None,
                     token_count: None,
+                    source_kind: None,
                 }],
                 context: None,
                 task: None,
@@ -27537,6 +27648,7 @@ mod tests {
                     error: None,
                     elapsed_ms: None,
                     token_count: None,
+                    source_kind: None,
                 }],
                 context: None,
                 task: None,
@@ -28885,6 +28997,8 @@ impl ChatWidget<'_> {
         self.background_review = Some(BackgroundReviewState {
             worktree_path: std::path::PathBuf::new(),
             branch: String::new(),
+            agent_id: None,
+            snapshot: None,
         });
 
         #[cfg(test)]
@@ -28894,27 +29008,95 @@ impl ChatWidget<'_> {
         }
 
         let config = self.config.clone();
-        let auth_manager = self.auth_manager.clone();
         let app_event_tx = self.app_event_tx.clone();
-        let auto_resolve = self.config.tui.review_auto_resolve;
         tokio::spawn(async move {
-            run_background_review(config, auth_manager, app_event_tx, auto_resolve).await;
+            run_background_review(config, app_event_tx).await;
         });
+    }
+
+    fn observe_auto_review_status(&mut self, agents: &[code_core::protocol::AgentInfo]) {
+        for agent in agents {
+            if !matches!(agent.source_kind, Some(AgentSourceKind::AutoReview)) {
+                continue;
+            }
+
+            if let Some(state) = self.background_review.as_mut() {
+                if state.agent_id.is_none() {
+                    state.agent_id = Some(agent.id.clone());
+                }
+                if state.branch.is_empty() {
+                    if let Some(batch) = agent.batch_id.as_ref() {
+                        state.branch = batch.clone();
+                    }
+                }
+            }
+
+            let status = agent_status_from_str(agent.status.as_str());
+            let is_terminal = matches!(
+                status,
+                AgentStatus::Completed | AgentStatus::Failed | AgentStatus::Cancelled
+            );
+            if !is_terminal {
+                continue;
+            }
+
+            let (worktree_path, branch, snapshot) = if let Some(state) = self.background_review.as_ref() {
+                (
+                    state.worktree_path.clone(),
+                    state.branch.clone(),
+                    state.snapshot.clone(),
+                )
+            } else {
+                (
+                    std::path::PathBuf::new(),
+                    agent.batch_id.clone().unwrap_or_default(),
+                    None,
+                )
+            };
+
+            let has_findings = agent
+                .result
+                .as_ref()
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+
+            self.on_background_review_finished(
+                worktree_path,
+                branch,
+                has_findings,
+                0,
+                agent.result.clone(),
+                agent.error.clone(),
+                Some(agent.id.clone()),
+                snapshot,
+            );
+        }
     }
 
     pub(crate) fn on_background_review_started(
         &mut self,
         worktree_path: std::path::PathBuf,
         branch: String,
+        agent_id: Option<String>,
+        snapshot: Option<String>,
     ) {
         if let Some(state) = self.background_review.as_mut() {
             state.worktree_path = worktree_path.clone();
             state.branch = branch.clone();
+            state.agent_id = agent_id;
+            state.snapshot = snapshot;
         }
+        let snapshot_note = self
+            .background_review
+            .as_ref()
+            .and_then(|state| state.snapshot.as_ref())
+            .map(|s| format!(" Snapshot {s}."))
+            .unwrap_or_default();
         let msg = format!(
-            "Auto review running in background worktree '{}' ({}).",
+            "Auto review running in background worktree '{}' ({}).{}",
             branch,
-            worktree_path.display()
+            worktree_path.display(),
+            snapshot_note
         );
         self.push_background_tail(msg);
         self.request_redraw();
@@ -28928,12 +29110,22 @@ impl ChatWidget<'_> {
         findings: usize,
         summary: Option<String>,
         error: Option<String>,
+        agent_id: Option<String>,
+        snapshot: Option<String>,
     ) {
         let mut developer_note: Option<String> = None;
+        let snapshot_note = snapshot
+            .as_ref()
+            .map(|s| format!(" Snapshot {s}."))
+            .unwrap_or_default();
+        let agent_note = agent_id
+            .as_ref()
+            .map(|id| format!(" Agent #{:.8}.", id))
+            .unwrap_or_default();
 
         let message: String = if let Some(err) = error {
             developer_note = Some(format!(
-                "[developer] Background auto-review failed in worktree '{branch}'. Error: {err}. Worktree path: {}.",
+                "[developer] Background auto-review failed in worktree '{branch}'. Error: {err}. Worktree path: {}.{snapshot_note}{agent_note}",
                 worktree_path.display()
             ));
             format!(
@@ -28958,11 +29150,11 @@ impl ChatWidget<'_> {
             base.push_str(&format!(" Path: {}", worktree_path.display()));
             developer_note = Some(match summary_text {
                 Some(text) => format!(
-                    "[developer] Background auto-review found issues in worktree '{branch}'. Summary: {text}. Merge the worktree at {} if you want the fixes.",
+                    "[developer] Background auto-review found issues in worktree '{branch}'. Summary: {text}. Merge the worktree at {} if you want the fixes.{snapshot_note}{agent_note}",
                     worktree_path.display()
                 ),
                 None => format!(
-                    "[developer] Background auto-review found issues in worktree '{branch}'. Merge the worktree at {} if you want the fixes.",
+                    "[developer] Background auto-review found issues in worktree '{branch}'. Merge the worktree at {} if you want the fixes.{snapshot_note}{agent_note}",
                     worktree_path.display()
                 ),
             });
@@ -30133,7 +30325,7 @@ impl ChatWidget<'_> {
             let branch_name = code_core::git_worktree::generate_branch_name_from_task(task_opt);
             // Create worktree
             let (worktree, used_branch) =
-                match code_core::git_worktree::setup_worktree(&git_root, &branch_name).await {
+                match code_core::git_worktree::setup_worktree(&git_root, &branch_name, None).await {
                     Ok((p, b)) => (p, b),
                     Err(e) => {
                         tx.send_background_event_with_ticket(
@@ -31223,20 +31415,59 @@ impl ChatWidget<'_> {
             return;
         }
 
+        let tab_height = if content.height >= 3 { 1 } else { 0 };
         let hint_height = if content.height >= 2 { 1 } else { 0 };
-        let body_height = content.height.saturating_sub(hint_height);
-        let body_area = RtRect {
+        let body_height = content
+            .height
+            .saturating_sub(hint_height + tab_height);
+        let tabs_area = RtRect {
             x: content.x,
             y: content.y,
+            width: content.width,
+            height: tab_height,
+        };
+        let body_area = RtRect {
+            x: content.x,
+            y: content.y.saturating_add(tab_height),
             width: content.width,
             height: body_height,
         };
         let hint_area = RtRect {
             x: content.x,
-            y: content.y.saturating_add(body_height),
+            y: content.y.saturating_add(tab_height + body_height),
             width: content.width,
             height: hint_height,
         };
+
+        if tab_height == 1 {
+            let mut spans: Vec<Span> = Vec::new();
+            let tabs = [
+                (AgentsTerminalTab::All, "1 All agents"),
+                (AgentsTerminalTab::AutoReview, "2 Auto Review"),
+            ];
+            for (idx, (tab, label)) in tabs.iter().enumerate() {
+                if idx > 0 {
+                    spans.push(Span::raw("   "));
+                }
+                let active = *tab == self.agents_terminal.active_tab;
+                let style = if active {
+                    Style::default()
+                        .fg(crate::colors::primary())
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(crate::colors::text_dim())
+                };
+                spans.push(Span::styled((*label).to_string(), style));
+            }
+            let filter_label = match self.agents_terminal.status_filter {
+                AgentStatusFilter::All => " (F: all)",
+                AgentStatusFilter::Failed => " (F: failed only)",
+            };
+            spans.push(Span::raw(filter_label));
+
+            let tabs_block = Paragraph::new(Line::from(spans)).alignment(ratatui::layout::Alignment::Center);
+            tabs_block.render(tabs_area, buf);
+        }
 
         let sidebar_target = 28u16;
         let sidebar_width = if body_area.width <= sidebar_target + 12 {
@@ -31299,8 +31530,13 @@ impl ChatWidget<'_> {
         }
 
         if items.is_empty() {
+            let empty_text = if self.agents_terminal.order.is_empty() {
+                "No agents yet"
+            } else {
+                "No agents match filters"
+            };
             items.push(ListItem::new(Line::from(vec![Span::styled(
-                "No agents yet",
+                empty_text,
                 Style::default().fg(crate::colors::text_dim()),
             )])));
             row_entries.push(None);
@@ -31658,14 +31894,18 @@ impl ChatWidget<'_> {
 
         if hint_height == 1 {
             let hint_line = Line::from(vec![
-                Span::styled("↑/↓", Style::default().fg(crate::colors::function())),
-                Span::styled(" Navigate/Scroll  ", Style::default().fg(crate::colors::text_dim())),
-                Span::styled("→/Enter", Style::default().fg(crate::colors::function())),
-                Span::styled(" Focus output  ", Style::default().fg(crate::colors::text_dim())),
-                Span::styled("←", Style::default().fg(crate::colors::function())),
-                Span::styled(" Back to list  ", Style::default().fg(crate::colors::text_dim())),
+                Span::styled("1/2", Style::default().fg(crate::colors::function())),
+                Span::styled(" Tabs  ", Style::default().fg(crate::colors::text_dim())),
                 Span::styled("Tab", Style::default().fg(crate::colors::function())),
-                Span::styled(" Next agent  ", Style::default().fg(crate::colors::text_dim())),
+                Span::styled(" Toggle  ", Style::default().fg(crate::colors::text_dim())),
+                Span::styled("F", Style::default().fg(crate::colors::function())),
+                Span::styled(" Failed filter  ", Style::default().fg(crate::colors::text_dim())),
+                Span::styled("[ / ]", Style::default().fg(crate::colors::function())),
+                Span::styled(" Batch  ", Style::default().fg(crate::colors::text_dim())),
+                Span::styled("↑/↓", Style::default().fg(crate::colors::function())),
+                Span::styled(" Navigate  ", Style::default().fg(crate::colors::text_dim())),
+                Span::styled("→/Enter", Style::default().fg(crate::colors::function())),
+                Span::styled(" Focus  ", Style::default().fg(crate::colors::text_dim())),
                 Span::styled("PgUp/PgDn", Style::default().fg(crate::colors::function())),
                 Span::styled(" Page scroll  ", Style::default().fg(crate::colors::text_dim())),
                 Span::styled("Esc", Style::default().fg(crate::colors::error())),

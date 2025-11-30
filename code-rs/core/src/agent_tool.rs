@@ -17,6 +17,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Duration as TokioDuration;
 use std::thread;
+use crate::protocol::AgentSourceKind;
 
 #[cfg(target_os = "windows")]
 fn default_pathext_or_default() -> Vec<String> {
@@ -168,6 +169,10 @@ pub struct Agent {
     pub progress: Vec<String>,
     pub worktree_path: Option<String>,
     pub branch_name: Option<String>,
+    #[serde(default)]
+    pub worktree_base: Option<String>,
+    #[serde(default)]
+    pub source_kind: Option<AgentSourceKind>,
     #[serde(skip)]
     #[allow(dead_code)]
     pub config: Option<AgentConfig>,
@@ -236,6 +241,7 @@ impl AgentManager {
                         error: agent.error.clone(),
                         elapsed_ms,
                         token_count: None,
+                        source_kind: agent.source_kind.clone(),
                     }
                 })
                 .collect();
@@ -289,6 +295,9 @@ impl AgentManager {
             read_only,
             batch_id,
             None,
+            None,
+            None,
+            None,
             reasoning_effort,
         )
         .await
@@ -317,9 +326,48 @@ impl AgentManager {
             read_only,
             batch_id,
             Some(config),
+            None,
+            None,
+            None,
             reasoning_effort,
         )
         .await
+    }
+
+    #[allow(dead_code)]
+    pub async fn create_agent_with_options(
+        &mut self,
+        model: String,
+        name: Option<String>,
+        prompt: String,
+        context: Option<String>,
+        output_goal: Option<String>,
+        files: Vec<String>,
+        read_only: bool,
+        batch_id: Option<String>,
+        config: Option<AgentConfig>,
+        worktree_branch: Option<String>,
+        worktree_base: Option<String>,
+        source_kind: Option<AgentSourceKind>,
+        reasoning_effort: code_protocol::config_types::ReasoningEffort,
+    ) -> String {
+        self
+            .create_agent_internal(
+                model,
+                name,
+                prompt,
+                context,
+                output_goal,
+                files,
+                read_only,
+                batch_id,
+                config,
+                worktree_branch,
+                worktree_base,
+                source_kind,
+                reasoning_effort,
+            )
+            .await
     }
 
     async fn create_agent_internal(
@@ -333,6 +381,9 @@ impl AgentManager {
         read_only: bool,
         batch_id: Option<String>,
         config: Option<AgentConfig>,
+        worktree_branch: Option<String>,
+        worktree_base: Option<String>,
+        source_kind: Option<AgentSourceKind>,
         reasoning_effort: code_protocol::config_types::ReasoningEffort,
     ) -> String {
         let agent_id = Uuid::new_v4().to_string();
@@ -355,7 +406,9 @@ impl AgentManager {
             completed_at: None,
             progress: Vec::new(),
             worktree_path: None,
-            branch_name: None,
+            branch_name: worktree_branch,
+            worktree_base,
+            source_kind,
             config: config.clone(),
             reasoning_effort,
         };
@@ -636,7 +689,10 @@ async fn execute_agent(agent_id: String, config: Option<AgentConfig>) {
         // Check git and setup worktree for non-read-only mode
         match get_git_root().await {
             Ok(git_root) => {
-                let branch_id = generate_branch_id(&model, &prompt);
+                let branch_id = agent
+                    .branch_name
+                    .clone()
+                    .unwrap_or_else(|| generate_branch_id(&model, &prompt));
 
                 let mut manager = AGENT_MANAGER.write().await;
                 manager
@@ -644,7 +700,7 @@ async fn execute_agent(agent_id: String, config: Option<AgentConfig>) {
                     .await;
                 drop(manager);
 
-                match setup_worktree(&git_root, &branch_id).await {
+                match setup_worktree(&git_root, &branch_id, agent.worktree_base.as_deref()).await {
                     Ok((worktree_path, used_branch)) => {
                         let mut manager = AGENT_MANAGER.write().await;
                         manager

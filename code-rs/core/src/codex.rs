@@ -11118,6 +11118,7 @@ async fn send_agent_status_update(sess: &Session) {
                 error: agent.error.clone(),
                 elapsed_ms,
                 token_count: None,
+                source_kind: agent.source_kind.clone(),
             }
         })
         .collect();

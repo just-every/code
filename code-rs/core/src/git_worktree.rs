@@ -121,8 +121,16 @@ pub async fn get_git_root_from(cwd: &Path) -> Result<PathBuf, String> {
 }
 
 /// Create a new worktree for `branch_id` under `<git_root>/.code/branches/<branch_id>`.
-/// If a previous worktree directory exists, remove it first.
-pub async fn setup_worktree(git_root: &Path, branch_id: &str) -> Result<(PathBuf, String), String> {
+/// When `base_ref` is provided, the worktree is created from that commit/ref so
+/// subsequent mutations in the primary working tree cannot affect the agent's
+/// view. If `base_ref` is `None`, the worktree is created from the current
+/// HEAD. When `base_ref` is set we always recreate the worktree directory to
+/// guarantee it reflects the requested snapshot.
+pub async fn setup_worktree(
+    git_root: &Path,
+    branch_id: &str,
+    base_ref: Option<&str>,
+) -> Result<(PathBuf, String), String> {
     // Global location: ~/.code/working/<repo_name>/branches
     let repo_name = git_root
         .file_name()
@@ -140,17 +148,43 @@ pub async fn setup_worktree(git_root: &Path, branch_id: &str) -> Result<(PathBuf
 
     let mut effective_branch = branch_id.to_string();
     let mut worktree_path = code_dir.join(&effective_branch);
+    let reuse_allowed = base_ref.is_none();
     if worktree_path.exists() {
-        // If the worktree directory already exists, re-use it to avoid the cost
-        // of removing and re-adding a worktree. This makes repeated agent runs
-        // start much faster.
-        record_worktree_in_session(git_root, &worktree_path).await;
-        return Ok((worktree_path, effective_branch));
+        if reuse_allowed {
+            // Re-use existing worktree for speed when it does not need to be
+            // pinned to a specific snapshot.
+            record_worktree_in_session(git_root, &worktree_path).await;
+            return Ok((worktree_path, effective_branch));
+        }
+
+        // Snapshot-specific worktrees must reflect the requested base ref, so
+        // remove any stale directory before recreating.
+        let _ = Command::new("git")
+            .arg("worktree")
+            .arg("remove")
+            .arg("--force")
+            .arg(worktree_path.to_str().unwrap())
+            .current_dir(git_root)
+            .output()
+            .await;
+    }
+
+    let mut args = vec![
+        "worktree",
+        "add",
+        "-b",
+        &effective_branch,
+        worktree_path
+            .to_str()
+            .ok_or_else(|| "Invalid worktree path".to_string())?,
+    ];
+    if let Some(base) = base_ref {
+        args.push(base);
     }
 
     let output = Command::new("git")
         .current_dir(git_root)
-        .args(["worktree", "add", "-b", &effective_branch, worktree_path.to_str().unwrap()])
+        .args(args)
         .output()
         .await
         .map_err(|e| format!("Failed to create git worktree: {}", e))?;
@@ -172,9 +206,21 @@ pub async fn setup_worktree(git_root: &Path, branch_id: &str) -> Result<(PathBuf
                     .output()
                     .await;
             }
+            let mut retry_args = vec![
+                "worktree",
+                "add",
+                "-b",
+                &effective_branch,
+                worktree_path
+                    .to_str()
+                    .ok_or_else(|| "Invalid worktree path".to_string())?,
+            ];
+            if let Some(base) = base_ref {
+                retry_args.push(base);
+            }
             let retry = Command::new("git")
                 .current_dir(git_root)
-                .args(["worktree", "add", "-b", &effective_branch, worktree_path.to_str().unwrap()])
+                .args(retry_args)
                 .output()
                 .await
                 .map_err(|e| format!("Failed to create git worktree (retry): {}", e))?;
