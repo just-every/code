@@ -29131,6 +29131,30 @@ impl ChatWidget<'_> {
         (has_findings, findings_len, summary)
     }
 
+    fn build_review_handoff_json(
+        branch: &str,
+        worktree_path: &std::path::Path,
+        snapshot: Option<&str>,
+        findings: usize,
+        summary: Option<&str>,
+    ) -> String {
+        let mut obj = serde_json::json!({
+            "type": "auto_review_result",
+            "branch": branch,
+            "worktree_path": worktree_path,
+            "findings": findings,
+        });
+
+        if let Some(s) = snapshot {
+            obj["snapshot"] = serde_json::Value::String(s.to_string());
+        }
+        if let Some(s) = summary {
+            obj["summary"] = serde_json::Value::String(s.to_string());
+        }
+
+        obj.to_string()
+    }
+
     pub(crate) fn on_background_review_started(
         &mut self,
         worktree_path: std::path::PathBuf,
@@ -29181,9 +29205,17 @@ impl ChatWidget<'_> {
             .map(|id| format!(" Agent #{:.8}.", id))
             .unwrap_or_default();
 
+        let handoff_json = Self::build_review_handoff_json(
+            &branch,
+            &worktree_path,
+            snapshot.as_deref(),
+            findings,
+            summary.as_deref(),
+        );
+
         let message: String = if let Some(err) = error {
             developer_note = Some(format!(
-                "[developer] Background auto-review failed in worktree '{branch}'. Error: {err}. Worktree path: {}.{snapshot_note}{agent_note}",
+                "[developer] Background auto-review failed in worktree '{branch}'. Error: {err}. Worktree path: {}.{snapshot_note}{agent_note}\n{handoff_json}",
                 worktree_path.display()
             ));
             format!(
@@ -29208,11 +29240,11 @@ impl ChatWidget<'_> {
             base.push_str(&format!(" Path: {}", worktree_path.display()));
             developer_note = Some(match summary_text {
                 Some(text) => format!(
-                    "[developer] Background auto-review found issues in worktree '{branch}'. Summary: {text}. Merge the worktree at {} if you want the fixes.{snapshot_note}{agent_note}",
+                    "[developer] Background auto-review found issues in worktree '{branch}'. Summary: {text}. Merge the worktree at {} if you want the fixes.{snapshot_note}{agent_note}\n{handoff_json}",
                     worktree_path.display()
                 ),
                 None => format!(
-                    "[developer] Background auto-review found issues in worktree '{branch}'. Merge the worktree at {} if you want the fixes.{snapshot_note}{agent_note}",
+                    "[developer] Background auto-review found issues in worktree '{branch}'. Merge the worktree at {} if you want the fixes.{snapshot_note}{agent_note}\n{handoff_json}",
                     worktree_path.display()
                 ),
             });
