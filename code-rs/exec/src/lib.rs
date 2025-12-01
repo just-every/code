@@ -24,6 +24,7 @@ use code_core::config::set_default_originator;
 use code_core::config::Config;
 use code_core::config::ConfigOverrides;
 use code_core::git_info::get_git_repo_root;
+use code_core::git_info::recent_commits;
 use code_core::protocol::AskForApproval;
 use code_core::protocol::Event;
 use code_core::protocol::EventMsg;
@@ -31,6 +32,7 @@ use code_core::protocol::InputItem;
 use code_core::protocol::Op;
 use code_core::protocol::ReviewRequest;
 use code_core::protocol::TaskCompleteEvent;
+use code_core::protocol::ReviewContextMetadata;
 use code_protocol::models::ContentItem;
 use code_protocol::models::ResponseItem;
 use code_protocol::protocol::SessionSource;
@@ -39,10 +41,13 @@ use code_protocol::config_types::SandboxMode;
 use event_processor_with_human_output::EventProcessorWithHumanOutput;
 use event_processor_with_json_output::EventProcessorWithJsonOutput;
 use event_processor::handle_last_message;
+use code_git_tooling::GhostCommit;
+use code_git_tooling::CreateGhostCommitOptions;
+use code_git_tooling::create_ghost_commit;
 use serde_json::Value;
 use std::io::IsTerminal;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use supports_color::Stream;
 use tracing::debug;
@@ -308,6 +313,8 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
             None
         }
     });
+    // Base snapshot captured at the start of auto-resolve; working snapshots for each review are parented to this.
+    let mut auto_resolve_base_snapshot: Option<GhostCommit> = None;
     let stop_on_task_complete = auto_drive_goal.is_none() && auto_resolve_state.is_none();
     let mut event_processor: Box<dyn EventProcessor> = if json_mode {
         Box::new(EventProcessorWithJsonOutput::new(last_message_file.clone()))
@@ -530,7 +537,24 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
     }
 
     // Send the prompt.
-    let _initial_prompt_task_id = if let Some(review_request) = review_request.clone() {
+    let _initial_prompt_task_id = if let Some(mut review_request) = review_request.clone() {
+        if auto_resolve_state.is_some() {
+            if auto_resolve_base_snapshot.is_none() {
+                auto_resolve_base_snapshot = capture_auto_resolve_snapshot(&config.cwd, None, "auto-resolve base snapshot");
+            }
+
+            if let Some(base) = auto_resolve_base_snapshot.as_ref() {
+                if let Some((snap, diff_paths)) = capture_snapshot_against_base(&config.cwd, base, "auto-resolve working snapshot") {
+                    review_request = apply_commit_scope_to_review_request(
+                        review_request,
+                        snap.id(),
+                        base.id(),
+                        Some(diff_paths.as_slice()),
+                    );
+                }
+            }
+        }
+
         let event_id = conversation.submit(Op::Review { review_request }).await?;
         info!("Sent /review with event ID: {event_id}");
         event_id
@@ -650,12 +674,23 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                 state.last_fix_message = last_agent_message.clone();
                                 state.phase = AutoResolvePhase::WaitingForReview;
                             }
-                            let followup_request = build_followup_review_request(&state_snapshot);
-                            let _ = conversation
-                                .submit(Op::Review {
-                                    review_request: followup_request,
-                                })
-                                .await?;
+                            if let Some(base) = auto_resolve_base_snapshot.as_ref() {
+                                if let Some((snap, diff_paths)) = capture_snapshot_against_base(&config.cwd, base, "auto-resolve follow-up snapshot") {
+                                    let followup_request = build_followup_review_request(
+                                        &state_snapshot,
+                                        &config.cwd,
+                                        Some(&snap),
+                                        Some(diff_paths.as_slice()),
+                                        Some(base.id()),
+                                    )
+                                    .await;
+                                    let _ = conversation
+                                        .submit(Op::Review {
+                                            review_request: followup_request,
+                                        })
+                                        .await?;
+                                }
+                            }
                         }
                         AutoResolvePhase::AwaitingJudge { .. } => {
                             // Legacy branch: fall back to requesting a follow-up review.
@@ -663,12 +698,23 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                 state.last_fix_message = last_agent_message.clone();
                                 state.phase = AutoResolvePhase::WaitingForReview;
                             }
-                            let followup_request = build_followup_review_request(&state_snapshot);
-                            let _ = conversation
-                                .submit(Op::Review {
-                                    review_request: followup_request,
-                                })
-                                .await?;
+                            if let Some(base) = auto_resolve_base_snapshot.as_ref() {
+                                if let Some((snap, diff_paths)) = capture_snapshot_against_base(&config.cwd, base, "auto-resolve follow-up snapshot") {
+                                    let followup_request = build_followup_review_request(
+                                        &state_snapshot,
+                                        &config.cwd,
+                                        Some(&snap),
+                                        Some(diff_paths.as_slice()),
+                                        Some(base.id()),
+                                    )
+                                    .await;
+                                    let _ = conversation
+                                        .submit(Op::Review {
+                                            review_request: followup_request,
+                                        })
+                                        .await?;
+                                }
+                            }
                         }
                         AutoResolvePhase::WaitingForReview => {
                             // Task complete from a review; handled in ExitedReviewMode.
@@ -1029,10 +1075,166 @@ async fn dispatch_auto_fix(
     Ok(())
 }
 
-fn build_followup_review_request(state: &AutoResolveState) -> ReviewRequest {
+fn capture_auto_resolve_snapshot(
+    cwd: &Path,
+    parent: Option<&str>,
+    message: &'static str,
+) -> Option<GhostCommit> {
+    let mut options = CreateGhostCommitOptions::new(cwd).message(message);
+    if let Some(parent) = parent {
+        options = options.parent(parent);
+    }
+    create_ghost_commit(&options).ok()
+}
+
+fn snapshot_parent_diff_paths(cwd: &Path, parent: &str, head: &str) -> Option<Vec<String>> {
+    let output = std::process::Command::new("git")
+        .current_dir(cwd)
+        .args(["diff", "--name-only", parent, head])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let paths: Vec<String> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| line.to_string())
+        .collect();
+
+    Some(paths)
+}
+
+fn apply_commit_scope_to_review_request(
+    mut request: ReviewRequest,
+    commit: &str,
+    parent: &str,
+    paths: Option<&[String]>,
+) -> ReviewRequest {
+    let short_commit: String = commit.chars().take(7).collect();
+    let short_parent: String = parent.chars().take(7).collect();
+
+    let mut prompt = request.prompt.trim_end().to_string();
+    prompt.push_str("\n\nReview scope: changes captured in commit ");
+    prompt.push_str(commit);
+    prompt.push_str(" (parent ");
+    prompt.push_str(parent);
+    prompt.push(')');
+    prompt.push('.');
+
+    if let Some(paths) = paths {
+        if !paths.is_empty() {
+            prompt.push_str("\nFiles changed in this snapshot:\n");
+            for path in paths {
+                prompt.push_str("- ");
+                prompt.push_str(path);
+                prompt.push('\n');
+            }
+        }
+    }
+
+    request.prompt = prompt;
+    request.user_facing_hint = format!("commit {short_commit} (parent {short_parent})");
+
+    let mut metadata = request.metadata.unwrap_or_default();
+    metadata.scope = Some("commit".to_string());
+    metadata.commit = Some(commit.to_string());
+    request.metadata = Some(metadata);
+    request
+}
+
+fn extract_commit_from_prompt(prompt: &str) -> Option<String> {
+    let mut words = prompt.split_whitespace().peekable();
+    while let Some(word) = words.next() {
+        if word.eq_ignore_ascii_case("commit") {
+            if let Some(next) = words.peek() {
+                let candidate = next.trim_matches(|c: char| c == '.' || c == ',' || c == ';');
+                let len_ok = (7..=40).contains(&candidate.len());
+                let is_hex = candidate.chars().all(|c| c.is_ascii_hexdigit());
+                if len_ok && is_hex {
+                    return Some(candidate.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+async fn head_commit_with_subject(cwd: &Path) -> Option<(String, Option<String>)> {
+    let mut commits = recent_commits(cwd, 1).await.into_iter();
+    let entry = commits.next()?;
+    let subject = entry.subject.trim();
+    let subject = (!subject.is_empty()).then(|| subject.to_string());
+    Some((entry.sha, subject))
+}
+
+fn capture_snapshot_against_base(
+    cwd: &Path,
+    base: &GhostCommit,
+    message: &'static str,
+) -> Option<(GhostCommit, Vec<String>)> {
+    let snapshot = capture_auto_resolve_snapshot(cwd, Some(base.id()), message)?;
+    let diff_paths = snapshot_parent_diff_paths(cwd, base.id(), snapshot.id())?;
+    Some((snapshot, diff_paths))
+}
+
+async fn build_followup_review_request(
+    state: &AutoResolveState,
+    cwd: &Path,
+    snapshot: Option<&GhostCommit>,
+    diff_paths: Option<&[String]>,
+    parent_commit: Option<&str>,
+) -> ReviewRequest {
     let mut prompt = state.prompt.trim_end().to_string();
     if let Some(idx) = prompt.find(AUTO_RESOLVE_REVIEW_FOLLOWUP) {
         prompt = prompt[..idx].trim_end().to_string();
+    }
+
+    let mut user_facing_hint = state.hint.clone();
+    let mut metadata = state.metadata.clone().unwrap_or_default();
+
+    if metadata.commit.is_none() {
+        if let Some(commit) = extract_commit_from_prompt(&prompt) {
+            metadata.commit = Some(commit);
+        }
+    }
+
+    if metadata.scope.is_none() && metadata.commit.is_some() {
+        metadata.scope = Some("commit".to_string());
+    }
+
+    if let (Some(snapshot), Some(parent)) = (snapshot, parent_commit) {
+        let updated = apply_commit_scope_to_review_request(
+            ReviewRequest {
+                prompt: prompt.clone(),
+                user_facing_hint: user_facing_hint.clone(),
+                metadata: Some(metadata.clone()),
+            },
+            snapshot.id(),
+            parent,
+            diff_paths,
+        );
+        prompt = updated.prompt;
+        user_facing_hint = updated.user_facing_hint;
+        metadata = updated.metadata.unwrap_or_default();
+    }
+
+    let scope_is_commit = metadata
+        .scope
+        .as_ref()
+        .is_some_and(|scope| scope.eq_ignore_ascii_case("commit"));
+
+    if scope_is_commit && metadata.commit.is_none() {
+        if let Some((head_sha, _)) = head_commit_with_subject(cwd).await {
+            metadata.commit = Some(head_sha.clone());
+            if metadata.current_branch.is_none() {
+                metadata.current_branch = current_branch_name(cwd).await;
+            }
+        }
     }
 
     if let Some(last_review) = state.last_review.as_ref() {
@@ -1048,10 +1250,16 @@ fn build_followup_review_request(state: &AutoResolveState) -> ReviewRequest {
         prompt.push_str(AUTO_RESOLVE_REVIEW_FOLLOWUP);
     }
 
+    let metadata = if metadata == ReviewContextMetadata::default() {
+        None
+    } else {
+        Some(metadata)
+    };
+
     ReviewRequest {
         prompt,
-        user_facing_hint: state.hint.clone(),
-        metadata: state.metadata.clone(),
+        user_facing_hint,
+        metadata,
     }
 }
 

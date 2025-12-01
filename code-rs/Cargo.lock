@@ -1243,6 +1243,7 @@ dependencies = [
  "code-auto-drive-core",
  "code-common",
  "code-core",
+ "code-git-tooling",
  "code-ollama",
  "code-protocol",
  "filetime",
