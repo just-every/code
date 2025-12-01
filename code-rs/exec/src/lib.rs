@@ -313,7 +313,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
             None
         }
     });
-    // Base snapshot captured at the start of auto-resolve; working snapshots for each review are parented to this.
+    // Base snapshot captured at the start of auto-resolve; each review snapshot is parented to this.
     let mut auto_resolve_base_snapshot: Option<GhostCommit> = None;
     let stop_on_task_complete = auto_drive_goal.is_none() && auto_resolve_state.is_none();
     let mut event_processor: Box<dyn EventProcessor> = if json_mode {
@@ -631,6 +631,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                         Some(output) if output.findings.is_empty() => {
                             eprintln!("Auto-resolve: review reported no actionable findings. Exiting.");
                             auto_resolve_state = None;
+                            auto_resolve_base_snapshot = None;
                         }
                         Some(_) if state.max_attempts > 0 && state.attempt > state.max_attempts => {
                             let limit = state.max_attempts;
@@ -643,6 +644,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                             };
                             eprintln!("{msg}");
                             auto_resolve_state = None;
+                            auto_resolve_base_snapshot = None;
                         }
                         Some(output) => {
                             state.phase = AutoResolvePhase::PendingFix {
@@ -654,6 +656,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                 "Auto-resolve: review ended without findings. Please inspect manually."
                             );
                             auto_resolve_state = None;
+                            auto_resolve_base_snapshot = None;
                         }
                     }
                 }
@@ -724,6 +727,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
 
                 if auto_resolve_state.is_none() && !shutdown_requested {
                     shutdown_requested = true;
+                    auto_resolve_base_snapshot = None;
                     conversation.submit(Op::Shutdown).await?;
                 }
             }

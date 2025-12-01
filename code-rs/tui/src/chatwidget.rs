@@ -1397,6 +1397,7 @@ pub(crate) struct ChatWidget<'a> {
     auto_resolve_attempts_baseline: u32,
     turn_had_code_edits: bool,
     background_review: Option<BackgroundReviewState>,
+    processed_auto_review_agents: HashSet<String>,
     // New: coordinator-provided hints for the next Auto turn
     pending_turn_descriptor: Option<TurnDescriptor>,
     pending_auto_turn_config: Option<TurnConfig>,
@@ -5345,6 +5346,7 @@ impl ChatWidget<'_> {
             auto_resolve_attempts_baseline: config.auto_drive.auto_resolve_review_attempts.get(),
             turn_had_code_edits: false,
             background_review: None,
+            processed_auto_review_agents: HashSet::new(),
             pending_turn_descriptor: None,
             pending_auto_turn_config: None,
             overall_task_status: "preparing".to_string(),
@@ -5679,6 +5681,7 @@ impl ChatWidget<'_> {
             auto_resolve_attempts_baseline: config.auto_drive.auto_resolve_review_attempts.get(),
             turn_had_code_edits: false,
             background_review: None,
+            processed_auto_review_agents: HashSet::new(),
             pending_turn_descriptor: None,
             pending_auto_turn_config: None,
             overall_task_status: "preparing".to_string(),
@@ -29247,6 +29250,9 @@ impl ChatWidget<'_> {
                 status,
                 AgentStatus::Completed | AgentStatus::Failed | AgentStatus::Cancelled
             );
+            if is_terminal && self.processed_auto_review_agents.contains(&agent.id) {
+                continue;
+            }
             if !is_terminal {
                 continue;
             }
@@ -29277,6 +29283,7 @@ impl ChatWidget<'_> {
                 Some(agent.id.clone()),
                 snapshot,
             );
+            self.processed_auto_review_agents.insert(agent.id.clone());
         }
     }
 
