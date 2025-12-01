@@ -250,6 +250,7 @@ use code_core::protocol::PatchApplyEndEvent;
 use code_core::protocol::TaskCompleteEvent;
 use code_core::protocol::TokenUsage;
 use code_core::protocol::TurnDiffEvent;
+use code_core::review_coord::{bump_snapshot_epoch, try_acquire_lock, ReviewGuard};
 use code_core::ConversationManager;
 use code_core::codex::compact::COMPACTION_CHECKPOINT_MESSAGE;
 use crate::bottom_pane::{
@@ -714,6 +715,8 @@ async fn run_fast_forward_merge(state: &MergeRepoState) -> Result<(), String> {
             describe_command_failure(&merge, "git merge --ff-only failed")
         ));
     }
+
+    bump_snapshot_epoch();
 
     let worktree_remove = Command::new("git")
         .current_dir(&state.git_root)
@@ -1312,6 +1315,12 @@ struct BackgroundReviewState {
     snapshot: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TurnOrigin {
+    User,
+    Developer,
+}
+
 pub(crate) struct ChatWidget<'a> {
     app_event_tx: AppEventSender,
     code_op_tx: UnboundedSender<Op>,
@@ -1351,6 +1360,12 @@ pub(crate) struct ChatWidget<'a> {
     // at once into scrollback so the history contains a single message.
     // Cache of the last finalized assistant message to suppress immediate duplicates
     last_assistant_message: Option<String>,
+    // Cache of the last user text we submitted (for context passing to review/resolve agents)
+    last_user_message: Option<String>,
+    // Cache of the last developer/system note we injected (hidden messages)
+    last_developer_message: Option<String>,
+    pending_turn_origin: Option<TurnOrigin>,
+    current_turn_origin: Option<TurnOrigin>,
     // Tracks whether lingering running exec/tool cells have been cleared for the
     // current turn. Reset on TaskStarted; set after the first assistant message
     // (delta or final) arrives, which is more reliable than TaskComplete.
@@ -1397,6 +1412,9 @@ pub(crate) struct ChatWidget<'a> {
     auto_resolve_attempts_baseline: u32,
     turn_had_code_edits: bool,
     background_review: Option<BackgroundReviewState>,
+    auto_review_baseline: Option<GhostCommit>,
+    review_guard: Option<ReviewGuard>,
+    background_review_guard: Option<ReviewGuard>,
     processed_auto_review_agents: HashSet<String>,
     // New: coordinator-provided hints for the next Auto turn
     pending_turn_descriptor: Option<TurnDescriptor>,
@@ -2170,6 +2188,8 @@ impl From<OrderKey> for OrderKeySnapshot {
 
 // Global guard to prevent overlapping background screenshot captures and to rate-limit them
 static BG_SHOT_IN_FLIGHT: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false));
+static BACKGROUND_REVIEW_LOCKS: Lazy<Mutex<HashMap<String, code_core::review_coord::ReviewGuard>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 static BG_SHOT_LAST_START_MS: Lazy<AtomicU64> = Lazy::new(|| AtomicU64::new(0));
 static MERGE_LOCKS: Lazy<Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
@@ -5299,6 +5319,10 @@ impl ChatWidget<'_> {
             rate_limit_secondary_next_reset_at: None,
             content_buffer: String::new(),
             last_assistant_message: None,
+            last_user_message: None,
+            last_developer_message: None,
+            pending_turn_origin: None,
+            current_turn_origin: None,
             cleared_lingering_execs_this_turn: true,
             exec: ExecState {
                 running_commands: HashMap::new(),
@@ -5346,6 +5370,9 @@ impl ChatWidget<'_> {
             auto_resolve_attempts_baseline: config.auto_drive.auto_resolve_review_attempts.get(),
             turn_had_code_edits: false,
             background_review: None,
+            auto_review_baseline: None,
+            review_guard: None,
+            background_review_guard: None,
             processed_auto_review_agents: HashSet::new(),
             pending_turn_descriptor: None,
             pending_auto_turn_config: None,
@@ -5618,6 +5645,10 @@ impl ChatWidget<'_> {
             rate_limit_secondary_next_reset_at: None,
             content_buffer: String::new(),
             last_assistant_message: None,
+            last_user_message: None,
+            last_developer_message: None,
+            pending_turn_origin: None,
+            current_turn_origin: None,
             cleared_lingering_execs_this_turn: true,
             exec: ExecState {
                 running_commands: HashMap::new(),
@@ -5681,6 +5712,9 @@ impl ChatWidget<'_> {
             auto_resolve_attempts_baseline: config.auto_drive.auto_resolve_review_attempts.get(),
             turn_had_code_edits: false,
             background_review: None,
+            auto_review_baseline: None,
+            review_guard: None,
+            background_review_guard: None,
             processed_auto_review_agents: HashSet::new(),
             pending_turn_descriptor: None,
             pending_auto_turn_config: None,
@@ -6674,6 +6708,8 @@ impl ChatWidget<'_> {
 
         match input_result {
             InputResult::Submitted(text) => {
+                self.pending_turn_origin = Some(TurnOrigin::User);
+                self.last_user_message = Some(text.clone());
                 if self.auto_state.should_show_goal_entry() {
                     let trimmed = text.trim();
                     if trimmed.is_empty() {
@@ -10007,7 +10043,8 @@ impl ChatWidget<'_> {
         );
         let repo_path = self.config.cwd.clone();
         let started_at = request.started_at;
-        let result = create_ghost_commit(&CreateGhostCommitOptions::new(repo_path.as_path()));
+        let result = create_ghost_commit(&CreateGhostCommitOptions::new(repo_path.as_path())
+            .post_commit_hook(&|| bump_snapshot_epoch()));
         let elapsed = started_at.elapsed();
         let snapshot = self.finalize_ghost_snapshot(request, result, elapsed);
         snapshot
@@ -10192,7 +10229,7 @@ impl ChatWidget<'_> {
         tokio::spawn(async move {
             let handle = tokio::task::spawn_blocking(move || {
                 let options = CreateGhostCommitOptions::new(repo_path.as_path());
-                create_ghost_commit(&options)
+                create_ghost_commit(&options.post_commit_hook(&|| bump_snapshot_epoch()))
             });
             tokio::pin!(handle);
 
@@ -10883,6 +10920,12 @@ impl ChatWidget<'_> {
                 Err(msg.to_string())
             }
         } else {
+            if args_vec
+                .iter()
+                .any(|arg| matches!(arg.as_str(), "pull" | "checkout" | "merge" | "apply"))
+            {
+                bump_snapshot_epoch();
+            }
             parser(String::from_utf8_lossy(&output.stdout).to_string())
         }
     }
@@ -11701,6 +11744,7 @@ impl ChatWidget<'_> {
                 // ToolEnd to avoid the earlier regression where we finalized
                 // after every tool call.
                 self.turn_had_code_edits = false;
+                self.current_turn_origin = self.pending_turn_origin.take();
                 self.cleared_lingering_execs_this_turn = false;
                 self.ensure_lingering_execs_cleared();
 
@@ -11726,6 +11770,16 @@ impl ChatWidget<'_> {
                 self.bottom_pane
                     .update_status_text("waiting for model".to_string());
                 tracing::info!("[order] EventMsg::TaskStarted id={}", id);
+
+                // Capture a baseline snapshot for this turn so background auto review only
+                // covers changes made during the turn, not pre-existing local edits.
+                self.auto_review_baseline = None;
+                if self.config.tui.auto_review_enabled {
+                    match self.capture_auto_turn_commit("auto review baseline snapshot", None) {
+                        Ok(commit) => self.auto_review_baseline = Some(commit),
+                        Err(err) => tracing::warn!("failed to capture auto review baseline: {err}"),
+                    }
+                }
 
                 // Don't add loading cell - we have progress in the input area
                 // self.add_to_history(history_cell::new_loading_cell("waiting for model".to_string()));
@@ -13076,6 +13130,7 @@ impl ChatWidget<'_> {
                 if self.auto_resolve_enabled() {
                     self.auto_resolve_handle_review_exit(review_event.review_output.clone());
                 }
+                self.review_guard = None;
                 let hint = self.active_review_hint.take();
                 let prompt = self.active_review_prompt.take();
                 match review_event.review_output {
@@ -16522,11 +16577,17 @@ Have we met every part of this goal and is there no further work to do?"#
             let parent_id = parent.map(|commit| commit.id().to_string());
             return stub(message, parent_id);
         }
-        let mut options = CreateGhostCommitOptions::new(self.config.cwd.as_path()).message(message);
+        let mut options = CreateGhostCommitOptions::new(self.config.cwd.as_path())
+            .message(message)
+            .post_commit_hook(&|| bump_snapshot_epoch());
         if let Some(parent_commit) = parent {
             options = options.parent(parent_commit.id());
         }
-        create_ghost_commit(&options)
+        let result = create_ghost_commit(&options.post_commit_hook(&|| bump_snapshot_epoch()));
+        if result.is_ok() {
+            bump_snapshot_epoch();
+        }
+        result
     }
 
     #[cfg(any(test, feature = "test-helpers"))]
@@ -24803,6 +24864,8 @@ Have we met every part of this goal and is there no further work to do?"#
         use code_core::protocol::InputItem;
 
         let mut ordered = Vec::new();
+        let preface_cache = preface.clone();
+        let agent_cache = agent_text.clone();
         if !preface.trim().is_empty() {
             ordered.push(InputItem::Text { text: preface });
         }
@@ -24819,6 +24882,20 @@ Have we met every part of this goal and is there no further work to do?"#
             ordered_items: ordered,
             suppress_persistence: false,
         };
+        let mut cache = String::new();
+        if !preface_cache.trim().is_empty() {
+            cache.push_str(preface_cache.trim());
+        }
+        if !agent_cache.trim().is_empty() {
+            if !cache.is_empty() {
+                cache.push('\n');
+            }
+            cache.push_str(agent_cache.trim());
+        }
+        if !cache.is_empty() {
+            self.last_developer_message = Some(cache);
+        }
+        self.pending_turn_origin = Some(TurnOrigin::Developer);
         self.submit_user_message(msg);
     }
 
@@ -25470,18 +25547,64 @@ Have we met every part of this goal and is there no further work to do?"#
     }
 }
 
-async fn run_background_review(config: Config, app_event_tx: AppEventSender) {
-    let outcome = async {
+async fn run_background_review(
+    config: Config,
+    app_event_tx: AppEventSender,
+    base_snapshot: Option<GhostCommit>,
+    turn_context: Option<String>,
+) {
+    // Best-effort: clean up any stale lock left by a cancelled review process.
+    let _ = code_core::review_coord::clear_stale_lock_if_dead();
+
+    // If another review is in-flight, skip quietly and report a non-fatal status.
+    let review_guard = match try_acquire_lock("background-review", &config.cwd) {
+        Ok(Some(g)) => g,
+        Ok(None) => {
+            app_event_tx.send(AppEvent::BackgroundReviewFinished {
+                worktree_path: std::path::PathBuf::new(),
+                branch: String::new(),
+                has_findings: false,
+                findings: 0,
+                summary: Some("Auto review skipped: another review is already running.".to_string()),
+                error: None,
+                agent_id: None,
+                snapshot: None,
+            });
+            return;
+        }
+        Err(err) => {
+            app_event_tx.send(AppEvent::BackgroundReviewFinished {
+                worktree_path: std::path::PathBuf::new(),
+                branch: String::new(),
+                has_findings: false,
+                findings: 0,
+                summary: None,
+                error: Some(format!("could not acquire review lock: {err}")),
+                agent_id: None,
+                snapshot: None,
+            });
+            return;
+        }
+    };
+
+    let app_event_tx_clone = app_event_tx.clone();
+    let outcome = async move {
+        let guard = review_guard;
         let git_root = code_core::git_worktree::get_git_root_from(&config.cwd)
             .await
             .map_err(|e| format!("failed to detect git root: {e}"))?;
 
         let snapshot = task::spawn_blocking({
             let repo_path = config.cwd.clone();
+            let base_snapshot = base_snapshot.clone();
             move || {
-                let options = CreateGhostCommitOptions::new(repo_path.as_path())
-                    .message("auto review snapshot");
-                create_ghost_commit(&options)
+                let mut options = CreateGhostCommitOptions::new(repo_path.as_path())
+                    .message("auto review snapshot")
+                    .post_commit_hook(&|| bump_snapshot_epoch());
+                if let Some(base) = base_snapshot.as_ref() {
+                    options = options.parent(base.id());
+                }
+                create_ghost_commit(&options.post_commit_hook(&|| bump_snapshot_epoch()))
             }
         })
         .await
@@ -25489,14 +25612,18 @@ async fn run_background_review(config: Config, app_event_tx: AppEventSender) {
         .and_then(|res| res.map_err(|e| format!("failed to capture snapshot: {e}")))?;
 
         let snapshot_id = snapshot.id().to_string();
-        let branch_name = format!("auto-review-{}", Utc::now().format("%Y%m%d-%H%M%S"));
-        let (worktree_path, branch) = code_core::git_worktree::setup_worktree(
+        bump_snapshot_epoch();
+        // Reuse a single detached worktree for auto-review to avoid churn; keep
+        // gitignored build outputs for faster incremental builds.
+        let worktree_path = code_core::git_worktree::prepare_reusable_worktree(
             &git_root,
-            &branch_name,
-            Some(snapshot_id.as_str()),
+            "auto-review-reuse",
+            snapshot_id.as_str(),
+            true,
         )
         .await
-        .map_err(|e| format!("failed to create worktree: {e}"))?;
+        .map_err(|e| format!("failed to prepare worktree: {e}"))?;
+        let branch = "auto-review-reuse".to_string();
 
         // Ensure Codex models are invoked via the `code-` CLI shim so they exist on PATH.
         fn ensure_code_prefix(model: &str) -> String {
@@ -25511,9 +25638,14 @@ async fn run_background_review(config: Config, app_event_tx: AppEventSender) {
         let review_model = ensure_code_prefix(&config.review_model);
 
         // Use the /review entrypoint so upstream wiring (model defaults, review formatting) stays intact.
-        let review_prompt = format!(
+        let mut review_prompt = format!(
             "/review Analyze only changes made in commit {snapshot_id}. Identify critical bugs, regressions, security/performance/concurrency risks or incorrect assumptions. Provide actionable feedback and references to the changed code; ignore minor style or formatting nits."
         );
+
+        if let Some(context) = turn_context {
+            review_prompt.push_str("\n\n");
+            review_prompt.push_str(&context);
+        }
 
         let mut manager = code_core::AGENT_MANAGER.write().await;
         let agent_id = manager
@@ -25535,13 +25667,15 @@ async fn run_background_review(config: Config, app_event_tx: AppEventSender) {
             .await;
         drop(manager);
 
-        app_event_tx.send(AppEvent::BackgroundReviewStarted {
+        app_event_tx_clone.send(AppEvent::BackgroundReviewStarted {
             worktree_path: worktree_path.clone(),
             branch: branch.clone(),
             agent_id: Some(agent_id.clone()),
             snapshot: Some(snapshot_id.clone()),
         });
-
+        // Keep the lock alive for the duration of the agent by parking it in a
+        // static map keyed by agent id; cleared on BackgroundReviewFinished.
+        insert_background_lock(&agent_id, guard);
         Ok((worktree_path, branch, agent_id, snapshot_id))
     }
     .await;
@@ -25557,6 +25691,20 @@ async fn run_background_review(config: Config, app_event_tx: AppEventSender) {
             agent_id: None,
             snapshot: None,
         });
+    }
+}
+
+fn insert_background_lock(agent_id: &str, guard: code_core::review_coord::ReviewGuard) {
+    if let Ok(mut map) = BACKGROUND_REVIEW_LOCKS.lock() {
+        map.insert(agent_id.to_string(), guard);
+    }
+}
+
+fn release_background_lock(agent_id: &Option<String>) {
+    if let Some(id) = agent_id {
+        if let Ok(mut map) = BACKGROUND_REVIEW_LOCKS.lock() {
+            map.remove(id);
+        }
     }
 }
 
@@ -25623,8 +25771,9 @@ impl Drop for AutoReviewStubGuard {
         TextEmphasis,
         TextTone,
     };
-    use code_core::parse_command::ParsedCommand;
-    use code_core::protocol::OrderMeta;
+use code_core::parse_command::ParsedCommand;
+use code_core::protocol::OrderMeta;
+use code_core::review_coord::{bump_snapshot_epoch, current_snapshot_epoch, try_acquire_lock, ReviewGuard};
     use code_core::protocol::{
         AskForApproval,
         AgentMessageEvent,
@@ -28517,6 +28666,40 @@ impl ChatWidget<'_> {
         }
     }
 
+    fn turn_context_block(&self) -> Option<String> {
+        let mut lines: Vec<String> = Vec::new();
+        let mut any = false;
+        lines.push("<context>".to_string());
+        lines.push("Below are the most recent messages related to this code change.".to_string());
+        if let Some(user) = self.last_user_message.as_ref().filter(|s| !s.trim().is_empty()) {
+            any = true;
+            lines.push(format!("<user>{}</user>", user.trim()));
+        }
+        if let Some(dev) = self
+            .last_developer_message
+            .as_ref()
+            .filter(|s| !s.trim().is_empty())
+        {
+            any = true;
+            lines.push(format!("<developer>{}</developer>", dev.trim()));
+        }
+        if let Some(assistant) = self
+            .last_assistant_message
+            .as_ref()
+            .filter(|s| !s.trim().is_empty())
+        {
+            any = true;
+            lines.push(format!("<assistant>{}</assistant>", assistant.trim()));
+        }
+        lines.push("</context>".to_string());
+
+        if any {
+            Some(lines.join("\n"))
+        } else {
+            None
+        }
+    }
+
     fn auto_resolve_should_block_auto_resume(&self) -> bool {
         match self.auto_resolve_state.as_ref().map(|state| &state.phase) {
             Some(AutoResolvePhase::PendingFix { .. })
@@ -28674,6 +28857,18 @@ impl ChatWidget<'_> {
                 );
             }
         }
+
+        // Pass the full structured output so the resolving agent sees file paths and line ranges.
+        if let Ok(raw_json) = serde_json::to_string_pretty(review) {
+            preface.push_str("\n\nFull review JSON (includes file paths and line ranges):\n");
+            preface.push_str(&raw_json);
+        }
+
+        if let Some(context) = self.turn_context_block() {
+            preface.push_str("\n\n");
+            preface.push_str(&context);
+        }
+
         self.auto_resolve_notice("Auto-resolve: asking the agent to verify and address the review findings.");
         self.submit_hidden_text_message_with_preface(
             "Is this a real issue introduced by our changes? If so, please fix and resolve all similar issues.".to_string(),
@@ -28712,6 +28907,11 @@ impl ChatWidget<'_> {
             }
         }
 
+        if let Some(context) = self.turn_context_block() {
+            preface.push_str("\n\n");
+            preface.push_str(&context);
+        }
+
         self.auto_resolve_notice("Auto-resolve: requesting status JSON from the agent.");
         self.submit_hidden_text_message_with_preface("Auto-resolve status check".to_string(), preface);
     }
@@ -28724,6 +28924,10 @@ impl ChatWidget<'_> {
         if !summary.is_empty() {
             preface.push_str("\n\nOutstanding findings:\n");
             preface.push_str(&summary);
+        }
+        if let Some(context) = self.turn_context_block() {
+            preface.push_str("\n\n");
+            preface.push_str(&context);
         }
         self.auto_resolve_notice("Auto-resolve: asking the agent to continue working on the findings.");
         self.submit_hidden_text_message_with_preface("Please continue".to_string(), preface);
@@ -29197,14 +29401,24 @@ impl ChatWidget<'_> {
         if !self.turn_had_code_edits {
             return;
         }
+        if matches!(self.current_turn_origin, Some(TurnOrigin::Developer)) {
+            return;
+        }
         if self.is_review_flow_active() {
             return;
         }
 
-        self.launch_background_review();
+        if self.auto_review_baseline.is_none() {
+            if let Ok(commit) = self.capture_auto_turn_commit("auto review baseline snapshot", None) {
+                self.auto_review_baseline = Some(commit);
+            }
+        }
+
+        let baseline = self.auto_review_baseline.take();
+        self.launch_background_review(baseline);
     }
 
-    fn launch_background_review(&mut self) {
+    fn launch_background_review(&mut self, base_snapshot: Option<GhostCommit>) {
         // Record state immediately to avoid duplicate launches when multiple
         // TaskComplete events fire in quick succession.
         self.turn_had_code_edits = false;
@@ -29223,8 +29437,10 @@ impl ChatWidget<'_> {
 
         let config = self.config.clone();
         let app_event_tx = self.app_event_tx.clone();
+        let base_snapshot_for_task = base_snapshot.clone();
+        let turn_context = self.turn_context_block();
         tokio::spawn(async move {
-            run_background_review(config, app_event_tx).await;
+            run_background_review(config, app_event_tx, base_snapshot_for_task, turn_context).await;
         });
     }
 
@@ -29439,6 +29655,10 @@ impl ChatWidget<'_> {
         agent_id: Option<String>,
         snapshot: Option<String>,
     ) {
+        // Clear flags up front so subsequent auto reviews can start even if this finishes with an error
+        self.background_review = None;
+        self.background_review_guard = None;
+        release_background_lock(&agent_id);
         let mut developer_note: Option<String> = None;
         let snapshot_note = snapshot
             .as_ref()
@@ -29486,11 +29706,22 @@ impl ChatWidget<'_> {
             });
             base
         } else {
-            format!(
-                "Auto review in '{}' completed with no blocking issues ({}).",
-                branch,
-                worktree_path.display()
-            )
+            if let Some(text) = summary.as_ref().and_then(|s| {
+                let t = s.trim();
+                if t.is_empty() {
+                    None
+                } else {
+                    Some(t.to_string())
+                }
+            }) {
+                text
+            } else {
+                format!(
+                    "Auto review in '{}' completed with no blocking issues ({}).",
+                    branch,
+                    worktree_path.display()
+                )
+            }
         };
 
         self.push_background_tail(message.clone());
@@ -29591,6 +29822,8 @@ impl ChatWidget<'_> {
                 self.config.auto_drive.auto_resolve_review_attempts = limit;
             }
         }
+
+        self.background_review = None;
     }
 
     fn update_review_settings_model_row(&mut self) {
@@ -30013,8 +30246,18 @@ impl ChatWidget<'_> {
             user_facing_hint: hint,
             metadata,
         };
-
-        self.submit_op(Op::Review { review_request });
+        match try_acquire_lock("review", &self.config.cwd) {
+            Ok(Some(guard)) => {
+                self.review_guard = Some(guard);
+                self.submit_op(Op::Review { review_request });
+            }
+            Ok(None) => {
+                self.push_background_tail("Review skipped: another review is already running.".to_string());
+            }
+            Err(err) => {
+                self.push_background_tail(format!("Review skipped: could not acquire review lock ({err})"));
+            }
+        }
     }
 
     fn is_review_flow_active(&self) -> bool {
@@ -32204,6 +32447,10 @@ impl ChatWidget<'_> {
         self.layout.last_history_viewport_height.set(viewport_height);
         self.layout.last_max_scroll.set(max_scroll);
 
+        // scroll_offset is bottom‑anchored; Paragraph expects top‑anchored scroll.
+        let clamped_offset = self.layout.scroll_offset.min(max_scroll);
+        let scroll_from_top = max_scroll.saturating_sub(clamped_offset);
+
         let detail_has_focus = self.agents_terminal.focus() == AgentsTerminalFocus::Detail;
         let detail_border_color = if detail_has_focus {
             crate::colors::border_focused()
@@ -32218,7 +32465,7 @@ impl ChatWidget<'_> {
         Paragraph::new(lines)
             .block(history_block)
             .wrap(Wrap { trim: false })
-            .scroll((self.layout.scroll_offset.min(max_scroll), 0))
+            .scroll((scroll_from_top, 0))
             .render(right_area, buf);
 
         if hint_height == 1 {

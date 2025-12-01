@@ -25,6 +25,7 @@ use code_core::config::Config;
 use code_core::config::ConfigOverrides;
 use code_core::git_info::get_git_repo_root;
 use code_core::git_info::recent_commits;
+use code_core::review_coord::{bump_snapshot_epoch, current_snapshot_epoch, try_acquire_lock};
 use code_core::protocol::AskForApproval;
 use code_core::protocol::Event;
 use code_core::protocol::EventMsg;
@@ -38,8 +39,6 @@ use code_protocol::models::ResponseItem;
 use code_protocol::protocol::SessionSource;
 use code_ollama::DEFAULT_OSS_MODEL;
 use code_protocol::config_types::SandboxMode;
-use once_cell::sync::Lazy;
-use tokio::sync::Mutex as AsyncMutex;
 use event_processor_with_human_output::EventProcessorWithHumanOutput;
 use event_processor_with_json_output::EventProcessorWithJsonOutput;
 use event_processor::handle_last_message;
@@ -302,6 +301,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
     let mut review_outputs: Vec<code_core::protocol::ReviewOutputEvent> = Vec::new();
     let mut final_review_snapshot: Option<code_core::protocol::ReviewSnapshotInfo> = None;
     let mut review_runs: u32 = 0;
+    let mut last_review_epoch: Option<u64> = None;
     let max_auto_resolve_attempts: u32 = config.auto_drive.auto_resolve_review_attempts.get();
     let mut auto_resolve_state: Option<AutoResolveState> = review_request.as_ref().and_then(|req| {
         if config.tui.review_auto_resolve {
@@ -315,6 +315,8 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
             None
         }
     });
+    let mut auto_resolve_fix_guard: Option<code_core::review_coord::ReviewGuard> = None;
+    let mut auto_resolve_followup_guard: Option<code_core::review_coord::ReviewGuard> = None;
     // Base snapshot captured at the start of auto-resolve; each review snapshot is parented to this.
     let mut auto_resolve_base_snapshot: Option<GhostCommit> = None;
     let stop_on_task_complete = auto_drive_goal.is_none() && auto_resolve_state.is_none();
@@ -539,11 +541,30 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
     }
 
     // Send the prompt.
+    let mut _review_guard: Option<code_core::review_coord::ReviewGuard> = None;
+
+    // Clear stale review lock in case a prior process crashed.
+    let _ = code_core::review_coord::clear_stale_lock_if_dead();
+
     let _initial_prompt_task_id = if let Some(mut review_request) = review_request.clone() {
-        let _review_lock = REVIEW_LOCK.lock().await;
+        // Cross-process review coordination
+        match try_acquire_lock("review", &config.cwd) {
+            Ok(Some(g)) => _review_guard = Some(g),
+            Ok(None) => {
+                eprintln!("Another review is already running; skipping this /review.");
+                return Ok(());
+            }
+            Err(err) => {
+                eprintln!("Warning: could not acquire review lock: {err}");
+            }
+        }
+
         if auto_resolve_state.is_some() {
             if auto_resolve_base_snapshot.is_none() {
                 auto_resolve_base_snapshot = capture_auto_resolve_snapshot(&config.cwd, None, "auto-resolve base snapshot");
+                if let Some(state) = auto_resolve_state.as_mut() {
+                    state.snapshot_epoch = Some(current_snapshot_epoch());
+                }
             }
 
             if let Some(base) = auto_resolve_base_snapshot.as_ref() {
@@ -560,6 +581,9 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                 }
             }
         }
+
+        // Capture baseline epoch after any snapshot creation so we don't trip on our own bumps.
+        last_review_epoch = Some(current_snapshot_epoch());
 
         let event_id = conversation.submit(Op::Review { review_request }).await?;
         info!("Sent /review with event ID: {event_id}");
@@ -587,13 +611,28 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         // Handle review auto-resolve: chain follow-up reviews when enabled.
         match &event.msg {
             EventMsg::ExitedReviewMode(event) => {
+                // Any review that just finished should release follow-up locks.
+                auto_resolve_followup_guard = None;
+                // Release the global review lock as soon as the review finishes so follow-up
+                // auto-resolve steps can acquire it.
+                _review_guard = None;
                 review_runs = review_runs.saturating_add(1);
-                if let Some(output) = event.review_output.as_ref() {
-                    review_outputs.push(output.clone());
-                }
-                if let Some(snapshot) = event.snapshot.as_ref() {
-                    final_review_snapshot = Some(snapshot.clone());
-                }
+                    if let Some(output) = event.review_output.as_ref() {
+                        review_outputs.push(output.clone());
+                    }
+                    if let Some(snapshot) = event.snapshot.as_ref() {
+                        final_review_snapshot = Some(snapshot.clone());
+                        // detect stale snapshot epoch
+                        if let Some(start_epoch) = last_review_epoch {
+                            let current_epoch = current_snapshot_epoch();
+                            if current_epoch != start_epoch {
+                                eprintln!("Snapshot epoch changed during review; aborting auto-resolve and requiring restart.");
+                                auto_resolve_state = None;
+                                auto_resolve_base_snapshot = None;
+                                continue;
+                            }
+                        }
+                    }
 
                 // Surface review result to the parent CLI via stderr; avoid injecting
                 // synthetic user turns into the /review sub-agent conversation.
@@ -669,26 +708,76 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
             }
             EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
                 if let Some(state_snapshot) = auto_resolve_state.clone() {
+                    let current_epoch = current_snapshot_epoch();
                     match state_snapshot.phase {
                         AutoResolvePhase::PendingFix { review } => {
+                            if auto_resolve_fix_guard.is_none() {
+                                auto_resolve_fix_guard = try_acquire_lock("auto-resolve-fix", &config.cwd).ok().flatten();
+                            }
+                            if auto_resolve_fix_guard.is_none() {
+                                eprintln!("Auto-resolve: another review is running; skipping fix.");
+                                auto_resolve_state = None;
+                                auto_resolve_base_snapshot = None;
+                                auto_resolve_fix_guard = None;
+                                auto_resolve_followup_guard = None;
+                                continue;
+                            }
                             if let Some(state) = auto_resolve_state.as_mut() {
                                 state.phase = AutoResolvePhase::AwaitingFix {
                                     review: review.clone(),
                                 };
+                                state.snapshot_epoch = Some(current_epoch);
                             }
                             dispatch_auto_fix(&conversation, &review).await?;
                         }
                         AutoResolvePhase::AwaitingFix { .. } => {
+                            // Fix phase complete; release fix guard so follow-up can take the review lock
+                            auto_resolve_fix_guard = None;
                             if let Some(state) = auto_resolve_state.as_mut() {
                                 state.last_fix_message = last_agent_message.clone();
                                 state.phase = AutoResolvePhase::WaitingForReview;
                             }
+                            if auto_resolve_followup_guard.is_none() {
+                                auto_resolve_followup_guard =
+                                    try_acquire_lock("auto-resolve-followup", &config.cwd).ok().flatten();
+                            }
+                            if auto_resolve_followup_guard.is_none() {
+                                eprintln!("Auto-resolve: another review is running; stopping follow-up review.");
+                                auto_resolve_state = None;
+                                auto_resolve_base_snapshot = None;
+                                auto_resolve_fix_guard = None;
+                                auto_resolve_followup_guard = None;
+                                continue;
+                            }
                             if let Some(base) = auto_resolve_base_snapshot.as_ref() {
-                                if !base_is_ancestor_of_head(&config.cwd, base.id()) {
-                                    eprintln!("Auto-resolve: base snapshot is no longer an ancestor of HEAD; stopping to avoid stale review.");
+                                if !head_is_ancestor_of_base(&config.cwd, base.id()) {
+                                    eprintln!("Auto-resolve: base snapshot no longer matches current HEAD; stopping to avoid stale review.");
                                     auto_resolve_state = None;
                                     auto_resolve_base_snapshot = None;
+                                    auto_resolve_followup_guard = None;
+                                    auto_resolve_fix_guard = None;
                                     continue;
+                                }
+                                // stale epoch check
+                                if let Some(state) = auto_resolve_state.as_ref() {
+                                    if let Some(baseline) = state.snapshot_epoch {
+                                        if current_epoch > baseline {
+                                            eprintln!("Auto-resolve: snapshot epoch advanced; aborting follow-up review.");
+                                            auto_resolve_state = None;
+                                            auto_resolve_base_snapshot = None;
+                                            auto_resolve_followup_guard = None;
+                                            auto_resolve_fix_guard = None;
+                                            continue;
+                                        }
+                                    }
+                                    if state.metadata.as_ref().and_then(|m| m.commit.as_ref()).is_some()
+                                        && state.snapshot_epoch.is_none()
+                                    {
+                                        eprintln!("Auto-resolve: snapshot epoch advanced; aborting follow-up review.");
+                                        auto_resolve_state = None;
+                                        auto_resolve_base_snapshot = None;
+                                        continue;
+                                    }
                                 }
                                 match capture_snapshot_against_base(
                                     &config.cwd,
@@ -703,15 +792,16 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                             eprintln!("Auto-resolve: follow-up snapshot is identical to last reviewed commit; ending loop to avoid duplicate review.");
                                             auto_resolve_state = None;
                                             auto_resolve_base_snapshot = None;
+                                            auto_resolve_followup_guard = None;
+                                            auto_resolve_fix_guard = None;
                                             continue;
                                         }
 
                                         if let Some(state) = auto_resolve_state.as_mut() {
                                             state.last_reviewed_commit = Some(snap.id().to_string());
+                                            state.snapshot_epoch = Some(current_snapshot_epoch());
                                         }
 
-                                        let _review_lock = REVIEW_LOCK.lock().await;
-                                        let _review_lock = REVIEW_LOCK.lock().await;
                                         let followup_request = build_followup_review_request(
                                             &state_snapshot,
                                             &config.cwd,
@@ -720,6 +810,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                             Some(base.id()),
                                         )
                                         .await;
+                                        last_review_epoch = Some(current_snapshot_epoch());
                                         let _ = conversation
                                             .submit(Op::Review {
                                                 review_request: followup_request,
@@ -730,6 +821,8 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                         eprintln!("Auto-resolve: failed to capture follow-up snapshot or no diff detected; stopping auto-resolve.");
                                         auto_resolve_state = None;
                                         auto_resolve_base_snapshot = None;
+                                        auto_resolve_followup_guard = None;
+                                        auto_resolve_fix_guard = None;
                                     }
                                 }
                             }
@@ -741,11 +834,26 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                 state.phase = AutoResolvePhase::WaitingForReview;
                             }
                             if let Some(base) = auto_resolve_base_snapshot.as_ref() {
-                                if !base_is_ancestor_of_head(&config.cwd, base.id()) {
-                                    eprintln!("Auto-resolve: base snapshot is no longer an ancestor of HEAD; stopping to avoid stale review.");
+                                if !head_is_ancestor_of_base(&config.cwd, base.id()) {
+                                    eprintln!("Auto-resolve: base snapshot no longer matches current HEAD; stopping to avoid stale review.");
                                     auto_resolve_state = None;
                                     auto_resolve_base_snapshot = None;
                                     continue;
+                                }
+                                let current_epoch = current_snapshot_epoch();
+                                if let Some(state) = auto_resolve_state.as_ref() {
+                                    if state
+                                        .metadata
+                                        .as_ref()
+                                        .and_then(|m| m.commit.as_ref())
+                                        .is_some()
+                                        && current_epoch > state.attempt as u64
+                                    {
+                                        eprintln!("Auto-resolve: snapshot epoch advanced; aborting follow-up review.");
+                                        auto_resolve_state = None;
+                                        auto_resolve_base_snapshot = None;
+                                        continue;
+                                    }
                                 }
                                 match capture_snapshot_against_base(
                                     &config.cwd,
@@ -775,6 +883,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                             Some(base.id()),
                                         )
                                         .await;
+                                        last_review_epoch = Some(current_snapshot_epoch());
                                         let _ = conversation
                                             .submit(Op::Review {
                                                 review_request: followup_request,
@@ -785,6 +894,8 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                         eprintln!("Auto-resolve: failed to capture follow-up snapshot or no diff detected; stopping auto-resolve.");
                                         auto_resolve_state = None;
                                         auto_resolve_base_snapshot = None;
+                                        auto_resolve_followup_guard = None;
+                                        auto_resolve_fix_guard = None;
                                     }
                                 }
                             }
@@ -1154,11 +1265,17 @@ fn capture_auto_resolve_snapshot(
     parent: Option<&str>,
     message: &'static str,
 ) -> Option<GhostCommit> {
-    let mut options = CreateGhostCommitOptions::new(cwd).message(message);
+    let mut options = CreateGhostCommitOptions::new(cwd)
+        .message(message)
+        .post_commit_hook(&|| bump_snapshot_epoch());
     if let Some(parent) = parent {
         options = options.parent(parent);
     }
-    create_ghost_commit(&options).ok()
+    let snap = create_ghost_commit(&options).ok();
+    if snap.is_some() {
+        bump_snapshot_epoch();
+    }
+    snap
 }
 
 fn snapshot_parent_diff_paths(cwd: &Path, parent: &str, head: &str) -> Option<Vec<String>> {
@@ -1256,6 +1373,7 @@ fn capture_snapshot_against_base(
     if diff_paths.is_empty() {
         return None;
     }
+    bump_snapshot_epoch();
     Some((snapshot, diff_paths))
 }
 
@@ -1274,6 +1392,30 @@ fn strip_scope_from_prompt(prompt: &str) -> String {
     filtered.join("\n")
 }
 
+/// Remove lines that pin the review to specific commit hashes so follow-up
+/// reviews can safely re-scope to the newest snapshot.
+fn strip_commit_mentions(prompt: &str, commits: &[&str]) -> String {
+    prompt
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            if trimmed
+                .to_ascii_lowercase()
+                .contains("analyze only changes made in commit")
+            {
+                return false;
+            }
+            for c in commits {
+                if !c.is_empty() && trimmed.contains(c) {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn should_skip_followup(last_reviewed_commit: Option<&str>, next_snapshot: &GhostCommit) -> bool {
     match last_reviewed_commit {
         Some(prev) => prev == next_snapshot.id(),
@@ -1281,12 +1423,17 @@ fn should_skip_followup(last_reviewed_commit: Option<&str>, next_snapshot: &Ghos
     }
 }
 
-static REVIEW_LOCK: Lazy<AsyncMutex<()>> = Lazy::new(|| AsyncMutex::new(()));
-
-fn base_is_ancestor_of_head(cwd: &Path, base_commit: &str) -> bool {
+/// Returns true if the current HEAD is an ancestor of `base_commit`.
+///
+/// Ghost snapshots are created as children of the then-current HEAD. That means
+/// HEAD should be an ancestor of the snapshot immediately after creation. If
+/// HEAD moves later (new commits, rebases, etc.) it may no longer be an
+/// ancestor, which indicates the snapshot is stale relative to the live branch
+/// we plan to patch against.
+fn head_is_ancestor_of_base(cwd: &Path, base_commit: &str) -> bool {
     let output = std::process::Command::new("git")
         .current_dir(cwd)
-        .args(["merge-base", "--is-ancestor", base_commit, "HEAD"])
+        .args(["merge-base", "--is-ancestor", "HEAD", base_commit])
         .output();
 
     match output {
@@ -1322,6 +1469,21 @@ async fn build_followup_review_request(
         user_facing_hint = updated.user_facing_hint;
         metadata = updated.metadata.unwrap_or_default();
     }
+
+    // Strip lingering references to earlier commits so follow-up /review scopes to
+    // the freshly captured snapshot instead of the original hash baked into the
+    // user prompt.
+    let mut commit_ids: Vec<&str> = Vec::new();
+    if let Some(last) = state.last_reviewed_commit.as_deref() {
+        commit_ids.push(last);
+    }
+    if let Some(meta_commit) = metadata.commit.as_deref() {
+        commit_ids.push(meta_commit);
+    }
+    if let Some(parent) = parent_commit {
+        commit_ids.push(parent);
+    }
+    prompt = strip_commit_mentions(&prompt, &commit_ids);
 
     // Ensure commit metadata matches the snapshot we will review.
     if let Some(snapshot) = snapshot {
@@ -1771,7 +1933,7 @@ use tokio::sync::Mutex as AsyncMutex;
             .output()
             .unwrap();
 
-        assert!(base_is_ancestor_of_head(temp.path(), &c1));
+        assert!(head_is_ancestor_of_base(temp.path(), &c1));
 
         // move HEAD back to check false case
         std::process::Command::new("git")
@@ -1779,7 +1941,7 @@ use tokio::sync::Mutex as AsyncMutex;
             .args(["checkout", "HEAD~1"])
             .output()
             .unwrap();
-        assert!(!base_is_ancestor_of_head(temp.path(), "deadbeef"));
+        assert!(!head_is_ancestor_of_base(temp.path(), "deadbeef"));
     }
 
     fn test_config(code_home: &Path) -> Config {

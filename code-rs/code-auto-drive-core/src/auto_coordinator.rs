@@ -1585,6 +1585,9 @@ fn run_git_command<const N: usize>(args: [&str; N]) -> Option<String> {
     if !output.status.success() {
         return None;
     }
+    if args.iter().any(|arg| matches!(*arg, "pull" | "checkout" | "merge" | "apply")) {
+        code_core::review_coord::bump_snapshot_epoch();
+    }
     String::from_utf8(output.stdout)
         .ok()
         .map(|text| text.trim_end().to_string())

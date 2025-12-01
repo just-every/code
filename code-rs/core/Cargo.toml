@@ -119,6 +119,8 @@ serial_test = "3.2.0"
 pretty_assertions = { workspace = true }
 tokio-test = { workspace = true }
 wiremock = { workspace = true }
+code-git-tooling = { path = "../git-tooling" }
+walkdir = { workspace = true }
 
 [package.metadata.cargo-shear]
 ignored = ["openssl-sys"]

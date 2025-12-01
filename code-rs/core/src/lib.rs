@@ -30,6 +30,7 @@ pub mod context_timeline;
 pub mod acp;
 pub mod custom_prompts;
 pub mod debug_logger;
+pub mod review_coord;
 mod environment_context;
 mod reasoning;
 pub mod retention;

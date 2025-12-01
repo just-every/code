@@ -65,6 +65,7 @@ pub(crate) struct EventProcessorWithHumanOutput {
     reasoning_started: bool,
     raw_reasoning_started: bool,
     last_message_path: Option<PathBuf>,
+    last_turn_diff: Option<String>,
 
     /// If true, stop after the first TaskComplete event (default exec mode).
     /// Auto Drive sessions keep running across multiple turns, so they leave
@@ -99,6 +100,7 @@ impl EventProcessorWithHumanOutput {
                 reasoning_started: false,
                 raw_reasoning_started: false,
                 last_message_path,
+                last_turn_diff: None,
                 stop_on_task_complete,
             }
         } else {
@@ -118,6 +120,7 @@ impl EventProcessorWithHumanOutput {
                 reasoning_started: false,
                 raw_reasoning_started: false,
                 last_message_path,
+                last_turn_diff: None,
                 stop_on_task_complete,
             }
         }
@@ -203,7 +206,8 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 // does not surface them alongside the human-readable transcript.
             }
             EventMsg::TaskStarted => {
-                // Ignore.
+                // Reset per-turn diff cache so we only print new diffs once.
+                self.last_turn_diff = None;
             }
             EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
                 if let Some(output_file) = self.last_message_path.as_deref() {
@@ -525,6 +529,11 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 }
             }
             EventMsg::TurnDiff(TurnDiffEvent { unified_diff }) => {
+                if self.last_turn_diff.as_deref() == Some(&unified_diff) {
+                    // Suppress duplicate turn diffs; they are sometimes streamed multiple times.
+                    return CodexStatus::Running;
+                }
+                self.last_turn_diff = Some(unified_diff.clone());
                 ts_println!(self, "{}", "turn diff:".style(self.magenta));
                 println!("{unified_diff}");
             }

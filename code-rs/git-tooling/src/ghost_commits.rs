@@ -24,6 +24,7 @@ pub struct CreateGhostCommitOptions<'a> {
     pub message: Option<&'a str>,
     pub force_include: Vec<PathBuf>,
     pub parent: Option<&'a str>,
+    pub post_commit_hook: Option<&'a dyn Fn()>,
 }
 
 impl<'a> CreateGhostCommitOptions<'a> {
@@ -34,6 +35,7 @@ impl<'a> CreateGhostCommitOptions<'a> {
             message: None,
             force_include: Vec::new(),
             parent: None,
+            post_commit_hook: None,
         }
     }
 
@@ -46,6 +48,12 @@ impl<'a> CreateGhostCommitOptions<'a> {
     /// Overrides the parent commit for the ghost snapshot when provided.
     pub fn parent(mut self, parent: &'a str) -> Self {
         self.parent = Some(parent);
+        self
+    }
+
+    /// Registers a hook to run after the ghost commit is created.
+    pub fn post_commit_hook(mut self, hook: &'a dyn Fn()) -> Self {
+        self.post_commit_hook = Some(hook);
         self
     }
 
@@ -139,6 +147,10 @@ pub fn create_ghost_commit(
         commit_args,
         Some(commit_env.as_slice()),
     )?;
+
+    if let Some(hook) = options.post_commit_hook {
+        hook();
+    }
 
     Ok(GhostCommit::new(commit_id, parent_ref))
 }
@@ -373,6 +385,41 @@ mod tests {
         let commit_message = run_git_stdout(repo, &["log", "-1", "--format=%s", ghost.id()]);
         assert_eq!(commit_message, message);
 
+        Ok(())
+    }
+
+    #[test]
+    /// Verifies the optional post-commit hook runs after snapshot creation.
+    fn post_commit_hook_runs_after_creation() -> Result<(), GitToolingError> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_test_repo(repo);
+
+        std::fs::write(repo.join("tracked.txt"), "contents\n")?;
+        run_git_in(repo, &["add", "tracked.txt"]);
+        run_git_in(
+            repo,
+            &[
+                "-c",
+                "user.name=Tester",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "initial",
+            ],
+        );
+
+        fn hook() {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        let options = CreateGhostCommitOptions::new(repo).post_commit_hook(&hook);
+        let _ = create_ghost_commit(&options)?;
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1);
         Ok(())
     }
 
