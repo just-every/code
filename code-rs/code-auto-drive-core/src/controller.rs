@@ -218,6 +218,7 @@ pub struct AutoResolveState {
     pub phase: AutoResolvePhase,
     pub last_review: Option<ReviewOutputEvent>,
     pub last_fix_message: Option<String>,
+    pub last_reviewed_commit: Option<String>,
 }
 
 impl AutoResolveState {
@@ -240,6 +241,7 @@ impl AutoResolveState {
             phase: AutoResolvePhase::WaitingForReview,
             last_review: None,
             last_fix_message: None,
+            last_reviewed_commit: None,
         }
     }
 }

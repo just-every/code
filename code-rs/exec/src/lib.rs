@@ -38,6 +38,8 @@ use code_protocol::models::ResponseItem;
 use code_protocol::protocol::SessionSource;
 use code_ollama::DEFAULT_OSS_MODEL;
 use code_protocol::config_types::SandboxMode;
+use once_cell::sync::Lazy;
+use tokio::sync::Mutex as AsyncMutex;
 use event_processor_with_human_output::EventProcessorWithHumanOutput;
 use event_processor_with_json_output::EventProcessorWithJsonOutput;
 use event_processor::handle_last_message;
@@ -538,6 +540,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
 
     // Send the prompt.
     let _initial_prompt_task_id = if let Some(mut review_request) = review_request.clone() {
+        let _review_lock = REVIEW_LOCK.lock().await;
         if auto_resolve_state.is_some() {
             if auto_resolve_base_snapshot.is_none() {
                 auto_resolve_base_snapshot = capture_auto_resolve_snapshot(&config.cwd, None, "auto-resolve base snapshot");
@@ -551,6 +554,9 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                         base.id(),
                         Some(diff_paths.as_slice()),
                     );
+                    if let Some(state) = auto_resolve_state.as_mut() {
+                        state.last_reviewed_commit = Some(snap.id().to_string());
+                    }
                 }
             }
         }
@@ -678,20 +684,53 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                 state.phase = AutoResolvePhase::WaitingForReview;
                             }
                             if let Some(base) = auto_resolve_base_snapshot.as_ref() {
-                                if let Some((snap, diff_paths)) = capture_snapshot_against_base(&config.cwd, base, "auto-resolve follow-up snapshot") {
-                                    let followup_request = build_followup_review_request(
-                                        &state_snapshot,
-                                        &config.cwd,
-                                        Some(&snap),
-                                        Some(diff_paths.as_slice()),
-                                        Some(base.id()),
-                                    )
-                                    .await;
-                                    let _ = conversation
-                                        .submit(Op::Review {
-                                            review_request: followup_request,
-                                        })
-                                        .await?;
+                                if !base_is_ancestor_of_head(&config.cwd, base.id()) {
+                                    eprintln!("Auto-resolve: base snapshot is no longer an ancestor of HEAD; stopping to avoid stale review.");
+                                    auto_resolve_state = None;
+                                    auto_resolve_base_snapshot = None;
+                                    continue;
+                                }
+                                match capture_snapshot_against_base(
+                                    &config.cwd,
+                                    base,
+                                    "auto-resolve follow-up snapshot",
+                                ) {
+                                    Some((snap, diff_paths)) => {
+                                        if should_skip_followup(
+                                            state_snapshot.last_reviewed_commit.as_deref(),
+                                            &snap,
+                                        ) {
+                                            eprintln!("Auto-resolve: follow-up snapshot is identical to last reviewed commit; ending loop to avoid duplicate review.");
+                                            auto_resolve_state = None;
+                                            auto_resolve_base_snapshot = None;
+                                            continue;
+                                        }
+
+                                        if let Some(state) = auto_resolve_state.as_mut() {
+                                            state.last_reviewed_commit = Some(snap.id().to_string());
+                                        }
+
+                                        let _review_lock = REVIEW_LOCK.lock().await;
+                                        let _review_lock = REVIEW_LOCK.lock().await;
+                                        let followup_request = build_followup_review_request(
+                                            &state_snapshot,
+                                            &config.cwd,
+                                            Some(&snap),
+                                            Some(diff_paths.as_slice()),
+                                            Some(base.id()),
+                                        )
+                                        .await;
+                                        let _ = conversation
+                                            .submit(Op::Review {
+                                                review_request: followup_request,
+                                            })
+                                            .await?;
+                                    }
+                                    None => {
+                                        eprintln!("Auto-resolve: failed to capture follow-up snapshot or no diff detected; stopping auto-resolve.");
+                                        auto_resolve_state = None;
+                                        auto_resolve_base_snapshot = None;
+                                    }
                                 }
                             }
                         }
@@ -702,20 +741,51 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                 state.phase = AutoResolvePhase::WaitingForReview;
                             }
                             if let Some(base) = auto_resolve_base_snapshot.as_ref() {
-                                if let Some((snap, diff_paths)) = capture_snapshot_against_base(&config.cwd, base, "auto-resolve follow-up snapshot") {
-                                    let followup_request = build_followup_review_request(
-                                        &state_snapshot,
-                                        &config.cwd,
-                                        Some(&snap),
-                                        Some(diff_paths.as_slice()),
-                                        Some(base.id()),
-                                    )
-                                    .await;
-                                    let _ = conversation
-                                        .submit(Op::Review {
-                                            review_request: followup_request,
-                                        })
-                                        .await?;
+                                if !base_is_ancestor_of_head(&config.cwd, base.id()) {
+                                    eprintln!("Auto-resolve: base snapshot is no longer an ancestor of HEAD; stopping to avoid stale review.");
+                                    auto_resolve_state = None;
+                                    auto_resolve_base_snapshot = None;
+                                    continue;
+                                }
+                                match capture_snapshot_against_base(
+                                    &config.cwd,
+                                    base,
+                                    "auto-resolve follow-up snapshot",
+                                ) {
+                                    Some((snap, diff_paths)) => {
+                                        if should_skip_followup(
+                                            state_snapshot.last_reviewed_commit.as_deref(),
+                                            &snap,
+                                        ) {
+                                            eprintln!("Auto-resolve: follow-up snapshot is identical to last reviewed commit; ending loop to avoid duplicate review.");
+                                            auto_resolve_state = None;
+                                            auto_resolve_base_snapshot = None;
+                                            continue;
+                                        }
+
+                                        if let Some(state) = auto_resolve_state.as_mut() {
+                                            state.last_reviewed_commit = Some(snap.id().to_string());
+                                        }
+
+                                        let followup_request = build_followup_review_request(
+                                            &state_snapshot,
+                                            &config.cwd,
+                                            Some(&snap),
+                                            Some(diff_paths.as_slice()),
+                                            Some(base.id()),
+                                        )
+                                        .await;
+                                        let _ = conversation
+                                            .submit(Op::Review {
+                                                review_request: followup_request,
+                                            })
+                                            .await?;
+                                    }
+                                    None => {
+                                        eprintln!("Auto-resolve: failed to capture follow-up snapshot or no diff detected; stopping auto-resolve.");
+                                        auto_resolve_state = None;
+                                        auto_resolve_base_snapshot = None;
+                                    }
                                 }
                             }
                         }
@@ -1183,7 +1253,46 @@ fn capture_snapshot_against_base(
 ) -> Option<(GhostCommit, Vec<String>)> {
     let snapshot = capture_auto_resolve_snapshot(cwd, Some(base.id()), message)?;
     let diff_paths = snapshot_parent_diff_paths(cwd, base.id(), snapshot.id())?;
+    if diff_paths.is_empty() {
+        return None;
+    }
     Some((snapshot, diff_paths))
+}
+
+fn strip_scope_from_prompt(prompt: &str) -> String {
+    let mut base = prompt.trim_end().to_string();
+    if let Some(idx) = base.find(AUTO_RESOLVE_REVIEW_FOLLOWUP) {
+        base = base[..idx].trim_end().to_string();
+    }
+    let filtered: Vec<&str> = base
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            !(trimmed.starts_with("Review scope:") || trimmed.starts_with("commit "))
+        })
+        .collect();
+    filtered.join("\n")
+}
+
+fn should_skip_followup(last_reviewed_commit: Option<&str>, next_snapshot: &GhostCommit) -> bool {
+    match last_reviewed_commit {
+        Some(prev) => prev == next_snapshot.id(),
+        None => false,
+    }
+}
+
+static REVIEW_LOCK: Lazy<AsyncMutex<()>> = Lazy::new(|| AsyncMutex::new(()));
+
+fn base_is_ancestor_of_head(cwd: &Path, base_commit: &str) -> bool {
+    let output = std::process::Command::new("git")
+        .current_dir(cwd)
+        .args(["merge-base", "--is-ancestor", base_commit, "HEAD"])
+        .output();
+
+    match output {
+        Ok(out) => out.status.success(),
+        Err(_) => false,
+    }
 }
 
 async fn build_followup_review_request(
@@ -1193,23 +1302,10 @@ async fn build_followup_review_request(
     diff_paths: Option<&[String]>,
     parent_commit: Option<&str>,
 ) -> ReviewRequest {
-    let mut prompt = state.prompt.trim_end().to_string();
-    if let Some(idx) = prompt.find(AUTO_RESOLVE_REVIEW_FOLLOWUP) {
-        prompt = prompt[..idx].trim_end().to_string();
-    }
+    let mut prompt = strip_scope_from_prompt(&state.prompt);
 
     let mut user_facing_hint = state.hint.clone();
     let mut metadata = state.metadata.clone().unwrap_or_default();
-
-    if metadata.commit.is_none() {
-        if let Some(commit) = extract_commit_from_prompt(&prompt) {
-            metadata.commit = Some(commit);
-        }
-    }
-
-    if metadata.scope.is_none() && metadata.commit.is_some() {
-        metadata.scope = Some("commit".to_string());
-    }
 
     if let (Some(snapshot), Some(parent)) = (snapshot, parent_commit) {
         let updated = apply_commit_scope_to_review_request(
@@ -1225,6 +1321,20 @@ async fn build_followup_review_request(
         prompt = updated.prompt;
         user_facing_hint = updated.user_facing_hint;
         metadata = updated.metadata.unwrap_or_default();
+    }
+
+    // Ensure commit metadata matches the snapshot we will review.
+    if let Some(snapshot) = snapshot {
+        metadata.commit = Some(snapshot.id().to_string());
+        metadata.scope = Some("commit".to_string());
+    } else if metadata.commit.is_none() {
+        if let Some(commit) = extract_commit_from_prompt(&prompt) {
+            metadata.commit = Some(commit);
+        }
+    }
+
+    if metadata.scope.is_none() && metadata.commit.is_some() {
+        metadata.scope = Some("commit".to_string());
     }
 
     let scope_is_commit = metadata
@@ -1496,7 +1606,9 @@ mod tests {
     };
     use filetime::{set_file_mtime, FileTime};
     use tempfile::TempDir;
-    use uuid::Uuid;
+use uuid::Uuid;
+use once_cell::sync::Lazy;
+use tokio::sync::Mutex as AsyncMutex;
 
     #[test]
     fn write_review_json_includes_snapshot() {
@@ -1578,6 +1690,96 @@ mod tests {
         assert_eq!(runs[0]["findings"].as_array().unwrap().len(), 1);
         assert_eq!(runs[1]["index"], 2);
         assert_eq!(runs[1]["findings"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn strip_scope_removes_previous_commit_scope() {
+        let prompt = format!(
+            "Please review.\nReview scope: commit abc123 (parent deadbeef)\nMore text\n\n{}",
+            AUTO_RESOLVE_REVIEW_FOLLOWUP
+        );
+        let cleaned = strip_scope_from_prompt(&prompt);
+        assert!(!cleaned.contains("abc123"));
+        assert!(!cleaned.contains("Review scope"));
+        assert!(!cleaned.contains(AUTO_RESOLVE_REVIEW_FOLLOWUP));
+        assert!(cleaned.contains("Please review."));
+    }
+
+    #[test]
+    fn should_skip_followup_detects_duplicate_snapshot() {
+        let temp = TempDir::new().unwrap();
+        std::process::Command::new("git")
+            .current_dir(temp.path())
+            .args(["init"])
+            .output()
+            .unwrap();
+        std::fs::write(temp.path().join("foo.txt"), "hello").unwrap();
+        std::process::Command::new("git")
+            .current_dir(temp.path())
+            .args(["add", "."])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .current_dir(temp.path())
+            .args(["commit", "-m", "init"])
+            .output()
+            .unwrap();
+
+        let base = capture_auto_resolve_snapshot(temp.path(), None, "base").expect("base snapshot");
+        let snap = capture_auto_resolve_snapshot(temp.path(), Some(base.id()), "dup").expect("child");
+
+        assert!(should_skip_followup(Some(snap.id()), &snap));
+        assert!(!should_skip_followup(Some("different"), &snap));
+        assert!(!should_skip_followup(None, &snap));
+    }
+
+    #[test]
+    fn base_ancestor_check_matches_git_history() {
+        let temp = TempDir::new().unwrap();
+        std::process::Command::new("git")
+            .current_dir(temp.path())
+            .args(["init"])
+            .output()
+            .unwrap();
+        std::fs::write(temp.path().join("a.txt"), "a").unwrap();
+        std::process::Command::new("git")
+            .current_dir(temp.path())
+            .args(["add", "."])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .current_dir(temp.path())
+            .args(["commit", "-m", "c1"])
+            .output()
+            .unwrap();
+        let c1 = String::from_utf8_lossy(
+            &std::process::Command::new("git")
+                .current_dir(temp.path())
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .trim()
+        .to_string();
+
+        // second commit
+        std::fs::write(temp.path().join("a.txt"), "b").unwrap();
+        std::process::Command::new("git")
+            .current_dir(temp.path())
+            .args(["commit", "-am", "c2"])
+            .output()
+            .unwrap();
+
+        assert!(base_is_ancestor_of_head(temp.path(), &c1));
+
+        // move HEAD back to check false case
+        std::process::Command::new("git")
+            .current_dir(temp.path())
+            .args(["checkout", "HEAD~1"])
+            .output()
+            .unwrap();
+        assert!(!base_is_ancestor_of_head(temp.path(), "deadbeef"));
     }
 
     fn test_config(code_home: &Path) -> Config {

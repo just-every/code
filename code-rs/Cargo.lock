@@ -1248,6 +1248,7 @@ dependencies = [
  "code-protocol",
  "filetime",
  "libc",
+ "once_cell",
  "opentelemetry-appender-tracing",
  "owo-colors",
  "serde",
