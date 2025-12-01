@@ -1156,6 +1156,7 @@ fn build_followup_review_request(state: &AutoResolveState) -> ReviewRequest {
 
 fn build_fix_prompt(review: &code_core::protocol::ReviewOutputEvent) -> String {
     let summary = format_review_findings(review);
+    let raw_json = serde_json::to_string_pretty(review).unwrap_or_else(|_| "{}".to_string());
     let mut preface = String::from(
         "You are continuing an automated /review resolution loop. Review the listed findings and determine whether they represent real issues introduced by our changes. If they are, apply the necessary fixes and resolve any similar issues you can identify before responding."
     );
@@ -1163,6 +1164,8 @@ fn build_fix_prompt(review: &code_core::protocol::ReviewOutputEvent) -> String {
         preface.push_str("\n\nFindings:\n");
         preface.push_str(&summary);
     }
+    preface.push_str("\n\nFull review JSON (includes file paths and line ranges):\n");
+    preface.push_str(&raw_json);
     format!(
         "Is this a real issue introduced by our changes? If so, please fix and resolve all similar issues.\n\n{preface}"
     )
@@ -1206,10 +1209,19 @@ fn format_review_findings(output: &code_core::protocol::ReviewOutputEvent) -> St
     for (idx, f) in output.findings.iter().enumerate() {
         let title = f.title.trim();
         let body = f.body.trim();
+        let location = format!(
+            "path: {}:{}-{}",
+            f.code_location
+                .absolute_file_path
+                .to_string_lossy()
+                .to_string(),
+            f.code_location.line_range.start,
+            f.code_location.line_range.end
+        );
         if body.is_empty() {
-            parts.push(format!("{}. {}", idx + 1, title));
+            parts.push(format!("{}. {}\n{}", idx + 1, title, location));
         } else {
-            parts.push(format!("{}. {}\n{}", idx + 1, title, body));
+            parts.push(format!("{}. {}\n{}\n{}", idx + 1, title, location, body));
         }
     }
     parts.join("\n\n")
@@ -1217,6 +1229,7 @@ fn format_review_findings(output: &code_core::protocol::ReviewOutputEvent) -> St
 
 fn build_judge_prompt(review: &code_core::protocol::ReviewOutputEvent, fix_message: Option<String>) -> String {
     let summary = format_review_findings(review);
+    let raw_json = serde_json::to_string_pretty(review).unwrap_or_else(|_| "{}".to_string());
     let mut preface = String::from(
         "You are evaluating whether the latest fixes resolved the findings from `/review`. Respond with a strict JSON object containing `status` and optional `rationale`. Valid `status` values: `review_again`, `no_issue`, `continue_fix`. Do not include any additional text before or after the JSON."
     );
@@ -1224,6 +1237,8 @@ fn build_judge_prompt(review: &code_core::protocol::ReviewOutputEvent, fix_messa
         preface.push_str("\n\nOriginal findings:\n");
         preface.push_str(&summary);
     }
+    preface.push_str("\n\nFull review JSON (includes file paths and line ranges):\n");
+    preface.push_str(&raw_json);
     if let Some(fix) = fix_message.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
         preface.push_str("\n\nLatest agent response:\n");
         preface.push_str(fix);
@@ -1234,6 +1249,7 @@ fn build_judge_prompt(review: &code_core::protocol::ReviewOutputEvent, fix_messa
 
 fn build_continue_prompt(review: &code_core::protocol::ReviewOutputEvent) -> String {
     let summary = format_review_findings(review);
+    let raw_json = serde_json::to_string_pretty(review).unwrap_or_else(|_| "{}".to_string());
     let mut preface = String::from(
         "The previous status check indicated more work is required on the review findings. Continue addressing the remaining issues before responding."
     );
@@ -1241,6 +1257,8 @@ fn build_continue_prompt(review: &code_core::protocol::ReviewOutputEvent) -> Str
         preface.push_str("\n\nOutstanding findings:\n");
         preface.push_str(&summary);
     }
+    preface.push_str("\n\nFull review JSON (includes file paths and line ranges):\n");
+    preface.push_str(&raw_json);
     preface
 }
 
