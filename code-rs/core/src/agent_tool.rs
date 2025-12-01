@@ -4,6 +4,8 @@ use chrono::Utc;
 use serde::Deserialize;
 use serde::Serialize;
 use uuid::Uuid;
+use std::fs::{self, OpenOptions};
+use std::io::Write as IoWrite;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -19,6 +21,7 @@ use tokio::time::Duration as TokioDuration;
 use std::thread;
 use std::time::{Duration as StdDuration, Instant};
 use crate::protocol::AgentSourceKind;
+use tracing::warn;
 
 #[cfg(target_os = "windows")]
 fn default_pathext_or_default() -> Vec<String> {
@@ -175,6 +178,8 @@ pub struct Agent {
     #[serde(default)]
     pub source_kind: Option<AgentSourceKind>,
     #[serde(skip)]
+    pub log_tag: Option<String>,
+    #[serde(skip)]
     #[allow(dead_code)]
     pub config: Option<AgentConfig>,
     pub reasoning_effort: code_protocol::config_types::ReasoningEffort,
@@ -189,6 +194,7 @@ pub struct AgentManager {
     agents: HashMap<String, Agent>,
     handles: HashMap<String, JoinHandle<()>>,
     event_sender: Option<mpsc::UnboundedSender<AgentStatusUpdatePayload>>,
+    debug_log_root: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -204,11 +210,35 @@ impl AgentManager {
             agents: HashMap::new(),
             handles: HashMap::new(),
             event_sender: None,
+            debug_log_root: None,
         }
     }
 
     pub fn set_event_sender(&mut self, sender: mpsc::UnboundedSender<AgentStatusUpdatePayload>) {
         self.event_sender = Some(sender);
+    }
+
+    pub fn set_debug_log_root(&mut self, root: Option<PathBuf>) {
+        self.debug_log_root = root;
+    }
+
+    fn append_agent_log(&self, log_tag: &str, line: &str) {
+        let Some(root) = &self.debug_log_root else { return; };
+        let dir = root.join(log_tag);
+        if let Err(err) = fs::create_dir_all(&dir) {
+            warn!("failed to create agent log dir {:?}: {}", dir, err);
+            return;
+        }
+
+        let file = dir.join("progress.log");
+        match OpenOptions::new().create(true).append(true).open(&file) {
+            Ok(mut fh) => {
+                if let Err(err) = writeln!(fh, "{}", line) {
+                    warn!("failed to write agent log {:?}: {}", file, err);
+                }
+            }
+            Err(err) => warn!("failed to open agent log {:?}: {}", file, err),
+        }
     }
 
     async fn send_agent_status_update(&self) {
@@ -389,6 +419,13 @@ impl AgentManager {
     ) -> String {
         let agent_id = Uuid::new_v4().to_string();
 
+        let log_tag = match source_kind {
+            Some(AgentSourceKind::AutoReview) => {
+                Some(format!("agents/auto-review/{}", agent_id))
+            }
+            _ => None,
+        };
+
         let agent = Agent {
             id: agent_id.clone(),
             batch_id,
@@ -410,6 +447,7 @@ impl AgentManager {
             branch_name: worktree_branch,
             worktree_base,
             source_kind,
+            log_tag,
             config: config.clone(),
             reasoning_effort,
         };
@@ -528,7 +566,28 @@ impl AgentManager {
     }
 
     pub async fn update_agent_result(&mut self, agent_id: &str, result: Result<String, String>) {
-        if let Some(agent) = self.agents.get_mut(agent_id) {
+        let debug_enabled = self.debug_log_root.is_some();
+
+        if let Some((log_tag, log_lines)) = self.agents.get_mut(agent_id).map(|agent| {
+            let log_tag = if debug_enabled { agent.log_tag.clone() } else { None };
+
+            let mut log_lines: Vec<String> = Vec::new();
+            if debug_enabled {
+                let stamp = Utc::now().format("%H:%M:%S");
+                match &result {
+                    Ok(output) => {
+                        log_lines.push(format!("{stamp}: [result] completed"));
+                        if !output.trim().is_empty() {
+                            log_lines.push(output.trim_end().to_string());
+                        }
+                    }
+                    Err(error) => {
+                        log_lines.push(format!("{stamp}: [result] failed"));
+                        log_lines.push(error.clone());
+                    }
+                }
+            }
+
             match result {
                 Ok(output) => {
                     agent.result = Some(output);
@@ -540,16 +599,31 @@ impl AgentManager {
                 }
             }
             agent.completed_at = Some(Utc::now());
+
+            (log_tag, log_lines)
+        }) {
+            if let Some(tag) = log_tag {
+                for line in log_lines {
+                    self.append_agent_log(&tag, &line);
+                }
+            }
             // Send status update event
             self.send_agent_status_update().await;
         }
     }
 
     pub async fn add_progress(&mut self, agent_id: &str, message: String) {
-        if let Some(agent) = self.agents.get_mut(agent_id) {
-            agent
-                .progress
-                .push(format!("{}: {}", Utc::now().format("%H:%M:%S"), message));
+        let debug_enabled = self.debug_log_root.is_some();
+
+        if let Some((log_tag, entry)) = self.agents.get_mut(agent_id).map(|agent| {
+            let entry = format!("{}: {}", Utc::now().format("%H:%M:%S"), message);
+            let log_tag = if debug_enabled { agent.log_tag.clone() } else { None };
+            agent.progress.push(entry.clone());
+            (log_tag, entry)
+        }) {
+            if let Some(tag) = log_tag {
+                self.append_agent_log(&tag, &entry);
+            }
             // Send updated agent status with the latest progress
             self.send_agent_status_update().await;
         }
@@ -651,6 +725,8 @@ async fn execute_agent(agent_id: String, config: Option<AgentConfig>) {
     let output_goal = agent.output_goal.clone();
     let files = agent.files.clone();
     let reasoning_effort = agent.reasoning_effort;
+    let source_kind = agent.source_kind.clone();
+    let log_tag = agent.log_tag.clone();
 
     drop(manager); // Release the lock before executing
 
@@ -778,6 +854,8 @@ async fn execute_agent(agent_id: String, config: Option<AgentConfig>) {
                                 config.clone(),
                                 reasoning_effort,
                                 review_output_json_path.as_ref(),
+                                source_kind.clone(),
+                                log_tag.as_deref(),
                             )
                             .await
                         }
@@ -818,6 +896,8 @@ async fn execute_agent(agent_id: String, config: Option<AgentConfig>) {
                 config,
                 reasoning_effort,
                 None,
+                source_kind,
+                log_tag.as_deref(),
             )
             .await
         }
@@ -847,6 +927,8 @@ async fn execute_model_with_permissions(
     config: Option<AgentConfig>,
     reasoning_effort: code_protocol::config_types::ReasoningEffort,
     review_output_json_path: Option<&PathBuf>,
+    source_kind: Option<AgentSourceKind>,
+    log_tag: Option<&str>,
 ) -> Result<String, String> {
     // Helper: cross‑platform check whether an executable is available in PATH
     // and is directly spawnable by std::process::Command (no shell wrappers).
@@ -1115,6 +1197,19 @@ fn command_exists(cmd: &str) -> bool {
         }
     }
 
+    let log_tag_owned = log_tag.map(str::to_string);
+    let debug_subagent = debug_subagents_enabled()
+        && matches!(source_kind, Some(AgentSourceKind::AutoReview));
+    let child_log_tag: Option<String> = if debug_subagent {
+        Some(log_tag_owned.clone().unwrap_or_else(|| format!("agents/{agent_id}")))
+    } else {
+        log_tag_owned
+    };
+
+    if debug_subagent && use_current_exe && !has_debug_flag(&final_args) {
+        final_args.insert(0, "--debug".to_string());
+    }
+
     if let Some(path) = review_output_json_path {
         final_args.push("--review-output-json".to_string());
         final_args.push(path.display().to_string());
@@ -1150,6 +1245,14 @@ fn command_exists(cmd: &str) -> bool {
     let orig_home: Option<String> = env.get("HOME").cloned();
     if let Some(ref cfg) = config {
         if let Some(ref e) = cfg.env { for (k, v) in e { env.insert(k.clone(), v.clone()); } }
+    }
+
+    if debug_subagent {
+        env.entry("CODE_SUBAGENT_DEBUG".to_string())
+            .or_insert_with(|| "1".to_string());
+        if let Some(tag) = child_log_tag.as_ref() {
+            env.insert("CODE_DEBUG_LOG_TAG".to_string(), tag.clone());
+        }
     }
 
     // Convenience: map common key names so external CLIs "just work".
@@ -1340,6 +1443,20 @@ async fn flush_progress(agent_id: &str, label: &str, chunk: &mut String) {
     chunk.clear();
 }
 
+fn debug_subagents_enabled() -> bool {
+    match std::env::var("CODE_SUBAGENT_DEBUG") {
+        Ok(val) => {
+            let lower = val.to_ascii_lowercase();
+            matches!(lower.as_str(), "1" | "true" | "yes" | "on")
+        }
+        Err(_) => false,
+    }
+}
+
+fn has_debug_flag(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--debug" || arg == "-d")
+}
+
 fn maybe_set_gemini_config_dir(env: &mut HashMap<String, String>, orig_home: Option<String>) {
     if env.get("GEMINI_API_KEY").is_some() {
         return;
@@ -1462,6 +1579,8 @@ async fn run_agent_smoke_test(cfg: AgentConfig) -> Result<String, String> {
             None,
             Some(cfg),
             code_protocol::config_types::ReasoningEffort::High,
+            None,
+            None,
             None,
         )
         .await

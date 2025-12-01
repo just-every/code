@@ -401,7 +401,10 @@ impl ModelClient {
     /// the provider config.  Public callers always invoke `stream()` – the
     /// specialised helpers are private to avoid accidental misuse.
     pub async fn stream(&self, prompt: &Prompt) -> Result<ResponseStream> {
-        let log_tag = prompt.log_tag.as_deref();
+        let env_log_tag = std::env::var("CODE_DEBUG_LOG_TAG").ok();
+        let log_tag = env_log_tag
+            .as_deref()
+            .or(prompt.log_tag.as_deref());
         match self.provider.wire_api {
             WireApi::Responses => self.stream_responses(prompt, log_tag).await,
             WireApi::Chat => {

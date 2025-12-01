@@ -4395,6 +4395,27 @@ async fn submission_loop(
                             warn!("failed to initialise session usage log: {e}");
                         }
                     }
+
+                    // SAFETY: setting a process-wide env var is intentional here to
+                    // coordinate sub-agent debug behaviour launched from this session.
+                    unsafe { std::env::set_var("CODE_SUBAGENT_DEBUG", "1"); }
+                    match crate::config::find_code_home() {
+                        Ok(mut debug_root) => {
+                            debug_root.push("debug_logs");
+                            let mut manager = AGENT_MANAGER.write().await;
+                            manager.set_debug_log_root(Some(debug_root));
+                        }
+                        Err(err) => {
+                            warn!("failed to resolve debug log root: {err}");
+                            let mut manager = AGENT_MANAGER.write().await;
+                            manager.set_debug_log_root(None);
+                        }
+                    }
+                } else {
+                    // SAFETY: removing the coordination flag is safe when debug is off.
+                    unsafe { std::env::remove_var("CODE_SUBAGENT_DEBUG"); }
+                    let mut manager = AGENT_MANAGER.write().await;
+                    manager.set_debug_log_root(None);
                 }
 
                 let conversation_id = code_protocol::mcp_protocol::ConversationId::from(session_id);
