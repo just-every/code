@@ -292,7 +292,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         );
     }
 
-    let mut final_review_output: Option<code_core::protocol::ReviewOutputEvent> = None;
+    let mut review_outputs: Vec<code_core::protocol::ReviewOutputEvent> = Vec::new();
     let mut final_review_snapshot: Option<code_core::protocol::ReviewSnapshotInfo> = None;
     let mut review_runs: u32 = 0;
     let max_auto_resolve_attempts: u32 = config.auto_drive.auto_resolve_review_attempts.get();
@@ -559,37 +559,43 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
             EventMsg::ExitedReviewMode(event) => {
                 review_runs = review_runs.saturating_add(1);
                 if let Some(output) = event.review_output.as_ref() {
-                    final_review_output = Some(output.clone());
+                    review_outputs.push(output.clone());
                 }
                 if let Some(snapshot) = event.snapshot.as_ref() {
                     final_review_snapshot = Some(snapshot.clone());
                 }
 
-                // Surface review result back to the parent conversation so Auto Drive/CLI can react.
+                // Surface review result to the parent CLI via stderr; avoid injecting
+                // synthetic user turns into the /review sub-agent conversation.
                 if review_request.is_some() {
-                    let findings_count = event.review_output.as_ref().map(|o| o.findings.len()).unwrap_or(0);
-                    let branch = current_branch_name(&config.cwd).await.unwrap_or_else(|| "unknown".to_string());
+                    let findings_count = event
+                        .review_output
+                        .as_ref()
+                        .map(|o| o.findings.len())
+                        .unwrap_or(0);
+                    let branch = current_branch_name(&config.cwd)
+                        .await
+                        .unwrap_or_else(|| "unknown".to_string());
                     let worktree = config.cwd.clone();
                     let summary = event.review_output.as_ref().and_then(review_summary_line);
-                    let note = if findings_count == 0 {
-                        format!(
+
+                    if findings_count == 0 {
+                        eprintln!(
                             "[developer] Auto-review completed on branch '{branch}' (worktree: {}). No issues reported.",
                             worktree.display()
-                        )
+                        );
                     } else {
                         match summary {
-                            Some(ref text) if !text.is_empty() => format!(
+                            Some(ref text) if !text.is_empty() => eprintln!(
                                 "[developer] Auto-review found {findings_count} issue(s) on branch '{branch}'. Summary: {text}. Worktree: {}. Merge this worktree/branch to apply fixes.",
                                 worktree.display()
                             ),
-                            _ => format!(
+                            _ => eprintln!(
                                 "[developer] Auto-review found {findings_count} issue(s) on branch '{branch}'. Worktree: {}. Merge this worktree/branch to apply fixes.",
                                 worktree.display()
                             ),
                         }
-                    };
-                    let items: Vec<InputItem> = vec![InputItem::Text { text: note }];
-                    let _ = conversation.submit(Op::UserInput { items }).await?;
+                    }
                 }
 
                 if let Some(state) = auto_resolve_state.as_mut() {
@@ -771,8 +777,8 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         }
     }
     if let Some(path) = review_output_json {
-        if let Some(output) = final_review_output {
-            let _ = write_review_json(path, &output, final_review_snapshot.as_ref());
+        if !review_outputs.is_empty() {
+            let _ = write_review_json(path, &review_outputs, final_review_snapshot.as_ref());
         }
     }
     if review_runs > 0 {
@@ -1284,18 +1290,47 @@ fn make_assistant_message(text: String) -> ResponseItem {
 
 fn write_review_json(
     path: PathBuf,
-    output: &code_core::protocol::ReviewOutputEvent,
+    outputs: &[code_core::protocol::ReviewOutputEvent],
     snapshot: Option<&code_core::protocol::ReviewSnapshotInfo>,
 ) -> std::io::Result<()> {
+    if outputs.is_empty() {
+        return Ok(());
+    }
+
+    #[derive(serde::Serialize)]
+    struct ReviewRun<'a> {
+        index: usize,
+        #[serde(flatten)]
+        output: &'a code_core::protocol::ReviewOutputEvent,
+    }
+
     #[derive(serde::Serialize)]
     struct ReviewJsonOutput<'a> {
         #[serde(flatten)]
-        output: &'a code_core::protocol::ReviewOutputEvent,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        latest: &'a code_core::protocol::ReviewOutputEvent,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        runs: Vec<ReviewRun<'a>>,
+        #[serde(flatten, skip_serializing_if = "Option::is_none")]
         snapshot: Option<&'a code_core::protocol::ReviewSnapshotInfo>,
     }
 
-    let payload = ReviewJsonOutput { output, snapshot };
+    let latest = outputs
+        .last()
+        .expect("outputs is non-empty due to earlier guard");
+    let runs: Vec<ReviewRun<'_>> = outputs
+        .iter()
+        .enumerate()
+        .map(|(idx, output)| ReviewRun {
+            index: idx + 1,
+            output,
+        })
+        .collect();
+
+    let payload = ReviewJsonOutput {
+        latest,
+        runs,
+        snapshot,
+    };
     let json = serde_json::to_string_pretty(&payload)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
     std::fs::write(path, json)
@@ -1425,7 +1460,7 @@ mod tests {
             repo_root: Some(PathBuf::from("/tmp/repo")),
         };
 
-        write_review_json(path.clone(), &output, Some(&snapshot)).unwrap();
+        write_review_json(path.clone(), &[output], Some(&snapshot)).unwrap();
 
         let content = std::fs::read_to_string(path).unwrap();
         let v: serde_json::Value = serde_json::from_str(&content).unwrap();
@@ -1433,6 +1468,50 @@ mod tests {
         assert_eq!(v["snapshot_commit"], "abc123");
         assert_eq!(v["worktree_path"], "/tmp/wt");
         assert_eq!(v["findings"].as_array().unwrap().len(), 1);
+        let runs = v["runs"].as_array().unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0]["index"], 1);
+    }
+
+    #[test]
+    fn write_review_json_keeps_all_runs() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("multi.json");
+
+        let first = code_core::protocol::ReviewOutputEvent {
+            findings: vec![code_core::protocol::ReviewFinding {
+                title: "bug".into(),
+                body: "details".into(),
+                confidence_score: 0.6,
+                priority: 1,
+                code_location: code_core::protocol::ReviewCodeLocation {
+                    absolute_file_path: PathBuf::from("src/lib.rs"),
+                    line_range: code_core::protocol::ReviewLineRange { start: 1, end: 2 },
+                },
+            }],
+            overall_correctness: "incorrect".into(),
+            overall_explanation: "needs fixes".into(),
+            overall_confidence_score: 0.7,
+        };
+
+        let second = code_core::protocol::ReviewOutputEvent {
+            findings: Vec::new(),
+            overall_correctness: "correct".into(),
+            overall_explanation: "clean".into(),
+            overall_confidence_score: 0.9,
+        };
+
+        write_review_json(path.clone(), &[first, second], None).unwrap();
+
+        let content = std::fs::read_to_string(path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(v["overall_explanation"], "clean"); // latest run is flattened
+        let runs = v["runs"].as_array().unwrap();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0]["index"], 1);
+        assert_eq!(runs[0]["findings"].as_array().unwrap().len(), 1);
+        assert_eq!(runs[1]["index"], 2);
+        assert_eq!(runs[1]["findings"].as_array().unwrap().len(), 0);
     }
 
     fn test_config(code_home: &Path) -> Config {

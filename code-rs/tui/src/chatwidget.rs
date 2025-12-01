@@ -25509,7 +25509,7 @@ async fn run_background_review(config: Config, app_event_tx: AppEventSender) {
 
         // Use the /review entrypoint so upstream wiring (model defaults, review formatting) stays intact.
         let review_prompt = format!(
-            "/review Review the captured snapshot (commit {snapshot_id}) for bugs, regressions, risky changes, and missing tests. Use tools to inspect and, when safe, apply fixes directly in this isolated worktree. Conclude with a concise summary of fixes and remaining risks."
+            "/review Analyze only changes made in commit {snapshot_id}. Identify critical bugs, regressions, security/performance/concurrency risks or incorrect assumptions. Provide actionable feedback and references to the changed code; ignore minor style or formatting nits."
         );
 
         let mut manager = code_core::AGENT_MANAGER.write().await;
@@ -25668,6 +25668,39 @@ impl Drop for AutoReviewStubGuard {
         let summary_text = summary.unwrap();
         assert!(summary_text.contains("needs work"));
         assert!(summary_text.contains("bug"));
+    }
+
+    #[test]
+    fn parse_agent_review_result_json_multi_run() {
+        let json = r#"{
+            "findings": [],
+            "overall_correctness": "correct",
+            "overall_explanation": "clean",
+            "overall_confidence_score": 0.9,
+            "runs": [
+                {
+                    "findings": [
+                        {"title": "bug", "body": "fix", "confidence_score": 0.5, "priority": 1, "code_location": {"absolute_file_path": "foo", "line_range": {"start":1,"end":1}}}
+                    ],
+                    "overall_correctness": "incorrect",
+                    "overall_explanation": "needs work",
+                    "overall_confidence_score": 0.6
+                },
+                {
+                    "findings": [],
+                    "overall_correctness": "correct",
+                    "overall_explanation": "clean",
+                    "overall_confidence_score": 0.9
+                }
+            ]
+        }"#;
+
+        let (has_findings, findings, summary) = ChatWidget::parse_agent_review_result(Some(json));
+        assert!(has_findings);
+        assert_eq!(findings, 1);
+        let summary_text = summary.unwrap();
+        assert!(summary_text.contains("needs work"));
+        assert!(summary_text.contains("Final pass reported no issues"));
     }
 
     #[test]
@@ -29256,6 +29289,23 @@ impl ChatWidget<'_> {
             return (false, 0, None);
         }
 
+        #[derive(serde::Deserialize)]
+        struct MultiRunReview {
+            #[serde(flatten)]
+            latest: ReviewOutputEvent,
+            #[serde(default)]
+            runs: Vec<ReviewOutputEvent>,
+        }
+
+        // Try multi-run JSON first (our /review output that preserves all passes).
+        if let Ok(wrapper) = serde_json::from_str::<MultiRunReview>(trimmed) {
+            let mut runs = wrapper.runs;
+            if runs.is_empty() {
+                runs.push(wrapper.latest);
+            }
+            return Self::review_result_from_runs(&runs);
+        }
+
         // Try direct JSON first.
         if let Ok(output) = serde_json::from_str::<ReviewOutputEvent>(trimmed) {
             return Self::review_result_from_output(&output);
@@ -29276,6 +29326,39 @@ impl ChatWidget<'_> {
         let clean_phrases = ["no issues", "no findings", "clean", "looks good", "nothing to fix"];
         let has_findings = !clean_phrases.iter().any(|p| lowered.contains(p));
         (has_findings, 0, Some(trimmed.to_string()))
+    }
+
+    fn review_result_from_runs(outputs: &[ReviewOutputEvent]) -> (bool, usize, Option<String>) {
+        if outputs.is_empty() {
+            return (false, 0, None);
+        }
+
+        let last = outputs.last().unwrap();
+        let last_with_findings_idx = outputs
+            .iter()
+            .rposition(|o| !o.findings.is_empty());
+
+        let (mut has_findings, mut findings_len, mut summary) = Self::review_result_from_output(last);
+
+        if let Some(idx) = last_with_findings_idx {
+            let with_findings = &outputs[idx];
+            let (has, len, summary_with_findings) = Self::review_result_from_output(with_findings);
+            has_findings |= has;
+            findings_len = len;
+            summary = summary_with_findings.or(summary);
+
+            // If fixes cleared the final pass, note that in the summary.
+            if last.findings.is_empty() {
+                let tail = "Final pass reported no issues after auto-resolve.";
+                summary = Some(match summary {
+                    Some(existing) if existing.contains(tail) => existing,
+                    Some(existing) => format!("{existing} \n{tail}"),
+                    None => tail.to_string(),
+                });
+            }
+        }
+
+        (has_findings, findings_len, summary)
     }
 
     fn review_result_from_output(output: &ReviewOutputEvent) -> (bool, usize, Option<String>) {
@@ -29406,14 +29489,17 @@ impl ChatWidget<'_> {
         self.push_background_tail(message.clone());
 
         if let Some(note) = developer_note {
-            if !self.is_task_running() && !self.auto_state.is_active() {
-                // Start a new turn so the model sees the failure/findings.
-                self.submit_hidden_text_message_with_preface(
-                    "Auto review follow-up".to_string(),
-                    note.clone(),
-                );
-            } else {
-                self.pending_agent_notes.push(note.clone());
+            // Always start a new turn so the parent model sees the findings, even if
+            // nothing is currently running. This avoids silent background-only notes.
+            self.submit_hidden_text_message_with_preface(
+                "Auto review follow-up".to_string(),
+                note.clone(),
+            );
+
+            // Keep the legacy backlog for situations where another task is already
+            // running; it will be flushed as soon as a user/auto turn is submitted.
+            if self.is_task_running() || self.auto_state.is_active() {
+                self.pending_agent_notes.push(note);
             }
         }
 

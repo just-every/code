@@ -10,13 +10,14 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::process::Command;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::runtime::Builder as TokioRuntimeBuilder;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Duration as TokioDuration;
 use std::thread;
+use std::time::{Duration as StdDuration, Instant};
 use crate::protocol::AgentSourceKind;
 
 #[cfg(target_os = "windows")]
@@ -769,6 +770,7 @@ async fn execute_agent(agent_id: String, config: Option<AgentConfig>) {
                             }
                         } else {
                             execute_model_with_permissions(
+                                &agent_id,
                                 &model,
                                 &full_prompt,
                                 false,
@@ -808,6 +810,7 @@ async fn execute_agent(agent_id: String, config: Option<AgentConfig>) {
             }
         } else {
             execute_model_with_permissions(
+                &agent_id,
                 &model,
                 &full_prompt,
                 true,
@@ -836,6 +839,7 @@ fn prefer_json_result(path: Option<&PathBuf>, fallback: Result<String, String>) 
 }
 
 async fn execute_model_with_permissions(
+    agent_id: &str,
     model: &str,
     prompt: &str,
     read_only: bool,
@@ -1025,11 +1029,6 @@ fn command_exists(cmd: &str) -> bool {
         }
     }
 
-    if let Some(path) = review_output_json_path {
-        final_args.push("--review-output-json".to_string());
-        final_args.push(path.display().to_string());
-    }
-
     strip_model_flags(&mut final_args);
 
     let spec_model_args: Vec<String> = if let Some(spec) = spec_opt {
@@ -1116,6 +1115,24 @@ fn command_exists(cmd: &str) -> bool {
         }
     }
 
+    if let Some(path) = review_output_json_path {
+        final_args.push("--review-output-json".to_string());
+        final_args.push(path.display().to_string());
+    }
+
+    if use_current_exe
+        && (final_args.iter().any(|arg| arg == "exec") || review_output_json_path.is_some())
+    {
+        let mut reordered: Vec<String> = Vec::with_capacity(final_args.len() + 1);
+        reordered.push("exec".to_string());
+        for arg in final_args.into_iter() {
+            if arg != "exec" {
+                reordered.push(arg);
+            }
+        }
+        final_args = reordered;
+    }
+
     // Proactively check for presence of external command before spawn when not
     // using the current executable fallback. This avoids confusing OS errors
     // like "program not found" and lets us surface a cleaner message.
@@ -1128,92 +1145,75 @@ fn command_exists(cmd: &str) -> bool {
     // Agents: run without OS sandboxing; rely on per-branch worktrees for isolation.
     use crate::protocol::SandboxPolicy;
     use crate::spawn::StdioPolicy;
+    // Build env from current process then overlay any config-provided vars.
+    let mut env: std::collections::HashMap<String, String> = std::env::vars().collect();
+    let orig_home: Option<String> = env.get("HOME").cloned();
+    if let Some(ref cfg) = config {
+        if let Some(ref e) = cfg.env { for (k, v) in e { env.insert(k.clone(), v.clone()); } }
+    }
+
+    // Convenience: map common key names so external CLIs "just work".
+    if let Some(google_key) = env.get("GOOGLE_API_KEY").cloned() {
+        env.entry("GEMINI_API_KEY".to_string()).or_insert(google_key);
+    }
+    if let Some(claude_key) = env.get("CLAUDE_API_KEY").cloned() {
+        env.entry("ANTHROPIC_API_KEY".to_string()).or_insert(claude_key);
+    }
+    if let Some(anthropic_key) = env.get("ANTHROPIC_API_KEY").cloned() {
+        env.entry("CLAUDE_API_KEY".to_string()).or_insert(anthropic_key);
+    }
+    if let Some(anthropic_base) = env.get("ANTHROPIC_BASE_URL").cloned() {
+        env.entry("CLAUDE_BASE_URL".to_string()).or_insert(anthropic_base);
+    }
+    // Qwen/DashScope convenience: mirror API keys and base URLs both ways so
+    // either variable name works across tools.
+    if let Some(qwen_key) = env.get("QWEN_API_KEY").cloned() {
+        env.entry("DASHSCOPE_API_KEY".to_string()).or_insert(qwen_key);
+    }
+    if let Some(dashscope_key) = env.get("DASHSCOPE_API_KEY").cloned() {
+        env.entry("QWEN_API_KEY".to_string()).or_insert(dashscope_key);
+    }
+    if let Some(qwen_base) = env.get("QWEN_BASE_URL").cloned() {
+        env.entry("DASHSCOPE_BASE_URL".to_string()).or_insert(qwen_base);
+    }
+    if let Some(ds_base) = env.get("DASHSCOPE_BASE_URL").cloned() {
+        env.entry("QWEN_BASE_URL".to_string()).or_insert(ds_base);
+    }
+    if family == "qwen" {
+        env.insert("OPENAI_API_KEY".to_string(), String::new());
+    }
+    // Reduce startup overhead for Claude CLI: disable auto-updater/telemetry.
+    env.entry("DISABLE_AUTOUPDATER".to_string()).or_insert("1".to_string());
+    env.entry("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC".to_string()).or_insert("1".to_string());
+    env.entry("DISABLE_ERROR_REPORTING".to_string()).or_insert("1".to_string());
+    // Prefer explicit Claude config dir to avoid touching $HOME/.claude.json.
+    // Do not force CLAUDE_CONFIG_DIR here; leave CLI free to use its default
+    // (including Keychain) unless we explicitly redirect HOME below.
+
+    // If GEMINI_API_KEY not provided, try pointing to host config for read‑only
+    // discovery (Gemini CLI supports GEMINI_CONFIG_DIR). We keep HOME as-is so
+    // CLIs that require ~/.gemini and ~/.claude continue to work with your
+    // existing config.
+    maybe_set_gemini_config_dir(&mut env, orig_home.clone());
+
     let output = if !read_only {
-        // Build env from current process then overlay any config-provided vars.
-        let mut env: std::collections::HashMap<String, String> = std::env::vars().collect();
-        let orig_home: Option<String> = env.get("HOME").cloned();
-        if let Some(ref cfg) = config {
-            if let Some(ref e) = cfg.env { for (k, v) in e { env.insert(k.clone(), v.clone()); } }
-        }
-
-        // Convenience: map common key names so external CLIs "just work".
-        if let Some(google_key) = env.get("GOOGLE_API_KEY").cloned() {
-            env.entry("GEMINI_API_KEY".to_string()).or_insert(google_key);
-        }
-        if let Some(claude_key) = env.get("CLAUDE_API_KEY").cloned() {
-            env.entry("ANTHROPIC_API_KEY".to_string()).or_insert(claude_key);
-        }
-        if let Some(anthropic_key) = env.get("ANTHROPIC_API_KEY").cloned() {
-            env.entry("CLAUDE_API_KEY".to_string()).or_insert(anthropic_key);
-        }
-        if let Some(anthropic_base) = env.get("ANTHROPIC_BASE_URL").cloned() {
-            env.entry("CLAUDE_BASE_URL".to_string()).or_insert(anthropic_base);
-        }
-        // Qwen/DashScope convenience: mirror API keys and base URLs both ways so
-        // either variable name works across tools.
-        if let Some(qwen_key) = env.get("QWEN_API_KEY").cloned() {
-            env.entry("DASHSCOPE_API_KEY".to_string()).or_insert(qwen_key);
-        }
-        if let Some(dashscope_key) = env.get("DASHSCOPE_API_KEY").cloned() {
-            env.entry("QWEN_API_KEY".to_string()).or_insert(dashscope_key);
-        }
-        if let Some(qwen_base) = env.get("QWEN_BASE_URL").cloned() {
-            env.entry("DASHSCOPE_BASE_URL".to_string()).or_insert(qwen_base);
-        }
-        if let Some(ds_base) = env.get("DASHSCOPE_BASE_URL").cloned() {
-            env.entry("QWEN_BASE_URL".to_string()).or_insert(ds_base);
-        }
-        if family == "qwen" {
-            env.insert("OPENAI_API_KEY".to_string(), String::new());
-        }
-        // Reduce startup overhead for Claude CLI: disable auto-updater/telemetry.
-        env.entry("DISABLE_AUTOUPDATER".to_string()).or_insert("1".to_string());
-        env.entry("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC".to_string()).or_insert("1".to_string());
-        env.entry("DISABLE_ERROR_REPORTING".to_string()).or_insert("1".to_string());
-        // Prefer explicit Claude config dir to avoid touching $HOME/.claude.json.
-        // Do not force CLAUDE_CONFIG_DIR here; leave CLI free to use its default
-        // (including Keychain) unless we explicitly redirect HOME below.
-
-        // If GEMINI_API_KEY not provided, try pointing to host config for read‑only
-        // discovery (Gemini CLI supports GEMINI_CONFIG_DIR). We keep HOME as-is so
-        // CLIs that require ~/.gemini and ~/.claude continue to work with your
-        // existing config.
-        maybe_set_gemini_config_dir(&mut env, orig_home.clone());
-
-        // No OS sandbox.
-
         // Resolve the command and args we prepared above into Vec<String> for spawn helpers.
         let program = resolve_program_path(use_current_exe, &command_for_spawn)?;
-        let mut args = final_args.clone();
-        if let Some(path) = review_output_json_path {
-            args.push("--review-output-json".to_string());
-            args.push(path.display().to_string());
-        }
+        let args = final_args.clone();
 
-        // Always run agents without OS sandboxing.
-        let sandbox_type = crate::exec::SandboxType::None;
-
-        // Spawn via helpers and capture output
-        let child_result: std::io::Result<tokio::process::Child> = match sandbox_type {
-            crate::exec::SandboxType::None | crate::exec::SandboxType::MacosSeatbelt | crate::exec::SandboxType::LinuxSeccomp => {
-                crate::spawn::spawn_child_async(
-                    program.clone(),
-                    args.clone(),
-                    Some(program.to_string_lossy().as_ref()),
-                    working_dir.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))),
-                    &SandboxPolicy::DangerFullAccess,
-                    StdioPolicy::RedirectForShellTool,
-                    env.clone(),
-                )
-                .await
-            }
-        };
+        let child_result: std::io::Result<tokio::process::Child> = crate::spawn::spawn_child_async(
+            program.clone(),
+            args.clone(),
+            Some(program.to_string_lossy().as_ref()),
+            working_dir.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))),
+            &SandboxPolicy::DangerFullAccess,
+            StdioPolicy::RedirectForShellTool,
+            env.clone(),
+        )
+        .await;
 
         match child_result {
-            Ok(child) => child
-                .wait_with_output()
-                .await
-                .map_err(|e| format!("Failed to read output: {}", e))?,
+            Ok(child) => stream_child_output(agent_id, child).await?,
             Err(e) => {
                 if e.kind() == std::io::ErrorKind::NotFound {
                     return Err(format_agent_not_found_error(&command, &command_for_spawn));
@@ -1222,18 +1222,21 @@ fn command_exists(cmd: &str) -> bool {
             }
         }
     } else {
-        // Read-only path: use prior behavior
-        // On Windows, proactively resolve the command to an absolute path so
-        // we bypass PATHEXT quirks (e.g., missing PATHEXT or PowerShell-only
-        // shims). This mirrors the write-path resolver above.
+        // Read-only path: stream output via tokio::process for consistency.
         #[cfg(target_os = "windows")]
         if let Some(resolved) = resolve_in_path(&command_for_spawn) {
             cmd = Command::new(resolved);
         }
 
         cmd.args(final_args.clone());
-        match cmd.output().await {
-            Ok(o) => o,
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        for (k, v) in &env {
+            cmd.env(k, v);
+        }
+
+        match cmd.spawn() {
+            Ok(child) => stream_child_output(agent_id, child).await?,
             Err(e) => {
                 if e.kind() == std::io::ErrorKind::NotFound {
                     return Err(format_agent_not_found_error(&command, &command_for_spawn));
@@ -1244,20 +1247,97 @@ fn command_exists(cmd: &str) -> bool {
         }
     };
 
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    let (status, stdout_buf, stderr_buf) = output;
+
+    if status.success() {
+        Ok(stdout_buf)
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let combined = if stderr.trim().is_empty() {
-            stdout.trim().to_string()
-        } else if stdout.trim().is_empty() {
-            stderr.trim().to_string()
+        let stderr = stderr_buf.trim();
+        let stdout = stdout_buf.trim();
+        let combined = if stderr.is_empty() {
+            stdout.to_string()
+        } else if stdout.is_empty() {
+            stderr.to_string()
         } else {
-            format!("{}\n{}", stderr.trim(), stdout.trim())
+            format!("{}\n{}", stderr, stdout)
         };
         Err(format!("Command failed: {}", combined))
     }
+}
+
+const STREAM_PROGRESS_INTERVAL: StdDuration = StdDuration::from_secs(2);
+const STREAM_PROGRESS_BYTES: usize = 2 * 1024;
+
+async fn stream_child_output(
+    agent_id: &str,
+    mut child: tokio::process::Child,
+) -> Result<(std::process::ExitStatus, String, String), String> {
+    let stdout_task = child.stdout.take().map(|stdout| {
+        let agent = agent_id.to_string();
+        tokio::spawn(async move { stream_reader_to_progress(agent, "stdout", stdout).await })
+    });
+
+    let stderr_task = child.stderr.take().map(|stderr| {
+        let agent = agent_id.to_string();
+        tokio::spawn(async move { stream_reader_to_progress(agent, "stderr", stderr).await })
+    });
+
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| format!("Failed to wait for agent process: {e}"))?;
+
+    let stdout_buf = match stdout_task {
+        Some(handle) => handle
+            .await
+            .map_err(|e| format!("Failed to read agent stdout: {e}"))?,
+        None => String::new(),
+    };
+
+    let stderr_buf = match stderr_task {
+        Some(handle) => handle
+            .await
+            .map_err(|e| format!("Failed to read agent stderr: {e}"))?,
+        None => String::new(),
+    };
+
+    Ok((status, stdout_buf, stderr_buf))
+}
+
+async fn stream_reader_to_progress<R>(agent_id: String, label: &str, reader: R) -> String
+where
+    R: AsyncRead + Unpin,
+{
+    let mut lines = BufReader::new(reader).lines();
+    let mut full = String::new();
+    let mut chunk = String::new();
+    let mut last_flush = Instant::now();
+
+    while let Ok(Some(line)) = lines.next_line().await {
+        let clean = line.trim_end_matches('\r');
+        full.push_str(clean);
+        full.push('\n');
+        chunk.push_str(clean);
+        chunk.push('\n');
+
+        if chunk.len() >= STREAM_PROGRESS_BYTES || last_flush.elapsed() >= STREAM_PROGRESS_INTERVAL {
+            flush_progress(&agent_id, label, &mut chunk).await;
+            last_flush = Instant::now();
+        }
+    }
+
+    if !chunk.is_empty() {
+        flush_progress(&agent_id, label, &mut chunk).await;
+    }
+
+    full
+}
+
+async fn flush_progress(agent_id: &str, label: &str, chunk: &mut String) {
+    let message = format!("[{label}] {}", chunk.trim_end());
+    let mut mgr = AGENT_MANAGER.write().await;
+    mgr.add_progress(agent_id, message).await;
+    chunk.clear();
 }
 
 fn maybe_set_gemini_config_dir(env: &mut HashMap<String, String>, orig_home: Option<String>) {
@@ -1375,6 +1455,7 @@ async fn run_agent_smoke_test(cfg: AgentConfig) -> Result<String, String> {
     let read_only = should_validate_in_read_only(&cfg);
     let mut task = tokio::spawn(async move {
         execute_model_with_permissions(
+            "agent-smoke-test",
             &model_name,
             AGENT_SMOKE_TEST_PROMPT,
             read_only,

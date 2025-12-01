@@ -88,8 +88,9 @@ pub struct Cli {
     #[arg(long = "output-last-message")]
     pub last_message_file: Option<PathBuf>,
 
-    /// When running /review, write the final structured review output JSON to this file.
-    /// Useful for wrappers that want to consume findings programmatically.
+    /// When running /review, write the structured review output JSON to this file.
+    /// Includes every review pass (e.g., auto-resolve loops) so findings are not
+    /// lost when later passes report "no issues".
     #[arg(long = "review-output-json", value_name = "FILE")]
     pub review_output_json: Option<PathBuf>,
 
