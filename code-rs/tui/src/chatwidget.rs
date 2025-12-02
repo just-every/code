@@ -1327,6 +1327,11 @@ struct AutoReviewIndicator {
     history_id: HistoryId,
 }
 
+#[derive(Clone, Debug)]
+struct AutoReviewNotice {
+    history_id: HistoryId,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TurnOrigin {
     User,
@@ -1425,6 +1430,7 @@ pub(crate) struct ChatWidget<'a> {
     turn_had_code_edits: bool,
     background_review: Option<BackgroundReviewState>,
     auto_review_indicator: Option<AutoReviewIndicator>,
+    auto_review_notice: Option<AutoReviewNotice>,
     auto_review_baseline: Option<GhostCommit>,
     review_guard: Option<ReviewGuard>,
     background_review_guard: Option<ReviewGuard>,
@@ -5424,6 +5430,7 @@ impl ChatWidget<'_> {
             turn_had_code_edits: false,
             background_review: None,
             auto_review_indicator: None,
+            auto_review_notice: None,
             auto_review_baseline: None,
             review_guard: None,
             background_review_guard: None,
@@ -5768,6 +5775,7 @@ impl ChatWidget<'_> {
             turn_had_code_edits: false,
             background_review: None,
             auto_review_indicator: None,
+            auto_review_notice: None,
             auto_review_baseline: None,
             review_guard: None,
             background_review_guard: None,
@@ -25835,12 +25843,6 @@ impl Drop for AutoReviewStubGuard {
     };
 use code_core::parse_command::ParsedCommand;
 use code_core::protocol::OrderMeta;
-use code_core::review_coord::{
-    bump_snapshot_epoch_for,
-    current_snapshot_epoch,
-    try_acquire_lock,
-    ReviewGuard,
-};
     use code_core::protocol::{
         AskForApproval,
         AgentMessageEvent,
@@ -25967,6 +25969,7 @@ use code_core::review_coord::{
 
     #[test]
     fn background_review_completion_resumes_auto_and_posts_summary() {
+        let _rt = enter_test_runtime_guard();
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
 
@@ -26010,6 +26013,14 @@ use code_core::review_coord::{
             })
         });
         assert!(indicator_present, "auto review indicator should be attached to assistant message");
+        let notice_present = chat.history_cells.iter().any(|cell| {
+            cell.display_lines_trimmed().iter().any(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.contains("issue(s) found"))
+            })
+        });
+        assert!(notice_present, "actionable auto review notice should be visible");
         assert!(chat.pending_agent_notes.is_empty(), "idle path should inject via hidden message, not queue notes");
         let developer_seen = chat
             .pending_dispatched_user_messages
@@ -26076,11 +26087,11 @@ use code_core::review_coord::{
 
         let agent = code_core::protocol::AgentInfo {
             id: "agent-1".to_string(),
+            name: "Auto Review".to_string(),
+            status: "completed".to_string(),
             batch_id: Some("auto-review-branch".to_string()),
             model: Some("code-review".to_string()),
-            name: Some("Auto Review".to_string()),
-            status: "completed".to_string(),
-            source_kind: Some(AgentSourceKind::AutoReview),
+            last_progress: None,
             result: Some(
                 r#"{
                     "findings":[{"title":"bug","body":"details","confidence_score":0.5,"priority":1,"code_location":{"absolute_file_path":"src/lib.rs","line_range":{"start":1,"end":1}}}],
@@ -26091,12 +26102,9 @@ use code_core::review_coord::{
                 .to_string(),
             ),
             error: None,
-            worktree_path: Some("/tmp/wt".to_string()),
-            branch_name: Some("auto-review-branch".to_string()),
-            progress: Vec::new(),
-            created_at: None,
-            started_at: None,
-            completed_at: None,
+            elapsed_ms: None,
+            token_count: None,
+            source_kind: Some(AgentSourceKind::AutoReview),
         };
 
         chat.observe_auto_review_status(&[agent]);
@@ -26126,11 +26134,11 @@ use code_core::review_coord::{
 
         let agent = code_core::protocol::AgentInfo {
             id: "agent-1".to_string(),
+            name: "Auto Review".to_string(),
+            status: "completed".to_string(),
             batch_id: Some("auto-review-branch".to_string()),
             model: Some("code-review".to_string()),
-            name: Some("Auto Review".to_string()),
-            status: "completed".to_string(),
-            source_kind: Some(AgentSourceKind::AutoReview),
+            last_progress: None,
             result: Some(
                 r#"{
                     "findings":[{"title":"bug","body":"details","confidence_score":0.5,"priority":1,"code_location":{"absolute_file_path":"src/lib.rs","line_range":{"start":1,"end":1}}}],
@@ -26141,12 +26149,9 @@ use code_core::review_coord::{
                 .to_string(),
             ),
             error: None,
-            worktree_path: Some("/tmp/wt".to_string()),
-            branch_name: Some("auto-review-branch".to_string()),
-            progress: Vec::new(),
-            created_at: None,
-            started_at: None,
-            completed_at: None,
+            elapsed_ms: None,
+            token_count: None,
+            source_kind: Some(AgentSourceKind::AutoReview),
         };
 
         chat.observe_auto_review_status(&[agent]);
@@ -26357,6 +26362,8 @@ use code_core::review_coord::{
             phase: AutoResolvePhase::PendingFix { review },
             last_review: None,
             last_fix_message: None,
+            last_reviewed_commit: None,
+            snapshot_epoch: None,
         }
     }
 
@@ -29502,6 +29509,7 @@ impl ChatWidget<'_> {
             snapshot: None,
         });
         self.auto_review_indicator = None;
+        self.auto_review_notice = None;
         self.set_auto_review_indicator(AutoReviewIndicatorStatus::Running, None);
 
         #[cfg(test)]
@@ -29776,8 +29784,10 @@ impl ChatWidget<'_> {
 
         let spans = Self::auto_review_indicator_line(status, findings);
         let line = ratatui::text::Line::from(spans);
+        // Notice cells treat the first line as a header; prepend a blank so the
+        // indicator content remains in the body.
         let state = history_cell::plain_message_state_from_lines(
-            vec![line],
+            vec![ratatui::text::Line::raw(""), line],
             history_cell::HistoryCellType::Notice,
         );
 
@@ -29810,6 +29820,74 @@ impl ChatWidget<'_> {
         }
     }
 
+    fn insert_auto_review_notice(
+        &mut self,
+        branch: &str,
+        worktree_path: &std::path::Path,
+        summary: Option<&str>,
+        findings: usize,
+    ) {
+        let mut primary = ratatui::text::Line::from(format!(
+            "Auto Review: {findings} issue(s) found in '{branch}'. Merge {path} to apply fixes. [Ctrl+A] Show",
+            path = worktree_path.display()
+        ));
+        primary.style = Style::default()
+            .bg(crate::colors::selection())
+            .fg(crate::colors::text());
+
+        let mut lines = vec![primary];
+        if let Some(text) = summary {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                let mut detail = ratatui::text::Line::from(trimmed.to_string());
+                detail.style = Style::default()
+                    .bg(crate::colors::selection())
+                    .fg(crate::colors::text_dim());
+                lines.push(detail);
+            }
+        }
+
+        let state = history_cell::plain_message_state_from_lines(
+            lines,
+            history_cell::HistoryCellType::Notice,
+        );
+
+        // Replace existing notice if present
+        if let Some(notice) = self.auto_review_notice.clone() {
+            if let Some(idx) = self
+                .history_cell_ids
+                .iter()
+                .position(|maybe| maybe.map(|id| id == notice.history_id).unwrap_or(false))
+            {
+                let cell = crate::history_cell::PlainHistoryCell::from_state(state.clone());
+                self.history_replace_at(idx, Box::new(cell));
+                return;
+            }
+        }
+
+        // Insert after the indicator if present; otherwise after the assistant cell
+        let base_key = if let Some(indicator) = self.auto_review_indicator.as_ref() {
+            self.history_cell_ids
+                .iter()
+                .position(|maybe| maybe.map(|id| id == indicator.history_id).unwrap_or(false))
+                .and_then(|idx| self.cell_order_seq.get(idx).copied())
+        } else {
+            self.last_assistant_cell_index()
+                .and_then(|idx| self.cell_order_seq.get(idx).copied())
+        }
+        .unwrap_or_else(|| OrderKey {
+            req: 0,
+            out: -1,
+            seq: 0,
+        });
+
+        let insert_key = Self::order_key_successor(base_key);
+        let pos = self.history_insert_plain_state_with_key(state, insert_key, "auto-review-notice");
+        if let Some(Some(id)) = self.history_cell_ids.get(pos) {
+            self.auto_review_notice = Some(AutoReviewNotice { history_id: *id });
+        }
+    }
+
     pub(crate) fn on_background_review_started(
         &mut self,
         worktree_path: std::path::PathBuf,
@@ -29826,6 +29904,7 @@ impl ChatWidget<'_> {
         if self.auto_review_indicator.is_none() {
             self.set_auto_review_indicator(AutoReviewIndicatorStatus::Running, None);
         }
+        self.auto_review_notice = None;
         self.request_redraw();
     }
 
@@ -29882,6 +29961,14 @@ impl ChatWidget<'_> {
         let findings_for_indicator =
             matches!(indicator_status, AutoReviewIndicatorStatus::Fixed).then_some(findings.max(1));
         self.set_auto_review_indicator(indicator_status, findings_for_indicator);
+        if matches!(indicator_status, AutoReviewIndicatorStatus::Fixed) {
+            self.insert_auto_review_notice(
+                &branch,
+                &worktree_path,
+                summary.as_deref(),
+                findings.max(1),
+            );
+        }
 
         if let Some(note) = developer_note {
             // Always start a new turn so the parent model sees the findings, even if
@@ -29893,7 +29980,7 @@ impl ChatWidget<'_> {
 
             // Keep the legacy backlog for situations where another task is already
             // running; it will be flushed as soon as a user/auto turn is submitted.
-            if self.is_task_running() || self.auto_state.is_active() {
+            if self.is_task_running() {
                 self.pending_agent_notes.push(note);
             }
         }
