@@ -65,6 +65,7 @@ pub(crate) struct EventProcessorWithHumanOutput {
     reasoning_started: bool,
     raw_reasoning_started: bool,
     last_message_path: Option<PathBuf>,
+    last_turn_diff: Option<String>,
 
     /// If true, stop after the first TaskComplete event (default exec mode).
     /// Auto Drive sessions keep running across multiple turns, so they leave
@@ -99,6 +100,7 @@ impl EventProcessorWithHumanOutput {
                 reasoning_started: false,
                 raw_reasoning_started: false,
                 last_message_path,
+                last_turn_diff: None,
                 stop_on_task_complete,
             }
         } else {
@@ -118,6 +120,7 @@ impl EventProcessorWithHumanOutput {
                 reasoning_started: false,
                 raw_reasoning_started: false,
                 last_message_path,
+                last_turn_diff: None,
                 stop_on_task_complete,
             }
         }
@@ -153,9 +156,18 @@ impl EventProcessor for EventProcessorWithHumanOutput {
         const VERSION: &str = env!("CARGO_PKG_VERSION");
         ts_println!(
             self,
-            "OpenAI Codex v{} (research preview)\n--------",
+            "OpenAI Codex v{} (research preview)",
             VERSION
         );
+
+        // Show which binary is being used to execute sub-agents so users can
+        // confirm path mismatches when testing new builds.
+        let exe_path = std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "<unknown>".to_string());
+        ts_println!(self, "binary: {}", exe_path);
+
+        println!("--------");
 
         let entries = create_config_summary_entries(config);
 
@@ -194,7 +206,8 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 // does not surface them alongside the human-readable transcript.
             }
             EventMsg::TaskStarted => {
-                // Ignore.
+                // Reset per-turn diff cache so we only print new diffs once.
+                self.last_turn_diff = None;
             }
             EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
                 if let Some(output_file) = self.last_message_path.as_deref() {
@@ -516,6 +529,11 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 }
             }
             EventMsg::TurnDiff(TurnDiffEvent { unified_diff }) => {
+                if self.last_turn_diff.as_deref() == Some(&unified_diff) {
+                    // Suppress duplicate turn diffs; they are sometimes streamed multiple times.
+                    return CodexStatus::Running;
+                }
+                self.last_turn_diff = Some(unified_diff.clone());
                 ts_println!(self, "{}", "turn diff:".style(self.magenta));
                 println!("{unified_diff}");
             }
@@ -629,8 +647,76 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::ShutdownComplete => return CodexStatus::Shutdown,
             EventMsg::ConversationPath(_) => {}
             EventMsg::UserMessage(_) => {}
-            EventMsg::EnteredReviewMode(_) => {}
-            EventMsg::ExitedReviewMode(_) => {}
+            EventMsg::EnteredReviewMode(request) => {
+                ts_println!(
+                    self,
+                    "{} {}",
+                    "review".style(self.magenta),
+                    "started".style(self.bold),
+                );
+                if let Some(scope) = request
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.scope.as_ref())
+                {
+                    println!("{} {}", "scope:".style(self.dimmed), scope.style(self.dimmed));
+                }
+                if !request.user_facing_hint.trim().is_empty() {
+                    println!("{}", request.user_facing_hint.trim().style(self.dimmed));
+                }
+            }
+            EventMsg::ExitedReviewMode(event) => {
+                ts_println!(
+                    self,
+                    "{} {}",
+                    "review".style(self.magenta),
+                    "finished".style(self.bold),
+                );
+                if let Some(snapshot) = &event.snapshot {
+                    if let Some(branch) = &snapshot.branch {
+                        println!("{} {}", "branch:".style(self.dimmed), branch);
+                    }
+                    if let Some(path) = &snapshot.worktree_path {
+                        println!("{} {}", "worktree:".style(self.dimmed), path.display());
+                    }
+                    if let Some(commit) = &snapshot.snapshot_commit {
+                        let short = commit.chars().take(12).collect::<String>();
+                        println!("{} {}", "snapshot:".style(self.dimmed), short);
+                    }
+                }
+                match &event.review_output {
+                    Some(output) => {
+                        if !output.overall_explanation.trim().is_empty() {
+                            println!("{}", output.overall_explanation.trim());
+                        }
+
+                        if output.findings.is_empty() {
+                            println!("{}", "no findings reported".style(self.dimmed));
+                        } else {
+                            for (idx, finding) in output.findings.iter().enumerate() {
+                                println!(
+                                    "{} {}",
+                                    format!("#{}", idx + 1).style(self.bold),
+                                    finding.title.trim(),
+                                );
+                                if !finding.body.trim().is_empty() {
+                                    for line in finding.body.lines() {
+                                        println!("  {}", line.trim());
+                                    }
+                                }
+                            }
+                        }
+
+                        if output.overall_confidence_score > 0.0 {
+                            println!(
+                                "confidence: {:.1}",
+                                output.overall_confidence_score,
+                            );
+                        }
+                    }
+                    None => println!("{}", "review ended without results".style(self.dimmed)),
+                }
+            }
             EventMsg::CompactionCheckpointWarning(_) => {}
         }
         CodexStatus::Running

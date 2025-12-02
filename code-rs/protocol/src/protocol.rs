@@ -610,6 +610,26 @@ pub enum EventMsg {
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
 pub struct ExitedReviewModeEvent {
     pub review_output: Option<ReviewOutputEvent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub snapshot: Option<ReviewSnapshotInfo>,
+}
+
+/// Git/worktree context captured at review time.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, TS)]
+pub struct ReviewSnapshotInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub snapshot_commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub worktree_path: Option<std::path::PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub repo_root: Option<std::path::PathBuf>,
 }
 
 // Individual event payload types matching each `EventMsg` variant.

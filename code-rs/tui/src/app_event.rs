@@ -269,6 +269,8 @@ pub(crate) enum AppEvent {
     UpdateTuiNotifications(bool),
     /// Enable or disable Auto Resolve for review flows
     UpdateReviewAutoResolveEnabled(bool),
+    /// Enable or disable background Auto Review
+    UpdateAutoReviewEnabled(bool),
     /// Set the maximum number of Auto Resolve re-review attempts
     UpdateReviewAutoResolveAttempts(u32),
     /// Open the review model selector overlay
@@ -305,6 +307,24 @@ pub(crate) enum AppEvent {
         preparation_label: Option<String>,
         metadata: Option<ReviewContextMetadata>,
         auto_resolve: bool,
+    },
+
+    /// Background Auto Review lifecycle notifications
+    BackgroundReviewStarted {
+        worktree_path: PathBuf,
+        branch: String,
+        agent_id: Option<String>,
+        snapshot: Option<String>,
+    },
+    BackgroundReviewFinished {
+        worktree_path: PathBuf,
+        branch: String,
+        has_findings: bool,
+        findings: usize,
+        summary: Option<String>,
+        error: Option<String>,
+        agent_id: Option<String>,
+        snapshot: Option<String>,
     },
 
     /// Run the review command with the given argument string (mirrors `/review <args>`)

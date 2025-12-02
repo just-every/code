@@ -1,5 +1,6 @@
 //! Root of the `codex-core` library.
 
+
 // Prevent accidental direct writes to stdout/stderr in library code. All
 // user-visible output must go through the appropriate abstraction (e.g.,
 // the TUI or the tracing stack).
@@ -29,6 +30,7 @@ pub mod context_timeline;
 pub mod acp;
 pub mod custom_prompts;
 pub mod debug_logger;
+pub mod review_coord;
 mod environment_context;
 mod reasoning;
 pub mod retention;
@@ -55,6 +57,7 @@ mod message_history;
 mod model_provider_info;
 pub mod agent_defaults;
 mod agent_tool;
+pub use agent_tool::AGENT_MANAGER;
 mod dry_run_guard;
 mod image_comparison;
 pub mod git_worktree;

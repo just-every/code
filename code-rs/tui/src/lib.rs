@@ -36,6 +36,7 @@ use code_protocol::config_types::SandboxMode;
 use std::fs::OpenOptions;
 use std::io;
 use std::path::{Path, PathBuf};
+use code_core::review_coord::{bump_snapshot_epoch, try_acquire_lock};
 use std::sync::Once;
 use std::sync::OnceLock;
 use tracing_appender::non_blocking;
@@ -844,10 +845,36 @@ fn reclaim_worktrees_from_file(path: &std::path::Path, label: &str) {
     eprintln!("Cleaning remaining worktrees for {} ({}).", label, entries.len());
     for (git_root, worktree) in entries {
         let Some(wt_str) = worktree.to_str() else { continue };
-        let _ = Command::new("git")
+
+        // Retry a few times if the global review lock is busy.
+        let mut acquired = None;
+        for attempt in 0..3 {
+            acquired = try_acquire_lock("tui-worktree-cleanup", &git_root)
+                .ok()
+                .flatten();
+            if acquired.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(150 * (attempt + 1)));
+        }
+
+        let Some(_lock) = acquired else {
+            eprintln!(
+                "Deferring cleanup of {} — review lock busy; will retry on next shutdown",
+                worktree.display()
+            );
+            continue;
+        };
+
+        if let Ok(out) = Command::new("git")
             .current_dir(&git_root)
             .args(["worktree", "remove", wt_str, "--force"])
-            .output();
+            .output()
+        {
+            if out.status.success() {
+                bump_snapshot_epoch();
+            }
+        }
         let _ = std::fs::remove_dir_all(&worktree);
     }
     let _ = std::fs::remove_file(path);

@@ -88,6 +88,12 @@ pub struct Cli {
     #[arg(long = "output-last-message")]
     pub last_message_file: Option<PathBuf>,
 
+    /// When running /review, write the structured review output JSON to this file.
+    /// Includes every review pass (e.g., auto-resolve loops) so findings are not
+    /// lost when later passes report "no issues".
+    #[arg(long = "review-output-json", value_name = "FILE")]
+    pub review_output_json: Option<PathBuf>,
+
     /// Initial instructions for the agent. If not provided as an argument (or
     /// if `-` is used), instructions are read from stdin.
     #[arg(value_name = "PROMPT")]

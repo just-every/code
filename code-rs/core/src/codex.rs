@@ -901,6 +901,8 @@ use crate::protocol::BrowserScreenshotUpdateEvent;
 use crate::protocol::ErrorEvent;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
+use crate::protocol::ExitedReviewModeEvent;
+use crate::protocol::ReviewSnapshotInfo;
 use crate::protocol::ListCustomPromptsResponseEvent;
 use crate::protocol::{BrowserSnapshotEvent, EnvironmentContextDeltaEvent, EnvironmentContextFullEvent};
 use crate::protocol::ExecApprovalRequestEvent;
@@ -4397,6 +4399,27 @@ async fn submission_loop(
                             warn!("failed to initialise session usage log: {e}");
                         }
                     }
+
+                    // SAFETY: setting a process-wide env var is intentional here to
+                    // coordinate sub-agent debug behaviour launched from this session.
+                    unsafe { std::env::set_var("CODE_SUBAGENT_DEBUG", "1"); }
+                    match crate::config::find_code_home() {
+                        Ok(mut debug_root) => {
+                            debug_root.push("debug_logs");
+                            let mut manager = AGENT_MANAGER.write().await;
+                            manager.set_debug_log_root(Some(debug_root));
+                        }
+                        Err(err) => {
+                            warn!("failed to resolve debug log root: {err}");
+                            let mut manager = AGENT_MANAGER.write().await;
+                            manager.set_debug_log_root(None);
+                        }
+                    }
+                } else {
+                    // SAFETY: removing the coordination flag is safe when debug is off.
+                    unsafe { std::env::remove_var("CODE_SUBAGENT_DEBUG"); }
+                    let mut manager = AGENT_MANAGER.write().await;
+                    manager.set_debug_log_root(None);
                 }
 
                 let conversation_id = code_protocol::mcp_protocol::ConversationId::from(session_id);
@@ -5116,7 +5139,14 @@ async fn exit_review_mode(
     task_sub_id: String,
     review_output: Option<ReviewOutputEvent>,
 ) {
-    let event = session.make_event(&task_sub_id, EventMsg::ExitedReviewMode(review_output.clone()));
+    let snapshot = capture_review_snapshot(&session).await;
+    let event = session.make_event(
+        &task_sub_id,
+        EventMsg::ExitedReviewMode(ExitedReviewModeEvent {
+            review_output: review_output.clone(),
+            snapshot,
+        }),
+    );
     session.send_event(event).await;
 
     let _active_request = session.take_active_review();
@@ -5169,6 +5199,23 @@ async fn exit_review_mode(
     session
         .record_conversation_items(&[developer_message])
         .await;
+}
+
+async fn capture_review_snapshot(session: &Session) -> Option<ReviewSnapshotInfo> {
+    let cwd = session.cwd.clone();
+    let repo_root = crate::git_info::get_git_repo_root(&cwd);
+    let branch = crate::git_info::current_branch_name(&cwd).await;
+
+    if repo_root.is_none() && branch.is_none() {
+        return None;
+    }
+
+    Some(ReviewSnapshotInfo {
+        snapshot_commit: None,
+        branch,
+        worktree_path: Some(cwd),
+        repo_root,
+    })
 }
 
 fn parse_review_output_event(text: &str) -> ReviewOutputEvent {
@@ -11316,6 +11363,7 @@ async fn send_agent_status_update(sess: &Session) {
                 error: agent.error.clone(),
                 elapsed_ms,
                 token_count: None,
+                source_kind: agent.source_kind.clone(),
             }
         })
         .collect();

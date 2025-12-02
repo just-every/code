@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use code_common::elapsed::format_duration;
 use code_core::protocol::ReviewContextMetadata;
 use code_core::protocol::ReviewOutputEvent;
+use code_core::review_coord::{bump_snapshot_epoch, try_acquire_lock};
 use code_git_tooling::GhostCommit;
 
 use crate::AutoTurnAgentsAction;
@@ -218,6 +219,8 @@ pub struct AutoResolveState {
     pub phase: AutoResolvePhase,
     pub last_review: Option<ReviewOutputEvent>,
     pub last_fix_message: Option<String>,
+    pub last_reviewed_commit: Option<String>,
+    pub snapshot_epoch: Option<u64>,
 }
 
 impl AutoResolveState {
@@ -240,6 +243,8 @@ impl AutoResolveState {
             phase: AutoResolvePhase::WaitingForReview,
             last_review: None,
             last_fix_message: None,
+            last_reviewed_commit: None,
+            snapshot_epoch: None,
         }
     }
 }
@@ -323,6 +328,8 @@ pub struct AutoDriveController {
     pub pending_stop_message: Option<String>,
     pub last_completion_explanation: Option<String>,
     pub phase: AutoRunPhase,
+    // Non-cloneable guard is kept separately; controller stays Clone.
+    pub review_lock: Option<std::sync::Arc<code_core::review_coord::ReviewGuard>>, 
 }
 
 impl AutoDriveController {
@@ -375,14 +382,24 @@ impl AutoDriveController {
 
     pub fn on_resume_from_manual(&mut self) {
         self.apply_phase(AutoRunPhase::Active);
+        bump_snapshot_epoch();
     }
 
     pub fn on_begin_review(&mut self, diagnostics_pending: bool) {
         self.apply_phase(AutoRunPhase::AwaitingReview { diagnostics_pending });
+        // Acquire global review lock; if busy or error, fall back to Active to avoid overlap.
+        self.review_lock = try_acquire_lock("auto-drive-review", std::path::Path::new("."))
+            .ok()
+            .flatten()
+            .map(std::sync::Arc::new);
+        if self.review_lock.is_none() {
+            self.apply_phase(AutoRunPhase::Active);
+        }
     }
 
     pub fn on_complete_review(&mut self) {
         self.apply_phase(AutoRunPhase::Active);
+        self.review_lock = None;
     }
 
     pub fn on_transient_failure(&mut self, backoff_ms: u64) {
@@ -428,10 +445,26 @@ impl AutoDriveController {
                 self.apply_phase(AutoRunPhase::AwaitingDiagnostics { coordinator_waiting: true });
             }
             (AutoRunPhase::AwaitingDiagnostics { .. } | AutoRunPhase::Active, PhaseTransition::BeginReview { diagnostics_pending }) => {
+                if self.review_lock.is_none() {
+                    self.review_lock = code_core::review_coord::try_acquire_lock(
+                        "auto-drive-review",
+                        std::path::Path::new("."),
+                    )
+                    .ok()
+                    .flatten()
+                    .map(std::sync::Arc::new);
+                    if self.review_lock.is_none() {
+                        // Unable to secure the global lock; stay active to avoid overlapping reviews.
+                        self.apply_phase(AutoRunPhase::Active);
+                        return TransitionEffects { effects, phase_changed: old_phase != self.phase };
+                    }
+                }
+
                 self.apply_phase(AutoRunPhase::AwaitingReview { diagnostics_pending: *diagnostics_pending });
             }
             (AutoRunPhase::AwaitingReview { .. }, PhaseTransition::CompleteReview) => {
                 self.apply_phase(AutoRunPhase::Active);
+                self.review_lock = None;
             }
             (_, PhaseTransition::TransientFailure { backoff_ms }) => {
                 if self.phase.is_active() {
@@ -443,6 +476,7 @@ impl AutoDriveController {
             }
             (_, PhaseTransition::Stop) => {
                 self.apply_phase(AutoRunPhase::Idle);
+                self.review_lock = None;
             }
             _ => {
             }
@@ -756,6 +790,7 @@ impl AutoDriveController {
         self.elapsed_override = elapsed_override;
         self.pending_stop_message = pending_stop_message;
         self.last_completion_explanation = last_completion_explanation;
+        self.review_lock = None;
         self.phase = if self.phase.is_active() {
             AutoRunPhase::Active
         } else {

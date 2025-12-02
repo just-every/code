@@ -28,6 +28,7 @@ code-ollama = { workspace = true }
 code-protocol = { workspace = true }
 code-app-server-protocol = { workspace = true }
 code-auto-drive-core = { workspace = true }
+code-git-tooling = { workspace = true }
 chrono = { workspace = true }
 opentelemetry-appender-tracing = { workspace = true }
 owo-colors = { workspace = true }
@@ -41,9 +42,11 @@ tokio = { workspace = true, features = [
     "process",
     "rt-multi-thread",
     "signal",
+    "sync",
 ] }
 tracing = { workspace = true, features = ["log"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+once_cell = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
