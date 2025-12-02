@@ -30033,10 +30033,9 @@ impl ChatWidget<'_> {
                 "•",
                 vec![
                     ratatui::text::Span::styled(
-                        "•",
+                        " Auto Review: Running",
                         Style::default().fg(crate::colors::success()),
                     ),
-                    ratatui::text::Span::raw(" Auto Review: Running"),
                     hint,
                 ],
             ),
@@ -30044,10 +30043,9 @@ impl ChatWidget<'_> {
                 "✔",
                 vec![
                     ratatui::text::Span::styled(
-                        "✔",
+                        " Auto Review: No Error",
                         Style::default().fg(crate::colors::success()),
                     ),
-                    ratatui::text::Span::raw(" Auto Review: No Error"),
                     hint,
                 ],
             ),
@@ -30062,10 +30060,9 @@ impl ChatWidget<'_> {
                     "⚠",
                     vec![
                         ratatui::text::Span::styled(
-                            "⚠",
+                            text,
                             Style::default().fg(crate::colors::warning()),
                         ),
-                        ratatui::text::Span::raw(text),
                         hint,
                     ],
                 )
@@ -30074,10 +30071,9 @@ impl ChatWidget<'_> {
                 "✖",
                 vec![
                     ratatui::text::Span::styled(
-                        "✖",
+                        " Auto Review: Failed",
                         Style::default().fg(crate::colors::error()),
                     ),
-                    ratatui::text::Span::raw(" Auto Review: Failed"),
                     hint,
                 ],
             ),
@@ -30105,6 +30101,8 @@ impl ChatWidget<'_> {
         status: AutoReviewIndicatorStatus,
         findings: Option<usize>,
     ) {
+        self.prune_auto_review_indicators();
+
         let target_id = self
             .auto_review_indicator
             .as_ref()
@@ -30165,6 +30163,23 @@ impl ChatWidget<'_> {
         let pos = self.history_insert_with_key_global_tagged(Box::new(cell), insert_key, "auto-review-indicator", None);
         if let Some(Some(id)) = self.history_cell_ids.get(pos) {
             self.auto_review_indicator = Some(AutoReviewIndicator { history_id: *id });
+        }
+    }
+
+    fn prune_auto_review_indicators(&mut self) {
+        let mut removed = false;
+        for idx in (0..self.history_cells.len()).rev() {
+            if self.history_cells[idx]
+                .as_any()
+                .downcast_ref::<crate::history_cell::AutoReviewStatusCell>()
+                .is_some()
+            {
+                self.history_remove_at(idx);
+                removed = true;
+            }
+        }
+        if removed {
+            self.auto_review_indicator = None;
         }
     }
 

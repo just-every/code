@@ -36,7 +36,9 @@ use code_protocol::config_types::SandboxMode;
 use std::fs::OpenOptions;
 use std::io;
 use std::path::{Path, PathBuf};
-use code_core::review_coord::{bump_snapshot_epoch, try_acquire_lock};
+use code_core::review_coord::{
+    bump_snapshot_epoch, clear_stale_lock_if_dead, read_lock_info, try_acquire_lock,
+};
 use std::sync::Once;
 use std::sync::OnceLock;
 use tracing_appender::non_blocking;
@@ -843,11 +845,13 @@ fn reclaim_worktrees_from_file(path: &std::path::Path, label: &str) {
     }
 
     eprintln!("Cleaning remaining worktrees for {} ({}).", label, entries.len());
+    let current_pid = std::process::id();
     for (git_root, worktree) in entries {
         let Some(wt_str) = worktree.to_str() else { continue };
 
         // Retry a few times if the global review lock is busy.
         let mut acquired = None;
+        let mut lock_info = None;
         for attempt in 0..3 {
             acquired = try_acquire_lock("tui-worktree-cleanup", &git_root)
                 .ok()
@@ -855,16 +859,36 @@ fn reclaim_worktrees_from_file(path: &std::path::Path, label: &str) {
             if acquired.is_some() {
                 break;
             }
+
+            // If the lock holder died, clear it and retry immediately.
+            if let Ok(true) = clear_stale_lock_if_dead(Some(&git_root)) {
+                continue;
+            }
+
+            // Remember who is holding the lock for diagnostics and potential self-cleanup.
+            lock_info = read_lock_info(Some(&git_root));
+            if matches!(lock_info.as_ref(), Some(info) if info.pid == current_pid) {
+                // Our own process still holds the lock (e.g., background task still winding down).
+                // Proceed without a guard so we still reclaim our worktrees on shutdown.
+                break;
+            }
+
             std::thread::sleep(std::time::Duration::from_millis(150 * (attempt + 1)));
         }
 
-        let Some(_lock) = acquired else {
+        let lock_is_self = matches!(lock_info.as_ref(), Some(info) if info.pid == current_pid);
+
+        if acquired.is_none() && !lock_is_self {
+            let detail = lock_info
+                .as_ref()
+                .map(|info| format!("pid {} (intent: {})", info.pid, info.intent))
+                .unwrap_or_else(|| "unknown holder".to_string());
             eprintln!(
-                "Deferring cleanup of {} — review lock busy; will retry on next shutdown",
+                "Deferring cleanup of {} — cleanup lock busy ({detail}); will retry on next shutdown",
                 worktree.display()
             );
             continue;
-        };
+        }
 
         if let Ok(out) = Command::new("git")
             .current_dir(&git_root)
