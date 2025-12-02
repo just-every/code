@@ -12,7 +12,7 @@ use crate::history_cell::{
     plain_message_state_from_paragraphs,
 };
 use crate::history::state::{PlainMessageKind, PlainMessageRole};
-use code_core::protocol::{AgentInfo, AgentStatusUpdateEvent, OrderMeta};
+use code_core::protocol::{AgentInfo, AgentSourceKind, AgentStatusUpdateEvent, OrderMeta};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -927,15 +927,28 @@ pub(super) fn handle_status_update(chat: &mut ChatWidget<'_>, event: &AgentStatu
         return;
     }
 
+    let filtered_agents: Vec<AgentInfo> = event
+        .agents
+        .iter()
+        .filter(|agent| {
+            !matches!(agent.source_kind, Some(AgentSourceKind::AutoReview))
+        })
+        .cloned()
+        .collect();
+
+    if filtered_agents.is_empty() {
+        return;
+    }
+
     let mut grouped: Vec<(String, Vec<AgentInfo>)> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
 
-    for agent in &event.agents {
+    for agent in filtered_agents {
         if let Some(batch_id) = agent.batch_id.clone() {
             if let Some((_, bucket)) = grouped.iter_mut().find(|(id, _)| id == &batch_id) {
-                bucket.push(agent.clone());
+                bucket.push(agent);
             } else {
-                grouped.push((batch_id, vec![agent.clone()]));
+                grouped.push((batch_id, vec![agent]));
             }
         } else {
             missing.push(agent.id.clone());

@@ -19,8 +19,7 @@ use std::process::{Command, Output};
 use std::str::FromStr;
 use base64::prelude::{Engine as _, BASE64_STANDARD};
 
-use ratatui::style::Modifier;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use crate::header_wave::HeaderWaveEffect;
 use crate::auto_drive_strings;
 use crate::auto_drive_style::AutoDriveVariant;
@@ -1316,6 +1315,19 @@ struct BackgroundReviewState {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AutoReviewIndicatorStatus {
+    Running,
+    Clean,
+    Fixed,
+    Failed,
+}
+
+#[derive(Clone, Debug)]
+struct AutoReviewIndicator {
+    history_id: HistoryId,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TurnOrigin {
     User,
     Developer,
@@ -1412,6 +1424,7 @@ pub(crate) struct ChatWidget<'a> {
     auto_resolve_attempts_baseline: u32,
     turn_had_code_edits: bool,
     background_review: Option<BackgroundReviewState>,
+    auto_review_indicator: Option<AutoReviewIndicator>,
     auto_review_baseline: Option<GhostCommit>,
     review_guard: Option<ReviewGuard>,
     background_review_guard: Option<ReviewGuard>,
@@ -5410,6 +5423,7 @@ impl ChatWidget<'_> {
             auto_resolve_attempts_baseline: config.auto_drive.auto_resolve_review_attempts.get(),
             turn_had_code_edits: false,
             background_review: None,
+            auto_review_indicator: None,
             auto_review_baseline: None,
             review_guard: None,
             background_review_guard: None,
@@ -5753,6 +5767,7 @@ impl ChatWidget<'_> {
             auto_resolve_attempts_baseline: config.auto_drive.auto_resolve_review_attempts.get(),
             turn_had_code_edits: false,
             background_review: None,
+            auto_review_indicator: None,
             auto_review_baseline: None,
             review_guard: None,
             background_review_guard: None,
@@ -25955,6 +25970,12 @@ use code_core::review_coord::{
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
 
+        chat.insert_final_answer_with_id(
+            None,
+            vec![ratatui::text::Line::from("Assistant reply")],
+            "Assistant reply".to_string(),
+        );
+
         chat.config.tui.auto_review_enabled = true;
         chat.auto_state.on_begin_review(false);
 
@@ -25981,14 +26002,14 @@ use code_core::review_coord::{
             "auto drive should resume after background review completes"
         );
 
-        let summary_present = chat.history_cells.iter().any(|cell| {
+        let indicator_present = chat.history_cells.iter().any(|cell| {
             cell.display_lines_trimmed().iter().any(|line| {
                 line.spans
                     .iter()
-                    .any(|span| span.content.contains("Short summary"))
+                    .any(|span| span.content.contains("Auto Review"))
             })
         });
-        assert!(summary_present, "summary should be posted to history");
+        assert!(indicator_present, "auto review indicator should be attached to assistant message");
         assert!(chat.pending_agent_notes.is_empty(), "idle path should inject via hidden message, not queue notes");
         let developer_seen = chat
             .pending_dispatched_user_messages
@@ -29480,6 +29501,8 @@ impl ChatWidget<'_> {
             agent_id: None,
             snapshot: None,
         });
+        self.auto_review_indicator = None;
+        self.set_auto_review_indicator(AutoReviewIndicatorStatus::Running, None);
 
         #[cfg(test)]
         if let Some(stub) = AUTO_REVIEW_STUB.lock().unwrap().as_mut() {
@@ -29667,6 +29690,126 @@ impl ChatWidget<'_> {
         (has_findings, findings_len, summary)
     }
 
+    fn auto_review_indicator_line(
+        status: AutoReviewIndicatorStatus,
+        findings: Option<usize>,
+    ) -> Vec<ratatui::text::Span<'static>> {
+        match status {
+            AutoReviewIndicatorStatus::Running => {
+                vec![
+                    ratatui::text::Span::styled(
+                        "•",
+                        Style::default().fg(crate::colors::success()),
+                    ),
+                    ratatui::text::Span::raw(" Auto Review Running [Ctrl+A] Show"),
+                ]
+            }
+            AutoReviewIndicatorStatus::Clean => {
+                vec![ratatui::text::Span::raw(
+                    "✔ Auto Review: no errors [Ctrl+A] Show",
+                )]
+            }
+            AutoReviewIndicatorStatus::Fixed => {
+                let text = if let Some(count) = findings {
+                    let plural = if count == 1 { "issue" } else { "issues" };
+                    format!(
+                        "⚠ Auto Review: {count} {plural} fixed [Ctrl+A] Show"
+                    )
+                } else {
+                    "⚠ Auto Review: issues fixed [Ctrl+A] Show".to_string()
+                };
+                vec![ratatui::text::Span::raw(text)]
+            }
+            AutoReviewIndicatorStatus::Failed => {
+                vec![ratatui::text::Span::raw(
+                    "✖ Auto Review: issues not patched [Ctrl+A] Show",
+                )]
+            }
+        }
+    }
+
+    fn last_assistant_cell_index(&self) -> Option<usize> {
+        self.history_cells.iter().enumerate().rev().find_map(|(idx, cell)| {
+            cell.as_any()
+                .downcast_ref::<history_cell::AssistantMarkdownCell>()
+                .map(|_| idx)
+        })
+    }
+
+    fn assistant_cell_index_by_id(&self, id: HistoryId) -> Option<usize> {
+        self.history_cells.iter().enumerate().rev().find_map(|(idx, cell)| {
+            cell.as_any()
+                .downcast_ref::<history_cell::AssistantMarkdownCell>()
+                .and_then(|amc| (amc.state().id == id).then_some(idx))
+        })
+    }
+
+    fn set_auto_review_indicator(
+        &mut self,
+        status: AutoReviewIndicatorStatus,
+        findings: Option<usize>,
+    ) {
+        let target_id = self
+            .auto_review_indicator
+            .as_ref()
+            .map(|indicator| indicator.history_id)
+            .or_else(|| {
+                self.last_assistant_cell_index().and_then(|idx| {
+                    self.history_cells[idx]
+                        .as_any()
+                        .downcast_ref::<history_cell::AssistantMarkdownCell>()
+                        .map(|amc| amc.state().id)
+                })
+            });
+
+        let Some(history_id) = target_id else {
+            return;
+        };
+
+        let idx = self
+            .assistant_cell_index_by_id(history_id)
+            .or_else(|| self.last_assistant_cell_index());
+
+        let Some(idx) = idx else {
+            return;
+        };
+
+        let spans = Self::auto_review_indicator_line(status, findings);
+        let line = ratatui::text::Line::from(spans);
+        let state = history_cell::plain_message_state_from_lines(
+            vec![line],
+            history_cell::HistoryCellType::Notice,
+        );
+
+        // If an indicator already exists, replace it in place.
+        if let Some(indicator) = self.auto_review_indicator.clone() {
+            if let Some(ind_idx) = self
+                .history_cell_ids
+                .iter()
+                .position(|maybe| maybe.map(|id| id == indicator.history_id).unwrap_or(false))
+            {
+                let cell = crate::history_cell::PlainHistoryCell::from_state(state.clone());
+                self.history_replace_at(ind_idx, Box::new(cell));
+                return;
+            }
+        }
+
+        // Insert immediately after the target assistant cell using an order key successor
+        let assistant_key = *self
+            .cell_order_seq
+            .get(idx)
+            .unwrap_or(&Self::order_key_successor(*self.cell_order_seq.last().unwrap_or(&OrderKey {
+                req: 0,
+                out: -1,
+                seq: 0,
+            })));
+        let insert_key = Self::order_key_successor(assistant_key);
+        let pos = self.history_insert_plain_state_with_key(state, insert_key, "auto-review-indicator");
+        if let Some(Some(id)) = self.history_cell_ids.get(pos) {
+            self.auto_review_indicator = Some(AutoReviewIndicator { history_id: *id });
+        }
+    }
+
     pub(crate) fn on_background_review_started(
         &mut self,
         worktree_path: std::path::PathBuf,
@@ -29680,19 +29823,9 @@ impl ChatWidget<'_> {
             state.agent_id = agent_id;
             state.snapshot = snapshot;
         }
-        let snapshot_note = self
-            .background_review
-            .as_ref()
-            .and_then(|state| state.snapshot.as_ref())
-            .map(|s| format!(" Snapshot {s}."))
-            .unwrap_or_default();
-        let msg = format!(
-            "Auto review running in background worktree '{}' ({}).{}",
-            branch,
-            worktree_path.display(),
-            snapshot_note
-        );
-        self.push_background_tail(msg);
+        if self.auto_review_indicator.is_none() {
+            self.set_auto_review_indicator(AutoReviewIndicatorStatus::Running, None);
+        }
         self.request_redraw();
     }
 
@@ -29720,32 +29853,17 @@ impl ChatWidget<'_> {
             .as_ref()
             .map(|id| format!(" Agent #{:.8}.", id))
             .unwrap_or_default();
-
-        let message: String = if let Some(err) = error {
+        let indicator_status = if let Some(err) = error {
             developer_note = Some(format!(
                 "[developer] Background auto-review failed in worktree '{branch}'. Error: {err}. Worktree path: {}.{snapshot_note}{agent_note}",
                 worktree_path.display()
             ));
-            format!(
-                "Auto review in worktree '{}' failed: {}",
-                branch,
-                err
-            )
+            AutoReviewIndicatorStatus::Failed
         } else if has_findings {
-            let mut base = format!(
-                "Auto review found {} issue(s) in '{}'. Merge that worktree to apply fixes.",
-                findings.max(1),
-                branch
-            );
             let summary_text = summary.as_ref().and_then(|s| {
                 let trimmed = s.trim();
                 if trimmed.is_empty() { None } else { Some(trimmed) }
             });
-            if let Some(text) = summary_text {
-                base.push_str(" Summary: ");
-                base.push_str(text);
-            }
-            base.push_str(&format!(" Path: {}", worktree_path.display()));
             developer_note = Some(match summary_text {
                 Some(text) => format!(
                     "[developer] Background auto-review found issues in worktree '{branch}'. Summary: {text}. Merge the worktree at {} if you want the fixes.{snapshot_note}{agent_note}",
@@ -29756,27 +29874,14 @@ impl ChatWidget<'_> {
                     worktree_path.display()
                 ),
             });
-            base
+            AutoReviewIndicatorStatus::Fixed
         } else {
-            if let Some(text) = summary.as_ref().and_then(|s| {
-                let t = s.trim();
-                if t.is_empty() {
-                    None
-                } else {
-                    Some(t.to_string())
-                }
-            }) {
-                text
-            } else {
-                format!(
-                    "Auto review in '{}' completed with no blocking issues ({}).",
-                    branch,
-                    worktree_path.display()
-                )
-            }
+            AutoReviewIndicatorStatus::Clean
         };
 
-        self.push_background_tail(message.clone());
+        let findings_for_indicator =
+            matches!(indicator_status, AutoReviewIndicatorStatus::Fixed).then_some(findings.max(1));
+        self.set_auto_review_indicator(indicator_status, findings_for_indicator);
 
         if let Some(note) = developer_note {
             // Always start a new turn so the parent model sees the findings, even if
@@ -29793,7 +29898,6 @@ impl ChatWidget<'_> {
             }
         }
 
-        self.background_review = None;
         self.maybe_resume_auto_after_review();
         self.request_redraw();
     }
