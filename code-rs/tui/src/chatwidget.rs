@@ -250,7 +250,7 @@ use code_core::protocol::PatchApplyEndEvent;
 use code_core::protocol::TaskCompleteEvent;
 use code_core::protocol::TokenUsage;
 use code_core::protocol::TurnDiffEvent;
-use code_core::review_coord::{bump_snapshot_epoch, try_acquire_lock, ReviewGuard};
+use code_core::review_coord::{bump_snapshot_epoch_for, try_acquire_lock, ReviewGuard};
 use code_core::ConversationManager;
 use code_core::codex::compact::COMPACTION_CHECKPOINT_MESSAGE;
 use crate::bottom_pane::{
@@ -716,7 +716,7 @@ async fn run_fast_forward_merge(state: &MergeRepoState) -> Result<(), String> {
         ));
     }
 
-    bump_snapshot_epoch();
+    bump_snapshot_epoch_for(&state.git_root);
 
     let worktree_remove = Command::new("git")
         .current_dir(&state.git_root)
@@ -10043,8 +10043,11 @@ impl ChatWidget<'_> {
         );
         let repo_path = self.config.cwd.clone();
         let started_at = request.started_at;
-        let result = create_ghost_commit(&CreateGhostCommitOptions::new(repo_path.as_path())
-            .post_commit_hook(&|| bump_snapshot_epoch()));
+        let hook_repo = repo_path.clone();
+        let result = create_ghost_commit(
+            &CreateGhostCommitOptions::new(repo_path.as_path())
+                .post_commit_hook(&move || bump_snapshot_epoch_for(&hook_repo)),
+        );
         let elapsed = started_at.elapsed();
         let snapshot = self.finalize_ghost_snapshot(request, result, elapsed);
         snapshot
@@ -10228,8 +10231,9 @@ impl ChatWidget<'_> {
 
         tokio::spawn(async move {
             let handle = tokio::task::spawn_blocking(move || {
+                let hook_repo = repo_path.clone();
                 let options = CreateGhostCommitOptions::new(repo_path.as_path());
-                create_ghost_commit(&options.post_commit_hook(&|| bump_snapshot_epoch()))
+                create_ghost_commit(&options.post_commit_hook(&move || bump_snapshot_epoch_for(&hook_repo)))
             });
             tokio::pin!(handle);
 
@@ -10924,7 +10928,7 @@ impl ChatWidget<'_> {
                 .iter()
                 .any(|arg| matches!(arg.as_str(), "pull" | "checkout" | "merge" | "apply"))
             {
-                bump_snapshot_epoch();
+                bump_snapshot_epoch_for(&self.config.cwd);
             }
             parser(String::from_utf8_lossy(&output.stdout).to_string())
         }
@@ -16577,15 +16581,15 @@ Have we met every part of this goal and is there no further work to do?"#
             let parent_id = parent.map(|commit| commit.id().to_string());
             return stub(message, parent_id);
         }
-        let mut options = CreateGhostCommitOptions::new(self.config.cwd.as_path())
-            .message(message)
-            .post_commit_hook(&|| bump_snapshot_epoch());
+        let mut options = CreateGhostCommitOptions::new(self.config.cwd.as_path()).message(message);
         if let Some(parent_commit) = parent {
             options = options.parent(parent_commit.id());
         }
-        let result = create_ghost_commit(&options.post_commit_hook(&|| bump_snapshot_epoch()));
+        let hook_repo_follow = self.config.cwd.clone();
+        let hook = move || bump_snapshot_epoch_for(&hook_repo_follow);
+        let result = create_ghost_commit(&options.post_commit_hook(&hook));
         if result.is_ok() {
-            bump_snapshot_epoch();
+            bump_snapshot_epoch_for(&self.config.cwd);
         }
         result
     }
@@ -25599,12 +25603,13 @@ async fn run_background_review(
             let base_snapshot = base_snapshot.clone();
             move || {
                 let mut options = CreateGhostCommitOptions::new(repo_path.as_path())
-                    .message("auto review snapshot")
-                    .post_commit_hook(&|| bump_snapshot_epoch());
+                    .message("auto review snapshot");
                 if let Some(base) = base_snapshot.as_ref() {
                     options = options.parent(base.id());
                 }
-                create_ghost_commit(&options.post_commit_hook(&|| bump_snapshot_epoch()))
+                let hook_repo = repo_path.clone();
+                let hook = move || bump_snapshot_epoch_for(&hook_repo);
+                create_ghost_commit(&options.post_commit_hook(&hook))
             }
         })
         .await
@@ -25612,7 +25617,7 @@ async fn run_background_review(
         .and_then(|res| res.map_err(|e| format!("failed to capture snapshot: {e}")))?;
 
         let snapshot_id = snapshot.id().to_string();
-        bump_snapshot_epoch();
+        bump_snapshot_epoch_for(&config.cwd);
         // Reuse a single detached worktree for auto-review to avoid churn; keep
         // gitignored build outputs for faster incremental builds.
         let worktree_path = code_core::git_worktree::prepare_reusable_worktree(
@@ -25773,7 +25778,12 @@ impl Drop for AutoReviewStubGuard {
     };
 use code_core::parse_command::ParsedCommand;
 use code_core::protocol::OrderMeta;
-use code_core::review_coord::{bump_snapshot_epoch, current_snapshot_epoch, try_acquire_lock, ReviewGuard};
+use code_core::review_coord::{
+    bump_snapshot_epoch_for,
+    current_snapshot_epoch,
+    try_acquire_lock,
+    ReviewGuard,
+};
     use code_core::protocol::{
         AskForApproval,
         AgentMessageEvent,

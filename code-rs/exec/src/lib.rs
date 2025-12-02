@@ -25,7 +25,12 @@ use code_core::config::Config;
 use code_core::config::ConfigOverrides;
 use code_core::git_info::get_git_repo_root;
 use code_core::git_info::recent_commits;
-use code_core::review_coord::{bump_snapshot_epoch, current_snapshot_epoch, try_acquire_lock};
+use code_core::review_coord::{
+    bump_snapshot_epoch_for,
+    clear_stale_lock_if_dead,
+    current_snapshot_epoch_for,
+    try_acquire_lock,
+};
 use code_core::protocol::AskForApproval;
 use code_core::protocol::Event;
 use code_core::protocol::EventMsg;
@@ -544,7 +549,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
     let mut _review_guard: Option<code_core::review_coord::ReviewGuard> = None;
 
     // Clear stale review lock in case a prior process crashed.
-    let _ = code_core::review_coord::clear_stale_lock_if_dead();
+    let _ = clear_stale_lock_if_dead();
 
     let _initial_prompt_task_id = if let Some(mut review_request) = review_request.clone() {
         // Cross-process review coordination
@@ -563,7 +568,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
             if auto_resolve_base_snapshot.is_none() {
                 auto_resolve_base_snapshot = capture_auto_resolve_snapshot(&config.cwd, None, "auto-resolve base snapshot");
                 if let Some(state) = auto_resolve_state.as_mut() {
-                    state.snapshot_epoch = Some(current_snapshot_epoch());
+                    state.snapshot_epoch = Some(current_snapshot_epoch_for(&config.cwd));
                 }
             }
 
@@ -583,7 +588,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         }
 
         // Capture baseline epoch after any snapshot creation so we don't trip on our own bumps.
-        last_review_epoch = Some(current_snapshot_epoch());
+        last_review_epoch = Some(current_snapshot_epoch_for(&config.cwd));
 
         let event_id = conversation.submit(Op::Review { review_request }).await?;
         info!("Sent /review with event ID: {event_id}");
@@ -624,7 +629,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                         final_review_snapshot = Some(snapshot.clone());
                         // detect stale snapshot epoch
                         if let Some(start_epoch) = last_review_epoch {
-                            let current_epoch = current_snapshot_epoch();
+                            let current_epoch = current_snapshot_epoch_for(&config.cwd);
                             if current_epoch != start_epoch {
                                 eprintln!("Snapshot epoch changed during review; aborting auto-resolve and requiring restart.");
                                 auto_resolve_state = None;
@@ -708,7 +713,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
             }
             EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
                 if let Some(state_snapshot) = auto_resolve_state.clone() {
-                    let current_epoch = current_snapshot_epoch();
+                    let current_epoch = current_snapshot_epoch_for(&config.cwd);
                     match state_snapshot.phase {
                         AutoResolvePhase::PendingFix { review } => {
                             if auto_resolve_fix_guard.is_none() {
@@ -799,7 +804,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
 
                                         if let Some(state) = auto_resolve_state.as_mut() {
                                             state.last_reviewed_commit = Some(snap.id().to_string());
-                                            state.snapshot_epoch = Some(current_snapshot_epoch());
+                                            state.snapshot_epoch = Some(current_snapshot_epoch_for(&config.cwd));
                                         }
 
                                         let followup_request = build_followup_review_request(
@@ -810,7 +815,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                             Some(base.id()),
                                         )
                                         .await;
-                                        last_review_epoch = Some(current_snapshot_epoch());
+                                        last_review_epoch = Some(current_snapshot_epoch_for(&config.cwd));
                                         let _ = conversation
                                             .submit(Op::Review {
                                                 review_request: followup_request,
@@ -840,7 +845,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                     auto_resolve_base_snapshot = None;
                                     continue;
                                 }
-                                let current_epoch = current_snapshot_epoch();
+                                let current_epoch = current_snapshot_epoch_for(&config.cwd);
                                 if let Some(state) = auto_resolve_state.as_ref() {
                                     if state
                                         .metadata
@@ -883,7 +888,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                             Some(base.id()),
                                         )
                                         .await;
-                                        last_review_epoch = Some(current_snapshot_epoch());
+                                        last_review_epoch = Some(current_snapshot_epoch_for(&config.cwd));
                                         let _ = conversation
                                             .submit(Op::Review {
                                                 review_request: followup_request,
@@ -1265,15 +1270,17 @@ fn capture_auto_resolve_snapshot(
     parent: Option<&str>,
     message: &'static str,
 ) -> Option<GhostCommit> {
+    let cwd_buf = cwd.to_path_buf();
+    let hook = move || bump_snapshot_epoch_for(&cwd_buf);
     let mut options = CreateGhostCommitOptions::new(cwd)
         .message(message)
-        .post_commit_hook(&|| bump_snapshot_epoch());
+        .post_commit_hook(&hook);
     if let Some(parent) = parent {
         options = options.parent(parent);
     }
     let snap = create_ghost_commit(&options).ok();
     if snap.is_some() {
-        bump_snapshot_epoch();
+        bump_snapshot_epoch_for(cwd);
     }
     snap
 }
@@ -1373,7 +1380,7 @@ fn capture_snapshot_against_base(
     if diff_paths.is_empty() {
         return None;
     }
-    bump_snapshot_epoch();
+    bump_snapshot_epoch_for(cwd);
     Some((snapshot, diff_paths))
 }
 

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use tokio::fs::OpenOptions;
 use tokio::process::Command;
 
-use crate::review_coord::bump_snapshot_epoch;
+use crate::review_coord::bump_snapshot_epoch_for;
 
 /// Returns the `/.../.code/branches/<worktree>` root when `path` resides inside a branch worktree.
 pub fn branch_worktree_root(path: &Path) -> Option<PathBuf> {
@@ -175,7 +175,7 @@ pub async fn setup_worktree(
                 let stderr = String::from_utf8_lossy(&clean.stderr);
                 return Err(format!("Failed to clean existing worktree: {stderr}"));
             }
-            bump_snapshot_epoch();
+            bump_snapshot_epoch_for(&worktree_path);
             record_worktree_in_session(git_root, &worktree_path).await;
             return Ok((worktree_path, effective_branch));
         }
@@ -198,7 +198,7 @@ pub async fn setup_worktree(
             .await
         {
             if out.status.success() {
-                bump_snapshot_epoch();
+                bump_snapshot_epoch_for(&worktree_path);
             }
         }
     }
@@ -224,7 +224,7 @@ pub async fn setup_worktree(
         .map_err(|e| format!("Failed to create git worktree: {}", e))?;
 
     if output.status.success() {
-        bump_snapshot_epoch();
+        bump_snapshot_epoch_for(&worktree_path);
     }
 
     if !output.status.success() {
@@ -266,7 +266,7 @@ pub async fn setup_worktree(
                 let retry_err = String::from_utf8_lossy(&retry.stderr);
                 return Err(format!("Failed to create worktree: {}", retry_err));
             }
-            bump_snapshot_epoch();
+            bump_snapshot_epoch_for(&worktree_path);
             record_worktree_in_session(git_root, &worktree_path).await;
         } else {
             return Err(format!("Failed to create worktree: {}", stderr));
@@ -337,7 +337,7 @@ pub async fn prepare_reusable_worktree(
             return Err(format!("Failed to clean reusable worktree: {stderr}"));
         }
 
-        bump_snapshot_epoch();
+        bump_snapshot_epoch_for(&worktree_path);
         record_worktree_in_session(git_root, &worktree_path).await;
         return Ok(worktree_path);
     }
@@ -363,7 +363,7 @@ pub async fn prepare_reusable_worktree(
         return Err(format!("Failed to create reusable worktree: {stderr}"));
     }
 
-    bump_snapshot_epoch();
+    bump_snapshot_epoch_for(&worktree_path);
     record_worktree_in_session(git_root, &worktree_path).await;
     Ok(worktree_path)
 }
@@ -414,7 +414,7 @@ pub async fn ensure_local_default_remote(
                     let stderr = String::from_utf8_lossy(&update.stderr).trim().to_string();
                     return Err(format!("Failed to set {remote_name} URL: {stderr}"));
                 }
-                bump_snapshot_epoch();
+                bump_snapshot_epoch_for(git_root);
             }
         }
         _ => {
@@ -428,7 +428,7 @@ pub async fn ensure_local_default_remote(
                 let stderr = String::from_utf8_lossy(&add.stderr).trim().to_string();
                 return Err(format!("Failed to add {remote_name}: {stderr}"));
             }
-            bump_snapshot_epoch();
+            bump_snapshot_epoch_for(git_root);
         }
     }
 
@@ -467,7 +467,7 @@ pub async fn ensure_local_default_remote(
                     .map_err(|e| format!("Failed to update {remote_ref}: {e}"))?;
                 if update.status.success() {
                     metadata.remote_ref = Some(format!("{remote_name}/{base}"));
-                    bump_snapshot_epoch();
+                    bump_snapshot_epoch_for(git_root);
                 }
             }
         }
@@ -592,7 +592,7 @@ async fn _ensure_origin_remote(git_root: &Path) -> Result<(), String> {
                     if !add.status.success() {
                         return Err("failed to add origin".to_string());
                     }
-                    bump_snapshot_epoch();
+                    bump_snapshot_epoch_for(git_root);
                     let _ = Command::new("git")
                         .current_dir(git_root)
                         .args(["remote", "set-head", "origin", "-a"])

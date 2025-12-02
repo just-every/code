@@ -1174,6 +1174,7 @@ dependencies = [
  "code-rmcp-client",
  "code-version",
  "core-foundation 0.9.4",
+ "crc32fast",
  "dirs",
  "dunce",
  "encoding_rs",

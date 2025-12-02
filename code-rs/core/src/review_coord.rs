@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const LOCK_FILENAME: &str = "review.lock";
@@ -28,10 +29,23 @@ fn state_dir() -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
-fn epoch_path() -> std::io::Result<PathBuf> {
-    let mut p = state_dir()?;
-    p.push(EPOCH_FILENAME);
-    Ok(p)
+fn epoch_path(scope: Option<&Path>) -> std::io::Result<PathBuf> {
+    if let Some(scope) = scope {
+        let normalized_scope = scope
+            .canonicalize()
+            .unwrap_or_else(|_| scope.to_path_buf());
+        let mut dir = state_dir()?;
+        let key = crc32fast::hash(normalized_scope.to_string_lossy().as_bytes());
+        dir.push(format!("repo-{key:08x}"));
+        fs::create_dir_all(&dir)?;
+        let mut p = dir;
+        p.push(EPOCH_FILENAME);
+        Ok(p)
+    } else {
+        let mut p = state_dir()?;
+        p.push(EPOCH_FILENAME);
+        Ok(p)
+    }
 }
 
 fn lock_path() -> std::io::Result<PathBuf> {
@@ -40,8 +54,8 @@ fn lock_path() -> std::io::Result<PathBuf> {
     Ok(p)
 }
 
-fn read_epoch() -> u64 {
-    if let Ok(p) = epoch_path() {
+fn read_epoch(scope: Option<&Path>) -> u64 {
+    if let Ok(p) = epoch_path(scope) {
         if let Ok(text) = fs::read_to_string(p) {
             if let Ok(v) = text.trim().parse::<u64>() {
                 return v;
@@ -51,18 +65,53 @@ fn read_epoch() -> u64 {
     0
 }
 
-fn write_epoch(val: u64) -> std::io::Result<()> {
-    let p = epoch_path()?;
+fn write_epoch(scope: Option<&Path>, val: u64) -> std::io::Result<()> {
+    let p = epoch_path(scope)?;
     fs::write(p, val.to_string())
 }
 
 pub fn bump_snapshot_epoch() {
-    let current = read_epoch();
-    let _ = write_epoch(current.saturating_add(1));
+    if let Some(scope) = scope_from_current_dir() {
+        bump_snapshot_epoch_for(&scope);
+        return;
+    }
+
+    let current = read_epoch(None);
+    let _ = write_epoch(None, current.saturating_add(1));
 }
 
 pub fn current_snapshot_epoch() -> u64 {
-    read_epoch()
+    if let Some(scope) = scope_from_current_dir() {
+        return current_snapshot_epoch_for(&scope);
+    }
+
+    read_epoch(None)
+}
+
+pub fn bump_snapshot_epoch_for(scope: &Path) {
+    let current = read_epoch(Some(scope));
+    let _ = write_epoch(Some(scope), current.saturating_add(1));
+}
+
+pub fn current_snapshot_epoch_for(scope: &Path) -> u64 {
+    read_epoch(Some(scope))
+}
+
+fn scope_from_current_dir() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    if let Ok(out) = Command::new("git")
+        .current_dir(&cwd)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+    {
+        if out.status.success() {
+            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(PathBuf::from(path));
+            }
+        }
+    }
+    Some(cwd)
 }
 
 fn git_head(cwd: &Path) -> Option<String> {
@@ -94,7 +143,7 @@ pub fn try_acquire_lock(intent: &str, cwd: &Path) -> std::io::Result<Option<Revi
                     .as_secs(),
                 intent: intent.to_string(),
                 git_head: git_head(cwd),
-                snapshot_epoch: current_snapshot_epoch(),
+                snapshot_epoch: current_snapshot_epoch_for(cwd),
             };
             let body = serde_json::to_string_pretty(&info).unwrap_or_default();
             let _ = f.write_all(body.as_bytes());
