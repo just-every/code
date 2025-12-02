@@ -1312,6 +1312,14 @@ struct BackgroundReviewState {
     branch: String,
     agent_id: Option<String>,
     snapshot: Option<String>,
+    base: Option<GhostCommit>,
+    started_at: std::time::Instant,
+}
+
+#[derive(Clone, Debug)]
+struct PendingAutoReviewRange {
+    base: GhostCommit,
+    defer_until_turn: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1432,6 +1440,9 @@ pub(crate) struct ChatWidget<'a> {
     auto_review_indicator: Option<AutoReviewIndicator>,
     auto_review_notice: Option<AutoReviewNotice>,
     auto_review_baseline: Option<GhostCommit>,
+    auto_review_reviewed_marker: Option<GhostCommit>,
+    pending_auto_review_range: Option<PendingAutoReviewRange>,
+    turn_sequence: u64,
     review_guard: Option<ReviewGuard>,
     background_review_guard: Option<ReviewGuard>,
     processed_auto_review_agents: HashSet<String>,
@@ -5432,6 +5443,9 @@ impl ChatWidget<'_> {
             auto_review_indicator: None,
             auto_review_notice: None,
             auto_review_baseline: None,
+            auto_review_reviewed_marker: None,
+            pending_auto_review_range: None,
+            turn_sequence: 0,
             review_guard: None,
             background_review_guard: None,
             processed_auto_review_agents: HashSet::new(),
@@ -5777,6 +5791,9 @@ impl ChatWidget<'_> {
             auto_review_indicator: None,
             auto_review_notice: None,
             auto_review_baseline: None,
+            auto_review_reviewed_marker: None,
+            pending_auto_review_range: None,
+            turn_sequence: 0,
             review_guard: None,
             background_review_guard: None,
             processed_auto_review_agents: HashSet::new(),
@@ -11812,6 +11829,7 @@ impl ChatWidget<'_> {
                 // This runs once per turn and is intentionally later than
                 // ToolEnd to avoid the earlier regression where we finalized
                 // after every tool call.
+                self.turn_sequence = self.turn_sequence.saturating_add(1);
                 self.turn_had_code_edits = false;
                 self.current_turn_origin = self.pending_turn_origin.take();
                 self.cleared_lingering_execs_this_turn = false;
@@ -25987,6 +26005,8 @@ use code_core::protocol::OrderMeta;
             branch: "auto-review-branch".to_string(),
             agent_id: Some("agent-123".to_string()),
             snapshot: Some("ghost123".to_string()),
+            base: None,
+            started_at: std::time::Instant::now(),
         });
 
         chat.on_background_review_finished(
@@ -26042,6 +26062,8 @@ use code_core::protocol::OrderMeta;
             branch: "auto-review-branch".to_string(),
             agent_id: Some("agent-123".to_string()),
             snapshot: Some("ghost123".to_string()),
+            base: None,
+            started_at: std::time::Instant::now(),
         });
 
         // Agent.result will be parsed; provide structured JSON with findings
@@ -26083,6 +26105,8 @@ use code_core::protocol::OrderMeta;
             branch: "auto-review-branch".to_string(),
             agent_id: None,
             snapshot: Some("ghost123".to_string()),
+            base: None,
+            started_at: std::time::Instant::now(),
         });
 
         let agent = code_core::protocol::AgentInfo {
@@ -26130,6 +26154,8 @@ use code_core::protocol::OrderMeta;
             branch: "auto-review-branch".to_string(),
             agent_id: None,
             snapshot: Some("ghost123".to_string()),
+            base: None,
+            started_at: std::time::Instant::now(),
         });
 
         let agent = code_core::protocol::AgentInfo {
@@ -26160,6 +26186,228 @@ use code_core::protocol::OrderMeta;
             note.contains("[developer]") && note.contains("Merge the worktree") && note.contains("auto-review-branch")
         });
         assert!(queued, "developer merge-hint note should be queued when busy");
+    }
+
+    #[test]
+    fn skipped_auto_review_with_findings_defers_to_next_turn() {
+        let _rt = enter_test_runtime_guard();
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        let launches = Arc::new(AtomicUsize::new(0));
+        let launches_clone = launches.clone();
+        let _stub = AutoReviewStubGuard::install(move || {
+            launches_clone.fetch_add(1, Ordering::SeqCst);
+        });
+
+        chat.config.tui.auto_review_enabled = true;
+        chat.turn_sequence = 1;
+        chat.turn_had_code_edits = true;
+        let pending_base = GhostCommit::new("base-skip".to_string(), None);
+        chat.auto_review_baseline = Some(pending_base.clone());
+
+        chat.background_review = Some(BackgroundReviewState {
+            worktree_path: PathBuf::from("/tmp/wt"),
+            branch: "auto-review-running".to_string(),
+            agent_id: Some("agent-running".to_string()),
+            snapshot: Some("ghost-running".to_string()),
+            base: Some(GhostCommit::new("running-base".to_string(), None)),
+            started_at: Instant::now(),
+        });
+
+        chat.maybe_trigger_auto_review();
+        assert_eq!(launches.load(Ordering::SeqCst), 0, "should skip while review runs");
+        let pending = chat
+            .pending_auto_review_range
+            .as_ref()
+            .expect("pending range queued");
+        assert_eq!(pending.base.id(), pending_base.id());
+        assert_eq!(pending.defer_until_turn, None);
+
+        chat.on_background_review_finished(
+            PathBuf::from("/tmp/wt"),
+            "auto-review-running".to_string(),
+            true,
+            2,
+            Some("found issues".to_string()),
+            None,
+            Some("agent-running".to_string()),
+            Some("ghost-running".to_string()),
+        );
+
+        let pending_after_finish = chat
+            .pending_auto_review_range
+            .as_ref()
+            .expect("pending kept after findings");
+        assert_eq!(pending_after_finish.defer_until_turn, Some(chat.turn_sequence));
+        assert_eq!(launches.load(Ordering::SeqCst), 0, "follow-up deferred to next turn");
+
+        chat.turn_sequence = 2;
+        chat.turn_had_code_edits = true;
+        chat.auto_review_baseline = Some(GhostCommit::new("next-base".to_string(), None));
+
+        chat.maybe_trigger_auto_review();
+        assert_eq!(launches.load(Ordering::SeqCst), 1, "follow-up launched next turn");
+        let running = chat
+            .background_review
+            .as_ref()
+            .expect("follow-up review should be running");
+        assert_eq!(
+            running.base.as_ref().map(|c| c.id()),
+            Some(pending_base.id()),
+            "follow-up should use first skipped base",
+        );
+    }
+
+    #[test]
+    fn skipped_auto_review_clean_runs_immediately() {
+        let _rt = enter_test_runtime_guard();
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        let launches = Arc::new(AtomicUsize::new(0));
+        let launches_clone = launches.clone();
+        let _stub = AutoReviewStubGuard::install(move || {
+            launches_clone.fetch_add(1, Ordering::SeqCst);
+        });
+
+        chat.config.tui.auto_review_enabled = true;
+        chat.turn_sequence = 1;
+        chat.turn_had_code_edits = true;
+        let pending_base = GhostCommit::new("base-clean".to_string(), None);
+        chat.auto_review_baseline = Some(pending_base.clone());
+
+        chat.background_review = Some(BackgroundReviewState {
+            worktree_path: PathBuf::from("/tmp/wt"),
+            branch: "auto-review-running".to_string(),
+            agent_id: Some("agent-running".to_string()),
+            snapshot: Some("ghost-running".to_string()),
+            base: Some(GhostCommit::new("running-base".to_string(), None)),
+            started_at: Instant::now(),
+        });
+
+        chat.maybe_trigger_auto_review();
+        assert_eq!(launches.load(Ordering::SeqCst), 0);
+        assert!(chat.pending_auto_review_range.is_some());
+
+        chat.on_background_review_finished(
+            PathBuf::from("/tmp/wt"),
+            "auto-review-running".to_string(),
+            false,
+            0,
+            None,
+            None,
+            Some("agent-running".to_string()),
+            Some("ghost-running".to_string()),
+        );
+
+        assert_eq!(launches.load(Ordering::SeqCst), 1, "follow-up should start immediately");
+        assert!(chat.pending_auto_review_range.is_none(), "pending should be consumed");
+        let running = chat.background_review.as_ref().expect("follow-up running");
+        assert_eq!(
+            running.base.as_ref().map(|c| c.id()),
+            Some(pending_base.id()),
+            "follow-up should cover skipped base",
+        );
+    }
+
+    #[test]
+    fn multiple_skipped_auto_reviews_collapse_to_first_base() {
+        let _rt = enter_test_runtime_guard();
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        let launches = Arc::new(AtomicUsize::new(0));
+        let launches_clone = launches.clone();
+        let _stub = AutoReviewStubGuard::install(move || {
+            launches_clone.fetch_add(1, Ordering::SeqCst);
+        });
+
+        chat.config.tui.auto_review_enabled = true;
+        chat.turn_sequence = 1;
+        chat.turn_had_code_edits = true;
+        let first_base = GhostCommit::new("base-first".to_string(), None);
+        chat.auto_review_baseline = Some(first_base.clone());
+
+        chat.background_review = Some(BackgroundReviewState {
+            worktree_path: PathBuf::from("/tmp/wt"),
+            branch: "auto-review-running".to_string(),
+            agent_id: Some("agent-running".to_string()),
+            snapshot: Some("ghost-running".to_string()),
+            base: Some(GhostCommit::new("running-base".to_string(), None)),
+            started_at: Instant::now(),
+        });
+
+        chat.maybe_trigger_auto_review();
+        assert_eq!(launches.load(Ordering::SeqCst), 0);
+        let pending = chat
+            .pending_auto_review_range
+            .as_ref()
+            .expect("first pending queued");
+        assert_eq!(pending.base.id(), first_base.id());
+
+        // Second skip while review still running
+        chat.auto_review_baseline = Some(GhostCommit::new("base-second".to_string(), None));
+        chat.turn_had_code_edits = true;
+        chat.maybe_trigger_auto_review();
+
+        let pending_after_second = chat
+            .pending_auto_review_range
+            .as_ref()
+            .expect("pending should persist");
+        assert_eq!(pending_after_second.base.id(), first_base.id());
+
+        chat.on_background_review_finished(
+            PathBuf::from("/tmp/wt"),
+            "auto-review-running".to_string(),
+            false,
+            0,
+            None,
+            None,
+            Some("agent-running".to_string()),
+            Some("ghost-running".to_string()),
+        );
+
+        assert_eq!(launches.load(Ordering::SeqCst), 1, "collapsed follow-up should run once");
+        let running = chat.background_review.as_ref().expect("follow-up running");
+        assert_eq!(running.base.as_ref().map(|c| c.id()), Some(first_base.id()));
+        assert!(chat.pending_auto_review_range.is_none());
+    }
+
+    #[test]
+    fn stale_background_review_is_reclaimed() {
+        let _rt = enter_test_runtime_guard();
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        let launches = Arc::new(AtomicUsize::new(0));
+        let launches_clone = launches.clone();
+        let _stub = AutoReviewStubGuard::install(move || {
+            launches_clone.fetch_add(1, Ordering::SeqCst);
+        });
+
+        chat.config.tui.auto_review_enabled = true;
+        chat.turn_had_code_edits = true;
+        let base = GhostCommit::new("stale-base".to_string(), None);
+        let stale_started = Instant::now()
+            .checked_sub(Duration::from_secs(400))
+            .unwrap_or_else(Instant::now);
+
+        chat.background_review = Some(BackgroundReviewState {
+            worktree_path: PathBuf::from("/tmp/wt"),
+            branch: "auto-review-running".to_string(),
+            agent_id: Some("agent-running".to_string()),
+            snapshot: Some("ghost-running".to_string()),
+            base: Some(base.clone()),
+            started_at: stale_started,
+        });
+
+        chat.maybe_trigger_auto_review();
+
+        assert_eq!(launches.load(Ordering::SeqCst), 1, "stale review should be relaunched");
+        let running = chat.background_review.as_ref().expect("reclaimed review running");
+        assert_eq!(running.base.as_ref().map(|c| c.id()), Some(base.id()));
+        assert!(chat.pending_auto_review_range.is_none());
     }
 
     #[test]
@@ -26222,7 +26470,7 @@ use code_core::protocol::OrderMeta;
     use ratatui::text::Line;
     use ratatui::Terminal;
     use std::collections::HashMap;
-    use std::time::{Duration, SystemTime};
+    use std::time::{Duration, Instant, SystemTime};
 
     use code_core::protocol::{ReviewFinding, ReviewCodeLocation, ReviewLineRange};
 
@@ -29475,27 +29723,98 @@ impl ChatWidget<'_> {
         if !self.config.tui.auto_review_enabled {
             return;
         }
-        if self.background_review.is_some() {
-            return;
-        }
-        if !self.turn_had_code_edits {
+        self.recover_stuck_background_review();
+
+        if !self.turn_had_code_edits && self.pending_auto_review_range.is_none() {
             return;
         }
         if matches!(self.current_turn_origin, Some(TurnOrigin::Developer)) {
             return;
         }
-        if self.is_review_flow_active() {
+
+        if self.pending_auto_review_deferred_for_current_turn() {
             return;
         }
 
-        if self.auto_review_baseline.is_none() {
-            if let Ok(commit) = self.capture_auto_turn_commit("auto review baseline snapshot", None) {
-                self.auto_review_baseline = Some(commit);
+        if self.background_review.is_some() || self.is_review_flow_active() {
+            if let Some(base) = self.take_or_capture_auto_review_baseline() {
+                self.queue_skipped_auto_review(base);
             }
+            return;
         }
 
-        let baseline = self.auto_review_baseline.take();
-        self.launch_background_review(baseline);
+        let base_snapshot = if let Some(base) = self.take_ready_pending_range_base() {
+            Some(base)
+        } else {
+            self.take_or_capture_auto_review_baseline()
+        };
+
+        if let Some(base) = base_snapshot {
+            self.launch_background_review(Some(base));
+        }
+    }
+
+    fn pending_auto_review_deferred_for_current_turn(&self) -> bool {
+        matches!(
+            self.pending_auto_review_range.as_ref(),
+            Some(range)
+                if matches!(range.defer_until_turn, Some(turn) if turn == self.turn_sequence)
+        )
+    }
+
+    fn take_ready_pending_range_base(&mut self) -> Option<GhostCommit> {
+        if let Some(range) = self.pending_auto_review_range.as_ref() {
+            if let Some(turn) = range.defer_until_turn {
+                if turn == self.turn_sequence {
+                    return None;
+                }
+            }
+        }
+        self.pending_auto_review_range.take().map(|range| range.base)
+    }
+
+    fn take_or_capture_auto_review_baseline(&mut self) -> Option<GhostCommit> {
+        if let Some(existing) = self.auto_review_baseline.take() {
+            return Some(existing);
+        }
+        match self.capture_auto_turn_commit("auto review baseline snapshot", None) {
+            Ok(commit) => Some(commit),
+            Err(err) => {
+                tracing::warn!("failed to capture auto review baseline: {err}");
+                self.auto_review_reviewed_marker.clone()
+            }
+        }
+    }
+
+    fn queue_skipped_auto_review(&mut self, base: GhostCommit) {
+        if self.pending_auto_review_range.is_some() {
+            return;
+        }
+        self.pending_auto_review_range = Some(PendingAutoReviewRange {
+            base,
+            defer_until_turn: None,
+        });
+    }
+
+    fn recover_stuck_background_review(&mut self) {
+        const STALE_REVIEW_SECS: u64 = 300;
+        let Some(state) = self.background_review.as_ref() else {
+            return;
+        };
+
+        if state.started_at.elapsed() < Duration::from_secs(STALE_REVIEW_SECS) {
+            return;
+        }
+
+        let base = state.base.clone();
+        let agent_id = state.agent_id.clone();
+        release_background_lock(&agent_id);
+        self.background_review = None;
+        self.background_review_guard = None;
+
+        if let Some(base_commit) = base {
+            self.queue_skipped_auto_review(base_commit);
+        }
     }
 
     fn launch_background_review(&mut self, base_snapshot: Option<GhostCommit>) {
@@ -29507,6 +29826,8 @@ impl ChatWidget<'_> {
             branch: String::new(),
             agent_id: None,
             snapshot: None,
+            base: base_snapshot.clone(),
+            started_at: std::time::Instant::now(),
         });
         self.auto_review_indicator = None;
         self.auto_review_notice = None;
@@ -29919,12 +30240,21 @@ impl ChatWidget<'_> {
         agent_id: Option<String>,
         snapshot: Option<String>,
     ) {
+        let inflight_base = self
+            .background_review
+            .as_ref()
+            .and_then(|state| state.base.clone());
+        let inflight_snapshot = snapshot.clone().or_else(|| {
+            self.background_review
+                .as_ref()
+                .and_then(|state| state.snapshot.clone())
+        });
         // Clear flags up front so subsequent auto reviews can start even if this finishes with an error
         self.background_review = None;
         self.background_review_guard = None;
         release_background_lock(&agent_id);
         let mut developer_note: Option<String> = None;
-        let snapshot_note = snapshot
+        let snapshot_note = inflight_snapshot
             .as_ref()
             .map(|s| format!(" Snapshot {s}."))
             .unwrap_or_default();
@@ -29932,6 +30262,7 @@ impl ChatWidget<'_> {
             .as_ref()
             .map(|id| format!(" Agent #{:.8}.", id))
             .unwrap_or_default();
+        let errored = error.is_some();
         let indicator_status = if let Some(err) = error {
             developer_note = Some(format!(
                 "[developer] Background auto-review failed in worktree '{branch}'. Error: {err}. Worktree path: {}.{snapshot_note}{agent_note}",
@@ -29985,8 +30316,53 @@ impl ChatWidget<'_> {
             }
         }
 
+        self.handle_auto_review_completion_state(
+            has_findings,
+            errored,
+            inflight_base,
+            inflight_snapshot,
+        );
         self.maybe_resume_auto_after_review();
         self.request_redraw();
+    }
+
+    fn handle_auto_review_completion_state(
+        &mut self,
+        has_findings: bool,
+        errored: bool,
+        inflight_base: Option<GhostCommit>,
+        snapshot: Option<String>,
+    ) {
+        let was_skipped = !has_findings && !errored && snapshot.is_none();
+
+        if was_skipped || errored {
+            if let Some(base) = inflight_base {
+                self.queue_skipped_auto_review(base);
+            }
+            return;
+        }
+
+        if has_findings {
+            if let Some(range) = self.pending_auto_review_range.as_mut() {
+                if range.defer_until_turn.is_none() {
+                    range.defer_until_turn = Some(self.turn_sequence);
+                }
+            } else if let Some(base) = inflight_base {
+                self.pending_auto_review_range = Some(PendingAutoReviewRange {
+                    base,
+                    defer_until_turn: Some(self.turn_sequence),
+                });
+            }
+            return;
+        }
+
+        if let Some(id) = snapshot {
+            self.auto_review_reviewed_marker = Some(GhostCommit::new(id, None));
+        }
+
+        if let Some(pending) = self.pending_auto_review_range.take() {
+            self.launch_background_review(Some(pending.base));
+        }
     }
 
     pub(crate) fn set_review_auto_resolve_attempts(&mut self, attempts: u32) {
