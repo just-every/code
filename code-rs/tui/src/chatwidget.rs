@@ -30022,38 +30022,65 @@ impl ChatWidget<'_> {
     fn auto_review_indicator_line(
         status: AutoReviewIndicatorStatus,
         findings: Option<usize>,
-    ) -> Vec<ratatui::text::Span<'static>> {
+    ) -> (&'static str, Vec<ratatui::text::Span<'static>>) {
+        let hint = ratatui::text::Span::styled(
+            " [Ctrl+A] Expand",
+            Style::default().fg(crate::colors::text_dim()),
+        );
+
         match status {
-            AutoReviewIndicatorStatus::Running => {
+            AutoReviewIndicatorStatus::Running => (
+                "•",
                 vec![
                     ratatui::text::Span::styled(
                         "•",
                         Style::default().fg(crate::colors::success()),
                     ),
-                    ratatui::text::Span::raw(" Auto Review Running [Ctrl+A] Show"),
-                ]
-            }
-            AutoReviewIndicatorStatus::Clean => {
-                vec![ratatui::text::Span::raw(
-                    "✔ Auto Review: no errors [Ctrl+A] Show",
-                )]
-            }
+                    ratatui::text::Span::raw(" Auto Review: Running"),
+                    hint,
+                ],
+            ),
+            AutoReviewIndicatorStatus::Clean => (
+                "✔",
+                vec![
+                    ratatui::text::Span::styled(
+                        "✔",
+                        Style::default().fg(crate::colors::success()),
+                    ),
+                    ratatui::text::Span::raw(" Auto Review: No Error"),
+                    hint,
+                ],
+            ),
             AutoReviewIndicatorStatus::Fixed => {
                 let text = if let Some(count) = findings {
                     let plural = if count == 1 { "issue" } else { "issues" };
-                    format!(
-                        "⚠ Auto Review: {count} {plural} fixed [Ctrl+A] Show"
-                    )
+                    format!(" Auto Review: {count} {plural} Fixed")
                 } else {
-                    "⚠ Auto Review: issues fixed [Ctrl+A] Show".to_string()
+                    " Auto Review: Issues Fixed".to_string()
                 };
-                vec![ratatui::text::Span::raw(text)]
+                (
+                    "⚠",
+                    vec![
+                        ratatui::text::Span::styled(
+                            "⚠",
+                            Style::default().fg(crate::colors::warning()),
+                        ),
+                        ratatui::text::Span::raw(text),
+                        hint,
+                    ],
+                )
             }
-            AutoReviewIndicatorStatus::Failed => {
-                vec![ratatui::text::Span::raw(
-                    "✖ Auto Review: issues not patched [Ctrl+A] Show",
-                )]
-            }
+            AutoReviewIndicatorStatus::Failed => (
+                "✖",
+                vec![
+                    ratatui::text::Span::styled(
+                        "✖",
+                        Style::default().fg(crate::colors::error()),
+                    ),
+                    ratatui::text::Span::raw(" Auto Review: Failed"),
+                    hint,
+                ],
+            ),
         }
     }
 
@@ -30103,13 +30130,12 @@ impl ChatWidget<'_> {
             return;
         };
 
-        let spans = Self::auto_review_indicator_line(status, findings);
+        let (gutter, spans) = Self::auto_review_indicator_line(status, findings);
         let line = ratatui::text::Line::from(spans);
-        // Notice cells treat the first line as a header; prepend a blank so the
-        // indicator content remains in the body.
+        // Keep the indicator body-only (no header) so it sits directly under the assistant reply.
         let state = history_cell::plain_message_state_from_lines(
-            vec![ratatui::text::Line::raw(""), line],
-            history_cell::HistoryCellType::Notice,
+            vec![line],
+            history_cell::HistoryCellType::Plain,
         );
 
         // If an indicator already exists, replace it in place.
@@ -30119,7 +30145,7 @@ impl ChatWidget<'_> {
                 .iter()
                 .position(|maybe| maybe.map(|id| id == indicator.history_id).unwrap_or(false))
             {
-                let cell = crate::history_cell::PlainHistoryCell::from_state(state.clone());
+                let cell = crate::history_cell::AutoReviewStatusCell::new(state.clone(), gutter);
                 self.history_replace_at(ind_idx, Box::new(cell));
                 return;
             }
@@ -30135,7 +30161,8 @@ impl ChatWidget<'_> {
                 seq: 0,
             })));
         let insert_key = Self::order_key_successor(assistant_key);
-        let pos = self.history_insert_plain_state_with_key(state, insert_key, "auto-review-indicator");
+        let cell = crate::history_cell::AutoReviewStatusCell::new(state, gutter);
+        let pos = self.history_insert_with_key_global_tagged(Box::new(cell), insert_key, "auto-review-indicator", None);
         if let Some(Some(id)) = self.history_cell_ids.get(pos) {
             self.auto_review_indicator = Some(AutoReviewIndicator { history_id: *id });
         }
@@ -34396,6 +34423,19 @@ impl WidgetRef for &ChatWidget<'_> {
                             crate::colors::success()
                         }
                     } else {
+                        if item
+                            .as_any()
+                            .downcast_ref::<crate::history_cell::AutoReviewStatusCell>()
+                            .is_some()
+                        {
+                            match symbol {
+                                "•" => crate::colors::success(),
+                                "✔" => crate::colors::success(),
+                                "✖" => crate::colors::error(),
+                                "⚠" => crate::colors::warning(),
+                                _ => crate::colors::text_dim(),
+                            }
+                        } else {
                         match symbol {
                             "›" => crate::colors::text(),        // user
                             "⋮" => crate::colors::primary(),     // thinking
@@ -34405,6 +34445,7 @@ impl WidgetRef for &ChatWidget<'_> {
                             "✖" => crate::colors::error(),       // error
                             "★" => crate::colors::text_bright(), // notice/popular
                             _ => crate::colors::text_dim(),
+                        }
                         }
                     };
 

@@ -308,6 +308,82 @@ impl HistoryCell for PlainHistoryCell {
     }
 }
 
+pub(crate) struct AutoReviewStatusCell {
+    inner: PlainHistoryCell,
+    gutter: &'static str,
+}
+
+impl AutoReviewStatusCell {
+    pub(crate) fn new(state: PlainMessageState, gutter: &'static str) -> Self {
+        Self {
+            inner: PlainHistoryCell::from_state(state),
+            gutter,
+        }
+    }
+}
+
+impl HistoryCell for AutoReviewStatusCell {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn kind(&self) -> HistoryCellType {
+        self.inner.kind()
+    }
+
+    fn display_lines(&self) -> Vec<Line<'static>> {
+        self.inner.display_lines()
+    }
+
+    fn display_lines_trimmed(&self) -> Vec<Line<'static>> {
+        self.inner.display_lines_trimmed()
+    }
+
+    fn desired_height(&self, width: u16) -> u16 {
+        self.inner.desired_height(width)
+    }
+
+    fn render_with_skip(&self, area: Rect, buf: &mut Buffer, skip_rows: u16) {
+        self.inner.render_with_skip(area, buf, skip_rows)
+    }
+
+    fn has_custom_render(&self) -> bool {
+        self.inner.has_custom_render()
+    }
+
+    fn custom_render(&self, area: Rect, buf: &mut Buffer) {
+        self.inner.custom_render(area, buf)
+    }
+
+    fn custom_render_with_skip(&self, area: Rect, buf: &mut Buffer, skip_rows: u16) {
+        self.inner.custom_render_with_skip(area, buf, skip_rows)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.inner.is_animating()
+    }
+
+    fn is_loading_cell(&self) -> bool {
+        self.inner.is_loading_cell()
+    }
+
+    fn trigger_fade(&self) {
+        self.inner.trigger_fade()
+    }
+
+    fn should_remove(&self) -> bool {
+        self.inner.should_remove()
+    }
+
+    fn gutter_symbol(&self) -> Option<&'static str> {
+        Some(self.gutter)
+    }
+}
+
 struct PlainMessageStateBuilder;
 
 impl PlainMessageStateBuilder {

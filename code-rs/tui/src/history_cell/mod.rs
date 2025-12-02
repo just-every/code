@@ -145,6 +145,7 @@ pub(crate) use plain::{
     plain_message_state_from_paragraphs,
     plain_role_for_kind,
     PlainHistoryCell,
+    AutoReviewStatusCell,
 };
 pub(crate) use stream::{stream_lines_from_state, StreamingContentCell};
 pub(crate) use upgrade::UpgradeNoticeCell;
