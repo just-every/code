@@ -25558,7 +25558,7 @@ async fn run_background_review(
     turn_context: Option<String>,
 ) {
     // Best-effort: clean up any stale lock left by a cancelled review process.
-    let _ = code_core::review_coord::clear_stale_lock_if_dead();
+    let _ = code_core::review_coord::clear_stale_lock_if_dead(Some(&config.cwd));
 
     // If another review is in-flight, skip quietly and report a non-fatal status.
     let review_guard = match try_acquire_lock("background-review", &config.cwd) {

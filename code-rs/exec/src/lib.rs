@@ -549,7 +549,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
     let mut _review_guard: Option<code_core::review_coord::ReviewGuard> = None;
 
     // Clear stale review lock in case a prior process crashed.
-    let _ = clear_stale_lock_if_dead();
+    let _ = clear_stale_lock_if_dead(Some(&config.cwd));
 
     let _initial_prompt_task_id = if let Some(mut review_request) = review_request.clone() {
         // Cross-process review coordination

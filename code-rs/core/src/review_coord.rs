@@ -29,27 +29,27 @@ fn state_dir() -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
-fn epoch_path(scope: Option<&Path>) -> std::io::Result<PathBuf> {
+fn scoped_dir(scope: Option<&Path>) -> std::io::Result<PathBuf> {
+    let mut dir = state_dir()?;
     if let Some(scope) = scope {
         let normalized_scope = scope
             .canonicalize()
             .unwrap_or_else(|_| scope.to_path_buf());
-        let mut dir = state_dir()?;
         let key = crc32fast::hash(normalized_scope.to_string_lossy().as_bytes());
         dir.push(format!("repo-{key:08x}"));
         fs::create_dir_all(&dir)?;
-        let mut p = dir;
-        p.push(EPOCH_FILENAME);
-        Ok(p)
-    } else {
-        let mut p = state_dir()?;
-        p.push(EPOCH_FILENAME);
-        Ok(p)
     }
+    Ok(dir)
 }
 
-fn lock_path() -> std::io::Result<PathBuf> {
-    let mut p = state_dir()?;
+fn epoch_path(scope: Option<&Path>) -> std::io::Result<PathBuf> {
+    let mut dir = scoped_dir(scope)?;
+    dir.push(EPOCH_FILENAME);
+    Ok(dir)
+}
+
+fn lock_path(scope: Option<&Path>) -> std::io::Result<PathBuf> {
+    let mut p = scoped_dir(scope)?;
     p.push(LOCK_FILENAME);
     Ok(p)
 }
@@ -127,7 +127,7 @@ fn git_head(cwd: &Path) -> Option<String> {
 }
 
 pub fn try_acquire_lock(intent: &str, cwd: &Path) -> std::io::Result<Option<ReviewGuard>> {
-    let lock_path = lock_path()?;
+    let lock_path = lock_path(Some(cwd))?;
     let file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -154,8 +154,8 @@ pub fn try_acquire_lock(intent: &str, cwd: &Path) -> std::io::Result<Option<Revi
     }
 }
 
-pub fn read_lock_info() -> Option<ReviewLockInfo> {
-    let path = lock_path().ok()?;
+pub fn read_lock_info(scope: Option<&Path>) -> Option<ReviewLockInfo> {
+    let path = lock_path(scope).ok()?;
     let mut buf = String::new();
     File::open(path).ok()?.read_to_string(&mut buf).ok()?;
     serde_json::from_str(&buf).ok()
@@ -184,15 +184,15 @@ fn pid_alive(_pid: u32) -> bool {
 
 /// Remove a stale review lock if the recorded pid is no longer running.
 /// Returns true if a stale lock was cleared.
-pub fn clear_stale_lock_if_dead() -> std::io::Result<bool> {
-    let info = match read_lock_info() {
+pub fn clear_stale_lock_if_dead(scope: Option<&Path>) -> std::io::Result<bool> {
+    let info = match read_lock_info(scope) {
         Some(i) => i,
         None => return Ok(false),
     };
     if pid_alive(info.pid) {
         return Ok(false);
     }
-    if let Ok(path) = lock_path() {
+    if let Ok(path) = lock_path(scope) {
         let _ = fs::remove_file(path);
         return Ok(true);
     }
@@ -245,7 +245,7 @@ mod tests {
         bump_snapshot_epoch();
         let current = current_snapshot_epoch();
         let guard = try_acquire_lock("first", cwd).unwrap().expect("lock available");
-        let info = read_lock_info().expect("lock info present");
+        let info = read_lock_info(Some(cwd)).expect("lock info present");
         assert_eq!(info.snapshot_epoch, current);
         drop(guard);
 
@@ -253,7 +253,7 @@ mod tests {
         let next = current_snapshot_epoch();
         assert!(next > current);
         let guard2 = try_acquire_lock("second", cwd).unwrap().expect("lock reacquired");
-        let info2 = read_lock_info().expect("lock info present");
+        let info2 = read_lock_info(Some(cwd)).expect("lock info present");
         assert_eq!(info2.snapshot_epoch, next);
         drop(guard2);
     }
@@ -265,13 +265,13 @@ mod tests {
         let cwd = dir.path();
 
         let guard = try_acquire_lock("stale-check", cwd).unwrap().expect("lock available");
-        let initial = read_lock_info().expect("lock info present");
+        let initial = read_lock_info(Some(cwd)).expect("lock info present");
         bump_snapshot_epoch();
         let now = current_snapshot_epoch();
 
         // The on-disk lock should still show the snapshot_epoch captured at acquisition time,
         // allowing callers to detect that the world has moved on while the lock holder runs.
-        let still_recorded = read_lock_info().expect("lock info present");
+        let still_recorded = read_lock_info(Some(cwd)).expect("lock info present");
         assert_eq!(still_recorded.snapshot_epoch, initial.snapshot_epoch);
         assert!(now > initial.snapshot_epoch);
         drop(guard);
@@ -301,7 +301,7 @@ mod tests {
 
         let before = current_snapshot_epoch();
         let guard = try_acquire_lock("exec", cwd).unwrap().unwrap();
-        let captured = read_lock_info().unwrap().snapshot_epoch;
+        let captured = read_lock_info(Some(cwd)).unwrap().snapshot_epoch;
         assert_eq!(captured, before);
 
         bump_snapshot_epoch(); // simulate git mutation while lock holder runs
@@ -329,7 +329,7 @@ mod tests {
         // A resume that still uses the old snapshot must be treated as stale
         assert_ne!(snapshot_epoch, resumed);
         let guard = try_acquire_lock("resume-review", cwd).unwrap().unwrap();
-        let info = read_lock_info().unwrap();
+        let info = read_lock_info(Some(cwd)).unwrap();
         assert_eq!(info.snapshot_epoch, resumed);
         drop(guard);
     }
