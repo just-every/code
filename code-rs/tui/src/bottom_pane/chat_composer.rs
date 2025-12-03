@@ -20,6 +20,7 @@ use code_protocol::custom_prompts::PROMPTS_CMD_PREFIX;
 
 use crate::app_event_sender::AppEventSender;
 use crate::auto_drive_style::{BorderGradient, ComposerStyle};
+use crate::chatwidget::AutoReviewIndicatorStatus;
 use crate::thread_spawner;
 use crate::bottom_pane::textarea::TextArea;
 use crate::bottom_pane::textarea::TextAreaState;
@@ -34,6 +35,8 @@ use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 // Dynamic placeholder rendered when the composer is empty.
 /// If the pasted content exceeds this number of characters, replace it with a
@@ -93,6 +96,19 @@ struct TokenUsageInfo {
     initial_prompt_tokens: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AutoReviewPhase {
+    Reviewing,
+    Resolving,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AutoReviewFooterStatus {
+    pub(crate) status: AutoReviewIndicatorStatus,
+    pub(crate) findings: Option<usize>,
+    pub(crate) phase: AutoReviewPhase,
+}
+
 // Format an integer with thousands separators (e.g., 125,654).
 fn format_with_thousands(n: u64) -> String {
     let s = n.to_string();
@@ -140,6 +156,8 @@ pub(crate) struct ChatComposer {
     footer_notice: Option<(String, std::time::Instant)>,
     // Persistent hint for specific modes (e.g., standard terminal mode)
     standard_terminal_hint: Option<String>,
+    // Auto Review status displayed in the footer
+    auto_review_status: Option<AutoReviewFooterStatus>,
     // Persistent/ephemeral access-mode indicator shown on the left
     access_mode_label: Option<String>,
     access_mode_label_expiry: Option<std::time::Instant>,
@@ -208,6 +226,7 @@ impl ChatComposer {
             custom_prompts: Vec::new(),
             footer_notice: None,
             standard_terminal_hint: None,
+            auto_review_status: None,
             access_mode_label: None,
             access_mode_label_expiry: None,
             access_mode_hint_expiry: None,
@@ -227,6 +246,15 @@ impl ChatComposer {
 
     pub fn set_using_chatgpt_auth(&mut self, using: bool) {
         self.using_chatgpt_auth = using;
+    }
+
+    pub(crate) fn set_auto_review_status(&mut self, status: Option<AutoReviewFooterStatus>) {
+        self.auto_review_status = status;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn auto_review_status(&self) -> Option<AutoReviewFooterStatus> {
+        self.auto_review_status
     }
 
     /// Returns true if the input starts with a slash command and the cursor
@@ -429,7 +457,9 @@ impl ChatComposer {
         let lower = technical_message.to_lowercase();
 
         // Auto Drive manual edit indicator
-        if lower.contains("auto drive goal") {
+        if lower.contains("auto review") {
+            "Auto Review".to_string()
+        } else if lower.contains("auto drive goal") {
             "Auto Drive Goal".to_string()
         } else if lower.contains("auto drive") {
             "Auto Drive".to_string()
@@ -2097,6 +2127,83 @@ impl ChatComposer {
         matches!(normalized, "Esc" | "Enter" | "Tab" | "Space" | "Backspace")
     }
 
+    fn auto_review_footer_spans(status: AutoReviewFooterStatus) -> Vec<Span<'static>> {
+        let key_hint_style = Style::default().fg(crate::colors::function());
+        let label_style = Style::default().fg(crate::colors::text_dim());
+
+        let hint_spans = vec![
+            Span::from("  •  ").style(label_style),
+            Span::styled("Ctrl+A", key_hint_style),
+            Span::from(" show agents").style(label_style),
+        ];
+
+        match status.status {
+            AutoReviewIndicatorStatus::Running => {
+                let phase_label = match status.phase {
+                    AutoReviewPhase::Resolving => "Auto Review: Resolving",
+                    AutoReviewPhase::Reviewing => "Auto Review: Checking",
+                };
+                let now_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis();
+                let phase = (now_ms % 1200) as f32 / 1200.0;
+                let pulse = (std::f32::consts::PI * 2.0 * phase).sin();
+                let fade = 0.5 + 0.5 * pulse;
+                let fade_t = 0.65 - 0.35 * fade;
+                let bullet_fg = crate::colors::mix_toward(
+                    crate::colors::success(),
+                    crate::colors::background(),
+                    fade_t,
+                );
+                let mut spans = vec![
+                    Span::from(" "),
+                    Span::styled("•", Style::default().fg(bullet_fg)),
+                    Span::from(" "),
+                    Span::styled(phase_label, Style::default().fg(crate::colors::success())),
+                ];
+                spans.extend(hint_spans);
+                spans
+            }
+            AutoReviewIndicatorStatus::Clean => {
+                let mut spans = vec![
+                    Span::from(" "),
+                    Span::styled("✔", Style::default().fg(crate::colors::success())),
+                    Span::from(" "),
+                    Span::styled("Auto Review: Correct", Style::default().fg(crate::colors::success())),
+                ];
+                spans.extend(hint_spans);
+                spans
+            }
+            AutoReviewIndicatorStatus::Fixed => {
+                let text = if let Some(count) = status.findings {
+                    let plural = if count == 1 { "Issue" } else { "Issues" };
+                    format!("Auto Review: {count} {plural} Fixed")
+                } else {
+                    "Auto Review: Issues Fixed".to_string()
+                };
+                let mut spans = vec![
+                    Span::from(" "),
+                    Span::styled("✔", Style::default().fg(crate::colors::success())),
+                    Span::from(" "),
+                    Span::styled(text, Style::default().fg(crate::colors::success())),
+                ];
+                spans.extend(hint_spans);
+                spans
+            }
+            AutoReviewIndicatorStatus::Failed => {
+                let mut spans = vec![
+                    Span::from(" "),
+                    Span::styled("✖", Style::default().fg(crate::colors::error())),
+                    Span::from(" "),
+                    Span::styled("Auto Review: Failed", Style::default().fg(crate::colors::error())),
+                ];
+                spans.extend(hint_spans);
+                spans
+            }
+        }
+    }
+
     pub(crate) fn footer_height(&self) -> u16 {
         if self.render_mode == ComposerRenderMode::FooterOnly {
             return if self.standard_terminal_hint.is_some() { 1 } else { 0 };
@@ -2171,7 +2278,17 @@ impl ChatComposer {
                     return;
                 }
 
-                let mut left_spans: Vec<Span> = vec![Span::from("  ")];
+                let mut left_spans: Vec<Span> = Vec::new();
+                if let Some(status) = self.auto_review_status {
+                    left_spans.extend(Self::auto_review_footer_spans(status));
+                    if self.auto_drive_active {
+                        left_spans.push(
+                            Span::from("  •  ")
+                                .style(Style::default().fg(crate::colors::text_dim())),
+                        );
+                    }
+                }
+                let primary_left = left_spans.clone();
                 let mut right_spans: Vec<Span<'static>> = Vec::new();
 
                 let show_access_label = if let Some(until) = self.access_mode_label_expiry {
@@ -2380,6 +2497,14 @@ impl ChatComposer {
                         break;
                     }
                     hint_spans = build_hints(include_reasoning, include_diff);
+                }
+
+                if self.auto_review_status.is_some()
+                    && left_len + combined_len(&hint_spans, &token_spans, &auth_spans) + trailing_pad
+                        > total_width
+                {
+                    left_spans = primary_left.clone();
+                    left_len = left_spans.iter().map(|s| s.content.chars().count()).sum();
                 }
 
                 if !hint_spans.is_empty() {
@@ -2682,4 +2807,47 @@ fn lerp_gradient_color(gradient: BorderGradient, ratio: f32) -> Color {
         (a + (b - a) * clamped).round().clamp(0.0, 255.0) as u8
     };
     Color::Rgb(mix(lr, rr), mix(lg, rg), mix(lb, rb))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_event::AppEvent;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    #[test]
+    fn auto_review_status_stays_left_with_auto_drive_footer() {
+        let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+        let app_tx = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(true, app_tx, true, false);
+
+        composer.auto_drive_active = true;
+        composer.standard_terminal_hint = Some("Esc stop\tCtrl+S settings".to_string());
+        composer.set_auto_review_status(Some(AutoReviewFooterStatus {
+            status: AutoReviewIndicatorStatus::Running,
+            findings: None,
+            phase: AutoReviewPhase::Reviewing,
+        }));
+
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 64,
+            height: 1,
+        };
+        let mut buf = Buffer::empty(area);
+        composer.render_footer(area, &mut buf);
+
+        let line: String = (0..area.width)
+            .map(|x| buf[(area.x + x, area.y)].symbol.clone())
+            .collect();
+
+        let auto_idx = line
+            .find("Auto Review")
+            .expect("footer should show auto review text");
+        let esc_idx = line.find("Esc stop").unwrap_or(line.len());
+
+        assert!(auto_idx < esc_idx, "Auto Review status should be left-most");
+    }
 }

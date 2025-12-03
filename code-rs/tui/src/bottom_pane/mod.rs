@@ -69,7 +69,7 @@ pub(crate) enum CancellationEvent {
     Handled,
 }
 
-pub(crate) use chat_composer::ChatComposer;
+pub(crate) use chat_composer::{AutoReviewFooterStatus, AutoReviewPhase, ChatComposer};
 pub(crate) use chat_composer::InputResult;
 pub(crate) use auto_coordinator_view::{
     AutoActiveViewModel,
@@ -584,6 +584,16 @@ impl BottomPane<'_> {
 
     pub(crate) fn standard_terminal_hint(&self) -> Option<&str> {
         self.composer.standard_terminal_hint()
+    }
+
+    pub(crate) fn set_auto_review_status(&mut self, status: Option<AutoReviewFooterStatus>) {
+        self.composer.set_auto_review_status(status);
+        self.request_redraw();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn auto_review_status(&self) -> Option<AutoReviewFooterStatus> {
+        self.composer.auto_review_status()
     }
 
     pub(crate) fn show_ctrl_c_quit_hint(&mut self) {

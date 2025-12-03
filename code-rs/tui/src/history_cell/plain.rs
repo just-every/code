@@ -13,6 +13,7 @@ use crate::history::state::{
     TextEmphasis,
     TextTone,
 };
+use crate::colors;
 use crate::theme::{current_theme, Theme};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -53,6 +54,17 @@ pub(crate) struct PlainHistoryCell {
 }
 
 impl PlainHistoryCell {
+    fn is_auto_review_notice(&self) -> bool {
+        self.state
+            .header()
+            .map(|h| h.label.to_lowercase().contains("auto review"))
+            .unwrap_or(false)
+    }
+
+    fn auto_review_bg() -> ratatui::style::Color {
+        // Blend success toward background for a light tint similar to assistant cards
+        colors::mix_toward(colors::success(), colors::background(), 0.82)
+    }
     pub(crate) fn from_state(state: PlainMessageState) -> Self {
         let mut kind = history_cell_kind_from_plain(state.kind);
         if kind == HistoryCellType::User {
@@ -125,9 +137,11 @@ impl PlainHistoryCell {
             };
         }
 
+        let is_auto_review = self.is_auto_review_notice();
         let cell_bg = match self.state.kind {
             HistoryCellType::Assistant => crate::colors::assistant_bg(),
             HistoryCellType::CompactionSummary => crate::colors::background(),
+            _ if is_auto_review => Self::auto_review_bg(),
             _ => crate::colors::background(),
         };
         let bg_style = Style::default().bg(cell_bg).fg(crate::colors::text());
@@ -135,10 +149,17 @@ impl PlainHistoryCell {
         let trimmed_lines = self.display_lines_trimmed();
         let text = Text::from(trimmed_lines.clone());
         let paragraph = Paragraph::new(text).wrap(Wrap { trim: false });
-        let height: u16 = paragraph
+
+        let pad_top = if is_auto_review { 1 } else { 0 };
+        let pad_bottom = if is_auto_review { 1 } else { 0 };
+
+        let inner_height: u16 = paragraph
             .line_count(effective_width)
             .try_into()
             .unwrap_or(0);
+        let height = inner_height
+            .saturating_add(pad_top)
+            .saturating_add(pad_bottom);
 
         if height == 0 {
             return PlainLayoutCache {
@@ -152,7 +173,8 @@ impl PlainHistoryCell {
         let render_height = height.max(1);
         let render_area = Rect::new(0, 0, requested_width, render_height);
         let mut buffer = Buffer::empty(render_area);
-        fill_rect(&mut buffer, render_area, Some(' '), bg_style);
+        // Paint full cell (including padding) with the cell background so tint extends through padding.
+        fill_rect(&mut buffer, render_area, Some(' '), Style::default().bg(cell_bg).fg(crate::colors::text()));
 
         let paragraph_lines = Text::from(trimmed_lines);
         if matches!(self.state.kind, HistoryCellType::User) {
@@ -171,11 +193,22 @@ impl PlainHistoryCell {
                 .render(render_area, &mut buffer);
         } else {
             let block = Block::default().style(Style::default().bg(cell_bg));
+            let inner_area = if pad_top + pad_bottom < render_height {
+                Rect::new(
+                    render_area.x,
+                    render_area.y.saturating_add(pad_top),
+                    render_area.width,
+                    render_height.saturating_sub(pad_top + pad_bottom),
+                )
+            } else {
+                render_area
+            };
+
             Paragraph::new(paragraph_lines)
                 .block(block)
                 .wrap(Wrap { trim: false })
                 .style(Style::default().bg(cell_bg))
-                .render(render_area, &mut buffer);
+                .render(inner_area, &mut buffer);
         }
 
         PlainLayoutCache {
@@ -214,6 +247,16 @@ impl HistoryCell for PlainHistoryCell {
 
     fn kind(&self) -> HistoryCellType {
         self.state.kind
+    }
+
+    fn gutter_symbol(&self) -> Option<&'static str> {
+        if let Some(header) = self.state.header() {
+            let label = header.label.trim().to_lowercase();
+            if label == "auto review" {
+                return Some("⮂");
+            }
+        }
+        super::gutter_symbol_for_kind(self.kind())
     }
 
     fn display_lines(&self) -> Vec<Line<'static>> {
@@ -258,11 +301,13 @@ impl HistoryCell for PlainHistoryCell {
             requested_width
         };
 
+        let is_auto_review = self.is_auto_review_notice();
         let cell_bg = match self.state.kind {
             HistoryCellType::Assistant => crate::colors::assistant_bg(),
+            _ if is_auto_review => Self::auto_review_bg(),
             _ => crate::colors::background(),
         };
-        if matches!(self.state.kind, HistoryCellType::Assistant) {
+        if matches!(self.state.kind, HistoryCellType::Assistant) || is_auto_review {
             let bg_style = Style::default().bg(cell_bg).fg(crate::colors::text());
             fill_rect(buf, area, Some(' '), bg_style);
         }
@@ -307,83 +352,6 @@ impl HistoryCell for PlainHistoryCell {
         trim_empty_lines(self.display_lines())
     }
 }
-
-pub(crate) struct AutoReviewStatusCell {
-    inner: PlainHistoryCell,
-    gutter: &'static str,
-}
-
-impl AutoReviewStatusCell {
-    pub(crate) fn new(state: PlainMessageState, gutter: &'static str) -> Self {
-        Self {
-            inner: PlainHistoryCell::from_state(state),
-            gutter,
-        }
-    }
-}
-
-impl HistoryCell for AutoReviewStatusCell {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-
-    fn kind(&self) -> HistoryCellType {
-        self.inner.kind()
-    }
-
-    fn display_lines(&self) -> Vec<Line<'static>> {
-        self.inner.display_lines()
-    }
-
-    fn display_lines_trimmed(&self) -> Vec<Line<'static>> {
-        self.inner.display_lines_trimmed()
-    }
-
-    fn desired_height(&self, width: u16) -> u16 {
-        self.inner.desired_height(width)
-    }
-
-    fn render_with_skip(&self, area: Rect, buf: &mut Buffer, skip_rows: u16) {
-        self.inner.render_with_skip(area, buf, skip_rows)
-    }
-
-    fn has_custom_render(&self) -> bool {
-        self.inner.has_custom_render()
-    }
-
-    fn custom_render(&self, area: Rect, buf: &mut Buffer) {
-        self.inner.custom_render(area, buf)
-    }
-
-    fn custom_render_with_skip(&self, area: Rect, buf: &mut Buffer, skip_rows: u16) {
-        self.inner.custom_render_with_skip(area, buf, skip_rows)
-    }
-
-    fn is_animating(&self) -> bool {
-        self.inner.is_animating()
-    }
-
-    fn is_loading_cell(&self) -> bool {
-        self.inner.is_loading_cell()
-    }
-
-    fn trigger_fade(&self) {
-        self.inner.trigger_fade()
-    }
-
-    fn should_remove(&self) -> bool {
-        self.inner.should_remove()
-    }
-
-    fn gutter_symbol(&self) -> Option<&'static str> {
-        Some(self.gutter)
-    }
-}
-
 struct PlainMessageStateBuilder;
 
 impl PlainMessageStateBuilder {

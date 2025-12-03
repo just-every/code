@@ -3,7 +3,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -13,7 +13,7 @@ use futures_util::{SinkExt, StreamExt};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::time::sleep;
+use tokio::time::{sleep, sleep_until, Instant};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
@@ -37,6 +37,9 @@ struct BridgeMeta {
 
 const HEARTBEAT_STALE_MS: i64 = 20_000;
 const SUBSCRIPTION_OVERRIDE_FILE: &str = "code-bridge.subscription.json";
+const BATCH_WINDOW: Duration = Duration::from_secs(3);
+const MAX_EVENTS_PER_BATCH: usize = 50;
+const MAX_EVENT_SUMMARY_CHARS: usize = 1200;
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -62,6 +65,13 @@ static CONTROL_SENDER: Lazy<Mutex<Option<tokio::sync::mpsc::UnboundedSender<Stri
     Lazy::new(|| Mutex::new(None));
 static LAST_OVERRIDE_FINGERPRINT: Lazy<Mutex<Option<u64>>> = Lazy::new(|| Mutex::new(None));
 static BRIDGE_HINT_EMITTED: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false));
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BridgeBatchEvent {
+    summary: String,
+    level: Option<String>,
+    truncated: bool,
+}
 
 fn default_levels() -> Vec<String> {
     vec!["errors".to_string()]
@@ -124,6 +134,161 @@ fn normalise_vec(values: Vec<String>) -> Vec<String> {
     vals.sort();
     vals.dedup();
     vals
+}
+
+fn parse_level(raw: &str) -> Option<String> {
+    serde_json::from_str::<Value>(raw)
+        .ok()
+        .and_then(|val| {
+            val.get("level")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_lowercase())
+                .or_else(|| {
+                    val.get("type")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_lowercase())
+                })
+        })
+}
+
+fn is_error_level(level: &str) -> bool {
+    matches!(level, "error" | "errors" | "err" | "fatal" | "critical" | "panic")
+}
+
+fn truncate_summary(text: &str) -> (String, bool) {
+    let mut chars = text.chars();
+    let truncated: String = chars.by_ref().take(MAX_EVENT_SUMMARY_CHARS).collect();
+    if text.chars().count() > MAX_EVENT_SUMMARY_CHARS {
+        let remaining = text.chars().count().saturating_sub(MAX_EVENT_SUMMARY_CHARS);
+        (format!("{}... [truncated {remaining} chars]", truncated), true)
+    } else {
+        (truncated, false)
+    }
+}
+
+fn summarize_event(raw: &str) -> BridgeBatchEvent {
+    let level = parse_level(raw);
+    let summary = summarize(raw);
+    let (summary, truncated) = truncate_summary(&summary);
+
+    BridgeBatchEvent {
+        summary,
+        level,
+        truncated,
+    }
+}
+
+#[derive(Debug)]
+struct CoalescedBatch {
+    entries: Vec<(String, usize)>,
+    total_events: usize,
+    truncated_events: usize,
+    dropped_events: usize,
+    saw_error: bool,
+}
+
+fn coalesce_events(events: Vec<BridgeBatchEvent>) -> CoalescedBatch {
+    let mut entries: Vec<(String, usize)> = Vec::new();
+    let mut truncated_events = 0;
+    let mut dropped_events = 0;
+    let mut saw_error = false;
+
+    for event in events {
+        let BridgeBatchEvent {
+            summary,
+            level,
+            truncated,
+        } = event;
+
+        if truncated {
+            truncated_events += 1;
+        }
+
+        if let Some(level) = level.as_deref() {
+            if is_error_level(level) {
+                saw_error = true;
+            }
+        }
+
+        if let Some((_, count)) = entries.iter_mut().find(|(msg, _)| msg == &summary) {
+            *count += 1;
+            continue;
+        }
+
+        if entries.len() < MAX_EVENTS_PER_BATCH {
+            entries.push((summary, 1));
+        } else {
+            dropped_events += 1;
+        }
+    }
+
+    let total_events = entries.iter().map(|(_, count)| *count).sum::<usize>() + dropped_events;
+
+    CoalescedBatch {
+        entries,
+        total_events,
+        truncated_events,
+        dropped_events,
+        saw_error,
+    }
+}
+
+fn format_batch_message(batch: &CoalescedBatch) -> String {
+    if batch.entries.is_empty() {
+        return "(no bridge events)".to_string();
+    }
+
+    let mut lines = Vec::new();
+    let header = if batch.total_events == 1 {
+        "Code Bridge event".to_string()
+    } else {
+        format!(
+            "Code Bridge events ({} in last {}s)",
+            batch.total_events,
+            BATCH_WINDOW.as_secs()
+        )
+    };
+    lines.push(header);
+
+    for (msg, count) in batch.entries.iter() {
+        let prefix = if *count > 1 {
+            format!("[{count}x] ")
+        } else {
+            String::new()
+        };
+        let indented = msg.replace('\n', "\n  ");
+        lines.push(format!("- {}{}", prefix, indented));
+    }
+
+    if batch.dropped_events > 0 {
+        lines.push(format!(
+            "(dropped {} events beyond batch limit of {})",
+            batch.dropped_events, MAX_EVENTS_PER_BATCH
+        ));
+    }
+
+    if batch.truncated_events > 0 {
+        lines.push(format!(
+            "(truncated {} event bodies to {} chars)",
+            batch.truncated_events, MAX_EVENT_SUMMARY_CHARS
+        ));
+    }
+
+    lines.join("\n")
+}
+
+async fn flush_batch(session: &Arc<Session>, events: Vec<BridgeBatchEvent>) {
+    let batch = coalesce_events(events);
+    if batch.entries.is_empty() {
+        return;
+    }
+
+    let message = format_batch_message(&batch);
+    session.record_bridge_event(message).await;
+
+    if batch.saw_error {
+        session.start_pending_only_turn_if_idle().await;
+    }
 }
 
 pub(crate) fn merge_effective_subscription(state: &SubscriptionState) -> Subscription {
@@ -272,7 +437,7 @@ pub(crate) fn spawn_bridge_listener(session: std::sync::Arc<Session>) {
                     Ok(meta) => {
                         last_notice = None;
                         info!("[bridge] host metadata found, connecting");
-                        if let Err(err) = connect_and_listen(meta, &session, &cwd).await {
+                        if let Err(err) = connect_and_listen(meta, Arc::clone(&session), &cwd).await {
                             warn!("[bridge] connect failed: {err:?}");
                         }
                     }
@@ -503,7 +668,7 @@ fn is_meta_stale(meta: &BridgeMeta, path: &Path) -> bool {
     false
 }
 
-async fn connect_and_listen(meta: BridgeMeta, session: &Session, cwd: &Path) -> Result<()> {
+async fn connect_and_listen(meta: BridgeMeta, session: Arc<Session>, cwd: &Path) -> Result<()> {
     let (ws, _) = connect_async(&meta.url).await?;
     let (mut tx, mut rx) = ws.split();
 
@@ -571,11 +736,54 @@ async fn connect_and_listen(meta: BridgeMeta, session: &Session, cwd: &Path) -> 
             .await;
     }
 
+    let (batch_tx, mut batch_rx) = tokio::sync::mpsc::unbounded_channel::<BridgeBatchEvent>();
+    let session_for_batch = Arc::clone(&session);
+
+    let batch_handle = tokio::spawn(async move {
+        let mut buffer: Vec<BridgeBatchEvent> = Vec::new();
+        let mut deadline: Option<Instant> = None;
+
+        loop {
+            tokio::select! {
+                Some(item) = batch_rx.recv() => {
+                    buffer.push(item);
+
+                    if buffer.len() >= MAX_EVENTS_PER_BATCH {
+                        flush_batch(&session_for_batch, std::mem::take(&mut buffer)).await;
+                        deadline = None;
+                        continue;
+                    }
+
+                    if deadline.is_none() {
+                        deadline = Some(Instant::now() + BATCH_WINDOW);
+                    }
+                }
+                _ = async {
+                    if let Some(when) = deadline {
+                        sleep_until(when).await;
+                    }
+                }, if deadline.is_some() => {
+                    if !buffer.is_empty() {
+                        flush_batch(&session_for_batch, std::mem::take(&mut buffer)).await;
+                    }
+                    deadline = None;
+                }
+                else => {
+                    break;
+                }
+            }
+        }
+
+        if !buffer.is_empty() {
+            flush_batch(&session_for_batch, buffer).await;
+        }
+    });
+
     while let Some(msg) = rx.next().await {
         match msg {
             Ok(Message::Text(text)) => {
-                let summary = summarize(&text);
-                session.record_bridge_event(summary).await;
+                let event = summarize_event(&text);
+                let _ = batch_tx.send(event);
             }
             Ok(Message::Binary(_)) => {}
             Ok(Message::Close(_)) => break,
@@ -588,6 +796,9 @@ async fn connect_and_listen(meta: BridgeMeta, session: &Session, cwd: &Path) -> 
             }
         }
     }
+
+    drop(batch_tx);
+    let _ = batch_handle.await;
     // clear sender on exit
     {
         let mut guard = CONTROL_SENDER.lock().unwrap();
@@ -682,5 +893,72 @@ mod tests {
         let msg = rx.try_recv().expect("expected subscribe message");
         assert!(msg.contains("\"type\":\"subscribe\""));
         assert!(msg.contains("trace"));
+    }
+
+    #[test]
+    fn batch_coalesces_and_truncates() {
+        let long_msg = "a".repeat(MAX_EVENT_SUMMARY_CHARS + 10);
+        let events = vec![
+            BridgeBatchEvent {
+                summary: "alpha".to_string(),
+                level: Some("info".to_string()),
+                truncated: false,
+            },
+            BridgeBatchEvent {
+                summary: "alpha".to_string(),
+                level: Some("info".to_string()),
+                truncated: false,
+            },
+            BridgeBatchEvent {
+                summary: long_msg.clone(),
+                level: Some("error".to_string()),
+                truncated: true,
+            },
+        ];
+
+        let batch = coalesce_events(events);
+        assert_eq!(batch.entries.len(), 2);
+        assert_eq!(batch.entries[0].0, "alpha");
+        assert_eq!(batch.entries[0].1, 2);
+        assert!(batch.saw_error);
+        assert_eq!(batch.truncated_events, 1);
+        assert_eq!(batch.dropped_events, 0);
+    }
+
+    #[test]
+    fn batch_enforces_limit_and_marks_error() {
+        let mut events = Vec::new();
+        for idx in 0..(MAX_EVENTS_PER_BATCH + 5) {
+            events.push(BridgeBatchEvent {
+                summary: format!("msg-{idx}"),
+                level: Some(if idx == 0 { "error" } else { "info" }.to_string()),
+                truncated: false,
+            });
+        }
+
+        let batch = coalesce_events(events);
+        assert_eq!(batch.entries.len(), MAX_EVENTS_PER_BATCH);
+        assert_eq!(batch.dropped_events, 5);
+        assert!(batch.saw_error);
+        assert_eq!(batch.total_events, MAX_EVENTS_PER_BATCH + 5);
+    }
+
+    #[test]
+    fn format_batch_includes_multipliers() {
+        let batch = CoalescedBatch {
+            entries: vec![
+                ("one".to_string(), 1),
+                ("two".to_string(), 3),
+            ],
+            total_events: 4,
+            truncated_events: 0,
+            dropped_events: 0,
+            saw_error: false,
+        };
+
+        let text = format_batch_message(&batch);
+        assert!(text.contains("Code Bridge events (4 in last"));
+        assert!(text.contains("- one"));
+        assert!(text.contains("- [3x] two"));
     }
 }

@@ -1825,6 +1825,27 @@ impl Session {
         state.current_task = Some(agent);
     }
 
+    pub async fn start_pending_only_turn_if_idle(self: &Arc<Self>) -> bool {
+        let should_start = {
+            let state = self.state.lock().unwrap();
+            state.current_task.is_none()
+        };
+
+        if !should_start {
+            return false;
+        }
+
+        self.cleanup_old_status_items().await;
+        let turn_context = self.make_turn_context();
+        let sub_id = self.next_internal_sub_id();
+        let sentinel_input = vec![InputItem::Text {
+            text: PENDING_ONLY_SENTINEL.to_string(),
+        }];
+        let agent = AgentTask::spawn(Arc::clone(self), turn_context, sub_id, sentinel_input);
+        self.set_task(agent);
+        true
+    }
+
     pub fn replace_history(&self, items: Vec<ResponseItem>) {
         let mut state = self.state.lock().unwrap();
         state.history.replace(items);
