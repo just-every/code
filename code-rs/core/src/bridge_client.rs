@@ -84,7 +84,13 @@ fn default_filter() -> String {
 fn default_subscription() -> Subscription {
     Subscription {
         levels: default_levels(),
-        capabilities: Vec::new(),
+        capabilities: vec![
+            "console".to_string(),
+            "error".to_string(),
+            "pageview".to_string(),
+            "screenshot".to_string(),
+            "control".to_string(),
+        ],
         llm_filter: default_filter(),
     }
 }
@@ -423,15 +429,7 @@ pub(crate) fn spawn_bridge_listener(session: std::sync::Arc<Session>) {
 
             match find_meta_path(&cwd) {
                 None => {
-                    if last_notice != Some("missing") {
-                        session
-                            .record_bridge_event(
-                                "Code Bridge metadata not found (.code/code-bridge.json); waiting for host..."
-                                    .to_string(),
-                            )
-                            .await;
-                        last_notice = Some("missing");
-                    }
+                    last_notice = Some("missing");
                 }
                 Some(meta_path) => match read_meta(meta_path.as_path()) {
                     Ok(meta) => {
@@ -499,6 +497,7 @@ pub(crate) fn get_effective_subscription() -> Subscription {
     merge_effective_subscription(&state)
 }
 
+#[allow(dead_code)]
 pub(crate) fn get_workspace_subscription() -> Option<Subscription> {
     SUBSCRIPTIONS.lock().unwrap().workspace.clone()
 }
@@ -730,11 +729,11 @@ async fn connect_and_listen(meta: BridgeMeta, session: Arc<Session>, cwd: &Path)
     if !BRIDGE_HINT_EMITTED.swap(true, Ordering::SeqCst) && workspace_has_code_bridge(cwd) {
                 session
                     .record_bridge_event(
-                "Code Bridge is a local, real-time debug stream (errors/console like Sentry, plus pageviews/screenshots and a control channel). Use the `code_bridge` tool to show|set|clear your subscription; examples: {\"action\":\"show\"}, {\"action\":\"set\",\"levels\":[\"trace\"],\"capabilities\":[\"screenshot\",\"pageview\"]}, {\"action\":\"clear\",\"persist\":true}. Set persist=true to write .code/code-bridge.subscription.json for workspace defaults."
-                    .to_string(),
-            )
-            .await;
-        }
+                        "Code Bridge is a local, real-time debug stream (errors/console like Sentry, plus pageviews/screenshots and a control channel). Use the `code_bridge` tool: subscribe to a level (trace/info/warn/errors), request a screenshot, or send a control command."
+                            .to_string(),
+                    )
+                    .await;
+            }
 
     let (batch_tx, mut batch_rx) = tokio::sync::mpsc::unbounded_channel::<BridgeBatchEvent>();
     let session_for_batch = Arc::clone(&session);

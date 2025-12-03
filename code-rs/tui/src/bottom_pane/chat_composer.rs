@@ -2163,7 +2163,7 @@ impl ChatComposer {
                     fade_t,
                 );
                 let mut spans = vec![
-                    Span::from(" "),
+                    Span::from("  "),
                     Span::styled("•", Style::default().fg(bullet_fg)),
                     Span::from(" "),
                     Span::styled(phase_label, Style::default().fg(crate::colors::success())),
@@ -2173,7 +2173,7 @@ impl ChatComposer {
             }
             AutoReviewIndicatorStatus::Clean => {
                 let mut spans = vec![
-                    Span::from(" "),
+                    Span::from("  "),
                     Span::styled("✔", Style::default().fg(crate::colors::success())),
                     Span::from(" "),
                     Span::styled("Auto Review: Correct", Style::default().fg(crate::colors::success())),
@@ -2189,7 +2189,7 @@ impl ChatComposer {
                     "Auto Review: Issues Fixed".to_string()
                 };
                 let mut spans = vec![
-                    Span::from(" "),
+                    Span::from("  "),
                     Span::styled("✔", Style::default().fg(crate::colors::success())),
                     Span::from(" "),
                     Span::styled(text, Style::default().fg(crate::colors::success())),
@@ -2199,7 +2199,7 @@ impl ChatComposer {
             }
             AutoReviewIndicatorStatus::Failed => {
                 let mut spans = vec![
-                    Span::from(" "),
+                    Span::from("  "),
                     Span::styled("✖", Style::default().fg(crate::colors::error())),
                     Span::from(" "),
                     Span::styled("Auto Review: Failed", Style::default().fg(crate::colors::error())),

@@ -46,6 +46,9 @@ When you run shell tools with Code they will run in the foreground for up to 10 
 ## Browser tools
 Use the browser tools to open a live page, interact with it, and harvest results. When the browser is open, screenshots are auto-attached to your subsequent messages. The browser will either be an internal headless browser, or a CPD connection to the user's active Chrome browser. Your screenshots will be 1024×768 which exactly matches the viewport.
 
+## Code Bridge
+A local Sentry-like bridge for development environments: add `@just-every/code-bridge` to your JavaScript app to stream errors/console, pageviews/screenshots, and expose a control channel for two-way, real-time debugging. The `code_bridge` tool supports: `{"action":"subscribe","level":"trace|info|warn|errors"}` (persists workspace defaults and always requests full capabilities), `{"action":"screenshot"}` to ask connected bridges for a screenshot, and `{"action":"command","command":"<name>","args":{...}}` to send control commands.
+
 ## Web tools
 Use `web.run` when you need multi-step browsing—search, opens, clicks, screenshots, or specialized lookups. Use `browser {"action":"fetch","url":"https://example.com"}` when you already know the URL and just need its Markdown content in a single fetch.
 

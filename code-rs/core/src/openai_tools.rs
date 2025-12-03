@@ -805,56 +805,55 @@ pub fn create_bridge_tool() -> OpenAiTool {
     properties.insert(
         "action".to_string(),
         JsonSchema::String {
-            description: Some("show | set | clear".to_string()),
+            description: Some(
+                "Required: subscribe (set level + persist), screenshot (request a screenshot), command (send a control command)."
+                    .to_string(),
+            ),
             allowed_values: Some(vec![
-                "show".to_string(),
-                "set".to_string(),
-                "clear".to_string(),
+                "subscribe".to_string(),
+                "screenshot".to_string(),
+                "command".to_string(),
             ]),
         },
     );
 
     properties.insert(
-        "levels".to_string(),
-        JsonSchema::Array {
-            items: Box::new(JsonSchema::String {
-                description: Some("log levels: errors|warn|info|trace".to_string()),
-                allowed_values: None,
-            }),
-            description: Some("Optional list of log levels to subscribe".to_string()),
-        },
-    );
-
-    properties.insert(
-        "capabilities".to_string(),
-        JsonSchema::Array {
-            items: Box::new(JsonSchema::String {
-                description: Some("capabilities: console,error,pageview,screenshot,control".to_string()),
-                allowed_values: None,
-            }),
-            description: Some("Optional list of capabilities to include".to_string()),
-        },
-    );
-
-    properties.insert(
-        "llm_filter".to_string(),
+        "level".to_string(),
         JsonSchema::String {
-            description: Some("llm filter: off|minimal|aggressive".to_string()),
+            description: Some(
+                "For action=subscribe: log level to receive (errors|warn|info|trace)."
+                    .to_string(),
+            ),
+            allowed_values: Some(vec![
+                "errors".to_string(),
+                "warn".to_string(),
+                "info".to_string(),
+                "trace".to_string(),
+            ]),
+        },
+    );
+
+    properties.insert(
+        "command".to_string(),
+        JsonSchema::String {
+            description: Some("For action=command: command name to send over the control channel.".to_string()),
             allowed_values: None,
         },
     );
 
     properties.insert(
-        "persist".to_string(),
-        JsonSchema::Boolean {
-            description: Some("when true, also write .code/code-bridge.subscription.json".to_string()),
+        "args".to_string(),
+        JsonSchema::Object {
+            properties: BTreeMap::new(),
+            required: None,
+            additional_properties: None,
         },
     );
 
     OpenAiTool::Function(ResponsesApiTool {
         name: "code_bridge".to_string(),
         description:
-            "Code Bridge = local Sentry-style event stream plus two-way control (errors/console/pageviews/screenshots/control). Manage the subscription (show|set|clear). Examples: {\"action\":\"show\"}, {\"action\":\"set\",\"levels\":[\"trace\"],\"capabilities\":[\"screenshot\",\"pageview\"]}, {\"action\":\"clear\",\"persist\":true}.".to_string(),
+            "Code Bridge = local Sentry-style event stream + two-way control (errors/console/pageviews/screenshots/control). Actions: subscribe (set level + persist workspace defaults), screenshot (ask bridges for a screenshot), command (send control command with optional args). Examples: {\"action\":\"subscribe\",\"level\":\"trace\"}, {\"action\":\"screenshot\"}, {\"action\":\"command\",\"command\":\"reload\",\"args\":{\"hard\":true}}. Always requests full capabilities.".to_string(),
         strict: false,
         parameters: JsonSchema::Object {
             properties,

@@ -834,7 +834,7 @@ use crate::apply_patch::convert_apply_patch_to_protocol;
 use crate::apply_patch::get_writable_roots;
 use crate::apply_patch::{self, ApplyPatchResult};
 use crate::bridge_client::{
-    get_effective_subscription, get_workspace_subscription, persist_workspace_subscription,
+    get_effective_subscription, persist_workspace_subscription, send_bridge_control,
     set_session_subscription, set_workspace_subscription,
 };
 use crate::client::ModelClient;
@@ -6726,29 +6726,35 @@ async fn handle_browser_cleanup(sess: &Session, ctx: &ToolCallCtx) -> ResponseIn
 }
 
 #[derive(Deserialize)]
-struct BridgeSubscriptionArgs {
+struct BridgeControlArgs {
     action: String,
     #[serde(default)]
-    levels: Option<Vec<String>>,
+    level: Option<String>,
     #[serde(default)]
-    capabilities: Option<Vec<String>>,
-    #[serde(default)]
-    llm_filter: Option<String>,
-    #[serde(default)]
-    persist: Option<bool>,
+    command: Option<String>,
+    #[serde(default, rename = "args")]
+    command_args: Option<serde_json::Value>,
 }
 
-fn norm_vec(vals: &Option<Vec<String>>) -> Option<Vec<String>> {
-    vals.as_ref().map(|v| {
-        let mut out: Vec<String> = v
-            .iter()
-            .map(|s| s.trim().to_lowercase())
-            .filter(|s| !s.is_empty())
-            .collect();
-        out.sort();
-        out.dedup();
-        out
-    })
+fn normalise_level(level: &str) -> Option<String> {
+    let l = level.trim().to_lowercase();
+    match l.as_str() {
+        "errors" | "error" => Some("errors".to_string()),
+        "warn" | "warning" => Some("warn".to_string()),
+        "info" => Some("info".to_string()),
+        "trace" | "debug" => Some("trace".to_string()),
+        _ => None,
+    }
+}
+
+fn full_capabilities() -> Vec<String> {
+    vec![
+        "console".to_string(),
+        "error".to_string(),
+        "pageview".to_string(),
+        "screenshot".to_string(),
+        "control".to_string(),
+    ]
 }
 
 async fn handle_code_bridge(
@@ -6764,7 +6770,7 @@ async fn handle_code_bridge_with_cwd(
     ctx: &ToolCallCtx,
     arguments: String,
 ) -> ResponseInputItem {
-    let parsed: Result<BridgeSubscriptionArgs, _> = serde_json::from_str(&arguments);
+    let parsed: Result<BridgeControlArgs, _> = serde_json::from_str(&arguments);
     let args = match parsed {
         Ok(a) => a,
         Err(e) => {
@@ -6779,83 +6785,82 @@ async fn handle_code_bridge_with_cwd(
     };
 
     let action = args.action.to_lowercase();
-    let persist = args.persist.unwrap_or(false);
 
     match action.as_str() {
-        "show" => {
-            let eff = get_effective_subscription();
-            let ws = get_workspace_subscription();
-            let content = serde_json::json!({
-                "effective": eff,
-                "workspace": ws,
-            })
-            .to_string();
-            ResponseInputItem::FunctionCallOutput {
-                call_id: ctx.call_id.clone(),
-                output: FunctionCallOutputPayload {
-                    content,
-                    success: Some(true),
-                },
-            }
-        }
-        "set" => {
+        "subscribe" => {
+            let level = match args.level.as_ref().and_then(|l| normalise_level(l)) {
+                Some(lvl) => lvl,
+                None => {
+                    return ResponseInputItem::FunctionCallOutput {
+                        call_id: ctx.call_id.clone(),
+                        output: FunctionCallOutputPayload {
+                            content: "invalid or missing level (use errors|warn|info|trace)".to_string(),
+                            success: Some(false),
+                        },
+                    }
+                }
+            };
+
             let mut sub = get_effective_subscription();
-            if let Some(levels) = norm_vec(&args.levels) {
-                sub.levels = if levels.is_empty() { sub.levels } else { levels };
-            }
-            if let Some(caps) = norm_vec(&args.capabilities) {
-                sub.capabilities = caps;
-            }
-            if let Some(filter) = args.llm_filter.as_ref() {
-                sub.llm_filter = filter.trim().to_lowercase();
-            }
+            sub.levels = vec![level];
+            sub.capabilities = full_capabilities();
+            sub.llm_filter = "off".to_string();
 
             set_session_subscription(Some(sub.clone()));
-
-            if persist {
-                if let Err(e) = persist_workspace_subscription(&cwd, Some(sub.clone())) {
-                    return ResponseInputItem::FunctionCallOutput {
-                        call_id: ctx.call_id.clone(),
-                        output: FunctionCallOutputPayload {
-                            content: format!("persist failed: {e}"),
-                            success: Some(false),
-                        },
-                    };
-                }
-                set_workspace_subscription(Some(sub.clone()));
+            if let Err(e) = persist_workspace_subscription(&cwd, Some(sub.clone())) {
+                return ResponseInputItem::FunctionCallOutput {
+                    call_id: ctx.call_id.clone(),
+                    output: FunctionCallOutputPayload {
+                        content: format!("persist failed: {e}"),
+                        success: Some(false),
+                    },
+                };
             }
+            set_workspace_subscription(Some(sub));
 
             ResponseInputItem::FunctionCallOutput {
                 call_id: ctx.call_id.clone(),
-                output: FunctionCallOutputPayload {
-                    content: "ok".to_string(),
-                    success: Some(true),
-                },
+                output: FunctionCallOutputPayload { content: "ok".to_string(), success: Some(true) },
             }
         }
-        "clear" => {
-            set_session_subscription(None);
-            if persist {
-                if let Err(e) = persist_workspace_subscription(&cwd, None) {
+        "screenshot" => {
+            send_bridge_control("screenshot", serde_json::json!({}));
+            ResponseInputItem::FunctionCallOutput {
+                call_id: ctx.call_id.clone(),
+                output: FunctionCallOutputPayload { content: "requested screenshot".to_string(), success: Some(true) },
+            }
+        }
+        "command" => {
+            let cmd = match args.command.as_ref() {
+                Some(c) if !c.trim().is_empty() => c.trim(),
+                _ => {
                     return ResponseInputItem::FunctionCallOutput {
                         call_id: ctx.call_id.clone(),
                         output: FunctionCallOutputPayload {
-                            content: format!("persist failed: {e}"),
+                            content: "missing command".to_string(),
                             success: Some(false),
                         },
-                    };
+                    }
                 }
-                set_workspace_subscription(None);
-            }
-
+            };
+            let payload = serde_json::json!({
+                "command": cmd,
+                "args": args.command_args.unwrap_or_else(|| serde_json::json!({})),
+            });
+            send_bridge_control("command", payload);
             ResponseInputItem::FunctionCallOutput {
                 call_id: ctx.call_id.clone(),
-                output: FunctionCallOutputPayload {
-                    content: "ok".to_string(),
-                    success: Some(true),
-                },
+                output: FunctionCallOutputPayload { content: "sent command".to_string(), success: Some(true) },
             }
         }
+        // Keep legacy actions for backward compatibility with older prompts/tools
+        "show" | "set" | "clear" => ResponseInputItem::FunctionCallOutput {
+            call_id: ctx.call_id.clone(),
+            output: FunctionCallOutputPayload {
+                content: "deprecated action; use subscribe/screenshot/command".to_string(),
+                success: Some(false),
+            },
+        },
         _ => ResponseInputItem::FunctionCallOutput {
             call_id: ctx.call_id.clone(),
             output: FunctionCallOutputPayload {

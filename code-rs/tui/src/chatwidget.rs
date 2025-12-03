@@ -34671,7 +34671,7 @@ impl WidgetRef for &ChatWidget<'_> {
                 // without changing layout or symbol positions.
                 let is_assistant =
                     matches!(item.kind(), crate::history_cell::HistoryCellType::Assistant);
-                let is_auto_review = item.gutter_symbol() == Some("⮂");
+                let is_auto_review = item.gutter_symbol() == Some("⇄");
                 let gutter_bg = if is_assistant {
                     crate::colors::assistant_bg()
                 } else if is_auto_review {
@@ -34724,7 +34724,7 @@ impl WidgetRef for &ChatWidget<'_> {
                 // Render gutter symbol if present
                     if let Some(symbol) = item.gutter_symbol() {
                     // Choose color based on symbol/type
-                    let color = if symbol == "⮂" {
+                        let color = if symbol == "⇄" {
                         crate::colors::success()
                     } else if symbol == "❯" {
                         // Executed arrow – color reflects exec state

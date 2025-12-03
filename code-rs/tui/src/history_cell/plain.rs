@@ -253,7 +253,7 @@ impl HistoryCell for PlainHistoryCell {
         if let Some(header) = self.state.header() {
             let label = header.label.trim().to_lowercase();
             if label == "auto review" {
-                return Some("⮂");
+                return Some("⇄");
             }
         }
         super::gutter_symbol_for_kind(self.kind())
