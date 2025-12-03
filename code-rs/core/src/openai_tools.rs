@@ -806,12 +806,11 @@ pub fn create_bridge_tool() -> OpenAiTool {
         "action".to_string(),
         JsonSchema::String {
             description: Some(
-                "Required: subscribe (set level + persist), screenshot (request a screenshot), command (send a control command)."
+                "Required: subscribe (set level + persist), command (screenshot | javascript)."
                     .to_string(),
             ),
             allowed_values: Some(vec![
                 "subscribe".to_string(),
-                "screenshot".to_string(),
                 "command".to_string(),
             ]),
         },
@@ -836,8 +835,8 @@ pub fn create_bridge_tool() -> OpenAiTool {
     properties.insert(
         "command".to_string(),
         JsonSchema::String {
-            description: Some("For action=command: command name to send over the control channel.".to_string()),
-            allowed_values: None,
+            description: Some("For action=command: screenshot | javascript.".to_string()),
+            allowed_values: Some(vec!["screenshot".to_string(), "javascript".to_string()]),
         },
     );
 
@@ -850,10 +849,18 @@ pub fn create_bridge_tool() -> OpenAiTool {
         },
     );
 
+    properties.insert(
+        "code".to_string(),
+        JsonSchema::String {
+            description: Some("For action=command & command=javascript: JS to execute on the bridge client.".to_string()),
+            allowed_values: None,
+        },
+    );
+
     OpenAiTool::Function(ResponsesApiTool {
         name: "code_bridge".to_string(),
         description:
-            "Code Bridge = local Sentry-style event stream + two-way control (errors/console/pageviews/screenshots/control). Actions: subscribe (set level + persist workspace defaults), screenshot (ask bridges for a screenshot), command (send control command with optional args). Examples: {\"action\":\"subscribe\",\"level\":\"trace\"}, {\"action\":\"screenshot\"}, {\"action\":\"command\",\"command\":\"reload\",\"args\":{\"hard\":true}}. Always requests full capabilities.".to_string(),
+            "Code Bridge = local Sentry-style event stream + two-way control (errors/console/pageviews/screenshots/control). Actions: subscribe (set level, persists, requests full capabilities), command=screenshot (ask bridges for a screenshot), command=javascript (send JS to execute and return result). Examples: {\"action\":\"subscribe\",\"level\":\"trace\"}, {\"action\":\"command\",\"command\":\"screenshot\"}, {\"action\":\"command\",\"command\":\"javascript\",\"code\":\"window.location.href\"}.".to_string(),
         strict: false,
         parameters: JsonSchema::Object {
             properties,

@@ -6732,8 +6732,8 @@ struct BridgeControlArgs {
     level: Option<String>,
     #[serde(default)]
     command: Option<String>,
-    #[serde(default, rename = "args")]
-    command_args: Option<serde_json::Value>,
+    #[serde(default)]
+    code: Option<String>,
 }
 
 fn normalise_level(level: &str) -> Option<String> {
@@ -6823,17 +6823,19 @@ async fn handle_code_bridge_with_cwd(
                 output: FunctionCallOutputPayload { content: "ok".to_string(), success: Some(true) },
             }
         }
-        "screenshot" => {
-            send_bridge_control("screenshot", serde_json::json!({}));
-            ResponseInputItem::FunctionCallOutput {
-                call_id: ctx.call_id.clone(),
-                output: FunctionCallOutputPayload { content: "requested screenshot".to_string(), success: Some(true) },
-            }
-        }
         "command" => {
-            let cmd = match args.command.as_ref() {
-                Some(c) if !c.trim().is_empty() => c.trim(),
-                _ => {
+            let cmd = match args.command.as_ref().map(|c| c.trim().to_lowercase()) {
+                Some(c) if c == "screenshot" || c == "javascript" => c,
+                Some(_) => {
+                    return ResponseInputItem::FunctionCallOutput {
+                        call_id: ctx.call_id.clone(),
+                        output: FunctionCallOutputPayload {
+                            content: "unsupported command (use screenshot|javascript)".to_string(),
+                            success: Some(false),
+                        },
+                    }
+                }
+                None => {
                     return ResponseInputItem::FunctionCallOutput {
                         call_id: ctx.call_id.clone(),
                         output: FunctionCallOutputPayload {
@@ -6843,14 +6845,35 @@ async fn handle_code_bridge_with_cwd(
                     }
                 }
             };
-            let payload = serde_json::json!({
-                "command": cmd,
-                "args": args.command_args.unwrap_or_else(|| serde_json::json!({})),
-            });
-            send_bridge_control("command", payload);
-            ResponseInputItem::FunctionCallOutput {
-                call_id: ctx.call_id.clone(),
-                output: FunctionCallOutputPayload { content: "sent command".to_string(), success: Some(true) },
+
+            match cmd.as_str() {
+                "screenshot" => {
+                    send_bridge_control("screenshot", serde_json::json!({}));
+                    ResponseInputItem::FunctionCallOutput {
+                        call_id: ctx.call_id.clone(),
+                        output: FunctionCallOutputPayload { content: "requested screenshot".to_string(), success: Some(true) },
+                    }
+                }
+                "javascript" => {
+                    let code = match args.code.as_ref().map(|c| c.trim()).filter(|c| !c.is_empty()) {
+                        Some(c) => c,
+                        None => {
+                            return ResponseInputItem::FunctionCallOutput {
+                                call_id: ctx.call_id.clone(),
+                                output: FunctionCallOutputPayload {
+                                    content: "missing code for javascript command".to_string(),
+                                    success: Some(false),
+                                },
+                            }
+                        }
+                    };
+                    send_bridge_control("javascript", serde_json::json!({ "code": code }));
+                    ResponseInputItem::FunctionCallOutput {
+                        call_id: ctx.call_id.clone(),
+                        output: FunctionCallOutputPayload { content: "sent javascript".to_string(), success: Some(true) },
+                    }
+                }
+                _ => unreachable!(),
             }
         }
         // Keep legacy actions for backward compatibility with older prompts/tools
