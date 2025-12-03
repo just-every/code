@@ -56,6 +56,7 @@ use code_protocol::mcp_protocol::AuthMode as McpAuthMode;
 use code_protocol::protocol::SessionSource;
 use code_protocol::num_format::format_with_separators;
 use code_core::split_command_and_args;
+use serde_json::Value as JsonValue;
 
 
 mod diff_handlers;
@@ -764,6 +765,52 @@ fn describe_command_failure(out: &Output, fallback: &str) -> String {
 }
 
 impl ChatWidget<'_> {
+    fn format_code_bridge_call(&self, args: &JsonValue) -> Option<String> {
+        let action = args.get("action")?.as_str()?.to_lowercase();
+        let mut out = String::from("Code Bridge\n");
+        match action.as_str() {
+            "subscribe" => {
+                out.push_str("└ Subscribe");
+                if let Some(level) = args.get("level").and_then(|v| v.as_str()) {
+                    out.push_str(&format!("  level={}", level));
+                }
+                Some(out)
+            }
+            "screenshot" => {
+                out.push_str("└ Screenshot");
+                Some(out)
+            }
+            "javascript" => {
+                out.push_str("└ JavaScript\n");
+                if let Some(code) = args.get("code").and_then(|v| v.as_str()) {
+                    out.push_str("   ```javascript\n");
+                    out.push_str(code);
+                    out.push_str("\n   ```");
+                }
+                Some(out)
+            }
+            _ => None,
+        }
+    }
+
+    fn format_kill_call(&self, args: &JsonValue) -> Option<String> {
+        if let Some(call_id) = args.get("call_id").and_then(|v| v.as_str()) {
+            let mut out = String::from("Kill\n");
+            out.push_str(&format!("└ call_id: {}", call_id));
+            return Some(out);
+        }
+        None
+    }
+
+    fn format_tool_call_preview(&self, name: &str, arguments: &str) -> Option<String> {
+        let parsed: JsonValue = serde_json::from_str(arguments).ok()?;
+        match name {
+            "code_bridge" => self.format_code_bridge_call(&parsed),
+            "kill" => self.format_kill_call(&parsed),
+            _ => None,
+        }
+    }
+
     fn browser_overlay_progress_line(
         &self,
         width: u16,
@@ -912,7 +959,7 @@ pub(crate) fn is_test_mode() -> bool {
         })
     }
 }
-use serde_json::{self, Value as JsonValue};
+use serde_json;
 use tracing::{debug, info, warn};
 // use image::GenericImageView;
 
@@ -4045,14 +4092,19 @@ impl ChatWidget<'_> {
                 }
             }
             ResponseItem::FunctionCall { name, arguments, call_id, .. } => {
-                let pretty_args = serde_json::from_str::<JsonValue>(&arguments)
-                    .and_then(|v| serde_json::to_string_pretty(&v))
-                    .unwrap_or_else(|_| arguments.clone());
-                let mut message = format!("🔧 Tool call: {}", name);
-                if !pretty_args.trim().is_empty() {
-                    message.push_str("\n");
-                    message.push_str(&pretty_args);
-                }
+                let mut message = self
+                    .format_tool_call_preview(&name, &arguments)
+                    .unwrap_or_else(|| {
+                        let pretty_args = serde_json::from_str::<JsonValue>(&arguments)
+                            .and_then(|v| serde_json::to_string_pretty(&v))
+                            .unwrap_or_else(|_| arguments.clone());
+                        let mut m = format!("🔧 Tool call: {}", name);
+                        if !pretty_args.trim().is_empty() {
+                            m.push_str("\n");
+                            m.push_str(&pretty_args);
+                        }
+                        m
+                    });
                 if !call_id.is_empty() {
                     message.push_str(&format!("\ncall_id: {}", call_id));
                 }
