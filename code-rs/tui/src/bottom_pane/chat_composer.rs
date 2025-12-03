@@ -35,8 +35,6 @@ use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
 
 // Dynamic placeholder rendered when the composer is empty.
 /// If the pasted content exceeds this number of characters, replace it with a
@@ -2149,24 +2147,12 @@ impl ChatComposer {
                     AutoReviewPhase::Resolving => "Auto Review: Resolving",
                     AutoReviewPhase::Reviewing => "Auto Review: Reviewing",
                 };
-                let now_ms = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis();
-                let phase = (now_ms % 1200) as f32 / 1200.0;
-                let pulse = (std::f32::consts::PI * 2.0 * phase).sin();
-                let fade = 0.5 + 0.5 * pulse;
-                let fade_t = 0.65 - 0.35 * fade;
-                let bullet_fg = crate::colors::mix_toward(
-                    crate::colors::success(),
-                    crate::colors::background(),
-                    fade_t,
-                );
+                let bullet_fg = crate::colors::primary();
                 let mut spans = vec![
                     Span::from("  "),
                     Span::styled("•", Style::default().fg(bullet_fg)),
                     Span::from(" "),
-                    Span::styled(phase_label, Style::default().fg(crate::colors::success())),
+                    Span::styled(phase_label, label_style),
                 ];
                 spans.extend(hint_spans);
                 spans
@@ -2176,7 +2162,7 @@ impl ChatComposer {
                     Span::from("  "),
                     Span::styled("✔", Style::default().fg(crate::colors::success())),
                     Span::from(" "),
-                    Span::styled("Auto Review: Correct", Style::default().fg(crate::colors::success())),
+                    Span::styled("Auto Review: Correct", label_style),
                 ];
                 spans.extend(hint_spans);
                 spans
@@ -2192,7 +2178,7 @@ impl ChatComposer {
                     Span::from("  "),
                     Span::styled("✔", Style::default().fg(crate::colors::success())),
                     Span::from(" "),
-                    Span::styled(text, Style::default().fg(crate::colors::success())),
+                    Span::styled(text, label_style),
                 ];
                 spans.extend(hint_spans);
                 spans
@@ -2202,7 +2188,7 @@ impl ChatComposer {
                     Span::from("  "),
                     Span::styled("✖", Style::default().fg(crate::colors::error())),
                     Span::from(" "),
-                    Span::styled("Auto Review: Failed", Style::default().fg(crate::colors::error())),
+                    Span::styled("Auto Review: Failed", label_style),
                 ];
                 spans.extend(hint_spans);
                 spans

@@ -15466,11 +15466,7 @@ impl ChatWidget<'_> {
 
     fn record_current_agent_scroll(&mut self) {
         if let Some(entry) = self.agents_terminal.current_sidebar_entry() {
-            let capped = self
-                .agents_terminal
-                .last_render_scroll
-                .get()
-                .min(self.layout.last_max_scroll.get());
+            let capped = self.layout.scroll_offset.min(self.layout.last_max_scroll.get());
             self
                 .agents_terminal
                 .scroll_offsets
