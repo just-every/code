@@ -2505,6 +2505,16 @@ fn agent_status_chip(status: AgentStatus) -> &'static str {
     }
 }
 
+fn agent_status_icon(status: AgentStatus) -> &'static str {
+    match status {
+        AgentStatus::Completed => "✔",
+        AgentStatus::Running => "▶",
+        AgentStatus::Pending => "…",
+        AgentStatus::Failed => "✖",
+        AgentStatus::Cancelled => "⏹",
+    }
+}
+
 fn agent_running_priority(status: AgentStatus) -> usize {
     match status {
         AgentStatus::Running => 0,
@@ -15154,31 +15164,42 @@ impl ChatWidget<'_> {
         let header_style = ratatui::style::Style::default()
             .fg(crate::colors::text())
             .add_modifier(ratatui::style::Modifier::BOLD);
-        let chevron = if collapsed { "[>]" } else { "[v]" };
-        lines.push(ratatui::text::Line::from(vec![
-            ratatui::text::Span::raw(" "),
-            ratatui::text::Span::styled(chevron.to_string(), header_style),
-            ratatui::text::Span::raw(" "),
-            ratatui::text::Span::styled("Highlights", header_style),
-        ]));
+        let chevron = if collapsed { "▶" } else { "▼" };
+        let title = format!("╭ Highlights (h) {chevron} ");
+        let title_width = unicode_width::UnicodeWidthStr::width(title.as_str()) as u16;
+        let pad = available_width
+            .saturating_sub(title_width)
+            .saturating_sub(1);
+        let mut heading = title;
+        heading.push_str(&"─".repeat(pad as usize));
+        heading.push('╮');
+        lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
+            heading,
+            header_style,
+        )));
 
         if collapsed || bullets.is_empty() {
+            let footer_width = available_width.saturating_sub(1);
+            let mut footer = String::from("╰");
+            footer.push_str(&"─".repeat(footer_width as usize));
+            lines.push(ratatui::text::Line::from(footer));
             self.ensure_trailing_blank_line(lines);
             return;
         }
 
-        let wrap_width = available_width.saturating_sub(2).max(8) as usize;
+        let wrap_width = available_width.saturating_sub(6).max(12) as usize;
         for (text, style) in bullets.into_iter() {
             let opts = textwrap::Options::new(wrap_width)
                 .break_words(false)
                 .word_splitter(textwrap::word_splitters::WordSplitter::NoHyphenation)
-                .initial_indent(" • ")
-                .subsequent_indent("   ");
-            for wrapped in textwrap::wrap(text.as_str(), opts) {
-                lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
-                    wrapped.to_string(),
-                    style,
-                )));
+                .initial_indent("• ")
+                .subsequent_indent("  ");
+            for (idx, wrapped) in textwrap::wrap(text.as_str(), opts).into_iter().enumerate() {
+                let prefix = if idx == 0 { "│   " } else { "│     " };
+                lines.push(ratatui::text::Line::from(vec![
+                    ratatui::text::Span::raw(prefix),
+                    ratatui::text::Span::styled(wrapped.to_string(), style),
+                ]));
             }
         }
 
@@ -15189,20 +15210,23 @@ impl ChatWidget<'_> {
         {
             if !error_text.is_empty() {
                 let msg = format!("Last error: {error_text}");
-                let opts = textwrap::Options::new(wrap_width)
-                    .break_words(false)
-                    .word_splitter(textwrap::word_splitters::WordSplitter::NoHyphenation)
-                    .initial_indent("   ")
-                    .subsequent_indent("   ");
-                for wrapped in textwrap::wrap(msg.as_str(), opts) {
-                    lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
-                        wrapped.to_string(),
-                        ratatui::style::Style::default().fg(crate::colors::error()),
-                    )));
+                for (idx, wrapped) in textwrap::wrap(msg.as_str(), wrap_width).into_iter().enumerate() {
+                    let prefix = if idx == 0 { "│   " } else { "│     " };
+                    lines.push(ratatui::text::Line::from(vec![
+                        ratatui::text::Span::raw(prefix),
+                        ratatui::text::Span::styled(
+                            wrapped.to_string(),
+                            ratatui::style::Style::default().fg(crate::colors::error()),
+                        ),
+                    ]));
                 }
             }
         }
 
+        let footer_width = available_width.saturating_sub(1);
+        let mut footer = String::from("╰");
+        footer.push_str(&"─".repeat(footer_width as usize));
+        lines.push(ratatui::text::Line::from(footer));
         self.ensure_trailing_blank_line(lines);
     }
 
@@ -33852,7 +33876,7 @@ impl ChatWidget<'_> {
             return;
         }
 
-        let tab_height = if content.height >= 3 { 1 } else { 0 };
+        let tab_height = if content.height >= 4 { 2 } else if content.height >= 3 { 1 } else { 0 };
         let hint_height = if content.height >= 2 { 1 } else { 0 };
         let body_height = content
             .height
@@ -33876,66 +33900,122 @@ impl ChatWidget<'_> {
             height: hint_height,
         };
 
-        if tab_height == 1 {
-            let mut spans: Vec<Span> = Vec::new();
-            spans.push(Span::styled(
-                "Agents  (Ctrl+A to close)  ",
-                Style::default().fg(crate::colors::text()),
-            ));
-            spans.push(Span::styled(
-                "Show:",
-                Style::default().fg(crate::colors::text_dim()),
-            ));
-            let tabs = [
-                (AgentsTerminalTab::All, "[ALL ]"),
-                (AgentsTerminalTab::Running, "[RUN ]"),
-                (AgentsTerminalTab::Failed, "[FAIL]"),
-                (AgentsTerminalTab::Completed, "[DONE]"),
-                (AgentsTerminalTab::Review, "[REV ]"),
-            ];
-            for (idx, (tab, label)) in tabs.iter().enumerate() {
-                if idx == 0 {
-                    spans.push(Span::raw(" "));
-                } else {
-                    spans.push(Span::raw("  "));
-                }
-                let active = *tab == self.agents_terminal.active_tab;
-                let style = if active {
-                    Style::default()
-                        .fg(crate::colors::primary())
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(crate::colors::text_dim())
-                };
-                spans.push(Span::styled((*label).to_string(), style));
+        if tab_height > 0 {
+            let mut header_rows: Vec<Rect> = Vec::new();
+            if tab_height == 2 {
+                let parts = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(1), Constraint::Length(1)])
+                    .split(tabs_area);
+                header_rows.extend_from_slice(&parts);
+            } else {
+                header_rows.push(tabs_area);
             }
 
-            spans.push(Span::raw("   "));
-            spans.push(Span::styled(
-                "Sort:",
-                Style::default().fg(crate::colors::text_dim()),
-            ));
-            let sort_label = match self.agents_terminal.sort_mode {
-                AgentsSortMode::Recent => "Recent",
-                AgentsSortMode::RunningFirst => "Running",
-                AgentsSortMode::Name => "Name",
-            };
-            spans.push(Span::raw(" "));
-            spans.push(Span::styled(
-                sort_label.to_string(),
-                Style::default()
-                    .fg(crate::colors::primary())
-                    .add_modifier(Modifier::BOLD),
-            ));
+            // Row 1: title with soft bars
+            let title_row = *header_rows.get(0).unwrap_or(&tabs_area);
+            let title_label = "Agents";
+            let ctrl_hint = "(Ctrl+A to close)";
+            let base = format!("╭ {title_label} ── {ctrl_hint} ");
+            let base_width = UnicodeWidthStr::width(base.as_str()) as u16;
+            let pad = title_row.width.saturating_sub(base_width + 1);
+            let mut title_text = base;
+            title_text.push_str(&"─".repeat(pad as usize));
+            title_text.push('╮');
+            Paragraph::new(Line::from(Span::styled(
+                title_text,
+                Style::default().fg(crate::colors::text()),
+            )))
+            .alignment(Alignment::Left)
+            .render(title_row, buf);
 
-            let tabs_block = Paragraph::new(Line::from(spans)).alignment(Alignment::Left);
-            tabs_block.render(tabs_area, buf);
+            // Row 2: filters + sort
+            if tab_height == 2 {
+                let filter_row = header_rows[1];
+                let mut spans: Vec<Span> = Vec::new();
+                spans.push(Span::styled(
+                    "│ Filter: ",
+                    Style::default().fg(crate::colors::text_dim()),
+                ));
+                let tabs = [
+                    (AgentsTerminalTab::All, "( ALL )"),
+                    (AgentsTerminalTab::Running, "( RUNNING )"),
+                    (AgentsTerminalTab::Failed, "( FAILED )"),
+                    (AgentsTerminalTab::Completed, "( DONE )"),
+                    (AgentsTerminalTab::Review, "( REVIEW )"),
+                ];
+                for (idx, (tab, label)) in tabs.iter().enumerate() {
+                    if idx > 0 {
+                        spans.push(Span::raw("  "));
+                    }
+                    let active = *tab == self.agents_terminal.active_tab;
+                    let style = if active {
+                        Style::default()
+                            .fg(crate::colors::primary())
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(crate::colors::text_dim())
+                    };
+                    spans.push(Span::styled((*label).to_string(), style));
+                }
+
+                spans.push(Span::raw("              "));
+                spans.push(Span::styled(
+                    "Sort by:",
+                    Style::default().fg(crate::colors::text_dim()),
+                ));
+                let sort_label = match self.agents_terminal.sort_mode {
+                    AgentsSortMode::Recent => "Recent",
+                    AgentsSortMode::RunningFirst => "Running",
+                    AgentsSortMode::Name => "Name",
+                };
+                spans.push(Span::raw(" ( "));
+                spans.push(Span::styled(
+                    format!("{sort_label} ▼"),
+                    Style::default()
+                        .fg(crate::colors::primary())
+                        .add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::raw(" )"));
+
+                // Right border cap
+                let mut line = Line::from(spans);
+                if filter_row.width > 0 {
+                    line.spans.push(Span::raw(" "));
+                    line.spans.push(Span::styled(
+                        "│",
+                        Style::default().fg(crate::colors::text_dim()),
+                    ));
+                }
+                Paragraph::new(line)
+                    .alignment(Alignment::Left)
+                    .render(filter_row, buf);
+            }
         }
 
-        let sidebar_width = if body_area.width <= 26 {
+        let longest_name_width: u16 = self
+            .agents_terminal
+            .entries
+            .values()
+            .map(|entry| {
+                let label = entry
+                    .model
+                    .as_ref()
+                    .map(|m| Self::format_model_label(m))
+                    .unwrap_or_else(|| Self::format_model_label(&entry.name));
+                UnicodeWidthStr::width(label.as_str()) as u16
+            })
+            .max()
+            .unwrap_or(10);
+        let chip_width = UnicodeWidthStr::width(agent_status_chip(AgentStatus::Running)) as u16;
+        let desired_sidebar = longest_name_width
+            .saturating_add(chip_width)
+            .saturating_add(8);
+        let sidebar_width = if body_area.width <= 30 {
             body_area.width
         } else {
-            22u16.min(body_area.width.saturating_sub(10)).max(18)
+            let max_allowed = body_area.width.saturating_sub(30).max(18);
+            desired_sidebar.clamp(24, max_allowed)
         };
 
         let constraints = if body_area.width <= sidebar_width {
@@ -33953,6 +34033,14 @@ impl ChatWidget<'_> {
         let mut items: Vec<ListItem> = Vec::new();
         let mut row_entries: Vec<Option<AgentsSidebarEntry>> = Vec::new();
 
+        items.push(ListItem::new(Line::from(vec![Span::styled(
+            "Batches",
+            Style::default()
+                .fg(crate::colors::text())
+                .add_modifier(Modifier::BOLD),
+        )])));
+        row_entries.push(None);
+
         for group in self.agents_terminal.sidebar_groups() {
             items.push(ListItem::new(Line::from(vec![
                 Span::styled(
@@ -33969,11 +34057,8 @@ impl ChatWidget<'_> {
                     let model_label = entry
                         .model
                         .as_ref()
-                        .and_then(|value| {
-                            let trimmed = value.trim();
-                            (!trimmed.is_empty()).then(|| trimmed.to_string())
-                        })
-                        .unwrap_or_else(|| entry.name.clone());
+                        .map(|value| Self::format_model_label(value))
+                        .unwrap_or_else(|| Self::format_model_label(&entry.name));
                     let chip = agent_status_chip(entry.status.clone());
                     let name_room = sidebar_width
                         .saturating_sub((chip.len() as u16).saturating_add(6))
@@ -34065,75 +34150,65 @@ impl ChatWidget<'_> {
         match self.agents_terminal.current_sidebar_entry() {
             Some(AgentsSidebarEntry::Agent(agent_id)) => {
                 if let Some(entry) = self.agents_terminal.entries.get(agent_id.as_str()) {
-                    let status_color = agent_status_color(entry.status.clone());
+                    let status = entry.status.clone();
+                    let status_color = agent_status_color(status.clone());
+                    let display_name = entry
+                        .model
+                        .as_ref()
+                        .map(|m| Self::format_model_label(m))
+                        .unwrap_or_else(|| Self::format_model_label(&entry.name));
+                    let title_text = entry
+                        .batch_label
+                        .as_ref()
+                        .and_then(|b| {
+                            let trimmed = b.trim();
+                            (!trimmed.is_empty()).then(|| trimmed.to_string())
+                        })
+                        .map(|batch| format!("{batch} / {display_name}"))
+                        .unwrap_or_else(|| display_name.clone());
+
                     lines.push(Line::from(vec![
                         Span::raw(" "),
                         Span::styled(
-                            entry.name.clone(),
+                            title_text,
                             Style::default()
                                 .fg(crate::colors::text())
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::raw("  "),
-                        Span::styled(agent_status_chip(entry.status.clone()).to_string(), Style::default().fg(status_color)),
-                        Span::raw("  "),
-                        Span::styled(
-                            format!("#{}", agent_id.chars().take(7).collect::<String>()),
-                            Style::default().fg(crate::colors::text_dim()),
-                        ),
                     ]));
 
-                    let mut meta_parts: Vec<Span> = Vec::new();
-                    if let Some(model) = entry.model.as_ref() {
-                        meta_parts.push(Span::styled(
-                            format!("Model: {model}"),
-                            Style::default().fg(crate::colors::text_dim()),
-                        ));
-                    }
-                    if entry
-                        .batch_label
+                    let id_short = format!("#{}", agent_id.chars().take(7).collect::<String>());
+                    let status_chip = format!("{} {}", agent_status_icon(status.clone()), agent_status_label(status));
+                    let model_meta = entry
+                        .model
                         .as_ref()
-                        .map(|value| !value.trim().is_empty())
-                        .unwrap_or(false)
-                        || entry.batch_id.is_some()
-                    {
-                        let mut parts: Vec<String> = Vec::new();
-                        if let Some(label) = entry
-                            .batch_label
-                            .as_ref()
-                            .and_then(|value| {
-                                let trimmed = value.trim();
-                                (!trimmed.is_empty()).then(|| trimmed.to_string())
-                            })
-                        {
-                            parts.push(label);
-                        }
-                        if let Some(batch_id) = entry.batch_id.as_ref() {
-                            let short = short_batch_label(batch_id);
-                            parts.push(if short.is_empty() {
-                                batch_id.clone()
-                            } else {
-                                short
-                            });
-                        }
-                        let batch_text = if parts.is_empty() {
-                            "Ad-hoc".to_string()
-                        } else {
-                            parts.join("  ")
-                        };
-                        if !meta_parts.is_empty() {
-                            meta_parts.push(Span::raw("  "));
-                        }
-                        meta_parts.push(Span::styled(
-                            format!("Batch: {batch_text}"),
+                        .map(|m| Self::format_model_label(m))
+                        .unwrap_or_else(|| display_name.clone());
+                    let mut meta_line: Vec<Span> = vec![
+                        Span::raw(" "),
+                        Span::styled("Status:", Style::default().fg(crate::colors::text_dim())),
+                        Span::raw(" "),
+                        Span::styled(status_chip, Style::default().fg(status_color).add_modifier(Modifier::BOLD)),
+                        Span::raw("   "),
+                        Span::styled("Model:", Style::default().fg(crate::colors::text_dim())),
+                        Span::raw(" "),
+                        Span::styled(
+                            model_meta,
+                            Style::default().fg(crate::colors::text()),
+                        ),
+                        Span::raw("   "),
+                        Span::styled("ID:", Style::default().fg(crate::colors::text_dim())),
+                        Span::raw(" "),
+                        Span::styled(id_short, Style::default().fg(crate::colors::text_dim())),
+                    ];
+                    if let Some(batch_id) = entry.batch_id.as_ref() {
+                        meta_line.push(Span::raw("   "));
+                        meta_line.push(Span::styled(
+                            format!("Batch: {}", short_batch_label(batch_id)),
                             Style::default().fg(crate::colors::text_dim()),
                         ));
                     }
-                    if !meta_parts.is_empty() {
-                        lines.push(Line::from(
-                            std::iter::once(Span::raw(" ")).chain(meta_parts.into_iter()).collect::<Vec<_>>(),
-                        ));
-                    }
+                    lines.push(Line::from(meta_line));
 
                     self.ensure_trailing_blank_line(&mut lines);
 
@@ -34154,45 +34229,65 @@ impl ChatWidget<'_> {
                     }
 
                     self.ensure_trailing_blank_line(&mut lines);
+
+                    // Action log box
                     let action_header_style = Style::default()
                         .fg(crate::colors::text())
                         .add_modifier(Modifier::BOLD);
-                    let chevron = if self.agents_terminal.actions_collapsed { "[>]" } else { "[v]" };
-                    lines.push(Line::from(vec![
-                        Span::raw(" "),
-                        Span::styled(chevron.to_string(), action_header_style),
-                        Span::raw(" "),
-                        Span::styled(
-                            format!("Action History ({} entries)", entry.logs.len()),
-                            action_header_style,
-                        ),
-                    ]));
+                    let chevron = if self.agents_terminal.actions_collapsed { "▶" } else { "▼" };
+                    let header_text = format!(
+                        "╭ Action Log (a) {chevron} — {} entries ",
+                        entry.logs.len()
+                    );
+                    let header_width = UnicodeWidthStr::width(header_text.as_str()) as u16;
+                    let pad = detail_width
+                        .saturating_sub(header_width)
+                        .saturating_sub(1);
+                    let mut action_header = header_text;
+                    action_header.push_str(&"─".repeat(pad as usize));
+                    action_header.push('╮');
+                    lines.push(Line::from(Span::styled(action_header, action_header_style)));
 
                     if self.agents_terminal.actions_collapsed {
+                        let mut footer = String::from("╰");
+                        footer.push_str(&"─".repeat(detail_width.saturating_sub(1) as usize));
+                        lines.push(Line::from(footer));
                         self.ensure_trailing_blank_line(&mut lines);
                     } else if entry.logs.is_empty() {
                         lines.push(Line::from(vec![
-                            Span::raw(" "),
+                            Span::raw("│   "),
                             Span::styled(
                                 "No updates yet",
                                 Style::default().fg(crate::colors::text_dim()),
                             ),
                         ]));
+                        let mut footer = String::from("╰");
+                        footer.push_str(&"─".repeat(detail_width.saturating_sub(1) as usize));
+                        lines.push(Line::from(footer));
                         self.ensure_trailing_blank_line(&mut lines);
                     } else {
                         lines.push(Line::from(vec![
-                            Span::raw(" #  Time     Event"),
+                            Span::raw("│   TIME      TYPE       MESSAGE"),
                         ]));
+                        let mut log_lines: Vec<Line> = Vec::new();
                         for (idx, log) in entry.logs.iter().enumerate() {
                             self.append_agent_log_lines(
-                                &mut lines,
+                                &mut log_lines,
                                 idx,
                                 entry.logs.len(),
                                 log,
                                 None,
-                                detail_width,
+                                detail_width.saturating_sub(4),
                             );
                         }
+                        for mut line in log_lines.into_iter() {
+                            line.spans.insert(0, Span::raw("│   "));
+                            lines.push(line);
+                        }
+                        let mut footer = String::from("╰");
+                        footer.push_str(&"─".repeat(detail_width.saturating_sub(1) as usize));
+                        lines.push(Line::from(footer));
+                        self.ensure_trailing_blank_line(&mut lines);
                     }
                 } else {
                     lines.push(Line::from(vec![
@@ -34290,22 +34385,18 @@ impl ChatWidget<'_> {
                 ])
             } else {
                 Line::from(vec![
-                    Span::styled("1-5", Style::default().fg(crate::colors::function())),
-                    Span::styled(" Filters  ", Style::default().fg(crate::colors::text_dim())),
-                    Span::styled("s", Style::default().fg(crate::colors::function())),
-                    Span::styled(" Sort  ", Style::default().fg(crate::colors::text_dim())),
-                    Span::styled("h/a", Style::default().fg(crate::colors::function())),
-                    Span::styled(" Collapse  ", Style::default().fg(crate::colors::text_dim())),
-                    Span::styled("↑/↓", Style::default().fg(crate::colors::function())),
-                    Span::styled(" List/Scroll  ", Style::default().fg(crate::colors::text_dim())),
-                    Span::styled("PgUp/PgDn", Style::default().fg(crate::colors::function())),
-                    Span::styled(" Page  ", Style::default().fg(crate::colors::text_dim())),
-                    Span::styled("←/→", Style::default().fg(crate::colors::function())),
-                    Span::styled(" Pane  ", Style::default().fg(crate::colors::text_dim())),
-                    Span::styled("S", Style::default().fg(crate::colors::function())),
-                    Span::styled(" Stop  ", Style::default().fg(crate::colors::text_dim())),
-                    Span::styled("Ctrl+A", Style::default().fg(crate::colors::function())),
-                    Span::styled(" Close", Style::default().fg(crate::colors::text_dim())),
+                    Span::styled("[↑/↓/←/→]", Style::default().fg(crate::colors::function())),
+                    Span::styled(" Navigate   ", Style::default().fg(crate::colors::text_dim())),
+                    Span::styled("[1-5]", Style::default().fg(crate::colors::function())),
+                    Span::styled(" Filter   ", Style::default().fg(crate::colors::text_dim())),
+                    Span::styled("[S]", Style::default().fg(crate::colors::function())),
+                    Span::styled(" Sort   ", Style::default().fg(crate::colors::text_dim())),
+                    Span::styled("[H/A]", Style::default().fg(crate::colors::function())),
+                    Span::styled(" Toggle Details   ", Style::default().fg(crate::colors::text_dim())),
+                    Span::styled("[X]", Style::default().fg(crate::colors::function())),
+                    Span::styled(" Stop   ", Style::default().fg(crate::colors::text_dim())),
+                    Span::styled("[Ctrl+A]", Style::default().fg(crate::colors::function())),
+                    Span::styled(" Exit", Style::default().fg(crate::colors::text_dim())),
                 ])
             };
             Paragraph::new(hint_line)
