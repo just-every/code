@@ -14742,9 +14742,19 @@ impl ChatWidget<'_> {
             self.config.review_use_chat_model,
             self.config.review_model.clone(),
             self.config.review_model_reasoning_effort,
+            self.config.review_resolve_use_chat_model,
+            self.config.review_resolve_model.clone(),
+            self.config.review_resolve_model_reasoning_effort,
             auto_resolve_enabled,
             attempts,
             auto_review_enabled,
+            self.config.auto_review_use_chat_model,
+            self.config.auto_review_model.clone(),
+            self.config.auto_review_model_reasoning_effort,
+            self.config.auto_review_resolve_use_chat_model,
+            self.config.auto_review_resolve_model.clone(),
+            self.config.auto_review_resolve_model_reasoning_effort,
+            self.config.auto_drive.auto_review_followup_attempts.get(),
             self.app_event_tx.clone(),
         );
         ReviewSettingsContent::new(view)
@@ -20003,6 +20013,99 @@ Have we met every part of this goal and is there no further work to do?"#
         );
     }
 
+    pub(crate) fn show_review_resolve_model_selector(&mut self) {
+        let presets = self.available_model_presets();
+        if presets.is_empty() {
+            self.bottom_pane.flash_footer_notice(
+                "No model presets are available for review resolution.".to_string(),
+            );
+            return;
+        }
+        if self.settings.overlay.is_some() {
+            self.pending_settings_return = Some(SettingsSection::Review);
+            self.close_settings_overlay();
+        }
+        let current = if self.config.review_resolve_use_chat_model {
+            self.config.model.clone()
+        } else {
+            self.config.review_resolve_model.clone()
+        };
+        let effort = if self.config.review_resolve_use_chat_model {
+            self.config.model_reasoning_effort
+        } else {
+            self.config.review_resolve_model_reasoning_effort
+        };
+        self.bottom_pane.show_model_selection(
+            presets,
+            current,
+            effort,
+            self.config.review_resolve_use_chat_model,
+            ModelSelectionTarget::ReviewResolve,
+        );
+    }
+
+    pub(crate) fn show_auto_review_model_selector(&mut self) {
+        let presets = self.available_model_presets();
+        if presets.is_empty() {
+            self.bottom_pane.flash_footer_notice(
+                "No model presets are available for Auto Review. Update configuration to define models.".to_string(),
+            );
+            return;
+        }
+        if self.settings.overlay.is_some() {
+            self.pending_settings_return = Some(SettingsSection::Review);
+            self.close_settings_overlay();
+        }
+        let current = if self.config.auto_review_use_chat_model {
+            self.config.model.clone()
+        } else {
+            self.config.auto_review_model.clone()
+        };
+        let effort = if self.config.auto_review_use_chat_model {
+            self.config.model_reasoning_effort
+        } else {
+            self.config.auto_review_model_reasoning_effort
+        };
+        self.bottom_pane.show_model_selection(
+            presets,
+            current,
+            effort,
+            self.config.auto_review_use_chat_model,
+            ModelSelectionTarget::AutoReview,
+        );
+    }
+
+    pub(crate) fn show_auto_review_resolve_model_selector(&mut self) {
+        let presets = self.available_model_presets();
+        if presets.is_empty() {
+            self.bottom_pane.flash_footer_notice(
+                "No model presets are available for Auto Review resolution.".to_string(),
+            );
+            return;
+        }
+        if self.settings.overlay.is_some() {
+            self.pending_settings_return = Some(SettingsSection::Review);
+            self.close_settings_overlay();
+        }
+        let current = if self.config.auto_review_resolve_use_chat_model {
+            self.config.model.clone()
+        } else {
+            self.config.auto_review_resolve_model.clone()
+        };
+        let effort = if self.config.auto_review_resolve_use_chat_model {
+            self.config.model_reasoning_effort
+        } else {
+            self.config.auto_review_resolve_model_reasoning_effort
+        };
+        self.bottom_pane.show_model_selection(
+            presets,
+            current,
+            effort,
+            self.config.auto_review_resolve_use_chat_model,
+            ModelSelectionTarget::AutoReviewResolve,
+        );
+    }
+
     pub(crate) fn show_planning_model_selector(&mut self) {
         let presets = self.available_model_presets();
         if presets.is_empty() {
@@ -20121,6 +20224,12 @@ Have we met every part of this goal and is there no further work to do?"#
             self.update_review_settings_model_row();
         }
 
+        if self.config.review_resolve_use_chat_model {
+            self.config.review_resolve_model = self.config.model.clone();
+            self.config.review_resolve_model_reasoning_effort = self.config.model_reasoning_effort;
+            self.update_review_settings_model_row();
+        }
+
         if self.config.planning_use_chat_model {
             self.config.planning_model = self.config.model.clone();
             self.config.planning_model_reasoning_effort = self.config.model_reasoning_effort;
@@ -20131,6 +20240,18 @@ Have we met every part of this goal and is there no further work to do?"#
             self.config.auto_drive.model = self.config.model.clone();
             self.config.auto_drive.model_reasoning_effort = self.config.model_reasoning_effort;
             self.update_auto_drive_settings_model_row();
+        }
+
+        if self.config.auto_review_use_chat_model {
+            self.config.auto_review_model = self.config.model.clone();
+            self.config.auto_review_model_reasoning_effort = self.config.model_reasoning_effort;
+            self.update_review_settings_model_row();
+        }
+
+        if self.config.auto_review_resolve_use_chat_model {
+            self.config.auto_review_resolve_model = self.config.model.clone();
+            self.config.auto_review_resolve_model_reasoning_effort = self.config.model_reasoning_effort;
+            self.update_review_settings_model_row();
         }
     }
 
@@ -20199,6 +20320,75 @@ Have we met every part of this goal and is there no further work to do?"#
         self.request_redraw();
     }
 
+    pub(crate) fn apply_review_resolve_model_selection(
+        &mut self,
+        model: String,
+        effort: ReasoningEffort,
+    ) {
+        let trimmed = model.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+
+        self.config.review_resolve_use_chat_model = false;
+
+        let clamped_effort = Self::clamp_reasoning_for_model(trimmed, effort);
+
+        let mut updated = false;
+        if !self
+            .config
+            .review_resolve_model
+            .eq_ignore_ascii_case(trimmed)
+        {
+            self.config.review_resolve_model = trimmed.to_string();
+            updated = true;
+        }
+
+        if self.config.review_resolve_model_reasoning_effort != clamped_effort {
+            self.config.review_resolve_model_reasoning_effort = clamped_effort;
+            updated = true;
+        }
+
+        if !updated {
+            self.bottom_pane
+                .flash_footer_notice("Resolve model unchanged.".to_string());
+            return;
+        }
+
+        let message = if let Ok(home) = code_core::config::find_code_home() {
+            match code_core::config::set_review_resolve_model(
+                &home,
+                &self.config.review_resolve_model,
+                self.config.review_resolve_model_reasoning_effort,
+                self.config.review_resolve_use_chat_model,
+            ) {
+                Ok(_) => format!(
+                    "Resolve model set to {} ({} reasoning)",
+                    self.config.review_resolve_model,
+                    Self::format_reasoning_effort(self.config.review_resolve_model_reasoning_effort)
+                ),
+                Err(err) => {
+                    tracing::warn!("Failed to persist resolve model: {err}");
+                    format!(
+                        "Resolve model set for this session (failed to persist): {}",
+                        self.config.review_resolve_model
+                    )
+                }
+            }
+        } else {
+            tracing::warn!("Could not locate Code home to persist resolve model");
+            format!(
+                "Resolve model set for this session: {}",
+                self.config.review_resolve_model
+            )
+        };
+
+        self.bottom_pane.flash_footer_notice(message);
+        self.refresh_settings_overview_rows();
+        self.update_review_settings_model_row();
+        self.request_redraw();
+    }
+
     pub(crate) fn set_review_use_chat_model(&mut self, use_chat: bool) {
         if self.config.review_use_chat_model == use_chat {
             return;
@@ -20227,6 +20417,251 @@ Have we met every part of this goal and is there no further work to do?"#
                 "Review model set to {} ({} reasoning)",
                 self.config.review_model,
                 Self::format_reasoning_effort(self.config.review_model_reasoning_effort)
+            )
+        };
+        self.bottom_pane.flash_footer_notice(notice);
+        self.update_review_settings_model_row();
+        self.refresh_settings_overview_rows();
+        self.request_redraw();
+    }
+
+    pub(crate) fn set_review_resolve_use_chat_model(&mut self, use_chat: bool) {
+        if self.config.review_resolve_use_chat_model == use_chat {
+            return;
+        }
+        self.config.review_resolve_use_chat_model = use_chat;
+        if use_chat {
+            self.config.review_resolve_model = self.config.model.clone();
+            self.config.review_resolve_model_reasoning_effort = self.config.model_reasoning_effort;
+        }
+
+        if let Ok(home) = code_core::config::find_code_home() {
+            if let Err(err) = code_core::config::set_review_resolve_model(
+                &home,
+                &self.config.review_resolve_model,
+                self.config.review_resolve_model_reasoning_effort,
+                use_chat,
+            ) {
+                tracing::warn!("Failed to persist resolve use-chat toggle: {err}");
+            }
+        }
+
+        let notice = if use_chat {
+            "Resolve model now follows Chat model".to_string()
+        } else {
+            format!(
+                "Resolve model set to {} ({} reasoning)",
+                self.config.review_resolve_model,
+                Self::format_reasoning_effort(self.config.review_resolve_model_reasoning_effort)
+            )
+        };
+        self.bottom_pane.flash_footer_notice(notice);
+        self.update_review_settings_model_row();
+        self.refresh_settings_overview_rows();
+        self.request_redraw();
+    }
+
+    pub(crate) fn apply_auto_review_model_selection(
+        &mut self,
+        model: String,
+        effort: ReasoningEffort,
+    ) {
+        let trimmed = model.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+
+        self.config.auto_review_use_chat_model = false;
+        let clamped_effort = Self::clamp_reasoning_for_model(trimmed, effort);
+
+        let mut updated = false;
+        if !self
+            .config
+            .auto_review_model
+            .eq_ignore_ascii_case(trimmed)
+        {
+            self.config.auto_review_model = trimmed.to_string();
+            updated = true;
+        }
+
+        if self.config.auto_review_model_reasoning_effort != clamped_effort {
+            self.config.auto_review_model_reasoning_effort = clamped_effort;
+            updated = true;
+        }
+
+        if !updated {
+            self.bottom_pane
+                .flash_footer_notice("Auto Review model unchanged.".to_string());
+            return;
+        }
+
+        let notice = if let Ok(home) = code_core::config::find_code_home() {
+            match code_core::config::set_auto_review_model(
+                &home,
+                &self.config.auto_review_model,
+                self.config.auto_review_model_reasoning_effort,
+                self.config.auto_review_use_chat_model,
+            ) {
+                Ok(_) => format!(
+                    "Auto Review model set to {} ({} reasoning)",
+                    self.config.auto_review_model,
+                    Self::format_reasoning_effort(self.config.auto_review_model_reasoning_effort)
+                ),
+                Err(err) => {
+                    tracing::warn!("Failed to persist Auto Review model: {err}");
+                    format!(
+                        "Auto Review model set for this session (failed to persist): {}",
+                        self.config.auto_review_model
+                    )
+                }
+            }
+        } else {
+            tracing::warn!("Could not locate Code home to persist Auto Review model");
+            format!(
+                "Auto Review model set for this session: {}",
+                self.config.auto_review_model
+            )
+        };
+
+        self.bottom_pane.flash_footer_notice(notice);
+        self.refresh_settings_overview_rows();
+        self.update_review_settings_model_row();
+        self.request_redraw();
+    }
+
+    pub(crate) fn set_auto_review_use_chat_model(&mut self, use_chat: bool) {
+        if self.config.auto_review_use_chat_model == use_chat {
+            return;
+        }
+        self.config.auto_review_use_chat_model = use_chat;
+        if use_chat {
+            self.config.auto_review_model = self.config.model.clone();
+            self.config.auto_review_model_reasoning_effort = self.config.model_reasoning_effort;
+        }
+
+        if let Ok(home) = code_core::config::find_code_home() {
+            if let Err(err) = code_core::config::set_auto_review_model(
+                &home,
+                &self.config.auto_review_model,
+                self.config.auto_review_model_reasoning_effort,
+                use_chat,
+            ) {
+                tracing::warn!("Failed to persist Auto Review use-chat toggle: {err}");
+            }
+        }
+
+        let notice = if use_chat {
+            "Auto Review model now follows Chat model".to_string()
+        } else {
+            format!(
+                "Auto Review model set to {} ({} reasoning)",
+                self.config.auto_review_model,
+                Self::format_reasoning_effort(self.config.auto_review_model_reasoning_effort)
+            )
+        };
+        self.bottom_pane.flash_footer_notice(notice);
+        self.update_review_settings_model_row();
+        self.refresh_settings_overview_rows();
+        self.request_redraw();
+    }
+
+    pub(crate) fn apply_auto_review_resolve_model_selection(
+        &mut self,
+        model: String,
+        effort: ReasoningEffort,
+    ) {
+        let trimmed = model.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+
+        self.config.auto_review_resolve_use_chat_model = false;
+        let clamped_effort = Self::clamp_reasoning_for_model(trimmed, effort);
+
+        let mut updated = false;
+        if !self
+            .config
+            .auto_review_resolve_model
+            .eq_ignore_ascii_case(trimmed)
+        {
+            self.config.auto_review_resolve_model = trimmed.to_string();
+            updated = true;
+        }
+
+        if self.config.auto_review_resolve_model_reasoning_effort != clamped_effort {
+            self.config.auto_review_resolve_model_reasoning_effort = clamped_effort;
+            updated = true;
+        }
+
+        if !updated {
+            self.bottom_pane
+                .flash_footer_notice("Auto Review resolve model unchanged.".to_string());
+            return;
+        }
+
+        let notice = if let Ok(home) = code_core::config::find_code_home() {
+            match code_core::config::set_auto_review_resolve_model(
+                &home,
+                &self.config.auto_review_resolve_model,
+                self.config.auto_review_resolve_model_reasoning_effort,
+                self.config.auto_review_resolve_use_chat_model,
+            ) {
+                Ok(_) => format!(
+                    "Auto Review resolve model set to {} ({} reasoning)",
+                    self.config.auto_review_resolve_model,
+                    Self::format_reasoning_effort(self.config.auto_review_resolve_model_reasoning_effort)
+                ),
+                Err(err) => {
+                    tracing::warn!("Failed to persist Auto Review resolve model: {err}");
+                    format!(
+                        "Auto Review resolve model set for this session (failed to persist): {}",
+                        self.config.auto_review_resolve_model
+                    )
+                }
+            }
+        } else {
+            tracing::warn!("Could not locate Code home to persist Auto Review resolve model");
+            format!(
+                "Auto Review resolve model set for this session: {}",
+                self.config.auto_review_resolve_model
+            )
+        };
+
+        self.bottom_pane.flash_footer_notice(notice);
+        self.refresh_settings_overview_rows();
+        self.update_review_settings_model_row();
+        self.request_redraw();
+    }
+
+    pub(crate) fn set_auto_review_resolve_use_chat_model(&mut self, use_chat: bool) {
+        if self.config.auto_review_resolve_use_chat_model == use_chat {
+            return;
+        }
+        self.config.auto_review_resolve_use_chat_model = use_chat;
+        if use_chat {
+            self.config.auto_review_resolve_model = self.config.model.clone();
+            self.config.auto_review_resolve_model_reasoning_effort =
+                self.config.model_reasoning_effort;
+        }
+
+        if let Ok(home) = code_core::config::find_code_home() {
+            if let Err(err) = code_core::config::set_auto_review_resolve_model(
+                &home,
+                &self.config.auto_review_resolve_model,
+                self.config.auto_review_resolve_model_reasoning_effort,
+                use_chat,
+            ) {
+                tracing::warn!("Failed to persist Auto Review resolve use-chat toggle: {err}");
+            }
+        }
+
+        let notice = if use_chat {
+            "Auto Review resolve model now follows Chat model".to_string()
+        } else {
+            format!(
+                "Auto Review resolve model set to {} ({} reasoning)",
+                self.config.auto_review_resolve_model,
+                Self::format_reasoning_effort(self.config.auto_review_resolve_model_reasoning_effort)
             )
         };
         self.bottom_pane.flash_footer_notice(notice);
@@ -20279,6 +20714,9 @@ Have we met every part of this goal and is there no further work to do?"#
             ModelSelectionKind::Review => SettingsSection::Review,
             ModelSelectionKind::Planning => SettingsSection::Planning,
             ModelSelectionKind::AutoDrive => SettingsSection::AutoDrive,
+            ModelSelectionKind::ReviewResolve => SettingsSection::Review,
+            ModelSelectionKind::AutoReview => SettingsSection::Review,
+            ModelSelectionKind::AutoReviewResolve => SettingsSection::Review,
         };
 
         if let Some(section) = self.pending_settings_return {
@@ -21373,35 +21811,58 @@ Have we met every part of this goal and is there no further work to do?"#
 
     fn settings_summary_review(&self) -> Option<String> {
         let attempts = self.configured_auto_resolve_re_reviews();
-        let auto_label = if !self.config.tui.review_auto_resolve {
-            "Auto Resolve: Off".to_string()
-        } else if attempts == 0 {
-            "Auto Resolve: On (0 re-reviews)".to_string()
-        } else if attempts == 1 {
-            "Auto Resolve: On (max 1 re-review)".to_string()
+        let auto_followups = self.config.auto_drive.auto_review_followup_attempts.get();
+
+        let review_model_label = if self.config.review_use_chat_model {
+            "Chat".to_string()
         } else {
-            format!("Auto Resolve: On (max {} re-reviews)", attempts)
-        };
-        let auto_review_label = format!(
-            "Auto Review: {}",
-            Self::on_off_label(self.config.tui.auto_review_enabled)
-        );
-        let model_part = if self.config.review_use_chat_model {
-            "Model: Follow Chat Mode".to_string()
-        } else {
-            let model = self.config.review_model.trim();
-            let model_display = if model.is_empty() {
-                "(not set)".to_string()
-            } else {
-                Self::format_model_label(model)
-            };
             format!(
-                "Model: {} ({})",
-                model_display,
+                "{} ({})",
+                Self::format_model_label(&self.config.review_model),
                 Self::format_reasoning_effort(self.config.review_model_reasoning_effort)
             )
         };
-        Some(format!("{} · {} · {}", model_part, auto_label, auto_review_label))
+
+        let review_resolve_label = if self.config.review_resolve_use_chat_model {
+            "Chat".to_string()
+        } else {
+            format!(
+                "{} ({})",
+                Self::format_model_label(&self.config.review_resolve_model),
+                Self::format_reasoning_effort(self.config.review_resolve_model_reasoning_effort)
+            )
+        };
+
+        let auto_review_model_label = if self.config.auto_review_use_chat_model {
+            "Chat".to_string()
+        } else {
+            format!(
+                "{} ({})",
+                Self::format_model_label(&self.config.auto_review_model),
+                Self::format_reasoning_effort(self.config.auto_review_model_reasoning_effort)
+            )
+        };
+
+        let auto_review_resolve_label = if self.config.auto_review_resolve_use_chat_model {
+            "Chat".to_string()
+        } else {
+            format!(
+                "{} ({})",
+                Self::format_model_label(&self.config.auto_review_resolve_model),
+                Self::format_reasoning_effort(self.config.auto_review_resolve_model_reasoning_effort)
+            )
+        };
+
+        Some(format!(
+            "/review: {} · Resolve: {} · Follow-ups: {} · Auto Review: {} ({} · resolve {} · follow-ups {})",
+            review_model_label,
+            review_resolve_label,
+            attempts,
+            Self::on_off_label(self.config.tui.auto_review_enabled),
+            auto_review_model_label,
+            auto_review_resolve_label,
+            auto_followups
+        ))
     }
 
     fn settings_summary_limits(&self) -> Option<String> {
@@ -26397,7 +26858,7 @@ async fn run_background_review(
             }
         }
 
-        let review_model = ensure_code_prefix(&config.review_model);
+        let review_model = ensure_code_prefix(&config.auto_review_model);
 
         // Use the /review entrypoint so upstream wiring (model defaults, review formatting) stays intact.
         let mut review_prompt = format!(
@@ -26424,7 +26885,7 @@ async fn run_background_review(
                 Some(branch.clone()),
                 Some(snapshot_id.clone()),
                 Some(code_core::protocol::AgentSourceKind::AutoReview),
-                config.review_model_reasoning_effort.into(),
+                config.auto_review_model_reasoning_effort.into(),
             )
             .await;
         drop(manager);
@@ -30416,6 +30877,7 @@ impl ChatWidget<'_> {
 
         self.bottom_pane.flash_footer_notice(message.to_string());
         self.refresh_settings_overview_rows();
+        self.update_review_settings_model_row();
         self.request_redraw();
     }
 
@@ -30456,6 +30918,7 @@ impl ChatWidget<'_> {
 
         self.bottom_pane.flash_footer_notice(message.to_string());
         self.refresh_settings_overview_rows();
+        self.update_review_settings_model_row();
         self.request_redraw();
     }
 
@@ -31131,7 +31594,59 @@ impl ChatWidget<'_> {
         };
 
         self.bottom_pane.flash_footer_notice(message);
+        self.update_review_settings_model_row();
         self.refresh_settings_overview_rows();
+        self.request_redraw();
+    }
+
+    pub(crate) fn set_auto_review_followup_attempts(&mut self, attempts: u32) {
+        use code_core::config_types::AutoResolveAttemptLimit;
+
+        let Ok(limit) = AutoResolveAttemptLimit::try_new(attempts) else {
+            tracing::warn!("Ignoring invalid auto-review follow-up value: {}", attempts);
+            return;
+        };
+
+        if self
+            .config
+            .auto_drive
+            .auto_review_followup_attempts
+            .get()
+            == limit.get()
+        {
+            return;
+        }
+
+        self.config.auto_drive.auto_review_followup_attempts = limit;
+
+        if let Ok(home) = code_core::config::find_code_home() {
+            match code_core::config::set_auto_drive_settings(
+                &home,
+                &self.config.auto_drive,
+                self.config.auto_drive_use_chat_model,
+            ) {
+                Ok(_) => {
+                    tracing::info!(
+                        "Persisted auto-review follow-up limit: {}",
+                        limit.get()
+                    );
+                    self.bottom_pane.flash_footer_notice(format!(
+                        "Auto Review follow-ups set to {}.",
+                        limit.get()
+                    ));
+                }
+                Err(err) => {
+                    tracing::warn!("Failed to persist auto-review follow-up attempts: {err}");
+                    self.bottom_pane.flash_footer_notice(format!(
+                        "Auto Review follow-ups set to {} for this session (failed to persist).",
+                        limit.get()
+                    ));
+                }
+            }
+        }
+
+        self.refresh_settings_overview_rows();
+        self.update_review_settings_model_row();
         self.request_redraw();
     }
 
@@ -31162,7 +31677,28 @@ impl ChatWidget<'_> {
                     self.config.review_model.clone(),
                     self.config.review_model_reasoning_effort,
                 );
-                content.set_use_chat_model(self.config.review_use_chat_model);
+                content.set_review_use_chat_model(self.config.review_use_chat_model);
+                content.update_review_resolve_model(
+                    self.config.review_resolve_model.clone(),
+                    self.config.review_resolve_model_reasoning_effort,
+                );
+                content.set_review_resolve_use_chat_model(self.config.review_resolve_use_chat_model);
+                content.update_auto_review_model(
+                    self.config.auto_review_model.clone(),
+                    self.config.auto_review_model_reasoning_effort,
+                );
+                content.set_auto_review_use_chat_model(self.config.auto_review_use_chat_model);
+                content.update_auto_review_resolve_model(
+                    self.config.auto_review_resolve_model.clone(),
+                    self.config.auto_review_resolve_model_reasoning_effort,
+                );
+                content.set_auto_review_resolve_use_chat_model(
+                    self.config.auto_review_resolve_use_chat_model,
+                );
+                content.set_review_followups(self.config.auto_drive.auto_resolve_review_attempts.get());
+                content.set_auto_review_followups(
+                    self.config.auto_drive.auto_review_followup_attempts.get(),
+                );
             }
         }
     }

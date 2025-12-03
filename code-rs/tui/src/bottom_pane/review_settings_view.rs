@@ -15,31 +15,54 @@ use super::bottom_pane_view::BottomPaneView;
 use super::scroll_state::ScrollState;
 use super::BottomPane;
 
-const DEFAULT_VISIBLE_ROWS: usize = 4;
+const DEFAULT_VISIBLE_ROWS: usize = 8;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum SelectionKind {
-    Model,
-    Toggle,
-    Attempts,
-    AutoReview,
+    ReviewEnabled,
+    ReviewModel,
+    ReviewResolveModel,
+    ReviewAttempts,
+    AutoReviewEnabled,
+    AutoReviewModel,
+    AutoReviewResolveModel,
+    AutoReviewAttempts,
 }
 
 enum RowData {
-    CustomModel,
-    Toggle,
-    Attempts,
-    AutoReview,
+    SectionReview,
+    ReviewEnabled,
+    ReviewModel,
+    ReviewResolveModel,
+    ReviewAttempts,
+    SectionAutoReview,
+    AutoReviewEnabled,
+    AutoReviewModel,
+    AutoReviewResolveModel,
+    AutoReviewAttempts,
 }
 
 pub(crate) struct ReviewSettingsView {
-    use_chat_model: bool,
+    review_use_chat_model: bool,
     review_model: String,
     review_reasoning: ReasoningEffort,
-    auto_resolve_enabled: bool,
-    auto_resolve_attempts: u32,
-    auto_attempt_index: usize,
+    review_resolve_use_chat_model: bool,
+    review_resolve_model: String,
+    review_resolve_reasoning: ReasoningEffort,
+    review_auto_resolve_enabled: bool,
+    review_followups: u32,
+    review_followups_index: usize,
+
     auto_review_enabled: bool,
+    auto_review_use_chat_model: bool,
+    auto_review_model: String,
+    auto_review_reasoning: ReasoningEffort,
+    auto_review_resolve_use_chat_model: bool,
+    auto_review_resolve_model: String,
+    auto_review_resolve_reasoning: ReasoningEffort,
+    auto_review_followups: u32,
+    auto_review_followups_index: usize,
+
     app_event_tx: AppEventSender,
     state: ScrollState,
     is_complete: bool,
@@ -53,37 +76,114 @@ impl ReviewSettingsView {
         self.review_reasoning = effort;
     }
 
-    pub fn set_use_chat_model(&mut self, use_chat: bool) {
-        self.use_chat_model = use_chat;
+    pub fn set_review_use_chat_model(&mut self, use_chat: bool) {
+        self.review_use_chat_model = use_chat;
     }
 
+    pub fn set_review_resolve_model(&mut self, model: String, effort: ReasoningEffort) {
+        self.review_resolve_model = model;
+        self.review_resolve_reasoning = effort;
+    }
+
+    pub fn set_review_resolve_use_chat_model(&mut self, use_chat: bool) {
+        self.review_resolve_use_chat_model = use_chat;
+    }
+
+    pub fn set_auto_review_model(&mut self, model: String, effort: ReasoningEffort) {
+        self.auto_review_model = model;
+        self.auto_review_reasoning = effort;
+    }
+
+    pub fn set_auto_review_use_chat_model(&mut self, use_chat: bool) {
+        self.auto_review_use_chat_model = use_chat;
+    }
+
+    pub fn set_auto_review_resolve_model(&mut self, model: String, effort: ReasoningEffort) {
+        self.auto_review_resolve_model = model;
+        self.auto_review_resolve_reasoning = effort;
+    }
+
+    pub fn set_auto_review_resolve_use_chat_model(&mut self, use_chat: bool) {
+        self.auto_review_resolve_use_chat_model = use_chat;
+    }
+
+    pub fn set_review_followups(&mut self, attempts: u32) {
+        if let Some(idx) = AutoResolveAttemptLimit::ALLOWED
+            .iter()
+            .position(|&value| value == attempts)
+        {
+            self.review_followups_index = idx;
+        }
+        self.review_followups = attempts;
+    }
+
+    pub fn set_auto_review_followups(&mut self, attempts: u32) {
+        if let Some(idx) = AutoResolveAttemptLimit::ALLOWED
+            .iter()
+            .position(|&value| value == attempts)
+        {
+            self.auto_review_followups_index = idx;
+        }
+        self.auto_review_followups = attempts;
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        use_chat_model: bool,
+        review_use_chat_model: bool,
         review_model: String,
         review_reasoning: ReasoningEffort,
-        auto_resolve_enabled: bool,
-        auto_resolve_attempts: u32,
+        review_resolve_use_chat_model: bool,
+        review_resolve_model: String,
+        review_resolve_reasoning: ReasoningEffort,
+        review_auto_resolve_enabled: bool,
+        review_followups: u32,
         auto_review_enabled: bool,
+        auto_review_use_chat_model: bool,
+        auto_review_model: String,
+        auto_review_reasoning: ReasoningEffort,
+        auto_review_resolve_use_chat_model: bool,
+        auto_review_resolve_model: String,
+        auto_review_resolve_reasoning: ReasoningEffort,
+        auto_review_followups: u32,
         app_event_tx: AppEventSender,
     ) -> Self {
         let mut state = ScrollState::new();
         state.selected_idx = Some(0);
+
         let default_index = AutoResolveAttemptLimit::ALLOWED
             .iter()
             .position(|&value| value == AutoResolveAttemptLimit::DEFAULT)
             .unwrap_or(0);
-        let attempt_index = AutoResolveAttemptLimit::ALLOWED
+
+        let review_followups_index = AutoResolveAttemptLimit::ALLOWED
             .iter()
-            .position(|&value| value == auto_resolve_attempts)
+            .position(|&value| value == review_followups)
             .unwrap_or(default_index);
+
+        let auto_review_followups_index = AutoResolveAttemptLimit::ALLOWED
+            .iter()
+            .position(|&value| value == auto_review_followups)
+            .unwrap_or(default_index);
+
         Self {
-            use_chat_model,
+            review_use_chat_model,
             review_model,
             review_reasoning,
-            auto_resolve_enabled,
-            auto_resolve_attempts,
-            auto_attempt_index: attempt_index,
+            review_resolve_use_chat_model,
+            review_resolve_model,
+            review_resolve_reasoning,
+            review_auto_resolve_enabled,
+            review_followups,
+            review_followups_index,
             auto_review_enabled,
+            auto_review_use_chat_model,
+            auto_review_model,
+            auto_review_reasoning,
+            auto_review_resolve_use_chat_model,
+            auto_review_resolve_model,
+            auto_review_resolve_reasoning,
+            auto_review_followups,
+            auto_review_followups_index,
             app_event_tx,
             state,
             is_complete: false,
@@ -92,20 +192,20 @@ impl ReviewSettingsView {
         }
     }
 
-    fn toggle_auto_resolve(&mut self) {
-        self.auto_resolve_enabled = !self.auto_resolve_enabled;
+    fn toggle_review_auto_resolve(&mut self) {
+        self.review_auto_resolve_enabled = !self.review_auto_resolve_enabled;
         self.app_event_tx
-            .send(AppEvent::UpdateReviewAutoResolveEnabled(self.auto_resolve_enabled));
+            .send(AppEvent::UpdateReviewAutoResolveEnabled(self.review_auto_resolve_enabled));
     }
 
-    fn adjust_auto_resolve_attempts(&mut self, forward: bool) {
+    fn adjust_review_followups(&mut self, forward: bool) {
         let allowed = AutoResolveAttemptLimit::ALLOWED;
         if allowed.is_empty() {
             return;
         }
 
         let len = allowed.len();
-        let mut next = self.auto_attempt_index;
+        let mut next = self.review_followups_index;
         next = if forward {
             (next + 1) % len
         } else if next == 0 {
@@ -114,14 +214,40 @@ impl ReviewSettingsView {
             next - 1
         };
 
-        if next == self.auto_attempt_index {
+        if next == self.review_followups_index {
             return;
         }
 
-        self.auto_attempt_index = next;
-        self.auto_resolve_attempts = allowed[next];
+        self.review_followups_index = next;
+        self.review_followups = allowed[next];
         self.app_event_tx
-            .send(AppEvent::UpdateReviewAutoResolveAttempts(self.auto_resolve_attempts));
+            .send(AppEvent::UpdateReviewAutoResolveAttempts(self.review_followups));
+    }
+
+    fn adjust_auto_review_followups(&mut self, forward: bool) {
+        let allowed = AutoResolveAttemptLimit::ALLOWED;
+        if allowed.is_empty() {
+            return;
+        }
+
+        let len = allowed.len();
+        let mut next = self.auto_review_followups_index;
+        next = if forward {
+            (next + 1) % len
+        } else if next == 0 {
+            len.saturating_sub(1)
+        } else {
+            next - 1
+        };
+
+        if next == self.auto_review_followups_index {
+            return;
+        }
+
+        self.auto_review_followups_index = next;
+        self.auto_review_followups = allowed[next];
+        self.app_event_tx
+            .send(AppEvent::UpdateAutoReviewFollowupAttempts(self.auto_review_followups));
     }
 
     fn toggle_auto_review(&mut self) {
@@ -135,19 +261,44 @@ impl ReviewSettingsView {
             .send(AppEvent::ShowReviewModelSelector);
     }
 
+    fn open_review_resolve_model_selector(&self) {
+        self.app_event_tx
+            .send(AppEvent::ShowReviewResolveModelSelector);
+    }
+
+    fn open_auto_review_model_selector(&self) {
+        self.app_event_tx
+            .send(AppEvent::ShowAutoReviewModelSelector);
+    }
+
+    fn open_auto_review_resolve_model_selector(&self) {
+        self.app_event_tx
+            .send(AppEvent::ShowAutoReviewResolveModelSelector);
+    }
+
     fn build_rows(&self) -> (Vec<RowData>, Vec<usize>, Vec<SelectionKind>) {
         let rows = vec![
-            RowData::CustomModel,
-            RowData::Toggle,
-            RowData::Attempts,
-            RowData::AutoReview,
+            RowData::SectionReview,
+            RowData::ReviewEnabled,
+            RowData::ReviewModel,
+            RowData::ReviewResolveModel,
+            RowData::ReviewAttempts,
+            RowData::SectionAutoReview,
+            RowData::AutoReviewEnabled,
+            RowData::AutoReviewModel,
+            RowData::AutoReviewResolveModel,
+            RowData::AutoReviewAttempts,
         ];
-        let selection_rows = vec![0, 1, 2, 3];
+        let selection_rows = vec![1, 2, 3, 4, 6, 7, 8, 9];
         let selection_kinds = vec![
-            SelectionKind::Model,
-            SelectionKind::Toggle,
-            SelectionKind::Attempts,
-            SelectionKind::AutoReview,
+            SelectionKind::ReviewEnabled,
+            SelectionKind::ReviewModel,
+            SelectionKind::ReviewResolveModel,
+            SelectionKind::ReviewAttempts,
+            SelectionKind::AutoReviewEnabled,
+            SelectionKind::AutoReviewModel,
+            SelectionKind::AutoReviewResolveModel,
+            SelectionKind::AutoReviewAttempts,
         ];
         (rows, selection_rows, selection_kinds)
     }
@@ -208,7 +359,54 @@ impl ReviewSettingsView {
             Style::default().fg(colors::text_dim())
         };
         match row {
-            RowData::CustomModel => {
+            RowData::SectionReview => {
+                Line::from(vec![Span::styled(
+                    " /review (manual) ",
+                    Style::default()
+                        .fg(colors::primary())
+                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                )])
+            }
+            RowData::SectionAutoReview => {
+                Line::from(vec![Span::styled(
+                    " Auto Review (background) ",
+                    Style::default()
+                        .fg(colors::primary())
+                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                )])
+            }
+            RowData::ReviewEnabled => {
+                let label_style = if selected {
+                    Style::default()
+                        .fg(colors::primary())
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(colors::text()).add_modifier(Modifier::BOLD)
+                };
+                let status_span = if self.review_auto_resolve_enabled {
+                    Span::styled("On", Style::default().fg(colors::success()))
+                } else {
+                    Span::styled("Off", Style::default().fg(colors::text_dim()))
+                };
+                let mut spans = vec![
+                    Span::styled(arrow, arrow_style),
+                    Span::styled("Enabled", label_style),
+                    Span::raw("  "),
+                    status_span,
+                    Span::raw("  (auto-resolve /review)"),
+                ];
+                if selected {
+                    let hint = if self.review_auto_resolve_enabled {
+                        "(press Enter to disable)"
+                    } else {
+                        "(press Enter to enable)"
+                    };
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled(hint, Style::default().fg(colors::text_dim())));
+                }
+                Line::from(spans)
+            }
+            RowData::ReviewModel => {
                 let label_style = if selected {
                     Style::default()
                         .fg(colors::primary())
@@ -223,36 +421,27 @@ impl ReviewSettingsView {
                 } else {
                     Style::default().fg(colors::text())
                 };
-                let (value_text, hint_text) = if self.use_chat_model {
-                    (
-                        "Follow Chat Mode".to_string(),
-                        Some("Enter to change".to_string()),
-                    )
+                let value_text = if self.review_use_chat_model {
+                    "Follow Chat".to_string()
                 } else {
-                    (
-                        format!(
-                            "{} ({})",
-                            Self::format_model_label(&self.review_model),
-                            Self::reasoning_label(self.review_reasoning)
-                        ),
-                        Some("Enter to change".to_string()),
+                    format!(
+                        "{} ({})",
+                        Self::format_model_label(&self.review_model),
+                        Self::reasoning_label(self.review_reasoning)
                     )
                 };
                 let mut spans = vec![
                     Span::styled(arrow, arrow_style),
-                    Span::styled("Custom review model", label_style),
+                    Span::styled("Review Model", label_style),
                     Span::raw("  "),
                     Span::styled(value_text, value_style),
                 ];
                 if selected {
-                    if let Some(hint) = hint_text {
-                        spans.push(Span::raw("  "));
-                        spans.push(Span::styled(hint, Style::default().fg(colors::text_dim())));
-                    }
+                    spans.push(Span::raw("  Enter to change"));
                 }
                 Line::from(spans)
             }
-            RowData::Toggle => {
+            RowData::ReviewResolveModel => {
                 let label_style = if selected {
                     Style::default()
                         .fg(colors::primary())
@@ -260,51 +449,56 @@ impl ReviewSettingsView {
                 } else {
                     Style::default().fg(colors::text()).add_modifier(Modifier::BOLD)
                 };
-                let status_span = if self.auto_resolve_enabled {
-                    Span::styled("On", Style::default().fg(colors::success()))
+                let value_style = if selected {
+                    Style::default()
+                        .fg(colors::function())
+                        .add_modifier(Modifier::BOLD)
                 } else {
-                    Span::styled("Off", Style::default().fg(colors::text_dim()))
+                    Style::default().fg(colors::text())
+                };
+                let value_text = if self.review_resolve_use_chat_model {
+                    "Follow Chat".to_string()
+                } else {
+                    format!(
+                        "{} ({})",
+                        Self::format_model_label(&self.review_resolve_model),
+                        Self::reasoning_label(self.review_resolve_reasoning)
+                    )
                 };
                 let mut spans = vec![
                     Span::styled(arrow, arrow_style),
-                    Span::styled("Auto Resolve reviews", label_style),
+                    Span::styled("Resolve Model", label_style),
                     Span::raw("  "),
-                    status_span,
+                    Span::styled(value_text, value_style),
                 ];
                 if selected {
-                    let hint = if self.auto_resolve_enabled {
-                        "(press Enter to disable)"
-                    } else {
-                        "(press Enter to enable)"
-                    };
-                    spans.push(Span::raw("  "));
-                    spans.push(Span::styled(hint, Style::default().fg(colors::text_dim())));
+                    spans.push(Span::raw("  Enter to change"));
                 }
                 Line::from(spans)
             }
-            RowData::Attempts => {
+            RowData::ReviewAttempts => {
                 let label_style = if selected {
                     Style::default()
                         .fg(colors::primary())
                         .add_modifier(Modifier::BOLD)
-                } else if self.auto_resolve_enabled {
+                } else if self.review_auto_resolve_enabled {
                     Style::default().fg(colors::text()).add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(colors::text_dim()).add_modifier(Modifier::BOLD)
                 };
                 let value_style = if selected {
                     Style::default().fg(colors::function()).add_modifier(Modifier::BOLD)
-                } else if self.auto_resolve_attempts == 0 {
+                } else if self.review_followups == 0 {
                     Style::default().fg(colors::text_dim())
                 } else {
                     Style::default().fg(colors::text())
                 };
-                let value_label = if self.auto_resolve_attempts == 0 {
+                let value_label = if self.review_followups == 0 {
                     "0 (no re-reviews)".to_string()
-                } else if self.auto_resolve_attempts == 1 {
+                } else if self.review_followups == 1 {
                     "1 re-review".to_string()
                 } else {
-                    format!("{} re-reviews", self.auto_resolve_attempts)
+                    format!("{} re-reviews", self.review_followups)
                 };
                 let mut spans = vec![
                     Span::styled(arrow, arrow_style),
@@ -317,7 +511,7 @@ impl ReviewSettingsView {
                 }
                 Line::from(spans)
             }
-            RowData::AutoReview => {
+            RowData::AutoReviewEnabled => {
                 let label_style = if selected {
                     Style::default()
                         .fg(colors::primary())
@@ -332,9 +526,10 @@ impl ReviewSettingsView {
                 };
                 let mut spans = vec![
                     Span::styled(arrow, arrow_style),
-                    Span::styled("Auto Review", label_style),
+                    Span::styled("Enabled", label_style),
                     Span::raw("  "),
                     status_span,
+                    Span::raw("  (background auto review)"),
                 ];
                 if selected {
                     let hint = if self.auto_review_enabled {
@@ -344,6 +539,111 @@ impl ReviewSettingsView {
                     };
                     spans.push(Span::raw("  "));
                     spans.push(Span::styled(hint, Style::default().fg(colors::text_dim())));
+                }
+                Line::from(spans)
+            }
+            RowData::AutoReviewModel => {
+                let label_style = if selected {
+                    Style::default()
+                        .fg(colors::primary())
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(colors::text()).add_modifier(Modifier::BOLD)
+                };
+                let value_style = if selected {
+                    Style::default()
+                        .fg(colors::function())
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(colors::text())
+                };
+                let value_text = if self.auto_review_use_chat_model {
+                    "Follow Chat".to_string()
+                } else {
+                    format!(
+                        "{} ({})",
+                        Self::format_model_label(&self.auto_review_model),
+                        Self::reasoning_label(self.auto_review_reasoning)
+                    )
+                };
+                let mut spans = vec![
+                    Span::styled(arrow, arrow_style),
+                    Span::styled("Review Model", label_style),
+                    Span::raw("  "),
+                    Span::styled(value_text, value_style),
+                ];
+                if selected {
+                    spans.push(Span::raw("  Enter to change"));
+                }
+                Line::from(spans)
+            }
+            RowData::AutoReviewResolveModel => {
+                let label_style = if selected {
+                    Style::default()
+                        .fg(colors::primary())
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(colors::text()).add_modifier(Modifier::BOLD)
+                };
+                let value_style = if selected {
+                    Style::default()
+                        .fg(colors::function())
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(colors::text())
+                };
+                let value_text = if self.auto_review_resolve_use_chat_model {
+                    "Follow Chat".to_string()
+                } else {
+                    format!(
+                        "{} ({})",
+                        Self::format_model_label(&self.auto_review_resolve_model),
+                        Self::reasoning_label(self.auto_review_resolve_reasoning)
+                    )
+                };
+                let mut spans = vec![
+                    Span::styled(arrow, arrow_style),
+                    Span::styled("Resolve Model", label_style),
+                    Span::raw("  "),
+                    Span::styled(value_text, value_style),
+                ];
+                if selected {
+                    spans.push(Span::raw("  Enter to change"));
+                }
+                Line::from(spans)
+            }
+            RowData::AutoReviewAttempts => {
+                let label_style = if selected {
+                    Style::default()
+                        .fg(colors::primary())
+                        .add_modifier(Modifier::BOLD)
+                } else if self.auto_review_enabled {
+                    Style::default().fg(colors::text()).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(colors::text_dim()).add_modifier(Modifier::BOLD)
+                };
+                let value_style = if selected {
+                    Style::default().fg(colors::function()).add_modifier(Modifier::BOLD)
+                } else if self.auto_review_followups == 0 {
+                    Style::default().fg(colors::text_dim())
+                } else {
+                    Style::default().fg(colors::text())
+                };
+                let value_label = if self.auto_review_followups == 0 {
+                    "0 (no follow-ups)".to_string()
+                } else if self.auto_review_followups == 1 {
+                    "1 follow-up".to_string()
+                } else {
+                    format!("{} follow-ups", self.auto_review_followups)
+                };
+                let mut spans = vec![
+                    Span::styled(arrow, arrow_style),
+                    Span::styled("Max follow-up reviews", label_style),
+                    Span::raw("  "),
+                    Span::styled(value_label, value_style),
+                ];
+                if selected {
+                    spans.push(Span::raw("  (←→ to adjust)"));
                 }
                 Line::from(spans)
             }
@@ -385,20 +685,32 @@ impl ReviewSettingsView {
             KeyEvent { code: KeyCode::Left, .. } => {
                 if let Some(kind) = current_kind {
                     match kind {
-                        SelectionKind::Toggle => self.toggle_auto_resolve(),
-                        SelectionKind::Attempts => self.adjust_auto_resolve_attempts(false),
-                        SelectionKind::AutoReview => self.toggle_auto_review(),
-                        SelectionKind::Model => {}
+                        SelectionKind::ReviewEnabled => self.toggle_review_auto_resolve(),
+                        SelectionKind::ReviewAttempts => self.adjust_review_followups(false),
+                        SelectionKind::AutoReviewEnabled => self.toggle_auto_review(),
+                        SelectionKind::AutoReviewAttempts => {
+                            self.adjust_auto_review_followups(false)
+                        }
+                        SelectionKind::ReviewModel
+                        | SelectionKind::ReviewResolveModel
+                        | SelectionKind::AutoReviewModel
+                        | SelectionKind::AutoReviewResolveModel => {}
                     }
                 }
             }
             KeyEvent { code: KeyCode::Right, .. } => {
                 if let Some(kind) = current_kind {
                     match kind {
-                        SelectionKind::Toggle => self.toggle_auto_resolve(),
-                        SelectionKind::Attempts => self.adjust_auto_resolve_attempts(true),
-                        SelectionKind::AutoReview => self.toggle_auto_review(),
-                        SelectionKind::Model => {}
+                        SelectionKind::ReviewEnabled => self.toggle_review_auto_resolve(),
+                        SelectionKind::ReviewAttempts => self.adjust_review_followups(true),
+                        SelectionKind::AutoReviewEnabled => self.toggle_auto_review(),
+                        SelectionKind::AutoReviewAttempts => {
+                            self.adjust_auto_review_followups(true)
+                        }
+                        SelectionKind::ReviewModel
+                        | SelectionKind::ReviewResolveModel
+                        | SelectionKind::AutoReviewModel
+                        | SelectionKind::AutoReviewResolveModel => {}
                     }
                 }
             }
@@ -406,20 +718,19 @@ impl ReviewSettingsView {
             | KeyEvent { code: KeyCode::Enter, modifiers: KeyModifiers::NONE, .. } => {
                 if let Some(kind) = current_kind {
                     match kind {
-                        SelectionKind::Toggle => self.toggle_auto_resolve(),
-                        SelectionKind::Attempts => self.adjust_auto_resolve_attempts(true),
-                        SelectionKind::AutoReview => self.toggle_auto_review(),
-                        SelectionKind::Model => {
-                            if let Some(sel) = self.state.selected_idx {
-                                if let Some(row) = self.build_rows().0.get(sel) {
-                                    match row {
-                                        RowData::CustomModel => {
-                                            self.open_review_model_selector();
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
+                        SelectionKind::ReviewEnabled => self.toggle_review_auto_resolve(),
+                        SelectionKind::ReviewAttempts => self.adjust_review_followups(true),
+                        SelectionKind::ReviewModel => self.open_review_model_selector(),
+                        SelectionKind::ReviewResolveModel => {
+                            self.open_review_resolve_model_selector()
+                        }
+                        SelectionKind::AutoReviewEnabled => self.toggle_auto_review(),
+                        SelectionKind::AutoReviewModel => self.open_auto_review_model_selector(),
+                        SelectionKind::AutoReviewResolveModel => {
+                            self.open_auto_review_resolve_model_selector()
+                        }
+                        SelectionKind::AutoReviewAttempts => {
+                            self.adjust_auto_review_followups(true)
                         }
                     }
                 }
@@ -453,7 +764,7 @@ impl<'a> BottomPaneView<'a> for ReviewSettingsView {
     }
 
     fn desired_height(&self, _width: u16) -> u16 {
-        6
+        12
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
@@ -472,7 +783,7 @@ impl<'a> BottomPaneView<'a> for ReviewSettingsView {
 
         let header_lines = vec![
             Line::from(Span::styled(
-                "Choose review model + Auto Resolve automation for /review.",
+                "Configure /review and Auto Review models, resolve models, and follow-ups.",
                 Style::default().fg(colors::text_dim()),
             )),
             Line::from(Span::styled(

@@ -2327,9 +2327,19 @@ impl App<'_> {
                         widget.apply_review_model_selection(model, effort);
                     }
                 }
+                AppEvent::UpdateReviewResolveModelSelection { model, effort } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.apply_review_resolve_model_selection(model, effort);
+                    }
+                }
                 AppEvent::UpdateReviewUseChatModel(use_chat) => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.set_review_use_chat_model(use_chat);
+                    }
+                }
+                AppEvent::UpdateReviewResolveUseChatModel(use_chat) => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.set_review_resolve_use_chat_model(use_chat);
                     }
                 }
                 AppEvent::UpdatePlanningModelSelection { model, effort } => {
@@ -2345,6 +2355,26 @@ impl App<'_> {
                 AppEvent::UpdateAutoDriveUseChatModel(use_chat) => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.set_auto_drive_use_chat_model(use_chat);
+                    }
+                }
+                AppEvent::UpdateAutoReviewModelSelection { model, effort } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.apply_auto_review_model_selection(model, effort);
+                    }
+                }
+                AppEvent::UpdateAutoReviewUseChatModel(use_chat) => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.set_auto_review_use_chat_model(use_chat);
+                    }
+                }
+                AppEvent::UpdateAutoReviewResolveModelSelection { model, effort } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.apply_auto_review_resolve_model_selection(model, effort);
+                    }
+                }
+                AppEvent::UpdateAutoReviewResolveUseChatModel(use_chat) => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.set_auto_review_resolve_use_chat_model(use_chat);
                     }
                 }
                 AppEvent::ModelSelectionClosed { target, accepted } => {
@@ -2463,9 +2493,19 @@ impl App<'_> {
                         widget.set_review_auto_resolve_attempts(attempts);
                     }
                 }
+                AppEvent::UpdateAutoReviewFollowupAttempts(attempts) => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.set_auto_review_followup_attempts(attempts);
+                    }
+                }
                 AppEvent::ShowReviewModelSelector => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.show_review_model_selector();
+                    }
+                }
+                AppEvent::ShowReviewResolveModelSelector => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.show_review_resolve_model_selector();
                     }
                 }
                 AppEvent::ShowPlanningModelSelector => {
@@ -2476,6 +2516,16 @@ impl App<'_> {
                 AppEvent::ShowAutoDriveModelSelector => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.show_auto_drive_model_selector();
+                    }
+                }
+                AppEvent::ShowAutoReviewModelSelector => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.show_auto_review_model_selector();
+                    }
+                }
+                AppEvent::ShowAutoReviewResolveModelSelector => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.show_auto_review_resolve_model_selector();
                     }
                 }
                 AppEvent::RunReviewWithScope {

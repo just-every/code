@@ -23,6 +23,8 @@ use code_core::CodexConversation;
 use code_core::config::set_default_originator;
 use code_core::config::Config;
 use code_core::config::ConfigOverrides;
+use code_core::model_family::{derive_default_model_family, find_family_for_model};
+use code_core::openai_model_info::get_model_info;
 use code_core::git_info::get_git_repo_root;
 use code_core::git_info::recent_commits;
 use code_core::review_coord::{
@@ -99,6 +101,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         include_plan_tool,
         config_overrides,
         auto_drive,
+        auto_review,
         review_output_json,
         ..
     } = cli;
@@ -295,7 +298,47 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         }
     }
 
-    let review_auto_resolve_requested = review_request.is_some() && config.tui.review_auto_resolve;
+    if auto_review {
+        if let Some(req) = review_request.as_mut() {
+            let mut metadata = req.metadata.clone().unwrap_or_default();
+            metadata.auto_review = Some(true);
+            req.metadata = Some(metadata);
+        }
+    }
+
+    let is_auto_review = review_request
+        .as_ref()
+        .and_then(|req| req.metadata.as_ref())
+        .and_then(|meta| meta.auto_review)
+        .unwrap_or(auto_review);
+
+    if is_auto_review {
+        if config.auto_review_use_chat_model {
+            config.review_model = config.model.clone();
+            config.review_model_reasoning_effort = config.model_reasoning_effort;
+        } else {
+            config.review_model = config.auto_review_model.clone();
+            config.review_model_reasoning_effort = config.auto_review_model_reasoning_effort;
+        }
+        config.review_use_chat_model = config.auto_review_use_chat_model;
+
+        if config.auto_review_resolve_use_chat_model {
+            config.review_resolve_model = config.model.clone();
+            config.review_resolve_model_reasoning_effort = config.model_reasoning_effort;
+        } else {
+            config.review_resolve_model = config.auto_review_resolve_model.clone();
+            config.review_resolve_model_reasoning_effort =
+                config.auto_review_resolve_model_reasoning_effort;
+        }
+        config.review_resolve_use_chat_model = config.auto_review_resolve_use_chat_model;
+    }
+
+    let review_auto_resolve_requested = review_request.is_some()
+        && if is_auto_review {
+            config.tui.auto_review_enabled
+        } else {
+            config.tui.review_auto_resolve
+        };
     if review_auto_resolve_requested && matches!(config.sandbox_policy, SandboxPolicy::ReadOnly) {
         config.sandbox_policy = SandboxPolicy::new_workspace_write_policy();
         eprintln!(
@@ -307,9 +350,13 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
     let mut final_review_snapshot: Option<code_core::protocol::ReviewSnapshotInfo> = None;
     let mut review_runs: u32 = 0;
     let mut last_review_epoch: Option<u64> = None;
-    let max_auto_resolve_attempts: u32 = config.auto_drive.auto_resolve_review_attempts.get();
+    let max_auto_resolve_attempts: u32 = if is_auto_review {
+        config.auto_drive.auto_review_followup_attempts.get()
+    } else {
+        config.auto_drive.auto_resolve_review_attempts.get()
+    };
     let mut auto_resolve_state: Option<AutoResolveState> = review_request.as_ref().and_then(|req| {
-        if config.tui.review_auto_resolve {
+        if review_auto_resolve_requested {
             Some(AutoResolveState::new_with_limit(
                 req.prompt.clone(),
                 req.user_facing_hint.clone(),
@@ -324,6 +371,43 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
     let mut auto_resolve_followup_guard: Option<code_core::review_coord::ReviewGuard> = None;
     // Base snapshot captured at the start of auto-resolve; each review snapshot is parented to this.
     let mut auto_resolve_base_snapshot: Option<GhostCommit> = None;
+    let resolve_model_for_auto_resolve = if is_auto_review {
+        if config.auto_review_resolve_use_chat_model {
+            config.model.clone()
+        } else {
+            config.auto_review_resolve_model.clone()
+        }
+    } else if config.review_resolve_use_chat_model {
+        config.model.clone()
+    } else {
+        config.review_resolve_model.clone()
+    };
+    let resolve_effort_for_auto_resolve = if is_auto_review {
+        if config.auto_review_resolve_use_chat_model {
+            config.model_reasoning_effort
+        } else {
+            config.auto_review_resolve_model_reasoning_effort
+        }
+    } else if config.review_resolve_use_chat_model {
+        config.model_reasoning_effort
+    } else {
+        config.review_resolve_model_reasoning_effort
+    };
+    if review_auto_resolve_requested
+        && (!resolve_model_for_auto_resolve.eq_ignore_ascii_case(&config.model)
+            || resolve_effort_for_auto_resolve != config.model_reasoning_effort)
+    {
+        let resolve_family = find_family_for_model(&resolve_model_for_auto_resolve)
+            .unwrap_or_else(|| derive_default_model_family(&resolve_model_for_auto_resolve));
+        config.model = resolve_model_for_auto_resolve.clone();
+        config.model_family = resolve_family.clone();
+        config.model_reasoning_effort = resolve_effort_for_auto_resolve;
+        if let Some(info) = get_model_info(&resolve_family) {
+            config.model_context_window = Some(info.context_window);
+            config.model_max_output_tokens = Some(info.max_output_tokens);
+            config.model_auto_compact_token_limit = info.auto_compact_token_limit;
+        }
+    }
     let stop_on_task_complete = auto_drive_goal.is_none() && auto_resolve_state.is_none();
     let mut event_processor: Box<dyn EventProcessor> = if json_mode {
         Box::new(EventProcessorWithJsonOutput::new(last_message_file.clone()))

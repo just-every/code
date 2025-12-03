@@ -20,6 +20,9 @@ pub(crate) enum ModelSelectionKind {
     Review,
     Planning,
     AutoDrive,
+    ReviewResolve,
+    AutoReview,
+    AutoReviewResolve,
 }
 use crate::history::state::HistorySnapshot;
 use std::time::Duration;
@@ -238,8 +241,15 @@ pub(crate) enum AppEvent {
         model: String,
         effort: ReasoningEffort,
     },
+    /// Update the resolve model + reasoning effort for /review auto-resolve
+    UpdateReviewResolveModelSelection {
+        model: String,
+        effort: ReasoningEffort,
+    },
     /// Toggle review model inheritance from chat model
     UpdateReviewUseChatModel(bool),
+    /// Toggle resolve model inheritance from chat model
+    UpdateReviewResolveUseChatModel(bool),
     /// Update the planning (read-only) model + reasoning effort
     UpdatePlanningModelSelection {
         model: String,
@@ -255,6 +265,22 @@ pub(crate) enum AppEvent {
     },
     /// Toggle Auto Drive model inheritance from chat model
     UpdateAutoDriveUseChatModel(bool),
+
+    /// Update the Auto Review model + reasoning effort
+    UpdateAutoReviewModelSelection {
+        model: String,
+        effort: ReasoningEffort,
+    },
+    /// Toggle Auto Review model inheritance from chat model
+    UpdateAutoReviewUseChatModel(bool),
+
+    /// Update the Auto Review resolve model + reasoning effort
+    UpdateAutoReviewResolveModelSelection {
+        model: String,
+        effort: ReasoningEffort,
+    },
+    /// Toggle Auto Review resolve model inheritance from chat model
+    UpdateAutoReviewResolveUseChatModel(bool),
 
     /// Model selection UI closed (accepted or cancelled)
     ModelSelectionClosed {
@@ -273,12 +299,20 @@ pub(crate) enum AppEvent {
     UpdateAutoReviewEnabled(bool),
     /// Set the maximum number of Auto Resolve re-review attempts
     UpdateReviewAutoResolveAttempts(u32),
+    /// Set the maximum number of Auto Review follow-up reviews
+    UpdateAutoReviewFollowupAttempts(u32),
     /// Open the review model selector overlay
     ShowReviewModelSelector,
+    /// Open the resolve model selector overlay for /review auto-resolve
+    ShowReviewResolveModelSelector,
     /// Open the planning model selector overlay
     ShowPlanningModelSelector,
     /// Open the Auto Drive model selector overlay
     ShowAutoDriveModelSelector,
+    /// Open the Auto Review review model selector overlay
+    ShowAutoReviewModelSelector,
+    /// Open the Auto Review resolve model selector overlay
+    ShowAutoReviewResolveModelSelector,
     /// Enable/disable a specific validation tool
     UpdateValidationTool { name: String, enable: bool },
     /// Enable/disable an entire validation group

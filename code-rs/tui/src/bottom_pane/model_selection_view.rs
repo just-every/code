@@ -58,6 +58,9 @@ pub(crate) enum ModelSelectionTarget {
     Review,
     Planning,
     AutoDrive,
+    ReviewResolve,
+    AutoReview,
+    AutoReviewResolve,
 }
 
 impl From<ModelSelectionTarget> for ModelSelectionKind {
@@ -67,6 +70,9 @@ impl From<ModelSelectionTarget> for ModelSelectionKind {
             ModelSelectionTarget::Review => ModelSelectionKind::Review,
             ModelSelectionTarget::Planning => ModelSelectionKind::Planning,
             ModelSelectionTarget::AutoDrive => ModelSelectionKind::AutoDrive,
+            ModelSelectionTarget::ReviewResolve => ModelSelectionKind::ReviewResolve,
+            ModelSelectionTarget::AutoReview => ModelSelectionKind::AutoReview,
+            ModelSelectionTarget::AutoReviewResolve => ModelSelectionKind::AutoReviewResolve,
         }
     }
 }
@@ -78,6 +84,9 @@ impl ModelSelectionTarget {
             ModelSelectionTarget::Review => "Select Review Model & Reasoning",
             ModelSelectionTarget::Planning => "Select Planning Model & Reasoning",
             ModelSelectionTarget::AutoDrive => "Select Auto Drive Model & Reasoning",
+            ModelSelectionTarget::ReviewResolve => "Select Resolve Model & Reasoning",
+            ModelSelectionTarget::AutoReview => "Select Auto Review Model & Reasoning",
+            ModelSelectionTarget::AutoReviewResolve => "Select Auto Review Resolve Model & Reasoning",
         }
     }
 
@@ -87,6 +96,9 @@ impl ModelSelectionTarget {
             ModelSelectionTarget::Review => "Review model",
             ModelSelectionTarget::Planning => "Planning model",
             ModelSelectionTarget::AutoDrive => "Auto Drive model",
+            ModelSelectionTarget::ReviewResolve => "Resolve model",
+            ModelSelectionTarget::AutoReview => "Auto Review model",
+            ModelSelectionTarget::AutoReviewResolve => "Auto Review resolve model",
         }
     }
 
@@ -96,6 +108,9 @@ impl ModelSelectionTarget {
             ModelSelectionTarget::Review => "Review reasoning",
             ModelSelectionTarget::Planning => "Planning reasoning",
             ModelSelectionTarget::AutoDrive => "Auto Drive reasoning",
+            ModelSelectionTarget::ReviewResolve => "Resolve reasoning",
+            ModelSelectionTarget::AutoReview => "Auto Review reasoning",
+            ModelSelectionTarget::AutoReviewResolve => "Auto Review resolve reasoning",
         }
     }
 
@@ -272,6 +287,21 @@ impl ModelSelectionView {
                                 .app_event_tx
                                 .send(AppEvent::UpdateAutoDriveUseChatModel(true));
                         }
+                        ModelSelectionTarget::ReviewResolve => {
+                            let _ = self
+                                .app_event_tx
+                                .send(AppEvent::UpdateReviewResolveUseChatModel(true));
+                        }
+                        ModelSelectionTarget::AutoReview => {
+                            let _ = self
+                                .app_event_tx
+                                .send(AppEvent::UpdateAutoReviewUseChatModel(true));
+                        }
+                        ModelSelectionTarget::AutoReviewResolve => {
+                            let _ = self
+                                .app_event_tx
+                                .send(AppEvent::UpdateAutoReviewResolveUseChatModel(true));
+                        }
                     }
                     self.send_closed(true);
                     return;
@@ -305,6 +335,30 @@ impl ModelSelectionView {
                                 let _ = self
                                     .app_event_tx
                                     .send(AppEvent::UpdateAutoDriveModelSelection {
+                                        model: flat_preset.model.clone(),
+                                        effort: flat_preset.effort,
+                                    });
+                            }
+                            ModelSelectionTarget::ReviewResolve => {
+                                let _ = self
+                                    .app_event_tx
+                                    .send(AppEvent::UpdateReviewResolveModelSelection {
+                                        model: flat_preset.model.clone(),
+                                        effort: flat_preset.effort,
+                                    });
+                            }
+                            ModelSelectionTarget::AutoReview => {
+                                let _ = self
+                                    .app_event_tx
+                                    .send(AppEvent::UpdateAutoReviewModelSelection {
+                                        model: flat_preset.model.clone(),
+                                        effort: flat_preset.effort,
+                                    });
+                            }
+                            ModelSelectionTarget::AutoReviewResolve => {
+                                let _ = self
+                                    .app_event_tx
+                                    .send(AppEvent::UpdateAutoReviewResolveModelSelection {
                                         model: flat_preset.model.clone(),
                                         effort: flat_preset.effort,
                                     });

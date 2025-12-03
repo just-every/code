@@ -1164,6 +1164,9 @@ pub struct ReviewContextMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub current_branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub auto_review: Option<bool>,
 }
 
 /// Structured review result produced by a child review session.

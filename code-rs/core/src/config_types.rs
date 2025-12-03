@@ -703,11 +703,11 @@ pub struct Tui {
     pub alternate_screen: bool,
 
     /// Remember whether Auto Resolve is enabled for `/review` flows.
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub review_auto_resolve: bool,
 
     /// Run a background `/review` after turns that modify code.
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub auto_review_enabled: bool,
 }
 
@@ -728,8 +728,8 @@ impl Default for Tui {
             spinner: SpinnerSelection::default(),
             notifications: Notifications::default(),
             alternate_screen: true,
-            review_auto_resolve: false,
-            auto_review_enabled: false,
+            review_auto_resolve: true,
+            auto_review_enabled: true,
         }
     }
 }
@@ -749,7 +749,7 @@ pub struct AutoResolveAttemptLimit(u32);
 
 impl AutoResolveAttemptLimit {
     pub const ALLOWED: [u32; 9] = [0, 1, 2, 3, 4, 5, 10, 20, 40];
-    pub const DEFAULT: u32 = 5;
+    pub const DEFAULT: u32 = 10;
 
     pub fn get(self) -> u32 {
         self.0
@@ -815,6 +815,9 @@ pub struct AutoDriveSettings {
 
     #[serde(default)]
     pub auto_resolve_review_attempts: AutoResolveAttemptLimit,
+
+    #[serde(default)]
+    pub auto_review_followup_attempts: AutoResolveAttemptLimit,
 }
 
 impl Default for AutoDriveSettings {
@@ -830,6 +833,7 @@ impl Default for AutoDriveSettings {
             model: default_auto_drive_model(),
             model_reasoning_effort: default_auto_drive_reasoning_effort(),
             auto_resolve_review_attempts: AutoResolveAttemptLimit::default(),
+            auto_review_followup_attempts: AutoResolveAttemptLimit::default(),
         }
     }
 }

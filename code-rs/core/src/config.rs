@@ -72,6 +72,10 @@ const OPENAI_DEFAULT_MODEL: &str = "gpt-5.1-codex";
 const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5.1-codex-mini";
 pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5.1-codex-max";
 
+const fn default_true_local() -> bool {
+    true
+}
+
 /// Maximum number of bytes of the documentation that will be embedded. Larger
 /// files are *silently truncated* to this size so we do not take up too much of
 /// the context window.
@@ -177,6 +181,33 @@ pub struct Config {
 
     /// Whether review should inherit the chat model instead of using a dedicated override.
     pub review_use_chat_model: bool,
+
+    /// Model used to apply fixes during auto-resolve of `/review` flows.
+    pub review_resolve_model: String,
+
+    /// Reasoning effort used for the resolve model when auto-resolving `/review`.
+    pub review_resolve_model_reasoning_effort: ReasoningEffort,
+
+    /// Whether resolve steps should inherit the chat model instead of a dedicated override.
+    pub review_resolve_use_chat_model: bool,
+
+    /// Model used for background Auto Review runs.
+    pub auto_review_model: String,
+
+    /// Reasoning effort used when running Auto Review.
+    pub auto_review_model_reasoning_effort: ReasoningEffort,
+
+    /// Whether Auto Review should inherit the chat model instead of a dedicated override.
+    pub auto_review_use_chat_model: bool,
+
+    /// Model used to apply fixes during Auto Review follow-ups.
+    pub auto_review_resolve_model: String,
+
+    /// Reasoning effort used for Auto Review resolve steps.
+    pub auto_review_resolve_model_reasoning_effort: ReasoningEffort,
+
+    /// Whether Auto Review resolve steps should inherit the chat model.
+    pub auto_review_resolve_use_chat_model: bool,
 
     pub model_family: ModelFamily,
 
@@ -1106,6 +1137,41 @@ pub fn set_review_model(
     Ok(())
 }
 
+/// Persist the resolve model + reasoning effort for `/review` auto-resolve flows.
+pub fn set_review_resolve_model(
+    code_home: &Path,
+    model: &str,
+    effort: ReasoningEffort,
+    use_chat_model: bool,
+) -> anyhow::Result<()> {
+    let trimmed = model.trim();
+    if !use_chat_model && trimmed.is_empty() {
+        return Err(anyhow::anyhow!("review resolve model cannot be empty"));
+    }
+
+    let config_path = code_home.join(CONFIG_TOML_FILE);
+    let read_path = resolve_code_path_for_read(code_home, Path::new(CONFIG_TOML_FILE));
+    let mut doc = match std::fs::read_to_string(&read_path) {
+        Ok(contents) => contents.parse::<DocumentMut>()?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentMut::new(),
+        Err(e) => return Err(e.into()),
+    };
+
+    doc["review_resolve_use_chat_model"] = toml_edit::value(use_chat_model);
+    if !use_chat_model {
+        doc["review_resolve_model"] = toml_edit::value(trimmed);
+        doc["review_resolve_model_reasoning_effort"] =
+            toml_edit::value(effort.to_string().to_ascii_lowercase());
+    }
+
+    std::fs::create_dir_all(code_home)?;
+    let tmp_file = NamedTempFile::new_in(code_home)?;
+    std::fs::write(tmp_file.path(), doc.to_string())?;
+    tmp_file.persist(config_path)?;
+
+    Ok(())
+}
+
 /// Persist the planning model + reasoning effort into `CODEX_HOME/config.toml`.
 pub fn set_planning_model(
     code_home: &Path,
@@ -1130,6 +1196,78 @@ pub fn set_planning_model(
         }
         doc["planning_model"] = toml_edit::value(trimmed);
         doc["planning_model_reasoning_effort"] =
+            toml_edit::value(effort.to_string().to_ascii_lowercase());
+    }
+
+    std::fs::create_dir_all(code_home)?;
+    let tmp_file = NamedTempFile::new_in(code_home)?;
+    std::fs::write(tmp_file.path(), doc.to_string())?;
+    tmp_file.persist(config_path)?;
+
+    Ok(())
+}
+
+/// Persist the Auto Review review model + reasoning effort.
+pub fn set_auto_review_model(
+    code_home: &Path,
+    model: &str,
+    effort: ReasoningEffort,
+    use_chat_model: bool,
+) -> anyhow::Result<()> {
+    let trimmed = model.trim();
+    if !use_chat_model && trimmed.is_empty() {
+        return Err(anyhow::anyhow!("auto review model cannot be empty"));
+    }
+
+    let config_path = code_home.join(CONFIG_TOML_FILE);
+    let read_path = resolve_code_path_for_read(code_home, Path::new(CONFIG_TOML_FILE));
+
+    let mut doc = match std::fs::read_to_string(&read_path) {
+        Ok(contents) => contents.parse::<DocumentMut>()?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentMut::new(),
+        Err(e) => return Err(e.into()),
+    };
+
+    doc["auto_review_use_chat_model"] = toml_edit::value(use_chat_model);
+    if !use_chat_model {
+        doc["auto_review_model"] = toml_edit::value(trimmed);
+        doc["auto_review_model_reasoning_effort"] =
+            toml_edit::value(effort.to_string().to_ascii_lowercase());
+    }
+
+    std::fs::create_dir_all(code_home)?;
+    let tmp_file = NamedTempFile::new_in(code_home)?;
+    std::fs::write(tmp_file.path(), doc.to_string())?;
+    tmp_file.persist(config_path)?;
+
+    Ok(())
+}
+
+/// Persist the Auto Review resolve model + reasoning effort.
+pub fn set_auto_review_resolve_model(
+    code_home: &Path,
+    model: &str,
+    effort: ReasoningEffort,
+    use_chat_model: bool,
+) -> anyhow::Result<()> {
+    let trimmed = model.trim();
+    if !use_chat_model && trimmed.is_empty() {
+        return Err(anyhow::anyhow!("auto review resolve model cannot be empty"));
+    }
+
+    let config_path = code_home.join(CONFIG_TOML_FILE);
+    let read_path = resolve_code_path_for_read(code_home, Path::new(CONFIG_TOML_FILE));
+
+    let mut doc = match std::fs::read_to_string(&read_path) {
+        Ok(contents) => contents.parse::<DocumentMut>()?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentMut::new(),
+        Err(e) => return Err(e.into()),
+    };
+
+    doc["auto_review_resolve_use_chat_model"] = toml_edit::value(use_chat_model);
+    if !use_chat_model {
+        doc["auto_review_resolve_model"] = toml_edit::value(trimmed);
+        doc["auto_review_resolve_model_reasoning_effort"] =
             toml_edit::value(effort.to_string().to_ascii_lowercase());
     }
 
@@ -1181,6 +1319,8 @@ pub fn set_auto_drive_settings(
     );
     doc["auto_drive"]["auto_resolve_review_attempts"] =
         toml_edit::value(settings.auto_resolve_review_attempts.get() as i64);
+    doc["auto_drive"]["auto_review_followup_attempts"] =
+        toml_edit::value(settings.auto_review_followup_attempts.get() as i64);
 
     let mode_str = match settings.continue_mode {
         AutoDriveContinueMode::Immediate => "immediate",
@@ -1811,6 +1951,30 @@ pub struct ConfigToml {
     /// Inherit chat model for review flows when true.
     #[serde(default)]
     pub review_use_chat_model: bool,
+
+    /// Resolve model override used during auto-resolve for `/review`.
+    pub review_resolve_model: Option<String>,
+    /// Reasoning effort override used for the resolve model.
+    pub review_resolve_model_reasoning_effort: Option<ReasoningEffort>,
+    /// Inherit chat model for resolve flows when true.
+    #[serde(default = "default_true_local")]
+    pub review_resolve_use_chat_model: bool,
+
+    /// Auto Review model override used for background reviews.
+    pub auto_review_model: Option<String>,
+    /// Reasoning effort override used for the Auto Review model.
+    pub auto_review_model_reasoning_effort: Option<ReasoningEffort>,
+    /// Inherit chat model for Auto Review when true.
+    #[serde(default)]
+    pub auto_review_use_chat_model: bool,
+
+    /// Resolve model override used during Auto Review follow-ups.
+    pub auto_review_resolve_model: Option<String>,
+    /// Reasoning effort override used for the Auto Review resolve model.
+    pub auto_review_resolve_model_reasoning_effort: Option<ReasoningEffort>,
+    /// Inherit chat model for Auto Review resolve flows when true.
+    #[serde(default = "default_true_local")]
+    pub auto_review_resolve_use_chat_model: bool,
 
     /// Provider to use from the model_providers map.
     pub model_provider: Option<String>,
@@ -2507,6 +2671,32 @@ impl Config {
             .or(cfg.review_model_reasoning_effort)
             .unwrap_or(ReasoningEffort::High);
 
+        let review_resolve_use_chat_model = config_profile
+            .review_resolve_use_chat_model
+            .or(Some(cfg.review_resolve_use_chat_model))
+            .unwrap_or(true);
+        let review_resolve_model = if review_resolve_use_chat_model {
+            model.clone()
+        } else {
+            config_profile
+                .review_resolve_model
+                .clone()
+                .or(cfg.review_resolve_model.clone())
+                .unwrap_or_else(|| model.clone())
+        };
+        let review_resolve_model_reasoning_effort = if review_resolve_use_chat_model {
+            chat_reasoning_effort
+        } else {
+            config_profile
+                .review_resolve_model_reasoning_effort
+                .or(cfg.review_resolve_model_reasoning_effort)
+                .unwrap_or(ReasoningEffort::High)
+        };
+        let review_resolve_model_reasoning_effort = clamp_reasoning_effort_for_model(
+            &review_resolve_model,
+            review_resolve_model_reasoning_effort,
+        );
+
         let planning_use_chat_model = config_profile
             .planning_use_chat_model
             .or(cfg.planning_use_chat_model)
@@ -2553,6 +2743,62 @@ impl Config {
             review_model_reasoning_effort,
         );
 
+        let auto_review_use_chat_model = config_profile
+            .auto_review_use_chat_model
+            .or(Some(cfg.auto_review_use_chat_model))
+            .unwrap_or(false);
+
+        let auto_review_model = if auto_review_use_chat_model {
+            model.clone()
+        } else {
+            config_profile
+                .auto_review_model
+                .clone()
+                .or(cfg.auto_review_model.clone())
+                .unwrap_or_else(default_review_model)
+        };
+
+        let auto_review_model_reasoning_effort = if auto_review_use_chat_model {
+            chat_reasoning_effort
+        } else {
+            config_profile
+                .auto_review_model_reasoning_effort
+                .or(cfg.auto_review_model_reasoning_effort)
+                .unwrap_or(ReasoningEffort::High)
+        };
+        let auto_review_model_reasoning_effort = clamp_reasoning_effort_for_model(
+            &auto_review_model,
+            auto_review_model_reasoning_effort,
+        );
+
+        let auto_review_resolve_use_chat_model = config_profile
+            .auto_review_resolve_use_chat_model
+            .or(Some(cfg.auto_review_resolve_use_chat_model))
+            .unwrap_or(true);
+
+        let auto_review_resolve_model = if auto_review_resolve_use_chat_model {
+            model.clone()
+        } else {
+            config_profile
+                .auto_review_resolve_model
+                .clone()
+                .or(cfg.auto_review_resolve_model.clone())
+                .unwrap_or_else(|| model.clone())
+        };
+
+        let auto_review_resolve_model_reasoning_effort = if auto_review_resolve_use_chat_model {
+            chat_reasoning_effort
+        } else {
+            config_profile
+                .auto_review_resolve_model_reasoning_effort
+                .or(cfg.auto_review_resolve_model_reasoning_effort)
+                .unwrap_or(ReasoningEffort::High)
+        };
+        let auto_review_resolve_model_reasoning_effort = clamp_reasoning_effort_for_model(
+            &auto_review_resolve_model,
+            auto_review_resolve_model_reasoning_effort,
+        );
+
         let auto_drive_use_chat_model = cfg.auto_drive_use_chat_model.unwrap_or(false);
 
         let mut auto_drive = cfg
@@ -2585,6 +2831,15 @@ impl Config {
             review_model,
             review_model_reasoning_effort,
             review_use_chat_model,
+            review_resolve_model,
+            review_resolve_model_reasoning_effort,
+            review_resolve_use_chat_model,
+            auto_review_model,
+            auto_review_model_reasoning_effort,
+            auto_review_use_chat_model,
+            auto_review_resolve_model,
+            auto_review_resolve_model_reasoning_effort,
+            auto_review_resolve_use_chat_model,
             model_family,
             model_context_window,
             model_max_output_tokens,
