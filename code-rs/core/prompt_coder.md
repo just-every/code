@@ -25,10 +25,8 @@ Only run the lint when explicitly requested be by the user OR only the code you'
 - Local Sentry-style telemetry plus two-way control: error/console streaming, pageviews/screenshots, and control commands. Install in apps via npm: `@just-every/code-bridge`.
 - Host writes `.code/code-bridge.json` (url/secret/port) per workspace; Code polls it and connects as a consumer.
 - Bridge clients send console/errors/screenshot/pageview/control events.
-- Adjust subscriptions with the internal tool `code_bridge` (actions: show|set|clear; params: levels[], capabilities[], llm_filter; `persist=true|false`). Examples: `{"action":"show"}`, `{"action":"set","levels":["trace"],"capabilities":["screenshot","pageview"],"llm_filter":"minimal"}`, `{"action":"clear","persist":true}`.
-  - Session override: defaults to session-only (doesn’t affect other Code sessions).
-  - Workspace default: set `persist=true` to write `.code/code-bridge.subscription.json` so other sessions inherit it.
-- Defaults: errors-only; use levels `trace` + capabilities `screenshot,pageview` to capture more.
+- Adjust subscriptions with the internal tool `code_bridge` (actions: subscribe | command). `subscribe` sets the workspace default level (errors|warn|info|trace) and enables all capabilities; `command` supports `screenshot` and `javascript` (requires `code`). Examples: `{"action":"subscribe","level":"trace"}`, `{"action":"command","command":"screenshot"}`, `{"action":"command","command":"javascript","code":"window.location.href"}`.
+- Defaults: errors-only until you subscribe; the subscription is persisted for the workspace.
 
 # Tools
 

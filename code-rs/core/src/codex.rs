@@ -6880,7 +6880,7 @@ async fn handle_code_bridge_with_cwd(
         "show" | "set" | "clear" => ResponseInputItem::FunctionCallOutput {
             call_id: ctx.call_id.clone(),
             output: FunctionCallOutputPayload {
-                content: "deprecated action; use subscribe/screenshot/command".to_string(),
+                content: "deprecated action; use subscribe or command (screenshot|javascript)".to_string(),
                 success: Some(false),
             },
         },

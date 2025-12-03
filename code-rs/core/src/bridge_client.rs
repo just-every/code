@@ -727,13 +727,13 @@ async fn connect_and_listen(meta: BridgeMeta, session: Arc<Session>, cwd: &Path)
     session.record_bridge_event(announce).await;
 
     if !BRIDGE_HINT_EMITTED.swap(true, Ordering::SeqCst) && workspace_has_code_bridge(cwd) {
-                session
-                    .record_bridge_event(
-                        "Code Bridge is a local, real-time debug stream (errors/console like Sentry, plus pageviews/screenshots and a control channel). Use the `code_bridge` tool: subscribe to a level (trace/info/warn/errors), request a screenshot, or send a control command."
-                            .to_string(),
-                    )
-                    .await;
-            }
+        session
+            .record_bridge_event(
+                "Code Bridge is a local, real-time debug stream (errors/console like Sentry, plus pageviews/screenshots and a control channel). Use the `code_bridge` tool: `action=subscribe` with level (errors|warn|info|trace) to persist full-capability logging, or `action=command` with `command=screenshot` or `command=javascript` (plus `code`)."
+                    .to_string(),
+            )
+            .await;
+    }
 
     let (batch_tx, mut batch_rx) = tokio::sync::mpsc::unbounded_channel::<BridgeBatchEvent>();
     let session_for_batch = Arc::clone(&session);
