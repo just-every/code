@@ -456,9 +456,15 @@ impl ChatComposer {
 
         let lower = technical_message.to_lowercase();
 
-        // Auto Drive manual edit indicator
+        // Auto Review: preserve the phase text so the footer shows
+        // "Auto Review: Reviewing/Resolving" instead of a generic label.
         if lower.contains("auto review") {
-            "Auto Review".to_string()
+            let cleaned = technical_message.trim();
+            if cleaned.is_empty() {
+                "Auto Review".to_string()
+            } else {
+                cleaned.to_string()
+            }
         } else if lower.contains("auto drive goal") {
             "Auto Drive Goal".to_string()
         } else if lower.contains("auto drive") {
@@ -2141,7 +2147,7 @@ impl ChatComposer {
             AutoReviewIndicatorStatus::Running => {
                 let phase_label = match status.phase {
                     AutoReviewPhase::Resolving => "Auto Review: Resolving",
-                    AutoReviewPhase::Reviewing => "Auto Review: Checking",
+                    AutoReviewPhase::Reviewing => "Auto Review: Reviewing",
                 };
                 let now_ms = SystemTime::now()
                     .duration_since(UNIX_EPOCH)

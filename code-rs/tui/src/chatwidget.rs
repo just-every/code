@@ -1908,6 +1908,8 @@ struct AgentsTerminalState {
     order: Vec<String>,
     entries: HashMap<String, AgentTerminalEntry>,
     scroll_offsets: HashMap<String, u16>,
+    // Last scroll offset used to render the detail view (bottom-anchored)
+    last_render_scroll: std::cell::Cell<u16>,
     saved_scroll_offset: u16,
     shared_context: Option<String>,
     shared_task: Option<String>,
@@ -1977,6 +1979,7 @@ impl AgentsTerminalState {
             order: Vec::new(),
             entries: HashMap::new(),
             scroll_offsets: HashMap::new(),
+            last_render_scroll: std::cell::Cell::new(0),
             saved_scroll_offset: 0,
             shared_context: None,
             shared_task: None,
@@ -1991,6 +1994,7 @@ impl AgentsTerminalState {
         self.order.clear();
         self.entries.clear();
         self.scroll_offsets.clear();
+        self.last_render_scroll.set(0);
         self.shared_context = None;
         self.shared_task = None;
         self.pending_stop = None;
@@ -3295,12 +3299,33 @@ impl ChatWidget<'_> {
     /// Returns true if any agents are actively running (Pending or Running), or we're about to start them.
     /// Agents in terminal states (Completed/Failed) do not keep the spinner visible.
     fn agents_are_actively_running(&self) -> bool {
-        if self.agents_ready_to_start {
+        let has_running_non_auto_review = self
+            .active_agents
+            .iter()
+            .any(|a| {
+                matches!(a.status, AgentStatus::Pending | AgentStatus::Running)
+                    && !matches!(a.source_kind, Some(AgentSourceKind::AutoReview))
+            });
+
+        if has_running_non_auto_review {
             return true;
         }
-        self.active_agents
+
+        // If only Auto Review agents are active, don't drive the spinner.
+        let has_running_auto_review = self
+            .active_agents
             .iter()
-            .any(|a| matches!(a.status, AgentStatus::Pending | AgentStatus::Running))
+            .any(|a| {
+                matches!(a.status, AgentStatus::Pending | AgentStatus::Running)
+                    && matches!(a.source_kind, Some(AgentSourceKind::AutoReview))
+            });
+
+        if has_running_auto_review {
+            return false;
+        }
+
+        // Fall back to preparatory state (e.g., Auto Drive about to launch agents)
+        self.agents_ready_to_start
     }
 
     fn has_cancelable_agents(&self) -> bool {
@@ -6770,6 +6795,7 @@ impl ChatWidget<'_> {
                 }
                 KeyCode::Up => {
                     if self.agents_terminal.focus() == AgentsTerminalFocus::Detail {
+                        self.sync_agents_terminal_scroll();
                         layout_scroll::line_up(self);
                         self.record_current_agent_scroll();
                     } else {
@@ -6779,6 +6805,7 @@ impl ChatWidget<'_> {
                 }
                 KeyCode::Down => {
                     if self.agents_terminal.focus() == AgentsTerminalFocus::Detail {
+                        self.sync_agents_terminal_scroll();
                         layout_scroll::line_down(self);
                         self.record_current_agent_scroll();
                     } else {
@@ -6788,6 +6815,7 @@ impl ChatWidget<'_> {
                 }
                 KeyCode::PageUp => {
                     if self.agents_terminal.focus() == AgentsTerminalFocus::Detail {
+                        self.sync_agents_terminal_scroll();
                         layout_scroll::page_up(self);
                         self.record_current_agent_scroll();
                     } else {
@@ -6797,6 +6825,7 @@ impl ChatWidget<'_> {
                 }
                 KeyCode::PageDown => {
                     if self.agents_terminal.focus() == AgentsTerminalFocus::Detail {
+                        self.sync_agents_terminal_scroll();
                         layout_scroll::page_down(self);
                         self.record_current_agent_scroll();
                     } else {
@@ -6806,6 +6835,7 @@ impl ChatWidget<'_> {
                 }
                 KeyCode::Home => {
                     if self.agents_terminal.focus() == AgentsTerminalFocus::Detail {
+                        self.sync_agents_terminal_scroll();
                         layout_scroll::to_top(self);
                         self.record_current_agent_scroll();
                     } else {
@@ -6815,6 +6845,7 @@ impl ChatWidget<'_> {
                 }
                 KeyCode::End => {
                     if self.agents_terminal.focus() == AgentsTerminalFocus::Detail {
+                        self.sync_agents_terminal_scroll();
                         layout_scroll::to_bottom(self);
                         self.record_current_agent_scroll();
                     } else {
@@ -13092,6 +13123,8 @@ impl ChatWidget<'_> {
                 self.active_agents.clear();
                 let now = Instant::now();
                 let mut saw_running = false;
+                let mut has_running_non_auto_review = false;
+                let mut has_running_auto_review = false;
                 for agent in agents.iter() {
                     let parsed_status = agent_status_from_str(agent.status.as_str());
                     // Update runtime map
@@ -13127,6 +13160,14 @@ impl ChatWidget<'_> {
                         error: agent.error.clone(),
                         last_progress: agent.last_progress.clone(),
                     });
+
+                    if matches!(parsed_status, AgentStatus::Pending | AgentStatus::Running) {
+                        if matches!(agent.source_kind, Some(AgentSourceKind::AutoReview)) {
+                            has_running_auto_review = true;
+                        } else {
+                            has_running_non_auto_review = true;
+                        }
+                    }
                 }
 
                 self.update_agents_terminal_state(&agents, context.clone(), task.clone());
@@ -13160,7 +13201,10 @@ impl ChatWidget<'_> {
                     }
                 }
 
-                if saw_running && !self.bottom_pane.is_task_running() {
+                if saw_running
+                    && has_running_non_auto_review
+                    && !self.bottom_pane.is_task_running()
+                {
                     self.bottom_pane.set_task_running(true);
                     self.bottom_pane.update_status_text("Running...".to_string());
                     self.refresh_auto_drive_visuals();
@@ -13175,21 +13219,36 @@ impl ChatWidget<'_> {
                     .active_agents
                     .iter()
                     .any(|a| matches!(a.status, AgentStatus::Pending | AgentStatus::Running));
-                if agents_still_active {
+                if agents_still_active && has_running_non_auto_review {
                     self.bottom_pane.set_task_running(true);
+                } else if agents_still_active && !has_running_non_auto_review {
+                    // Auto Review-only runs should not drive the spinner.
+                    if !self.has_running_commands_or_tools()
+                        && !self.stream.is_write_cycle_active()
+                        && self.active_task_ids.is_empty()
+                    {
+                        self.bottom_pane.set_task_running(false);
+                        self.bottom_pane.update_status_text(String::new());
+                    }
                 }
 
                 // Reflect concise agent status in the input border
-                let count = self.active_agents.len();
-                let msg = match status {
-                    "preparing" => format!("agents: preparing ({} ready)", count),
-                    "running" => format!("agents: running ({})", count),
-                    "complete" => format!("agents: complete ({} ok)", count),
-                    "failed" => "agents: failed".to_string(),
-                    "cancelled" => "agents: cancelled".to_string(),
-                    _ => "agents: planning".to_string(),
-                };
-                self.bottom_pane.update_status_text(msg);
+                if has_running_non_auto_review {
+                    let count = self.active_agents.len();
+                    let msg = match status {
+                        "preparing" => format!("agents: preparing ({} ready)", count),
+                        "running" => format!("agents: running ({})", count),
+                        "complete" => format!("agents: complete ({} ok)", count),
+                        "failed" => "agents: failed".to_string(),
+                        "cancelled" => "agents: cancelled".to_string(),
+                        _ => "agents: planning".to_string(),
+                    };
+                    self.bottom_pane.update_status_text(msg);
+                } else if has_running_auto_review {
+                    // Let the dedicated Auto Review footer drive messaging; avoid
+                    // clobbering it with a generic agents status.
+                    self.bottom_pane.update_status_text(String::new());
+                }
 
                 // Keep agents visible after completion so users can see final messages/errors.
                 // HUD will be reset automatically when a new agent batch starts.
@@ -15256,10 +15315,12 @@ impl ChatWidget<'_> {
     fn record_current_agent_scroll(&mut self) {
         if let Some(entry) = self.agents_terminal.current_sidebar_entry() {
             let capped = self
-                .layout
-                .scroll_offset
+                .agents_terminal
+                .last_render_scroll
+                .get()
                 .min(self.layout.last_max_scroll.get());
-            self.agents_terminal
+            self
+                .agents_terminal
                 .scroll_offsets
                 .insert(entry.scroll_key(), capped);
         }
@@ -15277,6 +15338,24 @@ impl ChatWidget<'_> {
             })
             .unwrap_or(0);
         self.layout.scroll_offset = offset;
+    }
+
+    fn sync_agents_terminal_scroll(&mut self) {
+        if !self.agents_terminal.active {
+            return;
+        }
+        let applied = self
+            .agents_terminal
+            .last_render_scroll
+            .get()
+            .min(self.layout.last_max_scroll.get());
+        self.layout.scroll_offset = applied;
+        if let Some(entry) = self.agents_terminal.current_sidebar_entry() {
+            self
+                .agents_terminal
+                .scroll_offsets
+                .insert(entry.scroll_key(), applied);
+        }
     }
 
     fn prompt_stop_selected_agent(&mut self) {
@@ -32982,10 +33061,10 @@ impl ChatWidget<'_> {
         bottom_pane_area: Rect,
         buf: &mut Buffer,
     ) {
-        use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect as RtRect};
+        use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect as RtRect};
         use ratatui::style::{Modifier, Style};
         use ratatui::text::{Line, Span};
-        use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+        use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 
         let scrim_style = Style::default()
             .bg(crate::colors::overlay_scrim())
@@ -33063,6 +33142,10 @@ impl ChatWidget<'_> {
 
         if tab_height == 1 {
             let mut spans: Vec<Span> = Vec::new();
+            spans.push(Span::styled(
+                "Show: ",
+                Style::default().fg(crate::colors::text_dim()),
+            ));
             let tabs = [
                 (AgentsTerminalTab::All, "1 All"),
                 (AgentsTerminalTab::Running, "2 Running"),
@@ -33085,7 +33168,7 @@ impl ChatWidget<'_> {
                 spans.push(Span::styled((*label).to_string(), style));
             }
 
-            let tabs_block = Paragraph::new(Line::from(spans)).alignment(ratatui::layout::Alignment::Center);
+            let tabs_block = Paragraph::new(Line::from(spans)).alignment(Alignment::Left);
             tabs_block.render(tabs_area, buf);
         }
 
@@ -33340,7 +33423,21 @@ impl ChatWidget<'_> {
         self.layout.last_max_scroll.set(max_scroll);
 
         // scroll_offset is bottom‑anchored; Paragraph expects top‑anchored scroll.
-        let clamped_offset = self.layout.scroll_offset.min(max_scroll);
+        let preferred_offset = self
+            .agents_terminal
+            .current_sidebar_entry()
+            .and_then(|entry| {
+                self.agents_terminal
+                    .scroll_offsets
+                    .get(&entry.scroll_key())
+                    .copied()
+            })
+            .unwrap_or(max_scroll);
+        let clamped_offset = preferred_offset.min(max_scroll);
+        self
+            .agents_terminal
+            .last_render_scroll
+            .set(clamped_offset);
         let scroll_from_top = max_scroll.saturating_sub(clamped_offset);
 
         let detail_has_focus = self.agents_terminal.focus() == AgentsTerminalFocus::Detail;
@@ -33356,7 +33453,6 @@ impl ChatWidget<'_> {
 
         Paragraph::new(wrapped_lines)
             .block(history_block)
-            .wrap(Wrap { trim: false })
             .scroll((scroll_from_top, 0))
             .render(right_area, buf);
 
