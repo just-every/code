@@ -729,7 +729,7 @@ async fn connect_and_listen(meta: BridgeMeta, session: Arc<Session>, cwd: &Path)
     if !BRIDGE_HINT_EMITTED.swap(true, Ordering::SeqCst) && workspace_has_code_bridge(cwd) {
         session
             .record_bridge_event(
-                "Code Bridge is a local, real-time debug stream (errors/console like Sentry, plus pageviews/screenshots and a control channel). Use the `code_bridge` tool: `action=subscribe` with level (errors|warn|info|trace) to persist full-capability logging, or `action=command` with `command=screenshot` or `command=javascript` (plus `code`)."
+                "Code Bridge is a local, real-time debug stream (errors/console like Sentry, plus pageviews/screenshots and a control channel). Use the `code_bridge` tool: `action=subscribe` with level (errors|warn|info|trace) to persist full-capability logging, `action=screenshot` to request a capture, or `action=javascript` with `code` to run JS on the bridge client."
                     .to_string(),
             )
             .await;

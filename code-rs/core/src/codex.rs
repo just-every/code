@@ -6731,8 +6731,6 @@ struct BridgeControlArgs {
     #[serde(default)]
     level: Option<String>,
     #[serde(default)]
-    command: Option<String>,
-    #[serde(default)]
     code: Option<String>,
 }
 
@@ -6823,64 +6821,37 @@ async fn handle_code_bridge_with_cwd(
                 output: FunctionCallOutputPayload { content: "ok".to_string(), success: Some(true) },
             }
         }
-        "command" => {
-            let cmd = match args.command.as_ref().map(|c| c.trim().to_lowercase()) {
-                Some(c) if c == "screenshot" || c == "javascript" => c,
-                Some(_) => {
-                    return ResponseInputItem::FunctionCallOutput {
-                        call_id: ctx.call_id.clone(),
-                        output: FunctionCallOutputPayload {
-                            content: "unsupported command (use screenshot|javascript)".to_string(),
-                            success: Some(false),
-                        },
-                    }
-                }
+        "screenshot" => {
+            send_bridge_control("screenshot", serde_json::json!({}));
+            ResponseInputItem::FunctionCallOutput {
+                call_id: ctx.call_id.clone(),
+                output: FunctionCallOutputPayload { content: "requested screenshot".to_string(), success: Some(true) },
+            }
+        }
+        "javascript" => {
+            let code = match args.code.as_ref().map(|c| c.trim()).filter(|c| !c.is_empty()) {
+                Some(c) => c,
                 None => {
                     return ResponseInputItem::FunctionCallOutput {
                         call_id: ctx.call_id.clone(),
                         output: FunctionCallOutputPayload {
-                            content: "missing command".to_string(),
+                            content: "missing code for javascript action".to_string(),
                             success: Some(false),
                         },
                     }
                 }
             };
-
-            match cmd.as_str() {
-                "screenshot" => {
-                    send_bridge_control("screenshot", serde_json::json!({}));
-                    ResponseInputItem::FunctionCallOutput {
-                        call_id: ctx.call_id.clone(),
-                        output: FunctionCallOutputPayload { content: "requested screenshot".to_string(), success: Some(true) },
-                    }
-                }
-                "javascript" => {
-                    let code = match args.code.as_ref().map(|c| c.trim()).filter(|c| !c.is_empty()) {
-                        Some(c) => c,
-                        None => {
-                            return ResponseInputItem::FunctionCallOutput {
-                                call_id: ctx.call_id.clone(),
-                                output: FunctionCallOutputPayload {
-                                    content: "missing code for javascript command".to_string(),
-                                    success: Some(false),
-                                },
-                            }
-                        }
-                    };
-                    send_bridge_control("javascript", serde_json::json!({ "code": code }));
-                    ResponseInputItem::FunctionCallOutput {
-                        call_id: ctx.call_id.clone(),
-                        output: FunctionCallOutputPayload { content: "sent javascript".to_string(), success: Some(true) },
-                    }
-                }
-                _ => unreachable!(),
+            send_bridge_control("javascript", serde_json::json!({ "code": code }));
+            ResponseInputItem::FunctionCallOutput {
+                call_id: ctx.call_id.clone(),
+                output: FunctionCallOutputPayload { content: "sent javascript".to_string(), success: Some(true) },
             }
         }
         // Keep legacy actions for backward compatibility with older prompts/tools
         "show" | "set" | "clear" => ResponseInputItem::FunctionCallOutput {
             call_id: ctx.call_id.clone(),
             output: FunctionCallOutputPayload {
-                content: "deprecated action; use subscribe or command (screenshot|javascript)".to_string(),
+                content: "deprecated action; use subscribe, screenshot, or javascript".to_string(),
                 success: Some(false),
             },
         },
