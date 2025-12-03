@@ -6673,7 +6673,7 @@ async fn handle_function_call(
         "web_fetch" => handle_web_fetch(sess, &ctx, arguments).await,
         "wait" => handle_wait(sess, &ctx, arguments).await,
         "kill" => handle_kill(sess, &ctx, arguments).await,
-        "code_bridge_subscription" => handle_bridge_subscription(sess, &ctx, arguments).await,
+        "code_bridge" | "code_bridge_subscription" => handle_code_bridge(sess, &ctx, arguments).await,
         _ => {
             match sess.mcp_connection_manager.parse_tool_name(&name) {
                 Some((server, tool_name)) => {
@@ -6751,15 +6751,15 @@ fn norm_vec(vals: &Option<Vec<String>>) -> Option<Vec<String>> {
     })
 }
 
-async fn handle_bridge_subscription(
+async fn handle_code_bridge(
     sess: &Session,
     ctx: &ToolCallCtx,
     arguments: String,
 ) -> ResponseInputItem {
-    handle_bridge_subscription_with_cwd(sess.get_cwd(), ctx, arguments).await
+    handle_code_bridge_with_cwd(sess.get_cwd(), ctx, arguments).await
 }
 
-async fn handle_bridge_subscription_with_cwd(
+async fn handle_code_bridge_with_cwd(
     cwd: &Path,
     ctx: &ToolCallCtx,
     arguments: String,
@@ -6877,7 +6877,7 @@ mod bridge_tool_tests {
         let ctx = ToolCallCtx::new("sub".into(), "call".into(), None, None);
         tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(async { handle_bridge_subscription_with_cwd(cwd, &ctx, args.to_string()).await })
+            .block_on(async { handle_code_bridge_with_cwd(cwd, &ctx, args.to_string()).await })
     }
 
     #[test]

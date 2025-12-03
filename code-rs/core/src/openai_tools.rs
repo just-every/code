@@ -709,7 +709,7 @@ pub fn get_openai_tools(
     // Add general wait tool for background completions
     tools.push(create_wait_tool());
     tools.push(create_kill_tool());
-    tools.push(create_bridge_subscription_tool());
+    tools.push(create_bridge_tool());
 
     if config.web_search_request {
         let tool = match &config.web_search_allowed_domains {
@@ -799,7 +799,7 @@ pub fn create_kill_tool() -> OpenAiTool {
     })
 }
 
-pub fn create_bridge_subscription_tool() -> OpenAiTool {
+pub fn create_bridge_tool() -> OpenAiTool {
     let mut properties = BTreeMap::new();
 
     properties.insert(
@@ -852,8 +852,9 @@ pub fn create_bridge_subscription_tool() -> OpenAiTool {
     );
 
     OpenAiTool::Function(ResponsesApiTool {
-        name: "code_bridge_subscription".to_string(),
-        description: "Show/set/clear this session's Code Bridge subscription; optional persist to workspace file.".to_string(),
+        name: "code_bridge".to_string(),
+        description:
+            "Code Bridge = local Sentry-style event stream plus two-way control (errors/console/pageviews/screenshots/control). Manage the subscription (show|set|clear). Examples: {\"action\":\"show\"}, {\"action\":\"set\",\"levels\":[\"trace\"],\"capabilities\":[\"screenshot\",\"pageview\"]}, {\"action\":\"clear\",\"persist\":true}.".to_string(),
         strict: false,
         parameters: JsonSchema::Object {
             properties,
@@ -935,7 +936,7 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
-                "code_bridge_subscription",
+                "code_bridge",
                 "web_search",
             ],
         );
@@ -967,7 +968,7 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
-                "code_bridge_subscription",
+                "code_bridge",
                 "web_search",
             ],
         );
@@ -998,7 +999,7 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
-                "code_bridge_subscription",
+                "code_bridge",
                 "web_search",
             ],
         );
@@ -1066,7 +1067,7 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
-                "code_bridge_subscription",
+                "code_bridge",
                 "web_search",
                 "test_server/do_something_cool",
             ],
@@ -1187,7 +1188,7 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
-                "code_bridge_subscription",
+                "code_bridge",
                 "web_search",
                 "test_server/do_something_cool",
             ],
@@ -1310,7 +1311,7 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
-                "code_bridge_subscription",
+                "code_bridge",
                 "web_search",
                 "dash/search",
             ],
@@ -1383,7 +1384,7 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
-                "code_bridge_subscription",
+                "code_bridge",
                 "web_search",
                 "dash/paginate",
             ],
@@ -1457,7 +1458,7 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
-                "code_bridge_subscription",
+                "code_bridge",
                 "web_search",
                 "dash/tags",
             ],
@@ -1529,7 +1530,7 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
-                "code_bridge_subscription",
+                "code_bridge",
                 "web_search",
                 "dash/value",
             ],
