@@ -2201,7 +2201,7 @@ impl ChatComposer {
                 vec![
                     Span::from("  "),
                     Span::styled("Auto Review: ", label_style),
-                    Span::styled("✔", icon_style),
+                    Span::styled("•", icon_style),
                     Span::from(" "),
                     Span::styled("Correct", icon_style),
                 ]
