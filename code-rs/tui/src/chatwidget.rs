@@ -259,7 +259,7 @@ use crate::bottom_pane::{
     AutoCoordinatorButton,
     AutoCoordinatorViewModel,
     CountdownState,
-    AutoReviewFooterStatus, AutoReviewPhase,
+    AgentHintLabel, AutoReviewFooterStatus, AutoReviewPhase,
     prompts_settings_view::PromptsSettingsView,
     McpSettingsView,
     ModelSelectionView,
@@ -1389,26 +1389,15 @@ struct AutoReviewStatus {
 
 fn detect_auto_review_phase(progress: Option<&str>) -> AutoReviewPhase {
     let text = progress.unwrap_or_default().to_ascii_lowercase();
-    let resolving_markers = [
-        "resolve",
-        "resolving",
-        "auto-resolve",
-        "autoresolve",
-        "apply fix",
-        "applying fix",
-        "apply patch",
-        "applying patch",
-        "patching",
-        "fixing",
-        "merging",
-        "merge",
-    ];
-
-    if resolving_markers.iter().any(|m| text.contains(m)) {
-        AutoReviewPhase::Resolving
-    } else {
-        AutoReviewPhase::Reviewing
+    // Prefer explicit phase markers emitted by exec when available.
+    if text.contains("[auto-review] phase: resolving") {
+        return AutoReviewPhase::Resolving;
     }
+    if text.contains("[auto-review] phase: reviewing") {
+        return AutoReviewPhase::Reviewing;
+    }
+
+    AutoReviewPhase::Reviewing
 }
 
 const SKIP_REVIEW_PROGRESS_SENTINEL: &str = "Another review is already running; skipping this /review.";
@@ -4215,12 +4204,17 @@ impl ChatWidget<'_> {
 
         debug_assert_eq!(layout.lines.len(), layout.rows.len());
 
-        let cell_bg = match item.kind() {
-            crate::history_cell::HistoryCellType::Assistant => crate::colors::assistant_bg(),
-            _ => crate::colors::background(),
+        let is_assistant = matches!(item.kind(), crate::history_cell::HistoryCellType::Assistant);
+        let is_auto_review = item.gutter_symbol() == Some("⇄");
+        let cell_bg = if is_assistant {
+            crate::colors::assistant_bg()
+        } else if is_auto_review {
+            crate::colors::success()
+        } else {
+            crate::colors::background()
         };
 
-        if matches!(item.kind(), crate::history_cell::HistoryCellType::Assistant) {
+        if is_assistant || is_auto_review {
             let bg_style = Style::default()
                 .bg(cell_bg)
                 .fg(crate::colors::text());
@@ -13360,6 +13354,13 @@ impl ChatWidget<'_> {
 
                 self.observe_auto_review_status(&agents);
 
+                let agent_hint_label = if has_running_auto_review && !has_running_non_auto_review {
+                    AgentHintLabel::Review
+                } else {
+                    AgentHintLabel::Agents
+                };
+                self.bottom_pane.set_agent_hint_label(agent_hint_label);
+
                 // Store shared context and task
                 self.agent_context = context;
                 self.agent_task = task;
@@ -19801,7 +19802,7 @@ Have we met every part of this goal and is there no further work to do?"#
         ));
 
         // Global
-        lines.push(kv("Ctrl+H", "Help overlay"));
+        lines.push(kv("Ctrl+G", "Guide overlay"));
         lines.push(kv("Ctrl+R", "Toggle reasoning"));
         lines.push(kv("Ctrl+T", "Toggle screen"));
         lines.push(kv("Ctrl+D", "Diff viewer"));
@@ -33462,7 +33463,7 @@ impl ChatWidget<'_> {
             }
         }
 
-        let content = inner.inner(Margin::new(1, 1));
+        let content = inner.inner(Margin::new(1, 0));
         if content.width == 0 || content.height == 0 {
             return;
         }
@@ -33824,7 +33825,9 @@ impl ChatWidget<'_> {
         use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect as RtRect};
         use ratatui::style::{Modifier, Style};
         use ratatui::text::{Line, Span};
-        use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+        use ratatui::widgets::{
+            Block, Borders, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph,
+        };
 
         let scrim_style = Style::default()
             .bg(crate::colors::overlay_scrim())
@@ -33876,7 +33879,7 @@ impl ChatWidget<'_> {
             return;
         }
 
-        let tab_height = if content.height >= 4 { 2 } else if content.height >= 3 { 1 } else { 0 };
+        let tab_height = if content.height >= 3 { 1 } else { 0 };
         let hint_height = if content.height >= 2 { 1 } else { 0 };
         let body_height = content
             .height
@@ -33901,96 +33904,62 @@ impl ChatWidget<'_> {
         };
 
         if tab_height > 0 {
-            let mut header_rows: Vec<Rect> = Vec::new();
-            if tab_height == 2 {
-                let parts = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(1), Constraint::Length(1)])
-                    .split(tabs_area);
-                header_rows.extend_from_slice(&parts);
-            } else {
-                header_rows.push(tabs_area);
-            }
-
-            // Row 1: title with soft bars
-            let title_row = *header_rows.get(0).unwrap_or(&tabs_area);
-            let title_label = "Agents";
-            let ctrl_hint = "(Ctrl+A to close)";
-            let base = format!("╭ {title_label} ── {ctrl_hint} ");
-            let base_width = UnicodeWidthStr::width(base.as_str()) as u16;
-            let pad = title_row.width.saturating_sub(base_width + 1);
-            let mut title_text = base;
-            title_text.push_str(&"─".repeat(pad as usize));
-            title_text.push('╮');
-            Paragraph::new(Line::from(Span::styled(
-                title_text,
-                Style::default().fg(crate::colors::text()),
-            )))
-            .alignment(Alignment::Left)
-            .render(title_row, buf);
-
-            // Row 2: filters + sort
-            if tab_height == 2 {
-                let filter_row = header_rows[1];
-                let mut spans: Vec<Span> = Vec::new();
-                spans.push(Span::styled(
-                    "│ Filter: ",
-                    Style::default().fg(crate::colors::text_dim()),
-                ));
-                let tabs = [
-                    (AgentsTerminalTab::All, "( ALL )"),
-                    (AgentsTerminalTab::Running, "( RUNNING )"),
-                    (AgentsTerminalTab::Failed, "( FAILED )"),
-                    (AgentsTerminalTab::Completed, "( DONE )"),
-                    (AgentsTerminalTab::Review, "( REVIEW )"),
-                ];
-                for (idx, (tab, label)) in tabs.iter().enumerate() {
-                    if idx > 0 {
-                        spans.push(Span::raw("  "));
-                    }
-                    let active = *tab == self.agents_terminal.active_tab;
-                    let style = if active {
-                        Style::default()
-                            .fg(crate::colors::primary())
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(crate::colors::text_dim())
-                    };
-                    spans.push(Span::styled((*label).to_string(), style));
+            let filter_row = tabs_area;
+            let mut spans: Vec<Span> = Vec::new();
+            spans.push(Span::styled(
+                "Filter: ",
+                Style::default().fg(crate::colors::text_dim()),
+            ));
+            let tabs = [
+                (AgentsTerminalTab::All, "( ALL )"),
+                (AgentsTerminalTab::Running, "( RUNNING )"),
+                (AgentsTerminalTab::Failed, "( FAILED )"),
+                (AgentsTerminalTab::Completed, "( DONE )"),
+                (AgentsTerminalTab::Review, "( REVIEW )"),
+            ];
+            for (idx, (tab, label)) in tabs.iter().enumerate() {
+                if idx > 0 {
+                    spans.push(Span::raw("  "));
                 }
-
-                spans.push(Span::raw("              "));
-                spans.push(Span::styled(
-                    "Sort by:",
-                    Style::default().fg(crate::colors::text_dim()),
-                ));
-                let sort_label = match self.agents_terminal.sort_mode {
-                    AgentsSortMode::Recent => "Recent",
-                    AgentsSortMode::RunningFirst => "Running",
-                    AgentsSortMode::Name => "Name",
+                let active = *tab == self.agents_terminal.active_tab;
+                let style = if active {
+                    Style::default()
+                        .fg(crate::colors::primary())
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(crate::colors::text_dim())
                 };
-                spans.push(Span::raw(" ( "));
-                spans.push(Span::styled(
+                spans.push(Span::styled((*label).to_string(), style));
+            }
+            let sort_label = match self.agents_terminal.sort_mode {
+                AgentsSortMode::Recent => "Recent",
+                AgentsSortMode::RunningFirst => "Running",
+                AgentsSortMode::Name => "Name",
+            };
+            let sort_spans = vec![
+                Span::styled("Sort: ", Style::default().fg(crate::colors::text_dim())),
+                Span::raw("( "),
+                Span::styled(
                     format!("{sort_label} ▼"),
                     Style::default()
                         .fg(crate::colors::primary())
                         .add_modifier(Modifier::BOLD),
-                ));
-                spans.push(Span::raw(" )"));
+                ),
+                Span::raw(" )"),
+            ];
 
-                // Right border cap
-                let mut line = Line::from(spans);
-                if filter_row.width > 0 {
-                    line.spans.push(Span::raw(" "));
-                    line.spans.push(Span::styled(
-                        "│",
-                        Style::default().fg(crate::colors::text_dim()),
-                    ));
-                }
-                Paragraph::new(line)
-                    .alignment(Alignment::Left)
-                    .render(filter_row, buf);
-            }
+            let filter_width: u16 = spans.iter().map(|span| span.width() as u16).sum();
+            let sort_width: u16 = sort_spans.iter().map(|span| span.width() as u16).sum();
+            let gap = filter_row
+                .width
+                .saturating_sub(filter_width + sort_width)
+                .max(1);
+            spans.push(Span::raw(" ".repeat(gap as usize)));
+            spans.extend(sort_spans);
+
+            Paragraph::new(Line::from(spans))
+                .alignment(Alignment::Left)
+                .render(filter_row, buf);
         }
 
         let longest_name_width: u16 = self
@@ -34036,9 +34005,10 @@ impl ChatWidget<'_> {
         items.push(ListItem::new(Line::from(vec![Span::styled(
             "Batches",
             Style::default()
-                .fg(crate::colors::text())
-                .add_modifier(Modifier::BOLD),
+                .fg(crate::colors::text_dim()),
         )])));
+        row_entries.push(None);
+        items.push(ListItem::new(Line::from(vec![Span::raw(" ")])));
         row_entries.push(None);
 
         for group in self.agents_terminal.sidebar_groups() {
@@ -34051,6 +34021,8 @@ impl ChatWidget<'_> {
                 ),
             ])));
             row_entries.push(None);
+
+            let selected_entry = self.agents_terminal.current_sidebar_entry();
 
             for agent_id in group.agent_ids {
                 if let Some(entry) = self.agents_terminal.entries.get(&agent_id) {
@@ -34072,8 +34044,14 @@ impl ChatWidget<'_> {
                         display_name.push('…');
                     }
                     let color = agent_status_color(entry.status.clone());
+                    let is_selected = selected_entry
+                        .as_ref()
+                        .map(|entry| entry == &AgentsSidebarEntry::Agent(agent_id.clone()))
+                        .unwrap_or(false);
+                    let prefix = if is_selected { "> " } else { "  " };
+
                     let line = Line::from(vec![
-                        Span::raw("  "),
+                        Span::raw(prefix),
                         Span::styled(
                             display_name,
                             Style::default().fg(crate::colors::text()),
@@ -34122,7 +34100,7 @@ impl ChatWidget<'_> {
         };
         let sidebar = List::new(items)
             .highlight_style(highlight_style)
-            .highlight_symbol("> ");
+            .highlight_spacing(HighlightSpacing::Never);
 
         fill_rect(
             buf,

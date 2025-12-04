@@ -69,7 +69,7 @@ pub(crate) enum CancellationEvent {
     Handled,
 }
 
-pub(crate) use chat_composer::{AutoReviewFooterStatus, AutoReviewPhase, ChatComposer};
+pub(crate) use chat_composer::{AgentHintLabel, AutoReviewFooterStatus, AutoReviewPhase, ChatComposer};
 pub(crate) use chat_composer::InputResult;
 pub(crate) use auto_coordinator_view::{
     AutoActiveViewModel,
@@ -588,6 +588,11 @@ impl BottomPane<'_> {
 
     pub(crate) fn set_auto_review_status(&mut self, status: Option<AutoReviewFooterStatus>) {
         self.composer.set_auto_review_status(status);
+        self.request_redraw();
+    }
+
+    pub(crate) fn set_agent_hint_label(&mut self, label: AgentHintLabel) {
+        self.composer.set_agent_hint_label(label);
         self.request_redraw();
     }
 

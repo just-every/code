@@ -675,6 +675,9 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         last_review_epoch = Some(current_snapshot_epoch_for(&config.cwd));
 
         let event_id = conversation.submit(Op::Review { review_request }).await?;
+        if is_auto_review {
+            eprintln!("[auto-review] phase: reviewing (started)");
+        }
         info!("Sent /review with event ID: {event_id}");
         event_id
     } else {
@@ -817,6 +820,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                 };
                                 state.snapshot_epoch = Some(current_epoch);
                             }
+                            eprintln!("[auto-review] phase: resolving (started)");
                             dispatch_auto_fix(&conversation, &review).await?;
                         }
                         AutoResolvePhase::AwaitingFix { .. } => {
@@ -900,6 +904,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                         )
                                         .await;
                                         last_review_epoch = Some(current_snapshot_epoch_for(&config.cwd));
+                                        eprintln!("[auto-review] phase: reviewing (started)");
                                         let _ = conversation
                                             .submit(Op::Review {
                                                 review_request: followup_request,

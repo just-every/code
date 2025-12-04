@@ -189,12 +189,12 @@ fn assert_viewport_invariants(output: &str, expected_rows: u16) {
         lines.len()
     );
     assert!(
-        output.contains("Ctrl+H help"),
+        output.contains("Ctrl+G guide"),
         "composer footer is expected to remain visible"
     );
     if let Some(last_line) = lines.last() {
         assert!(
-            last_line.trim().is_empty() || last_line.contains("help"),
+            last_line.trim().is_empty() || last_line.contains("guide"),
             "last visible line looks truncated: {last_line:?}"
         );
     }

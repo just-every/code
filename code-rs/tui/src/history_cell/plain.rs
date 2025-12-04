@@ -62,8 +62,8 @@ impl PlainHistoryCell {
     }
 
     fn auto_review_bg() -> ratatui::style::Color {
-        // Blend success toward background for a light tint similar to assistant cards
-        colors::mix_toward(colors::success(), colors::background(), 0.82)
+        // Solid success background for clear emphasis
+        colors::success()
     }
     pub(crate) fn from_state(state: PlainMessageState) -> Self {
         let mut kind = history_cell_kind_from_plain(state.kind);
