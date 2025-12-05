@@ -2496,16 +2496,6 @@ fn agent_status_label(status: AgentStatus) -> &'static str {
     }
 }
 
-fn agent_status_chip(status: AgentStatus) -> &'static str {
-    match status {
-        AgentStatus::Pending => "PEND",
-        AgentStatus::Running => "RUN",
-        AgentStatus::Completed => "DONE",
-        AgentStatus::Failed => "FAIL",
-        AgentStatus::Cancelled => "CNCL",
-    }
-}
-
 fn agent_status_icon(status: AgentStatus) -> &'static str {
     match status {
         AgentStatus::Completed => "✔",
@@ -34042,16 +34032,17 @@ impl ChatWidget<'_> {
         };
 
         let sidebar_has_focus = self.agents_terminal.focus() == AgentsTerminalFocus::Sidebar;
-        let batches_title_style = if sidebar_has_focus {
-            Style::default().fg(crate::colors::primary())
+        let sidebar_border_color = if sidebar_has_focus {
+            crate::colors::primary()
         } else {
-            Style::default().fg(crate::colors::text_dim())
+            crate::colors::border()
         };
+        let filter_title_style = Style::default().fg(crate::colors::text_dim());
 
         if tab_height > 0 {
             let filter_row = tabs_area;
             let mut spans: Vec<Span> = Vec::new();
-            spans.push(Span::styled("Batches", batches_title_style));
+            spans.push(Span::styled("Filter", filter_title_style));
             spans.push(Span::raw("   "));
             let tabs = [
                 (AgentsTerminalTab::All, "1", "All"),
@@ -34122,9 +34113,9 @@ impl ChatWidget<'_> {
             })
             .max()
             .unwrap_or(10);
-        let chip_width = UnicodeWidthStr::width(agent_status_chip(AgentStatus::Running)) as u16;
+        let status_icon_width = UnicodeWidthStr::width(agent_status_icon(AgentStatus::Running)) as u16;
         let desired_sidebar = longest_name_width
-            .saturating_add(chip_width)
+            .saturating_add(status_icon_width)
             .saturating_add(8);
         let sidebar_width = if body_area.width <= 30 {
             body_area.width
@@ -34170,9 +34161,10 @@ impl ChatWidget<'_> {
                         .as_ref()
                         .map(|value| Self::format_model_label(value))
                         .unwrap_or_else(|| Self::format_model_label(&entry.name));
-                    let chip = agent_status_chip(entry.status.clone());
+                    let status = entry.status.clone();
+                    let status_icon = agent_status_icon(status.clone());
                     let name_room = sidebar_width
-                        .saturating_sub((chip.len() as u16).saturating_add(6))
+                        .saturating_sub((UnicodeWidthStr::width(status_icon) as u16).saturating_add(5))
                         .max(4) as usize;
                     let mut display_name = model_label.clone();
                     if display_name.chars().count() > name_room {
@@ -34182,7 +34174,7 @@ impl ChatWidget<'_> {
                             .collect::<String>();
                         display_name.push('…');
                     }
-                    let color = agent_status_color(entry.status.clone());
+                    let color = agent_status_color(status);
                     let is_selected = selected_entry
                         .as_ref()
                         .map(|entry| entry == &AgentsSidebarEntry::Agent(agent_id.clone()))
@@ -34202,8 +34194,8 @@ impl ChatWidget<'_> {
                             display_name,
                             Style::default().fg(crate::colors::text()),
                         ),
-                        Span::raw("  "),
-                        Span::styled(chip.to_string(), Style::default().fg(color)),
+                        Span::raw(" "),
+                        Span::styled(status_icon, Style::default().fg(color)),
                     ]);
                     items.push(ListItem::new(line));
                     row_entries.push(Some(AgentsSidebarEntry::Agent(agent_id.clone())));
@@ -34234,37 +34226,32 @@ impl ChatWidget<'_> {
             }
         }
 
-        let highlight_style = if sidebar_has_focus {
-            Style::default()
-                .fg(crate::colors::primary())
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-                .fg(crate::colors::text_dim())
-                .add_modifier(Modifier::BOLD)
-        };
+        // Keep the selected agent vivid even when detail pane holds focus so users
+        // don’t lose their place while reading logs.
+        let highlight_style = Style::default()
+            .fg(crate::colors::primary())
+            .add_modifier(Modifier::BOLD);
         let sidebar = List::new(items)
             .highlight_style(highlight_style)
             .highlight_spacing(HighlightSpacing::Never);
 
+        let sidebar_block = Block::default()
+            .borders(Borders::ALL)
+            .style(Style::default().bg(crate::colors::background()))
+            .border_style(Style::default().fg(sidebar_border_color));
+
+        let sidebar_area = chunks[0];
+        let sidebar_inner = sidebar_block.inner(sidebar_area);
+        sidebar_block.render(sidebar_area, buf);
+
         fill_rect(
             buf,
-            chunks[0],
+            sidebar_inner,
             None,
             Style::default().bg(crate::colors::background()),
         );
-        ratatui::widgets::StatefulWidget::render(sidebar, chunks[0], buf, &mut list_state);
 
-        if chunks.len() > 1 {
-            let sep_x = chunks[0].x.saturating_add(chunks[0].width);
-            if sep_x < body_area.x.saturating_add(body_area.width) {
-                for y in body_area.y..body_area.y.saturating_add(body_area.height) {
-                    let cell = &mut buf[(sep_x, y)];
-                    cell.set_char('│');
-                    cell.set_style(Style::default().fg(crate::colors::border()));
-                }
-            }
-        }
+        ratatui::widgets::StatefulWidget::render(sidebar, sidebar_inner, buf, &mut list_state);
 
         let right_area = if chunks.len() > 1 { chunks[1] } else { chunks[0] };
         let detail_width = right_area.width.saturating_sub(2).max(1);
@@ -34460,27 +34447,12 @@ impl ChatWidget<'_> {
 
         let detail_has_focus = self.agents_terminal.focus() == AgentsTerminalFocus::Detail;
         let detail_border_color = if detail_has_focus {
-            crate::colors::border_focused()
+            crate::colors::primary()
         } else {
             crate::colors::border()
         };
-        let top_overflow = scroll_from_top > 0;
-        let bottom_overflow = clamped_offset > 0;
-        let mut history_title = String::from(" Agent History ");
-        if top_overflow {
-            history_title.push('↑');
-        }
-        if bottom_overflow {
-            history_title.push('↓');
-        }
-        let history_title_style = if detail_has_focus {
-            Style::default().fg(crate::colors::primary())
-        } else {
-            Style::default().fg(crate::colors::text_dim())
-        };
         let history_block = Block::default()
             .borders(Borders::ALL)
-            .title(Line::from(Span::styled(history_title, history_title_style)))
             .border_style(Style::default().fg(detail_border_color));
 
         Paragraph::new(wrapped_lines)
@@ -35844,7 +35816,9 @@ impl WidgetRef for &ChatWidget<'_> {
                             // Assistant messages render with one row of top padding so that
                             // the content visually aligns; anchor to that second row.
                             crate::history_cell::HistoryCellType::Assistant => 1,
-                            _ if is_auto_review => 1,
+                            _ if is_auto_review => {
+                                crate::history_cell::PlainHistoryCell::auto_review_padding().0
+                            }
                             _ => 0,
                         };
 
