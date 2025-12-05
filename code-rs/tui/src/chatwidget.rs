@@ -26228,6 +26228,18 @@ Have we met every part of this goal and is there no further work to do?"#
             return;
         }
 
+        // Surface immediately in the TUI as a notice (developer-style message).
+        let mut notice_lines = Vec::new();
+        if !preface_cache.trim().is_empty() {
+            notice_lines.push(preface_cache.trim().to_string());
+        }
+        if !agent_cache.trim().is_empty() {
+            notice_lines.push(agent_cache.trim().to_string());
+        }
+        if !notice_lines.is_empty() {
+            self.history_push_plain_paragraphs(PlainMessageKind::Notice, notice_lines);
+        }
+
         let msg = UserMessage {
             display_text: String::new(),
             ordered_items: ordered,
@@ -26247,7 +26259,23 @@ Have we met every part of this goal and is there no further work to do?"#
             self.last_developer_message = Some(cache);
         }
         self.pending_turn_origin = Some(TurnOrigin::Developer);
-        self.submit_user_message(msg);
+        self.submit_user_message_immediate(msg);
+    }
+
+    /// Dispatch a user message immediately, bypassing the queued/turn-active
+    /// path. Used for developer/system injections that must not be lost if the
+    /// current turn ends abruptly.
+    fn submit_user_message_immediate(&mut self, message: UserMessage) {
+        if message.ordered_items.is_empty() {
+            return;
+        }
+
+        let items = message.ordered_items.clone();
+        if let Err(e) = self.code_op_tx.send(Op::UserInput { items }) {
+            tracing::error!("failed to send immediate UserInput: {e}");
+        }
+
+        self.finalize_sent_user_message(message);
     }
 
     /// Queue a note that will be delivered to the agent as a hidden system
