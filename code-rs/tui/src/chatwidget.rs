@@ -2496,6 +2496,16 @@ fn agent_status_label(status: AgentStatus) -> &'static str {
     }
 }
 
+fn agent_status_chip(status: AgentStatus) -> &'static str {
+    match status {
+        AgentStatus::Pending => "PEND",
+        AgentStatus::Running => "RUN",
+        AgentStatus::Completed => "DONE",
+        AgentStatus::Failed => "FAIL",
+        AgentStatus::Cancelled => "CNCL",
+    }
+}
+
 fn agent_status_icon(status: AgentStatus) -> &'static str {
     match status {
         AgentStatus::Completed => "✔",
@@ -34113,9 +34123,9 @@ impl ChatWidget<'_> {
             })
             .max()
             .unwrap_or(10);
-        let status_icon_width = UnicodeWidthStr::width(agent_status_icon(AgentStatus::Running)) as u16;
+        let chip_width = UnicodeWidthStr::width(agent_status_chip(AgentStatus::Running)) as u16;
         let desired_sidebar = longest_name_width
-            .saturating_add(status_icon_width)
+            .saturating_add(chip_width)
             .saturating_add(8);
         let sidebar_width = if body_area.width <= 30 {
             body_area.width
@@ -34162,9 +34172,9 @@ impl ChatWidget<'_> {
                         .map(|value| Self::format_model_label(value))
                         .unwrap_or_else(|| Self::format_model_label(&entry.name));
                     let status = entry.status.clone();
-                    let status_icon = agent_status_icon(status.clone());
+                    let chip = agent_status_chip(status);
                     let name_room = sidebar_width
-                        .saturating_sub((UnicodeWidthStr::width(status_icon) as u16).saturating_add(5))
+                        .saturating_sub((chip.len() as u16).saturating_add(6))
                         .max(4) as usize;
                     let mut display_name = model_label.clone();
                     if display_name.chars().count() > name_room {
@@ -34174,7 +34184,7 @@ impl ChatWidget<'_> {
                             .collect::<String>();
                         display_name.push('…');
                     }
-                    let color = agent_status_color(status);
+                    let color = agent_status_color(entry.status.clone());
                     let is_selected = selected_entry
                         .as_ref()
                         .map(|entry| entry == &AgentsSidebarEntry::Agent(agent_id.clone()))
@@ -34194,8 +34204,8 @@ impl ChatWidget<'_> {
                             display_name,
                             Style::default().fg(crate::colors::text()),
                         ),
-                        Span::raw(" "),
-                        Span::styled(status_icon, Style::default().fg(color)),
+                        Span::raw("  "),
+                        Span::styled(chip.to_string(), Style::default().fg(color)),
                     ]);
                     items.push(ListItem::new(line));
                     row_entries.push(Some(AgentsSidebarEntry::Agent(agent_id.clone())));
