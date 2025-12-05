@@ -349,11 +349,10 @@ impl TextArea {
             } => {
                 self.undo();
             }
-            KeyEvent {
-                code: KeyCode::Char('z'),
-                modifiers: KeyModifiers::SUPER,
-                ..
-            } => {
+            KeyEvent { code: KeyCode::Char('z'), modifiers, .. }
+                if modifiers.contains(KeyModifiers::SUPER)
+                    && !modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) =>
+            {
                 self.undo();
             }
             // macOS-like shortcuts (when terminals report the Command key as SUPER):
@@ -958,6 +957,21 @@ mod tests {
         ));
 
         assert_eq!(textarea.text(), "", "Ctrl+Alt+H should still delete backward word");
+    }
+
+    #[test]
+    fn cmd_z_with_extra_control_bit_undoes() {
+        let mut textarea = TextArea::new();
+        textarea.insert_str("hello");
+        assert_eq!(textarea.text(), "hello");
+
+        textarea.input(KeyEvent::new(
+            KeyCode::Char('z'),
+            KeyModifiers::SUPER | KeyModifiers::CONTROL,
+        ));
+
+        assert_eq!(textarea.text(), "");
+        assert_eq!(textarea.cursor(), 0);
     }
 
     #[cfg(not(target_os = "windows"))]

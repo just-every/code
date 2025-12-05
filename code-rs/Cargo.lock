@@ -1054,6 +1054,7 @@ name = "code-cli"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "clap_complete",
  "code-app-server",
@@ -1085,6 +1086,7 @@ dependencies = [
  "tar",
  "tempfile",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
  "uuid",

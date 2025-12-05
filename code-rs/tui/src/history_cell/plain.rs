@@ -54,16 +54,16 @@ pub(crate) struct PlainHistoryCell {
 }
 
 impl PlainHistoryCell {
-    fn is_auto_review_notice(&self) -> bool {
+    pub(crate) fn is_auto_review_notice(&self) -> bool {
         self.state
             .header()
             .map(|h| h.label.to_lowercase().contains("auto review"))
             .unwrap_or(false)
     }
 
-    fn auto_review_bg() -> ratatui::style::Color {
-        // Solid success background for clear emphasis
-        colors::success()
+    pub(crate) fn auto_review_bg() -> ratatui::style::Color {
+        // Lightly tint the standard background toward success for readability.
+        colors::mix_toward(colors::background(), colors::success(), 0.18)
     }
     pub(crate) fn from_state(state: PlainMessageState) -> Self {
         let mut kind = history_cell_kind_from_plain(state.kind);
@@ -253,7 +253,7 @@ impl HistoryCell for PlainHistoryCell {
         if let Some(header) = self.state.header() {
             let label = header.label.trim().to_lowercase();
             if label == "auto review" {
-                return Some("⇄");
+                return Some("•");
             }
         }
         super::gutter_symbol_for_kind(self.kind())

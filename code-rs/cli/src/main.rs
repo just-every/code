@@ -15,6 +15,7 @@ use code_cli::login::run_login_with_api_key;
 use code_cli::login::run_login_with_chatgpt;
 use code_cli::login::run_login_with_device_code;
 use code_cli::login::run_logout;
+mod bridge;
 mod llm;
 use llm::{LlmCli, run_llm};
 use code_common::CliConfigOverrides;
@@ -195,6 +196,20 @@ struct BridgeCommand {
 enum BridgeAction {
     /// View or change the bridge subscription for the current workspace.
     Subscription(BridgeSubscriptionCommand),
+
+    /// Show bridge metadata for the current workspace.
+    #[clap(alias = "ls")]
+    List(BridgeListCommand),
+
+    /// Stream live bridge events.
+    Tail(BridgeTailCommand),
+
+    /// Request a screenshot from control-capable bridge clients.
+    Screenshot(BridgeScreenshotCommand),
+
+    /// Execute JavaScript via the bridge control channel (eval).
+    #[clap(alias = "js")]
+    Javascript(BridgeJavascriptCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -218,6 +233,49 @@ struct BridgeSubscriptionCommand {
     /// Remove the override file and revert to defaults (errors only).
     #[arg(long, default_value_t = false)]
     clear: bool,
+}
+
+#[derive(Debug, Parser)]
+struct BridgeListCommand {}
+
+#[derive(Debug, Parser)]
+struct BridgeTailCommand {
+    /// Minimum level to subscribe to (errors|warn|info|trace).
+    #[arg(long, default_value = "info", value_parser = ["errors", "warn", "info", "trace"])]
+    level: String,
+
+    /// Bridge target to use (index from `code bridge list` or metadata path).
+    #[arg(long = "bridge", value_name = "PATH|INDEX")]
+    bridge: Option<String>,
+
+    /// Print raw JSON frames instead of summaries.
+    #[arg(long, default_value_t = false)]
+    raw: bool,
+}
+
+#[derive(Debug, Parser)]
+struct BridgeScreenshotCommand {
+    /// Seconds to wait for a control response/screenshot.
+    #[arg(long, default_value_t = 10)]
+    timeout: u64,
+
+    /// Bridge target to use (index from `code bridge list` or metadata path).
+    #[arg(long = "bridge", value_name = "PATH|INDEX")]
+    bridge: Option<String>,
+}
+
+#[derive(Debug, Parser)]
+struct BridgeJavascriptCommand {
+    /// JavaScript to run inside the bridge client (eval).
+    code: String,
+
+    /// Seconds to wait for a control response.
+    #[arg(long, default_value_t = 10)]
+    timeout: u64,
+
+    /// Bridge target to use (index from `code bridge list` or metadata path).
+    #[arg(long = "bridge", value_name = "PATH|INDEX")]
+    bridge: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -535,7 +593,7 @@ async fn cli_main(code_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()>
             preview_main(args).await?;
         }
         Some(Subcommand::Bridge(bridge_cli)) => {
-            run_bridge_command(bridge_cli)?;
+            run_bridge_command(bridge_cli).await?;
         }
         Some(Subcommand::Llm(mut llm_cli)) => {
             prepend_config_flags(
@@ -560,9 +618,13 @@ fn prepend_config_flags(
         .splice(0..0, cli_config_overrides.raw_overrides);
 }
 
-fn run_bridge_command(cmd: BridgeCommand) -> anyhow::Result<()> {
+async fn run_bridge_command(cmd: BridgeCommand) -> anyhow::Result<()> {
     match cmd.action {
         BridgeAction::Subscription(sub_cmd) => run_bridge_subscription(sub_cmd),
+        BridgeAction::List(list_cmd) => run_bridge_list(list_cmd).await,
+        BridgeAction::Tail(tail_cmd) => run_bridge_tail(tail_cmd).await,
+        BridgeAction::Screenshot(shot_cmd) => run_bridge_screenshot(shot_cmd).await,
+        BridgeAction::Javascript(js_cmd) => run_bridge_javascript(js_cmd).await,
     }
 }
 
@@ -617,6 +679,187 @@ fn run_bridge_subscription(cmd: BridgeSubscriptionCommand) -> anyhow::Result<()>
     println!("llm_filter   : {}", sub.llm_filter);
     println!("Running Code session will resubscribe within ~5s.");
     Ok(())
+}
+
+async fn run_bridge_list(_cmd: BridgeListCommand) -> anyhow::Result<()> {
+    let cwd = std::env::current_dir().context("cannot read current dir")?;
+    let targets = bridge::discover_bridge_targets(&cwd)?;
+    if targets.is_empty() {
+        println!(
+            "No Code Bridge metadata found. Start `code-bridge-host` in this workspace and try again."
+        );
+        return Ok(());
+    }
+
+    for (idx, target) in targets.iter().enumerate() {
+        let prefix = if targets.len() > 1 {
+            format!("#{} ", idx + 1)
+        } else {
+            String::new()
+        };
+        let indent = if targets.len() > 1 { "   " } else { "" };
+
+        println!("{}Bridge metadata : {}", prefix, target.meta_path.display());
+        println!("{}url             : {}", indent, target.meta.url);
+        if let Some(ws) = target.meta.workspace_path.as_deref() {
+            println!("{}workspace       : {ws}", indent);
+        }
+        if let Some(pid) = target.meta.pid {
+            println!("{}host pid        : {pid}", indent);
+        }
+
+        let hb = match target.heartbeat_age_ms {
+            Some(ms) => {
+                let secs = ms as f64 / 1000.0;
+                if target.stale {
+                    format!("{secs:.1}s ago (stale)")
+                } else {
+                    format!("{secs:.1}s ago")
+                }
+            }
+            None => "unknown".to_string(),
+        };
+        println!("{}heartbeat       : {hb}", indent);
+        println!("{}stale           : {}", indent, if target.stale { "yes" } else { "no" });
+        if target.stale {
+            println!("{}⚠ metadata looks stale; restart code-bridge-host if this persists.", indent);
+        }
+
+        match bridge::list_control_capable(target).await {
+            Ok(count) => println!("{}control-capable : {count} bridge client(s)", indent),
+            Err(err) => println!("{}control-capable : unknown ({err})", indent),
+        }
+
+        if idx + 1 < targets.len() {
+            println!();
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_bridge_tail(cmd: BridgeTailCommand) -> anyhow::Result<()> {
+    let target = select_bridge_target(cmd.bridge.as_deref())?;
+    bridge::tail_events(&target, &cmd.level, cmd.raw).await
+}
+
+async fn run_bridge_screenshot(cmd: BridgeScreenshotCommand) -> anyhow::Result<()> {
+    let target = select_bridge_target(cmd.bridge.as_deref())?;
+    let outcome = bridge::request_screenshot(&target, cmd.timeout).await?;
+
+    println!(
+        "Forwarded to {} control-capable bridge(s).",
+        outcome.delivered
+    );
+
+    if let Some(res) = outcome.result.as_ref() {
+        let ok = res.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+        if ok {
+            let payload = res
+                .get("result")
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "ok".to_string());
+            println!("Control result  : {payload}");
+        } else {
+            let msg = res
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("control failed");
+            println!("Control result  : {msg}");
+        }
+    } else {
+        println!("Control result  : (no response)");
+    }
+
+    if let Some(bytes) = outcome.screenshot_bytes {
+        let kb = bytes / 1024;
+        let mime = outcome.screenshot_mime.unwrap_or_else(|| "unknown".to_string());
+        println!("Screenshot      : {kb} KB ({mime})");
+    } else {
+        println!("Screenshot      : no screenshot event received");
+    }
+
+    Ok(())
+}
+
+async fn run_bridge_javascript(cmd: BridgeJavascriptCommand) -> anyhow::Result<()> {
+    let target = select_bridge_target(cmd.bridge.as_deref())?;
+    let outcome = bridge::run_javascript(&target, &cmd.code, cmd.timeout).await?;
+
+    println!(
+        "Forwarded to {} control-capable bridge(s).",
+        outcome.delivered
+    );
+
+    if let Some(res) = outcome.result.as_ref() {
+        let ok = res.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+        if ok {
+            let payload = res
+                .get("result")
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "ok".to_string());
+            println!("Result          : {payload}");
+        } else {
+            let msg = res
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("control failed");
+            println!("Result          : {msg}");
+        }
+    } else {
+        println!("Result          : (no response)");
+    }
+
+    Ok(())
+}
+
+fn select_bridge_target(selector: Option<&str>) -> anyhow::Result<bridge::BridgeTarget> {
+    let cwd = std::env::current_dir().context("cannot read current dir")?;
+    let targets = bridge::discover_bridge_targets(&cwd)?;
+    if targets.is_empty() {
+        return Err(anyhow!(
+            "No Code Bridge metadata found. Start `code-bridge-host` in this workspace and try again."
+        ));
+    }
+
+    let Some(selector) = selector.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(targets[0].clone());
+    };
+
+    if let Ok(idx) = selector.parse::<usize>() {
+        if idx == 0 || idx > targets.len() {
+            anyhow::bail!("Bridge index out of range (found {}).", targets.len());
+        }
+        return Ok(targets[idx - 1].clone());
+    }
+
+    let path = PathBuf::from(selector);
+    for target in &targets {
+        if paths_match(&target.meta_path, &path) {
+            return Ok(target.clone());
+        }
+        if let Some(ws) = target.meta.workspace_path.as_deref() {
+            if ws == selector || ws.ends_with(selector) || ws.contains(selector) {
+                return Ok(target.clone());
+            }
+        }
+    }
+
+    anyhow::bail!(
+        "No bridge matched '{selector}'. Use `code bridge list` to see available bridges."
+    );
+}
+
+fn paths_match(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(l), Ok(r)) => l == r,
+        _ => false,
+    }
 }
 
 fn read_subscription_file(path: &Path) -> anyhow::Result<SubscriptionOverride> {

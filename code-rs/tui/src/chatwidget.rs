@@ -1098,6 +1098,7 @@ use crate::streaming::StreamKind;
 use crate::streaming::controller::AppEventHistorySink;
 use crate::util::buffer::fill_rect;
 use crate::user_approval_widget::ApprovalRequest;
+use code_ansi_escape::ansi_escape_line;
 pub(crate) use self::terminal::{
     PendingCommand,
     PendingCommandAction,
@@ -2486,11 +2487,11 @@ fn agent_status_label(status: AgentStatus) -> &'static str {
 
 fn agent_status_chip(status: AgentStatus) -> &'static str {
     match status {
-        AgentStatus::Pending => "[PEND]",
-        AgentStatus::Running => "[RUN ]",
-        AgentStatus::Completed => "[DONE]",
-        AgentStatus::Failed => "[FAIL]",
-        AgentStatus::Cancelled => "[CNCL]",
+        AgentStatus::Pending => "PEND",
+        AgentStatus::Running => "RUN",
+        AgentStatus::Completed => "DONE",
+        AgentStatus::Failed => "FAIL",
+        AgentStatus::Cancelled => "CNCL",
     }
 }
 
@@ -4185,6 +4186,13 @@ impl ChatWidget<'_> {
         }
     }
 
+    fn is_auto_review_cell(item: &dyn HistoryCell) -> bool {
+        item.as_any()
+            .downcast_ref::<crate::history_cell::PlainHistoryCell>()
+            .map(|plain| plain.is_auto_review_notice())
+            .unwrap_or(false)
+    }
+
     fn render_cached_lines(
         &self,
         item: &dyn HistoryCell,
@@ -4205,11 +4213,11 @@ impl ChatWidget<'_> {
         debug_assert_eq!(layout.lines.len(), layout.rows.len());
 
         let is_assistant = matches!(item.kind(), crate::history_cell::HistoryCellType::Assistant);
-        let is_auto_review = item.gutter_symbol() == Some("⇄");
+        let is_auto_review = ChatWidget::is_auto_review_cell(item);
         let cell_bg = if is_assistant {
             crate::colors::assistant_bg()
         } else if is_auto_review {
-            crate::colors::success()
+            crate::history_cell::PlainHistoryCell::auto_review_bg()
         } else {
             crate::colors::background()
         };
@@ -5427,6 +5435,22 @@ impl ChatWidget<'_> {
 
         if !(bottom_running || exec_related_running) {
             return;
+        }
+
+        // If the user cancels mid-turn while Auto Review is enabled, preserve the
+        // captured baseline so a review still runs after the next turn completes.
+        if self.config.tui.auto_review_enabled
+            && self.pending_auto_review_range.is_none()
+            && self.background_review.is_none()
+        {
+            if let Some(base) = self.auto_review_baseline.take() {
+                self.pending_auto_review_range = Some(PendingAutoReviewRange {
+                    base,
+                    // Defer to the next turn so cancellation doesn’t immediately
+                    // trigger auto-review in the same (cancelled) turn.
+                    defer_until_turn: Some(self.turn_sequence),
+                });
+            }
         }
 
         let mut has_wait_running = false;
@@ -15234,90 +15258,157 @@ impl ChatWidget<'_> {
     fn append_agent_log_lines(
         &self,
         lines: &mut Vec<ratatui::text::Line<'static>>,
-        idx: usize,
-        _total: usize,
+        _idx: usize,
         log: &AgentLogEntry,
-        agent_label: Option<&str>,
         available_width: u16,
+        is_new_kind: bool,
     ) {
         use ratatui::style::{Modifier, Style};
         use ratatui::text::{Line, Span};
 
-        let timestamp_text = format!("{time}", time = log.timestamp.format("%H:%M:%S"));
-        let label = agent_log_label(log.kind).to_uppercase();
-        let label_chip = format!("[{label:>5}]");
-        let chip_style = Style::default()
+        let time_text = log.timestamp.format("%H:%M").to_string();
+        let time_style = Style::default().fg(crate::colors::text_dim());
+        let kind_style = Style::default()
             .fg(agent_log_color(log.kind))
             .add_modifier(Modifier::BOLD);
-        let message_style = if matches!(log.kind, AgentLogKind::Error) {
+        let message_base_style = if matches!(log.kind, AgentLogKind::Error) {
             Style::default().fg(crate::colors::error())
         } else {
             Style::default().fg(crate::colors::text())
         };
-        let agent_label_string = agent_label.map(|label_text| format!("{label_text} "));
-        let agent_style = Style::default()
-            .fg(crate::colors::text_dim())
-            .add_modifier(Modifier::BOLD);
 
-        let num = format!("{:>2}", idx + 1);
-        let prefix_plain = format!("{num}  {timestamp_text}  ");
-        let prefix_width = prefix_plain.len();
-        let label_width = label_chip.len();
-        let max_width = available_width.max((prefix_width + label_width + 4) as u16) as usize;
-
-        let wrap_width = max_width.saturating_sub(prefix_width + label_width + 1).max(8);
-        let mut message_chunks: Vec<String> = Vec::new();
-        match log.kind {
-            AgentLogKind::Result => {
-                if log.message.trim().is_empty() {
-                    message_chunks.push("(no result)".to_string());
-                } else {
-                    for line in log.message.lines() {
-                        let trimmed = line.trim();
-                        if !trimmed.is_empty() {
-                            message_chunks.push(trimmed.to_string());
-                        }
-                    }
-                    if message_chunks.is_empty() {
-                        message_chunks.push(log.message.trim().to_string());
-                    }
-                }
-            }
-            _ => {
-                let normalized = log.message.replace('\n', " ");
-                message_chunks.push(normalized);
-            }
+        // Insert a section header when the log kind changes (TYPE column removed).
+        if is_new_kind {
+            let header = agent_log_label(log.kind).to_uppercase();
+            lines.push(Line::from(vec![Span::styled(header, kind_style)]));
         }
 
-        for (chunk_idx, chunk) in message_chunks.into_iter().enumerate() {
-            let options = textwrap::Options::new(wrap_width)
-                .break_words(false)
-                .word_splitter(textwrap::word_splitters::WordSplitter::NoHyphenation)
-                .initial_indent("")
-                .subsequent_indent("");
+        // Compact prefix: time only, kept short per request.
+        let prefix_plain = format!("{time_text}  ");
+        let prefix_width = unicode_width::UnicodeWidthStr::width(prefix_plain.as_str()) as u16;
+        let wrap_width = available_width.saturating_sub(prefix_width).max(4);
 
-            for (line_idx, wrapped) in textwrap::wrap(chunk.as_str(), options).into_iter().enumerate() {
+        // Break message into lines, sanitizing and keeping ANSI colors.
+        let mut message_lines: Vec<&str> = log.message.split('\n').collect();
+        if log.message.ends_with('\n') {
+            message_lines.push("");
+        }
+
+        for (line_idx, raw_line) in message_lines.into_iter().enumerate() {
+            let sanitized = self.sanitize_agent_log_line(raw_line);
+            let parsed = ansi_escape_line(&sanitized);
+            let wrapped = crate::insert_history::word_wrap_lines(&[self.apply_log_fallback_style(parsed, message_base_style)], wrap_width);
+
+            for (wrap_idx, wrapped_line) in wrapped.into_iter().enumerate() {
                 let mut spans: Vec<Span> = Vec::new();
-                if line_idx == 0 && chunk_idx == 0 {
-                    spans.push(Span::raw(" "));
-                    spans.push(Span::styled(prefix_plain.clone(), Style::default().fg(crate::colors::text_dim())));
-                    spans.push(Span::styled(label_chip.clone(), chip_style));
-                    spans.push(Span::raw(" "));
+                if wrap_idx == 0 && line_idx == 0 {
+                    // First visible line: show time prefix.
+                    spans.push(Span::styled(time_text.clone(), time_style));
+                    spans.push(Span::raw("  "));
                 } else {
-                    let pad = " ".repeat(prefix_width + label_width + 2);
-                    spans.push(Span::raw(pad));
+                    // Continuation lines align under the message body.
+                    spans.push(Span::raw(" ".repeat(prefix_width as usize)));
                 }
 
-                spans.push(Span::styled(wrapped.to_string(), message_style));
-
-                if let (Some(agent_text), true) = (agent_label_string.as_ref(), line_idx == 0 && chunk_idx == 0) {
-                    spans.push(Span::raw("  "));
-                    spans.push(Span::styled(agent_text.clone(), agent_style));
+                if wrapped_line.spans.is_empty() {
+                    spans.push(Span::raw(""));
+                } else {
+                    spans.extend(wrapped_line.spans.into_iter());
                 }
 
                 lines.push(Line::from(spans));
             }
+
         }
+    }
+
+    fn sanitize_agent_log_line(&self, raw: &str) -> String {
+        let without_ts = Self::strip_leading_timestamp(raw.trim_end_matches('\r'));
+        sanitize_for_tui(
+            without_ts,
+            SanitizeMode::AnsiPreserving,
+            SanitizeOptions {
+                expand_tabs: true,
+                tabstop: 4,
+                ..Default::default()
+            },
+        )
+    }
+
+    fn apply_log_fallback_style(
+        &self,
+        mut line: ratatui::text::Line<'static>,
+        base: ratatui::style::Style,
+    ) -> ratatui::text::Line<'static> {
+        for span in line.spans.iter_mut() {
+            span.style = base.patch(span.style);
+        }
+        line
+    }
+
+    fn strip_leading_timestamp<'a>(text: &'a str) -> &'a str {
+        fn is_digit(b: u8) -> bool { b.is_ascii_digit() }
+
+        fn consume_hms(bytes: &[u8]) -> usize {
+            if bytes.len() < 5 {
+                return 0;
+            }
+            if !(is_digit(bytes[0]) && is_digit(bytes[1]) && bytes[2] == b':' && is_digit(bytes[3]) && is_digit(bytes[4])) {
+                return 0;
+            }
+            let mut idx = 5;
+            if idx + 2 < bytes.len() && bytes[idx] == b':' && is_digit(bytes[idx + 1]) && is_digit(bytes[idx + 2]) {
+                idx += 3;
+                while idx < bytes.len() && (bytes[idx].is_ascii_digit() || bytes[idx] == b'.') {
+                    idx += 1;
+                }
+            }
+            idx
+        }
+
+        fn consume_ymd(bytes: &[u8]) -> usize {
+            if bytes.len() < 10 {
+                return 0;
+            }
+            if !(is_digit(bytes[0])
+                && is_digit(bytes[1])
+                && is_digit(bytes[2])
+                && is_digit(bytes[3])
+                && bytes[4] == b'-'
+                && is_digit(bytes[5])
+                && is_digit(bytes[6])
+                && bytes[7] == b'-'
+                && is_digit(bytes[8])
+                && is_digit(bytes[9]))
+            {
+                return 0;
+            }
+            let mut idx = 10;
+            if idx < bytes.len() && (bytes[idx] == b'T' || bytes[idx] == b' ') {
+                idx += 1;
+                idx += consume_hms(&bytes[idx..]);
+            }
+            idx
+        }
+
+        let trimmed = text.trim_start();
+        let mut candidate = trimmed.strip_prefix('[').unwrap_or(trimmed);
+        let bytes = candidate.as_bytes();
+
+        let mut consumed = consume_ymd(bytes);
+        if consumed == 0 {
+            consumed = consume_hms(bytes);
+        }
+
+        if consumed == 0 {
+            return text;
+        }
+
+        candidate = &candidate[consumed..];
+        if let Some(rest) = candidate.strip_prefix(']') {
+            candidate = rest;
+        }
+        candidate.trim_start()
     }
 
     fn ensure_trailing_blank_line(
@@ -15562,17 +15653,18 @@ impl ChatWidget<'_> {
     }
 
     fn restore_selected_agent_scroll(&mut self) {
-        let offset = self
-            .agents_terminal
-            .current_sidebar_entry()
-            .and_then(|entry| {
-                self.agents_terminal
-                    .scroll_offsets
-                    .get(&entry.scroll_key())
-                    .copied()
-            })
-            .unwrap_or(0);
-        self.layout.scroll_offset = offset;
+        if let Some(entry) = self.agents_terminal.current_sidebar_entry() {
+            // Always reset to the top when switching agents; use a sentinel so the
+            // next render clamps to the new agent's maximum scroll.
+            let key = entry.scroll_key();
+            self
+                .agents_terminal
+                .scroll_offsets
+                .insert(key, u16::MAX);
+            self.layout.scroll_offset = u16::MAX;
+        } else {
+            self.layout.scroll_offset = 0;
+        }
     }
 
     fn sync_agents_terminal_scroll(&mut self) {
@@ -19784,7 +19876,6 @@ Have we met every part of this goal and is there no further work to do?"#
             "Keyboard shortcuts",
             t_fg.add_modifier(Modifier::BOLD),
         )]));
-        lines.push(RtLine::from(""));
 
         let kv = |k: &str, v: &str| -> RtLine<'static> {
             RtLine::from(vec![
@@ -19794,7 +19885,6 @@ Have we met every part of this goal and is there no further work to do?"#
                 RtSpan::styled(v.to_string(), t_dim),
             ])
         };
-        lines.push(RtLine::from(""));
         // Top quick action
         lines.push(kv(
             "Shift+Tab",
@@ -21953,6 +22043,14 @@ Have we met every part of this goal and is there no further work to do?"#
     }
 
     fn format_model_label(model: &str) -> String {
+        // Strip the internal "code-" prefix from agent models so user-facing labels
+        // display the canonical model name (e.g., code-gpt-5.1-codex-mini -> GPT-5.1-Codex-Mini).
+        let model = if model.to_ascii_lowercase().starts_with("code-") {
+            &model[5..]
+        } else {
+            model
+        };
+
         let mut parts = Vec::new();
         for (idx, part) in model.split('-').enumerate() {
             if idx == 0 {
@@ -33874,7 +33972,11 @@ impl ChatWidget<'_> {
             }
         }
 
-        let content = inner.inner(Margin::new(1, 1));
+        // Remove vertical padding so the filter row sits directly below the title.
+        let content = inner.inner(Margin {
+            horizontal: 1,
+            vertical: 0,
+        });
         if content.width == 0 || content.height == 0 {
             return;
         }
@@ -33903,23 +34005,31 @@ impl ChatWidget<'_> {
             height: hint_height,
         };
 
+        let sidebar_has_focus = self.agents_terminal.focus() == AgentsTerminalFocus::Sidebar;
+        let batches_title_style = if sidebar_has_focus {
+            Style::default().fg(crate::colors::primary())
+        } else {
+            Style::default().fg(crate::colors::text_dim())
+        };
+
         if tab_height > 0 {
             let filter_row = tabs_area;
             let mut spans: Vec<Span> = Vec::new();
-            spans.push(Span::styled(
-                "Filter: ",
-                Style::default().fg(crate::colors::text_dim()),
-            ));
+            spans.push(Span::styled("Batches", batches_title_style));
+            spans.push(Span::raw("   "));
             let tabs = [
-                (AgentsTerminalTab::All, "( ALL )"),
-                (AgentsTerminalTab::Running, "( RUNNING )"),
-                (AgentsTerminalTab::Failed, "( FAILED )"),
-                (AgentsTerminalTab::Completed, "( DONE )"),
-                (AgentsTerminalTab::Review, "( REVIEW )"),
+                (AgentsTerminalTab::All, "1", "All"),
+                (AgentsTerminalTab::Running, "2", "Running"),
+                (AgentsTerminalTab::Failed, "3", "Failed"),
+                (AgentsTerminalTab::Completed, "4", "Done"),
+                (AgentsTerminalTab::Review, "5", "Review"),
             ];
-            for (idx, (tab, label)) in tabs.iter().enumerate() {
+            for (idx, (tab, number, label)) in tabs.iter().enumerate() {
                 if idx > 0 {
-                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled(
+                        " - ",
+                        Style::default().fg(crate::colors::text_dim()),
+                    ));
                 }
                 let active = *tab == self.agents_terminal.active_tab;
                 let style = if active {
@@ -33929,7 +34039,7 @@ impl ChatWidget<'_> {
                 } else {
                     Style::default().fg(crate::colors::text_dim())
                 };
-                spans.push(Span::styled((*label).to_string(), style));
+                spans.push(Span::styled(format!("{number} {label}"), style));
             }
             let sort_label = match self.agents_terminal.sort_mode {
                 AgentsSortMode::Recent => "Recent",
@@ -34001,13 +34111,6 @@ impl ChatWidget<'_> {
         // Sidebar list of agents grouped by batch id
         let mut items: Vec<ListItem> = Vec::new();
         let mut row_entries: Vec<Option<AgentsSidebarEntry>> = Vec::new();
-
-        items.push(ListItem::new(Line::from(vec![Span::styled(
-            "Batches",
-            Style::default()
-                .fg(crate::colors::text_dim()),
-        )])));
-        row_entries.push(None);
         items.push(ListItem::new(Line::from(vec![Span::raw(" ")])));
         row_entries.push(None);
 
@@ -34048,10 +34151,17 @@ impl ChatWidget<'_> {
                         .as_ref()
                         .map(|entry| entry == &AgentsSidebarEntry::Agent(agent_id.clone()))
                         .unwrap_or(false);
-                    let prefix = if is_selected { "> " } else { "  " };
+                    let prefix_span = if is_selected {
+                        Span::styled(
+                            "› ",
+                            Style::default().fg(crate::colors::primary()),
+                        )
+                    } else {
+                        Span::raw("  ")
+                    };
 
                     let line = Line::from(vec![
-                        Span::raw(prefix),
+                        prefix_span,
                         Span::styled(
                             display_name,
                             Style::default().fg(crate::colors::text()),
@@ -34088,7 +34198,6 @@ impl ChatWidget<'_> {
             }
         }
 
-        let sidebar_has_focus = self.agents_terminal.focus() == AgentsTerminalFocus::Sidebar;
         let highlight_style = if sidebar_has_focus {
             Style::default()
                 .fg(crate::colors::primary())
@@ -34244,19 +34353,18 @@ impl ChatWidget<'_> {
                         lines.push(Line::from(footer));
                         self.ensure_trailing_blank_line(&mut lines);
                     } else {
-                        lines.push(Line::from(vec![
-                            Span::raw("│   TIME      TYPE       MESSAGE"),
-                        ]));
                         let mut log_lines: Vec<Line> = Vec::new();
+                        let mut last_kind: Option<AgentLogKind> = None;
                         for (idx, log) in entry.logs.iter().enumerate() {
+                            let is_new_kind = last_kind.map_or(true, |kind| kind != log.kind);
                             self.append_agent_log_lines(
                                 &mut log_lines,
                                 idx,
-                                entry.logs.len(),
                                 log,
-                                None,
                                 detail_width.saturating_sub(4),
+                                is_new_kind,
                             );
+                            last_kind = Some(log.kind);
                         }
                         for mut line in log_lines.into_iter() {
                             line.spans.insert(0, Span::raw("│   "));
@@ -34329,9 +34437,14 @@ impl ChatWidget<'_> {
         if bottom_overflow {
             history_title.push('↓');
         }
+        let history_title_style = if detail_has_focus {
+            Style::default().fg(crate::colors::primary())
+        } else {
+            Style::default().fg(crate::colors::text_dim())
+        };
         let history_block = Block::default()
             .borders(Borders::ALL)
-            .title(history_title)
+            .title(Line::from(Span::styled(history_title, history_title_style)))
             .border_style(Style::default().fg(detail_border_color));
 
         Paragraph::new(wrapped_lines)
@@ -35545,21 +35658,22 @@ impl WidgetRef for &ChatWidget<'_> {
                     );
                 }
 
-                // Paint gutter background. For Assistant, extend the assistant tint under the
+                // Paint gutter background. For Assistant and Auto Review, extend the tint under the
                 // gutter and also one extra column to the left (so the • has color on both sides),
                 // without changing layout or symbol positions.
                 let is_assistant =
                     matches!(item.kind(), crate::history_cell::HistoryCellType::Assistant);
-                let is_auto_review = item.gutter_symbol() == Some("⇄");
+                let is_auto_review = ChatWidget::is_auto_review_cell(item);
+                let auto_review_bg = crate::history_cell::PlainHistoryCell::auto_review_bg();
                 let gutter_bg = if is_assistant {
                     crate::colors::assistant_bg()
                 } else if is_auto_review {
-                    crate::colors::mix_toward(crate::colors::success(), crate::colors::background(), 0.82)
+                    auto_review_bg
                 } else {
                     crate::colors::background()
                 };
 
-                // Paint gutter background for assistant cells so the tinted
+                // Paint gutter background for assistant/auto-review cells so the tinted
                 // strip appears contiguous with the message body. This avoids
                 // the light "hole" seen after we reduced redraws. For other
                 // cell types keep the default background (already painted by
@@ -35601,9 +35715,9 @@ impl WidgetRef for &ChatWidget<'_> {
                 }
 
                 // Render gutter symbol if present
-                    if let Some(symbol) = item.gutter_symbol() {
+                if let Some(symbol) = item.gutter_symbol() {
                     // Choose color based on symbol/type
-                        let color = if symbol == "⇄" {
+                    let color = if is_auto_review {
                         crate::colors::success()
                     } else if symbol == "❯" {
                         // Executed arrow – color reflects exec state
@@ -36699,7 +36813,7 @@ impl WidgetRef for &ChatWidget<'_> {
                                 Style::default().fg(crate::colors::text_dim()),
                             ),
                             ratatui::text::Span::styled(
-                                "Help",
+                                "Guide",
                                 Style::default().fg(crate::colors::text()),
                             ),
                             ratatui::text::Span::styled(

@@ -2177,7 +2177,6 @@ impl ChatComposer {
         };
 
         let agent_hint_spans = vec![
-            Span::from("  •  ").style(label_style),
             Span::styled("Ctrl+A", key_hint_style),
             Span::from(agent_hint_label_text).style(label_style),
         ];
@@ -2188,20 +2187,24 @@ impl ChatComposer {
                     AutoReviewPhase::Resolving => "Auto Review: Resolving",
                     AutoReviewPhase::Reviewing => "Auto Review: Reviewing",
                 };
+                let status_style = key_hint_style;
                 vec![
                     Span::from("  "),
                     Span::styled("Auto Review: ", label_style),
-                    Span::styled("•", key_hint_style),
+                    Span::styled("•", status_style),
                     Span::from(" "),
-                    Span::styled(phase_label.trim_start_matches("Auto Review: "), key_hint_style),
+                    Span::styled(
+                        phase_label.trim_start_matches("Auto Review: "),
+                        status_style,
+                    ),
                 ]
             }
             AutoReviewIndicatorStatus::Clean => {
-                let icon_style = Style::default().fg(crate::colors::success());
+                let icon_style = key_hint_style;
                 vec![
                     Span::from("  "),
                     Span::styled("Auto Review: ", label_style),
-                    Span::styled("•", icon_style),
+                    Span::styled("✔", icon_style),
                     Span::from(" "),
                     Span::styled("Correct", icon_style),
                 ]
