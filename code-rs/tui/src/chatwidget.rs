@@ -765,6 +765,17 @@ fn describe_command_failure(out: &Output, fallback: &str) -> String {
 }
 
 impl ChatWidget<'_> {
+    fn is_auto_review_agent(agent: &code_core::protocol::AgentInfo) -> bool {
+        if matches!(agent.source_kind, Some(AgentSourceKind::AutoReview)) {
+            return true;
+        }
+        if let Some(batch) = agent.batch_id.as_deref() {
+            if batch.eq_ignore_ascii_case("auto-review") {
+                return true;
+            }
+        }
+        false
+    }
     fn format_code_bridge_call(&self, args: &JsonValue) -> Option<String> {
         let action = args.get("action")?.as_str()?.to_lowercase();
         let mut out = String::from("Code Bridge\n");
@@ -13365,8 +13376,10 @@ impl ChatWidget<'_> {
                         last_progress: agent.last_progress.clone(),
                     });
 
+                    let is_auto_review = Self::is_auto_review_agent(agent);
+
                     if matches!(parsed_status, AgentStatus::Pending | AgentStatus::Running) {
-                        if matches!(agent.source_kind, Some(AgentSourceKind::AutoReview)) {
+                        if is_auto_review {
                             has_running_auto_review = true;
                         } else {
                             has_running_non_auto_review = true;
@@ -31182,7 +31195,7 @@ impl ChatWidget<'_> {
 
     fn observe_auto_review_status(&mut self, agents: &[code_core::protocol::AgentInfo]) {
         for agent in agents {
-            if !matches!(agent.source_kind, Some(AgentSourceKind::AutoReview)) {
+            if !Self::is_auto_review_agent(agent) {
                 continue;
             }
 
@@ -31594,18 +31607,13 @@ impl ChatWidget<'_> {
         }
 
         if let Some(note) = developer_note {
-            // Always start a new turn so the parent model sees the findings, even if
-            // nothing is currently running. This avoids silent background-only notes.
+            // Immediately inject as a developer message so the user sees it in the
+            // transcript, even if tasks/streams are still running. Do not defer to
+            // pending_agent_notes; that path can be lost if the session ends.
             self.submit_hidden_text_message_with_preface(
                 "Auto review follow-up".to_string(),
-                note.clone(),
+                note,
             );
-
-            // Keep the legacy backlog for situations where another task is already
-            // running; it will be flushed as soon as a user/auto turn is submitted.
-            if self.is_task_running() {
-                self.pending_agent_notes.push(note);
-            }
         }
 
         // Auto review completion should never leave the composer spinner active.

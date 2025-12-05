@@ -302,9 +302,9 @@ fi
 
 echo "Cache bucket: ${CACHE_KEY} (${CACHE_KEY_SOURCE})"
 
-CLI_PACKAGE="$(sed -n 's/^name\s*=\s*"\(.*\)"/\1/p' cli/Cargo.toml | head -n1)"
-TUI_PACKAGE="$(sed -n 's/^name\s*=\s*"\(.*\)"/\1/p' tui/Cargo.toml | head -n1)"
-EXEC_PACKAGE="$(sed -n 's/^name\s*=\s*"\(.*\)"/\1/p' exec/Cargo.toml | head -n1)"
+CLI_PACKAGE="$(sed -En 's/^name[[:space:]]*=[[:space:]]*"(.*)"/\1/p' cli/Cargo.toml | head -n1)"
+TUI_PACKAGE="$(sed -En 's/^name[[:space:]]*=[[:space:]]*"(.*)"/\1/p' tui/Cargo.toml | head -n1)"
+EXEC_PACKAGE="$(sed -En 's/^name[[:space:]]*=[[:space:]]*"(.*)"/\1/p' exec/Cargo.toml | head -n1)"
 CRATE_PREFIX="${CLI_PACKAGE%%-*}"
 EXEC_BIN="$(awk 'BEGIN{inbin=0} /^\[\[bin\]\]/{inbin=1; next} inbin && /^name[[:space:]]*=/{gsub(/.*"/,"",$0); gsub(/"/,"",$0); print; exit}' exec/Cargo.toml)"
 if [ -z "${EXEC_BIN}" ]; then

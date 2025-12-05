@@ -30,6 +30,13 @@ const AGENT_TOOL_NAMES: &[&str] = &[
     "agent_list",
 ];
 
+// Memory guards for agent run outputs. These mirror the exec-stream caps to
+// keep long Auto Drive sessions from retaining unbounded sub-agent chatter.
+const AGENT_DETAIL_MAX_BYTES: usize = 512 * 1024; // total per-agent detail payload
+const AGENT_DETAIL_MAX_LINES: usize = 200; // total detail entries per agent
+const AGENT_DETAIL_LINE_MAX_BYTES: usize = 4 * 1024; // per-line tail we keep
+const MAX_AGENT_RUNS: usize = 48; // global limit on tracked agent runs
+
 pub(super) fn is_agent_tool(tool_name: &str) -> bool {
     AGENT_TOOL_NAMES
         .iter()
@@ -798,6 +805,7 @@ pub(super) fn handle_custom_tool_begin(
     tool_cards::replace_tool_card::<AgentRunCell>(chat, &mut tracker.slot, &tracker.cell);
     chat.tools_state.agent_last_key = Some(key.clone());
     chat.tools_state.agent_runs.insert(key, tracker);
+    prune_agent_runs(chat);
 
     true
 }
@@ -918,6 +926,7 @@ pub(super) fn handle_custom_tool_end(
     tool_cards::replace_tool_card::<AgentRunCell>(chat, &mut tracker.slot, &tracker.cell);
     chat.tools_state.agent_last_key = Some(key.clone());
     chat.tools_state.agent_runs.insert(key, tracker);
+    prune_agent_runs(chat);
 
     true
 }
@@ -932,6 +941,11 @@ pub(super) fn handle_status_update(chat: &mut ChatWidget<'_>, event: &AgentStatu
         .iter()
         .filter(|agent| {
             !matches!(agent.source_kind, Some(AgentSourceKind::AutoReview))
+                && !agent
+                    .batch_id
+                    .as_deref()
+                    .map(|b| b.eq_ignore_ascii_case("auto-review"))
+                    .unwrap_or(false)
         })
         .cloned()
         .collect();
@@ -1111,6 +1125,8 @@ fn process_status_update_for_batch(
             details.push(AgentDetail::Info(agent.status.clone()));
         }
 
+        truncate_agent_details(&mut details);
+
         let last_update = details
             .last()
             .map(|detail| match detail {
@@ -1239,6 +1255,7 @@ fn process_status_update_for_batch(
     tool_cards::replace_tool_card::<AgentRunCell>(chat, &mut tracker.slot, &tracker.cell);
     chat.tools_state.agent_last_key = Some(current_key.clone());
     chat.tools_state.agent_runs.insert(current_key, tracker);
+    prune_agent_runs(chat);
 }
 
 fn order_key_and_ordinal(chat: &mut ChatWidget<'_>, order: Option<&OrderMeta>) -> (OrderKey, Option<u64>) {
@@ -1595,4 +1612,94 @@ fn dedup(mut values: Vec<String>) -> Vec<String> {
     let mut seen = HashSet::new();
     values.retain(|value| seen.insert(value.clone()));
     values
+}
+
+fn order_tuple(order_key: OrderKey) -> (u64, i32, u64) {
+    (order_key.req, order_key.out, order_key.seq)
+}
+
+fn prune_agent_runs(chat: &mut ChatWidget<'_>) {
+    while chat.tools_state.agent_runs.len() > MAX_AGENT_RUNS {
+        let oldest_key = chat
+            .tools_state
+            .agent_runs
+            .iter()
+            .min_by_key(|(_, tracker)| order_tuple(tracker.slot.order_key))
+            .map(|(key, _)| key.clone());
+
+        let Some(key) = oldest_key else { break; };
+        drop_agent_run(chat, key.as_str());
+    }
+}
+
+fn drop_agent_run(chat: &mut ChatWidget<'_>, key: &str) {
+    if let Some(tracker) = chat.tools_state.agent_runs.remove(key) {
+        chat.tools_state.agent_run_by_call.retain(|_, v| v != key);
+        chat.tools_state.agent_run_by_order.retain(|_, v| v != key);
+        chat.tools_state.agent_run_by_batch.retain(|_, v| v != key);
+        chat.tools_state.agent_run_by_agent.retain(|_, v| v != key);
+        if chat.tools_state.agent_last_key.as_deref() == Some(key) {
+            chat.tools_state.agent_last_key = None;
+        }
+
+        if let Some(id) = tracker.slot.history_id {
+            if let Some(idx) = chat.cell_index_for_history_id(id) {
+                chat.history_remove_at(idx);
+            }
+        }
+    }
+}
+
+fn trim_to_tail(text: &str, max_bytes: usize) -> (String, bool) {
+    let bytes = text.as_bytes();
+    if bytes.len() <= max_bytes {
+        return (text.to_string(), false);
+    }
+
+    // Keep the tail: most recent content is usually last.
+    let start = bytes.len() - max_bytes;
+    let mut start_idx = start;
+    // Ensure we split on a UTF-8 boundary.
+    while start_idx < bytes.len() && (bytes[start_idx] & 0b1100_0000) == 0b1000_0000 {
+        start_idx += 1;
+    }
+    let trimmed = String::from_utf8_lossy(&bytes[start_idx..]).to_string();
+    (format!("…{}", trimmed), true)
+}
+
+fn detail_text_len(detail: &AgentDetail) -> usize {
+    match detail {
+        AgentDetail::Progress(text)
+        | AgentDetail::Result(text)
+        | AgentDetail::Error(text)
+        | AgentDetail::Info(text) => text.len(),
+    }
+}
+
+fn truncate_agent_details(details: &mut Vec<AgentDetail>) {
+    // First, cap individual lines to avoid single gigantic entries.
+    for detail in details.iter_mut() {
+        match detail {
+            AgentDetail::Progress(text)
+            | AgentDetail::Result(text)
+            | AgentDetail::Error(text)
+            | AgentDetail::Info(text) => {
+                let (trimmed, was_trimmed) = trim_to_tail(text, AGENT_DETAIL_LINE_MAX_BYTES);
+                if was_trimmed {
+                    *text = trimmed;
+                }
+            }
+        }
+    }
+
+    // Then enforce total line + byte budgets, dropping oldest first.
+    let mut total_bytes: usize = details.iter().map(detail_text_len).sum();
+
+    while details.len() > AGENT_DETAIL_MAX_LINES || total_bytes > AGENT_DETAIL_MAX_BYTES {
+        if details.is_empty() {
+            break;
+        }
+        let removed = details.remove(0);
+        total_bytes = total_bytes.saturating_sub(detail_text_len(&removed));
+    }
 }

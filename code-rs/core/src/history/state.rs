@@ -1075,6 +1075,15 @@ const EXEC_STREAM_BYTE_STEP: usize = 2 * 1024 * 1024;
 /// Older bytes are truncated from the front once this threshold is exceeded.
 pub const MAX_EXEC_STREAM_RETAINED_BYTES: usize = 32 * 1024 * 1024; // 32 MiB
 
+/// Global cap across *all* exec streams we keep in memory. When exceeded, we
+/// progressively trim the oldest exec records down to a small tail to keep RSS
+/// bounded during long Auto Drive runs with many noisy commands.
+pub const GLOBAL_EXEC_STREAM_RETAINED_BYTES: usize = 256 * 1024 * 1024; // 256 MiB total
+
+/// Target tail to keep per stream when pruning old exec records to honor the
+/// global cap. Chosen to preserve recent context without retaining full logs.
+pub const EXEC_STREAM_PRUNE_TARGET_BYTES: usize = 512 * 1024; // 512 KiB per stream
+
 /// Maximum bytes retained in memory for assistant streaming output.
 pub const MAX_ASSISTANT_STREAM_RETAINED_BYTES: usize = 6 * 1024 * 1024; // 6 MiB
 
@@ -1851,10 +1860,14 @@ impl HistoryState {
                     }
                     self.usage_tracker
                         .observe_exec(&updated, "domain:update-exec-stream");
-                    self.apply_event(HistoryEvent::Replace {
+                    let mutation = self.apply_event(HistoryEvent::Replace {
                         index,
                         record: HistoryRecord::Exec(updated),
-                    })
+                    });
+                    if !matches!(mutation, HistoryMutation::Noop) {
+                        self.enforce_exec_stream_global_limit();
+                    }
+                    mutation
                 } else {
                     HistoryMutation::Noop
                 }
@@ -2058,16 +2071,66 @@ impl HistoryState {
 
                         self.usage_tracker
                             .observe_exec(&updated, "domain:finish-exec");
-                        self.apply_event(HistoryEvent::Replace {
+                        let mutation = self.apply_event(HistoryEvent::Replace {
                             index: idx,
                             record: HistoryRecord::Exec(updated),
-                        })
+                        });
+                        if !matches!(mutation, HistoryMutation::Noop) {
+                            self.enforce_exec_stream_global_limit();
+                        }
+                        mutation
                     } else {
                         HistoryMutation::Noop
                     }
                 } else {
                     HistoryMutation::Noop
                 }
+            }
+        }
+    }
+
+    /// Keep total in-memory exec stream payload bounded across all history
+    /// records. When the cumulative retained bytes exceed
+    /// `GLOBAL_EXEC_STREAM_RETAINED_BYTES`, progressively prune the oldest exec
+    /// records down to `EXEC_STREAM_PRUNE_TARGET_BYTES` per stream.
+    fn enforce_exec_stream_global_limit(&mut self) {
+        let mut total_retained: usize = 0;
+        let mut exec_indices: Vec<usize> = Vec::new();
+
+        for (idx, record) in self.records.iter().enumerate() {
+            if let HistoryRecord::Exec(exec) = record {
+                let retained = retained_stream_len(&exec.stdout_chunks)
+                    .saturating_add(retained_stream_len(&exec.stderr_chunks));
+                if retained > 0 {
+                    total_retained = total_retained.saturating_add(retained);
+                    exec_indices.push(idx);
+                }
+            }
+        }
+
+        if total_retained <= GLOBAL_EXEC_STREAM_RETAINED_BYTES {
+            return;
+        }
+
+        let mut bytes_to_drop = total_retained - GLOBAL_EXEC_STREAM_RETAINED_BYTES;
+
+        for idx in exec_indices {
+            if bytes_to_drop == 0 {
+                break;
+            }
+
+            if let Some(HistoryRecord::Exec(exec)) = self.records.get_mut(idx) {
+                let before = retained_stream_len(&exec.stdout_chunks)
+                    .saturating_add(retained_stream_len(&exec.stderr_chunks));
+
+                prune_exec_stream(&mut exec.stdout_chunks, EXEC_STREAM_PRUNE_TARGET_BYTES);
+                prune_exec_stream(&mut exec.stderr_chunks, EXEC_STREAM_PRUNE_TARGET_BYTES);
+
+                let after = retained_stream_len(&exec.stdout_chunks)
+                    .saturating_add(retained_stream_len(&exec.stderr_chunks));
+
+                let dropped = before.saturating_sub(after);
+                bytes_to_drop = bytes_to_drop.saturating_sub(dropped);
             }
         }
     }
