@@ -71,7 +71,7 @@ use crate::slash::{process_exec_slash_command, SlashContext, SlashDispatch};
 use code_auto_drive_core::AUTO_RESOLVE_REVIEW_FOLLOWUP;
 use code_auto_drive_core::AutoResolvePhase;
 use code_auto_drive_core::AutoResolveState;
-use code_core::{entry_to_rollout_path, SessionCatalog, SessionQuery};
+use code_core::{entry_to_rollout_path, AutoDriveMode, AutoDrivePidFile, SessionCatalog, SessionQuery};
 use code_core::protocol::SandboxPolicy;
 use code_core::git_info::current_branch_name;
 
@@ -1113,6 +1113,9 @@ async fn run_auto_drive_session(
 
     let mut history = AutoDriveHistory::new();
 
+    let mut auto_drive_pid_guard =
+        AutoDrivePidFile::write(&config.code_home, Some(goal.as_str()), AutoDriveMode::Exec);
+
     let mut auto_config = config.clone();
     auto_config.model = config.auto_drive.model.trim().to_string();
     if auto_config.model.is_empty() {
@@ -1260,6 +1263,9 @@ async fn run_auto_drive_session(
     }
 
     if error_seen {
+        if let Some(guard) = auto_drive_pid_guard.take() {
+            guard.cleanup();
+        }
         std::process::exit(1);
     }
 

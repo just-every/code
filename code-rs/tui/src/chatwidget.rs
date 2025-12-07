@@ -212,6 +212,7 @@ use self::history_render::{
     CachedLayout, HistoryRenderState, RenderRequest, RenderRequestKind, RenderSettings, VisibleCell,
 };
 use code_core::parse_command::ParsedCommand;
+use code_core::{AutoDriveMode, AutoDrivePidFile};
 use code_core::TextFormat;
 use code_core::protocol::AgentMessageDeltaEvent;
 use code_core::protocol::ApprovedCommandMatchKind;
@@ -1630,6 +1631,7 @@ pub(crate) struct ChatWidget<'a> {
     auto_state: AutoDriveController,
     auto_goal_escape_state: AutoGoalEscState,
     auto_handle: Option<AutoCoordinatorHandle>,
+    auto_drive_pid_guard: Option<AutoDrivePidFile>,
     auto_history: AutoDriveHistory,
     auto_compaction_overlay: Option<AutoCompactionOverlay>,
     auto_turn_review_state: Option<AutoTurnReviewState>,
@@ -5766,6 +5768,7 @@ impl ChatWidget<'_> {
             auto_state: AutoDriveController::default(),
             auto_goal_escape_state: AutoGoalEscState::Inactive,
             auto_handle: None,
+            auto_drive_pid_guard: None,
             auto_history: AutoDriveHistory::new(),
             auto_compaction_overlay: None,
             auto_turn_review_state: None,
@@ -6114,6 +6117,7 @@ impl ChatWidget<'_> {
             auto_state: AutoDriveController::default(),
             auto_goal_escape_state: AutoGoalEscState::Inactive,
             auto_handle: None,
+            auto_drive_pid_guard: None,
             auto_history: AutoDriveHistory::new(),
             auto_compaction_overlay: None,
             auto_turn_review_state: None,
@@ -16385,6 +16389,12 @@ fi\n\
         }
         auto_config.model_reasoning_effort = self.config.auto_drive.model_reasoning_effort;
 
+        let mut pid_guard = AutoDrivePidFile::write(
+            &self.config.code_home,
+            Some(goal.as_str()),
+            AutoDriveMode::Tui,
+        );
+
         match start_auto_coordinator(
             coordinator_events,
             goal.clone(),
@@ -16395,6 +16405,7 @@ fi\n\
         ) {
             Ok(handle) => {
                 self.auto_handle = Some(handle);
+                self.auto_drive_pid_guard = pid_guard.take();
                 let placeholder = auto_drive_strings::next_auto_drive_phrase().to_string();
                 let effects = self
                     .auto_state
@@ -16402,6 +16413,7 @@ fi\n\
                 self.auto_apply_controller_effects(effects);
             }
             Err(err) => {
+                drop(pid_guard);
                 let effects = self
                     .auto_state
                     .launch_failed(goal.clone(), err.to_string());
@@ -17791,6 +17803,7 @@ Have we met every part of this goal and is there no further work to do?"#
         self.next_cli_text_format = None;
         self.auto_pending_goal_request = false;
         self.auto_goal_bootstrap_done = false;
+        self.auto_drive_pid_guard = None;
         let effects = self
             .auto_state
             .stop_run(Instant::now(), message);
