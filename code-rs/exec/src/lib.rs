@@ -2014,7 +2014,15 @@ use uuid::Uuid;
             .args(["commit", "-m", "c1"])
             .output()
             .unwrap();
-        let c1 = String::from_utf8_lossy(
+
+        // second commit (represents a snapshot captured off the current HEAD)
+        std::fs::write(temp.path().join("a.txt"), "b").unwrap();
+        std::process::Command::new("git")
+            .current_dir(temp.path())
+            .args(["commit", "-am", "c2"])
+            .output()
+            .unwrap();
+        let base = String::from_utf8_lossy(
             &std::process::Command::new("git")
                 .current_dir(temp.path())
                 .args(["rev-parse", "HEAD"])
@@ -2025,15 +2033,7 @@ use uuid::Uuid;
         .trim()
         .to_string();
 
-        // second commit
-        std::fs::write(temp.path().join("a.txt"), "b").unwrap();
-        std::process::Command::new("git")
-            .current_dir(temp.path())
-            .args(["commit", "-am", "c2"])
-            .output()
-            .unwrap();
-
-        assert!(head_is_ancestor_of_base(temp.path(), &c1));
+        assert!(head_is_ancestor_of_base(temp.path(), &base));
 
         // move HEAD back to check false case
         std::process::Command::new("git")

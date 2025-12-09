@@ -27569,10 +27569,13 @@ use code_core::protocol::OrderMeta;
             Some("ghost123".to_string()),
         );
 
-        let queued = chat.pending_agent_notes.iter().any(|note| {
-            note.contains("Merge the worktree") && note.contains("auto-review-branch") && note.contains("needs work")
-        });
-        assert!(queued, "developer note with merge hint should be queued while busy");
+        // Busy path still injects a developer note immediately so the user sees it in the transcript.
+        assert!(chat.pending_agent_notes.is_empty());
+        let developer_sent = chat
+            .pending_dispatched_user_messages
+            .iter()
+            .any(|msg| msg.contains("[developer]") && msg.contains("Merge the worktree") && msg.contains("auto-review-branch"));
+        assert!(developer_sent, "developer merge-hint note should be injected even while busy");
     }
 
     #[test]
@@ -27663,10 +27666,12 @@ use code_core::protocol::OrderMeta;
 
         chat.observe_auto_review_status(&[agent]);
 
-        let queued = chat.pending_agent_notes.iter().any(|note| {
-            note.contains("[developer]") && note.contains("Merge the worktree") && note.contains("auto-review-branch")
-        });
-        assert!(queued, "developer merge-hint note should be queued when busy");
+        assert!(chat.pending_agent_notes.is_empty());
+        let developer_sent = chat
+            .pending_dispatched_user_messages
+            .iter()
+            .any(|msg| msg.contains("[developer]") && msg.contains("Merge the worktree") && msg.contains("auto-review-branch"));
+        assert!(developer_sent, "developer merge-hint note should be injected when busy");
     }
 
     #[test]
@@ -28148,7 +28153,7 @@ use code_core::protocol::OrderMeta;
             preparation_label.as_deref(),
             Some("Preparing code review for current changes")
         );
-        assert!(!auto_resolve, "default config disables auto resolve");
+        assert!(auto_resolve, "auto resolve now defaults to on for workspace reviews");
 
         let metadata = metadata.expect("workspace scope metadata");
         assert_eq!(metadata.scope.as_deref(), Some("workspace"));
@@ -28242,7 +28247,7 @@ use code_core::protocol::OrderMeta;
 
         let (batches, agents) = chat.collect_cancelable_agents();
         assert_eq!(batches, vec!["work".to_string()]);
-        assert_eq!(agents, vec!["agent-1".to_string()]);
+        assert!(agents.is_empty(), "batch cancel should cover the non-auto agent");
     }
 
     #[test]

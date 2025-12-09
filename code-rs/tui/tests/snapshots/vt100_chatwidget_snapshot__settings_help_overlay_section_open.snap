@@ -1,6 +1,5 @@
 ---
 source: tui/tests/vt100_chatwidget_snapshot.rs
-assertion_line: 2134
 expression: section_open
 ---
  +------------------------------------------------------------------------------------------------+
@@ -29,4 +28,4 @@ expression: section_open
  +------------------------------------------------------------------------------------------------+
  | What can I code for you today?                                                                 |
  +------------------------------------------------------------------------------------------------+
-   Read Only  (Shift+Tab change)                                           Ctrl+H help  •  API key
+ Read Only  (Shift+Tab change)                                            Ctrl+G guide  •  API key

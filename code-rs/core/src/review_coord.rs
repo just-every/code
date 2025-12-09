@@ -209,6 +209,7 @@ impl Drop for ReviewGuard {
 mod tests {
     use super::*;
     use std::path::Path;
+    use serial_test::serial;
     use tempfile::TempDir;
 
     fn set_code_home(path: &Path) {
@@ -217,6 +218,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn lock_contention_and_release() {
         let dir = TempDir::new().unwrap();
         set_code_home(dir.path());
@@ -233,30 +235,33 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn epoch_bump_changes_value() {
         let dir = TempDir::new().unwrap();
         set_code_home(dir.path());
-        let e0 = current_snapshot_epoch();
-        bump_snapshot_epoch();
-        let e1 = current_snapshot_epoch();
+        let cwd = dir.path();
+        let e0 = current_snapshot_epoch_for(cwd);
+        bump_snapshot_epoch_for(cwd);
+        let e1 = current_snapshot_epoch_for(cwd);
         assert!(e1 > e0);
     }
 
     #[test]
+    #[serial]
     fn lock_records_snapshot_epoch_and_updates_after_bump() {
         let dir = TempDir::new().unwrap();
         set_code_home(dir.path());
         let cwd = dir.path();
 
-        bump_snapshot_epoch();
-        let current = current_snapshot_epoch();
+        bump_snapshot_epoch_for(cwd);
+        let current = current_snapshot_epoch_for(cwd);
         let guard = try_acquire_lock("first", cwd).unwrap().expect("lock available");
         let info = read_lock_info(Some(cwd)).expect("lock info present");
         assert_eq!(info.snapshot_epoch, current);
         drop(guard);
 
-        bump_snapshot_epoch();
-        let next = current_snapshot_epoch();
+        bump_snapshot_epoch_for(cwd);
+        let next = current_snapshot_epoch_for(cwd);
         assert!(next > current);
         let guard2 = try_acquire_lock("second", cwd).unwrap().expect("lock reacquired");
         let info2 = read_lock_info(Some(cwd)).expect("lock info present");
@@ -265,6 +270,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn lock_info_survives_epoch_bump_for_stale_detection() {
         let dir = TempDir::new().unwrap();
         set_code_home(dir.path());
@@ -272,8 +278,8 @@ mod tests {
 
         let guard = try_acquire_lock("stale-check", cwd).unwrap().expect("lock available");
         let initial = read_lock_info(Some(cwd)).expect("lock info present");
-        bump_snapshot_epoch();
-        let now = current_snapshot_epoch();
+        bump_snapshot_epoch_for(cwd);
+        let now = current_snapshot_epoch_for(cwd);
 
         // The on-disk lock should still show the snapshot_epoch captured at acquisition time,
         // allowing callers to detect that the world has moved on while the lock holder runs.
@@ -284,6 +290,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn lock_contention_across_components() {
         let dir = TempDir::new().unwrap();
         set_code_home(dir.path());
@@ -300,18 +307,19 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn stale_epoch_detected_after_git_mutation() {
         let dir = TempDir::new().unwrap();
         set_code_home(dir.path());
         let cwd = dir.path();
 
-        let before = current_snapshot_epoch();
+        let before = current_snapshot_epoch_for(cwd);
         let guard = try_acquire_lock("exec", cwd).unwrap().unwrap();
         let captured = read_lock_info(Some(cwd)).unwrap().snapshot_epoch;
         assert_eq!(captured, before);
 
-        bump_snapshot_epoch(); // simulate git mutation while lock holder runs
-        let after = current_snapshot_epoch();
+        bump_snapshot_epoch_for(cwd); // simulate git mutation while lock holder runs
+        let after = current_snapshot_epoch_for(cwd);
         assert!(after > captured);
 
         // A follow-up caller comparing epochs would notice the mismatch.
@@ -320,17 +328,18 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn apply_failure_resume_requires_fresh_epoch() {
         let dir = TempDir::new().unwrap();
         set_code_home(dir.path());
         let cwd = dir.path();
 
-        let initial = current_snapshot_epoch();
+        let initial = current_snapshot_epoch_for(cwd);
         // Snapshot taken at initial epoch
         let snapshot_epoch = initial;
         // Simulate apply/patch failure causing repo mutation guard to bump
-        bump_snapshot_epoch();
-        let resumed = current_snapshot_epoch();
+        bump_snapshot_epoch_for(cwd);
+        let resumed = current_snapshot_epoch_for(cwd);
         assert!(resumed > snapshot_epoch);
         // A resume that still uses the old snapshot must be treated as stale
         assert_ne!(snapshot_epoch, resumed);

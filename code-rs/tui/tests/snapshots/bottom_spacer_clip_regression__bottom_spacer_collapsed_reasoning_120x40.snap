@@ -4,8 +4,21 @@ expression: collapsed
 ---
  |                                                        Code                                                        |
                                                                                                                        
- ★   /code - perform a coding task (multiple agents)
+
                                                                                                                        
+
+
+   E
+
+   █
+   █
+   █
+
+    
+
+
+
+ ★   /code - perform a coding task (multiple agents)
 
 
  • Hello! How can I help you today?
@@ -24,19 +37,6 @@ expression: collapsed
    Having reasoned through the constraints, the assistant now presents a final answer summarising why the spacer
  • preserves the last visible line.
 
-
-
-
-
-
-
-
-
-
-
-
-
-
  | What can I code for you today?                                                                                     |
                                                                                                                        
-   Read Only  (Shift+Tab change)                                                               Ctrl+H help  •  API key
+ Read Only  (Shift+Tab change)                                                                Ctrl+G guide  •  API key

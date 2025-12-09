@@ -306,6 +306,20 @@ impl ChatWidgetHarness {
         self.flush_into_widget();
     }
 
+    pub fn review_auto_review_enabled(&mut self) -> bool {
+        self.flush_into_widget();
+        self.chat.config.tui.auto_review_enabled
+    }
+
+    pub fn review_auto_review_followups(&mut self) -> u32 {
+        self.flush_into_widget();
+        self.chat
+            .config
+            .auto_drive
+            .auto_review_followup_attempts
+            .get()
+    }
+
     pub fn review_auto_resolve_enabled(&mut self) -> bool {
         self.flush_into_widget();
         self.chat.config.tui.review_auto_resolve

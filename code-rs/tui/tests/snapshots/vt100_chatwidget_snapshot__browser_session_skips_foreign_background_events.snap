@@ -1,6 +1,5 @@
 ---
 source: tui/tests/vt100_chatwidget_snapshot.rs
-assertion_line: 1583
 expression: output
 ---
  +----------------------------------------------------------------------------+
@@ -25,4 +24,4 @@ expression: output
  +----------------------------------------------------------------------------+
  | What can I code for you today?                                             |
  +----------------------------------------------------------------------------+
-   Read Only  (Shift+Tab change)                       Ctrl+H help  •  API key
+ Read Only  (Shift+Tab change)                        Ctrl+G guide  •  API key

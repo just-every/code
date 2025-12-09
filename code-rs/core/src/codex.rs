@@ -6884,33 +6884,35 @@ mod bridge_tool_tests {
         let tmp = TempDir::new().unwrap();
         let cwd = tmp.path();
 
-        // set (session-only)
+        // set (session-only) is now deprecated; ensure we emit a helpful failure
         let out = call_tool_with_cwd(
             cwd,
             r#"{"action":"set","levels":["trace"],"capabilities":["console"],"llm_filter":"off"}"#,
         );
         match out {
             ResponseInputItem::FunctionCallOutput { output, .. } => {
-                assert_eq!(output.success, Some(true));
+                assert_eq!(output.success, Some(false));
+                assert!(output.content.contains("deprecated action"));
             }
             _ => panic!("unexpected output"),
         }
 
-        // show
+        // show is also deprecated; we should return the same guidance
         let out = call_tool_with_cwd(cwd, r#"{"action":"show"}"#);
-        let content = match out {
-            ResponseInputItem::FunctionCallOutput { output, .. } => output.content,
+        match out {
+            ResponseInputItem::FunctionCallOutput { output, .. } => {
+                assert_eq!(output.success, Some(false));
+                assert!(output.content.contains("deprecated action"));
+            }
             _ => panic!("unexpected output"),
-        };
-        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(v["effective"]["levels"], serde_json::json!(["trace"]));
-        assert_eq!(v["effective"]["capabilities"], serde_json::json!(["console"]));
+        }
 
-        // clear session override and persist removal
+        // clear
         let out = call_tool_with_cwd(cwd, r#"{"action":"clear","persist":true}"#);
         match out {
             ResponseInputItem::FunctionCallOutput { output, .. } => {
-                assert_eq!(output.success, Some(true));
+                assert_eq!(output.success, Some(false));
+                assert!(output.content.contains("deprecated action"));
             }
             _ => panic!("unexpected output"),
         }

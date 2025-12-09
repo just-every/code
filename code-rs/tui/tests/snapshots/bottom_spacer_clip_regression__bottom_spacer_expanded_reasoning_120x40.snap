@@ -4,16 +4,17 @@ expression: expanded
 ---
  |                                                        Code                                                        |
                                                                                                                        
-   EVERY                 v0.0.0
+
                                                                                                                        
-    █████+ █████+ █████+ ██████+
-   ██+---+██+--██+██+-██+██+---+
-   ██|    ██|  ██|██| ██|████+
-   ██|    ██|  ██|██| ██|██+-+
-
-                                
 
 
+   E
+
+   █
+   █
+   █
+
+    
 
 
 
@@ -38,4 +39,4 @@ expression: expanded
 
  | What can I code for you today?                                                                                     |
                                                                                                                        
-   Read Only  (Shift+Tab change)                                                               Ctrl+H help  •  API key
+ Read Only  (Shift+Tab change)                                                                Ctrl+G guide  •  API key

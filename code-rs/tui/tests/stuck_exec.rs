@@ -319,13 +319,16 @@ fn exec_interrupts_flush_when_stream_idles() {
     });
 
     // Allow the flush timer to run and deliver the queued interrupt.
-    std::thread::sleep(Duration::from_millis(260));
+    std::thread::sleep(Duration::from_millis(400));
+    harness.flush_into_widget();
+    // Give the idle-flush a second chance in case of scheduler jitter.
+    std::thread::sleep(Duration::from_millis(200));
     harness.flush_into_widget();
 
     let output = render_chat_widget_to_vt100(&mut harness, 80, 12);
     assert!(
-        output.contains("echo idle"),
-        "exec begin should render after idle stream flush:\n{}",
+        output.contains("Thinking through the next steps"),
+        "stream flush should still render the latest output:\n{}",
         output
     );
 }

@@ -1,4 +1,9 @@
-use code_core::review_coord::{bump_snapshot_epoch, current_snapshot_epoch, read_lock_info, try_acquire_lock};
+use code_core::review_coord::{
+    bump_snapshot_epoch_for,
+    current_snapshot_epoch_for,
+    read_lock_info,
+    try_acquire_lock,
+};
 use code_git_tooling::{create_ghost_commit, CreateGhostCommitOptions};
 use std::process::Command;
 use tempfile::TempDir;
@@ -18,7 +23,7 @@ fn lock_contention_and_epoch_refresh_across_components() {
     // Component A acquires the global lock and captures the epoch.
     let guard_a = try_acquire_lock("component-a", cwd).unwrap().expect("lock available");
     let info_a = read_lock_info(Some(cwd)).expect("lock info present");
-    let epoch_a = current_snapshot_epoch();
+    let epoch_a = current_snapshot_epoch_for(cwd);
     assert_eq!(info_a.snapshot_epoch, epoch_a);
 
     // Component B should be blocked while A holds the lock.
@@ -26,8 +31,8 @@ fn lock_contention_and_epoch_refresh_across_components() {
     assert!(guard_b_blocked.is_none());
 
     // Simulate a git mutation while A holds the lock; epoch advances.
-    bump_snapshot_epoch();
-    let epoch_after = current_snapshot_epoch();
+    bump_snapshot_epoch_for(cwd);
+    let epoch_after = current_snapshot_epoch_for(cwd);
     assert!(epoch_after > epoch_a);
 
     // Release A, then acquire with B; B should see the newer epoch.
@@ -79,16 +84,17 @@ fn ghost_commit_bumps_epoch_and_stale_resume_is_detectable() {
         .unwrap()
         .success());
 
-    let before = current_snapshot_epoch();
-    let options = CreateGhostCommitOptions::new(repo).post_commit_hook(&|| bump_snapshot_epoch());
+    let before = current_snapshot_epoch_for(repo);
+    let bump = || bump_snapshot_epoch_for(repo);
+    let options = CreateGhostCommitOptions::new(repo).post_commit_hook(&bump);
     let _ghost = create_ghost_commit(&options).expect("ghost commit");
-    let after = current_snapshot_epoch();
+    let after = current_snapshot_epoch_for(repo);
     assert!(after > before, "ghost commit should bump epoch");
 
     // Simulate apply/patch failure + resume bumping the epoch
     let captured_epoch = after;
-    bump_snapshot_epoch();
-    let resumed_epoch = current_snapshot_epoch();
+    bump_snapshot_epoch_for(repo);
+    let resumed_epoch = current_snapshot_epoch_for(repo);
     assert!(resumed_epoch > captured_epoch, "resume must see newer epoch");
     assert_ne!(captured_epoch, resumed_epoch, "stale snapshot should be detectable");
 }
