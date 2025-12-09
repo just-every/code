@@ -803,29 +803,12 @@ fn style_del() -> Style {
 // --- Very light tinted backgrounds for insert/delete lines ------------------
 use ratatui::style::Color;
 
-fn blend(bg: (u8, u8, u8), fg: (u8, u8, u8), alpha: f32) -> (u8, u8, u8) {
-    let inv = 1.0 - alpha;
-    let r = (bg.0 as f32 * inv + fg.0 as f32 * alpha).round() as u8;
-    let g = (bg.1 as f32 * inv + fg.1 as f32 * alpha).round() as u8;
-    let b = (bg.2 as f32 * inv + fg.2 as f32 * alpha).round() as u8;
-    (r, g, b)
+fn success_tint() -> Color {
+    crate::colors::tint_background_toward(crate::colors::success())
 }
 
-fn is_dark(rgb: (u8, u8, u8)) -> bool {
-    let l = (0.2126 * rgb.0 as f32 + 0.7152 * rgb.1 as f32 + 0.0722 * rgb.2 as f32) / 255.0;
-    l < 0.55
+fn error_tint() -> Color {
+    crate::colors::tint_background_toward(crate::colors::error())
 }
-
-fn tinted_bg_toward(accent: Color) -> Color {
-    let bg = crate::colors::color_to_rgb(crate::colors::background());
-    let fg = crate::colors::color_to_rgb(accent);
-    // Slightly stronger tint on dark themes, lighter on light themes
-    let alpha = if is_dark(bg) { 0.20 } else { 0.10 };
-    let (r, g, b) = blend(bg, fg, alpha);
-    Color::Rgb(r, g, b)
-}
-
-fn success_tint() -> Color { tinted_bg_toward(crate::colors::success()) }
-fn error_tint() -> Color { tinted_bg_toward(crate::colors::error()) }
 
 // Removed per-line tinted backgrounds per design feedback

@@ -62,8 +62,8 @@ impl PlainHistoryCell {
     }
 
     pub(crate) fn auto_review_bg() -> ratatui::style::Color {
-        // Lightly tint the standard background toward success for readability.
-        colors::mix_toward(colors::background(), colors::success(), 0.18)
+        // Match the diff success background tint for consistent success styling.
+        colors::tint_background_toward(colors::success())
     }
 
     pub(crate) fn auto_review_padding() -> (u16, u16) {
@@ -282,7 +282,7 @@ impl HistoryCell for PlainHistoryCell {
     }
 
     fn has_custom_render(&self) -> bool {
-        matches!(self.state.kind, HistoryCellType::User)
+        matches!(self.state.kind, HistoryCellType::User) || self.is_auto_review_notice()
     }
 
     fn desired_height(&self, width: u16) -> u16 {

@@ -224,6 +224,22 @@ pub(crate) fn mix_toward(from: Color, to: Color, t: f32) -> Color {
     quantize_color_for_palette(Color::Rgb(r, g, b))
 }
 
+fn is_dark_rgb(rgb: (u8, u8, u8)) -> bool {
+    let l = (0.2126 * rgb.0 as f32 + 0.7152 * rgb.1 as f32 + 0.0722 * rgb.2 as f32) / 255.0;
+    l < 0.55
+}
+
+/// Lightly tint the terminal background toward an accent color. Matches the
+/// blending used for success backgrounds in diff rendering so shared surfaces
+/// stay consistent.
+pub(crate) fn tint_background_toward(accent: Color) -> Color {
+    let bg = color_to_rgb(background());
+    let fg = color_to_rgb(accent);
+    let alpha = if is_dark_rgb(bg) { 0.20 } else { 0.10 };
+    let (r, g, b) = blend_rgb(bg, fg, alpha);
+    Color::Rgb(r, g, b)
+}
+
 fn blend_with_black(rgb: (u8, u8, u8), alpha: f32) -> (u8, u8, u8) {
     // target = bg*(1-alpha) + black*alpha => bg*(1-alpha)
     let inv = 1.0 - alpha;
