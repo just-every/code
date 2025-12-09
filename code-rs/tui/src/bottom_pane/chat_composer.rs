@@ -2189,7 +2189,6 @@ impl ChatComposer {
                 };
                 let status_style = key_hint_style;
                 vec![
-                    Span::from("  "),
                     Span::styled("Auto Review: ", label_style),
                     Span::styled("•", status_style),
                     Span::from(" "),
@@ -2202,7 +2201,6 @@ impl ChatComposer {
             AutoReviewIndicatorStatus::Clean => {
                 let icon_style = key_hint_style;
                 vec![
-                    Span::from("  "),
                     Span::styled("Auto Review: ", label_style),
                     Span::styled("✔", icon_style),
                     Span::from(" "),
@@ -2218,7 +2216,6 @@ impl ChatComposer {
                     "Issues Fixed".to_string()
                 };
                 vec![
-                    Span::from("  "),
                     Span::styled("Auto Review: ", label_style),
                     Span::styled("✔", icon_style),
                     Span::from(" "),
@@ -2228,7 +2225,6 @@ impl ChatComposer {
             AutoReviewIndicatorStatus::Failed => {
                 let icon_style = Style::default().fg(crate::colors::error());
                 vec![
-                    Span::from("  "),
                     Span::styled("Auto Review: ", label_style),
                     Span::styled("✖", icon_style),
                     Span::from(" "),
@@ -2395,10 +2391,6 @@ impl ChatComposer {
                             if !left_misc_after_ctrlc.is_empty() {
                                 left_misc_after_ctrlc.push(Span::from("   ").style(auto_label_style));
                             }
-                            // Keep auto-drive footer hints aligned with the base
-                            // indentation used by the Auto Review prefix.
-                            left_misc_after_ctrlc
-                                .push(Span::from("  ").style(auto_label_style));
                             let spans = Self::build_auto_drive_hint_spans(
                                 &left_hint,
                                 auto_key_style,
@@ -2487,6 +2479,10 @@ impl ChatComposer {
                 let trailing_pad = 1usize;
                 let separator = Span::from("  •  ").style(label_style);
                 let separator_len = separator.content.chars().count();
+
+                // Base padding for left-aligned footer content when Auto Review is present.
+                let base_left_pad = Span::from("  ").style(label_style);
+                let base_left_pad_len = base_left_pad.content.chars().count();
 
                 let mut include_auto_review_status = left_sections.iter().any(|(p, _, inc)| *p == 3 && *inc);
                 let mut include_auto_review_agent_hint =
@@ -2597,12 +2593,17 @@ impl ChatComposer {
                         include_right_other,
                     );
 
-                    left_len = l_len;
+                    let add_base_pad = include_auto_review_status && !left_spans_eval.is_empty();
+                    left_len = l_len + if add_base_pad { base_left_pad_len } else { 0 };
                     right_len = r_len;
                     let total_len = left_len + right_len + trailing_pad;
 
                     if total_len <= total_width {
-                        final_left = left_spans_eval;
+                        let mut with_pad = left_spans_eval;
+                        if add_base_pad {
+                            with_pad.insert(0, base_left_pad.clone());
+                        }
+                        final_left = with_pad;
                         final_right = right_spans_eval;
                         break;
                     }
@@ -2640,7 +2641,11 @@ impl ChatComposer {
                         }
                         _ => {
                             // Last resort: fall back to truncating the left spans
-                            final_left = left_spans_eval;
+                            let mut with_pad = left_spans_eval;
+                            if add_base_pad {
+                                with_pad.insert(0, base_left_pad.clone());
+                            }
+                            final_left = with_pad;
                             final_right = right_spans_eval;
                             break;
                         }
