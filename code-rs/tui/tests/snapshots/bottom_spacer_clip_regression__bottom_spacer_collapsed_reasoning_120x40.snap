@@ -2,22 +2,6 @@
 source: tui/tests/bottom_spacer_clip_regression.rs
 expression: collapsed
 ---
- |                                                        Code                                                        |
-                                                                                                                       
-
-                                                                                                                       
-
-
-   E
-
-   █
-   █
-   █
-
-    
-
-
-
  ★   /code - perform a coding task (multiple agents)
 
 
@@ -38,5 +22,5 @@ expression: collapsed
  • preserves the last visible line.
 
  | What can I code for you today?                                                                                     |
-                                                                                                                       
+
  Read Only  (Shift+Tab change)                                                                Ctrl+G guide  •  API key

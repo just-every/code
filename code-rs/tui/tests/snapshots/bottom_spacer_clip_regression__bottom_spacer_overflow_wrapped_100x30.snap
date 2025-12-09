@@ -3,9 +3,9 @@ source: tui/tests/bottom_spacer_clip_regression.rs
 expression: output
 ---
  |                                              Code                                              |
-                                                                                                   
+
    with scroll offsets.
-                                                                                                   
+
 
    Assistant reply #6 contains a deliberately verbose paragraph that discusses wrapping,
  • stream padding, viewport math, and the importance of not clipping the final line.
@@ -28,5 +28,5 @@ expression: output
    last row of history.
 
  | What can I code for you today?                                                                 |
-                                                                                                   
+
  Read Only  (Shift+Tab change)                                            Ctrl+G guide  •  API key

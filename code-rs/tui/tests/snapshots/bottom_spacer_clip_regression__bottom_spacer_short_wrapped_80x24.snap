@@ -3,9 +3,9 @@ source: tui/tests/bottom_spacer_clip_regression.rs
 expression: output
 ---
  |                                    Code                                    |
-                                                                               
+
    - Running commands
-                                                                               
+
 
 
  › Could you provide a detailed overview of how the anti-clipping spacer
@@ -22,5 +22,5 @@ expression: output
    final row historically vanished.
 
  | What can I code for you today?                                             |
-                                                                               
+
  Read Only  (Shift+Tab change)                        Ctrl+G guide  •  API key
