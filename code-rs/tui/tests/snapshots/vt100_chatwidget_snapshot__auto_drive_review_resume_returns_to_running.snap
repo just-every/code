@@ -14,12 +14,11 @@ expression: "frames.join(\"\\n---FRAME---\\n\")"
 
 
 
-  Auto Drive > waiting for code review...  ✶ Awaiting review (Xs)
+  Auto Drive > <status redacted>                                 
  +----------------------------------------------------------------------------+
  | What can I code for you today?                                             |
  +----------------------------------------------------------------------------+
  Agents Enabled  •  Diagnostics Enabled                                API key
-
 ---FRAME---
  +----------------------------------------------------------------------------+
  |                                    Code                                    |
@@ -33,7 +32,7 @@ expression: "frames.join(\"\\n---FRAME---\\n\")"
 
 
 
-  Auto Drive > Coordinator resumed the workflow.  ✶ Thinking (Xs)
+  Auto Drive > <status redacted>                                 
  +----------------------------------------------------------------------------+
  | What can I code for you today?                                             |
  +----------------------------------------------------------------------------+

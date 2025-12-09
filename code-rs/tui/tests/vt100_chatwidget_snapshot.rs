@@ -942,6 +942,25 @@ fn auto_drive_manual_mode_waits() {
 fn auto_drive_review_resume_returns_to_running() {
     let mut harness = ChatWidgetHarness::new();
 
+    let scrub_status = |frame: String| {
+        frame
+            .lines()
+            .map(|line| {
+                if line.contains("Auto Drive >") {
+                    let target_len = line.chars().count();
+                    let mut text = "  Auto Drive > <status redacted>".to_string();
+                    if text.chars().count() < target_len {
+                        text.push_str(&" ".repeat(target_len - text.chars().count()));
+                    }
+                    text.chars().take(target_len).collect()
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
     harness.auto_drive_activate(
         "Resume after review",
         true,
@@ -953,14 +972,22 @@ fn auto_drive_review_resume_returns_to_running() {
     ));
 
     let mut frames = Vec::new();
-    frames.push(normalize_output(render_chat_widget_to_vt100(&mut harness, 80, 18)));
+    frames.push(scrub_status(normalize_output(render_chat_widget_to_vt100(
+        &mut harness,
+        80,
+        18,
+    ))));
 
     harness.auto_drive_set_waiting_for_response(
         "Review complete — resuming tasks",
         Some("Coordinator resumed the workflow.".to_string()),
         Some("Review cleared open issues.".to_string()),
     );
-    frames.push(normalize_output(render_chat_widget_to_vt100(&mut harness, 80, 18)));
+    frames.push(scrub_status(normalize_output(render_chat_widget_to_vt100(
+        &mut harness,
+        80,
+        18,
+    ))));
 
     insta::assert_snapshot!(
         "auto_drive_review_resume_returns_to_running",
