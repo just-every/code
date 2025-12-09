@@ -65,6 +65,11 @@ impl PlainHistoryCell {
         // Lightly tint the standard background toward success for readability.
         colors::mix_toward(colors::background(), colors::success(), 0.18)
     }
+
+    pub(crate) fn auto_review_padding() -> (u16, u16) {
+        // Symmetric top/bottom padding for auto-review notices.
+        (1, 1)
+    }
     pub(crate) fn from_state(state: PlainMessageState) -> Self {
         let mut kind = history_cell_kind_from_plain(state.kind);
         if kind == HistoryCellType::User {
@@ -150,8 +155,11 @@ impl PlainHistoryCell {
         let text = Text::from(trimmed_lines.clone());
         let paragraph = Paragraph::new(text).wrap(Wrap { trim: false });
 
-        let pad_top = if is_auto_review { 1 } else { 0 };
-        let pad_bottom = if is_auto_review { 1 } else { 0 };
+        let (pad_top, pad_bottom) = if is_auto_review {
+            Self::auto_review_padding()
+        } else {
+            (0, 0)
+        };
 
         let inner_height: u16 = paragraph
             .line_count(effective_width)

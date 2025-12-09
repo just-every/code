@@ -812,6 +812,9 @@ fn summarize(raw: &str) -> String {
         if let Some(t) = val.get("type").and_then(|v| v.as_str()) {
             parts.push(format!("type: {t}"));
         }
+        if let Some(platform) = val.get("platform").and_then(|v| v.as_str()) {
+            parts.push(format!("platform: {platform}"));
+        }
         if let Some(level) = val.get("level").and_then(|v| v.as_str()) {
             parts.push(format!("level: {level}"));
         }
@@ -959,5 +962,13 @@ mod tests {
         assert!(text.contains("Code Bridge events (4 in last"));
         assert!(text.contains("- one"));
         assert!(text.contains("- [3x] two"));
+    }
+
+    #[test]
+    fn summarize_includes_platform_when_present() {
+        let raw = r#"{"type":"console","level":"info","platform":"roblox","message":"hi"}"#;
+        let summary = summarize(raw);
+        assert!(summary.contains("platform: roblox"));
+        assert!(summary.contains("message: hi"));
     }
 }
