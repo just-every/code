@@ -7120,7 +7120,8 @@ impl ChatWidget<'_> {
         match input_result {
             InputResult::Submitted(text) => {
                 self.pending_turn_origin = Some(TurnOrigin::User);
-                self.last_user_message = Some(text.clone());
+                let cleaned = Self::strip_context_sections(&text);
+                self.last_user_message = (!cleaned.trim().is_empty()).then_some(cleaned);
                 if self.auto_state.should_show_goal_entry() {
                     let trimmed = text.trim();
                     if trimmed.is_empty() {
@@ -11990,7 +11991,8 @@ impl ChatWidget<'_> {
                 let _ = self.stream.apply_final_answer(&message, &sink);
 
                 // Track last message for potential dedup heuristics.
-                self.last_assistant_message = Some(message);
+                let cleaned = Self::strip_context_sections(&message);
+                self.last_assistant_message = (!cleaned.trim().is_empty()).then_some(cleaned);
                 // Mark this Answer stream id as closed for the rest of the turn so any late
                 // AgentMessageDelta for the same id is ignored. In the full App runtime,
                 // the InsertFinalAnswer path also marks closed; setting it here makes
@@ -26430,9 +26432,8 @@ Have we met every part of this goal and is there no further work to do?"#
             }
             cache.push_str(agent_cache.trim());
         }
-        if !cache.is_empty() {
-            self.last_developer_message = Some(cache);
-        }
+        let cleaned = Self::strip_context_sections(&cache);
+        self.last_developer_message = (!cleaned.trim().is_empty()).then_some(cleaned);
         self.pending_turn_origin = Some(TurnOrigin::Developer);
         self.submit_user_message_immediate(msg);
     }
@@ -30534,30 +30535,82 @@ impl ChatWidget<'_> {
         }
     }
 
+    fn strip_context_sections(text: &str) -> String {
+        // Remove any <context>...</context> blocks. If a closing tag is missing,
+        // drop everything from the opening tag to the end of the string so we
+        // never leak a stray <context> marker back into the next prompt.
+        const START: &str = "<context"; // allow attributes or whitespace before '>'
+        const END: &str = "</context>";
+
+        let lower = text.to_ascii_lowercase();
+        let mut cleaned = String::with_capacity(text.len());
+        let mut cursor: usize = 0;
+
+        while let Some(start_rel) = lower[cursor..].find(START) {
+            let start = cursor + start_rel;
+            cleaned.push_str(&text[cursor..start]);
+
+            // Advance past the opening tag terminator '>' if present; otherwise
+            // treat the rest of the string as part of the unclosed context block.
+            let after_start = match text[start..].find('>') {
+                Some(off) => start + off + 1,
+                None => return cleaned, // Unclosed start tag: drop the remainder
+            };
+
+            // Look for the matching closing tag. If not found, drop the tail.
+            if let Some(end_rel) = lower[after_start..].find(END) {
+                let end = after_start + end_rel + END.len();
+                cursor = end;
+            } else {
+                return cleaned;
+            }
+        }
+
+        // Append any trailing text after the last removed block.
+        cleaned.push_str(&text[cursor..]);
+
+        // Clean up any stray closing tags that had no opener.
+        if cleaned.contains(END) {
+            cleaned = cleaned.replace(END, "");
+        }
+
+        cleaned
+    }
+
     fn turn_context_block(&self) -> Option<String> {
         let mut lines: Vec<String> = Vec::new();
         let mut any = false;
         lines.push("<context>".to_string());
         lines.push("Below are the most recent messages related to this code change.".to_string());
-        if let Some(user) = self.last_user_message.as_ref().filter(|s| !s.trim().is_empty()) {
+        if let Some(user) = self
+            .last_user_message
+            .as_ref()
+            .map(|msg| Self::strip_context_sections(msg))
+            .map(|msg| msg.trim().to_string())
+            .filter(|msg| !msg.is_empty())
+        {
             any = true;
-            lines.push(format!("<user>{}</user>", user.trim()));
+            lines.push(format!("<user>{user}</user>"));
         }
         if let Some(dev) = self
             .last_developer_message
             .as_ref()
-            .filter(|s| !s.trim().is_empty())
+            .map(|msg| Self::strip_context_sections(msg))
+            .map(|msg| msg.trim().to_string())
+            .filter(|msg| !msg.is_empty())
         {
             any = true;
-            lines.push(format!("<developer>{}</developer>", dev.trim()));
+            lines.push(format!("<developer>{dev}</developer>"));
         }
         if let Some(assistant) = self
             .last_assistant_message
             .as_ref()
-            .filter(|s| !s.trim().is_empty())
+            .map(|msg| Self::strip_context_sections(msg))
+            .map(|msg| msg.trim().to_string())
+            .filter(|msg| !msg.is_empty())
         {
             any = true;
-            lines.push(format!("<assistant>{}</assistant>", assistant.trim()));
+            lines.push(format!("<assistant>{assistant}</assistant>"));
         }
         lines.push("</context>".to_string());
 
@@ -36018,11 +36071,7 @@ impl WidgetRef for &ChatWidget<'_> {
                             let symbol_y = gutter_area.y.saturating_add(rel);
                             if symbol_y < gutter_area.y.saturating_add(gutter_area.height) {
                                 let symbol_style = Style::default().fg(color).bg(gutter_bg);
-                                let symbol_x = if is_auto_review && gutter_area.x > history_area.x {
-                                    gutter_area.x.saturating_sub(1)
-                                } else {
-                                    gutter_area.x
-                                };
+                                let symbol_x = gutter_area.x;
                                 buf.set_string(symbol_x, symbol_y, symbol, symbol_style);
                             }
                         }
