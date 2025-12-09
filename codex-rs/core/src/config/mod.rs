@@ -22,26 +22,23 @@ use crate::features::FeatureOverrides;
 use crate::features::Features;
 use crate::features::FeaturesToml;
 use crate::git_info::resolve_root_git_project_for_trust;
-use crate::model_family::ModelFamily;
-use crate::model_family::derive_default_model_family;
-use crate::model_family::find_family_for_model;
 use crate::model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::OLLAMA_OSS_PROVIDER_ID;
 use crate::model_provider_info::built_in_model_providers;
-use crate::openai_model_info::get_model_info;
 use crate::project_doc::DEFAULT_PROJECT_DOC_FILENAME;
 use crate::project_doc::LOCAL_PROJECT_DOC_FILENAME;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
+use crate::util::resolve_path;
 use codex_app_server_protocol::Tools;
 use codex_app_server_protocol::UserSavedConfig;
 use codex_protocol::config_types::ForcedLoginMethod;
-use codex_protocol::config_types::ReasoningEffort;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::config_types::TrustLevel;
 use codex_protocol::config_types::Verbosity;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_rmcp_client::OAuthCredentialsStoreMode;
 use dirs::home_dir;
 use dunce::canonicalize;
@@ -61,9 +58,8 @@ pub mod edit;
 pub mod profile;
 pub mod types;
 
-pub const OPENAI_DEFAULT_MODEL: &str = "gpt-5.1-codex";
-const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5.1-codex";
-pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5.1-codex";
+pub const OPENAI_DEFAULT_MODEL: &str = "gpt-5.1-codex-max";
+const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5.1-codex-max";
 
 /// Maximum number of bytes of the documentation that will be embedded. Larger
 /// files are *silently truncated* to this size so we do not take up too much of
@@ -80,8 +76,6 @@ pub struct Config {
 
     /// Model used specifically for review sessions. Defaults to "gpt-5.1-codex-max".
     pub review_model: String,
-
-    pub model_family: ModelFamily,
 
     /// Size of the context window for the model, in tokens.
     pub model_context_window: Option<i64>,
@@ -160,6 +154,9 @@ pub struct Config {
     /// Enable ASCII animations and shimmer effects in the TUI.
     pub animations: bool,
 
+    /// Show startup tooltips in the TUI welcome screen.
+    pub show_tooltips: bool,
+
     /// The directory that should be treated as the current working directory
     /// for the session. All relative paths inside the business-logic layer are
     /// resolved against this path.
@@ -192,6 +189,7 @@ pub struct Config {
     /// Additional filenames to try when looking for project-level docs.
     pub project_doc_fallback_filenames: Vec<String>,
 
+    // todo(aibrahim): this should be used in the override model family
     /// Token budget applied when storing tool/function outputs in the context manager.
     pub tool_output_token_limit: Option<usize>,
 
@@ -221,6 +219,12 @@ pub struct Config {
     /// If not "none", the value to use for `reasoning.summary` when making a
     /// request using the Responses API.
     pub model_reasoning_summary: ReasoningSummary,
+
+    /// Optional override to force-enable reasoning summaries for the configured model.
+    pub model_supports_reasoning_summaries: Option<bool>,
+
+    /// Optional override to force reasoning summary format for the configured model.
+    pub model_reasoning_summary_format: Option<ReasoningSummaryFormat>,
 
     /// Optional verbosity control for GPT-5 models (Responses API `text.verbosity`).
     pub model_verbosity: Option<Verbosity>,
@@ -1016,15 +1020,8 @@ impl Config {
         let additional_writable_roots: Vec<PathBuf> = additional_writable_roots
             .into_iter()
             .map(|path| {
-                let absolute = if path.is_absolute() {
-                    path
-                } else {
-                    resolved_cwd.join(path)
-                };
-                match canonicalize(&absolute) {
-                    Ok(canonical) => canonical,
-                    Err(_) => absolute,
-                }
+                let absolute = resolve_path(&resolved_cwd, &path);
+                canonicalize(&absolute).unwrap_or(absolute)
             })
             .collect();
         let active_project = cfg
@@ -1107,30 +1104,11 @@ impl Config {
 
         let forced_login_method = cfg.forced_login_method;
 
+        // todo(aibrahim): make model optional
         let model = model
             .or(config_profile.model)
             .or(cfg.model)
             .unwrap_or_else(default_model);
-
-        let mut model_family =
-            find_family_for_model(&model).unwrap_or_else(|| derive_default_model_family(&model));
-
-        if let Some(supports_reasoning_summaries) = cfg.model_supports_reasoning_summaries {
-            model_family.supports_reasoning_summaries = supports_reasoning_summaries;
-        }
-        if let Some(model_reasoning_summary_format) = cfg.model_reasoning_summary_format {
-            model_family.reasoning_summary_format = model_reasoning_summary_format;
-        }
-
-        let openai_model_info = get_model_info(&model_family);
-        let model_context_window = cfg
-            .model_context_window
-            .or_else(|| openai_model_info.as_ref().map(|info| info.context_window));
-        let model_auto_compact_token_limit = cfg.model_auto_compact_token_limit.or_else(|| {
-            openai_model_info
-                .as_ref()
-                .and_then(|info| info.auto_compact_token_limit)
-        });
 
         let compact_prompt = compact_prompt.or(cfg.compact_prompt).and_then(|value| {
             let trimmed = value.trim();
@@ -1177,9 +1155,8 @@ impl Config {
         let config = Self {
             model,
             review_model,
-            model_family,
-            model_context_window,
-            model_auto_compact_token_limit,
+            model_context_window: cfg.model_context_window,
+            model_auto_compact_token_limit: cfg.model_auto_compact_token_limit,
             model_provider_id,
             model_provider,
             cwd: resolved_cwd,
@@ -1233,6 +1210,8 @@ impl Config {
                 .model_reasoning_summary
                 .or(cfg.model_reasoning_summary)
                 .unwrap_or_default(),
+            model_supports_reasoning_summaries: cfg.model_supports_reasoning_summaries,
+            model_reasoning_summary_format: cfg.model_reasoning_summary_format.clone(),
             model_verbosity: config_profile.model_verbosity.or(cfg.model_verbosity),
             chatgpt_base_url: config_profile
                 .chatgpt_base_url
@@ -1258,6 +1237,7 @@ impl Config {
                 .map(|t| t.notifications.clone())
                 .unwrap_or_default(),
             animations: cfg.tui.as_ref().map(|t| t.animations).unwrap_or(true),
+            show_tooltips: cfg.tui.as_ref().map(|t| t.show_tooltips).unwrap_or(true),
             otel: {
                 let t: OtelConfigToml = cfg.otel.unwrap_or_default();
                 let log_user_prompt = t.log_user_prompt.unwrap_or(false);
@@ -1299,11 +1279,7 @@ impl Config {
             return Ok(None);
         };
 
-        let full_path = if p.is_relative() {
-            cwd.join(p)
-        } else {
-            p.to_path_buf()
-        };
+        let full_path = resolve_path(cwd, p);
 
         let contents = std::fs::read_to_string(&full_path).map_err(|e| {
             std::io::Error::new(
@@ -1436,6 +1412,7 @@ persistence = "none"
         let tui = parsed.tui.expect("config should include tui section");
 
         assert_eq!(tui.notifications, Notifications::Enabled(true));
+        assert!(tui.show_tooltips);
     }
 
     #[test]
@@ -2960,9 +2937,8 @@ model_verbosity = "high"
             Config {
                 model: "o3".to_string(),
                 review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
-                model_family: find_family_for_model("o3").expect("known model slug"),
-                model_context_window: Some(200_000),
-                model_auto_compact_token_limit: Some(180_000),
+                model_context_window: None,
+                model_auto_compact_token_limit: None,
                 model_provider_id: "openai".to_string(),
                 model_provider: fixture.openai_provider.clone(),
                 approval_policy: AskForApproval::Never,
@@ -2988,6 +2964,8 @@ model_verbosity = "high"
                 show_raw_agent_reasoning: false,
                 model_reasoning_effort: Some(ReasoningEffort::High),
                 model_reasoning_summary: ReasoningSummary::Detailed,
+                model_supports_reasoning_summaries: None,
+                model_reasoning_summary_format: None,
                 model_verbosity: None,
                 chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
                 base_instructions: None,
@@ -3009,6 +2987,7 @@ model_verbosity = "high"
                 disable_paste_burst: false,
                 tui_notifications: Default::default(),
                 animations: true,
+                show_tooltips: true,
                 otel: OtelConfig::default(),
             },
             o3_profile_config
@@ -3033,9 +3012,8 @@ model_verbosity = "high"
         let expected_gpt3_profile_config = Config {
             model: "gpt-3.5-turbo".to_string(),
             review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
-            model_family: find_family_for_model("gpt-3.5-turbo").expect("known model slug"),
-            model_context_window: Some(16_385),
-            model_auto_compact_token_limit: Some(14_746),
+            model_context_window: None,
+            model_auto_compact_token_limit: None,
             model_provider_id: "openai-chat-completions".to_string(),
             model_provider: fixture.openai_chat_completions_provider.clone(),
             approval_policy: AskForApproval::UnlessTrusted,
@@ -3061,6 +3039,8 @@ model_verbosity = "high"
             show_raw_agent_reasoning: false,
             model_reasoning_effort: None,
             model_reasoning_summary: ReasoningSummary::default(),
+            model_supports_reasoning_summaries: None,
+            model_reasoning_summary_format: None,
             model_verbosity: None,
             chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
             base_instructions: None,
@@ -3082,6 +3062,7 @@ model_verbosity = "high"
             disable_paste_burst: false,
             tui_notifications: Default::default(),
             animations: true,
+            show_tooltips: true,
             otel: OtelConfig::default(),
         };
 
@@ -3121,9 +3102,8 @@ model_verbosity = "high"
         let expected_zdr_profile_config = Config {
             model: "o3".to_string(),
             review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
-            model_family: find_family_for_model("o3").expect("known model slug"),
-            model_context_window: Some(200_000),
-            model_auto_compact_token_limit: Some(180_000),
+            model_context_window: None,
+            model_auto_compact_token_limit: None,
             model_provider_id: "openai".to_string(),
             model_provider: fixture.openai_provider.clone(),
             approval_policy: AskForApproval::OnFailure,
@@ -3149,6 +3129,8 @@ model_verbosity = "high"
             show_raw_agent_reasoning: false,
             model_reasoning_effort: None,
             model_reasoning_summary: ReasoningSummary::default(),
+            model_supports_reasoning_summaries: None,
+            model_reasoning_summary_format: None,
             model_verbosity: None,
             chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
             base_instructions: None,
@@ -3170,6 +3152,7 @@ model_verbosity = "high"
             disable_paste_burst: false,
             tui_notifications: Default::default(),
             animations: true,
+            show_tooltips: true,
             otel: OtelConfig::default(),
         };
 
@@ -3195,9 +3178,8 @@ model_verbosity = "high"
         let expected_gpt5_profile_config = Config {
             model: "gpt-5.1".to_string(),
             review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
-            model_family: find_family_for_model("gpt-5.1").expect("known model slug"),
-            model_context_window: Some(272_000),
-            model_auto_compact_token_limit: Some(244_800),
+            model_context_window: None,
+            model_auto_compact_token_limit: None,
             model_provider_id: "openai".to_string(),
             model_provider: fixture.openai_provider.clone(),
             approval_policy: AskForApproval::OnFailure,
@@ -3223,6 +3205,8 @@ model_verbosity = "high"
             show_raw_agent_reasoning: false,
             model_reasoning_effort: Some(ReasoningEffort::High),
             model_reasoning_summary: ReasoningSummary::Detailed,
+            model_supports_reasoning_summaries: None,
+            model_reasoning_summary_format: None,
             model_verbosity: Some(Verbosity::High),
             chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
             base_instructions: None,
@@ -3244,6 +3228,7 @@ model_verbosity = "high"
             disable_paste_burst: false,
             tui_notifications: Default::default(),
             animations: true,
+            show_tooltips: true,
             otel: OtelConfig::default(),
         };
 

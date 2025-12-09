@@ -48,6 +48,9 @@ pub(crate) const UNIFIED_EXEC_OUTPUT_MAX_BYTES: usize = 1024 * 1024; // 1 MiB
 pub(crate) const UNIFIED_EXEC_OUTPUT_MAX_TOKENS: usize = UNIFIED_EXEC_OUTPUT_MAX_BYTES / 4;
 pub(crate) const MAX_UNIFIED_EXEC_SESSIONS: usize = 64;
 
+// Send a warning message to the models when it reaches this number of sessions.
+pub(crate) const WARNING_UNIFIED_EXEC_SESSIONS: usize = 60;
+
 pub(crate) struct UnifiedExecContext {
     pub session: Arc<Session>,
     pub turn: Arc<TurnContext>,
@@ -77,7 +80,6 @@ pub(crate) struct ExecCommandRequest {
 
 #[derive(Debug)]
 pub(crate) struct WriteStdinRequest<'a> {
-    pub call_id: &'a str,
     pub process_id: &'a str,
     pub input: &'a str,
     pub yield_time_ms: u64,
@@ -98,8 +100,26 @@ pub(crate) struct UnifiedExecResponse {
 
 #[derive(Default)]
 pub(crate) struct UnifiedExecSessionManager {
-    sessions: Mutex<HashMap<String, SessionEntry>>,
-    used_session_ids: Mutex<HashSet<String>>,
+    session_store: Mutex<SessionStore>,
+}
+
+// Required for mutex sharing.
+#[derive(Default)]
+pub(crate) struct SessionStore {
+    sessions: HashMap<String, SessionEntry>,
+    reserved_sessions_id: HashSet<String>,
+}
+
+impl SessionStore {
+    fn remove(&mut self, session_id: &str) -> Option<SessionEntry> {
+        self.reserved_sessions_id.remove(session_id);
+        self.sessions.remove(session_id)
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.reserved_sessions_id.clear();
+        self.sessions.clear();
+    }
 }
 
 struct SessionEntry {
@@ -195,7 +215,6 @@ mod tests {
             .services
             .unified_exec_manager
             .write_stdin(WriteStdinRequest {
-                call_id: "write-stdin",
                 process_id,
                 input,
                 yield_time_ms,
@@ -384,9 +403,10 @@ mod tests {
             session
                 .services
                 .unified_exec_manager
-                .sessions
+                .session_store
                 .lock()
                 .await
+                .sessions
                 .is_empty()
         );
 
@@ -425,9 +445,10 @@ mod tests {
             session
                 .services
                 .unified_exec_manager
-                .sessions
+                .session_store
                 .lock()
                 .await
+                .sessions
                 .is_empty()
         );
 

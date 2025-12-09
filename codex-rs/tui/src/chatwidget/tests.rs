@@ -5,25 +5,26 @@ use crate::test_backend::VT100Backend;
 use crate::tui::FrameRequester;
 use assert_matches::assert_matches;
 use codex_common::approval_presets::builtin_approval_presets;
-use codex_common::model_presets::ModelPreset;
-use codex_common::model_presets::ReasoningEffortPreset;
 use codex_core::AuthManager;
 use codex_core::CodexAuth;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::ConfigToml;
+use codex_core::openai_models::models_manager::ModelsManager;
 use codex_core::protocol::AgentMessageDeltaEvent;
 use codex_core::protocol::AgentMessageEvent;
 use codex_core::protocol::AgentReasoningDeltaEvent;
 use codex_core::protocol::AgentReasoningEvent;
 use codex_core::protocol::ApplyPatchApprovalRequestEvent;
 use codex_core::protocol::BackgroundEventEvent;
+use codex_core::protocol::CreditsSnapshot;
 use codex_core::protocol::Event;
 use codex_core::protocol::EventMsg;
 use codex_core::protocol::ExecApprovalRequestEvent;
 use codex_core::protocol::ExecCommandBeginEvent;
 use codex_core::protocol::ExecCommandEndEvent;
 use codex_core::protocol::ExecCommandSource;
+use codex_core::protocol::ExecPolicyAmendment;
 use codex_core::protocol::ExitedReviewModeEvent;
 use codex_core::protocol::FileChange;
 use codex_core::protocol::Op;
@@ -35,6 +36,7 @@ use codex_core::protocol::ReviewFinding;
 use codex_core::protocol::ReviewLineRange;
 use codex_core::protocol::ReviewOutputEvent;
 use codex_core::protocol::ReviewRequest;
+use codex_core::protocol::ReviewTarget;
 use codex_core::protocol::StreamErrorEvent;
 use codex_core::protocol::TaskCompleteEvent;
 use codex_core::protocol::TaskStartedEvent;
@@ -46,6 +48,9 @@ use codex_core::protocol::UndoStartedEvent;
 use codex_core::protocol::ViewImageToolCallEvent;
 use codex_core::protocol::WarningEvent;
 use codex_protocol::ConversationId;
+use codex_protocol::account::PlanType;
+use codex_protocol::openai_models::ModelPreset;
+use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::plan_tool::PlanItemArg;
 use codex_protocol::plan_tool::StepStatus;
@@ -87,12 +92,13 @@ fn snapshot(percent: f64) -> RateLimitSnapshot {
         }),
         secondary: None,
         credits: None,
+        plan_type: None,
     }
 }
 
 #[test]
 fn resumed_initial_messages_render_history() {
-    let (mut chat, mut rx, _ops) = make_chatwidget_manual();
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None);
 
     let conversation_id = ConversationId::new();
     let rollout_file = NamedTempFile::new().unwrap();
@@ -148,14 +154,15 @@ fn resumed_initial_messages_render_history() {
 /// Entering review mode uses the hint provided by the review request.
 #[test]
 fn entered_review_mode_uses_request_hint() {
-    let (mut chat, mut rx, _ops) = make_chatwidget_manual();
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None);
 
     chat.handle_codex_event(Event {
         id: "review-start".into(),
         msg: EventMsg::EnteredReviewMode(ReviewRequest {
-            prompt: "Review the latest changes".to_string(),
-            user_facing_hint: "feature branch".to_string(),
-            append_to_original_thread: true,
+            target: ReviewTarget::BaseBranch {
+                branch: "feature".to_string(),
+            },
+            user_facing_hint: Some("feature branch".to_string()),
         }),
     });
 
@@ -168,14 +175,13 @@ fn entered_review_mode_uses_request_hint() {
 /// Entering review mode renders the current changes banner when requested.
 #[test]
 fn entered_review_mode_defaults_to_current_changes_banner() {
-    let (mut chat, mut rx, _ops) = make_chatwidget_manual();
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None);
 
     chat.handle_codex_event(Event {
         id: "review-start".into(),
         msg: EventMsg::EnteredReviewMode(ReviewRequest {
-            prompt: "Review the current changes".to_string(),
-            user_facing_hint: "current changes".to_string(),
-            append_to_original_thread: true,
+            target: ReviewTarget::UncommittedChanges,
+            user_facing_hint: None,
         }),
     });
 
@@ -189,7 +195,7 @@ fn entered_review_mode_defaults_to_current_changes_banner() {
 /// the closing banner while clearing review mode state.
 #[test]
 fn exited_review_mode_emits_results_and_finishes() {
-    let (mut chat, mut rx, _ops) = make_chatwidget_manual();
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None);
 
     let review = ReviewOutputEvent {
         findings: vec![ReviewFinding {
@@ -223,7 +229,7 @@ fn exited_review_mode_emits_results_and_finishes() {
 /// Exiting review restores the pre-review context window indicator.
 #[test]
 fn review_restores_context_window_indicator() {
-    let (mut chat, mut rx, _ops) = make_chatwidget_manual();
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None);
 
     let context_window = 13_000;
     let pre_review_tokens = 12_700; // ~30% remaining after subtracting baseline.
@@ -241,9 +247,10 @@ fn review_restores_context_window_indicator() {
     chat.handle_codex_event(Event {
         id: "review-start".into(),
         msg: EventMsg::EnteredReviewMode(ReviewRequest {
-            prompt: "Review the latest changes".to_string(),
-            user_facing_hint: "feature branch".to_string(),
-            append_to_original_thread: true,
+            target: ReviewTarget::BaseBranch {
+                branch: "feature".to_string(),
+            },
+            user_facing_hint: Some("feature branch".to_string()),
         }),
     });
 
@@ -271,7 +278,7 @@ fn review_restores_context_window_indicator() {
 /// Receiving a TokenCount event without usage clears the context indicator.
 #[test]
 fn token_count_none_resets_context_indicator() {
-    let (mut chat, _rx, _ops) = make_chatwidget_manual();
+    let (mut chat, _rx, _ops) = make_chatwidget_manual(None);
 
     let context_window = 13_000;
     let pre_compact_tokens = 12_700;
@@ -295,6 +302,41 @@ fn token_count_none_resets_context_indicator() {
     assert_eq!(chat.bottom_pane.context_window_percent(), None);
 }
 
+#[test]
+fn context_indicator_shows_used_tokens_when_window_unknown() {
+    let (mut chat, _rx, _ops) = make_chatwidget_manual(Some("unknown-model"));
+
+    chat.config.model_context_window = None;
+    let auto_compact_limit = 200_000;
+    chat.config.model_auto_compact_token_limit = Some(auto_compact_limit);
+
+    // No model window, so the indicator should fall back to showing tokens used.
+    let total_tokens = 106_000;
+    let token_usage = TokenUsage {
+        total_tokens,
+        ..TokenUsage::default()
+    };
+    let token_info = TokenUsageInfo {
+        total_token_usage: token_usage.clone(),
+        last_token_usage: token_usage,
+        model_context_window: None,
+    };
+
+    chat.handle_codex_event(Event {
+        id: "token-usage".into(),
+        msg: EventMsg::TokenCount(TokenCountEvent {
+            info: Some(token_info),
+            rate_limits: None,
+        }),
+    });
+
+    assert_eq!(chat.bottom_pane.context_window_percent(), None);
+    assert_eq!(
+        chat.bottom_pane.context_window_used_tokens(),
+        Some(total_tokens)
+    );
+}
+
 #[cfg_attr(
     target_os = "macos",
     ignore = "system configuration APIs are blocked under macOS seatbelt"
@@ -304,6 +346,7 @@ async fn helpers_are_available_and_do_not_panic() {
     let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
     let tx = AppEventSender::new(tx_raw);
     let cfg = test_config();
+    let model_family = ModelsManager::construct_model_family_offline(&cfg.model, &cfg);
     let conversation_manager = Arc::new(ConversationManager::with_auth(CodexAuth::from_api_key(
         "test",
     )));
@@ -316,7 +359,11 @@ async fn helpers_are_available_and_do_not_panic() {
         initial_images: Vec::new(),
         enhanced_keys_supported: false,
         auth_manager,
+        models_manager: conversation_manager.get_models_manager(),
         feedback: codex_feedback::CodexFeedback::new(),
+        skills: None,
+        is_first_run: true,
+        model_family,
     };
     let mut w = ChatWidget::new(init, conversation_manager);
     // Basic construction sanity.
@@ -324,7 +371,9 @@ async fn helpers_are_available_and_do_not_panic() {
 }
 
 // --- Helpers for tests that need direct construction and event draining ---
-fn make_chatwidget_manual() -> (
+fn make_chatwidget_manual(
+    model_override: Option<&str>,
+) -> (
     ChatWidget,
     tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
     tokio::sync::mpsc::UnboundedReceiver<Op>,
@@ -332,7 +381,10 @@ fn make_chatwidget_manual() -> (
     let (tx_raw, rx) = unbounded_channel::<AppEvent>();
     let app_event_tx = AppEventSender::new(tx_raw);
     let (op_tx, op_rx) = unbounded_channel::<Op>();
-    let cfg = test_config();
+    let mut cfg = test_config();
+    if let Some(model) = model_override {
+        cfg.model = model.to_string();
+    }
     let bottom = BottomPane::new(BottomPaneParams {
         app_event_tx: app_event_tx.clone(),
         frame_requester: FrameRequester::test_dummy(),
@@ -341,6 +393,7 @@ fn make_chatwidget_manual() -> (
         placeholder_text: "Ask Codex to do anything".to_string(),
         disable_paste_burst: false,
         animations_enabled: cfg.animations,
+        skills: None,
     });
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("test"));
     let widget = ChatWidget {
@@ -349,11 +402,14 @@ fn make_chatwidget_manual() -> (
         bottom_pane: bottom,
         active_cell: None,
         config: cfg.clone(),
-        auth_manager,
+        model_family: ModelsManager::construct_model_family_offline(&cfg.model, &cfg),
+        auth_manager: auth_manager.clone(),
+        models_manager: Arc::new(ModelsManager::new(auth_manager)),
         session_header: SessionHeader::new(cfg.model),
         initial_user_message: None,
         token_info: None,
         rate_limit_snapshot: None,
+        plan_type: None,
         rate_limit_warnings: RateLimitWarningState::default(),
         rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),
         rate_limit_poller: None,
@@ -384,13 +440,19 @@ fn make_chatwidget_manual() -> (
     (widget, rx, op_rx)
 }
 
+fn set_chatgpt_auth(chat: &mut ChatWidget) {
+    chat.auth_manager =
+        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+    chat.models_manager = Arc::new(ModelsManager::new(chat.auth_manager.clone()));
+}
+
 pub(crate) fn make_chatwidget_manual_with_sender() -> (
     ChatWidget,
     AppEventSender,
     tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
     tokio::sync::mpsc::UnboundedReceiver<Op>,
 ) {
-    let (widget, rx, op_rx) = make_chatwidget_manual();
+    let (widget, rx, op_rx) = make_chatwidget_manual(None);
     let app_event_tx = widget.app_event_tx.clone();
     (widget, app_event_tx, rx, op_rx)
 }
@@ -485,8 +547,110 @@ fn test_rate_limit_warnings_monthly() {
 }
 
 #[test]
+fn rate_limit_snapshot_keeps_prior_credits_when_missing_from_headers() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
+
+    chat.on_rate_limit_snapshot(Some(RateLimitSnapshot {
+        primary: None,
+        secondary: None,
+        credits: Some(CreditsSnapshot {
+            has_credits: true,
+            unlimited: false,
+            balance: Some("17.5".to_string()),
+        }),
+        plan_type: None,
+    }));
+    let initial_balance = chat
+        .rate_limit_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.credits.as_ref())
+        .and_then(|credits| credits.balance.as_deref());
+    assert_eq!(initial_balance, Some("17.5"));
+
+    chat.on_rate_limit_snapshot(Some(RateLimitSnapshot {
+        primary: Some(RateLimitWindow {
+            used_percent: 80.0,
+            window_minutes: Some(60),
+            resets_at: Some(123),
+        }),
+        secondary: None,
+        credits: None,
+        plan_type: None,
+    }));
+
+    let display = chat
+        .rate_limit_snapshot
+        .as_ref()
+        .expect("rate limits should be cached");
+    let credits = display
+        .credits
+        .as_ref()
+        .expect("credits should persist when headers omit them");
+
+    assert_eq!(credits.balance.as_deref(), Some("17.5"));
+    assert!(!credits.unlimited);
+    assert_eq!(
+        display.primary.as_ref().map(|window| window.used_percent),
+        Some(80.0)
+    );
+}
+
+#[test]
+fn rate_limit_snapshot_updates_and_retains_plan_type() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
+
+    chat.on_rate_limit_snapshot(Some(RateLimitSnapshot {
+        primary: Some(RateLimitWindow {
+            used_percent: 10.0,
+            window_minutes: Some(60),
+            resets_at: None,
+        }),
+        secondary: Some(RateLimitWindow {
+            used_percent: 5.0,
+            window_minutes: Some(300),
+            resets_at: None,
+        }),
+        credits: None,
+        plan_type: Some(PlanType::Plus),
+    }));
+    assert_eq!(chat.plan_type, Some(PlanType::Plus));
+
+    chat.on_rate_limit_snapshot(Some(RateLimitSnapshot {
+        primary: Some(RateLimitWindow {
+            used_percent: 25.0,
+            window_minutes: Some(30),
+            resets_at: Some(123),
+        }),
+        secondary: Some(RateLimitWindow {
+            used_percent: 15.0,
+            window_minutes: Some(300),
+            resets_at: Some(234),
+        }),
+        credits: None,
+        plan_type: Some(PlanType::Pro),
+    }));
+    assert_eq!(chat.plan_type, Some(PlanType::Pro));
+
+    chat.on_rate_limit_snapshot(Some(RateLimitSnapshot {
+        primary: Some(RateLimitWindow {
+            used_percent: 30.0,
+            window_minutes: Some(60),
+            resets_at: Some(456),
+        }),
+        secondary: Some(RateLimitWindow {
+            used_percent: 18.0,
+            window_minutes: Some(300),
+            resets_at: Some(567),
+        }),
+        credits: None,
+        plan_type: None,
+    }));
+    assert_eq!(chat.plan_type, Some(PlanType::Pro));
+}
+
+#[test]
 fn rate_limit_switch_prompt_skips_when_on_lower_cost_model() {
-    let (mut chat, _, _) = make_chatwidget_manual();
+    let (mut chat, _, _) = make_chatwidget_manual(None);
     chat.auth_manager =
         AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
     chat.config.model = NUDGE_MODEL_SLUG.to_string();
@@ -502,7 +666,7 @@ fn rate_limit_switch_prompt_skips_when_on_lower_cost_model() {
 #[test]
 fn rate_limit_switch_prompt_shows_once_per_session() {
     let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
-    let (mut chat, _, _) = make_chatwidget_manual();
+    let (mut chat, _, _) = make_chatwidget_manual(None);
     chat.config.model = "gpt-5".to_string();
     chat.auth_manager = AuthManager::from_auth_for_testing(auth);
 
@@ -527,7 +691,7 @@ fn rate_limit_switch_prompt_shows_once_per_session() {
 #[test]
 fn rate_limit_switch_prompt_respects_hidden_notice() {
     let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
-    let (mut chat, _, _) = make_chatwidget_manual();
+    let (mut chat, _, _) = make_chatwidget_manual(None);
     chat.config.model = "gpt-5".to_string();
     chat.auth_manager = AuthManager::from_auth_for_testing(auth);
     chat.config.notices.hide_rate_limit_model_nudge = Some(true);
@@ -543,7 +707,7 @@ fn rate_limit_switch_prompt_respects_hidden_notice() {
 #[test]
 fn rate_limit_switch_prompt_defers_until_task_complete() {
     let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
-    let (mut chat, _, _) = make_chatwidget_manual();
+    let (mut chat, _, _) = make_chatwidget_manual(None);
     chat.config.model = "gpt-5".to_string();
     chat.auth_manager = AuthManager::from_auth_for_testing(auth);
 
@@ -564,7 +728,7 @@ fn rate_limit_switch_prompt_defers_until_task_complete() {
 
 #[test]
 fn rate_limit_switch_prompt_popup_snapshot() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
     chat.auth_manager =
         AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
     chat.config.model = "gpt-5".to_string();
@@ -580,7 +744,7 @@ fn rate_limit_switch_prompt_popup_snapshot() {
 
 #[test]
 fn exec_approval_emits_proposed_command_and_decision_history() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
     // Trigger an exec approval request with a short, single-line command
     let ev = ExecApprovalRequestEvent {
@@ -592,6 +756,7 @@ fn exec_approval_emits_proposed_command_and_decision_history() {
             "this is a test reason such as one that would be produced by the model".into(),
         ),
         risk: None,
+        proposed_execpolicy_amendment: None,
         parsed_cmd: vec![],
     };
     chat.handle_codex_event(Event {
@@ -624,7 +789,7 @@ fn exec_approval_emits_proposed_command_and_decision_history() {
 
 #[test]
 fn exec_approval_decision_truncates_multiline_and_long_commands() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
     // Multiline command: modal should show full command, history records decision only
     let ev_multi = ExecApprovalRequestEvent {
@@ -636,6 +801,7 @@ fn exec_approval_decision_truncates_multiline_and_long_commands() {
             "this is a test reason such as one that would be produced by the model".into(),
         ),
         risk: None,
+        proposed_execpolicy_amendment: None,
         parsed_cmd: vec![],
     };
     chat.handle_codex_event(Event {
@@ -686,6 +852,7 @@ fn exec_approval_decision_truncates_multiline_and_long_commands() {
         cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         reason: None,
         risk: None,
+        proposed_execpolicy_amendment: None,
         parsed_cmd: vec![],
     };
     chat.handle_codex_event(Event {
@@ -793,9 +960,21 @@ fn active_blob(chat: &ChatWidget) -> String {
     lines_to_single_string(&lines)
 }
 
+fn get_available_model(chat: &ChatWidget, model: &str) -> ModelPreset {
+    let models = chat
+        .models_manager
+        .try_list_models()
+        .expect("models lock available");
+    models
+        .iter()
+        .find(|&preset| preset.model == model)
+        .cloned()
+        .unwrap_or_else(|| panic!("{model} preset not found"))
+}
+
 #[test]
 fn empty_enter_during_task_does_not_queue() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
 
     // Simulate running task so submissions would normally be queued.
     chat.bottom_pane.set_task_running(true);
@@ -809,7 +988,7 @@ fn empty_enter_during_task_does_not_queue() {
 
 #[test]
 fn alt_up_edits_most_recent_queued_message() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
 
     // Simulate a running task so messages would normally be queued.
     chat.bottom_pane.set_task_running(true);
@@ -842,7 +1021,7 @@ fn alt_up_edits_most_recent_queued_message() {
 /// is queued repeatedly.
 #[test]
 fn enqueueing_history_prompt_multiple_times_is_stable() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
 
     // Submit an initial prompt to seed history.
     chat.bottom_pane.set_composer_text("repeat me".to_string());
@@ -868,7 +1047,7 @@ fn enqueueing_history_prompt_multiple_times_is_stable() {
 
 #[test]
 fn streaming_final_answer_keeps_task_running_state() {
-    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None);
 
     chat.on_task_started();
     chat.on_agent_message_delta("Final answer line\n".to_string());
@@ -898,7 +1077,7 @@ fn streaming_final_answer_keeps_task_running_state() {
 
 #[test]
 fn ctrl_c_shutdown_ignores_caps_lock() {
-    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None);
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::CONTROL));
 
@@ -910,7 +1089,7 @@ fn ctrl_c_shutdown_ignores_caps_lock() {
 
 #[test]
 fn ctrl_c_cleared_prompt_is_recoverable_via_history() {
-    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None);
 
     chat.bottom_pane.insert_str("draft message ");
     chat.bottom_pane
@@ -944,7 +1123,7 @@ fn ctrl_c_cleared_prompt_is_recoverable_via_history() {
 
 #[test]
 fn exec_history_cell_shows_working_then_completed() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
     // Begin command
     let begin = begin_exec(&mut chat, "call-1", "echo done");
@@ -974,7 +1153,7 @@ fn exec_history_cell_shows_working_then_completed() {
 
 #[test]
 fn exec_history_cell_shows_working_then_failed() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
     // Begin command
     let begin = begin_exec(&mut chat, "call-2", "false");
@@ -998,7 +1177,7 @@ fn exec_history_cell_shows_working_then_failed() {
 
 #[test]
 fn exec_history_shows_unified_exec_startup_commands() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
     let begin = begin_exec_with_source(
         &mut chat,
@@ -1026,7 +1205,7 @@ fn exec_history_shows_unified_exec_startup_commands() {
 /// OpenReviewCustomPrompt to the app event channel.
 #[test]
 fn review_popup_custom_prompt_action_sends_event() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
     // Open the preset selection popup
     chat.open_review_popup();
@@ -1051,7 +1230,7 @@ fn review_popup_custom_prompt_action_sends_event() {
 
 #[test]
 fn slash_init_skips_when_project_doc_exists() {
-    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None);
     let tempdir = tempdir().unwrap();
     let existing_path = tempdir.path().join(DEFAULT_PROJECT_DOC_FILENAME);
     std::fs::write(&existing_path, "existing instructions").unwrap();
@@ -1083,7 +1262,7 @@ fn slash_init_skips_when_project_doc_exists() {
 
 #[test]
 fn slash_quit_requests_exit() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
     chat.dispatch_command(SlashCommand::Quit);
 
@@ -1092,7 +1271,7 @@ fn slash_quit_requests_exit() {
 
 #[test]
 fn slash_exit_requests_exit() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
     chat.dispatch_command(SlashCommand::Exit);
 
@@ -1100,8 +1279,17 @@ fn slash_exit_requests_exit() {
 }
 
 #[test]
+fn slash_resume_opens_picker() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
+
+    chat.dispatch_command(SlashCommand::Resume);
+
+    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenResumePicker));
+}
+
+#[test]
 fn slash_undo_sends_op() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
     chat.dispatch_command(SlashCommand::Undo);
 
@@ -1113,7 +1301,7 @@ fn slash_undo_sends_op() {
 
 #[test]
 fn slash_rollout_displays_current_path() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
     let rollout_path = PathBuf::from("/tmp/codex-test-rollout.jsonl");
     chat.current_rollout_path = Some(rollout_path.clone());
 
@@ -1130,7 +1318,7 @@ fn slash_rollout_displays_current_path() {
 
 #[test]
 fn slash_rollout_handles_missing_path() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
     chat.dispatch_command(SlashCommand::Rollout);
 
@@ -1149,7 +1337,7 @@ fn slash_rollout_handles_missing_path() {
 
 #[test]
 fn undo_success_events_render_info_messages() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
     chat.handle_codex_event(Event {
         id: "turn-1".to_string(),
@@ -1186,7 +1374,7 @@ fn undo_success_events_render_info_messages() {
 
 #[test]
 fn undo_failure_events_render_error_message() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
     chat.handle_codex_event(Event {
         id: "turn-2".to_string(),
@@ -1221,7 +1409,7 @@ fn undo_failure_events_render_error_message() {
 
 #[test]
 fn undo_started_hides_interrupt_hint() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
 
     chat.handle_codex_event(Event {
         id: "turn-hint".to_string(),
@@ -1241,7 +1429,7 @@ fn undo_started_hides_interrupt_hint() {
 /// The commit picker shows only commit subjects (no timestamps).
 #[test]
 fn review_commit_picker_shows_subjects_without_timestamps() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
 
     // Open the Review presets parent popup.
     chat.open_review_popup();
@@ -1303,7 +1491,7 @@ fn review_commit_picker_shows_subjects_without_timestamps() {
 /// and uses the same text for the user-facing hint.
 #[test]
 fn custom_prompt_submit_sends_review_op() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
     chat.show_review_custom_prompt();
     // Paste prompt text via ChatWidget handler, then submit
@@ -1315,12 +1503,13 @@ fn custom_prompt_submit_sends_review_op() {
     match evt {
         AppEvent::CodexOp(Op::Review { review_request }) => {
             assert_eq!(
-                review_request.prompt,
-                "please audit dependencies".to_string()
-            );
-            assert_eq!(
-                review_request.user_facing_hint,
-                "please audit dependencies".to_string()
+                review_request,
+                ReviewRequest {
+                    target: ReviewTarget::Custom {
+                        instructions: "please audit dependencies".to_string(),
+                    },
+                    user_facing_hint: None,
+                }
             );
         }
         other => panic!("unexpected app event: {other:?}"),
@@ -1330,7 +1519,7 @@ fn custom_prompt_submit_sends_review_op() {
 /// Hitting Enter on an empty custom prompt view does not submit.
 #[test]
 fn custom_prompt_enter_empty_does_not_send() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
     chat.show_review_custom_prompt();
     // Enter without any text
@@ -1342,7 +1531,7 @@ fn custom_prompt_enter_empty_does_not_send() {
 
 #[test]
 fn view_image_tool_call_adds_history_cell() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
     let image_path = chat.config.cwd.join("example.png");
 
     chat.handle_codex_event(Event {
@@ -1363,7 +1552,7 @@ fn view_image_tool_call_adds_history_cell() {
 // marker (replacing the spinner) and flushes it into history.
 #[test]
 fn interrupt_exec_marks_failed_snapshot() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
     // Begin a long-running command so we have an active exec cell with a spinner.
     begin_exec(&mut chat, "call-int", "sleep 1");
@@ -1392,7 +1581,7 @@ fn interrupt_exec_marks_failed_snapshot() {
 // suggesting the user to tell the model what to do differently and to use /feedback.
 #[test]
 fn interrupted_turn_error_message_snapshot() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
     // Simulate an in-progress task so the widget is in a running state.
     chat.handle_codex_event(Event {
@@ -1423,7 +1612,7 @@ fn interrupted_turn_error_message_snapshot() {
 /// parent popup, pressing Esc again dismisses all panels (back to normal mode).
 #[test]
 fn review_custom_prompt_escape_navigates_back_then_dismisses() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
 
     // Open the Review presets parent popup.
     chat.open_review_popup();
@@ -1458,7 +1647,7 @@ fn review_custom_prompt_escape_navigates_back_then_dismisses() {
 /// parent popup, pressing Esc again dismisses all panels (back to normal mode).
 #[tokio::test]
 async fn review_branch_picker_escape_navigates_back_then_dismisses() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
 
     // Open the Review presets parent popup.
     chat.open_review_popup();
@@ -1545,7 +1734,7 @@ fn render_bottom_popup(chat: &ChatWidget, width: u16) -> String {
 
 #[test]
 fn model_selection_popup_snapshot() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
 
     chat.config.model = "gpt-5-codex".to_string();
     chat.open_model_popup();
@@ -1556,7 +1745,7 @@ fn model_selection_popup_snapshot() {
 
 #[test]
 fn approvals_selection_popup_snapshot() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
 
     chat.config.notices.hide_full_access_warning = None;
     chat.open_approvals_popup();
@@ -1595,7 +1784,7 @@ fn preset_matching_ignores_extra_writable_roots() {
 
 #[test]
 fn full_access_confirmation_popup_snapshot() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
 
     let preset = builtin_approval_presets()
         .into_iter()
@@ -1610,7 +1799,7 @@ fn full_access_confirmation_popup_snapshot() {
 #[cfg(target_os = "windows")]
 #[test]
 fn windows_auto_mode_prompt_requests_enabling_sandbox_feature() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
 
     let preset = builtin_approval_presets()
         .into_iter()
@@ -1628,7 +1817,7 @@ fn windows_auto_mode_prompt_requests_enabling_sandbox_feature() {
 #[cfg(target_os = "windows")]
 #[test]
 fn startup_prompts_for_windows_sandbox_when_agent_requested() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
 
     set_windows_sandbox_enabled(false);
     chat.config.forced_auto_mode_downgraded_on_windows = true;
@@ -1650,15 +1839,13 @@ fn startup_prompts_for_windows_sandbox_when_agent_requested() {
 
 #[test]
 fn model_reasoning_selection_popup_snapshot() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
 
+    set_chatgpt_auth(&mut chat);
     chat.config.model = "gpt-5.1-codex-max".to_string();
     chat.config.model_reasoning_effort = Some(ReasoningEffortConfig::High);
 
-    let preset = builtin_model_presets(None)
-        .into_iter()
-        .find(|preset| preset.model == "gpt-5.1-codex-max")
-        .expect("gpt-5.1-codex-max preset");
+    let preset = get_available_model(&chat, "gpt-5.1-codex-max");
     chat.open_reasoning_popup(preset);
 
     let popup = render_bottom_popup(&chat, 80);
@@ -1667,15 +1854,13 @@ fn model_reasoning_selection_popup_snapshot() {
 
 #[test]
 fn model_reasoning_selection_popup_extra_high_warning_snapshot() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
 
+    set_chatgpt_auth(&mut chat);
     chat.config.model = "gpt-5.1-codex-max".to_string();
     chat.config.model_reasoning_effort = Some(ReasoningEffortConfig::XHigh);
 
-    let preset = builtin_model_presets(None)
-        .into_iter()
-        .find(|preset| preset.model == "gpt-5.1-codex-max")
-        .expect("gpt-5.1-codex-max preset");
+    let preset = get_available_model(&chat, "gpt-5.1-codex-max");
     chat.open_reasoning_popup(preset);
 
     let popup = render_bottom_popup(&chat, 80);
@@ -1684,14 +1869,12 @@ fn model_reasoning_selection_popup_extra_high_warning_snapshot() {
 
 #[test]
 fn reasoning_popup_shows_extra_high_with_space() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
 
+    set_chatgpt_auth(&mut chat);
     chat.config.model = "gpt-5.1-codex-max".to_string();
 
-    let preset = builtin_model_presets(None)
-        .into_iter()
-        .find(|preset| preset.model == "gpt-5.1-codex-max")
-        .expect("gpt-5.1-codex-max preset");
+    let preset = get_available_model(&chat, "gpt-5.1-codex-max");
     chat.open_reasoning_popup(preset);
 
     let popup = render_bottom_popup(&chat, 120);
@@ -1707,19 +1890,19 @@ fn reasoning_popup_shows_extra_high_with_space() {
 
 #[test]
 fn single_reasoning_option_skips_selection() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
-    static SINGLE_EFFORT: [ReasoningEffortPreset; 1] = [ReasoningEffortPreset {
+    let single_effort = vec![ReasoningEffortPreset {
         effort: ReasoningEffortConfig::High,
-        description: "Maximizes reasoning depth for complex or ambiguous problems",
+        description: "Maximizes reasoning depth for complex or ambiguous problems".to_string(),
     }];
     let preset = ModelPreset {
-        id: "model-with-single-reasoning",
-        model: "model-with-single-reasoning",
-        display_name: "model-with-single-reasoning",
-        description: "",
+        id: "model-with-single-reasoning".to_string(),
+        model: "model-with-single-reasoning".to_string(),
+        display_name: "model-with-single-reasoning".to_string(),
+        description: "".to_string(),
         default_reasoning_effort: ReasoningEffortConfig::High,
-        supported_reasoning_efforts: &SINGLE_EFFORT,
+        supported_reasoning_efforts: single_effort,
         is_default: false,
         upgrade: None,
         show_in_picker: true,
@@ -1747,7 +1930,7 @@ fn single_reasoning_option_skips_selection() {
 
 #[test]
 fn feedback_selection_popup_snapshot() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
 
     // Open the feedback category selection popup via slash command.
     chat.dispatch_command(SlashCommand::Feedback);
@@ -1758,7 +1941,7 @@ fn feedback_selection_popup_snapshot() {
 
 #[test]
 fn feedback_upload_consent_popup_snapshot() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
 
     // Open the consent popup directly for a chosen category.
     chat.open_feedback_consent(crate::app_event::FeedbackCategory::Bug);
@@ -1769,16 +1952,13 @@ fn feedback_upload_consent_popup_snapshot() {
 
 #[test]
 fn reasoning_popup_escape_returns_to_model_popup() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
 
     chat.config.model = "gpt-5.1".to_string();
     chat.open_model_popup();
 
-    let presets = builtin_model_presets(None)
-        .into_iter()
-        .find(|preset| preset.model == "gpt-5.1-codex")
-        .expect("gpt-5.1-codex preset");
-    chat.open_reasoning_popup(presets);
+    let preset = get_available_model(&chat, "gpt-5.1-codex");
+    chat.open_reasoning_popup(preset);
 
     let before_escape = render_bottom_popup(&chat, 80);
     assert!(before_escape.contains("Select Reasoning Level"));
@@ -1786,13 +1966,13 @@ fn reasoning_popup_escape_returns_to_model_popup() {
     chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     let after_escape = render_bottom_popup(&chat, 80);
-    assert!(after_escape.contains("Select Model and Effort"));
+    assert!(after_escape.contains("Select Model"));
     assert!(!after_escape.contains("Select Reasoning Level"));
 }
 
 #[test]
 fn exec_history_extends_previous_when_consecutive() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
 
     // 1) Start "ls -la" (List)
     let begin_ls = begin_exec(&mut chat, "call-ls", "ls -la");
@@ -1823,7 +2003,7 @@ fn exec_history_extends_previous_when_consecutive() {
 
 #[test]
 fn user_shell_command_renders_output_not_exploring() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
     let begin_ls = begin_exec_with_source(
         &mut chat,
@@ -1846,7 +2026,7 @@ fn user_shell_command_renders_output_not_exploring() {
 #[test]
 fn disabled_slash_command_while_task_running_snapshot() {
     // Build a chat widget and simulate an active task
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
     chat.bottom_pane.set_task_running(true);
 
     // Dispatch a command that is unavailable while a task runs (e.g., /model)
@@ -1870,7 +2050,7 @@ fn disabled_slash_command_while_task_running_snapshot() {
 #[test]
 fn approval_modal_exec_snapshot() {
     // Build a chat widget with manual channels to avoid spawning the agent.
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
     // Ensure policy allows surfacing approvals explicitly (not strictly required for direct event).
     chat.config.approval_policy = AskForApproval::OnRequest;
     // Inject an exec approval request to display the approval modal.
@@ -1883,6 +2063,11 @@ fn approval_modal_exec_snapshot() {
             "this is a test reason such as one that would be produced by the model".into(),
         ),
         risk: None,
+        proposed_execpolicy_amendment: Some(ExecPolicyAmendment::new(vec![
+            "echo".into(),
+            "hello".into(),
+            "world".into(),
+        ])),
         parsed_cmd: vec![],
     };
     chat.handle_codex_event(Event {
@@ -1891,11 +2076,12 @@ fn approval_modal_exec_snapshot() {
     });
     // Render to a fixed-size test terminal and snapshot.
     // Call desired_height first and use that exact height for rendering.
-    let height = chat.desired_height(80);
+    let width = 100;
+    let height = chat.desired_height(width);
     let mut terminal =
-        crate::custom_terminal::Terminal::with_options(VT100Backend::new(80, height))
+        crate::custom_terminal::Terminal::with_options(VT100Backend::new(width, height))
             .expect("create terminal");
-    let viewport = Rect::new(0, 0, 80, height);
+    let viewport = Rect::new(0, 0, width, height);
     terminal.set_viewport_area(viewport);
 
     terminal
@@ -1919,7 +2105,7 @@ fn approval_modal_exec_snapshot() {
 // Ensures spacing looks correct when no reason text is provided.
 #[test]
 fn approval_modal_exec_without_reason_snapshot() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
     chat.config.approval_policy = AskForApproval::OnRequest;
 
     let ev = ExecApprovalRequestEvent {
@@ -1929,6 +2115,11 @@ fn approval_modal_exec_without_reason_snapshot() {
         cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         reason: None,
         risk: None,
+        proposed_execpolicy_amendment: Some(ExecPolicyAmendment::new(vec![
+            "echo".into(),
+            "hello".into(),
+            "world".into(),
+        ])),
         parsed_cmd: vec![],
     };
     chat.handle_codex_event(Event {
@@ -1936,10 +2127,11 @@ fn approval_modal_exec_without_reason_snapshot() {
         msg: EventMsg::ExecApprovalRequest(ev),
     });
 
-    let height = chat.desired_height(80);
+    let width = 100;
+    let height = chat.desired_height(width);
     let mut terminal =
-        ratatui::Terminal::new(VT100Backend::new(80, height)).expect("create terminal");
-    terminal.set_viewport_area(Rect::new(0, 0, 80, height));
+        ratatui::Terminal::new(VT100Backend::new(width, height)).expect("create terminal");
+    terminal.set_viewport_area(Rect::new(0, 0, width, height));
     terminal
         .draw(|f| chat.render(f.area(), f.buffer_mut()))
         .expect("draw approval modal (no reason)");
@@ -1952,7 +2144,7 @@ fn approval_modal_exec_without_reason_snapshot() {
 // Snapshot test: patch approval modal
 #[test]
 fn approval_modal_patch_snapshot() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
     chat.config.approval_policy = AskForApproval::OnRequest;
 
     // Build a small changeset and a reason/grant_root to exercise the prompt text.
@@ -1991,7 +2183,7 @@ fn approval_modal_patch_snapshot() {
 
 #[test]
 fn interrupt_restores_queued_messages_into_composer() {
-    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None);
 
     // Simulate a running task to enable queuing of user inputs.
     chat.bottom_pane.set_task_running(true);
@@ -2030,7 +2222,7 @@ fn interrupt_restores_queued_messages_into_composer() {
 
 #[test]
 fn interrupt_prepends_queued_messages_before_existing_composer_text() {
-    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None);
 
     chat.bottom_pane.set_task_running(true);
     chat.bottom_pane
@@ -2068,7 +2260,7 @@ fn interrupt_prepends_queued_messages_before_existing_composer_text() {
 fn ui_snapshots_small_heights_idle() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    let (chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (chat, _rx, _op_rx) = make_chatwidget_manual(None);
     for h in [1u16, 2, 3] {
         let name = format!("chat_small_idle_h{h}");
         let mut terminal = Terminal::new(TestBackend::new(40, h)).expect("create terminal");
@@ -2085,7 +2277,7 @@ fn ui_snapshots_small_heights_idle() {
 fn ui_snapshots_small_heights_task_running() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
     // Activate status line
     chat.handle_codex_event(Event {
         id: "task-1".into(),
@@ -2116,7 +2308,7 @@ fn ui_snapshots_small_heights_task_running() {
 fn status_widget_and_approval_modal_snapshot() {
     use codex_core::protocol::ExecApprovalRequestEvent;
 
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
     // Begin a running task so the status indicator would be active.
     chat.handle_codex_event(Event {
         id: "task-1".into(),
@@ -2142,6 +2334,10 @@ fn status_widget_and_approval_modal_snapshot() {
             "this is a test reason such as one that would be produced by the model".into(),
         ),
         risk: None,
+        proposed_execpolicy_amendment: Some(ExecPolicyAmendment::new(vec![
+            "echo".into(),
+            "hello world".into(),
+        ])),
         parsed_cmd: vec![],
     };
     chat.handle_codex_event(Event {
@@ -2150,9 +2346,11 @@ fn status_widget_and_approval_modal_snapshot() {
     });
 
     // Render at the widget's desired height and snapshot.
-    let height = chat.desired_height(80);
-    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, height))
+    let width: u16 = 100;
+    let height = chat.desired_height(width);
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
         .expect("create terminal");
+    terminal.set_viewport_area(Rect::new(0, 0, width, height));
     terminal
         .draw(|f| chat.render(f.area(), f.buffer_mut()))
         .expect("draw status + approval modal");
@@ -2163,7 +2361,7 @@ fn status_widget_and_approval_modal_snapshot() {
 // Ensures the VT100 rendering of the status indicator is stable when active.
 #[test]
 fn status_widget_active_snapshot() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
     // Activate the status indicator by simulating a task start.
     chat.handle_codex_event(Event {
         id: "task-1".into(),
@@ -2190,7 +2388,7 @@ fn status_widget_active_snapshot() {
 
 #[test]
 fn background_event_updates_status_header() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
     chat.handle_codex_event(Event {
         id: "bg-1".into(),
@@ -2206,7 +2404,7 @@ fn background_event_updates_status_header() {
 
 #[test]
 fn apply_patch_events_emit_history_cells() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
     // 1) Approval request -> proposed patch summary cell
     let mut changes = HashMap::new();
@@ -2304,7 +2502,7 @@ fn apply_patch_events_emit_history_cells() {
 
 #[test]
 fn apply_patch_manual_approval_adjusts_header() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
     let mut proposed_changes = HashMap::new();
     proposed_changes.insert(
@@ -2353,7 +2551,7 @@ fn apply_patch_manual_approval_adjusts_header() {
 
 #[test]
 fn apply_patch_manual_flow_snapshot() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
     let mut proposed_changes = HashMap::new();
     proposed_changes.insert(
@@ -2406,7 +2604,7 @@ fn apply_patch_manual_flow_snapshot() {
 
 #[test]
 fn apply_patch_approval_sends_op_with_submission_id() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
     // Simulate receiving an approval request with a distinct submission id and call id
     let mut changes = HashMap::new();
     changes.insert(
@@ -2445,7 +2643,7 @@ fn apply_patch_approval_sends_op_with_submission_id() {
 
 #[test]
 fn apply_patch_full_flow_integration_like() {
-    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None);
 
     // 1) Backend requests approval
     let mut changes = HashMap::new();
@@ -2523,7 +2721,7 @@ fn apply_patch_full_flow_integration_like() {
 
 #[test]
 fn apply_patch_untrusted_shows_approval_modal() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
     // Ensure approval policy is untrusted (OnRequest)
     chat.config.approval_policy = AskForApproval::OnRequest;
 
@@ -2568,7 +2766,7 @@ fn apply_patch_untrusted_shows_approval_modal() {
 
 #[test]
 fn apply_patch_request_shows_diff_summary() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
     // Ensure we are in OnRequest so an approval is surfaced
     chat.config.approval_policy = AskForApproval::OnRequest;
@@ -2634,7 +2832,7 @@ fn apply_patch_request_shows_diff_summary() {
 
 #[test]
 fn plan_update_renders_history_cell() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
     let update = UpdatePlanArgs {
         explanation: Some("Adapting plan".to_string()),
         plan: vec![
@@ -2670,7 +2868,7 @@ fn plan_update_renders_history_cell() {
 
 #[test]
 fn stream_error_updates_status_indicator() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
     chat.bottom_pane.set_task_running(true);
     let msg = "Reconnecting... 2/5";
     chat.handle_codex_event(Event {
@@ -2695,7 +2893,7 @@ fn stream_error_updates_status_indicator() {
 
 #[test]
 fn warning_event_adds_warning_history_cell() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
     chat.handle_codex_event(Event {
         id: "sub-1".into(),
         msg: EventMsg::Warning(WarningEvent {
@@ -2713,8 +2911,41 @@ fn warning_event_adds_warning_history_cell() {
 }
 
 #[test]
+fn stream_recovery_restores_previous_status_header() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
+    chat.handle_codex_event(Event {
+        id: "task".into(),
+        msg: EventMsg::TaskStarted(TaskStartedEvent {
+            model_context_window: None,
+        }),
+    });
+    drain_insert_history(&mut rx);
+    chat.handle_codex_event(Event {
+        id: "retry".into(),
+        msg: EventMsg::StreamError(StreamErrorEvent {
+            message: "Reconnecting... 1/5".to_string(),
+            codex_error_info: Some(CodexErrorInfo::Other),
+        }),
+    });
+    drain_insert_history(&mut rx);
+    chat.handle_codex_event(Event {
+        id: "delta".into(),
+        msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+            delta: "hello".to_string(),
+        }),
+    });
+
+    let status = chat
+        .bottom_pane
+        .status_widget()
+        .expect("status indicator should be visible");
+    assert_eq!(status.header(), "Working");
+    assert!(chat.retry_status_header.is_none());
+}
+
+#[test]
 fn multiple_agent_messages_in_single_turn_emit_multiple_headers() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
     // Begin turn
     chat.handle_codex_event(Event {
@@ -2768,7 +2999,7 @@ fn multiple_agent_messages_in_single_turn_emit_multiple_headers() {
 
 #[test]
 fn final_reasoning_then_message_without_deltas_are_rendered() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
     // No deltas; only final reasoning followed by final message.
     chat.handle_codex_event(Event {
@@ -2795,7 +3026,7 @@ fn final_reasoning_then_message_without_deltas_are_rendered() {
 
 #[test]
 fn deltas_then_same_final_message_are_rendered_snapshot() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
     // Stream some reasoning deltas first.
     chat.handle_codex_event(Event {
@@ -2859,7 +3090,7 @@ fn deltas_then_same_final_message_are_rendered_snapshot() {
 // then the exec block, another blank line, the status line, a blank line, and the composer.
 #[test]
 fn chatwidget_exec_and_status_layout_vt100_snapshot() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
     chat.handle_codex_event(Event {
         id: "t1".into(),
         msg: EventMsg::AgentMessage(AgentMessageEvent { message: "I’m going to search the repo for where “Change Approved” is rendered to update that view.".into() }),
@@ -2951,7 +3182,7 @@ fn chatwidget_exec_and_status_layout_vt100_snapshot() {
 // E2E vt100 snapshot for complex markdown with indented and nested fenced code blocks
 #[test]
 fn chatwidget_markdown_code_blocks_vt100_snapshot() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
 
     // Simulate a final agent message via streaming deltas instead of a single message
 
@@ -3042,7 +3273,7 @@ printf 'fenced within fenced\n'
 
 #[test]
 fn chatwidget_tall() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
     chat.handle_codex_event(Event {
         id: "t1".into(),
         msg: EventMsg::TaskStarted(TaskStartedEvent {
