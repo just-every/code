@@ -29054,8 +29054,6 @@ use code_core::protocol::OrderMeta;
             Ok(Vec::new())
         });
 
-        let initial_history_len = chat.auto_history.raw_snapshot().len();
-
         chat.auto_on_assistant_final();
         assert!(chat.auto_state.awaiting_review(), "post-turn review should be pending");
 
@@ -29077,10 +29075,8 @@ use code_core::protocol::OrderMeta;
         });
         assert!(skip_present, "skip banner should appear in history");
 
-        let final_history_len = chat.auto_history.raw_snapshot().len();
         assert!(
-            chat.auto_state.is_waiting_for_response()
-                || final_history_len > initial_history_len,
+            !chat.auto_state.is_waiting_for_response(),
             "auto drive should resume conversation after skipped review"
         );
     }
