@@ -6,28 +6,28 @@ expression: "&output"
  |                                            Code                                            |
  +--------------------------------------------------------------------------------------------+
  + Agents - Ctrl+A to close-------------------------------------------------------------------+
- |                                                                                            |
- |  Docs Sweep                 + Agent History ---------------------------------------------+ |
- | › ★ Overview                | Docs Sweep  2 agents                                       | |
- |   • claude-3-opus           | Models: claude-3-opus, gpt-4o                              | |
- |   • gpt-4o                  |                                                            | |
- |                             | Context                                                    | |
- |                             |   Focus on October 2025 product changes                    | |
- |                             |                                                            | |
- |                             | Action History                                             | |
- |                             |                                                            | |
- |                             | [MM:SS] claude-3-opus status: Status → Running          | |
- |                             |                                                            | |
- |                             | [MM:SS] claude-3-opus detail: ...                     | |
- |                                                                                            |
- |                             |                                                            | |
- |                             | [MM:SS] gpt-4o status: Status → Pending                 | |
- |                             |                                                            | |
- |                             | [MM:SS] claude-3-opus status: Status → Completed        | |
- |                             |                                                            | |
- |                             | [MM:SS] claude-3-opus detail: ...                     | |
- |                                                                                            |
- |                             +------------------------------------------------------------+ |
- | ↑/↓ Navigate/Scroll  →/Enter Focus output  ← Back to list  Tab Next agent  PgUp/PgDn Page  |
- |                                                                                            |
+ | Filter   1 All - 2 Running - 3 Failed - 4 Done - 5 Review               Sort: ( Recent ▼ ) |
+ | +----------------------++----------------------------------------------------------------+ |
+ | |Docs Sweep            || Docs Sweep / CLAUDE-3-Opus                                     | |
+ | |› CLAUDE-3-Opus ✔     || Status: ✔ Completed   Model: CLAUDE-3-Opus   ID: #docs-sw      | |
+ | |  GPT-4o ✖            ||Batch: Batch batchdoc                                           | |
+ | |                      ||                                                                | |
+ | |                      ||+ Highlights (h) ▼ --------------------------------------------+| |
+ | |                      |||   • Final: ### Highlights - New Auto Drive controls - Faster  | |
+ | |                      |||       release approvals                                       | |
+ | |                      ||+---------------------------------------------------------------| |
+ | |                      ||                                                                | |
+ | |                      || Context                                                        | |
+ | |                      ||   Focus on October 2025 product changes                        | |
+ | |                      ||                                                                | |
+ | |                      ||+ Action Log (a) ▼ - 5 entries --------------------------------+| |
+ | |                      |||   STATUS                                                      | |
+ | |                      |||   MM:SS  Status → Running                                     | |
+ | |                      |||   PROGRESS                                                    | |
+ | |                      |||   MM:SS  Collecting release notes                             | |
+ | |                      |||          Reviewing eng updates                                | |
+ | |                      |||   STATUS                                                      | |
+ | |                      |||   MM:SS  Status → Completed                                   | |
+ | +----------------------++----------------------------------------------------------------+ |
+ | [↑/↓/←/→] Navigate   [1-5] Filter   [S] Sort   [H/A] Toggle Details   [X] Stop   [Ctrl+A]  |
  +--------------------------------------------------------------------------------------------+

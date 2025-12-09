@@ -15116,35 +15116,46 @@ impl ChatWidget<'_> {
         let mut bullets: Vec<(String, ratatui::style::Style)> = Vec::new();
 
         if matches!(entry.source_kind, Some(AgentSourceKind::AutoReview)) {
-            let (has_findings, findings_count, summary) =
-                Self::parse_agent_review_result(entry.result.as_deref());
-            let mut label = if has_findings {
-                let plural = if findings_count == 1 { "issue" } else { "issues" };
-                format!("Auto Review: {findings_count} {plural} found")
-            } else {
-                "Auto Review: no issues found".to_string()
-            };
-            if label.is_empty() {
-                label = "Auto Review".to_string();
-            }
+            let is_terminal = matches!(
+                entry.status,
+                AgentStatus::Completed | AgentStatus::Failed | AgentStatus::Cancelled
+            );
 
-            let color = if has_findings {
-                ratatui::style::Style::default().fg(crate::colors::warning())
-            } else {
-                ratatui::style::Style::default().fg(crate::colors::success())
-            };
-            bullets.push((label, color));
+            if is_terminal {
+                let (has_findings, findings_count, summary) =
+                    Self::parse_agent_review_result(entry.result.as_deref());
+                let mut label = if has_findings {
+                    let plural = if findings_count == 1 { "issue" } else { "issues" };
+                    format!("Auto Review: {findings_count} {plural} found")
+                } else if matches!(entry.status, AgentStatus::Completed) {
+                    "Auto Review: no issues found".to_string()
+                } else {
+                    String::new()
+                };
+                if label.is_empty() {
+                    label = "Auto Review".to_string();
+                }
 
-            if let Some(summary_text) = summary {
-                for line in summary_text.lines() {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() {
-                        continue;
+                if has_findings || matches!(entry.status, AgentStatus::Completed) {
+                    let color = if has_findings {
+                        ratatui::style::Style::default().fg(crate::colors::warning())
+                    } else {
+                        ratatui::style::Style::default().fg(crate::colors::success())
+                    };
+                    bullets.push((label, color));
+                }
+
+                if let Some(summary_text) = summary {
+                    for line in summary_text.lines() {
+                        let trimmed = line.trim();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        bullets.push((
+                            self.truncate_overlay_text(trimmed, 280),
+                            ratatui::style::Style::default().fg(crate::colors::text_dim()),
+                        ));
                     }
-                    bullets.push((
-                        self.truncate_overlay_text(trimmed, 280),
-                        ratatui::style::Style::default().fg(crate::colors::text_dim()),
-                    ));
                 }
             }
         }
@@ -34151,10 +34162,10 @@ impl ChatWidget<'_> {
         // Sidebar list of agents grouped by batch id
         let mut items: Vec<ListItem> = Vec::new();
         let mut row_entries: Vec<Option<AgentsSidebarEntry>> = Vec::new();
-        items.push(ListItem::new(Line::from(vec![Span::raw(" ")])));
-        row_entries.push(None);
+        let groups = self.agents_terminal.sidebar_groups();
+        let last_group_idx = groups.len().saturating_sub(1);
 
-        for group in self.agents_terminal.sidebar_groups() {
+        for (group_idx, group) in groups.into_iter().enumerate() {
             items.push(ListItem::new(Line::from(vec![
                 Span::styled(
                     group.label.clone(),
@@ -34213,6 +34224,11 @@ impl ChatWidget<'_> {
                     items.push(ListItem::new(line));
                     row_entries.push(Some(AgentsSidebarEntry::Agent(agent_id.clone())));
                 }
+            }
+
+            if group_idx < last_group_idx {
+                items.push(ListItem::new(Line::from(vec![Span::raw(" ")])));
+                row_entries.push(None);
             }
         }
 

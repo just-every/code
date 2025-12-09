@@ -9,6 +9,7 @@
 
 use code_core::protocol::{
     AgentInfo,
+    AgentSourceKind,
     AgentMessageDeltaEvent,
     AgentMessageEvent,
     AgentStatusUpdateEvent,
@@ -1966,6 +1967,81 @@ fn agents_terminal_overlay_full_details() {
     let output = render_chat_widget_to_vt100(&mut harness, 96, 30);
     let output = normalize_output(output);
     insta::assert_snapshot!("agents_terminal_overlay_full_details", &output);
+}
+
+#[test]
+fn auto_review_highlights_wait_for_completion_before_no_errors() {
+    let mut harness = ChatWidgetHarness::new();
+    let mut event_seq = 0;
+    let mut order_seq = 0;
+
+    push_ordered_event(
+        &mut harness,
+        &mut event_seq,
+        &mut order_seq,
+        EventMsg::AgentStatusUpdate(AgentStatusUpdateEvent {
+            agents: vec![AgentInfo {
+                id: "auto-review-agent".into(),
+                name: "Auto Review".into(),
+                status: "running".into(),
+                batch_id: Some("auto-review-batch".into()),
+                model: Some("code-reviewer".into()),
+                last_progress: Some("Scanning staged changes".into()),
+                result: None,
+                error: None,
+                elapsed_ms: Some(1_200),
+                token_count: Some(1_800),
+                source_kind: Some(AgentSourceKind::AutoReview),
+            }],
+            context: Some("Review the current workspace".into()),
+            task: Some("Auto review".into()),
+        }),
+    );
+
+    harness.send_key(make_key(KeyCode::Char('a'), KeyModifiers::CONTROL));
+
+    let running_frame = normalize_output(render_chat_widget_to_vt100(&mut harness, 96, 26));
+    assert!(
+        !running_frame.contains("Auto Review: no issues found"),
+        "running auto review should not report success",
+    );
+
+    let no_findings = r#"{
+        "findings": [],
+        "overall_correctness": "correct",
+        "overall_explanation": "Clean run",
+        "overall_confidence_score": 0.72
+    }"#
+    .to_string();
+
+    push_ordered_event(
+        &mut harness,
+        &mut event_seq,
+        &mut order_seq,
+        EventMsg::AgentStatusUpdate(AgentStatusUpdateEvent {
+            agents: vec![AgentInfo {
+                id: "auto-review-agent".into(),
+                name: "Auto Review".into(),
+                status: "completed".into(),
+                batch_id: Some("auto-review-batch".into()),
+                model: Some("code-reviewer".into()),
+                last_progress: Some("Summarizing results".into()),
+                result: Some(no_findings),
+                error: None,
+                elapsed_ms: Some(4_800),
+                token_count: Some(3_400),
+                source_kind: Some(AgentSourceKind::AutoReview),
+            }],
+            context: Some("Review the current workspace".into()),
+            task: Some("Auto review".into()),
+        }),
+    );
+
+    let completed_frame = normalize_output(render_chat_widget_to_vt100(&mut harness, 96, 26));
+    assert!(
+        completed_frame.contains("Auto Review: no issues found"),
+        "completed auto review should surface no-issues label",
+    );
 }
 
 #[test]
