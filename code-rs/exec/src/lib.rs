@@ -1998,37 +1998,33 @@ use uuid::Uuid;
     #[test]
     fn base_ancestor_check_matches_git_history() {
         let temp = TempDir::new().unwrap();
-        std::process::Command::new("git")
-            .current_dir(temp.path())
-            .args(["init"])
-            .output()
-            .unwrap();
+        let run_git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(temp.path())
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            output
+        };
+
+        run_git(["init"].as_slice());
+        run_git(["config", "user.email", "codex@example.com"].as_slice());
+        run_git(["config", "user.name", "Codex Tester"].as_slice());
         std::fs::write(temp.path().join("a.txt"), "a").unwrap();
-        std::process::Command::new("git")
-            .current_dir(temp.path())
-            .args(["add", "."])
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .current_dir(temp.path())
-            .args(["commit", "-m", "c1"])
-            .output()
-            .unwrap();
+        run_git(["add", "."].as_slice());
+        run_git(["commit", "-m", "c1"].as_slice());
 
         // second commit (represents a snapshot captured off the current HEAD)
         std::fs::write(temp.path().join("a.txt"), "b").unwrap();
-        std::process::Command::new("git")
-            .current_dir(temp.path())
-            .args(["commit", "-am", "c2"])
-            .output()
-            .unwrap();
+        run_git(["commit", "-am", "c2"].as_slice());
         let base = String::from_utf8_lossy(
-            &std::process::Command::new("git")
-                .current_dir(temp.path())
-                .args(["rev-parse", "HEAD"])
-                .output()
-                .unwrap()
-                .stdout,
+            &run_git(["rev-parse", "HEAD"].as_slice()).stdout,
         )
         .trim()
         .to_string();
@@ -2036,11 +2032,7 @@ use uuid::Uuid;
         assert!(head_is_ancestor_of_base(temp.path(), &base));
 
         // move HEAD back to check false case
-        std::process::Command::new("git")
-            .current_dir(temp.path())
-            .args(["checkout", "HEAD~1"])
-            .output()
-            .unwrap();
+        run_git(["checkout", "HEAD~1"].as_slice());
         assert!(!head_is_ancestor_of_base(temp.path(), "deadbeef"));
     }
 
