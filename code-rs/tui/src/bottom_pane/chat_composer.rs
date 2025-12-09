@@ -2395,6 +2395,10 @@ impl ChatComposer {
                             if !left_misc_after_ctrlc.is_empty() {
                                 left_misc_after_ctrlc.push(Span::from("   ").style(auto_label_style));
                             }
+                            // Keep auto-drive footer hints aligned with the base
+                            // indentation used by the Auto Review prefix.
+                            left_misc_after_ctrlc
+                                .push(Span::from("  ").style(auto_label_style));
                             let spans = Self::build_auto_drive_hint_spans(
                                 &left_hint,
                                 auto_key_style,
