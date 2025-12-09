@@ -1625,6 +1625,7 @@ pub(crate) struct ChatWidget<'a> {
     active_ghost_snapshot: Option<(u64, GhostSnapshotRequest)>,
     next_ghost_snapshot_id: u64,
     pending_snapshot_dispatches: VecDeque<PendingSnapshotDispatch>,
+    queue_block_started_at: Option<Instant>,
 
     auto_drive_card_sequence: u64,
     auto_drive_variant: AutoDriveVariant,
@@ -4080,7 +4081,7 @@ impl ChatWidget<'_> {
                     if let Some(front) = self.queued_user_messages.front() {
                         if front.display_text.trim() == text.trim() {
                             self.queued_user_messages.pop_front();
-                            self.refresh_queued_user_messages();
+                            self.refresh_queued_user_messages(false);
                         }
                     }
                 } else {
@@ -5526,7 +5527,7 @@ impl ChatWidget<'_> {
             self.queued_user_messages.clear();
             self.bottom_pane.update_status_text(String::new());
             self.pending_dispatched_user_messages.clear();
-            self.refresh_queued_user_messages();
+            self.refresh_queued_user_messages(false);
         }
         self.maybe_hide_spinner();
         self.request_redraw();
@@ -5756,6 +5757,7 @@ impl ChatWidget<'_> {
             queued_user_messages: std::collections::VecDeque::new(),
             pending_dispatched_user_messages: std::collections::VecDeque::new(),
             pending_user_prompts_for_next_turn: 0,
+            queue_block_started_at: None,
             ghost_snapshots: Vec::new(),
             ghost_snapshots_disabled: false,
             ghost_snapshots_disabled_reason: None,
@@ -6105,6 +6107,7 @@ impl ChatWidget<'_> {
             queued_user_messages: std::collections::VecDeque::new(),
             pending_dispatched_user_messages: std::collections::VecDeque::new(),
             pending_user_prompts_for_next_turn: 0,
+            queue_block_started_at: None,
             ghost_snapshots: Vec::new(),
             ghost_snapshots_disabled: false,
             ghost_snapshots_disabled_reason: None,
@@ -10316,10 +10319,12 @@ impl ChatWidget<'_> {
             return;
         }
 
-        let turn_active = self.is_task_running()
+        let wait_only_active = self.wait_only_activity();
+        let turn_active = (self.is_task_running()
             || !self.active_task_ids.is_empty()
             || self.stream.is_write_cycle_active()
-            || !self.queued_user_messages.is_empty();
+            || !self.queued_user_messages.is_empty())
+            && !wait_only_active;
 
         if turn_active {
             tracing::info!(
@@ -10331,7 +10336,7 @@ impl ChatWidget<'_> {
             );
             let queued_clone = message.clone();
             self.queued_user_messages.push_back(queued_clone);
-            self.refresh_queued_user_messages();
+            self.refresh_queued_user_messages(true);
 
             let prompt_summary = if message.display_text.trim().is_empty() {
                 None
@@ -10351,6 +10356,13 @@ impl ChatWidget<'_> {
             return;
         }
 
+        if wait_only_active {
+            // Keep long waits running but do not block user input.
+            self.bottom_pane.set_task_running(false);
+            self.bottom_pane
+                .update_status_text("Waiting in background".to_string());
+        }
+
         tracing::info!(
             "[queue] Turn idle, enqueuing and preparing to drain (auto_active={}, queue_size={})",
             self.auto_state.is_active(),
@@ -10359,7 +10371,7 @@ impl ChatWidget<'_> {
 
         let queued_clone = message.clone();
         self.queued_user_messages.push_back(queued_clone);
-        self.refresh_queued_user_messages();
+        self.refresh_queued_user_messages(false);
 
         let batch: Vec<UserMessage> = self.queued_user_messages.iter().cloned().collect();
         let summary = batch
@@ -10564,7 +10576,7 @@ impl ChatWidget<'_> {
             Err(err) => {
                 tracing::error!("failed to send QueueUserInput op: {err}");
                 self.queued_user_messages.push_front(message);
-                self.refresh_queued_user_messages();
+                self.refresh_queued_user_messages(true);
             }
         }
     }
@@ -10594,7 +10606,7 @@ impl ChatWidget<'_> {
                 Err(err) => {
                     tracing::error!("[queue] Failed to send QueueUserInput op: {err}");
                     self.queued_user_messages.push_front(message);
-                    self.refresh_queued_user_messages();
+                    self.refresh_queued_user_messages(true);
                     break;
                 }
             }
@@ -10607,7 +10619,7 @@ impl ChatWidget<'_> {
             .iter()
             .position(|message| message == target)?;
         let removed = self.queued_user_messages.remove(position)?;
-        self.refresh_queued_user_messages();
+        self.refresh_queued_user_messages(false);
         Some(removed)
     }
 
@@ -10923,7 +10935,10 @@ impl ChatWidget<'_> {
         self.next_ghost_snapshot_id = state.next_id;
         self.pending_snapshot_dispatches = state.pending_dispatches;
         self.queued_user_messages = state.queued_user_messages;
-        self.refresh_queued_user_messages();
+        let blocked = self.is_task_running()
+            || !self.active_task_ids.is_empty()
+            || self.stream.is_write_cycle_active();
+        self.refresh_queued_user_messages(blocked);
         self.spawn_next_ghost_snapshot();
     }
 
@@ -11685,7 +11700,7 @@ impl ChatWidget<'_> {
         self.pending_dispatched_user_messages.clear();
         self.pending_user_prompts_for_next_turn = 0;
         self.queued_user_messages.clear();
-        self.refresh_queued_user_messages();
+        self.refresh_queued_user_messages(false);
         self.bottom_pane.clear_composer();
         self.bottom_pane.clear_ctrl_c_quit_hint();
         self.bottom_pane.clear_live_ring();
@@ -11765,7 +11780,56 @@ impl ChatWidget<'_> {
         self.request_redraw();
     }
 
-    fn refresh_queued_user_messages(&mut self) {
+    fn refresh_queued_user_messages(&mut self, schedule_watchdog: bool) {
+        let mut scheduled_watchdog = false;
+        if self.queued_user_messages.is_empty() {
+            self.queue_block_started_at = None;
+        } else if schedule_watchdog {
+            if self.queue_block_started_at.is_none() {
+                self.queue_block_started_at = Some(Instant::now());
+                scheduled_watchdog = true;
+            }
+        }
+
+        if scheduled_watchdog {
+            let tx = self.app_event_tx.clone();
+            // Fire a CommitTick after ~10s to ensure the watchdog runs even when
+            // no streaming/animation is active.
+            if thread_spawner::spawn_lightweight("queue-watchdog", move || {
+                std::thread::sleep(Duration::from_secs(10));
+                tx.send(crate::app_event::AppEvent::CommitTick);
+            })
+            .is_none()
+            {
+                // If we cannot spawn another lightweight thread (e.g., thread cap reached),
+                // fall back to a non-threaded timer using tokio when available, or a best-effort
+                // regular thread; as a last resort mark the timer expired and send immediately so
+                // the queue cannot remain blocked.
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    let tx = self.app_event_tx.clone();
+                    handle.spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                        let _ = tx.send(crate::app_event::AppEvent::CommitTick);
+                    });
+                } else {
+                    let tx = self.app_event_tx.clone();
+                    if std::thread::Builder::new()
+                        .name("queue-watchdog-fallback".to_string())
+                        .spawn(move || {
+                            std::thread::sleep(Duration::from_secs(10));
+                            let _ = tx.send(crate::app_event::AppEvent::CommitTick);
+                        })
+                        .is_err()
+                    {
+                        // No way to schedule a delayed tick; force the timer to appear expired
+                        // and emit a tick now to avoid indefinite blocking.
+                        self.queue_block_started_at = Some(Instant::now() - Duration::from_secs(10));
+                        let _ = self.app_event_tx.send(crate::app_event::AppEvent::CommitTick);
+                    }
+                }
+            }
+        }
+
         self.request_redraw();
     }
 
@@ -22936,24 +23000,121 @@ Have we met every part of this goal and is there no further work to do?"#
     }
 
     fn has_running_commands_or_tools(&self) -> bool {
+        let wait_running = self.wait_running();
+        let wait_blocks = self.wait_blocking_enabled();
+
         self.terminal_is_running()
             || !self.exec.running_commands.is_empty()
             || !self.tools_state.running_custom_tools.is_empty()
             || !self.tools_state.web_search_sessions.is_empty()
-            || !self.tools_state.running_wait_tools.is_empty()
-            || !self.tools_state.running_kill_tools.is_empty()
+            || (wait_running && wait_blocks)
     }
 
     pub(crate) fn is_task_running(&self) -> bool {
+        let wait_running = self.wait_running();
+        let wait_blocks = self.wait_blocking_enabled();
+
         self.bottom_pane.is_task_running()
             || self.terminal_is_running()
             || !self.exec.running_commands.is_empty()
             || !self.tools_state.running_custom_tools.is_empty()
             || !self.tools_state.web_search_sessions.is_empty()
-            || !self.tools_state.running_wait_tools.is_empty()
-            || !self.tools_state.running_kill_tools.is_empty()
             || !self.active_task_ids.is_empty()
             || self.stream.is_write_cycle_active()
+            || (wait_running && wait_blocks)
+    }
+
+    #[inline]
+    fn wait_running(&self) -> bool {
+        !self.tools_state.running_wait_tools.is_empty()
+            || !self.tools_state.running_kill_tools.is_empty()
+    }
+
+    #[inline]
+    fn wait_blocking_enabled(&self) -> bool {
+        self.queued_user_messages.is_empty()
+    }
+
+    /// True when the only ongoing activity is a wait/kill tool (no exec/stream/agents/tasks),
+    /// meaning we can safely unlock the composer without cancelling the work.
+    fn wait_only_activity(&self) -> bool {
+        if !self.wait_running() {
+            return false;
+        }
+
+        self.exec.running_commands.is_empty()
+            && self.tools_state.running_custom_tools.is_empty()
+            && self.tools_state.web_search_sessions.is_empty()
+            && !self.stream.is_write_cycle_active()
+            && !self.agents_are_actively_running()
+            && self.active_task_ids.is_empty()
+    }
+
+    /// If queued user messages have been blocked longer than the SLA while only a wait/kill
+    /// tool is running, unlock the composer and dispatch the queue.
+    fn maybe_enforce_queue_unblock(&mut self) {
+        if self.queued_user_messages.is_empty() {
+            self.queue_block_started_at = None;
+            return;
+        }
+
+        let Some(started) = self.queue_block_started_at else {
+            self.queue_block_started_at = Some(Instant::now());
+            return;
+        };
+
+        if started.elapsed() < Duration::from_secs(10) {
+            return;
+        }
+
+        if !self.wait_only_activity() {
+            // Another activity is running; keep waiting.
+            return;
+        }
+
+        let wait_ids: Vec<String> = self
+            .tools_state
+            .running_wait_tools
+            .keys()
+            .map(|k| k.0.clone())
+            .collect();
+
+        tracing::warn!(
+            "queue watchdog fired; unblocking input (waits={:?}, queued={})",
+            wait_ids,
+            self.queued_user_messages.len()
+        );
+
+        self.bottom_pane.set_task_running(false);
+        self.bottom_pane
+            .update_status_text("Waiting in background".to_string());
+
+        if !wait_ids.is_empty() {
+            self.push_background_tail(format!(
+                "Input unblocked after 10s; wait still running ({}).",
+                wait_ids.join(", ")
+            ));
+        } else {
+            self.push_background_tail("Input unblocked after 10s; wait still running.".to_string());
+        }
+
+        if let Some(front) = self.queued_user_messages.front().cloned() {
+            if let Some(position) = self.pending_snapshot_dispatches.iter().position(|pending| {
+                matches!(pending, PendingSnapshotDispatch::Queued { message, .. } if message == &front)
+            }) {
+                self.pending_snapshot_dispatches.remove(position);
+            }
+            self.dispatch_queued_user_message_now(front);
+        }
+
+        // Reset timer only if messages remain; otherwise leave it cleared so the next queue
+        // submission can schedule a fresh watchdog.
+        if self.queued_user_messages.is_empty() {
+            self.queue_block_started_at = None;
+        } else {
+            self.queue_block_started_at = Some(Instant::now());
+        }
+        self.request_redraw();
     }
 
     /// Clear the composer text and any pending paste placeholders/history cursors.

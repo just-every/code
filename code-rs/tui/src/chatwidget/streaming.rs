@@ -8,6 +8,7 @@ use crate::streaming::StreamKind;
 pub(super) fn on_commit_tick(chat: &mut ChatWidget<'_>) {
     let sink = AppEventHistorySink(chat.app_event_tx.clone());
     let _finished = chat.stream.on_commit_tick(&sink);
+    chat.maybe_enforce_queue_unblock();
 }
 
 pub(super) fn is_write_cycle_active(chat: &ChatWidget<'_>) -> bool {
