@@ -9,6 +9,7 @@ pub struct SlashContext<'a> {
     pub subagent_commands: &'a [SubagentCommandConfig],
 }
 
+#[derive(Debug)]
 pub enum SlashDispatch {
     NotSlash,
     ExpandedPrompt { prompt: String, summary: String },

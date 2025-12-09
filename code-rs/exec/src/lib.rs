@@ -1871,8 +1871,6 @@ mod tests {
     use filetime::{set_file_mtime, FileTime};
     use tempfile::TempDir;
 use uuid::Uuid;
-use once_cell::sync::Lazy;
-use tokio::sync::Mutex as AsyncMutex;
 
     #[test]
     fn write_review_json_includes_snapshot() {
