@@ -1,5 +1,6 @@
 ---
 source: tui/tests/vt100_chatwidget_snapshot.rs
+assertion_line: 994
 expression: "frames.join(\"\\n---FRAME---\\n\")"
 ---
  +----------------------------------------------------------------------------+

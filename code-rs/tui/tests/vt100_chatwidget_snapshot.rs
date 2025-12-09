@@ -942,12 +942,14 @@ fn auto_drive_manual_mode_waits() {
 fn auto_drive_review_resume_returns_to_running() {
     let mut harness = ChatWidgetHarness::new();
 
+    const REDACTED_STATUS_WIDTH: usize = 65;
+
     let scrub_status = |frame: String| {
         frame
             .lines()
             .map(|line| {
                 if line.contains("Auto Drive >") {
-                    let target_len = line.chars().count();
+                    let target_len = REDACTED_STATUS_WIDTH;
                     let mut text = "  Auto Drive > <status redacted>".to_string();
                     if text.chars().count() < target_len {
                         text.push_str(&" ".repeat(target_len - text.chars().count()));
