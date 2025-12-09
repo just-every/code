@@ -47,27 +47,27 @@ const ALL_TEXT_VERBOSITY: &[TextVerbosityConfig] = &[
 static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
     vec![
         ModelPreset {
-            id: "gpt-5.1-codex-max",
-            model: "gpt-5.1-codex-max",
-            display_name: "gpt-5.1-codex-max",
-            description: "Latest Codex-optimized flagship for deep and fast reasoning.",
+            id: "gpt-5.1-codex-max".to_string(),
+            model: "gpt-5.1-codex-max".to_string(),
+            display_name: "gpt-5.1-codex-max".to_string(),
+            description: "Latest Codex-optimized flagship for deep and fast reasoning.".to_string(),
             default_reasoning_effort: ReasoningEffort::Medium,
-            supported_reasoning_efforts: &[
+            supported_reasoning_efforts: vec![
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::Low,
-                    description: "Fast responses with lighter reasoning",
+                    description: "Fast responses with lighter reasoning".to_string(),
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::Medium,
-                    description: "Balances speed and reasoning depth for everyday tasks",
+                    description: "Balances speed and reasoning depth for everyday tasks".to_string(),
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::High,
-                    description: "Maximizes reasoning depth for complex problems",
+                    description: "Maximizes reasoning depth for complex problems".to_string(),
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::XHigh,
-                    description: "Extra high reasoning depth for complex problems",
+                    description: "Extra high reasoning depth for complex problems".to_string(),
                 },
             ],
             supported_text_verbosity: &[TextVerbosityConfig::Medium],
@@ -81,26 +81,27 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             display_name: "gpt-5.1-codex",
             description: "Optimized for Code.",
             default_reasoning_effort: ReasoningEffort::Medium,
-            supported_reasoning_efforts: &[
+            supported_reasoning_efforts: vec![
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::Low,
-                    description: "Fastest responses with limited reasoning",
+                    description: "Fastest responses with limited reasoning".to_string(),
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::Medium,
-                    description: "Dynamically adjusts reasoning based on the task",
+                    description: "Dynamically adjusts reasoning based on the task".to_string(),
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::High,
-                    description: "Maximizes reasoning depth for complex or ambiguous problems",
+                    description: "Maximizes reasoning depth for complex or ambiguous problems"
+                        .to_string(),
                 },
             ],
             supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
-                id: "gpt-5.1-codex-max",
+                id: "gpt-5.1-codex-max".to_string(),
                 reasoning_effort_mapping: None,
-                migration_config_key: HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG,
+                migration_config_key: HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG.to_string(),
             }),
             show_in_picker: true,
         },
@@ -110,32 +111,33 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             display_name: "gpt-5.1-codex-mini",
             description: "Optimized for Code. Cheaper, faster, but less capable.",
             default_reasoning_effort: ReasoningEffort::Medium,
-            supported_reasoning_efforts: &[
+            supported_reasoning_efforts: vec![
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::Medium,
-                    description: "Dynamically adjusts reasoning based on the task",
+                    description: "Dynamically adjusts reasoning based on the task".to_string(),
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::High,
-                    description: "Maximizes reasoning depth for complex or ambiguous problems",
+                    description: "Maximizes reasoning depth for complex or ambiguous problems"
+                        .to_string(),
                 },
             ],
             supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
-                id: "gpt-5.1-codex-max",
+                id: "gpt-5.1-codex-max".to_string(),
                 reasoning_effort_mapping: None,
-                migration_config_key: HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG,
+                migration_config_key: HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG.to_string(),
             }),
             show_in_picker: true,
         },
         ModelPreset {
-            id: "gpt-5.1",
-            model: "gpt-5.1",
-            display_name: "gpt-5.1",
-            description: "Broad world knowledge with strong general reasoning.",
+            id: "gpt-5.1".to_string(),
+            model: "gpt-5.1".to_string(),
+            display_name: "gpt-5.1".to_string(),
+            description: "Broad world knowledge with strong general reasoning.".to_string(),
             default_reasoning_effort: ReasoningEffort::Medium,
-            supported_reasoning_efforts: &[
+            supported_reasoning_efforts: vec![
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::Low,
                     description:
@@ -148,15 +150,15 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::High,
-                    description: "Maximizes reasoning depth for complex or ambiguous problems",
+                    description: "Maximizes reasoning depth for complex or ambiguous problems".to_string(),
                 },
             ],
             supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
-                id: "gpt-5.1-codex-max",
+                id: "gpt-5.1-codex-max".to_string(),
                 reasoning_effort_mapping: None,
-                migration_config_key: HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG,
+                migration_config_key: HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG.to_string(),
             }),
             show_in_picker: true,
         },
@@ -167,26 +169,26 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             display_name: "gpt-5-codex",
             description: "Optimized for Code.",
             default_reasoning_effort: ReasoningEffort::Medium,
-            supported_reasoning_efforts: &[
+            supported_reasoning_efforts: vec![
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::Low,
-                    description: "Fastest responses with limited reasoning",
+                    description: "Fastest responses with limited reasoning".to_string(),
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::Medium,
-                    description: "Dynamically adjusts reasoning based on the task",
+                    description: "Dynamically adjusts reasoning based on the task".to_string(),
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::High,
-                    description: "Maximizes reasoning depth for complex or ambiguous problems",
+                    description: "Maximizes reasoning depth for complex or ambiguous problems".to_string(),
                 },
             ],
             supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
-                id: "gpt-5.1-codex-max",
+                id: "gpt-5.1-codex-max".to_string(),
                 reasoning_effort_mapping: None,
-                migration_config_key: HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG,
+                migration_config_key: HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG.to_string(),
             }),
             show_in_picker: false,
         },
@@ -196,35 +198,35 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             display_name: "gpt-5-codex-mini",
             description: "Optimized for Code. Cheaper, faster, but less capable.",
             default_reasoning_effort: ReasoningEffort::Medium,
-            supported_reasoning_efforts: &[
+            supported_reasoning_efforts: vec![
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::Medium,
-                    description: "Dynamically adjusts reasoning based on the task",
+                    description: "Dynamically adjusts reasoning based on the task".to_string(),
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::High,
-                    description: "Maximizes reasoning depth for complex or ambiguous problems",
+                    description: "Maximizes reasoning depth for complex or ambiguous problems".to_string(),
                 },
             ],
             supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
-                id: "gpt-5.1-codex-mini",
+                id: "gpt-5.1-codex-mini".to_string(),
                 reasoning_effort_mapping: None,
-                migration_config_key: HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG,
+                migration_config_key: HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG.to_string(),
             }),
             show_in_picker: false,
         },
         ModelPreset {
-            id: "gpt-5",
-            model: "gpt-5",
-            display_name: "gpt-5",
-            description: "Broad world knowledge with strong general reasoning.",
+            id: "gpt-5".to_string(),
+            model: "gpt-5".to_string(),
+            display_name: "gpt-5".to_string(),
+            description: "Broad world knowledge with strong general reasoning.".to_string(),
             default_reasoning_effort: ReasoningEffort::Medium,
-            supported_reasoning_efforts: &[
+            supported_reasoning_efforts: vec![
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::Minimal,
-                    description: "Fastest responses with little reasoning",
+                    description: "Fastest responses with little reasoning".to_string(),
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::Low,
@@ -238,32 +240,30 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::High,
-                    description: "Maximizes reasoning depth for complex or ambiguous problems",
+                    description: "Maximizes reasoning depth for complex or ambiguous problems".to_string(),
                 },
             ],
             supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
-                id: "gpt-5.1-codex-max",
+                id: "gpt-5.1-codex-max".to_string(),
                 reasoning_effort_mapping: None,
-                migration_config_key: HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG,
+                migration_config_key: HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG.to_string(),
             }),
             show_in_picker: false,
         },
     ]
 });
 
-pub fn builtin_model_presets(auth_mode: Option<AuthMode>) -> Vec<ModelPreset> {
+pub(crate) fn builtin_model_presets(_auth_mode: Option<AuthMode>) -> Vec<ModelPreset> {
     PRESETS
         .iter()
-        .filter(|preset| match auth_mode {
-            Some(AuthMode::ApiKey) => preset.show_in_picker && preset.id != "gpt-5.1-codex-max",
-            _ => preset.show_in_picker,
-        })
+        .filter(|preset| preset.show_in_picker)
         .cloned()
         .collect()
 }
 
+// todo(aibrahim): remove this once we migrate tests
 pub fn all_model_presets() -> &'static Vec<ModelPreset> {
     &PRESETS
 }
