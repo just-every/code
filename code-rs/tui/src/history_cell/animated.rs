@@ -46,18 +46,6 @@ impl AnimatedWelcomeCell {
         self.faded_out.get()
     }
 
-    fn ensure_variant(&self, width: u16) -> crate::glitch_animation::IntroArtSize {
-        if let Some(v) = self.variant.get() {
-            return v;
-        }
-        let chosen = crate::glitch_animation::intro_art_size_for_width(width);
-        self.variant.set(Some(chosen));
-        if self.locked_height.get().is_none() {
-            let h = crate::glitch_animation::intro_art_height(chosen);
-            self.locked_height.set(Some(h));
-        }
-        chosen
-    }
 }
 
 impl HistoryCell for AnimatedWelcomeCell {
@@ -83,11 +71,12 @@ impl HistoryCell for AnimatedWelcomeCell {
     }
 
     fn desired_height(&self, width: u16) -> u16 {
-        if let Some(h) = self.locked_height.get() {
-            return h.saturating_add(3);
-        }
-        let variant = self.ensure_variant(width);
-        let h = crate::glitch_animation::intro_art_height(variant);
+        // Lock height to the largest art that fits the current width so we can
+        // grow back when vertical space returns (instead of permanently
+        // shrinking after a tight layout). Height is recomputed on every
+        // measurement so width changes immediately refresh the locked value.
+        let variant_for_width = crate::glitch_animation::intro_art_size_for_width(width);
+        let h = crate::glitch_animation::intro_art_height(variant_for_width);
         self.locked_height.set(Some(h));
         h.saturating_add(3)
     }
@@ -101,33 +90,46 @@ impl HistoryCell for AnimatedWelcomeCell {
             return;
         }
 
+        // Clear the full allocated area first so repositioning the art (e.g.,
+        // bottom-aligning when there's vertical slack) doesn't leave stale
+        // pixels behind in the padding rows.
+        let bg = crate::colors::background();
+        for y in area.y..area.y.saturating_add(area.height) {
+            for x in area.x..area.x.saturating_add(area.width) {
+                let cell = &mut buf[(x, y)];
+                cell.set_bg(bg);
+                cell.set_symbol(" ");
+            }
+        }
+
         let current_variant = crate::glitch_animation::intro_art_size_for_area(area.width, area.height);
-        let variant_changed = self.variant.get() != Some(current_variant);
+        let previous_variant = self.variant.get();
+        let variant_changed = previous_variant.map_or(false, |v| v != current_variant);
+
         if variant_changed {
             self.variant.set(Some(current_variant));
-            self.locked_height
-                .set(Some(crate::glitch_animation::intro_art_height(current_variant)));
             *self.fade_start.borrow_mut() = None;
             self.faded_out.set(false);
-            self.completed.set(true);
-        } else if self.variant.get().is_none() {
+            // Keep `completed` as-is so the intro animation continues when the
+            // size adjusts mid-run instead of jumping to the final frame.
+        } else if previous_variant.is_none() {
+            // First render: set the variant without suppressing the intro animation.
             self.variant.set(Some(current_variant));
-            self.locked_height
-                .set(Some(crate::glitch_animation::intro_art_height(current_variant)));
         }
 
         let variant_for_render = current_variant;
 
-        let locked_h = self
-            .locked_height
-            .get()
-            .unwrap_or_else(|| crate::glitch_animation::intro_art_height(current_variant));
-        let height = locked_h.min(area.height);
+        let art_height = crate::glitch_animation::intro_art_height(current_variant).min(area.height);
+        // Prefer the logo low in the cell so spare lines sit above it. Keep a
+        // small bottom gap (up to 2 rows) when there's room; otherwise center.
+        let slack = area.height.saturating_sub(art_height);
+        let bottom_pad = slack.min(2);
+        let top_pad = slack.saturating_sub(bottom_pad);
         let positioned_area = Rect {
             x: area.x,
-            y: area.y,
+            y: area.y.saturating_add(top_pad),
             width: area.width,
-            height,
+            height: art_height,
         };
 
         let fade_duration = Duration::from_millis(800);
