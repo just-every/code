@@ -142,4 +142,3 @@ This architecture separates concerns between execution logic (core), UI state ma
 - Adjust the poll cadence via `--interval <seconds>` (defaults to 8). The script exits 0 on success and 1 on failure, so it can gate local automation.
 - Pass `--failure-logs` to automatically dump logs for any job that does not finish successfully.
 - Dependencies: GitHub CLI (`gh`) and `jq` must be available in `PATH`.
-

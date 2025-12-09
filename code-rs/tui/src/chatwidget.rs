@@ -31706,27 +31706,42 @@ impl ChatWidget<'_> {
         summary: Option<&str>,
         findings: usize,
     ) {
-        let mut primary = ratatui::text::Line::from(format!(
-            "Auto Review: {findings} issue(s) found in '{branch}'. Merge {path} to apply fixes. [Ctrl+A] Show",
-            path = worktree_path.display()
-        ));
-        primary.style = Style::default().fg(crate::colors::text());
+        let mut message_lines = vec![MessageLine {
+            kind: MessageLineKind::Paragraph,
+            spans: vec![InlineSpan {
+                text: format!(
+                    "Auto Review: {findings} issue(s) found in '{branch}'. Merge {path} to apply fixes. [Ctrl+A] Show",
+                    path = worktree_path.display()
+                ),
+                tone: TextTone::Default,
+                emphasis: TextEmphasis::default(),
+                entity: None,
+            }],
+        }];
 
-        let mut lines = vec![primary];
         if let Some(text) = summary {
             let trimmed = text.trim();
             if !trimmed.is_empty() {
-                let mut detail = ratatui::text::Line::from(trimmed.to_string());
-                detail.style = Style::default().fg(crate::colors::text_dim());
-                lines.push(detail);
+                message_lines.push(MessageLine {
+                    kind: MessageLineKind::Paragraph,
+                    spans: vec![InlineSpan {
+                        text: format!("Auto Review: {trimmed}"),
+                        tone: TextTone::Dim,
+                        emphasis: TextEmphasis::default(),
+                        entity: None,
+                    }],
+                });
             }
         }
 
-        let mut state = history_cell::plain_message_state_from_lines(
-            lines,
-            history_cell::HistoryCellType::Notice,
-        );
-        state.header = Some(MessageHeader { label: "Auto Review".to_string(), badge: None });
+        let state = PlainMessageState {
+            id: HistoryId::ZERO,
+            role: PlainMessageRole::System,
+            kind: PlainMessageKind::Notice,
+            header: Some(MessageHeader { label: "Auto Review".to_string(), badge: None }),
+            lines: message_lines,
+            metadata: None,
+        };
 
         // Replace existing notice if present
         if let Some(notice) = self.auto_review_notice.clone() {
