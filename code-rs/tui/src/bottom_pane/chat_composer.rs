@@ -2971,7 +2971,7 @@ mod tests {
         composer.render_footer(area, &mut buf);
 
         let line: String = (0..area.width)
-            .map(|x| buf[(area.x + x, area.y)].symbol.clone())
+            .map(|x| buf[(area.x + x, area.y)].symbol().to_string())
             .collect();
 
         let auto_idx = line
