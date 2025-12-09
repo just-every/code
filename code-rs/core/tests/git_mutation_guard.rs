@@ -6,7 +6,6 @@
 //! helper that bumps `snapshot epoch` or extend the allow-list with a justification.
 
 use std::fs;
-use std::path::Path;
 
 const TARGET_DIRS: &[&str] = &[
     "code-rs/tui/src",

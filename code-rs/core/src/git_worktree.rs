@@ -810,6 +810,24 @@ mod tests {
     use tempfile::TempDir;
     use tokio::process::Command;
 
+    fn set_home(path: &Path) {
+        // SAFETY: tests isolate HOME inside a fresh temp directory.
+        unsafe { std::env::set_var("HOME", path); }
+    }
+
+    fn restore_home(prev: Option<String>) {
+        match prev {
+            Some(prev) => {
+                // SAFETY: restoring the previous HOME value at test end.
+                unsafe { std::env::set_var("HOME", prev); }
+            }
+            None => {
+                // SAFETY: clearing HOME after the test to match original state.
+                unsafe { std::env::remove_var("HOME"); }
+            }
+        }
+    }
+
     async fn git(repo: &Path, args: &[&str]) {
         let out = Command::new("git")
             .current_dir(repo)
@@ -841,7 +859,7 @@ mod tests {
         init_repo(&repo_dir).await;
 
         let prev_home = std::env::var("HOME").ok();
-        std::env::set_var("HOME", temp_home.path());
+        set_home(temp_home.path());
 
         let first = prepare_reusable_worktree(&repo_dir, "auto-review", "HEAD", false)
             .await
@@ -857,6 +875,6 @@ mod tests {
         assert_eq!(first, second);
         assert!(second.exists());
 
-        if let Some(prev) = prev_home { std::env::set_var("HOME", prev); } else { std::env::remove_var("HOME"); }
+        restore_home(prev_home);
     }
 }
