@@ -92,7 +92,6 @@ pub use auth::RefreshTokenError;
 pub use auth::RefreshTokenErrorKind;
 pub mod default_client;
 pub mod model_family;
-pub mod openai_model_info;
 mod openai_tools;
 mod patch_harness;
 pub mod plan_tool;

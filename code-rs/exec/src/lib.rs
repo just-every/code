@@ -24,7 +24,6 @@ use code_core::config::set_default_originator;
 use code_core::config::Config;
 use code_core::config::ConfigOverrides;
 use code_core::model_family::{derive_default_model_family, find_family_for_model};
-use code_core::openai_model_info::get_model_info;
 use code_core::git_info::get_git_repo_root;
 use code_core::git_info::recent_commits;
 use code_core::review_coord::{
@@ -402,11 +401,13 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         config.model = resolve_model_for_auto_resolve.clone();
         config.model_family = resolve_family.clone();
         config.model_reasoning_effort = resolve_effort_for_auto_resolve;
-        if let Some(info) = get_model_info(&resolve_family) {
-            config.model_context_window = Some(info.context_window);
-            config.model_max_output_tokens = Some(info.max_output_tokens);
-            config.model_auto_compact_token_limit = info.auto_compact_token_limit;
+        if let Some(cw) = resolve_family.context_window {
+            config.model_context_window = Some(cw);
         }
+        if let Some(max) = resolve_family.max_output_tokens {
+            config.model_max_output_tokens = Some(max);
+        }
+        config.model_auto_compact_token_limit = resolve_family.auto_compact_token_limit();
     }
     let stop_on_task_complete = auto_drive_goal.is_none() && auto_resolve_state.is_none();
     let mut event_processor: Box<dyn EventProcessor> = if json_mode {

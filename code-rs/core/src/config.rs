@@ -40,7 +40,6 @@ use crate::model_family::derive_default_model_family;
 use crate::model_family::find_family_for_model;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::built_in_model_providers;
-use crate::openai_model_info::get_model_info;
 use crate::reasoning::clamp_reasoning_effort_for_model;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
@@ -2590,20 +2589,15 @@ impl Config {
         let chat_reasoning_effort =
             clamp_reasoning_effort_for_model(&model, chat_reasoning_effort);
 
-        let openai_model_info = get_model_info(&model_family);
         let model_context_window = cfg
             .model_context_window
-            .or_else(|| openai_model_info.as_ref().map(|info| info.context_window));
-        let model_max_output_tokens = cfg.model_max_output_tokens.or_else(|| {
-            openai_model_info
-                .as_ref()
-                .map(|info| info.max_output_tokens)
-        });
-        let model_auto_compact_token_limit = cfg.model_auto_compact_token_limit.or_else(|| {
-            openai_model_info
-                .as_ref()
-                .and_then(|info| info.auto_compact_token_limit)
-        });
+            .or(model_family.context_window);
+        let model_max_output_tokens = cfg
+            .model_max_output_tokens
+            .or(model_family.max_output_tokens);
+        let model_auto_compact_token_limit = cfg
+            .model_auto_compact_token_limit
+            .or_else(|| model_family.auto_compact_token_limit());
 
         // Load base instructions override from a file if specified. If the
         // path is relative, resolve it against the effective cwd so the

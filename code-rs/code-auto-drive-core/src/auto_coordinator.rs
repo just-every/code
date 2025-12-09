@@ -11,7 +11,6 @@ use code_core::config_types::{AutoDriveSettings, ReasoningEffort, TextVerbosity}
 use code_core::debug_logger::DebugLogger;
 use code_core::codex::compact::resolve_compact_prompt_text;
 use code_core::model_family::{derive_default_model_family, find_family_for_model};
-use code_core::openai_model_info::get_model_info;
 use code_core::project_doc::read_auto_drive_docs;
 use code_core::protocol::SandboxPolicy;
 use code_core::slash_commands::get_enabled_agents;
@@ -3069,11 +3068,12 @@ pub fn should_compact(
     let family = find_family_for_model(model_slug)
         .unwrap_or_else(|| derive_default_model_family(model_slug));
 
-    if let Some(model_info) = get_model_info(&family) {
-        let token_limit = model_info
-            .auto_compact_token_limit
-            .and_then(|limit| (limit > 0).then(|| limit as u64))
-            .unwrap_or(model_info.context_window);
+    let token_limit = family
+        .auto_compact_token_limit()
+        .and_then(|limit| (limit > 0).then(|| limit as u64))
+        .or(family.context_window);
+
+    if let Some(token_limit) = token_limit {
         if token_limit > 0 {
             let threshold = (token_limit as f64 * 0.8) as u64;
             let projected_total = transcript_tokens.saturating_add(estimated_next);

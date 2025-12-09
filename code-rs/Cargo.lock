@@ -1454,6 +1454,7 @@ dependencies = [
  "icu_locale_core",
  "mime_guess",
  "pretty_assertions",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "serde_with",

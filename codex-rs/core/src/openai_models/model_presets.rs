@@ -1,49 +1,12 @@
-use std::collections::HashMap;
-
-use code_app_server_protocol::AuthMode;
-use code_core::config_types::TextVerbosity as TextVerbosityConfig;
-use code_core::protocol_config_types::ReasoningEffort;
+use codex_app_server_protocol::AuthMode;
+use codex_protocol::openai_models::{ModelPreset, ModelUpgrade, ReasoningEffort, ReasoningEffortPreset};
 use once_cell::sync::Lazy;
 
 pub const HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG: &str = "hide_gpt5_1_migration_prompt";
 pub const HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG: &str =
     "hide_gpt-5.1-codex-max_migration_prompt";
 
-/// A reasoning effort option surfaced for a model.
-#[derive(Debug, Clone, Copy)]
-pub struct ReasoningEffortPreset {
-    pub effort: ReasoningEffort,
-    pub description: &'static str,
-}
-
-#[derive(Debug, Clone)]
-pub struct ModelUpgrade {
-    pub id: &'static str,
-    pub reasoning_effort_mapping: Option<HashMap<ReasoningEffort, ReasoningEffort>>,
-    pub migration_config_key: &'static str,
-}
-
-/// Metadata describing a Code-supported model.
-#[derive(Debug, Clone)]
-pub struct ModelPreset {
-    pub id: &'static str,
-    pub model: &'static str,
-    pub display_name: &'static str,
-    pub description: &'static str,
-    pub default_reasoning_effort: ReasoningEffort,
-    pub supported_reasoning_efforts: &'static [ReasoningEffortPreset],
-    pub supported_text_verbosity: &'static [TextVerbosityConfig],
-    pub is_default: bool,
-    pub upgrade: Option<ModelUpgrade>,
-    pub show_in_picker: bool,
-}
-
-const ALL_TEXT_VERBOSITY: &[TextVerbosityConfig] = &[
-    TextVerbosityConfig::Low,
-    TextVerbosityConfig::Medium,
-    TextVerbosityConfig::High,
-];
-
+// Built-in model presets exposed when the backend model list is unavailable.
 static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
     vec![
         ModelPreset {
@@ -70,16 +33,15 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                     description: "Extra high reasoning depth for complex problems".to_string(),
                 },
             ],
-            supported_text_verbosity: &[TextVerbosityConfig::Medium],
             is_default: true,
             upgrade: None,
             show_in_picker: true,
         },
         ModelPreset {
-            id: "gpt-5.1-codex",
-            model: "gpt-5.1-codex",
-            display_name: "gpt-5.1-codex",
-            description: "Optimized for Code.",
+            id: "gpt-5.1-codex".to_string(),
+            model: "gpt-5.1-codex".to_string(),
+            display_name: "gpt-5.1-codex".to_string(),
+            description: "Optimized for Code.".to_string(),
             default_reasoning_effort: ReasoningEffort::Medium,
             supported_reasoning_efforts: vec![
                 ReasoningEffortPreset {
@@ -92,11 +54,9 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::High,
-                    description: "Maximizes reasoning depth for complex or ambiguous problems"
-                        .to_string(),
+                    description: "Maximizes reasoning depth for complex or ambiguous problems".to_string(),
                 },
             ],
-            supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
                 id: "gpt-5.1-codex-max".to_string(),
@@ -106,10 +66,10 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             show_in_picker: true,
         },
         ModelPreset {
-            id: "gpt-5.1-codex-mini",
-            model: "gpt-5.1-codex-mini",
-            display_name: "gpt-5.1-codex-mini",
-            description: "Optimized for Code. Cheaper, faster, but less capable.",
+            id: "gpt-5.1-codex-mini".to_string(),
+            model: "gpt-5.1-codex-mini".to_string(),
+            display_name: "gpt-5.1-codex-mini".to_string(),
+            description: "Optimized for Code. Cheaper, faster, but less capable.".to_string(),
             default_reasoning_effort: ReasoningEffort::Medium,
             supported_reasoning_efforts: vec![
                 ReasoningEffortPreset {
@@ -118,11 +78,9 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::High,
-                    description: "Maximizes reasoning depth for complex or ambiguous problems"
-                        .to_string(),
+                    description: "Maximizes reasoning depth for complex or ambiguous problems".to_string(),
                 },
             ],
-            supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
                 id: "gpt-5.1-codex-max".to_string(),
@@ -141,19 +99,20 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::Low,
                     description:
-                        "Balances speed with some reasoning; useful for straightforward queries and short explanations",
+                        "Balances speed with some reasoning; useful for straightforward queries and short explanations"
+                            .to_string(),
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::Medium,
                     description:
-                        "Provides a solid balance of reasoning depth and latency for general-purpose tasks",
+                        "Provides a solid balance of reasoning depth and latency for general-purpose tasks"
+                            .to_string(),
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::High,
                     description: "Maximizes reasoning depth for complex or ambiguous problems".to_string(),
                 },
             ],
-            supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
                 id: "gpt-5.1-codex-max".to_string(),
@@ -164,10 +123,10 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
         },
         // Deprecated GPT-5 variants kept for migrations / config compatibility.
         ModelPreset {
-            id: "gpt-5-codex",
-            model: "gpt-5-codex",
-            display_name: "gpt-5-codex",
-            description: "Optimized for Code.",
+            id: "gpt-5-codex".to_string(),
+            model: "gpt-5-codex".to_string(),
+            display_name: "gpt-5-codex".to_string(),
+            description: "Optimized for Code.".to_string(),
             default_reasoning_effort: ReasoningEffort::Medium,
             supported_reasoning_efforts: vec![
                 ReasoningEffortPreset {
@@ -183,7 +142,6 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                     description: "Maximizes reasoning depth for complex or ambiguous problems".to_string(),
                 },
             ],
-            supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
                 id: "gpt-5.1-codex-max".to_string(),
@@ -193,10 +151,10 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             show_in_picker: false,
         },
         ModelPreset {
-            id: "gpt-5-codex-mini",
-            model: "gpt-5-codex-mini",
-            display_name: "gpt-5-codex-mini",
-            description: "Optimized for Code. Cheaper, faster, but less capable.",
+            id: "gpt-5-codex-mini".to_string(),
+            model: "gpt-5-codex-mini".to_string(),
+            display_name: "gpt-5-codex-mini".to_string(),
+            description: "Optimized for Code. Cheaper, faster, but less capable.".to_string(),
             default_reasoning_effort: ReasoningEffort::Medium,
             supported_reasoning_efforts: vec![
                 ReasoningEffortPreset {
@@ -208,7 +166,6 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                     description: "Maximizes reasoning depth for complex or ambiguous problems".to_string(),
                 },
             ],
-            supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
                 id: "gpt-5.1-codex-mini".to_string(),
@@ -231,19 +188,20 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::Low,
                     description:
-                        "Balances speed with some reasoning; useful for straightforward queries and short explanations",
+                        "Balances speed with some reasoning; useful for straightforward queries and short explanations"
+                            .to_string(),
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::Medium,
                     description:
-                        "Provides a solid balance of reasoning depth and latency for general-purpose tasks",
+                        "Provides a solid balance of reasoning depth and latency for general-purpose tasks"
+                            .to_string(),
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::High,
                     description: "Maximizes reasoning depth for complex or ambiguous problems".to_string(),
                 },
             ],
-            supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
                 id: "gpt-5.1-codex-max".to_string(),
@@ -256,35 +214,21 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
 });
 
 pub(crate) fn builtin_model_presets(_auth_mode: Option<AuthMode>) -> Vec<ModelPreset> {
-    PRESETS
-        .iter()
-        .filter(|preset| preset.show_in_picker)
-        .cloned()
-        .collect()
+    PRESETS.clone()
 }
 
-// todo(aibrahim): remove this once we migrate tests
 pub fn all_model_presets() -> &'static Vec<ModelPreset> {
     &PRESETS
 }
 
-fn find_preset_for_model(model: &str) -> Option<&'static ModelPreset> {
-    let model_lower = model.to_ascii_lowercase();
-
-    PRESETS.iter().find(|preset| {
-        preset.model.eq_ignore_ascii_case(&model_lower)
-            || preset.id.eq_ignore_ascii_case(&model_lower)
-            || preset.display_name.eq_ignore_ascii_case(&model_lower)
-    })
-}
-
 fn reasoning_effort_rank(effort: ReasoningEffort) -> u8 {
     match effort {
-        ReasoningEffort::Minimal => 0,
-        ReasoningEffort::Low => 1,
-        ReasoningEffort::Medium => 2,
-        ReasoningEffort::High => 3,
-        ReasoningEffort::XHigh => 4,
+        ReasoningEffort::None => 0,
+        ReasoningEffort::Minimal => 1,
+        ReasoningEffort::Low => 2,
+        ReasoningEffort::Medium => 3,
+        ReasoningEffort::High => 4,
+        ReasoningEffort::XHigh => 5,
     }
 }
 
@@ -317,39 +261,8 @@ pub fn clamp_reasoning_effort_for_model(
         .unwrap_or(requested)
 }
 
-pub fn allowed_text_verbosity_for_model(model: &str) -> &'static [TextVerbosityConfig] {
-    find_preset_for_model(model)
-        .map(|preset| preset.supported_text_verbosity)
-        .unwrap_or(ALL_TEXT_VERBOSITY)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_one_default_model_is_configured() {
-        assert_eq!(PRESETS.iter().filter(|preset| preset.is_default).count(), 1);
-    }
-
-    #[test]
-    fn gpt_5_1_codex_max_hidden_for_api_key_auth() {
-        let presets = builtin_model_presets(Some(AuthMode::ApiKey));
-        assert!(presets
-            .iter()
-            .all(|preset| preset.id != "gpt-5.1-codex-max"));
-    }
-
-    #[test]
-    fn clamp_reasoning_effort_downgrades_to_supported_level() {
-        let clamped = clamp_reasoning_effort_for_model(
-            "gpt-5.1-codex",
-            ReasoningEffort::XHigh,
-        );
-        assert_eq!(clamped, ReasoningEffort::High);
-
-        let clamped_minimal =
-            clamp_reasoning_effort_for_model("gpt-5.1-codex-mini", ReasoningEffort::Minimal);
-        assert_eq!(clamped_minimal, ReasoningEffort::Medium);
-    }
+fn find_preset_for_model(model: &str) -> Option<&'static ModelPreset> {
+    PRESETS
+        .iter()
+        .find(|preset| preset.model.eq_ignore_ascii_case(model))
 }

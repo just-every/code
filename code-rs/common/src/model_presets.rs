@@ -10,28 +10,28 @@ pub const HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG: &str =
     "hide_gpt-5.1-codex-max_migration_prompt";
 
 /// A reasoning effort option surfaced for a model.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ReasoningEffortPreset {
     pub effort: ReasoningEffort,
-    pub description: &'static str,
+    pub description: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct ModelUpgrade {
-    pub id: &'static str,
+    pub id: String,
     pub reasoning_effort_mapping: Option<HashMap<ReasoningEffort, ReasoningEffort>>,
-    pub migration_config_key: &'static str,
+    pub migration_config_key: String,
 }
 
 /// Metadata describing a Code-supported model.
 #[derive(Debug, Clone)]
 pub struct ModelPreset {
-    pub id: &'static str,
-    pub model: &'static str,
-    pub display_name: &'static str,
-    pub description: &'static str,
+    pub id: String,
+    pub model: String,
+    pub display_name: String,
+    pub description: String,
     pub default_reasoning_effort: ReasoningEffort,
-    pub supported_reasoning_efforts: &'static [ReasoningEffortPreset],
+    pub supported_reasoning_efforts: Vec<ReasoningEffortPreset>,
     pub supported_text_verbosity: &'static [TextVerbosityConfig],
     pub is_default: bool,
     pub upgrade: Option<ModelUpgrade>,
@@ -76,10 +76,10 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             show_in_picker: true,
         },
         ModelPreset {
-            id: "gpt-5.1-codex",
-            model: "gpt-5.1-codex",
-            display_name: "gpt-5.1-codex",
-            description: "Optimized for Code.",
+            id: "gpt-5.1-codex".to_string(),
+            model: "gpt-5.1-codex".to_string(),
+            display_name: "gpt-5.1-codex".to_string(),
+            description: "Optimized for Code.".to_string(),
             default_reasoning_effort: ReasoningEffort::Medium,
             supported_reasoning_efforts: vec![
                 ReasoningEffortPreset {
@@ -106,10 +106,10 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             show_in_picker: true,
         },
         ModelPreset {
-            id: "gpt-5.1-codex-mini",
-            model: "gpt-5.1-codex-mini",
-            display_name: "gpt-5.1-codex-mini",
-            description: "Optimized for Code. Cheaper, faster, but less capable.",
+            id: "gpt-5.1-codex-mini".to_string(),
+            model: "gpt-5.1-codex-mini".to_string(),
+            display_name: "gpt-5.1-codex-mini".to_string(),
+            description: "Optimized for Code. Cheaper, faster, but less capable.".to_string(),
             default_reasoning_effort: ReasoningEffort::Medium,
             supported_reasoning_efforts: vec![
                 ReasoningEffortPreset {
@@ -141,12 +141,14 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::Low,
                     description:
-                        "Balances speed with some reasoning; useful for straightforward queries and short explanations",
+                        "Balances speed with some reasoning; useful for straightforward queries and short explanations"
+                            .to_string(),
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::Medium,
                     description:
-                        "Provides a solid balance of reasoning depth and latency for general-purpose tasks",
+                        "Provides a solid balance of reasoning depth and latency for general-purpose tasks"
+                            .to_string(),
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::High,
@@ -164,10 +166,10 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
         },
         // Deprecated GPT-5 variants kept for migrations / config compatibility.
         ModelPreset {
-            id: "gpt-5-codex",
-            model: "gpt-5-codex",
-            display_name: "gpt-5-codex",
-            description: "Optimized for Code.",
+            id: "gpt-5-codex".to_string(),
+            model: "gpt-5-codex".to_string(),
+            display_name: "gpt-5-codex".to_string(),
+            description: "Optimized for Code.".to_string(),
             default_reasoning_effort: ReasoningEffort::Medium,
             supported_reasoning_efforts: vec![
                 ReasoningEffortPreset {
@@ -193,10 +195,10 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             show_in_picker: false,
         },
         ModelPreset {
-            id: "gpt-5-codex-mini",
-            model: "gpt-5-codex-mini",
-            display_name: "gpt-5-codex-mini",
-            description: "Optimized for Code. Cheaper, faster, but less capable.",
+            id: "gpt-5-codex-mini".to_string(),
+            model: "gpt-5-codex-mini".to_string(),
+            display_name: "gpt-5-codex-mini".to_string(),
+            description: "Optimized for Code. Cheaper, faster, but less capable.".to_string(),
             default_reasoning_effort: ReasoningEffort::Medium,
             supported_reasoning_efforts: vec![
                 ReasoningEffortPreset {
@@ -231,12 +233,14 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::Low,
                     description:
-                        "Balances speed with some reasoning; useful for straightforward queries and short explanations",
+                        "Balances speed with some reasoning; useful for straightforward queries and short explanations"
+                            .to_string(),
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::Medium,
                     description:
-                        "Provides a solid balance of reasoning depth and latency for general-purpose tasks",
+                        "Provides a solid balance of reasoning depth and latency for general-purpose tasks"
+                            .to_string(),
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::High,
@@ -255,7 +259,7 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
     ]
 });
 
-pub(crate) fn builtin_model_presets(_auth_mode: Option<AuthMode>) -> Vec<ModelPreset> {
+pub fn builtin_model_presets(_auth_mode: Option<AuthMode>) -> Vec<ModelPreset> {
     PRESETS
         .iter()
         .filter(|preset| preset.show_in_picker)

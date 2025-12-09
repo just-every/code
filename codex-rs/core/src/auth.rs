@@ -32,8 +32,10 @@ use crate::token_data::TokenData;
 use crate::token_data::parse_id_token;
 use crate::util::try_parse_error_message;
 use codex_protocol::account::PlanType as AccountPlanType;
+#[cfg(any(test, feature = "test-support"))]
 use once_cell::sync::Lazy;
 use serde_json::Value;
+#[cfg(any(test, feature = "test-support"))]
 use tempfile::TempDir;
 use thiserror::Error;
 
@@ -64,6 +66,7 @@ const REFRESH_TOKEN_UNKNOWN_MESSAGE: &str =
 const REFRESH_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 pub const REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR: &str = "CODEX_REFRESH_TOKEN_URL_OVERRIDE";
 
+#[cfg(any(test, feature = "test-support"))]
 static TEST_AUTH_TEMP_DIRS: Lazy<Mutex<Vec<TempDir>>> = Lazy::new(|| Mutex::new(Vec::new()));
 
 #[derive(Debug, Error)]

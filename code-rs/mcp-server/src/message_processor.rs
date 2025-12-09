@@ -1493,7 +1493,7 @@ fn session_models_from_config(config: &Config) -> Option<acp::SessionModelState>
     let mut current_model_id: Option<acp::ModelId> = None;
 
     for preset in presets.iter() {
-        let id = acp::ModelId(Arc::from(preset.id));
+        let id = acp::ModelId(Arc::from(preset.id.as_str()));
         let description = if preset.description.is_empty() {
             None
         } else {

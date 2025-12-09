@@ -53,7 +53,6 @@ use crate::flags::CODEX_RS_SSE_FIXTURE;
 use crate::model_family::{find_family_for_model, ModelFamily};
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
-use crate::openai_model_info::get_model_info;
 use crate::openai_tools::create_tools_json_for_responses_api;
 use crate::openai_tools::ConfigShellToolType;
 use crate::openai_tools::ToolsConfig;
@@ -384,9 +383,9 @@ impl ModelClient {
     }
 
     pub fn get_auto_compact_token_limit(&self) -> Option<i64> {
-        self.config.model_auto_compact_token_limit.or_else(|| {
-            get_model_info(&self.config.model_family).and_then(|info| info.auto_compact_token_limit)
-        })
+        self.config
+            .model_auto_compact_token_limit
+            .or_else(|| self.config.model_family.auto_compact_token_limit())
     }
 
     pub fn default_model_slug(&self) -> &str {

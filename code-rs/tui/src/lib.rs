@@ -1005,19 +1005,19 @@ fn determine_migration_plan(config: &Config, auth_mode: AuthMode) -> Option<Migr
         .iter()
         .find(|preset| preset.id.eq_ignore_ascii_case(&current_slug))?;
     let upgrade = current.upgrade.as_ref()?;
-    if notice_hidden(&config.notices, upgrade.migration_config_key) {
+    if notice_hidden(&config.notices, upgrade.migration_config_key.as_str()) {
         return None;
     }
     let target = presets
         .iter()
-        .find(|preset| preset.id.eq_ignore_ascii_case(upgrade.id))?;
+        .find(|preset| preset.id.eq_ignore_ascii_case(&upgrade.id))?;
     if !auth_allows_target(auth_mode, target) {
         return None;
     }
     let new_effort = None;
     Some(MigrationPlan {
         target,
-        hide_key: upgrade.migration_config_key,
+        hide_key: upgrade.migration_config_key.as_str(),
         new_effort,
     })
 }

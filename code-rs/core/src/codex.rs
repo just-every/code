@@ -877,7 +877,6 @@ use code_protocol::models::ReasoningItemReasoningSummary;
 use code_protocol::models::ResponseInputItem;
 use code_protocol::models::ResponseItem;
 use code_protocol::models::ShellToolCallParams;
-use crate::openai_model_info::get_model_info;
 use crate::openai_tools::ToolsConfig;
 use crate::openai_tools::get_openai_tools;
 use crate::slash_commands::get_enabled_agents;
@@ -4282,7 +4281,6 @@ async fn submission_loop(
                 let effort_changed = updated_config.model_reasoning_effort != model_reasoning_effort;
 
                 let old_model_family = updated_config.model_family.clone();
-                let old_model_info = get_model_info(&old_model_family);
 
                 updated_config.model = model.clone();
                 updated_config.model_provider = provider.clone();
@@ -4300,18 +4298,12 @@ async fn submission_loop(
                 updated_config.model_family = find_family_for_model(&updated_config.model)
                     .unwrap_or_else(|| derive_default_model_family(&updated_config.model));
 
-                let new_model_info = get_model_info(&updated_config.model_family);
-
-                let old_context_window = old_model_info.as_ref().map(|info| info.context_window);
-                let new_context_window = new_model_info.as_ref().map(|info| info.context_window);
-                let old_max_tokens = old_model_info.as_ref().map(|info| info.max_output_tokens);
-                let new_max_tokens = new_model_info.as_ref().map(|info| info.max_output_tokens);
-                let old_auto_compact = old_model_info
-                    .as_ref()
-                    .and_then(|info| info.auto_compact_token_limit);
-                let new_auto_compact = new_model_info
-                    .as_ref()
-                    .and_then(|info| info.auto_compact_token_limit);
+                let old_context_window = old_model_family.context_window;
+                let new_context_window = updated_config.model_family.context_window;
+                let old_max_tokens = old_model_family.max_output_tokens;
+                let new_max_tokens = updated_config.model_family.max_output_tokens;
+                let old_auto_compact = old_model_family.auto_compact_token_limit();
+                let new_auto_compact = updated_config.model_family.auto_compact_token_limit();
 
                 maybe_update_from_model_info(
                     &mut updated_config.model_context_window,
@@ -5089,9 +5081,11 @@ async fn spawn_review_thread(
     review_config.model_text_verbosity = config.model_text_verbosity;
     review_config.user_instructions = None;
     review_config.base_instructions = Some(REVIEW_PROMPT.to_string());
-    if let Some(info) = get_model_info(&review_family) {
-        review_config.model_context_window = Some(info.context_window);
-        review_config.model_max_output_tokens = Some(info.max_output_tokens);
+    if let Some(cw) = review_family.context_window {
+        review_config.model_context_window = Some(cw);
+    }
+    if let Some(max) = review_family.max_output_tokens {
+        review_config.model_max_output_tokens = Some(max);
     }
     let review_config = Arc::new(review_config);
 

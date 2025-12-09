@@ -1,5 +1,4 @@
 use crate::AuthManager;
-use crate::CodexAuth;
 use crate::codex::Codex;
 use crate::codex::CodexSpawnOk;
 use crate::codex::INITIAL_SUBMIT_ID;
