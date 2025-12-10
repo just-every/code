@@ -18525,7 +18525,7 @@ Have we met every part of this goal and is there no further work to do?"#
             "Diagnostics Disabled"
         };
 
-        let left = format!("{}  •  {}", agents_label, diagnostics_label);
+        let left = format!("• {}  •  {}", agents_label, diagnostics_label);
 
         let hint = left.to_string();
         self.bottom_pane

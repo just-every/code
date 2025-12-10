@@ -2113,6 +2113,7 @@ impl ChatComposer {
         label_style: Style,
     ) -> Vec<Span<'static>> {
         let mut spans: Vec<Span<'static>> = Vec::new();
+        let leading_bullet = text.trim_start().starts_with('•');
         let parts: Vec<String> = text
             .split('•')
             .map(|part| part.trim())
@@ -2123,6 +2124,8 @@ impl ChatComposer {
         for (index, part) in parts.iter().enumerate() {
             if index > 0 {
                 spans.push(Span::from("  •  ".to_string()).style(label_style));
+            } else if leading_bullet {
+                spans.push(Span::from("• ").style(label_style));
             }
             let (key, label) = Self::split_auto_drive_key_label(part);
             if let Some(key) = key {
@@ -2328,12 +2331,6 @@ impl ChatComposer {
                     left_sections.push((3, auto_review_status_spans, true));
                 }
 
-                if self.auto_review_status.is_some() && self.auto_drive_active {
-                    let spacer = Span::from("  •  ")
-                        .style(Style::default().fg(crate::colors::text_dim()));
-                    left_sections.push((6, vec![spacer], true));
-                }
-
                 if !auto_review_agent_hint.is_empty() {
                     // Keep the Auto Review hint on the right so spacing stays tight even
                     // when the status text changes; left-side padding was previously
@@ -2504,6 +2501,19 @@ impl ChatComposer {
                 | -> (Vec<Span<'static>>, usize) {
                     let mut spans: Vec<Span<'static>> = Vec::new();
                     let mut len = 0usize;
+                    let mut last_section_was_separator = false;
+
+                    let is_separator = |section: &[Span<'static>]| {
+                        section.len() == 1 && section[0].content.trim() == "•"
+                    };
+
+                    let starts_with_bullet = |section: &[Span<'static>]| {
+                        section.iter().find_map(|span| {
+                            let trimmed = span.content.trim_start();
+                            (!trimmed.is_empty()).then(|| trimmed.starts_with('•'))
+                        })
+                        .unwrap_or(false)
+                    };
 
                     for (priority, section, included) in &left_sections {
                         let include = match *priority {
@@ -2512,15 +2522,21 @@ impl ChatComposer {
                             6 => include_left_misc && *included,
                             _ => *included,
                         };
-                        if include {
-                            if !spans.is_empty() {
-                                let pad = Span::from("   ").style(label_style);
-                                spans.push(pad.clone());
-                                len += pad.content.chars().count();
-                            }
-                            spans.extend(section.clone());
-                            len += span_len(section);
+                        if !include {
+                            continue;
                         }
+
+                        let section_is_separator = is_separator(section);
+                        if !spans.is_empty() && !last_section_was_separator && !section_is_separator {
+                            let pad_text = if starts_with_bullet(section) { "  " } else { "   " };
+                            let pad = Span::from(pad_text).style(label_style);
+                            len += pad.content.chars().count();
+                            spans.push(pad);
+                        }
+
+                        spans.extend(section.clone());
+                        len += span_len(section);
+                        last_section_was_separator = section_is_separator;
                     }
 
                     (spans, len)
