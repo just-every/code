@@ -58,7 +58,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > ~/.npmrc
-          npm whoami >/dev/null 2>&1 || { echo "npm auth failed (npm whoami). Ensure NPM_TOKEN is an npm automation token with publish rights to @just-every/*" >&2; exit 1; }
+          npm whoami >/dev/null 2>&1 || { echo "npm auth failed (npm whoami). Ensure NPM_TOKEN is an npm automation token with publish rights to @just-every/*; if this fails, mint a fresh token with scripts/refresh-npm-token.sh and update the NPM_TOKEN secret." >&2; exit 1; }
 
   preflight-tests:
     name: Preflight Tests (Linux fast E2E)
