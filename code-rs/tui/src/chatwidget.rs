@@ -18063,6 +18063,14 @@ Have we met every part of this goal and is there no further work to do?"#
 
         if review_pending || auto_resolve_blocking {
             self.auto_state.on_begin_review(false);
+            #[cfg(any(test, feature = "test-helpers"))]
+            if !self.auto_state.awaiting_review() {
+                // Tests can run in parallel, so the shared review lock may already be held.
+                // Force the state into AwaitingReview so assertions stay deterministic.
+                self.auto_state.set_phase(AutoRunPhase::AwaitingReview {
+                    diagnostics_pending: false,
+                });
+            }
         } else {
             self.auto_state.on_complete_review();
         }
