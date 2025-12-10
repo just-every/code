@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.6.1] - 2025-12-10
+
+- Auto Review: Harden locks, fallback worktrees, zero-count status, and pending-fix isolation so automated reviews stay reliable. (44234af, a62eaa3, 609432e, ae4b4ec)
+- Models: Introduce ModelsManager across app server and TUI, add a remote models flag, and cache disk-loaded presets with TTL/ETag for faster selection. (00cc00e, 8da91d1, 53a486f, 222a491)
+- Shell & Exec: Detect mutating commands, snapshot shell state, and clear lingering execs so automation captures side effects cleanly. (da983c1, 7836aed, cf15065)
+- TUI UX: Add vim-style pager keys, Ctrl+N/P list shortcuts, tighter shell output limits, and aligned auto-review footers for smoother navigation. (9df70a0, 4a3e9ed, 3395ebd, 9e2b68b)
+
 ## [0.5.15] - 2025-11-28
 
 - CLI: bump npm metadata to 0.5.15 so fresh installs pull the latest binaries. (0e5d3f9)
