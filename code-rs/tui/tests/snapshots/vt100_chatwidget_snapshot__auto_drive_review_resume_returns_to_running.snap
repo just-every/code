@@ -1,6 +1,5 @@
 ---
 source: tui/tests/vt100_chatwidget_snapshot.rs
-assertion_line: 994
 expression: "frames.join(\"\\n---FRAME---\\n\")"
 ---
  +----------------------------------------------------------------------------+
@@ -19,7 +18,7 @@ expression: "frames.join(\"\\n---FRAME---\\n\")"
  +----------------------------------------------------------------------------+
  | What can I code for you today?                                             |
  +----------------------------------------------------------------------------+
- Agents Enabled  •  Diagnostics Enabled                                API key
+ • Agents Enabled  •  Diagnostics Enabled                              API key
 ---FRAME---
  +----------------------------------------------------------------------------+
  |                                    Code                                    |
@@ -37,4 +36,4 @@ expression: "frames.join(\"\\n---FRAME---\\n\")"
  +----------------------------------------------------------------------------+
  | What can I code for you today?                                             |
  +----------------------------------------------------------------------------+
- Agents Enabled  •  Diagnostics Enabled                                API key
+ • Agents Enabled  •  Diagnostics Enabled                              API key

@@ -31917,14 +31917,18 @@ impl ChatWidget<'_> {
         let path_text = format!("{}", worktree_path.display());
         let has_path = !path_text.is_empty();
 
-        let summary_text = summary
-            .and_then(|text| {
-                let trimmed = text.trim();
-                (!trimmed.is_empty()).then_some(trimmed.to_string())
-            })
-            .unwrap_or_else(|| format!("{findings} issue(s) found in '{branch}'"));
+        let summary_text = summary.and_then(|text| {
+            let trimmed = text.trim();
+            (!trimmed.is_empty()).then_some(trimmed.to_string())
+        });
 
-        let mut line = format!("Auto Review: {summary_text}");
+        let mut line = format!("Auto Review: {findings} issue(s) found");
+        if let Some(summary_text) = summary_text {
+            line.push_str(". ");
+            line.push_str(&summary_text);
+        } else {
+            line.push_str(&format!(" in '{branch}'"));
+        }
         if has_path {
             line.push(' ');
             line.push_str(&format!("Merge {path_text} to apply fixes."));
@@ -32057,6 +32061,10 @@ impl ChatWidget<'_> {
             ));
             AutoReviewIndicatorStatus::Failed
         } else if has_findings {
+            developer_note = Some(format!(
+                "[developer] Merge the worktree '{branch}' to apply the auto-review fixes. Worktree path: {}.{snapshot_note}{agent_note}",
+                worktree_path.display()
+            ));
             AutoReviewIndicatorStatus::Fixed
         } else {
             AutoReviewIndicatorStatus::Clean

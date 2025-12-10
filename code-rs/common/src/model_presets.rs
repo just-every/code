@@ -259,9 +259,13 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
     ]
 });
 
-pub fn builtin_model_presets(_auth_mode: Option<AuthMode>) -> Vec<ModelPreset> {
+pub fn builtin_model_presets(auth_mode: Option<AuthMode>) -> Vec<ModelPreset> {
     PRESETS
         .iter()
+        .filter(|preset| match auth_mode {
+            Some(AuthMode::ApiKey) => preset.id != "gpt-5.1-codex-max",
+            _ => true,
+        })
         .filter(|preset| preset.show_in_picker)
         .cloned()
         .collect()
