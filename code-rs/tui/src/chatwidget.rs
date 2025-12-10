@@ -1433,6 +1433,16 @@ fn auto_review_branches_dir(git_root: &Path) -> Result<PathBuf, String> {
     Ok(code_home)
 }
 
+fn resolve_auto_review_worktree_path(git_root: &Path, branch: &str) -> Option<PathBuf> {
+    if branch.is_empty() {
+        return None;
+    }
+
+    let branches_dir = auto_review_branches_dir(git_root).ok()?;
+    let candidate = branches_dir.join(branch);
+    candidate.exists().then_some(candidate)
+}
+
 async fn remove_worktree_path(git_root: &Path, path: &Path) -> Result<(), String> {
     let path_str = path
         .to_str()
@@ -27241,6 +27251,7 @@ async fn run_background_review(
     app_event_tx: AppEventSender,
     base_snapshot: Option<GhostCommit>,
     turn_context: Option<String>,
+    prefer_fallback: bool,
 ) {
     // Best-effort: clean up any stale lock left by a cancelled review process.
     let _ = code_core::review_coord::clear_stale_lock_if_dead(Some(&config.cwd));
@@ -27298,28 +27309,34 @@ async fn run_background_review(
         let snapshot_id = snapshot.id().to_string();
         bump_snapshot_epoch_for(&config.cwd);
 
-        // Attempt to hold the shared review lock; if busy, fall back to a
-        // per-request auto-review worktree to allow safe concurrency across
-        // sessions/branches.
-        let (worktree_path, branch, worktree_guard) = match try_acquire_lock("review", &config.cwd) {
-            Ok(Some(g)) => {
-                let path = code_core::git_worktree::prepare_reusable_worktree(
-                    &git_root,
-                    AUTO_REVIEW_SHARED_WORKTREE,
-                    snapshot_id.as_str(),
-                    true,
-                )
-                .await
-                .map_err(|e| format!("failed to prepare worktree: {e}"))?;
-                (path, AUTO_REVIEW_SHARED_WORKTREE.to_string(), g)
-            }
-            Ok(None) => {
-                let (path, name, guard) =
-                    allocate_fallback_auto_review_worktree(&git_root, &snapshot_id).await?;
-                (path, name, guard)
-            }
-            Err(err) => {
-                return Err(format!("could not acquire review lock: {err}"));
+        // Attempt to hold the shared review lock; if busy or a previous review
+        // with findings is still surfaced, fall back to a per-request
+        // auto-review worktree to avoid clobbering pending fixes.
+        let (worktree_path, branch, worktree_guard) = if prefer_fallback {
+            let (path, name, guard) =
+                allocate_fallback_auto_review_worktree(&git_root, &snapshot_id).await?;
+            (path, name, guard)
+        } else {
+            match try_acquire_lock("review", &config.cwd) {
+                Ok(Some(g)) => {
+                    let path = code_core::git_worktree::prepare_reusable_worktree(
+                        &git_root,
+                        AUTO_REVIEW_SHARED_WORKTREE,
+                        snapshot_id.as_str(),
+                        true,
+                    )
+                    .await
+                    .map_err(|e| format!("failed to prepare worktree: {e}"))?;
+                    (path, AUTO_REVIEW_SHARED_WORKTREE.to_string(), g)
+                }
+                Ok(None) => {
+                    let (path, name, guard) =
+                        allocate_fallback_auto_review_worktree(&git_root, &snapshot_id).await?;
+                    (path, name, guard)
+                }
+                Err(err) => {
+                    return Err(format!("could not acquire review lock: {err}"));
+                }
             }
         };
 
@@ -31588,6 +31605,11 @@ impl ChatWidget<'_> {
         // Record state immediately to avoid duplicate launches when multiple
         // TaskComplete events fire in quick succession.
         self.turn_had_code_edits = false;
+        let had_notice = self.auto_review_notice.is_some();
+        let had_fixed_indicator = matches!(
+            self.auto_review_status,
+            Some(AutoReviewStatus { status: AutoReviewIndicatorStatus::Fixed, .. })
+        );
         self.background_review = Some(BackgroundReviewState {
             worktree_path: std::path::PathBuf::new(),
             branch: String::new(),
@@ -31615,8 +31637,16 @@ impl ChatWidget<'_> {
         let app_event_tx = self.app_event_tx.clone();
         let base_snapshot_for_task = base_snapshot.clone();
         let turn_context = self.turn_context_block();
+        let prefer_fallback = had_notice || had_fixed_indicator;
         tokio::spawn(async move {
-            run_background_review(config, app_event_tx, base_snapshot_for_task, turn_context).await;
+            run_background_review(
+                config,
+                app_event_tx,
+                base_snapshot_for_task,
+                turn_context,
+                prefer_fallback,
+            )
+            .await;
         });
     }
 
@@ -31689,11 +31719,10 @@ impl ChatWidget<'_> {
                     state.snapshot.clone(),
                 )
             } else {
-                (
-                    std::path::PathBuf::new(),
-                    agent.batch_id.clone().unwrap_or_default(),
-                    None,
-                )
+                let branch = agent.batch_id.clone().unwrap_or_default();
+                let worktree_path = resolve_auto_review_worktree_path(&self.config.cwd, &branch)
+                    .unwrap_or_default();
+                (worktree_path, branch, None)
             };
 
             let (has_findings, findings, summary) = Self::parse_agent_review_result(agent.result.as_deref());
@@ -31877,33 +31906,32 @@ impl ChatWidget<'_> {
         summary: Option<&str>,
         findings: usize,
     ) {
-        let mut message_lines = vec![MessageLine {
+        let path_text = format!("{}", worktree_path.display());
+        let has_path = !path_text.is_empty();
+
+        let summary_text = summary
+            .and_then(|text| {
+                let trimmed = text.trim();
+                (!trimmed.is_empty()).then_some(trimmed.to_string())
+            })
+            .unwrap_or_else(|| format!("{findings} issue(s) found in '{branch}'"));
+
+        let mut line = format!("Auto Review: {summary_text}");
+        if has_path {
+            line.push(' ');
+            line.push_str(&format!("Merge {path_text} to apply fixes."));
+        }
+        line.push_str(" [Ctrl+A] Show");
+
+        let message_lines = vec![MessageLine {
             kind: MessageLineKind::Paragraph,
             spans: vec![InlineSpan {
-                text: format!(
-                    "Auto Review: {findings} issue(s) found in '{branch}'. Merge {path} to apply fixes. [Ctrl+A] Show",
-                    path = worktree_path.display()
-                ),
+                text: line,
                 tone: TextTone::Default,
                 emphasis: TextEmphasis::default(),
                 entity: None,
             }],
         }];
-
-        if let Some(text) = summary {
-            let trimmed = text.trim();
-            if !trimmed.is_empty() {
-                message_lines.push(MessageLine {
-                    kind: MessageLineKind::Paragraph,
-                    spans: vec![InlineSpan {
-                        text: format!("Auto Review: {trimmed}"),
-                        tone: TextTone::Dim,
-                        emphasis: TextEmphasis::default(),
-                        entity: None,
-                    }],
-                });
-            }
-        }
 
         let state = PlainMessageState {
             id: HistoryId::ZERO,
@@ -32013,20 +32041,6 @@ impl ChatWidget<'_> {
             ));
             AutoReviewIndicatorStatus::Failed
         } else if has_findings {
-            let summary_text = summary.as_ref().and_then(|s| {
-                let trimmed = s.trim();
-                if trimmed.is_empty() { None } else { Some(trimmed) }
-            });
-            developer_note = Some(match summary_text {
-                Some(text) => format!(
-                    "[developer] Background auto-review found issues in worktree '{branch}'. Summary: {text}. Merge the worktree at {} if you want the fixes.{snapshot_note}{agent_note}",
-                    worktree_path.display()
-                ),
-                None => format!(
-                    "[developer] Background auto-review found issues in worktree '{branch}'. Merge the worktree at {} if you want the fixes.{snapshot_note}{agent_note}",
-                    worktree_path.display()
-                ),
-            });
             AutoReviewIndicatorStatus::Fixed
         } else {
             AutoReviewIndicatorStatus::Clean
