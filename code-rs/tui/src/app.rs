@@ -62,6 +62,10 @@ use tokio::sync::oneshot;
 /// we smooth out per-frame hotspots; keeps redraws responsive without pegging
 /// the main thread.
 const REDRAW_DEBOUNCE: Duration = Duration::from_millis(33);
+/// After this many consecutive backpressure skips, force a non‑blocking draw so
+/// buffered output can catch up even if POLLOUT never flips true (e.g., tmux
+/// reattach or XON/XOFF throttling).
+const BACKPRESSURE_FORCED_DRAW_SKIPS: u32 = 4;
 const DEFAULT_PTY_ROWS: u16 = 24;
 const DEFAULT_PTY_COLS: u16 = 80;
 
@@ -675,6 +679,49 @@ impl App<'_> {
             .schedule(duration, self.app_event_tx.clone());
     }
 
+    /// Attempt to draw a frame with stdout temporarily set to non‑blocking.
+    /// This lets us flush buffered UI even when POLLOUT stays false (tmux reattach,
+    /// XON/XOFF). Original flags are restored before returning.
+    fn draw_frame_with_nonblocking_stdout(
+        &mut self,
+        terminal: &mut tui::Tui,
+    ) -> std::io::Result<Result<()>> {
+        #[cfg(unix)]
+        {
+            use libc::{fcntl, F_GETFL, F_SETFL, O_NONBLOCK};
+            use std::os::fd::AsRawFd;
+
+            struct RestoreFlags {
+                fd: i32,
+                flags: i32,
+            }
+            impl Drop for RestoreFlags {
+                fn drop(&mut self) {
+                    unsafe { libc::fcntl(self.fd, libc::F_SETFL, self.flags) };
+                }
+            }
+
+            let fd = std::io::stdout().as_raw_fd();
+            let orig = unsafe { fcntl(fd, F_GETFL) };
+            if orig < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let _restore = RestoreFlags { fd, flags: orig };
+            let set = unsafe { fcntl(fd, F_SETFL, orig | O_NONBLOCK) };
+            if set < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+
+            std::io::stdout().sync_update(|_| self.draw_next_frame(terminal))
+        }
+
+        #[cfg(not(unix))]
+        {
+            // Non‑Unix platforms already treat stdout as writable; fall back to normal draw.
+            std::io::stdout().sync_update(|_| self.draw_next_frame(terminal))
+        }
+    }
+
     fn handle_login_mode_change(&mut self, using_chatgpt_auth: bool) {
         self.config.using_chatgpt_auth = using_chatgpt_auth;
         if let AppState::Chat { widget } = &mut self.app_state {
@@ -1187,7 +1234,8 @@ impl App<'_> {
                 AppEvent::Redraw => {
                     if self.timing_enabled { self.timing.on_redraw_begin(); }
                     let t0 = Instant::now();
-                    if !tui::stdout_ready_for_writes() {
+                    let mut used_nonblocking = false;
+                    let draw_result = if !tui::stdout_ready_for_writes() {
                         self.stdout_backpressure_skips = self.stdout_backpressure_skips.saturating_add(1);
                         if self.stdout_backpressure_skips == 1
                             || self.stdout_backpressure_skips % 25 == 0
@@ -1197,20 +1245,47 @@ impl App<'_> {
                                 "stdout not writable; deferring redraw to avoid blocking"
                             );
                         }
-                        self.redraw_inflight.store(false, Ordering::Release);
-                        self.app_event_tx
-                            .send(AppEvent::ScheduleFrameIn(Duration::from_millis(120)));
-                        continue;
-                    }
-                    self.stdout_backpressure_skips = 0;
-                    let draw_result = std::io::stdout().sync_update(|_| self.draw_next_frame(terminal));
+
+                        if self.stdout_backpressure_skips < BACKPRESSURE_FORCED_DRAW_SKIPS {
+                            self.redraw_inflight.store(false, Ordering::Release);
+                            self.app_event_tx
+                                .send(AppEvent::ScheduleFrameIn(Duration::from_millis(120)));
+                            continue;
+                        }
+
+                        used_nonblocking = true;
+                        tracing::warn!(
+                            skips = self.stdout_backpressure_skips,
+                            "stdout still blocked; forcing nonblocking redraw"
+                        );
+                        self.draw_frame_with_nonblocking_stdout(terminal)
+                    } else {
+                        self.stdout_backpressure_skips = 0;
+                        std::io::stdout().sync_update(|_| self.draw_next_frame(terminal))
+                    };
+
                     self.redraw_inflight.store(false, Ordering::Release);
                     let needs_follow_up = self.post_frame_redraw.swap(false, Ordering::AcqRel);
                     if needs_follow_up {
                         self.schedule_redraw();
                     }
-                    draw_result??;
-                    if self.timing_enabled { self.timing.on_redraw_end(t0); }
+
+                    match flatten_draw_result(draw_result) {
+                        Ok(()) => {
+                            self.stdout_backpressure_skips = 0;
+                            if self.timing_enabled { self.timing.on_redraw_end(t0); }
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            // Non‑blocking draw hit backpressure; try again shortly.
+                            if used_nonblocking {
+                                tracing::debug!("nonblocking redraw hit WouldBlock; rescheduling");
+                            }
+                            self.app_event_tx
+                                .send(AppEvent::ScheduleFrameIn(Duration::from_millis(120)));
+                            continue;
+                        }
+                        Err(e) => return Err(e.into()),
+                    }
                 }
                 AppEvent::StartCommitAnimation => {
                     if self
@@ -3421,15 +3496,24 @@ impl App<'_> {
         }
     }
 
-    fn normalize_non_enhanced_release_code(code: KeyCode) -> KeyCode {
-        match code {
-            KeyCode::Char('\r') | KeyCode::Char('\n') => KeyCode::Enter,
-            KeyCode::Char('\t') => KeyCode::Tab,
-            KeyCode::Char('\u{1b}') => KeyCode::Esc,
-            other => other,
-        }
+fn normalize_non_enhanced_release_code(code: KeyCode) -> KeyCode {
+    match code {
+        KeyCode::Char('\r') | KeyCode::Char('\n') => KeyCode::Enter,
+        KeyCode::Char('\t') => KeyCode::Tab,
+        KeyCode::Char('\u{1b}') => KeyCode::Esc,
+        other => other,
     }
+}
 
+}
+
+/// Flatten a nested draw result of the form `io::Result<Result<()>>` into a
+/// single `io::Result<()>`, preserving error kinds for WouldBlock handling.
+fn flatten_draw_result(res: std::io::Result<Result<()>>) -> std::io::Result<()> {
+    match res {
+        Ok(inner) => inner.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)),
+        Err(e) => Err(e),
+    }
 }
 
 struct BufferDiffProfiler {
