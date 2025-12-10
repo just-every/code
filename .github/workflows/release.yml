@@ -30,8 +30,39 @@ permissions:
   statuses: write
 
 jobs:
+  npm-auth-check:
+    name: Validate npm auth
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    timeout-minutes: 5
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - name: Fail if NPM_TOKEN is missing
+        run: |
+          set -euo pipefail
+          if [ -z "${NPM_TOKEN:-}" ]; then
+            echo "NPM_TOKEN is required for release publishing" >&2
+            exit 1
+          fi
+
+      - name: Setup Node.js for auth check
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Verify npm authentication
+        env:
+          NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > ~/.npmrc
+          npm whoami >/dev/null 2>&1 || { echo "npm auth failed (npm whoami). Ensure NPM_TOKEN is an npm automation token with publish rights to @just-every/*" >&2; exit 1; }
+
   preflight-tests:
     name: Preflight Tests (Linux fast E2E)
+    needs: [npm-auth-check]
     runs-on: ubuntu-24.04
     env:
       CARGO_TARGET_DIR: /mnt/cargo-target
@@ -128,6 +159,7 @@ jobs:
 
   determine-version:
     name: Determine Version
+    needs: [npm-auth-check]
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -999,18 +1031,15 @@ jobs:
           git push -u origin HEAD:main
 
       - name: Publish per-target npm binary packages (last)
-        if: ${{ env.NPM_TOKEN != '' }}
         env:
           NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          # If auth is missing (e.g., fork or expired token), skip gracefully to keep the
-          # release pipeline green while still exercising signing/packaging steps.
-          if ! npm whoami >/dev/null 2>&1; then
-            echo "npm auth unavailable; skipping per-target npm publish" >&2
-            exit 0
-          fi
+          config_path="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
+          mkdir -p "$(dirname "$config_path")"
+          echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > "$config_path"
+          npm whoami >/dev/null 2>&1 || { echo "npm auth failed (npm whoami). Confirm NPM_TOKEN has publish rights to @just-every/*" >&2; exit 1; }
           shopt -s nullglob
           for dir in npm-binaries/*; do
             name=$(jq -r '.name' "$dir/package.json")
@@ -1033,10 +1062,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! npm whoami >/dev/null 2>&1; then
-            echo "npm auth unavailable; skipping main npm publish" >&2
-            exit 0
-          fi
+          config_path="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
+          mkdir -p "$(dirname "$config_path")"
+          echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > "$config_path"
+          npm whoami >/dev/null 2>&1 || { echo "npm auth failed (npm whoami). Confirm NPM_TOKEN has publish rights to @just-every/*" >&2; exit 1; }
           name="@just-every/code"
           version=$(jq -r '.version' package.json)
           echo "Preparing to publish $name@$version"
