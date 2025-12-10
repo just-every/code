@@ -31991,6 +31991,14 @@ impl ChatWidget<'_> {
         agent_id: Option<String>,
         snapshot: Option<String>,
     ) {
+        // Normalize zero-count "issues" so the indicator and developer notes stay
+        // aligned with the overlay: if the parser could not produce a findings list,
+        // treat the run as clean instead of "fixed".
+        let mut has_findings = has_findings;
+        if has_findings && findings == 0 {
+            has_findings = false;
+        }
+
         let inflight_base = self
             .background_review
             .as_ref()
