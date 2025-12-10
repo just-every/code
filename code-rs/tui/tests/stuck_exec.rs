@@ -1,6 +1,8 @@
 use code_core::protocol::{
+    AgentMessageEvent,
     Event,
     EventMsg,
+    ErrorEvent,
     ExecCommandBeginEvent,
     ExecCommandEndEvent,
     TaskCompleteEvent,
@@ -91,8 +93,6 @@ fn exec_cell_clears_after_patch_flow() {
 
 #[test]
 fn exec_spinner_clears_after_final_answer() {
-    use code_core::protocol::AgentMessageEvent;
-
     let mut harness = ChatWidgetHarness::new();
     let mut seq = 0_u64;
     let call_id = "call_spinner".to_string();
@@ -123,6 +123,54 @@ fn exec_spinner_clears_after_final_answer() {
     assert!(
         !output.contains("running command"),
         "spinner should clear after final answer, but output was:\n{}",
+        output
+    );
+}
+
+#[test]
+fn exec_cell_clears_after_task_started_final_answer_without_task_complete() {
+    let mut harness = ChatWidgetHarness::new();
+    let mut seq = 0_u64;
+    let call_id = "call_final".to_string();
+    let cwd = PathBuf::from("/tmp");
+
+    harness.handle_event(Event {
+        id: "task-start".to_string(),
+        event_seq: 0,
+        msg: EventMsg::TaskStarted,
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    harness.handle_event(Event {
+        id: "exec-begin".to_string(),
+        event_seq: 1,
+        msg: EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
+            call_id: call_id.clone(),
+            command: vec!["bash".into(), "-lc".into(), "echo pending".into()],
+            cwd: cwd.clone(),
+            parsed_cmd: Vec::new(),
+        }),
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    harness.handle_event(Event {
+        id: "answer-final".to_string(),
+        event_seq: 2,
+        msg: EventMsg::AgentMessage(AgentMessageEvent {
+            message: "done".into(),
+        }),
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    let output = render_chat_widget_to_vt100(&mut harness, 80, 14);
+    assert!(
+        !output.contains("Running"),
+        "exec should finalize after final answer even without TaskComplete:\n{}",
+        output
+    );
+    assert!(
+        output.contains("done"),
+        "final answer should be visible in output:\n{}",
         output
     );
 }
@@ -329,6 +377,54 @@ fn exec_interrupts_flush_when_stream_idles() {
     assert!(
         output.contains("Thinking through the next steps"),
         "stream flush should still render the latest output:\n{}",
+        output
+    );
+}
+
+#[test]
+fn running_exec_is_finalized_when_error_event_arrives() {
+    let mut harness = ChatWidgetHarness::new();
+    let mut seq = 0_u64;
+    let call_id = "call_error".to_string();
+    let cwd = PathBuf::from("/tmp");
+
+    harness.handle_event(Event {
+        id: "task-start".to_string(),
+        event_seq: 0,
+        msg: EventMsg::TaskStarted,
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    harness.handle_event(Event {
+        id: "exec-begin-error".to_string(),
+        event_seq: 1,
+        msg: EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
+            call_id: call_id.clone(),
+            command: vec!["bash".into(), "-lc".into(), "pgrep something".into()],
+            cwd: cwd.clone(),
+            parsed_cmd: Vec::new(),
+        }),
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    harness.handle_event(Event {
+        id: "fatal-error".to_string(),
+        event_seq: 2,
+        msg: EventMsg::Error(ErrorEvent {
+            message: "fatal: provider crashed".into(),
+        }),
+        order: None,
+    });
+
+    let output = render_chat_widget_to_vt100(&mut harness, 80, 14);
+    assert!(
+        !output.contains("Running"),
+        "exec cell should not linger after fatal error:\n{}",
+        output
+    );
+    assert!(
+        output.contains("fatal: provider crashed") || output.contains("Cancelled by user."),
+        "error context should be visible after fatal error:\n{}",
         output
     );
 }

@@ -5392,7 +5392,9 @@ impl ChatWidget<'_> {
             Some(HistoryDomainRecord::Plain(state)),
         );
         self.bottom_pane.set_task_running(false);
-        self.exec.running_commands.clear();
+        // Ensure any running exec/tool cells are finalized so spinners don't linger
+        // after fatal errors.
+        self.finalize_all_running_as_interrupted();
         self.stream.clear_all();
         self.stream_state.drop_streaming = false;
         self.agents_ready_to_start = false;
@@ -11964,6 +11966,9 @@ impl ChatWidget<'_> {
                     return;
                 }
 
+                // Allow a fresh lingering-exec sweep even if the per-turn guard
+                // was tripped before any commands started.
+                self.cleared_lingering_execs_this_turn = false;
                 self.ensure_lingering_execs_cleared();
 
                 self.stream_state.seq_answer_final = Some(event.event_seq);
