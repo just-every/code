@@ -58,7 +58,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > ~/.npmrc
-          npm whoami >/dev/null 2>&1 || { echo "npm auth failed (npm whoami). Ensure NPM_TOKEN is an npm automation token with publish rights to @just-every/*; if this fails, mint a fresh token with scripts/refresh-npm-token.sh and update the NPM_TOKEN secret." >&2; exit 1; }
+          npm whoami >/dev/null 2>&1 || { echo "npm auth failed (npm whoami). Ensure NPM_TOKEN is a granular/automation token with publish rights to @just-every/*, bypass 2FA enabled, and update the NPM_TOKEN secret via npmjs.com (Access Tokens → Granular → publish + bypass 2FA)." >&2; exit 1; }
 
   preflight-tests:
     name: Preflight Tests (Linux fast E2E)
@@ -1039,7 +1039,7 @@ jobs:
           config_path="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
           mkdir -p "$(dirname "$config_path")"
           echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > "$config_path"
-          npm whoami >/dev/null 2>&1 || { echo "npm auth failed (npm whoami). Confirm NPM_TOKEN has publish rights to @just-every/*" >&2; exit 1; }
+          npm whoami >/dev/null 2>&1 || { echo "npm auth failed (npm whoami). Ensure NPM_TOKEN is a granular/automation token with publish rights to @just-every/* and bypass 2FA enabled; update the secret via npmjs.com." >&2; exit 1; }
           shopt -s nullglob
           for dir in npm-binaries/*; do
             name=$(jq -r '.name' "$dir/package.json")
@@ -1065,7 +1065,7 @@ jobs:
           config_path="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
           mkdir -p "$(dirname "$config_path")"
           echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > "$config_path"
-          npm whoami >/dev/null 2>&1 || { echo "npm auth failed (npm whoami). Confirm NPM_TOKEN has publish rights to @just-every/*" >&2; exit 1; }
+          npm whoami >/dev/null 2>&1 || { echo "npm auth failed (npm whoami). Ensure NPM_TOKEN is a granular/automation token with publish rights to @just-every/* and bypass 2FA enabled; update the secret via npmjs.com." >&2; exit 1; }
           name="@just-every/code"
           version=$(jq -r '.version' package.json)
           echo "Preparing to publish $name@$version"
