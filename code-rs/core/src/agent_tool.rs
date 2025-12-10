@@ -106,13 +106,78 @@ fn current_code_binary_path() -> Result<std::path::PathBuf, String> {
         return Ok(p);
     }
     let exe = std::env::current_exe().map_err(|e| format!("Failed to resolve current executable: {}", e))?;
-    if !exe.exists() {
-        return Err(format!(
-            "Current code binary is missing on disk ({}). It may have been deleted while running. Rebuild with ./build-fast.sh or reinstall 'code' to continue.",
-            exe.display()
-        ));
+
+    // If the kernel reports the path as "(deleted)", strip the suffix and prefer the live file
+    // at the same location (common when a rebuild replaces the inode under a long-running process).
+    let cleaned = strip_deleted_suffix(&exe);
+    if cleaned.exists() {
+        return Ok(cleaned);
     }
-    Ok(exe)
+
+    if let Some(fallback) = fallback_code_binary_path() {
+        return Ok(fallback);
+    }
+
+    Err(format!(
+        "Current code binary is missing on disk ({}). It may have been deleted while running. Rebuild with ./build-fast.sh or reinstall 'code' to continue.",
+        exe.display()
+    ))
+}
+
+fn strip_deleted_suffix(path: &std::path::Path) -> std::path::PathBuf {
+    const DELETED_SUFFIX: &str = " (deleted)";
+    let s = path.to_string_lossy();
+    if let Some(stripped) = s.strip_suffix(DELETED_SUFFIX) {
+        return std::path::PathBuf::from(stripped);
+    }
+    path.to_path_buf()
+}
+
+fn fallback_code_binary_path() -> Option<std::path::PathBuf> {
+    // If the running binary was pruned (e.g., shared target cache rotation), try to locate
+    // a fresh dev build in the repository, and if missing, trigger a quick rebuild.
+    let repo_root = find_repo_root(std::env::current_dir().ok()?)?;
+    let workspace = repo_root.join("code-rs");
+
+    // Probe likely build outputs in priority order.
+    let mut candidates = vec![
+        workspace.join("target/dev-fast/code"),
+        workspace.join("target/debug/code"),
+        workspace.join("target/release-prod/code"),
+        workspace.join("target/release/code"),
+        workspace.join("bin/code"),
+    ];
+
+    if let Some(found) = candidates.iter().find(|p| p.exists()).cloned() {
+        return Some(found);
+    }
+
+    // Best-effort rebuild; swallow errors so caller can surface the original message.
+    let status = std::process::Command::new("bash")
+        .current_dir(&repo_root)
+        .args(["-lc", "./build-fast.sh >/dev/null 2>&1"])
+        .status()
+        .ok();
+
+    if status.map(|s| s.success()).unwrap_or(false) {
+        candidates.retain(|p| p.exists());
+        if let Some(found) = candidates.first().cloned() {
+            return Some(found);
+        }
+    }
+
+    None
+}
+
+fn find_repo_root(start: std::path::PathBuf) -> Option<std::path::PathBuf> {
+    let mut dir = Some(start.as_path());
+    while let Some(path) = dir {
+        if path.join(".git").exists() {
+            return Some(path.to_path_buf());
+        }
+        dir = path.parent();
+    }
+    None
 }
 
 /// Format a helpful error message when an agent command is not found.

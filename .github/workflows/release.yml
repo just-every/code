@@ -1005,10 +1005,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! npm whoami >/dev/null 2>&1; then
-            echo "Skip per-target publish: npm auth failed (missing or expired token)"
-            exit 0
-          fi
+          npm whoami >/dev/null 2>&1 || { echo "npm auth failed (missing or expired token)" >&2; exit 1; }
           shopt -s nullglob
           for dir in npm-binaries/*; do
             name=$(jq -r '.name' "$dir/package.json")
@@ -1031,10 +1028,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! npm whoami >/dev/null 2>&1; then
-            echo "Skip main publish: npm auth failed (missing or expired token)"
-            exit 0
-          fi
+          npm whoami >/dev/null 2>&1 || { echo "npm auth failed (missing or expired token)" >&2; exit 1; }
           name="@just-every/code"
           version=$(jq -r '.version' package.json)
           echo "Preparing to publish $name@$version"
