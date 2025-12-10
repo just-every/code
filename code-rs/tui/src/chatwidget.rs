@@ -15,6 +15,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime};
+use std::fs;
 use std::process::{Command, Output};
 use std::str::FromStr;
 use base64::prelude::{Engine as _, BASE64_STANDARD};
@@ -1414,6 +1415,134 @@ fn detect_auto_review_phase(progress: Option<&str>) -> AutoReviewPhase {
 }
 
 const SKIP_REVIEW_PROGRESS_SENTINEL: &str = "Another review is already running; skipping this /review.";
+const AUTO_REVIEW_SHARED_WORKTREE: &str = "auto-review";
+const AUTO_REVIEW_FALLBACK_PREFIX: &str = "auto-review-";
+const AUTO_REVIEW_FALLBACK_MAX: usize = 3;
+const AUTO_REVIEW_FALLBACK_MAX_AGE_SECS: u64 = 12 * 60 * 60; // 12h
+
+fn auto_review_branches_dir(git_root: &Path) -> Result<PathBuf, String> {
+    let repo_name = git_root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("repo");
+    let mut code_home = code_core::config::find_code_home()
+        .map_err(|e| format!("failed to locate code home: {e}"))?;
+    code_home = code_home.join("working").join(repo_name).join("branches");
+    std::fs::create_dir_all(&code_home)
+        .map_err(|e| format!("failed to create branches dir: {e}"))?;
+    Ok(code_home)
+}
+
+async fn remove_worktree_path(git_root: &Path, path: &Path) -> Result<(), String> {
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| "invalid worktree path".to_string())?;
+    let remove = tokio::process::Command::new("git")
+        .current_dir(git_root)
+        .args(["worktree", "remove", "-f", path_str])
+        .output()
+        .await
+        .map_err(|e| format!("failed to remove worktree: {e}"))?;
+    if !remove.status.success() {
+        let stderr = String::from_utf8_lossy(&remove.stderr);
+        tracing::warn!("failed to remove fallback worktree via git: {}", stderr.trim());
+    }
+    if path.exists() {
+        if let Err(e) = tokio::fs::remove_dir_all(path).await {
+            tracing::warn!("failed to delete fallback worktree dir {:?}: {}", path, e);
+        }
+    }
+    Ok(())
+}
+
+async fn cleanup_fallback_worktrees(git_root: &Path) -> Result<(), String> {
+    let branches_dir = auto_review_branches_dir(git_root)?;
+    let mut entries: Vec<(PathBuf, SystemTime)> = Vec::new();
+    if let Ok(read_dir) = fs::read_dir(&branches_dir) {
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            let name = entry
+                .file_name()
+                .into_string()
+                .unwrap_or_default();
+            if !name.starts_with(AUTO_REVIEW_FALLBACK_PREFIX) || name == AUTO_REVIEW_SHARED_WORKTREE {
+                continue;
+            }
+            let meta = entry.metadata().ok();
+            let mtime = meta
+                .and_then(|m| m.modified().ok())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            entries.push((path, mtime));
+        }
+    }
+
+    // Age-based prune
+    let now = SystemTime::now();
+    for (path, mtime) in entries.iter() {
+        if let Ok(elapsed) = now.duration_since(*mtime) {
+            if elapsed.as_secs() > AUTO_REVIEW_FALLBACK_MAX_AGE_SECS {
+                if let Ok(Some(g)) = try_acquire_lock("review-fallback", path) {
+                    drop(g);
+                    let _ = remove_worktree_path(git_root, path).await;
+                }
+            }
+        }
+    }
+
+    // Count-based prune
+    let mut remaining: Vec<(PathBuf, SystemTime)> = entries
+        .into_iter()
+        .filter(|(p, _)| p.exists())
+        .collect();
+    remaining.sort_by_key(|(_, t)| *t);
+    while remaining.len() > AUTO_REVIEW_FALLBACK_MAX {
+        if let Some((path, _)) = remaining.first().cloned() {
+            if let Ok(Some(g)) = try_acquire_lock("review-fallback", &path) {
+                drop(g);
+                let _ = remove_worktree_path(git_root, &path).await;
+                remaining.remove(0);
+            } else {
+                // Busy; skip pruning this one
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn allocate_fallback_auto_review_worktree(
+    git_root: &Path,
+    snapshot_id: &str,
+) -> Result<(PathBuf, String, ReviewGuard), String> {
+    cleanup_fallback_worktrees(git_root).await?;
+    let branches_dir = auto_review_branches_dir(git_root)?;
+    let short = snapshot_id.chars().take(8).collect::<String>();
+
+    for attempt in 0..AUTO_REVIEW_FALLBACK_MAX {
+        let suffix = if attempt == 0 { String::new() } else { format!("-{}", attempt + 1) };
+        let name = format!("{}{}{}", AUTO_REVIEW_FALLBACK_PREFIX, short, suffix);
+        let path = branches_dir.join(&name);
+
+        match try_acquire_lock("review-fallback", &path) {
+            Ok(Some(guard)) => {
+                let worktree_path = code_core::git_worktree::prepare_reusable_worktree(
+                    git_root,
+                    &name,
+                    snapshot_id,
+                    true,
+                )
+                .await
+                .map_err(|e| format!("failed to prepare fallback worktree: {e}"))?;
+                return Ok((worktree_path, name, guard));
+            }
+            Ok(None) => continue, // in use, try next suffix
+            Err(err) => return Err(format!("could not acquire fallback review lock: {err}")),
+        }
+    }
+
+    Err("Auto review fallback pool is busy; try again soon.".to_string())
+}
 
 #[derive(Clone, Debug)]
 struct AutoReviewNotice {
@@ -27116,42 +27245,34 @@ async fn run_background_review(
     // Best-effort: clean up any stale lock left by a cancelled review process.
     let _ = code_core::review_coord::clear_stale_lock_if_dead(Some(&config.cwd));
 
-    // Share the same global review lock as `/review` so we never collide with
-    // foreground/manual runs. This prevents spawning a background agent that
-    // immediately exits with "already running".
-    let review_guard = match try_acquire_lock("review", &config.cwd) {
-        Ok(Some(g)) => g,
-        Ok(None) => {
+    // Prevent duplicate auto-reviews within this process: if any AutoReview agent
+    // is already pending/running, bail early with a benign notice.
+    {
+        let mgr = code_core::AGENT_MANAGER.read().await;
+        let busy = mgr
+            .list_agents(None, Some("auto-review".to_string()), false)
+            .into_iter()
+            .any(|agent| {
+                let status = format!("{:?}", agent.status).to_ascii_lowercase();
+                status == "running" || status == "pending"
+            });
+        if busy {
             app_event_tx.send(AppEvent::BackgroundReviewFinished {
                 worktree_path: std::path::PathBuf::new(),
                 branch: String::new(),
                 has_findings: false,
                 findings: 0,
-                summary: Some("Auto review skipped: another review is already running.".to_string()),
+                summary: Some("Auto review skipped: another auto review is already running.".to_string()),
                 error: None,
                 agent_id: None,
                 snapshot: None,
             });
             return;
         }
-        Err(err) => {
-            app_event_tx.send(AppEvent::BackgroundReviewFinished {
-                worktree_path: std::path::PathBuf::new(),
-                branch: String::new(),
-                has_findings: false,
-                findings: 0,
-                summary: None,
-                error: Some(format!("could not acquire review lock: {err}")),
-                agent_id: None,
-                snapshot: None,
-            });
-            return;
-        }
-    };
+    }
 
     let app_event_tx_clone = app_event_tx.clone();
     let outcome = async move {
-        let guard = review_guard;
         let git_root = code_core::git_worktree::get_git_root_from(&config.cwd)
             .await
             .map_err(|e| format!("failed to detect git root: {e}"))?;
@@ -27176,22 +27297,31 @@ async fn run_background_review(
 
         let snapshot_id = snapshot.id().to_string();
         bump_snapshot_epoch_for(&config.cwd);
-        // Reuse a single detached worktree for auto-review to avoid churn; keep
-        // gitignored build outputs for faster incremental builds.
-        let worktree_path = code_core::git_worktree::prepare_reusable_worktree(
-            &git_root,
-            "auto-review",
-            snapshot_id.as_str(),
-            true,
-        )
-        .await
-        .map_err(|e| format!("failed to prepare worktree: {e}"))?;
-        let branch = "auto-review".to_string();
 
-        // Release the review lock before spawning the agent so the downstream
-        // /review invocation inside the agent can acquire it. This prevents the
-        // CLI from emitting "Another review is already running" and skipping.
-        drop(guard);
+        // Attempt to hold the shared review lock; if busy, fall back to a
+        // per-request auto-review worktree to allow safe concurrency across
+        // sessions/branches.
+        let (worktree_path, branch, worktree_guard) = match try_acquire_lock("review", &config.cwd) {
+            Ok(Some(g)) => {
+                let path = code_core::git_worktree::prepare_reusable_worktree(
+                    &git_root,
+                    AUTO_REVIEW_SHARED_WORKTREE,
+                    snapshot_id.as_str(),
+                    true,
+                )
+                .await
+                .map_err(|e| format!("failed to prepare worktree: {e}"))?;
+                (path, AUTO_REVIEW_SHARED_WORKTREE.to_string(), g)
+            }
+            Ok(None) => {
+                let (path, name, guard) =
+                    allocate_fallback_auto_review_worktree(&git_root, &snapshot_id).await?;
+                (path, name, guard)
+            }
+            Err(err) => {
+                return Err(format!("could not acquire review lock: {err}"));
+            }
+        };
 
         // Ensure Codex models are invoked via the `code-` CLI shim so they exist on PATH.
         fn ensure_code_prefix(model: &str) -> String {
@@ -27204,6 +27334,22 @@ async fn run_background_review(
         }
 
         let review_model = ensure_code_prefix(&config.auto_review_model);
+
+        // Allow the spawned agent to reuse the parent's review lock without blocking.
+        let mut env: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        env.insert("CODE_REVIEW_LOCK_LEASE".to_string(), "1".to_string());
+        let agent_config = code_core::config_types::AgentConfig {
+            name: review_model.clone(),
+            command: String::new(),
+            args: Vec::new(),
+            read_only: false,
+            enabled: true,
+            description: None,
+            env: Some(env),
+            args_read_only: None,
+            args_write: None,
+            instructions: None,
+        };
 
         // Use the /review entrypoint so upstream wiring (model defaults, review formatting) stays intact.
         let mut review_prompt = format!(
@@ -27226,13 +27372,14 @@ async fn run_background_review(
                 Vec::new(),
                 false,
                 Some(branch.clone()),
-                None,
+                Some(agent_config.clone()),
                 Some(branch.clone()),
                 Some(snapshot_id.clone()),
                 Some(code_core::protocol::AgentSourceKind::AutoReview),
                 config.auto_review_model_reasoning_effort.into(),
             )
             .await;
+        insert_background_lock(&agent_id, worktree_guard);
         drop(manager);
 
         app_event_tx_clone.send(AppEvent::BackgroundReviewStarted {
@@ -27241,7 +27388,7 @@ async fn run_background_review(
             agent_id: Some(agent_id.clone()),
             snapshot: Some(snapshot_id.clone()),
         });
-        Ok((worktree_path, branch, agent_id, snapshot_id))
+        Ok::<(PathBuf, String, String, String), String>((worktree_path, branch, agent_id, snapshot_id))
     }
     .await;
 
@@ -31412,7 +31559,25 @@ impl ChatWidget<'_> {
         release_background_lock(&agent_id);
         self.background_review = None;
         self.background_review_guard = None;
-        self.clear_auto_review_indicator();
+        // Cancel the stale agent to avoid duplicate runs and mark it processed so
+        // a late status update does not re-inflate the indicator.
+        if let Some(id) = agent_id.clone() {
+            self.processed_auto_review_agents.insert(id.clone());
+            tokio::spawn(async move {
+                let mut mgr = code_core::AGENT_MANAGER.write().await;
+                let _ = mgr.cancel_agent(&id).await;
+            });
+        }
+
+        self.set_auto_review_indicator(
+            AutoReviewIndicatorStatus::Failed,
+            None,
+            AutoReviewPhase::Reviewing,
+        );
+        self.submit_hidden_text_message_with_preface(
+            "Auto review watchdog".to_string(),
+            "[developer] Background auto review timed out after 5 minutes; cancelling the stale run and retrying.".to_string(),
+        );
 
         if let Some(base_commit) = base {
             self.queue_skipped_auto_review(base_commit);

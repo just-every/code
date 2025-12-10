@@ -636,16 +636,22 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
     // Clear stale review lock in case a prior process crashed.
     let _ = clear_stale_lock_if_dead(Some(&config.cwd));
 
+    let skip_review_lock = std::env::var("CODE_REVIEW_LOCK_LEASE")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+
     let _initial_prompt_task_id = if let Some(mut review_request) = review_request.clone() {
         // Cross-process review coordination
-        match try_acquire_lock("review", &config.cwd) {
-            Ok(Some(g)) => _review_guard = Some(g),
-            Ok(None) => {
-                eprintln!("Another review is already running; skipping this /review.");
-                return Ok(());
-            }
-            Err(err) => {
-                eprintln!("Warning: could not acquire review lock: {err}");
+        if !skip_review_lock {
+            match try_acquire_lock("review", &config.cwd) {
+                Ok(Some(g)) => _review_guard = Some(g),
+                Ok(None) => {
+                    eprintln!("Another review is already running; skipping this /review.");
+                    return Ok(());
+                }
+                Err(err) => {
+                    eprintln!("Warning: could not acquire review lock: {err}");
+                }
             }
         }
 
@@ -813,6 +819,11 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                 auto_resolve_base_snapshot = None;
                                 auto_resolve_fix_guard = None;
                                 auto_resolve_followup_guard = None;
+                                if !shutdown_requested {
+                                    shutdown_requested = true;
+                                    auto_resolve_base_snapshot = None;
+                                    conversation.submit(Op::Shutdown).await?;
+                                }
                                 continue;
                             }
                             if let Some(state) = auto_resolve_state.as_mut() {
@@ -841,6 +852,11 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                 auto_resolve_base_snapshot = None;
                                 auto_resolve_fix_guard = None;
                                 auto_resolve_followup_guard = None;
+                                if !shutdown_requested {
+                                    shutdown_requested = true;
+                                    auto_resolve_base_snapshot = None;
+                                    conversation.submit(Op::Shutdown).await?;
+                                }
                                 continue;
                             }
                             if let Some(base) = auto_resolve_base_snapshot.as_ref() {
@@ -850,6 +866,11 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                     auto_resolve_base_snapshot = None;
                                     auto_resolve_followup_guard = None;
                                     auto_resolve_fix_guard = None;
+                                    if !shutdown_requested {
+                                        shutdown_requested = true;
+                                        auto_resolve_base_snapshot = None;
+                                        conversation.submit(Op::Shutdown).await?;
+                                    }
                                     continue;
                                 }
                                 // stale epoch check
@@ -861,6 +882,11 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                             auto_resolve_base_snapshot = None;
                                             auto_resolve_followup_guard = None;
                                             auto_resolve_fix_guard = None;
+                                            if !shutdown_requested {
+                                                shutdown_requested = true;
+                                                auto_resolve_base_snapshot = None;
+                                                conversation.submit(Op::Shutdown).await?;
+                                            }
                                             continue;
                                         }
                                     }
@@ -870,6 +896,11 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                         eprintln!("Auto-resolve: snapshot epoch advanced; aborting follow-up review.");
                                         auto_resolve_state = None;
                                         auto_resolve_base_snapshot = None;
+                                        if !shutdown_requested {
+                                            shutdown_requested = true;
+                                            auto_resolve_base_snapshot = None;
+                                            conversation.submit(Op::Shutdown).await?;
+                                        }
                                         continue;
                                     }
                                 }
@@ -888,6 +919,11 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                             auto_resolve_base_snapshot = None;
                                             auto_resolve_followup_guard = None;
                                             auto_resolve_fix_guard = None;
+                                            if !shutdown_requested {
+                                                shutdown_requested = true;
+                                                auto_resolve_base_snapshot = None;
+                                                conversation.submit(Op::Shutdown).await?;
+                                            }
                                             continue;
                                         }
 
@@ -918,6 +954,11 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                         auto_resolve_base_snapshot = None;
                                         auto_resolve_followup_guard = None;
                                         auto_resolve_fix_guard = None;
+                                        if !shutdown_requested {
+                                            shutdown_requested = true;
+                                            auto_resolve_base_snapshot = None;
+                                            conversation.submit(Op::Shutdown).await?;
+                                        }
                                     }
                                 }
                             }
@@ -933,6 +974,11 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                     eprintln!("Auto-resolve: base snapshot no longer matches current HEAD; stopping to avoid stale review.");
                                     auto_resolve_state = None;
                                     auto_resolve_base_snapshot = None;
+                                    if !shutdown_requested {
+                                        shutdown_requested = true;
+                                        auto_resolve_base_snapshot = None;
+                                        conversation.submit(Op::Shutdown).await?;
+                                    }
                                     continue;
                                 }
                                 let current_epoch = current_snapshot_epoch_for(&config.cwd);
@@ -947,6 +993,11 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                         eprintln!("Auto-resolve: snapshot epoch advanced; aborting follow-up review.");
                                         auto_resolve_state = None;
                                         auto_resolve_base_snapshot = None;
+                                        if !shutdown_requested {
+                                            shutdown_requested = true;
+                                            auto_resolve_base_snapshot = None;
+                                            conversation.submit(Op::Shutdown).await?;
+                                        }
                                         continue;
                                     }
                                 }
@@ -963,6 +1014,11 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                             eprintln!("Auto-resolve: follow-up snapshot is identical to last reviewed commit; ending loop to avoid duplicate review.");
                                             auto_resolve_state = None;
                                             auto_resolve_base_snapshot = None;
+                                            if !shutdown_requested {
+                                                shutdown_requested = true;
+                                                auto_resolve_base_snapshot = None;
+                                                conversation.submit(Op::Shutdown).await?;
+                                            }
                                             continue;
                                         }
 

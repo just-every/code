@@ -96,9 +96,23 @@ use crate::protocol::AgentInfo;
 
 fn current_code_binary_path() -> Result<std::path::PathBuf, String> {
     if let Ok(path) = std::env::var("CODE_BINARY_PATH") {
-        return Ok(std::path::PathBuf::from(path));
+        let p = std::path::PathBuf::from(path);
+        if !p.exists() {
+            return Err(format!(
+                "CODE_BINARY_PATH points to '{}' but that file is missing. Rebuild with ./build-fast.sh or update CODE_BINARY_PATH.",
+                p.display()
+            ));
+        }
+        return Ok(p);
     }
-    std::env::current_exe().map_err(|e| format!("Failed to resolve current executable: {}", e))
+    let exe = std::env::current_exe().map_err(|e| format!("Failed to resolve current executable: {}", e))?;
+    if !exe.exists() {
+        return Err(format!(
+            "Current code binary is missing on disk ({}). It may have been deleted while running. Rebuild with ./build-fast.sh or reinstall 'code' to continue.",
+            exe.display()
+        ));
+    }
+    Ok(exe)
 }
 
 /// Format a helpful error message when an agent command is not found.
@@ -1054,7 +1068,7 @@ fn command_exists(cmd: &str) -> bool {
     let model_lower = model.to_lowercase();
     let command_lower = command_for_spawn.to_ascii_lowercase();
     fn is_known_family(s: &str) -> bool {
-        matches!(s, "claude" | "gemini" | "qwen" | "codex" | "code" | "cloud")
+        matches!(s, "claude" | "gemini" | "qwen" | "codex" | "code" | "cloud" | "coder")
     }
 
     let slug_for_defaults = spec_opt.map(|spec| spec.slug).unwrap_or(model);
@@ -1075,7 +1089,11 @@ fn command_exists(cmd: &str) -> bool {
     let mut cmd = if use_current_exe {
         match current_code_binary_path() {
             Ok(path) => Command::new(path),
-            Err(e) => return Err(e),
+            Err(e) => {
+                return Err(format!(
+                    "Current code binary is unavailable (deleted or moved): {e}. Rebuild with ./build-fast.sh or reinstall 'code' to continue."
+                ));
+            }
         }
     } else {
         Command::new(command_for_spawn.clone())
@@ -1477,7 +1495,7 @@ pub(crate) fn should_use_current_exe_for_agent(
     command_missing: bool,
     config: Option<&AgentConfig>,
 ) -> bool {
-    if !matches!(family, "code" | "codex" | "cloud") {
+    if !matches!(family, "code" | "codex" | "cloud" | "coder") {
         return false;
     }
 
