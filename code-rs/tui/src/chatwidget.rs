@@ -15322,8 +15322,16 @@ impl ChatWidget<'_> {
             );
 
             if is_terminal {
-                let (has_findings, findings_count, summary) =
+                let (mut has_findings, findings_count, summary) =
                     Self::parse_agent_review_result(entry.result.as_deref());
+
+                // Avoid showing a warning when we didn't get an explicit findings list.
+                // Some heuristic parses can claim "issues" but provide a zero count; treat those as clean
+                // to keep the UI consistent with successful, issue-free reviews.
+                if has_findings && findings_count == 0 {
+                    has_findings = false;
+                }
+
                 let mut label = if has_findings {
                     let plural = if findings_count == 1 { "issue" } else { "issues" };
                     format!("Auto Review: {findings_count} {plural} found")
