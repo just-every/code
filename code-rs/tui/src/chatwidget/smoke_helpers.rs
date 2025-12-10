@@ -8,6 +8,7 @@ use crate::markdown_render::render_markdown_text;
 use crate::tui::TerminalInfo;
 use crate::bottom_pane::SettingsSection;
 use crossterm::event::KeyEvent;
+use code_auto_drive_core::AutoRunPhase;
 use code_core::config::{Config, ConfigOverrides, ConfigToml};
 use code_core::history::state::HistoryRecord;
 use code_core::protocol::{BackgroundEventEvent, Event, EventMsg, OrderMeta};
@@ -635,6 +636,10 @@ impl ChatWidgetHarness {
             let chat = self.chat();
             chat.auto_state.on_prompt_submitted();
             chat.auto_state.on_begin_review(summary.is_some());
+            // Ensure snapshots do not depend on global review lock availability.
+            chat.auto_state.set_phase(AutoRunPhase::AwaitingReview {
+                diagnostics_pending: summary.is_some(),
+            });
             chat.auto_state.set_coordinator_waiting(false);
             if let Some(text) = summary {
                 chat.auto_state.current_summary = Some(text.clone());
