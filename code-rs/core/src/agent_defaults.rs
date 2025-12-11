@@ -95,7 +95,16 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         model_args: &["--model", "gpt-5.1-codex-max"],
         description: "Frontline coding agent for all work; top of the line speed, reasoning and execution.",
         enabled_by_default: true,
-        aliases: &["code-gpt-5.1-codex", "code-gpt-5-codex", "coder", "code", "codex"],
+        aliases: &[
+            "code-gpt-5.1-codex",
+            "code-gpt-5-codex",
+            "gpt-5.1-codex-max",
+            "gpt-5.1-codex",
+            "gpt-5-codex",
+            "coder",
+            "code",
+            "codex",
+        ],
         gating_env: None,
         is_frontline: true,
     },
@@ -108,7 +117,13 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         model_args: &["--model", "gpt-5.1-codex-mini"],
         description: "Straightforward coding tasks: cheapest and quick; great for implementation, refactors, multi-file edits, and code reviews.",
         enabled_by_default: true,
-        aliases: &["code-gpt-5-codex-mini", "codex-mini", "coder-mini"],
+        aliases: &[
+            "code-gpt-5-codex-mini",
+            "gpt-5.1-codex-mini",
+            "gpt-5-codex-mini",
+            "codex-mini",
+            "coder-mini",
+        ],
         gating_env: None,
         is_frontline: false,
     },
@@ -121,7 +136,12 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         model_args: &["--model", "gpt-5.1"],
         description: "Mixed tasks that blend code with design/product reasoning; slower speed, but larger breadth.",
         enabled_by_default: true,
-        aliases: &["code-gpt-5", "coder-gpt-5"],
+        aliases: &[
+            "code-gpt-5",
+            "gpt-5.1",
+            "gpt-5",
+            "coder-gpt-5",
+        ],
         gating_env: None,
         is_frontline: false,
     },
@@ -412,5 +432,20 @@ mod tests {
     fn cloud_defaults_are_empty_both_modes() {
         assert!(default_params_for("cloud", true).is_empty());
         assert!(default_params_for("cloud", false).is_empty());
+    }
+
+    #[test]
+    fn gpt_codex_aliases_resolve() {
+        let max = agent_model_spec("gpt-5.1-codex").expect("alias for max present");
+        assert_eq!(max.slug, "code-gpt-5.1-codex-max");
+
+        let max_direct = agent_model_spec("gpt-5.1-codex-max").expect("max present");
+        assert_eq!(max_direct.slug, "code-gpt-5.1-codex-max");
+
+        let mini = agent_model_spec("gpt-5.1-codex-mini").expect("mini alias present");
+        assert_eq!(mini.slug, "code-gpt-5.1-codex-mini");
+
+        let mid = agent_model_spec("gpt-5.1").expect("mid alias present");
+        assert_eq!(mid.slug, "code-gpt-5.1");
     }
 }

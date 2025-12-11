@@ -320,22 +320,37 @@ fn empty_exit_summary() -> ExitSummary {
     }
 }
 
-pub fn resume_command_name() -> &'static str {
-    static COMMAND: OnceLock<&'static str> = OnceLock::new();
-    COMMAND.get_or_init(|| {
-        let arg0 = std::env::args().next();
-        let invoked = arg0
-            .as_ref()
-            .and_then(|value| std::path::Path::new(value).file_name())
-            .and_then(|name| name.to_str())
-            .unwrap_or("");
-
-        if invoked.eq_ignore_ascii_case("coder") {
-            "coder"
-        } else {
-            "code"
+fn derive_resume_command_name(arg0: Option<std::ffi::OsString>) -> String {
+    if let Some(raw) = arg0 {
+        if let Some(name) = std::path::Path::new(&raw)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty())
+        {
+            return name.to_string();
         }
-    })
+
+        let lossy = raw.to_string_lossy();
+        if !lossy.is_empty() {
+            return lossy.into_owned();
+        }
+    }
+
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "code".to_string())
+}
+
+pub fn resume_command_name() -> &'static str {
+    static COMMAND: OnceLock<String> = OnceLock::new();
+    COMMAND
+        .get_or_init(|| derive_resume_command_name(std::env::args_os().next()))
+        .as_str()
 }
 
 pub async fn run_main(
@@ -1365,5 +1380,27 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    #[test]
+    fn resume_command_uses_invocation_basename() {
+        let derived = derive_resume_command_name(Some(std::ffi::OsString::from(
+            "/usr/local/bin/coder",
+        )));
+        assert_eq!(derived, "coder");
+    }
+
+    #[test]
+    fn resume_command_falls_back_to_current_exe() {
+        let expected = std::env::current_exe()
+            .ok()
+            .and_then(|path| {
+                path.file_name()
+                    .and_then(|value| value.to_str())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| "code".to_string());
+
+        assert_eq!(derive_resume_command_name(None), expected);
     }
 }

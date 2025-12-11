@@ -10546,8 +10546,34 @@ async fn handle_container_exec_with_params(
                     };
                 }
             }
+
             let changes = convert_apply_patch_to_protocol(&action);
             turn_diff_tracker.on_patch_begin(&changes);
+
+            let mut hook_ctx = ExecCommandContext {
+                sub_id: sub_id.clone(),
+                call_id: call_id.clone(),
+                command_for_display: params.command.clone(),
+                cwd: params.cwd.clone(),
+                apply_patch: Some(ApplyPatchCommandContext {
+                    user_explicitly_approved_this_action: false,
+                    changes: changes.clone(),
+                }),
+            };
+
+            // FileBeforeWrite hook for apply_patch
+            sess
+                .run_hooks_for_exec_event(
+                    turn_diff_tracker,
+                    ProjectHookEvent::FileBeforeWrite,
+                    &hook_ctx,
+                    &params,
+                    None,
+                    attempt_req,
+                )
+                .await;
+
+            let patch_start = std::time::Instant::now();
 
             match apply_patch::apply_patch(
                 sess,
@@ -10561,6 +10587,10 @@ async fn handle_container_exec_with_params(
             {
                 ApplyPatchResult::Reply(item) => return item,
                 ApplyPatchResult::Applied(run) => {
+                    hook_ctx.apply_patch.as_mut().map(|ctx| {
+                        ctx.user_explicitly_approved_this_action = !run.auto_approved;
+                    });
+
                     let order_begin = crate::protocol::OrderMeta {
                         request_ordinal: attempt_req,
                         output_index,
@@ -10592,6 +10622,34 @@ async fn handle_container_exec_with_params(
                         seq_hint.map(|h| h.saturating_add(1)),
                     );
                     let _ = sess.tx_event.send(event).await;
+
+                    let hook_output = ExecToolCallOutput {
+                        exit_code: if run.success { 0 } else { 1 },
+                        stdout: StreamOutput::new(run.stdout.clone()),
+                        stderr: StreamOutput::new(run.stderr.clone()),
+                        aggregated_output: StreamOutput::new({
+                            if run.stdout.is_empty() {
+                                run.stderr.clone()
+                            } else if run.stderr.is_empty() {
+                                run.stdout.clone()
+                            } else {
+                                format!("{}\n{}", run.stdout, run.stderr)
+                            }
+                        }),
+                        duration: patch_start.elapsed(),
+                        timed_out: false,
+                    };
+
+                    sess
+                        .run_hooks_for_exec_event(
+                            turn_diff_tracker,
+                            ProjectHookEvent::FileAfterWrite,
+                            &hook_ctx,
+                            &params,
+                            Some(&hook_output),
+                            attempt_req,
+                        )
+                        .await;
 
                     if let Ok(Some(unified_diff)) = turn_diff_tracker.get_unified_diff() {
                         let diff_event = sess.make_event(
@@ -10746,6 +10804,19 @@ async fn handle_container_exec_with_params(
     let display_label = crate::util::strip_bash_lc_and_escape(&exec_command_context.command_for_display);
     let params = maybe_run_with_user_profile(params, sess);
 
+    // ToolBefore hook for shell/container.exec commands
+    let params_for_hooks = params.clone();
+    sess
+        .run_hooks_for_exec_event(
+            turn_diff_tracker,
+            ProjectHookEvent::ToolBefore,
+            &exec_command_context,
+            &params_for_hooks,
+            None,
+            attempt_req,
+        )
+        .await;
+
     // Prepare tail buffer and background registry entry
     let tail_buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
     let notify = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -10779,6 +10850,12 @@ async fn handle_container_exec_with_params(
         );
     }
 
+    let sess_for_hooks = sess.self_handle.upgrade();
+    let params_for_after_hooks = params_for_hooks.clone();
+    let exec_ctx_for_hooks = exec_command_context.clone();
+    let exec_ctx_for_task = exec_command_context.clone();
+    let attempt_req_for_task = attempt_req;
+
     // Emit BEGIN event using the normal path so the TUI shows a running cell
     sess
         .on_exec_command_begin(
@@ -10806,7 +10883,7 @@ async fn handle_container_exec_with_params(
     let task_handle = tokio::spawn(async move {
         // Build stdout stream with tail capture. We cannot stamp via `Session` here,
         // but deltas will be delivered with neutral ordering which the UI tolerates.
-        let stdout_stream = if exec_command_context.apply_patch.is_some() {
+        let stdout_stream = if exec_ctx_for_task.apply_patch.is_some() {
             None
         } else {
             Some(StdoutStream {
@@ -10865,6 +10942,22 @@ async fn handle_container_exec_with_params(
         {
             let mut slot = result_cell_for_task.lock().unwrap();
             *slot = Some(out.clone());
+        }
+
+        if backgrounded_task.load(std::sync::atomic::Ordering::Relaxed) {
+            if let Some(sess_arc) = sess_for_hooks.clone() {
+                let mut hook_tracker = TurnDiffTracker::new();
+                sess_arc
+                    .run_hooks_for_exec_event(
+                        &mut hook_tracker,
+                        ProjectHookEvent::ToolAfter,
+                        &exec_ctx_for_hooks,
+                        &params_for_after_hooks,
+                        Some(&out),
+                        attempt_req_for_task,
+                    )
+                    .await;
+            }
         }
         // Only emit background completion notifications if the command actually backgrounded
         if backgrounded_task.load(std::sync::atomic::Ordering::Relaxed) {
@@ -10938,6 +11031,18 @@ async fn handle_container_exec_with_params(
                     content.push_str(harness);
                 }
             }
+
+            sess
+                .run_hooks_for_exec_event(
+                    turn_diff_tracker,
+                    ProjectHookEvent::ToolAfter,
+                    &exec_command_context,
+                    &params_for_hooks,
+                    Some(&done),
+                    attempt_req,
+                )
+                .await;
+
             return ResponseInputItem::FunctionCallOutput { call_id: call_id.clone(), output: FunctionCallOutputPayload { content, success: Some(is_success) } };
         } else {
             // Fallback (should not happen): indicate completion without detail
