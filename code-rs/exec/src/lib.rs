@@ -33,10 +33,13 @@ use code_core::review_coord::{
     try_acquire_lock,
 };
 use code_core::protocol::AskForApproval;
+use code_core::protocol::AgentSourceKind;
+use code_core::protocol::AgentStatusUpdateEvent;
 use code_core::protocol::Event;
 use code_core::protocol::EventMsg;
 use code_core::protocol::InputItem;
 use code_core::protocol::Op;
+use code_core::protocol::ReviewOutputEvent;
 use code_core::protocol::ReviewRequest;
 use code_core::protocol::TaskCompleteEvent;
 use code_core::protocol::ReviewContextMetadata;
@@ -52,6 +55,7 @@ use code_git_tooling::GhostCommit;
 use code_git_tooling::CreateGhostCommitOptions;
 use code_git_tooling::create_ghost_commit;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -701,8 +705,16 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
     // Track whether a fatal error was reported by the server so we can
     // exit with a non-zero status for automation-friendly signaling.
     let mut error_seen = false;
-    let mut shutdown_requested = false;
+    let mut shutdown_pending = false;
+    let mut shutdown_sent = false;
+    let mut auto_review_tracker = AutoReviewTracker::new(&config.cwd);
     while let Some(event) = rx.recv().await {
+        if let EventMsg::AgentStatusUpdate(status) = &event.msg {
+            let completions = auto_review_tracker.update(status);
+            for completion in completions {
+                emit_auto_review_completion(&completion);
+            }
+        }
         if matches!(event.msg, EventMsg::Error(_)) {
             error_seen = true;
         }
@@ -819,11 +831,13 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                 auto_resolve_base_snapshot = None;
                                 auto_resolve_fix_guard = None;
                                 auto_resolve_followup_guard = None;
-                                if !shutdown_requested {
-                                    shutdown_requested = true;
-                                    auto_resolve_base_snapshot = None;
-                                    conversation.submit(Op::Shutdown).await?;
-                                }
+                                request_shutdown(
+                                    &conversation,
+                                    &auto_review_tracker,
+                                    &mut shutdown_pending,
+                                    &mut shutdown_sent,
+                                )
+                                .await?;
                                 continue;
                             }
                             if let Some(state) = auto_resolve_state.as_mut() {
@@ -852,11 +866,13 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                 auto_resolve_base_snapshot = None;
                                 auto_resolve_fix_guard = None;
                                 auto_resolve_followup_guard = None;
-                                if !shutdown_requested {
-                                    shutdown_requested = true;
-                                    auto_resolve_base_snapshot = None;
-                                    conversation.submit(Op::Shutdown).await?;
-                                }
+                                request_shutdown(
+                                    &conversation,
+                                    &auto_review_tracker,
+                                    &mut shutdown_pending,
+                                    &mut shutdown_sent,
+                                )
+                                .await?;
                                 continue;
                             }
                             if let Some(base) = auto_resolve_base_snapshot.as_ref() {
@@ -866,11 +882,13 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                     auto_resolve_base_snapshot = None;
                                     auto_resolve_followup_guard = None;
                                     auto_resolve_fix_guard = None;
-                                    if !shutdown_requested {
-                                        shutdown_requested = true;
-                                        auto_resolve_base_snapshot = None;
-                                        conversation.submit(Op::Shutdown).await?;
-                                    }
+                                    request_shutdown(
+                                        &conversation,
+                                        &auto_review_tracker,
+                                        &mut shutdown_pending,
+                                        &mut shutdown_sent,
+                                    )
+                                    .await?;
                                     continue;
                                 }
                                 // stale epoch check
@@ -882,11 +900,13 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                             auto_resolve_base_snapshot = None;
                                             auto_resolve_followup_guard = None;
                                             auto_resolve_fix_guard = None;
-                                            if !shutdown_requested {
-                                                shutdown_requested = true;
-                                                auto_resolve_base_snapshot = None;
-                                                conversation.submit(Op::Shutdown).await?;
-                                            }
+                                            request_shutdown(
+                                                &conversation,
+                                                &auto_review_tracker,
+                                                &mut shutdown_pending,
+                                                &mut shutdown_sent,
+                                            )
+                                            .await?;
                                             continue;
                                         }
                                     }
@@ -896,11 +916,13 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                         eprintln!("Auto-resolve: snapshot epoch advanced; aborting follow-up review.");
                                         auto_resolve_state = None;
                                         auto_resolve_base_snapshot = None;
-                                        if !shutdown_requested {
-                                            shutdown_requested = true;
-                                            auto_resolve_base_snapshot = None;
-                                            conversation.submit(Op::Shutdown).await?;
-                                        }
+                                        request_shutdown(
+                                            &conversation,
+                                            &auto_review_tracker,
+                                            &mut shutdown_pending,
+                                            &mut shutdown_sent,
+                                        )
+                                        .await?;
                                         continue;
                                     }
                                 }
@@ -919,11 +941,13 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                             auto_resolve_base_snapshot = None;
                                             auto_resolve_followup_guard = None;
                                             auto_resolve_fix_guard = None;
-                                            if !shutdown_requested {
-                                                shutdown_requested = true;
-                                                auto_resolve_base_snapshot = None;
-                                                conversation.submit(Op::Shutdown).await?;
-                                            }
+                                            request_shutdown(
+                                                &conversation,
+                                                &auto_review_tracker,
+                                                &mut shutdown_pending,
+                                                &mut shutdown_sent,
+                                            )
+                                            .await?;
                                             continue;
                                         }
 
@@ -954,11 +978,13 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                         auto_resolve_base_snapshot = None;
                                         auto_resolve_followup_guard = None;
                                         auto_resolve_fix_guard = None;
-                                        if !shutdown_requested {
-                                            shutdown_requested = true;
-                                            auto_resolve_base_snapshot = None;
-                                            conversation.submit(Op::Shutdown).await?;
-                                        }
+                                        request_shutdown(
+                                            &conversation,
+                                            &auto_review_tracker,
+                                            &mut shutdown_pending,
+                                            &mut shutdown_sent,
+                                        )
+                                        .await?;
                                     }
                                 }
                             }
@@ -974,11 +1000,13 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                     eprintln!("Auto-resolve: base snapshot no longer matches current HEAD; stopping to avoid stale review.");
                                     auto_resolve_state = None;
                                     auto_resolve_base_snapshot = None;
-                                    if !shutdown_requested {
-                                        shutdown_requested = true;
-                                        auto_resolve_base_snapshot = None;
-                                        conversation.submit(Op::Shutdown).await?;
-                                    }
+                                    request_shutdown(
+                                        &conversation,
+                                        &auto_review_tracker,
+                                        &mut shutdown_pending,
+                                        &mut shutdown_sent,
+                                    )
+                                    .await?;
                                     continue;
                                 }
                                 let current_epoch = current_snapshot_epoch_for(&config.cwd);
@@ -993,11 +1021,13 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                         eprintln!("Auto-resolve: snapshot epoch advanced; aborting follow-up review.");
                                         auto_resolve_state = None;
                                         auto_resolve_base_snapshot = None;
-                                        if !shutdown_requested {
-                                            shutdown_requested = true;
-                                            auto_resolve_base_snapshot = None;
-                                            conversation.submit(Op::Shutdown).await?;
-                                        }
+                                        request_shutdown(
+                                            &conversation,
+                                            &auto_review_tracker,
+                                            &mut shutdown_pending,
+                                            &mut shutdown_sent,
+                                        )
+                                        .await?;
                                         continue;
                                     }
                                 }
@@ -1014,11 +1044,13 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                             eprintln!("Auto-resolve: follow-up snapshot is identical to last reviewed commit; ending loop to avoid duplicate review.");
                                             auto_resolve_state = None;
                                             auto_resolve_base_snapshot = None;
-                                            if !shutdown_requested {
-                                                shutdown_requested = true;
-                                                auto_resolve_base_snapshot = None;
-                                                conversation.submit(Op::Shutdown).await?;
-                                            }
+                                            request_shutdown(
+                                                &conversation,
+                                                &auto_review_tracker,
+                                                &mut shutdown_pending,
+                                                &mut shutdown_sent,
+                                            )
+                                            .await?;
                                             continue;
                                         }
 
@@ -1057,10 +1089,15 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                     }
                 }
 
-                if auto_resolve_state.is_none() && !shutdown_requested {
-                    shutdown_requested = true;
+                if auto_resolve_state.is_none() && !shutdown_sent {
                     auto_resolve_base_snapshot = None;
-                    conversation.submit(Op::Shutdown).await?;
+                    request_shutdown(
+                        &conversation,
+                        &auto_review_tracker,
+                        &mut shutdown_pending,
+                        &mut shutdown_sent,
+                    )
+                    .await?;
                 }
             }
             _ => {}
@@ -1070,14 +1107,27 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         match shutdown {
             CodexStatus::Running => continue,
             CodexStatus::InitiateShutdown => {
-                if !shutdown_requested {
-                    shutdown_requested = true;
-                    conversation.submit(Op::Shutdown).await?;
-                }
+                request_shutdown(
+                    &conversation,
+                    &auto_review_tracker,
+                    &mut shutdown_pending,
+                    &mut shutdown_sent,
+                )
+                .await?;
             }
             CodexStatus::Shutdown => {
                 break;
             }
+        }
+
+        if shutdown_pending {
+            request_shutdown(
+                &conversation,
+                &auto_review_tracker,
+                &mut shutdown_pending,
+                &mut shutdown_sent,
+            )
+            .await?;
         }
     }
     if let Some(path) = review_output_json {
@@ -1146,6 +1196,8 @@ async fn run_auto_drive_session(
 ) -> anyhow::Result<()> {
     let mut final_last_message: Option<String> = None;
     let mut error_seen = false;
+    let mut auto_review_tracker = AutoReviewTracker::new(&config.cwd);
+    let mut shutdown_sent = false;
 
     if !images.is_empty() {
         let items: Vec<InputItem> = images
@@ -1234,7 +1286,13 @@ async fn run_auto_drive_session(
                         let TurnResult {
                             last_agent_message,
                             error_seen: turn_error,
-                        } = submit_and_wait(&conversation, event_processor.as_mut(), prompt_text.to_string()).await?;
+                        } = submit_and_wait(
+                            &conversation,
+                            event_processor.as_mut(),
+                            &mut auto_review_tracker,
+                            prompt_text.to_string(),
+                        )
+                        .await?;
                         error_seen |= turn_error;
                         if let Some(text) = last_agent_message {
                             history.append_raw(&[make_assistant_message(text.clone())]);
@@ -1283,7 +1341,13 @@ async fn run_auto_drive_session(
                 let TurnResult {
                     last_agent_message,
                     error_seen: turn_error,
-                } = submit_and_wait(&conversation, event_processor.as_mut(), prompt_text).await?;
+                } = submit_and_wait(
+                    &conversation,
+                    event_processor.as_mut(),
+                    &mut auto_review_tracker,
+                    prompt_text,
+                )
+                .await?;
                 error_seen |= turn_error;
                 if let Some(text) = last_agent_message {
                     history.append_raw(&[make_assistant_message(text.clone())]);
@@ -1304,8 +1368,38 @@ async fn run_auto_drive_session(
     }
 
     handle.cancel();
-    let _ = conversation.submit(Op::Shutdown).await;
+
+    if auto_review_tracker.is_running() {
+        while let Ok(event) = conversation.next_event().await {
+            if let EventMsg::AgentStatusUpdate(status) = &event.msg {
+                let completions = auto_review_tracker.update(status);
+                for completion in completions {
+                    emit_auto_review_completion(&completion);
+                }
+            }
+
+            let status = event_processor.process_event(event);
+
+            if !auto_review_tracker.is_running() {
+                break;
+            }
+
+            if matches!(status, CodexStatus::Shutdown) {
+                break;
+            }
+        }
+    }
+
+    let _ = send_shutdown_if_ready(&conversation, &auto_review_tracker, &mut shutdown_sent).await?;
+
     while let Ok(event) = conversation.next_event().await {
+        if let EventMsg::AgentStatusUpdate(status) = &event.msg {
+            let completions = auto_review_tracker.update(status);
+            for completion in completions {
+                emit_auto_review_completion(&completion);
+            }
+        }
+
         if matches!(event.msg, EventMsg::ShutdownComplete) {
             break;
         }
@@ -1336,6 +1430,322 @@ fn append_auto_drive_test_suffix(goal: &str) -> String {
     }
 
     format!("{trimmed_goal}\n\n{AUTO_DRIVE_TEST_SUFFIX}")
+}
+
+#[derive(Default, Debug, Clone)]
+struct AutoReviewSummary {
+    has_findings: bool,
+    findings: usize,
+    summary: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct AutoReviewCompletion {
+    branch: Option<String>,
+    worktree_path: Option<PathBuf>,
+    summary: AutoReviewSummary,
+    error: Option<String>,
+}
+
+#[derive(Default)]
+struct AutoReviewTracker {
+    running: HashSet<String>,
+    processed: HashSet<String>,
+    git_root: PathBuf,
+}
+
+impl AutoReviewTracker {
+    fn new(cwd: &Path) -> Self {
+        let git_root = get_git_repo_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
+
+        Self {
+            running: HashSet::new(),
+            processed: HashSet::new(),
+            git_root,
+        }
+    }
+
+    fn update(&mut self, event: &AgentStatusUpdateEvent) -> Vec<AutoReviewCompletion> {
+        let mut completions: Vec<AutoReviewCompletion> = Vec::new();
+
+        for agent in event.agents.iter() {
+            if !matches!(agent.source_kind, Some(AgentSourceKind::AutoReview)) {
+                continue;
+            }
+
+            let status = agent.status.to_ascii_lowercase();
+            if status == "pending" || status == "running" {
+                self.running.insert(agent.id.clone());
+                continue;
+            }
+
+            let is_terminal = matches!(
+                status.as_str(),
+                "completed" | "failed" | "cancelled"
+            );
+            if !is_terminal || self.processed.contains(&agent.id) {
+                continue;
+            }
+
+            self.running.remove(&agent.id);
+            self.processed.insert(agent.id.clone());
+
+            let summary = agent
+                .result
+                .as_deref()
+                .map(parse_auto_review_summary)
+                .unwrap_or_default();
+
+            completions.push(AutoReviewCompletion {
+                branch: agent.batch_id.clone(),
+                worktree_path: agent
+                    .batch_id
+                    .as_deref()
+                    .and_then(|branch| resolve_auto_review_worktree_path(&self.git_root, branch)),
+                summary,
+                error: agent.error.clone(),
+            });
+        }
+
+        completions
+    }
+
+    fn is_running(&self) -> bool {
+        !self.running.is_empty()
+    }
+}
+
+fn emit_auto_review_completion(completion: &AutoReviewCompletion) {
+    let branch = completion.branch.as_deref().unwrap_or("auto-review");
+
+    if let Some(err) = completion.error.as_deref() {
+        eprintln!("[auto-review] {branch}: failed: {err}");
+        return;
+    }
+
+    let summary_text = completion
+        .summary
+        .summary
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("No issues reported.");
+
+    if completion.summary.has_findings {
+        let count = completion.summary.findings.max(1);
+        if let Some(path) = completion.worktree_path.as_ref() {
+            eprintln!(
+                "[auto-review] {branch}: {count} issue(s) found. Merge {} to apply fixes. Summary: {summary_text}",
+                path.display()
+            );
+        } else {
+            eprintln!(
+                "[auto-review] {branch}: {count} issue(s) found. Summary: {summary_text}"
+            );
+        }
+    } else if summary_text == "No issues reported." {
+        eprintln!("[auto-review] {branch}: no issues found.");
+    } else {
+        eprintln!("[auto-review] {branch}: no issues found. {summary_text}");
+    }
+}
+
+fn parse_auto_review_summary(raw: &str) -> AutoReviewSummary {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return AutoReviewSummary::default();
+    }
+
+    #[derive(serde::Deserialize)]
+    struct MultiRun {
+        #[serde(flatten)]
+        latest: ReviewOutputEvent,
+        #[serde(default)]
+        runs: Vec<ReviewOutputEvent>,
+    }
+
+    if let Ok(wrapper) = serde_json::from_str::<MultiRun>(trimmed) {
+        let mut runs = wrapper.runs;
+        if runs.is_empty() {
+            runs.push(wrapper.latest);
+        }
+        return summary_from_runs(&runs);
+    }
+
+    if let Ok(output) = serde_json::from_str::<ReviewOutputEvent>(trimmed) {
+        return summary_from_output(&output);
+    }
+
+    if let Some(start) = trimmed.find("```") {
+        if let Some((body, _)) = trimmed[start + 3..].split_once("```") {
+            let candidate = body.trim_start_matches("json").trim();
+            if let Ok(output) = serde_json::from_str::<ReviewOutputEvent>(candidate) {
+                return summary_from_output(&output);
+            }
+        }
+    }
+
+    let lowered = trimmed.to_ascii_lowercase();
+    let clean_phrases = [
+        "no issues",
+        "no findings",
+        "clean",
+        "looks good",
+        "nothing to fix",
+    ];
+    let skip_phrases = [
+        "already running",
+        "another review",
+        "skipping this",
+        "skip this",
+    ];
+    let issue_markers = [
+        "issue",
+        "issues",
+        "finding",
+        "findings",
+        "bug",
+        "bugs",
+        "problem",
+        "problems",
+        "error",
+        "errors",
+    ];
+
+    if skip_phrases.iter().any(|p| lowered.contains(p)) {
+        return AutoReviewSummary {
+            has_findings: false,
+            findings: 0,
+            summary: Some(trimmed.to_string()),
+        };
+    }
+
+    if clean_phrases.iter().any(|p| lowered.contains(p)) {
+        return AutoReviewSummary {
+            has_findings: false,
+            findings: 0,
+            summary: Some(trimmed.to_string()),
+        };
+    }
+
+    let has_findings = issue_markers.iter().any(|p| lowered.contains(p));
+
+    AutoReviewSummary {
+        has_findings,
+        findings: 0,
+        summary: Some(trimmed.to_string()),
+    }
+}
+
+fn summary_from_runs(outputs: &[ReviewOutputEvent]) -> AutoReviewSummary {
+    if outputs.is_empty() {
+        return AutoReviewSummary::default();
+    }
+
+    let latest = outputs.last().unwrap();
+    let mut summary = summary_from_output(latest);
+
+    if let Some(idx) = outputs.iter().rposition(|o| !o.findings.is_empty()) {
+        let with_findings = summary_from_output(&outputs[idx]);
+        if with_findings.has_findings {
+            summary.has_findings = true;
+            summary.findings = with_findings.findings;
+            summary.summary = with_findings.summary.or(summary.summary);
+
+            if latest.findings.is_empty() {
+                let tail = "Final pass reported no issues after auto-resolve.";
+                summary.summary = match summary.summary {
+                    Some(ref existing) if existing.contains(tail) => Some(existing.clone()),
+                    Some(existing) => Some(format!("{existing} \n{tail}")),
+                    None => Some(tail.to_string()),
+                };
+            }
+        }
+    }
+
+    summary
+}
+
+fn summary_from_output(output: &ReviewOutputEvent) -> AutoReviewSummary {
+    let findings = output.findings.len();
+    let has_findings = findings > 0;
+
+    let mut parts: Vec<String> = Vec::new();
+    if !output.overall_explanation.trim().is_empty() {
+        parts.push(output.overall_explanation.trim().to_string());
+    }
+    if has_findings {
+        let titles: Vec<String> = output
+            .findings
+            .iter()
+            .filter_map(|f| {
+                let title = f.title.trim();
+                (!title.is_empty()).then_some(title.to_string())
+            })
+            .collect();
+        if !titles.is_empty() {
+            parts.push(format!("Findings: {}", titles.join("; ")));
+        }
+    }
+
+    let summary = (!parts.is_empty()).then(|| parts.join(" \n"));
+
+    AutoReviewSummary {
+        has_findings,
+        findings,
+        summary,
+    }
+}
+
+fn auto_review_branches_dir(git_root: &Path) -> Option<PathBuf> {
+    let repo_name = git_root.file_name()?.to_str()?;
+    let mut code_home = code_core::config::find_code_home().ok()?;
+    code_home = code_home.join("working").join(repo_name).join("branches");
+    std::fs::create_dir_all(&code_home).ok()?;
+    Some(code_home)
+}
+
+fn resolve_auto_review_worktree_path(git_root: &Path, branch: &str) -> Option<PathBuf> {
+    if branch.is_empty() {
+        return None;
+    }
+
+    let branches_dir = auto_review_branches_dir(git_root)?;
+    let candidate = branches_dir.join(branch);
+    candidate.exists().then_some(candidate)
+}
+
+async fn send_shutdown_if_ready(
+    conversation: &Arc<CodexConversation>,
+    auto_review_tracker: &AutoReviewTracker,
+    shutdown_sent: &mut bool,
+) -> anyhow::Result<bool> {
+    if *shutdown_sent || auto_review_tracker.is_running() {
+        return Ok(false);
+    }
+
+    conversation.submit(Op::Shutdown).await?;
+    *shutdown_sent = true;
+    Ok(true)
+}
+
+async fn request_shutdown(
+    conversation: &Arc<CodexConversation>,
+    auto_review_tracker: &AutoReviewTracker,
+    shutdown_pending: &mut bool,
+    shutdown_sent: &mut bool,
+) -> anyhow::Result<()> {
+    if *shutdown_sent {
+        *shutdown_pending = false;
+        return Ok(());
+    }
+
+    if send_shutdown_if_ready(conversation, auto_review_tracker, shutdown_sent).await? {
+        *shutdown_pending = false;
+    } else {
+        *shutdown_pending = true;
+    }
+
+    Ok(())
 }
 
 fn build_auto_prompt(
@@ -1836,6 +2246,7 @@ fn write_review_json(
 async fn submit_and_wait(
     conversation: &Arc<CodexConversation>,
     event_processor: &mut dyn EventProcessor,
+    auto_review_tracker: &mut AutoReviewTracker,
     prompt_text: String,
 ) -> anyhow::Result<TurnResult> {
     let mut error_seen = false;
@@ -1857,6 +2268,13 @@ async fn submit_and_wait(
                 let event_id = event.id.clone();
                 if matches!(event.msg, EventMsg::Error(_)) {
                     error_seen = true;
+                }
+
+                if let EventMsg::AgentStatusUpdate(status) = &event.msg {
+                    let completions = auto_review_tracker.update(status);
+                    for completion in completions {
+                        emit_auto_review_completion(&completion);
+                    }
                 }
 
                 let last_agent_message = if let EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) = &event.msg {

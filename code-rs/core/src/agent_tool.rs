@@ -10,7 +10,6 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Arc;
 use tokio::process::Command;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::runtime::Builder as TokioRuntimeBuilder;
@@ -18,6 +17,8 @@ use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Duration as TokioDuration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration as StdDuration, Instant};
 use crate::spawn::spawn_tokio_command_with_retry;
@@ -263,6 +264,8 @@ pub struct Agent {
     #[allow(dead_code)]
     pub config: Option<AgentConfig>,
     pub reasoning_effort: code_protocol::config_types::ReasoningEffort,
+    #[serde(skip)]
+    pub last_activity: DateTime<Utc>,
 }
 
 // Global agent manager
@@ -275,6 +278,8 @@ pub struct AgentManager {
     handles: HashMap<String, JoinHandle<()>>,
     event_sender: Option<mpsc::UnboundedSender<AgentStatusUpdatePayload>>,
     debug_log_root: Option<PathBuf>,
+    watchdog_handle: Option<JoinHandle<()>>,
+    inactivity_timeout: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -291,15 +296,80 @@ impl AgentManager {
             handles: HashMap::new(),
             event_sender: None,
             debug_log_root: None,
+            watchdog_handle: None,
+            inactivity_timeout: Duration::minutes(30),
         }
     }
 
     pub fn set_event_sender(&mut self, sender: mpsc::UnboundedSender<AgentStatusUpdatePayload>) {
         self.event_sender = Some(sender);
+        self.start_watchdog();
+    }
+
+    fn start_watchdog(&mut self) {
+        if self.watchdog_handle.is_some() {
+            return;
+        }
+
+        let timeout = self.inactivity_timeout;
+        let manager = Arc::downgrade(&AGENT_MANAGER);
+        self.watchdog_handle = Some(tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(TokioDuration::from_secs(60));
+            loop {
+                ticker.tick().await;
+
+                let Some(manager_arc) = manager.upgrade() else { break; };
+
+                let mut mgr = manager_arc.write().await;
+                let now = Utc::now();
+                let timeout_ids: Vec<String> = mgr
+                    .agents
+                    .iter()
+                    .filter(|(_, agent)| matches!(agent.status, AgentStatus::Pending | AgentStatus::Running))
+                    .filter(|(_, agent)| now - agent.last_activity > timeout)
+                    .map(|(id, _)| id.clone())
+                    .collect();
+
+                if timeout_ids.is_empty() {
+                    continue;
+                }
+
+                for agent_id in timeout_ids.iter() {
+                    if let Some(handle) = mgr.handles.remove(agent_id) {
+                        handle.abort();
+                    }
+                    if let Some(agent) = mgr.agents.get_mut(agent_id) {
+                        agent.status = AgentStatus::Failed;
+                        agent.error = Some(format!(
+                            "Agent timed out after {} minutes of inactivity.",
+                            timeout.num_minutes()
+                        ));
+                        agent.completed_at = Some(now);
+                        Self::record_activity(agent);
+                    }
+                }
+
+                // Notify listeners once per sweep.
+                mgr.send_agent_status_update().await;
+            }
+        }));
     }
 
     pub fn set_debug_log_root(&mut self, root: Option<PathBuf>) {
         self.debug_log_root = root;
+    }
+
+    async fn touch_agent(agent_id: &str) {
+        if let Some(manager) = Arc::downgrade(&AGENT_MANAGER).upgrade() {
+            let mut mgr = manager.write().await;
+            if let Some(agent) = mgr.agents.get_mut(agent_id) {
+                Self::record_activity(agent);
+            }
+        }
+    }
+
+    fn record_activity(agent: &mut Agent) {
+        agent.last_activity = Utc::now();
     }
 
     fn append_agent_log(&self, log_tag: &str, line: &str) {
@@ -352,6 +422,21 @@ impl AgentManager {
                         error: agent.error.clone(),
                         elapsed_ms,
                         token_count: None,
+                        last_activity_at: match agent.status {
+                            AgentStatus::Pending | AgentStatus::Running => {
+                                Some(agent.last_activity.to_rfc3339())
+                            }
+                            _ => None,
+                        },
+                        seconds_since_last_activity: match agent.status {
+                            AgentStatus::Pending | AgentStatus::Running => Some(
+                                Utc::now()
+                                    .signed_duration_since(agent.last_activity)
+                                    .num_seconds()
+                                    .max(0) as u64,
+                            ),
+                            _ => None,
+                        },
                         source_kind: agent.source_kind.clone(),
                     }
                 })
@@ -530,6 +615,7 @@ impl AgentManager {
             log_tag,
             config: config.clone(),
             reasoning_effort,
+            last_activity: Utc::now(),
         };
 
         self.agents.insert(agent_id.clone(), agent.clone());
@@ -640,6 +726,7 @@ impl AgentManager {
             ) {
                 agent.completed_at = Some(Utc::now());
             }
+            Self::record_activity(agent);
             // Send status update event
             self.send_agent_status_update().await;
         }
@@ -679,6 +766,7 @@ impl AgentManager {
                 }
             }
             agent.completed_at = Some(Utc::now());
+            Self::record_activity(agent);
 
             (log_tag, log_lines)
         }) {
@@ -699,6 +787,7 @@ impl AgentManager {
             let entry = format!("{}: {}", Utc::now().format("%H:%M:%S"), message);
             let log_tag = if debug_enabled { agent.log_tag.clone() } else { None };
             agent.progress.push(entry.clone());
+            Self::record_activity(agent);
             (log_tag, entry)
         }) {
             if let Some(tag) = log_tag {
@@ -1462,6 +1551,20 @@ async fn stream_child_output(
     agent_id: &str,
     mut child: tokio::process::Child,
 ) -> Result<(std::process::ExitStatus, String, String), String> {
+    let agent_id_owned = agent_id.to_string();
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let stop_clone = stop_flag.clone();
+    let heartbeat = tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(TokioDuration::from_secs(30));
+        loop {
+            ticker.tick().await;
+            if stop_clone.load(Ordering::Relaxed) {
+                break;
+            }
+            AgentManager::touch_agent(&agent_id_owned).await;
+        }
+    });
+
     let stdout_task = child.stdout.take().map(|stdout| {
         let agent = agent_id.to_string();
         tokio::spawn(async move { stream_reader_to_progress(agent, "stdout", stdout).await })
@@ -1490,6 +1593,9 @@ async fn stream_child_output(
             .map_err(|e| format!("Failed to read agent stderr: {e}"))?,
         None => String::new(),
     };
+
+    stop_flag.store(true, Ordering::Relaxed);
+    heartbeat.abort();
 
     Ok((status, stdout_buf, stderr_buf))
 }

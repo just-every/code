@@ -1378,7 +1378,7 @@ struct BackgroundReviewState {
     agent_id: Option<String>,
     snapshot: Option<String>,
     base: Option<GhostCommit>,
-    started_at: std::time::Instant,
+    last_seen: std::time::Instant,
 }
 
 #[derive(Clone, Debug)]
@@ -27738,7 +27738,7 @@ use code_core::protocol::OrderMeta;
             agent_id: Some("agent-123".to_string()),
             snapshot: Some("ghost123".to_string()),
             base: None,
-            started_at: std::time::Instant::now(),
+            last_seen: std::time::Instant::now(),
         });
 
         chat.on_background_review_finished(
@@ -27793,7 +27793,7 @@ use code_core::protocol::OrderMeta;
             agent_id: Some("agent-123".to_string()),
             snapshot: Some("ghost123".to_string()),
             base: None,
-            started_at: std::time::Instant::now(),
+            last_seen: std::time::Instant::now(),
         });
 
         // Agent.result will be parsed; provide structured JSON with findings
@@ -27839,7 +27839,7 @@ use code_core::protocol::OrderMeta;
             agent_id: None,
             snapshot: Some("ghost123".to_string()),
             base: None,
-            started_at: std::time::Instant::now(),
+            last_seen: std::time::Instant::now(),
         });
 
         let agent = code_core::protocol::AgentInfo {
@@ -27861,6 +27861,8 @@ use code_core::protocol::OrderMeta;
             error: None,
             elapsed_ms: None,
             token_count: None,
+            last_activity_at: None,
+            seconds_since_last_activity: None,
             source_kind: Some(AgentSourceKind::AutoReview),
         };
 
@@ -27888,7 +27890,7 @@ use code_core::protocol::OrderMeta;
             agent_id: None,
             snapshot: Some("ghost123".to_string()),
             base: None,
-            started_at: std::time::Instant::now(),
+            last_seen: std::time::Instant::now(),
         });
 
         let agent = code_core::protocol::AgentInfo {
@@ -27910,6 +27912,8 @@ use code_core::protocol::OrderMeta;
             error: None,
             elapsed_ms: None,
             token_count: None,
+            last_activity_at: None,
+            seconds_since_last_activity: None,
             source_kind: Some(AgentSourceKind::AutoReview),
         };
 
@@ -27947,7 +27951,7 @@ use code_core::protocol::OrderMeta;
             agent_id: Some("agent-running".to_string()),
             snapshot: Some("ghost-running".to_string()),
             base: Some(GhostCommit::new("running-base".to_string(), None)),
-            started_at: Instant::now(),
+            last_seen: Instant::now(),
         });
 
         chat.maybe_trigger_auto_review();
@@ -28018,7 +28022,7 @@ use code_core::protocol::OrderMeta;
             agent_id: Some("agent-running".to_string()),
             snapshot: Some("ghost-running".to_string()),
             base: Some(GhostCommit::new("running-base".to_string(), None)),
-            started_at: Instant::now(),
+            last_seen: Instant::now(),
         });
 
         chat.maybe_trigger_auto_review();
@@ -28070,7 +28074,7 @@ use code_core::protocol::OrderMeta;
             agent_id: Some("agent-running".to_string()),
             snapshot: Some("ghost-running".to_string()),
             base: Some(GhostCommit::new("running-base".to_string(), None)),
-            started_at: Instant::now(),
+            last_seen: Instant::now(),
         });
 
         chat.maybe_trigger_auto_review();
@@ -28134,7 +28138,7 @@ use code_core::protocol::OrderMeta;
             agent_id: Some("agent-running".to_string()),
             snapshot: Some("ghost-running".to_string()),
             base: Some(base.clone()),
-            started_at: stale_started,
+            last_seen: stale_started,
         });
 
         chat.maybe_trigger_auto_review();
@@ -30017,6 +30021,8 @@ use code_core::protocol::OrderMeta;
                     error: None,
                     elapsed_ms: None,
                     token_count: None,
+                    last_activity_at: None,
+                    seconds_since_last_activity: None,
                     source_kind: None,
                 }],
                 context: None,
@@ -30091,6 +30097,8 @@ use code_core::protocol::OrderMeta;
                     error: None,
                     elapsed_ms: None,
                     token_count: None,
+                    last_activity_at: None,
+                    seconds_since_last_activity: None,
                     source_kind: None,
                 }],
                 context: None,
@@ -30130,6 +30138,8 @@ use code_core::protocol::OrderMeta;
                     error: None,
                     elapsed_ms: None,
                     token_count: None,
+                    last_activity_at: None,
+                    seconds_since_last_activity: None,
                     source_kind: None,
                 }],
                 context: None,
@@ -31642,43 +31652,7 @@ impl ChatWidget<'_> {
     }
 
     fn recover_stuck_background_review(&mut self) {
-        const STALE_REVIEW_SECS: u64 = 300;
-        let Some(state) = self.background_review.as_ref() else {
-            return;
-        };
-
-        if state.started_at.elapsed() < Duration::from_secs(STALE_REVIEW_SECS) {
-            return;
-        }
-
-        let base = state.base.clone();
-        let agent_id = state.agent_id.clone();
-        release_background_lock(&agent_id);
-        self.background_review = None;
-        self.background_review_guard = None;
-        // Cancel the stale agent to avoid duplicate runs and mark it processed so
-        // a late status update does not re-inflate the indicator.
-        if let Some(id) = agent_id.clone() {
-            self.processed_auto_review_agents.insert(id.clone());
-            tokio::spawn(async move {
-                let mut mgr = code_core::AGENT_MANAGER.write().await;
-                let _ = mgr.cancel_agent(&id).await;
-            });
-        }
-
-        self.set_auto_review_indicator(
-            AutoReviewIndicatorStatus::Failed,
-            None,
-            AutoReviewPhase::Reviewing,
-        );
-        self.submit_hidden_text_message_with_preface(
-            "Auto review watchdog".to_string(),
-            "[developer] Background auto review timed out after 5 minutes; cancelling the stale run and retrying.".to_string(),
-        );
-
-        if let Some(base_commit) = base {
-            self.queue_skipped_auto_review(base_commit);
-        }
+        // Centralized watchdog now lives in AgentManager; nothing to do client-side.
     }
 
     fn launch_background_review(&mut self, base_snapshot: Option<GhostCommit>) {
@@ -31696,7 +31670,7 @@ impl ChatWidget<'_> {
             agent_id: None,
             snapshot: None,
             base: base_snapshot.clone(),
-            started_at: std::time::Instant::now(),
+            last_seen: std::time::Instant::now(),
         });
         self.auto_review_status = None;
         self.bottom_pane.set_auto_review_status(None);
@@ -31731,6 +31705,7 @@ impl ChatWidget<'_> {
     }
 
     fn observe_auto_review_status(&mut self, agents: &[code_core::protocol::AgentInfo]) {
+        let now = Instant::now();
         for agent in agents {
             if !Self::is_auto_review_agent(agent) {
                 continue;
@@ -31748,6 +31723,7 @@ impl ChatWidget<'_> {
             }
 
             if let Some(state) = self.background_review.as_mut() {
+                state.last_seen = now;
                 if state.agent_id.is_none() {
                     state.agent_id = Some(agent.id.clone());
                 }
@@ -32068,6 +32044,7 @@ impl ChatWidget<'_> {
             state.branch = branch.clone();
             state.agent_id = agent_id;
             state.snapshot = snapshot;
+            state.last_seen = Instant::now();
         }
         if self.auto_review_status.is_none() {
             self.set_auto_review_indicator(
