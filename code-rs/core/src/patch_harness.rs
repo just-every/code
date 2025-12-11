@@ -717,7 +717,7 @@ fn which(exe: &Path) -> Option<PathBuf> {
 fn run_with_timeout(mut cmd: std::process::Command, timeout_secs: u64) -> Option<CommandCapture> {
     use std::process::Stdio;
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let Ok(mut child) = cmd.spawn() else { return None };
+    let Ok(mut child) = crate::spawn::spawn_std_command_with_retry(&mut cmd) else { return None };
 
     let start = std::time::Instant::now();
     loop {

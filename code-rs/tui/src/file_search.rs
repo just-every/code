@@ -27,6 +27,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
+use tracing::warn;
 
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
@@ -117,7 +118,9 @@ impl FileSearchManager {
         let state = self.state.clone();
         let search_dir = self.search_dir.clone();
         let tx_clone = self.app_tx.clone();
-        thread::spawn(move || {
+        if let Err(err) = thread::Builder::new()
+            .name("file-search-debounce".to_string())
+            .spawn(move || {
             // Always do a minimum debounce, but then poll until the
             // `active_search` is cleared.
             thread::sleep(FILE_SEARCH_DEBOUNCE);
@@ -152,7 +155,10 @@ impl FileSearchManager {
                 cancellation_token,
                 state,
             );
-        });
+            })
+        {
+            warn!("failed to spawn file search debounce thread: {err}");
+        }
     }
 
     fn spawn_file_search(
@@ -163,7 +169,9 @@ impl FileSearchManager {
         search_state: Arc<Mutex<SearchState>>,
     ) {
         let compute_indices = true;
-        std::thread::spawn(move || {
+        if let Err(err) = std::thread::Builder::new()
+            .name("file-search-runner".to_string())
+            .spawn(move || {
             // Normalize the query: strip leading "./" so it matches repo-relative paths.
             let search_query = query.strip_prefix("./").unwrap_or(&query).to_string();
             // Create a streaming channel for partial updates.
@@ -173,14 +181,19 @@ impl FileSearchManager {
             let rx_tx = tx.clone();
             let rx_query = query.clone();
             let rx_cancel = cancellation_token.clone();
-            std::thread::spawn(move || {
+            if let Err(err) = std::thread::Builder::new()
+                .name("file-search-forwarder".to_string())
+                .spawn(move || {
                 while let Ok(matches) = part_rx.recv() {
                     if rx_cancel.load(Ordering::Relaxed) {
                         break;
                     }
                     rx_tx.send(AppEvent::FileSearchResult { query: rx_query.clone(), matches });
                 }
-            });
+                })
+            {
+                warn!("failed to spawn file search forwarder: {err}");
+            }
 
             // Decide preference: when user starts with "./" or types a bare
             // filename (no slash), rank files in the current directory first.
@@ -212,6 +225,9 @@ impl FileSearchManager {
                 }
                 }
             }
-        });
+            })
+        {
+            warn!("failed to spawn file search runner: {err}");
+        }
     }
 }

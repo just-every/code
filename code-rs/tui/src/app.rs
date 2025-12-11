@@ -336,7 +336,9 @@ impl App<'_> {
             let app_event_tx = app_event_tx.clone();
             let input_running_thread = input_running.clone();
             let drop_release_events = enhanced_keys_supported;
-            std::thread::spawn(move || {
+            if let Err(err) = std::thread::Builder::new()
+                .name("tui-input-loop".to_string())
+                .spawn(move || {
                 // Track recent typing to temporarily increase poll frequency for low latency.
                 let mut last_key_time = Instant::now();
                 loop {
@@ -423,7 +425,10 @@ impl App<'_> {
                         }
                     }
                 }
-            });
+                })
+            {
+                tracing::error!("input thread spawn failed: {err}");
+            }
         }
 
         #[cfg(unix)]
@@ -3176,23 +3181,28 @@ impl App<'_> {
                         let server = self._server.clone();
                         let tx = self.app_event_tx.clone();
                         let prefill_clone = prefill.clone();
-                        std::thread::spawn(move || {
-                            let rt = tokio::runtime::Builder::new_multi_thread()
-                                .enable_all()
-                                .build()
-                                .expect("build tokio runtime");
-                            // Clone cfg for the async block to keep original for the event
-                            let cfg_for_rt = cfg.clone();
-                            let result = rt.block_on(async move {
-                                // Fallback: start a new conversation instead of forking
-                                server.new_conversation(cfg_for_rt).await
-                            });
-                            if let Ok(new_conv) = result {
-                                tx.send(AppEvent::JumpBackForked { cfg, new_conv: crate::app_event::Redacted(new_conv), prefix_items, prefill: prefill_clone });
-                            } else if let Err(e) = result {
-                                tracing::error!("error forking conversation: {e:#}");
-                            }
-                        });
+                        if let Err(err) = std::thread::Builder::new()
+                            .name("jump-back-fork".to_string())
+                            .spawn(move || {
+                                let rt = tokio::runtime::Builder::new_multi_thread()
+                                    .enable_all()
+                                    .build()
+                                    .expect("build tokio runtime");
+                                // Clone cfg for the async block to keep original for the event
+                                let cfg_for_rt = cfg.clone();
+                                let result = rt.block_on(async move {
+                                    // Fallback: start a new conversation instead of forking
+                                    server.new_conversation(cfg_for_rt).await
+                                });
+                                if let Ok(new_conv) = result {
+                                    tx.send(AppEvent::JumpBackForked { cfg, new_conv: crate::app_event::Redacted(new_conv), prefix_items, prefill: prefill_clone });
+                                } else if let Err(e) = result {
+                                    tracing::error!("error forking conversation: {e:#}");
+                                }
+                            })
+                        {
+                            tracing::error!("jump-back fork spawn failed: {err}");
+                        }
                     }
                 }
                 AppEvent::JumpBackForked { cfg, new_conv, prefix_items, prefill } => {

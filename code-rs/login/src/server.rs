@@ -121,15 +121,18 @@ pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Request>(16);
     let _server_handle = {
         let server = server.clone();
-        thread::spawn(move || -> io::Result<()> {
-            while let Ok(request) = server.recv() {
-                tx.blocking_send(request).map_err(|e| {
-                    eprintln!("Failed to send request to channel: {e}");
-                    io::Error::other("Failed to send request to channel")
-                })?;
-            }
-            Ok(())
-        })
+        thread::Builder::new()
+            .name("login-server-listener".to_string())
+            .spawn(move || -> io::Result<()> {
+                while let Ok(request) = server.recv() {
+                    tx.blocking_send(request).map_err(|e| {
+                        eprintln!("Failed to send request to channel: {e}");
+                        io::Error::other("Failed to send request to channel")
+                    })?;
+                }
+                Ok(())
+            })
+            .map_err(|err| io::Error::other(format!("failed to spawn login listener thread: {err}")))?
     };
 
     let shutdown_notify = Arc::new(tokio::sync::Notify::new());

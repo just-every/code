@@ -66,18 +66,42 @@ impl RmcpClient {
         env: Option<HashMap<String, String>>,
     ) -> io::Result<Self> {
         let program_name = program.to_string_lossy().into_owned();
-        let mut command = Command::new(&program);
-        command
-            .kill_on_drop(true)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .env_clear()
-            .envs(create_env_for_mcp_server(env))
-            .args(&args);
+        let mut last_err: Option<io::Error> = None;
+        let mut spawned: Option<(TokioChildProcess, Option<tokio::process::ChildStderr>)> = None;
 
-        let (transport, stderr) = TokioChildProcess::builder(command)
-            .stderr(Stdio::piped())
-            .spawn()?;
+        for delay_ms in [0_u64, 10, 50] {
+            let mut command = Command::new(&program);
+            command
+                .kill_on_drop(true)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .env_clear()
+                .envs(create_env_for_mcp_server(env.clone()))
+                .args(&args);
+
+            match TokioChildProcess::builder(command)
+                .stderr(Stdio::piped())
+                .spawn()
+            {
+                Ok(child) => {
+                    spawned = Some(child);
+                    break;
+                }
+                Err(err)
+                    if err.kind() == io::ErrorKind::WouldBlock
+                        || matches!(err.raw_os_error(), Some(35) | Some(12)) =>
+                {
+                    last_err = Some(err);
+                    if delay_ms > 0 {
+                        time::sleep(Duration::from_millis(delay_ms)).await;
+                    }
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        let (transport, stderr) = spawned
+            .ok_or_else(|| last_err.unwrap_or_else(|| io::Error::other("failed to spawn rmcp server")))?;
 
         if let Some(stderr) = stderr {
             tokio::spawn(async move {

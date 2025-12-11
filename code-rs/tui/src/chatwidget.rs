@@ -40,6 +40,7 @@ use code_core::config_types::AutoDriveContinueMode;
 use code_core::config_types::Notifications;
 use code_core::config_types::ReasoningEffort;
 use code_core::config_types::TextVerbosity;
+use code_core::spawn::spawn_std_command_with_retry;
 use code_core::plan_tool::{PlanItemArg, StepStatus, UpdatePlanArgs};
 use code_core::model_family::derive_default_model_family;
 use code_core::model_family::find_family_for_model;
@@ -22975,9 +22976,14 @@ Have we met every part of this goal and is there no further work to do?"#
             #[cfg(test)]
             {
                 let tx = self.app_event_tx.clone();
-                std::thread::spawn(move || {
-                    tx.send(event);
-                });
+                if let Err(err) = std::thread::Builder::new()
+                    .name("delayed-app-event".to_string())
+                    .spawn(move || {
+                        tx.send(event);
+                    })
+                {
+                    tracing::warn!("failed to spawn delayed app event: {err}");
+                }
             }
             #[cfg(not(test))]
             {
@@ -24435,7 +24441,9 @@ Have we met every part of this goal and is there no further work to do?"#
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .stdin(Stdio::null());
-            let _ = cmd.spawn();
+            if let Err(err) = spawn_std_command_with_retry(&mut cmd) {
+                tracing::warn!("failed to launch Chrome with profile: {err}");
+            }
         }
 
         #[cfg(target_os = "linux")]
@@ -24458,7 +24466,9 @@ Have we met every part of this goal and is there no further work to do?"#
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .stdin(Stdio::null());
-            let _ = cmd.spawn();
+            if let Err(err) = spawn_std_command_with_retry(&mut cmd) {
+                tracing::warn!("failed to launch Chrome with profile: {err}");
+            }
         }
 
         #[cfg(target_os = "windows")]
@@ -24492,7 +24502,9 @@ Have we met every part of this goal and is there no further work to do?"#
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
                         .stdin(Stdio::null());
-                    let _ = cmd.spawn();
+                    if let Err(err) = spawn_std_command_with_retry(&mut cmd) {
+                        tracing::warn!("failed to launch Chrome with profile: {err}");
+                    }
                     break;
                 }
             }
@@ -25076,7 +25088,9 @@ Have we met every part of this goal and is there no further work to do?"#
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .stdin(Stdio::null());
-            let _ = cmd.spawn();
+            if let Err(err) = spawn_std_command_with_retry(&mut cmd) {
+                tracing::warn!("failed to launch Chrome with temp profile: {err}");
+            }
         }
 
         #[cfg(target_os = "linux")]
@@ -25100,7 +25114,9 @@ Have we met every part of this goal and is there no further work to do?"#
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .stdin(Stdio::null());
-            let _ = cmd.spawn();
+            if let Err(err) = spawn_std_command_with_retry(&mut cmd) {
+                tracing::warn!("failed to launch Chrome with temp profile: {err}");
+            }
         }
 
         #[cfg(target_os = "windows")]
@@ -25135,7 +25151,9 @@ Have we met every part of this goal and is there no further work to do?"#
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
                         .stdin(Stdio::null());
-                    let _ = cmd.spawn();
+                    if let Err(err) = spawn_std_command_with_retry(&mut cmd) {
+                        tracing::warn!("failed to launch Chrome with temp profile: {err}");
+                    }
                     break;
                 }
             }

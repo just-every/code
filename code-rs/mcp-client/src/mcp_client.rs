@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use std::io;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -59,6 +60,27 @@ const CHANNEL_CAPACITY: usize = 128;
 /// Internal representation of a pending request sender.
 type PendingSender = oneshot::Sender<JSONRPCMessage>;
 
+async fn spawn_child_with_retry(cmd: &mut Command) -> io::Result<tokio::process::Child> {
+    let mut last_err: Option<io::Error> = None;
+    for delay_ms in [0_u64, 10, 50] {
+        match cmd.spawn() {
+            Ok(child) => return Ok(child),
+            Err(err)
+                if err.kind() == io::ErrorKind::WouldBlock
+                    || matches!(err.raw_os_error(), Some(35) | Some(12)) =>
+            {
+                last_err = Some(err);
+                if delay_ms > 0 {
+                    time::sleep(Duration::from_millis(delay_ms)).await;
+                }
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| io::Error::other("spawn failed")))
+}
+
 /// A running MCP client instance.
 pub struct McpClient {
     /// Retain this child process until the client is dropped. The Tokio runtime
@@ -87,8 +109,8 @@ impl McpClient {
         args: Vec<OsString>,
         env: Option<HashMap<String, String>>,
     ) -> std::io::Result<Self> {
-        let mut child = Command::new(program)
-            .args(args)
+        let mut cmd = Command::new(program);
+        cmd.args(args)
             .env_clear()
             .envs(create_env_for_mcp_server(env))
             .stdin(std::process::Stdio::piped())
@@ -97,8 +119,9 @@ impl McpClient {
             // As noted in the `kill_on_drop` documentation, the Tokio runtime makes
             // a "best effort" to reap-after-exit to avoid zombie processes, but it
             // is not a guarantee.
-            .kill_on_drop(true)
-            .spawn()?;
+            .kill_on_drop(true);
+
+        let mut child = spawn_child_with_retry(&mut cmd).await?;
 
         let stdin = child
             .stdin

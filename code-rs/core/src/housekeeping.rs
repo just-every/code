@@ -859,12 +859,12 @@ mod tests {
         use std::thread;
         use std::time::Duration;
 
-        let mut child = Command::new("cmd")
-            .args(["/C", "timeout /T 2 >NUL"])
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/C", "timeout /T 2 >NUL"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
+            .stderr(Stdio::null());
+        let mut child = crate::spawn::spawn_std_command_with_retry(&mut cmd)
             .expect("failed to spawn cmd timeout helper");
 
         thread::sleep(Duration::from_millis(100));

@@ -20,6 +20,7 @@ mod llm;
 use llm::{LlmCli, run_llm};
 use code_common::CliConfigOverrides;
 use code_core::{entry_to_rollout_path, SessionCatalog, SessionQuery};
+use code_core::spawn::spawn_std_command_with_retry;
 use code_protocol::protocol::SessionSource;
 use code_cloud_tasks::Cli as CloudTasksCli;
 use code_exec::Cli as ExecCli;
@@ -1082,12 +1083,15 @@ fn resolve_resume_path(session_id: Option<&str>, last: bool) -> anyhow::Result<O
         } else {
             Ok(None)
         }
-    };
+        };
 
     match TokioHandle::try_current() {
         Ok(handle) => {
             let handle = handle.clone();
-            std::thread::spawn(move || handle.block_on(fetch))
+            std::thread::Builder::new()
+                .name("resume-lookup".to_string())
+                .spawn(move || handle.block_on(fetch))
+                .map_err(|err| anyhow!("resume lookup thread spawn failed: {err}"))?
                 .join()
                 .map_err(|_| anyhow!("resume lookup thread panicked"))?
         }
@@ -1354,7 +1358,14 @@ async fn preview_main(args: PreviewArgs) -> anyhow::Result<()> {
             };
             let _ = fs::rename(&exe, &dest).or_else(|_| { fs::copy(&exe, &dest).map(|_| () ) });
             println!("Downloaded preview to {}", dest.display());
-            if !args.extra.is_empty() { let _ = std::process::Command::new(&dest).args(&args.extra).spawn(); } else { let _ = std::process::Command::new(&dest).spawn(); }
+            if !args.extra.is_empty() {
+                let mut cmd = std::process::Command::new(&dest);
+                cmd.args(&args.extra);
+                let _ = spawn_std_command_with_retry(&mut cmd);
+            } else {
+                let mut cmd = std::process::Command::new(&dest);
+                let _ = spawn_std_command_with_retry(&mut cmd);
+            }
             return Ok(());
         }
     }

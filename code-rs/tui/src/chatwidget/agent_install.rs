@@ -157,7 +157,10 @@ fn start_guided_terminal_session(
     config: Option<Config>,
     debug_enabled: bool,
 ) {
-    std::thread::spawn(move || {
+    let fail_tx = app_event_tx.clone();
+    if let Err(err) = std::thread::Builder::new()
+        .name("guided-terminal-session".to_string())
+        .spawn(move || {
         let runtime = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -217,7 +220,16 @@ fn start_guided_terminal_session(
                 message: msg,
             });
         }
-    });
+        })
+    {
+        let msg = format!("Failed to start guided terminal helper: {err}");
+        fail_tx.send(AppEvent::TerminalChunk {
+            id: terminal_id,
+            chunk: format!("{msg}\n").into_bytes(),
+            _is_stderr: true,
+        });
+        fail_tx.send(AppEvent::TerminalUpdateMessage { id: terminal_id, message: msg });
+    }
 }
 
 fn run_guided_loop(

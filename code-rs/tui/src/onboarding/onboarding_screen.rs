@@ -18,6 +18,7 @@ use crate::onboarding::trust_directory::TrustDirectoryWidget;
 use crate::onboarding::welcome::WelcomeWidget;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tracing::warn;
 use std::sync::Mutex;
 
 #[allow(clippy::large_enum_variant)]
@@ -123,12 +124,17 @@ impl OnboardingScreen {
                     self.event_tx.send(AppEvent::RequestRedraw);
                     let tx1 = self.event_tx.clone();
                     let tx2 = self.event_tx.clone();
-                    std::thread::spawn(move || {
-                        std::thread::sleep(std::time::Duration::from_millis(150));
-                        tx1.send(AppEvent::RequestRedraw);
-                        std::thread::sleep(std::time::Duration::from_millis(200));
-                        tx2.send(AppEvent::RequestRedraw);
-                    });
+                    if let Err(err) = std::thread::Builder::new()
+                        .name("onboarding-auth-redraw".to_string())
+                        .spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_millis(150));
+                            tx1.send(AppEvent::RequestRedraw);
+                            std::thread::sleep(std::time::Duration::from_millis(200));
+                            tx2.send(AppEvent::RequestRedraw);
+                        })
+                    {
+                        warn!("failed to spawn onboarding redraw helper: {err}");
+                    }
                 }
                 Err(e) => {
                     state.sign_in_state = SignInState::PickMode;

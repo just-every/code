@@ -1,8 +1,11 @@
 use std::collections::HashMap;
+use std::io;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::time::Duration;
 use tokio::process::Child;
 use tokio::process::Command;
+use tokio::time::sleep;
 use tracing::trace;
 
 use crate::protocol::SandboxPolicy;
@@ -21,6 +24,65 @@ pub const CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR: &str = "CODEX_SANDBOX_NETWORK_
 /// value is "seatbelt" for macOS, but it may change in the future to
 /// accommodate sandboxing configuration and other sandboxing mechanisms.
 pub const CODEX_SANDBOX_ENV_VAR: &str = "CODEX_SANDBOX";
+
+const SPAWN_RETRY_DELAYS_MS: [u64; 3] = [0, 10, 50];
+
+fn is_temporary_resource_error(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::WouldBlock
+        || matches!(err.raw_os_error(), Some(35) | Some(libc::ENOMEM))
+}
+
+fn spawn_with_retry_blocking<F, T>(mut spawn: F) -> io::Result<T>
+where
+    F: FnMut() -> io::Result<T>,
+{
+    let mut last_err: Option<io::Error> = None;
+    for delay_ms in SPAWN_RETRY_DELAYS_MS {
+        match spawn() {
+            Ok(child) => return Ok(child),
+            Err(err) if is_temporary_resource_error(&err) => {
+                last_err = Some(err);
+                if delay_ms > 0 {
+                    std::thread::sleep(Duration::from_millis(delay_ms));
+                }
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| io::Error::other("spawn failed")))
+}
+
+async fn spawn_with_retry_async<F, T>(mut spawn: F) -> io::Result<T>
+where
+    F: FnMut() -> io::Result<T>,
+{
+    let mut last_err: Option<io::Error> = None;
+    for delay_ms in SPAWN_RETRY_DELAYS_MS {
+        match spawn() {
+            Ok(child) => return Ok(child),
+            Err(err) if is_temporary_resource_error(&err) => {
+                last_err = Some(err);
+                if delay_ms > 0 {
+                    sleep(Duration::from_millis(delay_ms)).await;
+                }
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| io::Error::other("spawn failed")))
+}
+
+pub fn spawn_std_command_with_retry(
+    cmd: &mut std::process::Command,
+) -> io::Result<std::process::Child> {
+    spawn_with_retry_blocking(|| cmd.spawn())
+}
+
+pub async fn spawn_tokio_command_with_retry(cmd: &mut Command) -> io::Result<Child> {
+    spawn_with_retry_async(|| cmd.spawn()).await
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum StdioPolicy {
@@ -102,5 +164,7 @@ pub(crate) async fn spawn_child_async(
         }
     }
 
-    cmd.kill_on_drop(true).spawn()
+    cmd.kill_on_drop(true);
+
+    spawn_tokio_command_with_retry(&mut cmd).await
 }

@@ -20,6 +20,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Duration as TokioDuration;
 use std::thread;
 use std::time::{Duration as StdDuration, Instant};
+use crate::spawn::spawn_tokio_command_with_retry;
 use crate::protocol::AgentSourceKind;
 use tracing::warn;
 
@@ -1424,7 +1425,7 @@ fn command_exists(cmd: &str) -> bool {
         // Ensure the child is terminated if this process dies unexpectedly.
         cmd.kill_on_drop(true);
 
-        match cmd.spawn() {
+        match spawn_tokio_command_with_retry(&mut cmd).await {
             Ok(child) => stream_child_output(agent_id, child).await?,
             Err(e) => {
                 if e.kind() == std::io::ErrorKind::NotFound {
@@ -1830,8 +1831,8 @@ async fn execute_cloud_built_in_streaming(
                 apply.current_dir(dir);
                 apply.stdin(Stdio::piped());
 
-                let mut child = apply
-                    .spawn()
+                let mut child = spawn_tokio_command_with_retry(&mut apply)
+                    .await
                     .map_err(|e| format!("Failed to spawn git apply: {}", e))?;
 
                 if let Some(mut stdin) = child.stdin.take() {

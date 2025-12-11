@@ -75,7 +75,9 @@ pub fn run_main(args: Args) -> Result<()> {
     let http_shutdown = args.http_shutdown;
     for request in server.incoming_requests() {
         let client = client.clone();
-        std::thread::spawn(move || {
+        if let Err(err) = std::thread::Builder::new()
+            .name("responses-api-proxy-worker".to_string())
+            .spawn(move || {
             if http_shutdown && request.method() == &Method::Get && request.url() == "/shutdown" {
                 let _ = request.respond(Response::new_empty(StatusCode(200)));
                 std::process::exit(0);
@@ -84,7 +86,10 @@ pub fn run_main(args: Args) -> Result<()> {
             if let Err(e) = forward_request(&client, auth_header, request) {
                 eprintln!("forwarding error: {e}");
             }
-        });
+        })
+        {
+            eprintln!("failed to spawn request handler: {err}");
+        }
     }
 
     Err(anyhow!("server stopped unexpectedly"))

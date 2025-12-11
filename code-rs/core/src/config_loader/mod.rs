@@ -190,7 +190,10 @@ where
     T: Send + 'static,
 {
     if Handle::try_current().is_ok() {
-        std::thread::spawn(move || run_future(future))
+        std::thread::Builder::new()
+            .name("config-loader".to_string())
+            .spawn(move || run_future(future))
+            .map_err(|err| io::Error::other(format!("config loader thread spawn failed: {err}")))?
             .join()
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "config loader thread panicked"))?
     } else {
