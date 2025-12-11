@@ -218,6 +218,10 @@ impl ChatWidgetHarness {
         }
     }
 
+    pub fn force_stream_clear(&mut self) {
+        self.chat.stream.clear_all();
+    }
+
     pub fn drive_commit_tick(&mut self) {
         self.chat.on_commit_tick();
         self.flush_into_widget();

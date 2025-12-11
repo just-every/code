@@ -1,5 +1,6 @@
 use code_core::protocol::{
     AgentMessageEvent,
+    AgentMessageDeltaEvent,
     Event,
     EventMsg,
     ErrorEvent,
@@ -377,6 +378,68 @@ fn exec_interrupts_flush_when_stream_idles() {
     assert!(
         output.contains("Thinking through the next steps"),
         "stream flush should still render the latest output:\n{}",
+        output
+    );
+}
+
+#[test]
+fn queued_exec_end_flushes_after_stream_clears() {
+    let mut harness = ChatWidgetHarness::new();
+    let mut seq = 0_u64;
+    let call_id = "call_flush".to_string();
+    let cwd = PathBuf::from("/tmp");
+
+    harness.handle_event(Event {
+        id: "exec-begin-flush".to_string(),
+        event_seq: 0,
+        msg: EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
+            call_id: call_id.clone(),
+            command: vec!["bash".into(), "-lc".into(), "echo queued".into()],
+            cwd: cwd.clone(),
+            parsed_cmd: Vec::new(),
+        }),
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    // Start a stream so ExecEnd defers into the interrupt queue.
+    harness.handle_event(Event {
+        id: "answer-delta-active".to_string(),
+        event_seq: 1,
+        msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+            delta: "streaming answer".into(),
+        }),
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    // Exec end arrives while the stream is active; it is deferred behind the flush timer.
+    harness.handle_event(Event {
+        id: "exec-end-flush".to_string(),
+        event_seq: 2,
+        msg: EventMsg::ExecCommandEnd(ExecCommandEndEvent {
+            call_id: call_id.clone(),
+            stdout: "queued\n".into(),
+            stderr: String::new(),
+            exit_code: 0,
+            duration: Duration::from_millis(5),
+        }),
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    // Stream finishes before the idle-flush callback fires; pending ExecEnd should still flush.
+    harness.force_stream_clear();
+
+    std::thread::sleep(Duration::from_millis(250));
+    harness.flush_into_widget();
+
+    let output = render_chat_widget_to_vt100(&mut harness, 80, 14);
+    assert!(
+        output.contains("queued"),
+        "exec output should render after the deferred end is delivered:\n{}",
+        output
+    );
+    assert!(
+        !output.contains("Running"),
+        "exec should not stay running after stream clears and the flush timer fires:\n{}",
         output
     );
 }

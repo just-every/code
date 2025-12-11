@@ -3934,6 +3934,10 @@ impl ChatWidget<'_> {
     pub(crate) fn flush_interrupts_if_stream_idle(&mut self) {
         self.interrupt_flush_scheduled = false;
         if !self.stream.is_write_cycle_active() {
+            if self.interrupts.has_queued() {
+                self.flush_interrupt_queue();
+                self.request_redraw();
+            }
             return;
         }
         if self.stream.is_current_stream_idle() {
