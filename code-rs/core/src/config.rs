@@ -67,8 +67,8 @@ use toml_edit::Item as TomlItem;
 use toml_edit::Table as TomlTable;
 use which::which;
 
-const OPENAI_DEFAULT_MODEL: &str = "gpt-5.1-codex";
-const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5.1-codex-mini";
+const OPENAI_DEFAULT_MODEL: &str = "gpt-5.1-codex-max";
+const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5.1-codex-max";
 pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5.1-codex-max";
 
 const fn default_true_local() -> bool {
@@ -172,7 +172,7 @@ pub struct Config {
     /// Whether planning should inherit the chat model instead of using a dedicated override.
     pub planning_use_chat_model: bool,
 
-    /// Model used specifically for review sessions. Defaults to "gpt-5.1-codex-mini".
+    /// Model used specifically for review sessions. Defaults to "gpt-5.1-codex-max".
     pub review_model: String,
 
     /// Reasoning effort used when running review sessions.
