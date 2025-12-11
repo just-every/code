@@ -1421,6 +1421,9 @@ fn command_exists(cmd: &str) -> bool {
             cmd.env(k, v);
         }
 
+        // Ensure the child is terminated if this process dies unexpectedly.
+        cmd.kill_on_drop(true);
+
         match cmd.spawn() {
             Ok(child) => stream_child_output(agent_id, child).await?,
             Err(e) => {
