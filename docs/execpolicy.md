@@ -12,9 +12,9 @@ Codex CLI will present the option to whitelist commands when a command causes a 
 
 Whitelisted commands will no longer require your permission to run in current and subsequent sessions.
 
-Under the hood, when you approve and whitelist a command, codex will edit `~/.codex/policy/default.codexpolicy`.
+Under the hood, when you approve and whitelist a command, codex will edit `~/.codex/rules/default.rules`.
 
-### Editing `.codexpolicy` files
+### Editing `.rules` files
 
 1. Create a policy directory: `mkdir -p ~/.code/policy`.
 2. Add one or more `.codexpolicy` files in that folder. Code automatically loads every `.codexpolicy` file in there on startup.
