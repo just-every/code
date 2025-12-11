@@ -239,8 +239,17 @@ impl BrowserManager {
                         info!("[cdp/bm] WS connect attempt {} succeeded", attempt);
 
                         // Start event handler loop
-                        let task = tokio::spawn(async move { while let Some(_evt) = handler.next().await {} });
-                        *self.event_task.lock().await = Some(task);
+                let browser_arc = self.browser.clone();
+                let page_arc = self.page.clone();
+                let background_page_arc = self.background_page.clone();
+                let task = tokio::spawn(async move {
+                    while let Some(_evt) = handler.next().await {}
+                    warn!("[cdp/bm] event handler ended; clearing browser state so it can restart");
+                    *browser_arc.lock().await = None;
+                    *page_arc.lock().await = None;
+                    *background_page_arc.lock().await = None;
+                });
+                *self.event_task.lock().await = Some(task);
                         {
                             let mut guard = self.browser.lock().await;
                             *guard = Some(browser);
@@ -355,7 +364,16 @@ impl BrowserManager {
                             info!("[cdp/bm] Connected to Chrome in {:?}", connect_start.elapsed());
 
                             // Start event handler loop
-                            let task = tokio::spawn(async move { while let Some(_evt) = handler.next().await {} });
+                            let browser_arc = self.browser.clone();
+                            let page_arc = self.page.clone();
+                            let background_page_arc = self.background_page.clone();
+                            let task = tokio::spawn(async move {
+                                while let Some(_evt) = handler.next().await {}
+                                warn!("[cdp/bm] event handler ended; clearing browser state so it can restart");
+                                *browser_arc.lock().await = None;
+                                *page_arc.lock().await = None;
+                                *background_page_arc.lock().await = None;
+                            });
                             *self.event_task.lock().await = Some(task);
 
                             // Install browser
@@ -450,7 +468,16 @@ impl BrowserManager {
                 Ok(Ok(Ok((browser, mut handler)))) => {
                     info!("[cdp/bm] WS connect attempt {} succeeded", attempt);
                     // Start event handler loop
-                    let task = tokio::spawn(async move { while let Some(_evt) = handler.next().await {} });
+                    let browser_arc = self.browser.clone();
+                    let page_arc = self.page.clone();
+                    let background_page_arc = self.background_page.clone();
+                    let task = tokio::spawn(async move {
+                        while let Some(_evt) = handler.next().await {}
+                        warn!("[cdp/bm] event handler ended; clearing browser state so it can restart");
+                        *browser_arc.lock().await = None;
+                        *page_arc.lock().await = None;
+                        *background_page_arc.lock().await = None;
+                    });
                     *self.event_task.lock().await = Some(task);
                     {
                         let mut guard = self.browser.lock().await;
@@ -564,7 +591,16 @@ impl BrowserManager {
                             );
 
                             // Start event handler
-                            let task = tokio::spawn(async move { while let Some(_evt) = handler.next().await {} });
+                            let browser_arc = self.browser.clone();
+                            let page_arc = self.page.clone();
+                            let background_page_arc = self.background_page.clone();
+                            let task = tokio::spawn(async move {
+                                while let Some(_evt) = handler.next().await {}
+                                warn!("[cdp/bm] event handler ended; clearing browser state so it can restart");
+                                *browser_arc.lock().await = None;
+                                *page_arc.lock().await = None;
+                                *background_page_arc.lock().await = None;
+                            });
                             *self.event_task.lock().await = Some(task);
                             {
                                 let mut guard = self.browser.lock().await;
@@ -695,10 +731,17 @@ impl BrowserManager {
         };
         // Optionally: browser.fetch_targets().await.ok();
 
+        let browser_arc = self.browser.clone();
+        let page_arc = self.page.clone();
+        let background_page_arc = self.background_page.clone();
         let task = tokio::spawn(async move {
             while let Some(event) = handler.next().await {
                 debug!("Browser event: {:?}", event);
             }
+            warn!("[cdp/bm] event handler ended; clearing browser state so it can restart");
+            *browser_arc.lock().await = None;
+            *page_arc.lock().await = None;
+            *background_page_arc.lock().await = None;
         });
         *self.event_task.lock().await = Some(task);
 
@@ -1436,6 +1479,14 @@ impl BrowserManager {
 
         match err {
             BrowserError::NotInitialized => true,
+            BrowserError::IoError(e) => matches!(
+                e.kind(),
+                std::io::ErrorKind::WouldBlock
+                    | std::io::ErrorKind::TimedOut
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+            ),
             BrowserError::CdpError(msg) => {
                 let msg_lower = msg.to_ascii_lowercase();
                 const RECOVERABLE_SUBSTRINGS: &[&str] = &[
@@ -1448,6 +1499,9 @@ impl BrowserManager {
                     "transport",
                     "timeout",
                     "timed out",
+                    "resource temporarily unavailable",
+                    "temporarily unavailable",
+                    "eagain",
                 ];
 
                 RECOVERABLE_SUBSTRINGS
