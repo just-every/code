@@ -438,8 +438,67 @@ fn queued_exec_end_flushes_after_stream_clears() {
         output
     );
     assert!(
-        !output.contains("Running"),
+        !output.contains("Running..."),
         "exec should not stay running after stream clears and the flush timer fires:\n{}",
+        output
+    );
+}
+
+#[test]
+fn background_style_exec_end_with_zero_seq_does_not_get_stuck() {
+    let mut harness = ChatWidgetHarness::new();
+    let mut seq = 0_u64;
+    let call_id = "call_zero_seq".to_string();
+    let cwd = PathBuf::from("/tmp");
+
+    // Simulate streaming so interrupts queue defers begin/end.
+    harness.handle_event(Event {
+        id: "reasoning-delta".to_string(),
+        event_seq: 0,
+        msg: EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+            delta: "thinking".into(),
+        }),
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    // Exec begin uses a normal monotonic seq (matches live code path).
+    harness.handle_event(Event {
+        id: "exec-begin-zero".to_string(),
+        event_seq: 1,
+        msg: EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
+            call_id: call_id.clone(),
+            command: vec!["bash".into(), "-lc".into(), "echo bg".into()],
+            cwd: cwd.clone(),
+            parsed_cmd: Vec::new(),
+        }),
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    // Exec end arrives while stream still active and (like background runner) reports seq 0.
+    harness.handle_event(Event {
+        id: "exec-end-zero".to_string(),
+        event_seq: 0,
+        msg: EventMsg::ExecCommandEnd(ExecCommandEndEvent {
+            call_id: call_id.clone(),
+            stdout: "bg\n".into(),
+            stderr: String::new(),
+            exit_code: 0,
+            duration: Duration::from_millis(5),
+        }),
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    // Stream finishes before the idle-flush callback fires; pending begin/end should still flush.
+    harness.force_stream_clear();
+
+    // Flush queued interrupts to deliver begin/end.
+    std::thread::sleep(Duration::from_millis(250));
+    harness.flush_into_widget();
+
+    let output = render_chat_widget_to_vt100(&mut harness, 80, 12);
+    assert!(
+        output.contains("bg") && !output.contains("Running..."),
+        "exec with zero seq end should complete after flush:\n{}",
         output
     );
 }

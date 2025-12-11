@@ -83,23 +83,31 @@ impl InterruptManager {
                 QueuedInterrupt::ApplyPatchApproval { seq: _, id, ev } => {
                     chat.handle_apply_patch_approval_now(id, ev);
                 }
-                QueuedInterrupt::ExecBegin { seq: _, ev, order, .. } => {
+                QueuedInterrupt::ExecBegin { seq, ev, order, .. } => {
                     match order.as_ref() {
-                        Some(ord) => chat.handle_exec_begin_now(ev, ord),
+                        Some(ord) => chat.handle_exec_begin_ordered(ev, ord.clone(), seq),
                         None => {
                             tracing::warn!("missing OrderMeta in queued ExecBegin; rendering with synthetic order");
-                            // Fall back to immediate render with synthetic ordering inside handler paths.
-                            // Use a minimal OrderMeta surrogate by anchoring to last seen request via internal key downstream.
-                            chat.handle_exec_begin_now(ev, &code_core::protocol::OrderMeta { request_ordinal: chat.last_seen_request_index, output_index: Some(i32::MAX as u32), sequence_number: Some(0) });
+                            let synthetic = code_core::protocol::OrderMeta {
+                                request_ordinal: chat.last_seen_request_index,
+                                output_index: Some(i32::MAX as u32),
+                                sequence_number: Some(0),
+                            };
+                            chat.handle_exec_begin_ordered(ev, synthetic, seq);
                         }
                     }
                 }
                 QueuedInterrupt::ExecEnd { ev, order, .. } => {
                     match order.as_ref() {
-                        Some(ord) => chat.handle_exec_end_now(ev, ord),
+                        Some(ord) => chat.enqueue_or_handle_exec_end(ev, ord.clone()),
                         None => {
                             tracing::warn!("missing OrderMeta in queued ExecEnd; rendering with synthetic order");
-                            chat.handle_exec_end_now(ev, &code_core::protocol::OrderMeta { request_ordinal: chat.last_seen_request_index, output_index: Some(i32::MAX as u32), sequence_number: Some(1) });
+                            let synthetic = code_core::protocol::OrderMeta {
+                                request_ordinal: chat.last_seen_request_index,
+                                output_index: Some(i32::MAX as u32),
+                                sequence_number: Some(1),
+                            };
+                            chat.enqueue_or_handle_exec_end(ev, synthetic);
                         }
                     }
                 },

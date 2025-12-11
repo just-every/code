@@ -11,6 +11,7 @@ use crossterm::event::KeyEvent;
 use code_auto_drive_core::AutoRunPhase;
 use code_core::config::{Config, ConfigOverrides, ConfigToml};
 use code_core::history::state::HistoryRecord;
+use code_core::history::state::ExecStatus;
 use code_core::protocol::{BackgroundEventEvent, Event, EventMsg, OrderMeta};
 use once_cell::sync::Lazy;
 use chrono::Utc;
@@ -220,6 +221,44 @@ impl ChatWidgetHarness {
 
     pub fn force_stream_clear(&mut self) {
         self.chat.stream.clear_all();
+    }
+
+    pub fn running_exec_call_ids(&self) -> Vec<String> {
+        self.chat
+            .exec
+            .running_commands
+            .keys()
+            .map(|cid| cid.0.clone())
+            .collect()
+    }
+
+    pub fn ended_exec_call_ids(&self) -> Vec<String> {
+        self.chat
+            .ended_call_ids
+            .iter()
+            .map(|cid| cid.0.clone())
+            .collect()
+    }
+
+    pub fn pending_exec_end_count(&self) -> usize {
+        self.chat.exec.pending_exec_ends.len()
+    }
+
+    pub fn pending_exec_end_keys(&self) -> Vec<String> {
+        self.chat
+            .exec
+            .pending_exec_ends
+            .keys()
+            .map(|cid| cid.0.clone())
+            .collect()
+    }
+
+    pub fn exec_status_for_call(&self, call_id: &str) -> Option<ExecStatus> {
+        let id = self.chat.history_state.history_id_for_exec_call(call_id)?;
+        match self.chat.history_state.record(id).cloned() {
+            Some(HistoryRecord::Exec(exec)) => Some(exec.status),
+            _ => None,
+        }
     }
 
     pub fn drive_commit_tick(&mut self) {

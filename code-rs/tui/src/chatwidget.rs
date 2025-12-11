@@ -4792,6 +4792,32 @@ impl ChatWidget<'_> {
         exec_tools::handle_exec_begin_now(self, ev, order);
     }
 
+    /// Common exec-begin handling used for both immediate and deferred paths.
+    /// Ensures we finalize any active stream, create the running cell, and
+    /// immediately apply a pending end if it arrived first.
+    fn handle_exec_begin_ordered(
+        &mut self,
+        ev: ExecCommandBeginEvent,
+        order: code_core::protocol::OrderMeta,
+        seq: u64,
+    ) {
+        self.finalize_active_stream();
+        tracing::info!(
+            "[order] ExecCommandBegin call_id={} seq={}",
+            ev.call_id,
+            seq
+        );
+        self.handle_exec_begin_now(ev.clone(), &order);
+        if let Some((pending_end, order2, _ts)) = self
+            .exec
+            .pending_exec_ends
+            .remove(&ExecCallId(ev.call_id.clone()))
+        {
+            self.handle_exec_end_now(pending_end, &order2);
+        }
+        self.flush_interrupt_queue();
+    }
+
     /// Handle exec command end immediately
     fn handle_exec_end_now(
         &mut self,
@@ -4799,6 +4825,36 @@ impl ChatWidget<'_> {
         order: &code_core::protocol::OrderMeta,
     ) {
         exec_tools::handle_exec_end_now(self, ev, order);
+    }
+
+    /// Handle or defer an exec end based on whether the matching begin has
+    /// already been seen. When no running entry exists yet, stash the end so
+    /// it can be paired once the begin arrives, falling back to a timed flush.
+    fn enqueue_or_handle_exec_end(
+        &mut self,
+        ev: ExecCommandEndEvent,
+        order: code_core::protocol::OrderMeta,
+    ) {
+        let call_id = ExecCallId(ev.call_id.clone());
+        let has_running = self.exec.running_commands.contains_key(&call_id);
+        if has_running {
+            self.handle_exec_end_now(ev, &order);
+            return;
+        }
+
+        self.exec
+            .pending_exec_ends
+            .insert(call_id, (ev, order.clone(), std::time::Instant::now()));
+        let tx = self.app_event_tx.clone();
+        let fallback_tx = tx.clone();
+        if thread_spawner::spawn_lightweight("exec-flush", move || {
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            tx.send(crate::app_event::AppEvent::FlushPendingExecEnds);
+        })
+        .is_none()
+        {
+            let _ = fallback_tx.send(crate::app_event::AppEvent::FlushPendingExecEnds);
+        }
     }
 
     fn build_patch_failure_metadata(stdout: &str, stderr: &str) -> PatchFailureMetadata {
@@ -12714,28 +12770,7 @@ impl ChatWidget<'_> {
                 self.defer_or_handle(
                     move |interrupts| interrupts.push_exec_begin(seq, ev, Some(om_begin)),
                     move |this| {
-                        // Finalize any active streaming sections, then establish
-                        // the running Exec cell before flushing queued interrupts.
-                        // This prevents an out‑of‑order ExecCommandEnd from being
-                        // applied first (which would fall back to showing call_id).
-                        this.finalize_active_stream();
-                        tracing::info!(
-                            "[order] ExecCommandBegin call_id={} seq={}",
-                            ev2.call_id,
-                            seq
-                        );
-                        this.handle_exec_begin_now(ev2.clone(), &om_begin_for_handler);
-                        // If an ExecEnd for this call_id arrived earlier and is waiting,
-                        // apply it immediately now that we have a matching Begin.
-                        if let Some((pending_end, order2, _ts)) = this
-                            .exec
-                            .pending_exec_ends
-                            .remove(&ExecCallId(ev2.call_id.clone()))
-                        {
-                            // Use the same order for the pending end
-                            this.handle_exec_end_now(pending_end, &order2);
-                        }
-                        this.flush_interrupt_queue();
+                        this.handle_exec_begin_ordered(ev2, om_begin_for_handler, seq);
                     },
                 );
             }
@@ -12882,7 +12917,6 @@ impl ChatWidget<'_> {
                     .clone()
                     .expect("missing OrderMeta for ExecCommandEnd");
                 let om_for_send = order_meta_end.clone();
-                let om_for_insert = order_meta_end.clone();
                 self.defer_or_handle(
                     move |interrupts| interrupts.push_exec_end(seq, ev, Some(om_for_send)),
                     move |this| {
@@ -12891,33 +12925,7 @@ impl ChatWidget<'_> {
                             ev2.call_id,
                             seq
                         );
-                        // If we already have a running command for this call_id, finish it now.
-                        let has_running = this
-                            .exec
-                            .running_commands
-                            .contains_key(&ExecCallId(ev2.call_id.clone()));
-                        if has_running {
-                            this.handle_exec_end_now(ev2, &order_meta_end);
-                        } else {
-                            // Otherwise, stash it briefly and schedule a flush in case the
-                            // matching Begin arrives shortly. This avoids rendering a fallback
-                            // "call_<id>" cell when events are slightly out of order.
-                            this.exec.pending_exec_ends.insert(
-                                ExecCallId(ev2.call_id.clone()),
-                                (ev2, om_for_insert, std::time::Instant::now()),
-                            );
-                            let tx = this.app_event_tx.clone();
-                            let fallback_tx = tx.clone();
-                            if thread_spawner::spawn_lightweight("exec-flush", move || {
-                                std::thread::sleep(std::time::Duration::from_millis(120));
-                                tx.send(crate::app_event::AppEvent::FlushPendingExecEnds);
-                            })
-                            .is_none()
-                            {
-                                let _ = fallback_tx
-                                    .send(crate::app_event::AppEvent::FlushPendingExecEnds);
-                            }
-                        }
+                        this.enqueue_or_handle_exec_end(ev2, order_meta_end);
                     },
                 );
             }
