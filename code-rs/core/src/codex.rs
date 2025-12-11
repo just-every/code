@@ -11484,6 +11484,18 @@ async fn send_agent_status_update(sess: &Session) {
                 error: agent.error.clone(),
                 elapsed_ms,
                 token_count: None,
+                last_activity_at: matches!(agent.status, AgentStatus::Pending | AgentStatus::Running)
+                    .then(|| agent.last_activity.to_rfc3339()),
+                seconds_since_last_activity: matches!(
+                    agent.status,
+                    AgentStatus::Pending | AgentStatus::Running
+                )
+                .then(|| {
+                    Utc::now()
+                        .signed_duration_since(agent.last_activity)
+                        .num_seconds()
+                        .max(0) as u64
+                }),
                 source_kind: agent.source_kind.clone(),
             }
         })

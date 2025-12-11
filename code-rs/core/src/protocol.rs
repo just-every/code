@@ -1289,6 +1289,16 @@ pub struct AgentInfo {
     #[serde(default)]
     pub token_count: Option<u64>,
 
+    /// Last time the agent reported activity (RFC3339). Only populated for active agents.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub last_activity_at: Option<String>,
+
+    /// Seconds since last activity, computed at emission time. Only for active agents.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub seconds_since_last_activity: Option<u64>,
+
     /// Source category for this agent (e.g., auto_review) to support UI filtering.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
