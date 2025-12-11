@@ -1,12 +1,14 @@
 use codex_app_server_protocol::AuthMode;
-use codex_protocol::openai_models::{ModelPreset, ModelUpgrade, ReasoningEffort, ReasoningEffortPreset};
+use codex_protocol::openai_models::ModelPreset;
+use codex_protocol::openai_models::ModelUpgrade;
+use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::openai_models::ReasoningEffortPreset;
 use once_cell::sync::Lazy;
 
 pub const HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG: &str = "hide_gpt5_1_migration_prompt";
 pub const HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG: &str =
     "hide_gpt-5.1-codex-max_migration_prompt";
 
-// Built-in model presets exposed when the backend model list is unavailable.
 static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
     vec![
         ModelPreset {
@@ -41,7 +43,7 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             id: "gpt-5.1-codex".to_string(),
             model: "gpt-5.1-codex".to_string(),
             display_name: "gpt-5.1-codex".to_string(),
-            description: "Optimized for Code.".to_string(),
+            description: "Optimized for codex.".to_string(),
             default_reasoning_effort: ReasoningEffort::Medium,
             supported_reasoning_efforts: vec![
                 ReasoningEffortPreset {
@@ -54,7 +56,8 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::High,
-                    description: "Maximizes reasoning depth for complex or ambiguous problems".to_string(),
+                    description: "Maximizes reasoning depth for complex or ambiguous problems"
+                        .to_string(),
                 },
             ],
             is_default: false,
@@ -69,7 +72,7 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             id: "gpt-5.1-codex-mini".to_string(),
             model: "gpt-5.1-codex-mini".to_string(),
             display_name: "gpt-5.1-codex-mini".to_string(),
-            description: "Optimized for Code. Cheaper, faster, but less capable.".to_string(),
+            description: "Optimized for codex. Cheaper, faster, but less capable.".to_string(),
             default_reasoning_effort: ReasoningEffort::Medium,
             supported_reasoning_efforts: vec![
                 ReasoningEffortPreset {
@@ -78,7 +81,8 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::High,
-                    description: "Maximizes reasoning depth for complex or ambiguous problems".to_string(),
+                    description: "Maximizes reasoning depth for complex or ambiguous problems"
+                        .to_string(),
                 },
             ],
             is_default: false,
@@ -98,15 +102,11 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             supported_reasoning_efforts: vec![
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::Low,
-                    description:
-                        "Balances speed with some reasoning; useful for straightforward queries and short explanations"
-                            .to_string(),
+                    description: "Balances speed with some reasoning; useful for straightforward queries and short explanations".to_string(),
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::Medium,
-                    description:
-                        "Provides a solid balance of reasoning depth and latency for general-purpose tasks"
-                            .to_string(),
+                    description: "Provides a solid balance of reasoning depth and latency for general-purpose tasks".to_string(),
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::High,
@@ -121,12 +121,12 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             }),
             show_in_picker: true,
         },
-        // Deprecated GPT-5 variants kept for migrations / config compatibility.
+        // Deprecated models.
         ModelPreset {
             id: "gpt-5-codex".to_string(),
             model: "gpt-5-codex".to_string(),
             display_name: "gpt-5-codex".to_string(),
-            description: "Optimized for Code.".to_string(),
+            description: "Optimized for codex.".to_string(),
             default_reasoning_effort: ReasoningEffort::Medium,
             supported_reasoning_efforts: vec![
                 ReasoningEffortPreset {
@@ -154,7 +154,7 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             id: "gpt-5-codex-mini".to_string(),
             model: "gpt-5-codex-mini".to_string(),
             display_name: "gpt-5-codex-mini".to_string(),
-            description: "Optimized for Code. Cheaper, faster, but less capable.".to_string(),
+            description: "Optimized for codex. Cheaper, faster, but less capable.".to_string(),
             default_reasoning_effort: ReasoningEffort::Medium,
             supported_reasoning_efforts: vec![
                 ReasoningEffortPreset {
@@ -187,15 +187,11 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::Low,
-                    description:
-                        "Balances speed with some reasoning; useful for straightforward queries and short explanations"
-                            .to_string(),
+                    description: "Balances speed with some reasoning; useful for straightforward queries and short explanations".to_string(),
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::Medium,
-                    description:
-                        "Provides a solid balance of reasoning depth and latency for general-purpose tasks"
-                            .to_string(),
+                    description: "Provides a solid balance of reasoning depth and latency for general-purpose tasks".to_string(),
                 },
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::High,
@@ -214,55 +210,25 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
 });
 
 pub(crate) fn builtin_model_presets(_auth_mode: Option<AuthMode>) -> Vec<ModelPreset> {
-    PRESETS.clone()
+    PRESETS
+        .iter()
+        .filter(|preset| preset.show_in_picker)
+        .cloned()
+        .collect()
 }
 
+// todo(aibrahim): remove this once we migrate tests
 pub fn all_model_presets() -> &'static Vec<ModelPreset> {
     &PRESETS
 }
 
-fn reasoning_effort_rank(effort: ReasoningEffort) -> u8 {
-    match effort {
-        ReasoningEffort::None => 0,
-        ReasoningEffort::Minimal => 1,
-        ReasoningEffort::Low => 2,
-        ReasoningEffort::Medium => 3,
-        ReasoningEffort::High => 4,
-        ReasoningEffort::XHigh => 5,
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_one_default_model_is_configured() {
+        let default_models = PRESETS.iter().filter(|preset| preset.is_default).count();
+        assert!(default_models == 1);
     }
-}
-
-pub fn clamp_reasoning_effort_for_model(
-    model: &str,
-    requested: ReasoningEffort,
-) -> ReasoningEffort {
-    let Some(preset) = find_preset_for_model(model) else {
-        return requested;
-    };
-
-    if preset
-        .supported_reasoning_efforts
-        .iter()
-        .any(|opt| opt.effort == requested)
-    {
-        return requested;
-    }
-
-    let requested_rank = reasoning_effort_rank(requested);
-
-    preset
-        .supported_reasoning_efforts
-        .iter()
-        .min_by_key(|opt| {
-            let rank = reasoning_effort_rank(opt.effort);
-            (requested_rank.abs_diff(rank), u8::MAX - rank)
-        })
-        .map(|opt| opt.effort)
-        .unwrap_or(requested)
-}
-
-fn find_preset_for_model(model: &str) -> Option<&'static ModelPreset> {
-    PRESETS
-        .iter()
-        .find(|preset| preset.model.eq_ignore_ascii_case(model))
 }
