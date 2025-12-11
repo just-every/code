@@ -35,8 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     if: "!contains(github.event.head_commit.message, '[skip ci]')"
     timeout-minutes: 5
-    outputs:
-      auth_ok: ${{ steps.auth.outputs.auth_ok }}
+    # Fail fast if npm auth is not usable; downstream jobs should not continue.
     env:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
@@ -45,32 +44,28 @@ jobs:
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
-      - name: Validate npm authentication
-        id: auth
+      - name: Validate npm authentication (must fail fast if missing/invalid)
         env:
           NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "auth_ok=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::NPM_TOKEN is missing; release publish steps will be skipped. Set a granular/automation token with publish + bypass 2FA permissions." >&2
-            exit 0
+            echo "::error::NPM_TOKEN is missing. Create a granular automation token with publish + bypass-2FA: https://docs.npmjs.com/creating-and-viewing-access-tokens#creating-access-tokens ; add/update the secret: https://github.com/organizations/just-every/settings/secrets/actions/NPM_TOKEN" >&2
+            exit 1
           fi
 
           echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > ~/.npmrc
 
           if npm whoami >/dev/null 2>&1; then
-            echo "auth_ok=true" >> "$GITHUB_OUTPUT"
             echo "npm auth ok"
           else
-            echo "auth_ok=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::npm auth failed (npm whoami). Ensure NPM_TOKEN is a granular/automation token with publish rights to @just-every/*, bypass 2FA enabled, and update the NPM_TOKEN secret via npmjs.com (Access Tokens → Granular → publish + bypass 2FA)." >&2
+            echo "::error::npm auth failed (npm whoami). Ensure NPM_TOKEN is a granular/automation token with publish rights to @just-every/*, bypass 2FA enabled: https://docs.npmjs.com/creating-and-viewing-access-tokens#creating-access-tokens ; update the secret: https://github.com/organizations/just-every/settings/secrets/actions/NPM_TOKEN" >&2
+            exit 1
           fi
 
   preflight-tests:
     name: Preflight Tests (Linux fast E2E)
     needs: [npm-auth-check]
-    if: needs.npm-auth-check.outputs.auth_ok == 'true'
     runs-on: ubuntu-24.04
     env:
       CARGO_TARGET_DIR: /mnt/cargo-target
@@ -168,7 +163,6 @@ jobs:
   determine-version:
     name: Determine Version
     needs: [npm-auth-check]
-    if: needs.npm-auth-check.outputs.auth_ok == 'true'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
