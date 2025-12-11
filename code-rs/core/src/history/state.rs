@@ -1844,30 +1844,33 @@ impl HistoryState {
                 stdout_chunk,
                 stderr_chunk,
             } => {
-                if let Some(HistoryRecord::Exec(existing)) = self.records.get(index).cloned() {
-                    let mut updated = existing;
-                    if let Some(chunk) = stdout_chunk {
-                        let chunk_len = chunk.content.len();
+                let id = match self.records.get_mut(index) {
+                    Some(HistoryRecord::Exec(existing)) => {
+                        if let Some(chunk) = stdout_chunk {
+                            let chunk_len = chunk.content.len();
+                            self.usage_tracker.add_exec_delta(existing.id, 1, chunk_len);
+                            append_exec_chunk(&mut existing.stdout_chunks, chunk);
+                        }
+                        if let Some(chunk) = stderr_chunk {
+                            let chunk_len = chunk.content.len();
+                            self.usage_tracker.add_exec_delta(existing.id, 1, chunk_len);
+                            append_exec_chunk(&mut existing.stderr_chunks, chunk);
+                        }
                         self.usage_tracker
-                            .add_exec_delta(updated.id, 1, chunk_len);
-                        append_exec_chunk(&mut updated.stdout_chunks, chunk);
+                            .observe_exec(existing, "domain:update-exec-stream");
+                        existing.id
                     }
-                    if let Some(chunk) = stderr_chunk {
-                        let chunk_len = chunk.content.len();
-                        self.usage_tracker
-                            .add_exec_delta(updated.id, 1, chunk_len);
-                        append_exec_chunk(&mut updated.stderr_chunks, chunk);
-                    }
-                    self.usage_tracker
-                        .observe_exec(&updated, "domain:update-exec-stream");
-                    let mutation = self.apply_event(HistoryEvent::Replace {
+                    _ => return HistoryMutation::Noop,
+                };
+
+                self.enforce_exec_stream_global_limit();
+
+                if let Some(record) = self.records.get(index).cloned() {
+                    HistoryMutation::Replaced {
                         index,
-                        record: HistoryRecord::Exec(updated),
-                    });
-                    if !matches!(mutation, HistoryMutation::Noop) {
-                        self.enforce_exec_stream_global_limit();
+                        id,
+                        record,
                     }
-                    mutation
                 } else {
                     HistoryMutation::Noop
                 }
@@ -2071,14 +2074,26 @@ impl HistoryState {
 
                         self.usage_tracker
                             .observe_exec(&updated, "domain:finish-exec");
+                        let id = updated.id;
                         let mutation = self.apply_event(HistoryEvent::Replace {
                             index: idx,
                             record: HistoryRecord::Exec(updated),
                         });
-                        if !matches!(mutation, HistoryMutation::Noop) {
-                            self.enforce_exec_stream_global_limit();
+                        if matches!(mutation, HistoryMutation::Noop) {
+                            return mutation;
                         }
-                        mutation
+
+                        self.enforce_exec_stream_global_limit();
+
+                        if let Some(record) = self.records.get(idx).cloned() {
+                            HistoryMutation::Replaced {
+                                index: idx,
+                                id,
+                                record,
+                            }
+                        } else {
+                            HistoryMutation::Noop
+                        }
                     } else {
                         HistoryMutation::Noop
                     }

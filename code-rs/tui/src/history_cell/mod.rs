@@ -1734,6 +1734,7 @@ pub(crate) fn new_completed_wait_tool_call(target: String, duration: Duration) -
 // Unified preview format: show first 2 and last 5 non-empty lines with an ellipsis between.
 const PREVIEW_HEAD_LINES: usize = 2;
 const PREVIEW_TAIL_LINES: usize = 5;
+const EXEC_PREVIEW_MAX_CHARS: usize = 16_000;
 const STREAMING_EXIT_CODE: i32 = i32::MIN;
 
 /// Normalize common TTY overwrite sequences within a text block so that
@@ -1919,6 +1920,7 @@ fn build_preview_lines(text: &str, _include_left_pipe: bool) -> Vec<Line<'static
     // Otherwise, compact valid JSON (without ANSI) to improve wrap, or pass original through.
     let processed = format_json_compact(text).unwrap_or_else(|| text.to_string());
     let processed = normalize_overwrite_sequences(&processed);
+    let (processed, clipped) = clip_preview_text(&processed, EXEC_PREVIEW_MAX_CHARS);
     let processed = sanitize_for_tui(
         &processed,
         SanitizeMode::AnsiPreserving,
@@ -1960,6 +1962,12 @@ fn build_preview_lines(text: &str, _include_left_pipe: bool) -> Vec<Line<'static
     }
 
     let mut out: Vec<Line<'static>> = Vec::new();
+    if clipped {
+        out.push(Line::styled(
+            format!("… output truncated to last {} chars", EXEC_PREVIEW_MAX_CHARS),
+            Style::default().fg(crate::colors::text_dim()),
+        ));
+    }
     for seg in segments {
         match seg {
             Seg::Line(line) => out.push(ansi_line_with_theme_bg(line)),
@@ -1967,6 +1975,22 @@ fn build_preview_lines(text: &str, _include_left_pipe: bool) -> Vec<Line<'static
         }
     }
     out
+}
+
+fn clip_preview_text(text: &str, limit: usize) -> (String, bool) {
+    let char_count = text.chars().count();
+    if char_count <= limit {
+        return (text.to_string(), false);
+    }
+    let tail: String = text
+        .chars()
+        .rev()
+        .take(limit)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    (tail, true)
 }
 
 fn output_lines(
