@@ -23199,12 +23199,34 @@ Have we met every part of this goal and is there no further work to do?"#
 
     /// True when the only ongoing activity is a wait/kill tool (no exec/stream/agents/tasks),
     /// meaning we can safely unlock the composer without cancelling the work.
+    ///
+    /// Historically this returned false whenever any exec was running, which caused user input
+    /// submitted during a `wait` tool to be queued instead of interrupting the wait. That meant
+    /// the core never received `Op::UserInput`, so waits could not be cancelled mid-flight.
+    /// We treat execs that are only being observed by a wait tool as "wait-only" so input can
+    /// flow through immediately and interrupt the wait.
     fn wait_only_activity(&self) -> bool {
         if !self.wait_running() {
             return false;
         }
 
-        self.exec.running_commands.is_empty()
+        // Consider execs "wait-only" when every running command is being waited on and marked
+        // as such. Any other exec activity keeps the composer blocked.
+        let execs_wait_only = self.exec.running_commands.is_empty()
+            || self
+                .exec
+                .running_commands
+                .iter()
+                .all(|(id, cmd)| {
+                    cmd.wait_active
+                        && self
+                            .tools_state
+                            .running_wait_tools
+                            .values()
+                            .any(|wait_id| wait_id == id)
+                });
+
+        execs_wait_only
             && self.tools_state.running_custom_tools.is_empty()
             && self.tools_state.web_search_sessions.is_empty()
             && !self.stream.is_write_cycle_active()
