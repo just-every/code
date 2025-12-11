@@ -35,34 +35,42 @@ jobs:
     runs-on: ubuntu-latest
     if: "!contains(github.event.head_commit.message, '[skip ci]')"
     timeout-minutes: 5
+    outputs:
+      auth_ok: ${{ steps.auth.outputs.auth_ok }}
     env:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
-      - name: Fail if NPM_TOKEN is missing
-        run: |
-          set -euo pipefail
-          if [ -z "${NPM_TOKEN:-}" ]; then
-            echo "NPM_TOKEN is required for release publishing" >&2
-            exit 1
-          fi
-
       - name: Setup Node.js for auth check
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
-
-      - name: Verify npm authentication
+      - name: Validate npm authentication
+        id: auth
         env:
           NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN }}
         run: |
           set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "auth_ok=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::NPM_TOKEN is missing; release publish steps will be skipped. Set a granular/automation token with publish + bypass 2FA permissions." >&2
+            exit 0
+          fi
+
           echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > ~/.npmrc
-          npm whoami >/dev/null 2>&1 || { echo "npm auth failed (npm whoami). Ensure NPM_TOKEN is a granular/automation token with publish rights to @just-every/*, bypass 2FA enabled, and update the NPM_TOKEN secret via npmjs.com (Access Tokens → Granular → publish + bypass 2FA)." >&2; exit 1; }
+
+          if npm whoami >/dev/null 2>&1; then
+            echo "auth_ok=true" >> "$GITHUB_OUTPUT"
+            echo "npm auth ok"
+          else
+            echo "auth_ok=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::npm auth failed (npm whoami). Ensure NPM_TOKEN is a granular/automation token with publish rights to @just-every/*, bypass 2FA enabled, and update the NPM_TOKEN secret via npmjs.com (Access Tokens → Granular → publish + bypass 2FA)." >&2
+          fi
 
   preflight-tests:
     name: Preflight Tests (Linux fast E2E)
     needs: [npm-auth-check]
+    if: needs.npm-auth-check.outputs.auth_ok == 'true'
     runs-on: ubuntu-24.04
     env:
       CARGO_TARGET_DIR: /mnt/cargo-target
@@ -160,6 +168,7 @@ jobs:
   determine-version:
     name: Determine Version
     needs: [npm-auth-check]
+    if: needs.npm-auth-check.outputs.auth_ok == 'true'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
