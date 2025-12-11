@@ -9,17 +9,15 @@
 **Every Code** (Code for short) is a fast, local coding agent for your terminal. It's a community-driven fork of `openai/codex` focused on real developer ergonomics: Browser integration, multi-agents, theming, and reasoning control — all while staying compatible with upstream.
 
 &ensp;
-## What's new in v0.5.0 (November 21st 2025)
+## What's new in v0.6.0 (December 2025)
 
-- **Renamed to Every Code** – new name for better discoverability while keeping the `code` shorthand.
-- **Auto Drive upgraded** – hand `/auto` a task and it now plans, coordinates agents, reruns checks, and recovers from hiccups without babysitting.
-- **Many QoL improvements** – `/resume` and `/undo` work reliably. All major upstream features have been ported across including compaction v2 and -max and -mini models.
-- **Unified settings** – `/settings` centralizes limits, model routing, themes, and CLI integrations so you can audit configuration in one place.
-- **Card-based activity** – Agents, browser sessions, web search, and Auto Drive render as compact cards with drill-down overlays for full logs.
-- **Turbocharged performance** – History rendering and streaming were optimized to stay smooth even during long multi-agent sessions.
-- **Smarter agents** – Mix and match orchestrator CLIs (Claude, Gemini, GPT-5, Qwen, and more) per `/plan`, `/code`, or `/solve` run.
+- **Auto Review** – background ghost-commit watcher runs reviews in a separate worktree whenever a turn changes code; uses `codex-5.1-mini-high` and reports issues plus ready-to-apply fixes without blocking the main thread.
+- **Code Bridge** – Sentry-style local bridge that streams errors, console, screenshots, and control from running apps into Code; ships an MCP server; install by asking Code to pull `https://github.com/just-every/code-bridge`.
+- **Plays well with Auto Drive** – reviews run in parallel with long Auto Drive tasks so quality checks land while the flow keeps moving.
+- **Quality-first focus** – the release shifts emphasis from "can the model write this file" to "did we verify it works".
+- _From v0.5.0:_ rename to Every Code, upgraded `/auto` planning/recovery, unified `/settings`, faster streaming/history with card-based activity, and more reliable `/resume` + `/undo`.
 
-Read the full notes in `docs/release-notes/RELEASE_NOTES.md`.
+ [Read the full notes in RELEASE_NOTES.md](docs/release-notes/RELEASE_NOTES.md)
 
 &ensp;
 ## Why Every Code
