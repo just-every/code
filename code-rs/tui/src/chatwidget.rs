@@ -4842,6 +4842,18 @@ impl ChatWidget<'_> {
             return;
         }
 
+        // If the history already knows about this call_id (e.g., Begin was handled
+        // but running_commands was cleared), finish it immediately to avoid leaving
+        // the cell stuck in a running state.
+        if self
+            .history_state
+            .history_id_for_exec_call(call_id.as_ref())
+            .is_some()
+        {
+            self.handle_exec_end_now(ev, &order);
+            return;
+        }
+
         self.exec
             .pending_exec_ends
             .insert(call_id, (ev, order.clone(), std::time::Instant::now()));
