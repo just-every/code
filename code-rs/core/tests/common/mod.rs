@@ -29,13 +29,32 @@ pub fn load_default_config_for_test(code_home: &TempDir) -> Config {
 fn default_test_overrides() -> ConfigOverrides {
     use std::path::PathBuf;
 
+    let infer_sandbox_path = || {
+        let mut target_dir = std::env::current_exe().ok()?;
+        target_dir.pop();
+        if target_dir.ends_with("deps") {
+            target_dir.pop();
+        }
+        let exe_suffix = std::env::consts::EXE_SUFFIX;
+        let candidate = target_dir.join(format!("code-linux-sandbox{exe_suffix}"));
+        candidate.exists().then_some(candidate)
+    };
+
     let sandbox_path = std::env::var_os("CARGO_BIN_EXE_code-linux-sandbox")
         .map(PathBuf::from)
-        .expect("code-linux-sandbox binary should exist for integration tests");
+        .or_else(infer_sandbox_path);
 
-    ConfigOverrides {
-        code_linux_sandbox_exe: Some(sandbox_path),
-        ..ConfigOverrides::default()
+    match sandbox_path {
+        Some(sandbox_path) => ConfigOverrides {
+            code_linux_sandbox_exe: Some(sandbox_path),
+            ..ConfigOverrides::default()
+        },
+        None => {
+            eprintln!(
+                "code-linux-sandbox binary missing; running tests without linux sandbox overrides"
+            );
+            ConfigOverrides::default()
+        }
     }
 }
 

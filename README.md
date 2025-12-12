@@ -299,6 +299,16 @@ npm install
 ./code-rs/target/dev-fast/code
 ```
 
+#### Git hooks
+
+This repo ships shared hooks under `.githooks/`. To enable them locally:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The `pre-push` hook runs `./pre-release.sh` automatically when pushing to `main`.
+
 ### Opening a pull request
 
 1. Fork the repository
