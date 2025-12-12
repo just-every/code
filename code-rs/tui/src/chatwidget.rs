@@ -13022,6 +13022,7 @@ impl ChatWidget<'_> {
                     },
                 );
             }
+
             EventMsg::CustomToolCallBegin(CustomToolCallBeginEvent {
                 call_id,
                 tool_name,
@@ -13063,56 +13064,63 @@ impl ChatWidget<'_> {
                         return;
                     }
                 }
-                if tool_name == "wait" {
-                    if let Some(exec_call_id) =
-                        wait_exec_call_id_from_params(params_string.as_ref())
-                    {
-                        self.tools_state
-                            .running_wait_tools
-                            .insert(ToolCallId(call_id.clone()), exec_call_id.clone());
 
-                        let mut wait_update: Option<(
-                            HistoryId,
-                            Option<Duration>,
-                            Vec<(String, bool)>,
-                        )> = None;
-                        if let Some(running) = self.exec.running_commands.get_mut(&exec_call_id) {
-                            running.wait_active = true;
-                            running.wait_notes.clear();
-                            let history_id = running.history_id.or_else(|| {
-                                running.history_index.and_then(|idx| {
-                                    self.history_cell_ids
-                                        .get(idx)
-                                        .and_then(|slot| *slot)
-                                })
-                            });
-                            running.history_id = history_id;
-                            if let Some(id) = history_id {
-                                wait_update = Some((id, running.wait_total, running.wait_notes.clone()));
+                if tool_name == "wait" {
+
+                    if let Some(exec_call_id) = wait_exec_call_id_from_params(params_string.as_ref()) {
+                        // Only treat this as an exec-scoped wait when the target exec is still running.
+                        // Background waits (e.g., waiting on a shell call_id) also carry `call_id`.
+                        if self.exec.running_commands.contains_key(&exec_call_id) {
+                            self.tools_state
+                                .running_wait_tools
+                                .insert(ToolCallId(call_id.clone()), exec_call_id.clone());
+
+
+                            let mut wait_update: Option<(
+                                HistoryId,
+                                Option<Duration>,
+                                Vec<(String, bool)>,
+                            )> = None;
+                            if let Some(running) = self.exec.running_commands.get_mut(&exec_call_id) {
+                                running.wait_active = true;
+                                running.wait_notes.clear();
+                                let history_id = running.history_id.or_else(|| {
+                                    running.history_index.and_then(|idx| {
+                                        self.history_cell_ids
+                                            .get(idx)
+                                            .and_then(|slot| *slot)
+                                    })
+                                });
+                                running.history_id = history_id;
+                                if let Some(id) = history_id {
+                                    wait_update = Some((id, running.wait_total, running.wait_notes.clone()));
+                                }
                             }
+                            if let Some((history_id, total, notes)) = wait_update {
+                                let _ = self.update_exec_wait_state_with_pairs(history_id, total, true, &notes);
+                            }
+                            self.bottom_pane
+                                .update_status_text("waiting for command".to_string());
+                            self.invalidate_height_cache();
+                            self.request_redraw();
+                            return;
                         }
-                        if let Some((history_id, total, notes)) = wait_update {
-                            let _ = self.update_exec_wait_state_with_pairs(history_id, total, true, &notes);
-                        }
-                        self.bottom_pane
-                            .update_status_text("waiting for command".to_string());
-                        self.invalidate_height_cache();
-                        self.request_redraw();
-                        return;
                     }
                 }
+
                 if tool_name == "kill" {
-                    if let Some(exec_call_id) =
-                        wait_exec_call_id_from_params(params_string.as_ref())
-                    {
-                        self.tools_state
-                            .running_kill_tools
-                            .insert(ToolCallId(call_id.clone()), exec_call_id);
-                        self.bottom_pane
-                            .update_status_text("cancelling command".to_string());
-                        self.invalidate_height_cache();
-                        self.request_redraw();
-                        return;
+
+                    if let Some(exec_call_id) = wait_exec_call_id_from_params(params_string.as_ref()) {
+                        if self.exec.running_commands.contains_key(&exec_call_id) {
+                            self.tools_state
+                                .running_kill_tools
+                                .insert(ToolCallId(call_id.clone()), exec_call_id);
+                            self.bottom_pane
+                                .update_status_text("cancelling command".to_string());
+                            self.invalidate_height_cache();
+                            self.request_redraw();
+                            return;
+                        }
                     }
                 }
                 // Animated running cell with live timer and formatted args
