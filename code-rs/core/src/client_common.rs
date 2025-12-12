@@ -470,10 +470,13 @@ pub(crate) fn create_reasoning_param_for_request(
         return None;
     }
 
-    Some(Reasoning {
-        effort,
-        summary: Some(summary),
-    })
+    let summary = if summary == ReasoningSummaryConfig::None {
+        None
+    } else {
+        Some(summary)
+    };
+
+    Some(Reasoning { effort, summary })
 }
 
 // Removed legacy TextControls helper; use `Text` with `OpenAiTextVerbosity` instead.
