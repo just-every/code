@@ -743,7 +743,10 @@ if [ $? -eq 0 ]; then
     for BIN_NAME in "${TARGET_BINS[@]}"; do
       BIN_TARGET_PATH="${TARGET_DIR_ABS}/${BIN_SUBDIR}/${BIN_NAME}"
       if [ -e "${BIN_TARGET_PATH}" ]; then
-        TMP_BIN_PATH="${BIN_DIR}/${BIN_NAME}.tmp"
+        # Use a per-process temp file to avoid races when multiple build-fast
+        # invocations run concurrently in the same repo.
+        TMP_BIN_PATH="${BIN_DIR}/${BIN_NAME}.tmp.${BASHPID:-$$}"
+        rm -f "${TMP_BIN_PATH}" 2>/dev/null || true
         cp -f "${BIN_TARGET_PATH}" "${TMP_BIN_PATH}"
         mv -f "${TMP_BIN_PATH}" "${BIN_DIR}/${BIN_NAME}"
         chmod +x "${BIN_DIR}/${BIN_NAME}" 2>/dev/null || true
