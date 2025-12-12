@@ -988,6 +988,7 @@ impl Codex {
             provider: config.model_provider.clone(),
             model: config.model.clone(),
             model_reasoning_effort: config.model_reasoning_effort,
+            preferred_model_reasoning_effort: config.preferred_model_reasoning_effort,
             model_reasoning_summary: config.model_reasoning_summary,
             model_text_verbosity: config.model_text_verbosity,
             user_instructions,
@@ -4251,6 +4252,7 @@ async fn submission_loop(
                 provider,
                 model,
                 model_reasoning_effort,
+                preferred_model_reasoning_effort,
                 model_reasoning_summary,
                 model_text_verbosity,
                 user_instructions: provided_user_instructions,
@@ -4279,12 +4281,19 @@ async fn submission_loop(
 
                 let model_changed = !updated_config.model.eq_ignore_ascii_case(&model);
                 let effort_changed = updated_config.model_reasoning_effort != model_reasoning_effort;
+                let preferred_effort_changed = preferred_model_reasoning_effort
+                    .as_ref()
+                    .map(|preferred| updated_config.preferred_model_reasoning_effort != Some(*preferred))
+                    .unwrap_or(false);
 
                 let old_model_family = updated_config.model_family.clone();
 
                 updated_config.model = model.clone();
                 updated_config.model_provider = provider.clone();
                 updated_config.model_reasoning_effort = model_reasoning_effort;
+                if let Some(preferred) = preferred_model_reasoning_effort {
+                    updated_config.preferred_model_reasoning_effort = Some(preferred);
+                }
                 updated_config.model_reasoning_summary = model_reasoning_summary;
                 updated_config.model_text_verbosity = model_text_verbosity;
                 updated_config.user_instructions = provided_user_instructions.clone();
@@ -4357,12 +4366,13 @@ async fn submission_loop(
 
                 let new_config = Arc::new(updated_config);
 
-                if model_changed || effort_changed {
+                if model_changed || effort_changed || preferred_effort_changed {
                     if let Err(err) = persist_model_selection(
                         &new_config.code_home,
                         new_config.active_profile.as_deref(),
                         &new_config.model,
                         Some(new_config.model_reasoning_effort),
+                        new_config.preferred_model_reasoning_effort,
                     )
                     .await
                     {

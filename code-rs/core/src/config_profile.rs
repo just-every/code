@@ -24,6 +24,7 @@ pub struct ConfigProfile {
     pub approval_policy: Option<AskForApproval>,
     pub disable_response_storage: Option<bool>,
     pub model_reasoning_effort: Option<ReasoningEffort>,
+    pub preferred_model_reasoning_effort: Option<ReasoningEffort>,
     pub review_model_reasoning_effort: Option<ReasoningEffort>,
     pub review_use_chat_model: Option<bool>,
     pub auto_review_model: Option<String>,

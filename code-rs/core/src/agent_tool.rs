@@ -2030,7 +2030,7 @@ pub fn create_agent_tool(allowed_models: &[String]) -> OpenAiTool {
                 },
             }),
                 description: Some(
-                    "Optional array of model names (e.g., ['claude-sonnet-4.5','code-gpt-5.1-codex-max','code-gpt-5.1-codex-mini','gemini-3-pro'])".to_string(),
+                    "Optional array of model names (e.g., ['code-gpt-5.2','claude-sonnet-4.5','code-gpt-5.1-codex-max','gemini-3-pro'])".to_string(),
                 ),
         },
     );

@@ -24,6 +24,13 @@ const GPT5_1_EFFORTS: &[ReasoningEffort] = &[
     ReasoningEffort::High,
 ];
 
+const GPT5_2_EFFORTS: &[ReasoningEffort] = &[
+    ReasoningEffort::Low,
+    ReasoningEffort::Medium,
+    ReasoningEffort::High,
+    ReasoningEffort::XHigh,
+];
+
 const GPT5_CODEX_EFFORTS: &[ReasoningEffort] = &[
     ReasoningEffort::Low,
     ReasoningEffort::Medium,
@@ -83,6 +90,10 @@ pub fn supported_reasoning_efforts_for_model(model: &str) -> &'static [Reasoning
 
     if lower.starts_with("gpt-5.1") {
         return GPT5_1_EFFORTS;
+    }
+
+    if lower.starts_with("gpt-5.2") || lower.starts_with("test-gpt-5.2") {
+        return GPT5_2_EFFORTS;
     }
 
     if lower.starts_with("gpt-5-codex-mini") {
@@ -146,5 +157,11 @@ mod tests {
     fn keeps_supported_effort() {
         let clamped = clamp_reasoning_effort_for_model("gpt-5.1-codex-max", ReasoningEffort::High);
         assert_eq!(clamped, ReasoningEffort::High);
+    }
+
+    #[test]
+    fn gpt5_2_supports_xhigh() {
+        let clamped = clamp_reasoning_effort_for_model("gpt-5.2", ReasoningEffort::XHigh);
+        assert_eq!(clamped, ReasoningEffort::XHigh);
     }
 }

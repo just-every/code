@@ -491,7 +491,10 @@ pub async fn run_main(
             AuthMode::ApiKey
         };
         if let Some(plan) = determine_migration_plan(&config, auth_mode) {
-            if matches!(auth_mode, AuthMode::ChatGPT) {
+            let should_auto_accept = matches!(auth_mode, AuthMode::ChatGPT)
+                && plan.hide_key != code_common::model_presets::HIDE_GPT_5_2_MIGRATION_PROMPT_CONFIG;
+
+            if should_auto_accept {
                 if let Err(err) = persist_migration_acceptance(
                     &code_home,
                     cli.config_profile.as_deref(),
@@ -1017,9 +1020,7 @@ struct MigrationPlan {
 fn determine_migration_plan(config: &Config, auth_mode: AuthMode) -> Option<MigrationPlan> {
     let current_slug = config.model.to_ascii_lowercase();
     let presets = all_model_presets();
-    let current = presets
-        .iter()
-        .find(|preset| preset.id.eq_ignore_ascii_case(&current_slug))?;
+    let current = find_migration_preset(presets, &current_slug)?;
     let upgrade = current.upgrade.as_ref()?;
     if notice_hidden(&config.notices, upgrade.migration_config_key.as_str()) {
         return None;
@@ -1036,6 +1037,44 @@ fn determine_migration_plan(config: &Config, auth_mode: AuthMode) -> Option<Migr
         hide_key: upgrade.migration_config_key.as_str(),
         new_effort,
     })
+}
+
+fn find_migration_preset<'a>(presets: &'a [ModelPreset], slug_lower: &str) -> Option<&'a ModelPreset> {
+    let slug_no_prefix = slug_lower
+        .rsplit_once(':')
+        .map(|(_, rest)| rest)
+        .unwrap_or(slug_lower);
+    let slug_no_prefix = slug_no_prefix
+        .rsplit_once('/')
+        .map(|(_, rest)| rest)
+        .unwrap_or(slug_no_prefix);
+    let slug_no_test = slug_no_prefix.strip_prefix("test-").unwrap_or(slug_no_prefix);
+
+    if let Some(preset) = presets.iter().find(|preset| {
+        preset.id.eq_ignore_ascii_case(slug_no_test)
+            || preset.model.eq_ignore_ascii_case(slug_no_test)
+            || preset.display_name.eq_ignore_ascii_case(slug_no_test)
+    }) {
+        return Some(preset);
+    }
+
+    let mut best: Option<&ModelPreset> = None;
+    let mut best_len = 0usize;
+    for preset in presets.iter() {
+        for candidate in [&preset.id, &preset.model, &preset.display_name] {
+            let candidate_lower = candidate.to_ascii_lowercase();
+            if slug_no_test.starts_with(candidate_lower.as_str()) {
+                let candidate_len = candidate.len();
+                if candidate_len > best_len {
+                    best = Some(preset);
+                    best_len = candidate_len;
+                }
+                break;
+            }
+        }
+    }
+
+    best
 }
 
 const NOTICE_TABLE: &str = "notice";

@@ -12217,12 +12217,10 @@ impl ChatWidget<'_> {
                 self.stream_state
                     .closed_answer_ids
                     .insert(StreamId(id.clone()));
-                // Receiving a final answer means this task has finished even if we have not yet
-                // observed the corresponding TaskComplete event. Clear the active marker now so
-                // the status spinner can hide promptly when nothing else is running.
-                self.active_task_ids.remove(&id);
-                self.finalize_agent_activity();
-                self.stop_spinner();
+                // Do not quiesce the global spinner here. `AgentMessage` is emitted for every
+                // completed assistant output item, and modern models may send multiple assistant
+                // messages mid-turn (progress updates, tool interleavings, etc.). We only clear
+                // the turn spinner on `TaskComplete` or when all other activity drains.
                 // Important: do not advance Auto Drive here. The StreamController will emit
                 // AppEvent::InsertFinalAnswer, and the App thread will finalize the assistant
                 // cell slightly later. Advancing at this point can start the next Auto Drive
@@ -20565,7 +20563,16 @@ Have we met every part of this goal and is there no further work to do?"#
             updated = true;
         }
 
-        let requested_effort = effort.unwrap_or(self.config.model_reasoning_effort);
+        if let Some(explicit) = effort {
+            if self.config.preferred_model_reasoning_effort != Some(explicit) {
+                self.config.preferred_model_reasoning_effort = Some(explicit);
+                updated = true;
+            }
+        }
+
+        let requested_effort = effort
+            .or(self.config.preferred_model_reasoning_effort)
+            .unwrap_or(self.config.model_reasoning_effort);
         let clamped_effort = Self::clamp_reasoning_for_model(trimmed, requested_effort);
 
         if self.config.model_reasoning_effort != clamped_effort {
@@ -20578,6 +20585,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 provider: self.config.model_provider.clone(),
                 model: self.config.model.clone(),
                 model_reasoning_effort: self.config.model_reasoning_effort,
+                preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
                 model_reasoning_summary: self.config.model_reasoning_summary,
                 model_text_verbosity: self.config.model_text_verbosity,
                 user_instructions: self.config.user_instructions.clone(),
@@ -21203,6 +21211,7 @@ Have we met every part of this goal and is there no further work to do?"#
             provider: self.config.model_provider.clone(),
             model: self.config.model.clone(),
             model_reasoning_effort: self.config.model_reasoning_effort,
+            preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
             model_reasoning_summary: self.config.model_reasoning_summary,
             model_text_verbosity: self.config.model_text_verbosity,
             user_instructions: self.config.user_instructions.clone(),
@@ -21226,6 +21235,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 provider: self.config.model_provider.clone(),
                 model: self.config.model.clone(),
                 model_reasoning_effort: self.config.model_reasoning_effort,
+                preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
                 model_reasoning_summary: self.config.model_reasoning_summary,
                 model_text_verbosity: self.config.model_text_verbosity,
                 user_instructions: self.config.user_instructions.clone(),
@@ -21429,6 +21439,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 provider: self.config.model_provider.clone(),
                 model: self.config.model.clone(),
                 model_reasoning_effort: self.config.model_reasoning_effort,
+                preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
                 model_reasoning_summary: self.config.model_reasoning_summary,
                 model_text_verbosity: self.config.model_text_verbosity,
                 user_instructions: self.config.user_instructions.clone(),
@@ -21562,6 +21573,7 @@ Have we met every part of this goal and is there no further work to do?"#
         }
 
         // Update the config
+        self.config.preferred_model_reasoning_effort = Some(new_effort);
         self.config.model_reasoning_effort = clamped_effort;
 
         // Send ConfigureSession op to update the backend
@@ -21569,6 +21581,7 @@ Have we met every part of this goal and is there no further work to do?"#
             provider: self.config.model_provider.clone(),
             model: self.config.model.clone(),
             model_reasoning_effort: clamped_effort,
+            preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
             model_reasoning_summary: self.config.model_reasoning_summary,
             model_text_verbosity: self.config.model_text_verbosity,
             user_instructions: self.config.user_instructions.clone(),
@@ -21607,6 +21620,7 @@ Have we met every part of this goal and is there no further work to do?"#
             provider: self.config.model_provider.clone(),
             model: self.config.model.clone(),
             model_reasoning_effort: self.config.model_reasoning_effort,
+            preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
             model_reasoning_summary: self.config.model_reasoning_summary,
             model_text_verbosity: new_verbosity,
             user_instructions: self.config.user_instructions.clone(),
@@ -22656,6 +22670,7 @@ Have we met every part of this goal and is there no further work to do?"#
             provider: self.config.model_provider.clone(),
             model: self.config.model.clone(),
             model_reasoning_effort: self.config.model_reasoning_effort,
+            preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
             model_reasoning_summary: self.config.model_reasoning_summary,
             model_text_verbosity: self.config.model_text_verbosity,
             user_instructions: self.config.user_instructions.clone(),
@@ -23930,7 +23945,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 }
             }
         }
-        if self.is_review_flow_active() {
+            if self.is_review_flow_active() {
             if let Some(ref want) = id {
                 if !self
                     .stream_state
@@ -23942,7 +23957,7 @@ Have we met every part of this goal and is there no further work to do?"#
                         want
                     );
                     self.last_assistant_message = Some(final_source.clone());
-                    self.stop_spinner();
+                    self.maybe_hide_spinner();
                     return;
                 }
                 if let Some(idx) = self.history_cells.iter().rposition(|c| {
@@ -23992,7 +24007,7 @@ Have we met every part of this goal and is there no further work to do?"#
             self.history_insert_existing_record(Box::new(cell), key, "answer-review", history_id);
             // Advance Auto Drive after the assistant message has been finalized.
             self.auto_on_assistant_final();
-            self.stop_spinner();
+            self.maybe_hide_spinner();
             return;
         }
         // Debug: list last few history cell kinds so we can see what's present
@@ -24066,7 +24081,7 @@ Have we met every part of this goal and is there no further work to do?"#
                                 "InsertFinalAnswer: dropping duplicate final for id={}",
                                 want
                             );
-                            self.stop_spinner();
+                            self.maybe_hide_spinner();
                             return;
                         }
                     }
@@ -24124,7 +24139,7 @@ Have we met every part of this goal and is there no further work to do?"#
             self.autoscroll_if_near_bottom();
             // Final cell committed via replacement; now advance Auto Drive.
             self.auto_on_assistant_final();
-            self.stop_spinner();
+            self.maybe_hide_spinner();
             return;
         }
 
@@ -24156,7 +24171,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 self.autoscroll_if_near_bottom();
                 // Final cell replaced in-place; advance Auto Drive now.
                 self.auto_on_assistant_final();
-                self.stop_spinner();
+                self.maybe_hide_spinner();
                 return;
             }
         }
@@ -24200,7 +24215,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 self.autoscroll_if_near_bottom();
                 // Final assistant content revised; advance Auto Drive now.
                 self.auto_on_assistant_final();
-                self.stop_spinner();
+                self.maybe_hide_spinner();
                 return;
             }
         }
@@ -24253,7 +24268,7 @@ Have we met every part of this goal and is there no further work to do?"#
         // Ordered insert completed; advance Auto Drive now that the assistant
         // message is present in history.
         self.auto_on_assistant_final();
-        self.stop_spinner();
+        self.maybe_hide_spinner();
     }
 
     // Assign or fetch a stable sequence for a stream kind+id within its originating turn
@@ -30044,8 +30059,24 @@ use code_core::protocol::OrderMeta;
             order: None,
         });
         assert!(
+            chat.bottom_pane.is_task_running(),
+            "spinner should remain active after an assistant message until TaskComplete"
+        );
+
+        assert_eq!(chat.overall_task_status, "running".to_string());
+
+        chat.handle_code_event(Event {
+            id: turn_id.clone(),
+            event_seq: 3,
+            msg: EventMsg::TaskComplete(TaskCompleteEvent {
+                last_agent_message: None,
+            }),
+            order: None,
+        });
+
+        assert!(
             !chat.bottom_pane.is_task_running(),
-            "spinner should clear once the final answer arrives even without a terminal status update"
+            "spinner should clear on TaskComplete even when agent runtime is missing"
         );
 
         assert_eq!(chat.overall_task_status, "complete".to_string());
@@ -30118,14 +30149,25 @@ use code_core::protocol::OrderMeta;
             order: None,
         });
 
-        assert!(
-            !chat.bottom_pane.is_task_running(),
-            "final answer should clear the spinner when no terminal update arrives"
-        );
+        assert!(chat.bottom_pane.is_task_running(), "spinner stays running after assistant message");
 
         chat.handle_code_event(Event {
             id: turn_id.clone(),
             event_seq: 3,
+            msg: EventMsg::TaskComplete(TaskCompleteEvent {
+                last_agent_message: None,
+            }),
+            order: None,
+        });
+
+        assert!(
+            !chat.bottom_pane.is_task_running(),
+            "TaskComplete should clear the spinner"
+        );
+
+        chat.handle_code_event(Event {
+            id: turn_id.clone(),
+            event_seq: 4,
             msg: EventMsg::AgentStatusUpdate(AgentStatusUpdateEvent {
                 agents: vec![CoreAgentInfo {
                     id: "agent-1".to_string(),
@@ -33882,6 +33924,7 @@ impl ChatWidget<'_> {
             provider: self.config.model_provider.clone(),
             model: self.config.model.clone(),
             model_reasoning_effort: self.config.model_reasoning_effort,
+            preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
             model_reasoning_summary: self.config.model_reasoning_summary,
             model_text_verbosity: self.config.model_text_verbosity,
             user_instructions: self.config.user_instructions.clone(),

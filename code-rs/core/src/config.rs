@@ -363,8 +363,13 @@ pub struct Config {
     pub code_linux_sandbox_exe: Option<PathBuf>,
 
     /// The value to use for `reasoning.effort` when making a
-    /// request using the Responses API. Allowed values: `minimal`, `low`, `medium`, `high`.
+    /// request using the Responses API. Allowed values: `minimal`, `low`, `medium`, `high`, `xhigh`.
     pub model_reasoning_effort: ReasoningEffort,
+
+    /// Optional preferred reasoning effort for the chat model. When the active model
+    /// does not support this level, Code will clamp the effective effort but keep
+    /// the preference so switching back restores it.
+    pub preferred_model_reasoning_effort: Option<ReasoningEffort>,
 
     /// If not "none", the value to use for `reasoning.summary` when making a
     /// request using the Responses API.
@@ -596,6 +601,7 @@ pub async fn persist_model_selection(
     profile: Option<&str>,
     model: &str,
     effort: Option<ReasoningEffort>,
+    preferred_effort: Option<ReasoningEffort>,
 ) -> anyhow::Result<()> {
     use tokio::fs;
 
@@ -650,6 +656,13 @@ pub async fn persist_model_selection(
             } else {
                 profile_table.remove("model_reasoning_effort");
             }
+
+            if let Some(preferred) = preferred_effort {
+                profile_table["preferred_model_reasoning_effort"] =
+                    toml_edit::value(preferred.to_string());
+            } else {
+                profile_table.remove("preferred_model_reasoning_effort");
+            }
         } else {
             root["model"] = toml_edit::value(model.to_string());
             match effort {
@@ -659,6 +672,16 @@ pub async fn persist_model_selection(
                 }
                 None => {
                     root.remove("model_reasoning_effort");
+                }
+            }
+
+            match preferred_effort {
+                Some(preferred) => {
+                    root["preferred_model_reasoning_effort"] =
+                        toml_edit::value(preferred.to_string());
+                }
+                None => {
+                    root.remove("preferred_model_reasoning_effort");
                 }
             }
         }
@@ -2089,6 +2112,7 @@ pub struct ConfigToml {
     pub show_raw_agent_reasoning: Option<bool>,
 
     pub model_reasoning_effort: Option<ReasoningEffort>,
+    pub preferred_model_reasoning_effort: Option<ReasoningEffort>,
     pub model_reasoning_summary: Option<ReasoningSummary>,
     pub model_text_verbosity: Option<TextVerbosity>,
 
@@ -2591,12 +2615,16 @@ impl Config {
             find_family_for_model(&model).unwrap_or_else(|| derive_default_model_family(&model));
 
         // Chat model reasoning effort (used when other flows follow the chat model).
-        let chat_reasoning_effort = config_profile
-            .model_reasoning_effort
-            .or(cfg.model_reasoning_effort)
-            .unwrap_or(ReasoningEffort::Medium);
+        let preferred_model_reasoning_effort = config_profile
+            .preferred_model_reasoning_effort
+            .or(cfg.preferred_model_reasoning_effort)
+            .or(config_profile.model_reasoning_effort)
+            .or(cfg.model_reasoning_effort);
+
+        let requested_chat_effort =
+            preferred_model_reasoning_effort.unwrap_or(ReasoningEffort::Medium);
         let chat_reasoning_effort =
-            clamp_reasoning_effort_for_model(&model, chat_reasoning_effort);
+            clamp_reasoning_effort_for_model(&model, requested_chat_effort);
 
         let model_context_window = cfg
             .model_context_window
@@ -2901,6 +2929,7 @@ impl Config {
                 .or(show_raw_agent_reasoning)
                 .unwrap_or(false),
             model_reasoning_effort: chat_reasoning_effort,
+            preferred_model_reasoning_effort,
             model_reasoning_summary: config_profile
                 .model_reasoning_summary
                 .or(cfg.model_reasoning_summary)
@@ -3460,6 +3489,7 @@ args = ["-y", "@upstash/context7-mcp"]
             None,
             "gpt-5.1-codex",
             Some(ReasoningEffort::High),
+            None,
         )
         .await?;
 
@@ -3495,6 +3525,7 @@ model = "gpt-4.1"
             None,
             "o4-mini",
             Some(ReasoningEffort::High),
+            None,
         )
         .await?;
 
@@ -3523,6 +3554,7 @@ model = "gpt-4.1"
             Some("dev"),
             "gpt-5.1-codex",
             Some(ReasoningEffort::Medium),
+            None,
         )
         .await?;
 
@@ -3566,6 +3598,7 @@ model = "gpt-5.1-codex"
             Some("dev"),
             "o4-high",
             Some(ReasoningEffort::Medium),
+            None,
         )
         .await?;
 

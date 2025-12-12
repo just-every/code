@@ -75,6 +75,11 @@ pub enum Op {
         model: String,
 
         model_reasoning_effort: ReasoningEffortConfig,
+        /// Optional user-preferred reasoning effort for the chat model.
+        /// When present, the core will persist it separately from the effective clamped effort.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
+        preferred_model_reasoning_effort: Option<ReasoningEffortConfig>,
         model_reasoning_summary: ReasoningSummaryConfig,
         model_text_verbosity: TextVerbosityConfig,
 

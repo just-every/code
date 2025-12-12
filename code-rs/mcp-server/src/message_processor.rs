@@ -1617,6 +1617,7 @@ fn configure_session_op_from_config(config: &Config) -> Op {
         provider: config.model_provider.clone(),
         model: config.model.clone(),
         model_reasoning_effort: config.model_reasoning_effort,
+        preferred_model_reasoning_effort: config.preferred_model_reasoning_effort,
         model_reasoning_summary: config.model_reasoning_summary,
         model_text_verbosity: config.model_text_verbosity,
         user_instructions: config.user_instructions.clone(),

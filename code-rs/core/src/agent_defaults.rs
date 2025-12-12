@@ -34,6 +34,7 @@ const CLOUD_GPT5_CODEX_WRITE: &[&str] = &[];
 /// CLI-name lookups.
 pub const DEFAULT_AGENT_NAMES: &[&str] = &[
     // Frontline for moderate/challenging tasks
+    "code-gpt-5.2",
     "code-gpt-5.1-codex-max",
     "claude-opus-4.5",
     "gemini-3-pro",
@@ -86,6 +87,19 @@ impl AgentModelSpec {
 }
 
 const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
+    AgentModelSpec {
+        slug: "code-gpt-5.2",
+        family: "code",
+        cli: "coder",
+        read_only_args: CODE_GPT5_READ_ONLY,
+        write_args: CODE_GPT5_WRITE,
+        model_args: &["--model", "gpt-5.2"],
+        description: "Latest GPT-5.2 frontier model with improvements across knowledge, reasoning, and coding.",
+        enabled_by_default: true,
+        aliases: &["gpt-5.2"],
+        gating_env: None,
+        is_frontline: true,
+    },
     AgentModelSpec {
         slug: "code-gpt-5.1-codex-max",
         family: "code",
@@ -274,7 +288,7 @@ fn model_guide_intro(active_agents: &[String]) -> String {
         .collect();
 
     if present_frontline.is_empty() {
-        present_frontline.push("code-gpt-5.1-codex-max".to_string());
+        present_frontline.push("code-gpt-5.2".to_string());
     }
     let frontline_str = present_frontline.join(", ");
 
