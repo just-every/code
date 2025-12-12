@@ -1,6 +1,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-const STACK_SIZE_BYTES: usize = 256 * 1024;
+// Background tasks occasionally spin up Tokio runtimes or TLS stacks; keep a
+// modest stack while avoiding stack overflow in heavier workers.
+const STACK_SIZE_BYTES: usize = 1024 * 1024;
 const MAX_BACKGROUND_THREADS: usize = 32;
 
 static ACTIVE_THREADS: AtomicUsize = AtomicUsize::new(0);
