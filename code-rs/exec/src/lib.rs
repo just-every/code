@@ -61,6 +61,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use supports_color::Stream;
+use tokio::time::{Duration, Instant};
 use tracing::debug;
 use tracing::error;
 use tracing::info;
@@ -79,6 +80,10 @@ use code_core::protocol::SandboxPolicy;
 use code_core::git_info::current_branch_name;
 
 const AUTO_DRIVE_TEST_SUFFIX: &str = "After planning, but before you start, please ensure you can test the outcome of your changes. Test first to ensure it's failing, then again at the end to ensure it passes. Do not use work arounds or mock code to pass - solve the underlying issue. Create new tests as you work if needed. Once done, clean up your tests unless added to an existing test suite.";
+
+/// How long exec waits after task completion before sending Shutdown when Auto Review
+/// may be about to start. Guarded so sub-agents are not delayed.
+const AUTO_REVIEW_SHUTDOWN_GRACE_MS: u64 = 1_500;
 
 pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()> {
     if let Err(err) = set_default_originator("code_exec") {
@@ -707,8 +712,15 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
     let mut error_seen = false;
     let mut shutdown_pending = false;
     let mut shutdown_sent = false;
+    let mut shutdown_deadline: Option<Instant> = None;
+    let auto_review_grace_enabled = config.tui.auto_review_enabled;
     let mut auto_review_tracker = AutoReviewTracker::new(&config.cwd);
-    while let Some(event) = rx.recv().await {
+    loop {
+        tokio::select! {
+            maybe_event = rx.recv() => {
+                let Some(event) = maybe_event else {
+                    break;
+                };
         if let EventMsg::AgentStatusUpdate(status) = &event.msg {
             let completions = auto_review_tracker.update(status);
             for completion in completions {
@@ -836,6 +848,8 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                     &auto_review_tracker,
                                     &mut shutdown_pending,
                                     &mut shutdown_sent,
+                                    &mut shutdown_deadline,
+                                    auto_review_grace_enabled,
                                 )
                                 .await?;
                                 continue;
@@ -871,6 +885,8 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                     &auto_review_tracker,
                                     &mut shutdown_pending,
                                     &mut shutdown_sent,
+                                    &mut shutdown_deadline,
+                                    auto_review_grace_enabled,
                                 )
                                 .await?;
                                 continue;
@@ -887,6 +903,8 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                         &auto_review_tracker,
                                         &mut shutdown_pending,
                                         &mut shutdown_sent,
+                                        &mut shutdown_deadline,
+                                        auto_review_grace_enabled,
                                     )
                                     .await?;
                                     continue;
@@ -905,6 +923,8 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                                 &auto_review_tracker,
                                                 &mut shutdown_pending,
                                                 &mut shutdown_sent,
+                                                &mut shutdown_deadline,
+                                                auto_review_grace_enabled,
                                             )
                                             .await?;
                                             continue;
@@ -921,6 +941,8 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                             &auto_review_tracker,
                                             &mut shutdown_pending,
                                             &mut shutdown_sent,
+                                            &mut shutdown_deadline,
+                                            auto_review_grace_enabled,
                                         )
                                         .await?;
                                         continue;
@@ -946,6 +968,8 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                                 &auto_review_tracker,
                                                 &mut shutdown_pending,
                                                 &mut shutdown_sent,
+                                                &mut shutdown_deadline,
+                                                auto_review_grace_enabled,
                                             )
                                             .await?;
                                             continue;
@@ -983,6 +1007,8 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                             &auto_review_tracker,
                                             &mut shutdown_pending,
                                             &mut shutdown_sent,
+                                            &mut shutdown_deadline,
+                                            auto_review_grace_enabled,
                                         )
                                         .await?;
                                     }
@@ -1005,6 +1031,8 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                         &auto_review_tracker,
                                         &mut shutdown_pending,
                                         &mut shutdown_sent,
+                                        &mut shutdown_deadline,
+                                        auto_review_grace_enabled,
                                     )
                                     .await?;
                                     continue;
@@ -1026,6 +1054,8 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                             &auto_review_tracker,
                                             &mut shutdown_pending,
                                             &mut shutdown_sent,
+                                            &mut shutdown_deadline,
+                                            auto_review_grace_enabled,
                                         )
                                         .await?;
                                         continue;
@@ -1049,6 +1079,8 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                                 &auto_review_tracker,
                                                 &mut shutdown_pending,
                                                 &mut shutdown_sent,
+                                                &mut shutdown_deadline,
+                                                auto_review_grace_enabled,
                                             )
                                             .await?;
                                             continue;
@@ -1096,6 +1128,8 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                         &auto_review_tracker,
                         &mut shutdown_pending,
                         &mut shutdown_sent,
+                        &mut shutdown_deadline,
+                        auto_review_grace_enabled,
                     )
                     .await?;
                 }
@@ -1105,13 +1139,15 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
 
         let shutdown: CodexStatus = event_processor.process_event(event);
         match shutdown {
-            CodexStatus::Running => continue,
+            CodexStatus::Running => {}
             CodexStatus::InitiateShutdown => {
                 request_shutdown(
                     &conversation,
                     &auto_review_tracker,
                     &mut shutdown_pending,
                     &mut shutdown_sent,
+                    &mut shutdown_deadline,
+                    auto_review_grace_enabled,
                 )
                 .await?;
             }
@@ -1126,8 +1162,25 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                 &auto_review_tracker,
                 &mut shutdown_pending,
                 &mut shutdown_sent,
+                &mut shutdown_deadline,
+                auto_review_grace_enabled,
             )
             .await?;
+        }
+            }
+            _ = tokio::time::sleep_until(shutdown_deadline.unwrap_or_else(Instant::now)),
+                if shutdown_pending && shutdown_deadline.is_some() && auto_review_grace_enabled =>
+            {
+                request_shutdown(
+                    &conversation,
+                    &auto_review_tracker,
+                    &mut shutdown_pending,
+                    &mut shutdown_sent,
+                    &mut shutdown_deadline,
+                    auto_review_grace_enabled,
+                )
+                .await?;
+            }
         }
     }
     if let Some(path) = review_output_json {
@@ -1368,6 +1421,32 @@ async fn run_auto_drive_session(
     }
 
     handle.cancel();
+
+    if !auto_review_tracker.is_running() {
+        let grace_deadline = Instant::now() + Duration::from_millis(AUTO_REVIEW_SHUTDOWN_GRACE_MS);
+        while Instant::now() < grace_deadline {
+            let remaining = grace_deadline.saturating_duration_since(Instant::now());
+            match tokio::time::timeout(remaining, conversation.next_event()).await {
+                Ok(Ok(event)) => {
+                    if let EventMsg::AgentStatusUpdate(status) = &event.msg {
+                        let completions = auto_review_tracker.update(status);
+                        for completion in completions {
+                            emit_auto_review_completion(&completion);
+                        }
+                    }
+
+                    let processor_status = event_processor.process_event(event);
+                    if matches!(processor_status, CodexStatus::Shutdown)
+                        || auto_review_tracker.is_running()
+                    {
+                        break;
+                    }
+                }
+                Ok(Err(err)) => return Err(err.into()),
+                Err(_) => break,
+            }
+        }
+    }
 
     if auto_review_tracker.is_running() {
         while let Ok(event) = conversation.next_event().await {
@@ -1733,19 +1812,68 @@ async fn request_shutdown(
     auto_review_tracker: &AutoReviewTracker,
     shutdown_pending: &mut bool,
     shutdown_sent: &mut bool,
+    shutdown_deadline: &mut Option<Instant>,
+    auto_review_grace_enabled: bool,
 ) -> anyhow::Result<()> {
     if *shutdown_sent {
         *shutdown_pending = false;
+        *shutdown_deadline = None;
+        return Ok(());
+    }
+
+    let now = Instant::now();
+    let (attempt_send, new_pending, new_deadline) = shutdown_state_after_request(
+        auto_review_tracker.is_running(),
+        *shutdown_pending,
+        *shutdown_deadline,
+        now,
+        auto_review_grace_enabled,
+    );
+    *shutdown_pending = new_pending;
+    *shutdown_deadline = new_deadline;
+
+    if !attempt_send {
         return Ok(());
     }
 
     if send_shutdown_if_ready(conversation, auto_review_tracker, shutdown_sent).await? {
         *shutdown_pending = false;
+        *shutdown_deadline = None;
     } else {
         *shutdown_pending = true;
+        *shutdown_deadline = None;
     }
 
     Ok(())
+}
+
+fn shutdown_state_after_request(
+    auto_review_running: bool,
+    shutdown_pending: bool,
+    shutdown_deadline: Option<Instant>,
+    now: Instant,
+    grace_enabled: bool,
+) -> (bool, bool, Option<Instant>) {
+    if auto_review_running {
+        return (false, true, None);
+    }
+
+    if !grace_enabled {
+        return (true, true, None);
+    }
+
+    if !shutdown_pending && shutdown_deadline.is_none() {
+        let deadline = now + Duration::from_millis(AUTO_REVIEW_SHUTDOWN_GRACE_MS);
+        return (false, true, Some(deadline));
+    }
+
+    if let Some(deadline) = shutdown_deadline {
+        if deadline > now {
+            return (false, true, Some(deadline));
+        }
+    }
+
+    (true, true, None)
 }
 
 fn build_auto_prompt(
@@ -2339,13 +2467,75 @@ mod tests {
     use code_core::config::{ConfigOverrides, ConfigToml};
     use code_protocol::models::{ContentItem, ResponseItem};
     use code_protocol::mcp_protocol::ConversationId;
-    use code_protocol::protocol::{
-        EventMsg as ProtoEventMsg, RecordedEvent, RolloutItem, RolloutLine, SessionMeta,
-        SessionMetaLine, SessionSource, UserMessageEvent,
-    };
-    use filetime::{set_file_mtime, FileTime};
-    use tempfile::TempDir;
-use uuid::Uuid;
+	    use code_protocol::protocol::{
+	        EventMsg as ProtoEventMsg, RecordedEvent, RolloutItem, RolloutLine, SessionMeta,
+	        SessionMetaLine, SessionSource, UserMessageEvent,
+	    };
+	    use filetime::{set_file_mtime, FileTime};
+	    use tempfile::TempDir;
+	    use uuid::Uuid;
+
+	    #[test]
+	    fn shutdown_state_schedules_grace_on_first_request() {
+	        let now = Instant::now();
+	        let (attempt_send, pending, deadline) = shutdown_state_after_request(
+	            false,
+	            false,
+	            None,
+	            now,
+	            true,
+	        );
+	        assert!(!attempt_send);
+	        assert!(pending);
+	        assert!(deadline.expect("deadline").gt(&now));
+	    }
+
+	    #[test]
+	    fn shutdown_state_waits_until_deadline() {
+	        let now = Instant::now();
+	        let future_deadline = now + tokio::time::Duration::from_millis(100);
+	        let (attempt_send, pending, deadline) = shutdown_state_after_request(
+	            false,
+	            true,
+	            Some(future_deadline),
+	            now,
+	            true,
+	        );
+	        assert!(!attempt_send);
+	        assert!(pending);
+	        assert_eq!(deadline, Some(future_deadline));
+	    }
+
+	    #[test]
+	    fn shutdown_state_attempts_send_after_grace_elapses() {
+	        let now = Instant::now();
+	        let expired_deadline = now - tokio::time::Duration::from_millis(1);
+	        let (attempt_send, pending, deadline) = shutdown_state_after_request(
+	            false,
+	            true,
+	            Some(expired_deadline),
+	            now,
+	            true,
+	        );
+	        assert!(attempt_send);
+	        assert!(pending);
+	        assert!(deadline.is_none());
+	    }
+
+	    #[test]
+	    fn shutdown_state_sends_immediately_without_grace() {
+	        let now = Instant::now();
+	        let (attempt_send, pending, deadline) = shutdown_state_after_request(
+	            false,
+	            false,
+	            None,
+	            now,
+	            false,
+	        );
+	        assert!(attempt_send);
+	        assert!(pending);
+	        assert!(deadline.is_none());
+	    }
 
     #[test]
     fn write_review_json_includes_snapshot() {
