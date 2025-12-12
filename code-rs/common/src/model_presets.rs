@@ -198,7 +198,7 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                 reasoning_effort_mapping: None,
                 migration_config_key: HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG.to_string(),
             }),
-            show_in_picker: true,
+            show_in_picker: false,
         },
         // Deprecated GPT-5 variants kept for migrations / config compatibility.
         ModelPreset {
