@@ -2548,9 +2548,17 @@ impl App<'_> {
                         widget.submit_text_message_with_preface(visible, preface);
                     }
                 }
-                AppEvent::SubmitHiddenTextWithPreface { agent_text, preface } => {
+                AppEvent::SubmitHiddenTextWithPreface {
+                    agent_text,
+                    preface,
+                    surface_notice,
+                } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.submit_hidden_text_message_with_preface(agent_text, preface);
+                        widget.submit_hidden_text_message_with_preface_and_notice(
+                            agent_text,
+                            preface,
+                            surface_notice,
+                        );
                     }
                 }
                 AppEvent::RunReviewCommand(args) => {

@@ -26794,6 +26794,18 @@ Have we met every part of this goal and is there no further work to do?"#
         agent_text: String,
         preface: String,
     ) {
+        self.submit_hidden_text_message_with_preface_and_notice(agent_text, preface, true);
+    }
+
+    /// Submit a hidden message with optional notice surfacing.
+    /// When `surface_notice` is true, the injected text is also shown in history
+    /// as a developer-style notice; when false, the injection is silent.
+    pub(crate) fn submit_hidden_text_message_with_preface_and_notice(
+        &mut self,
+        agent_text: String,
+        preface: String,
+        surface_notice: bool,
+    ) {
         if agent_text.trim().is_empty() && preface.trim().is_empty() {
             return;
         }
@@ -26814,16 +26826,18 @@ Have we met every part of this goal and is there no further work to do?"#
             return;
         }
 
-        // Surface immediately in the TUI as a notice (developer-style message).
-        let mut notice_lines = Vec::new();
-        if !preface_cache.trim().is_empty() {
-            notice_lines.push(preface_cache.trim().to_string());
-        }
-        if !agent_cache.trim().is_empty() {
-            notice_lines.push(agent_cache.trim().to_string());
-        }
-        if !notice_lines.is_empty() {
-            self.history_push_plain_paragraphs(PlainMessageKind::Notice, notice_lines);
+        if surface_notice {
+            // Surface immediately in the TUI as a notice (developer-style message).
+            let mut notice_lines = Vec::new();
+            if !preface_cache.trim().is_empty() {
+                notice_lines.push(preface_cache.trim().to_string());
+            }
+            if !agent_cache.trim().is_empty() {
+                notice_lines.push(agent_cache.trim().to_string());
+            }
+            if !notice_lines.is_empty() {
+                self.history_push_plain_paragraphs(PlainMessageKind::Notice, notice_lines);
+            }
         }
 
         let msg = UserMessage {
@@ -34016,6 +34030,7 @@ impl ChatWidget<'_> {
             tx.send(AppEvent::SubmitHiddenTextWithPreface {
                 agent_text: message,
                 preface: String::new(),
+                surface_notice: false,
             });
         });
     }

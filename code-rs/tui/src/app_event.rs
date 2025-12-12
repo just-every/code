@@ -331,8 +331,14 @@ pub(crate) enum AppEvent {
     /// Submit a message with hidden preface instructions
     SubmitTextWithPreface { visible: String, preface: String },
 
-    /// Submit a hidden message that is not rendered in history but still sent to the LLM
-    SubmitHiddenTextWithPreface { agent_text: String, preface: String },
+    /// Submit a hidden message that is not rendered in history but still sent to the LLM.
+    /// When `surface_notice` is true, the TUI shows a developer-style notice with the
+    /// injected text; when false, the injection is silent.
+    SubmitHiddenTextWithPreface {
+        agent_text: String,
+        preface: String,
+        surface_notice: bool,
+    },
 
     /// Run a review with an explicit prompt/hint pair (used by TUI selections)
     RunReviewWithScope {
