@@ -27253,10 +27253,11 @@ Have we met every part of this goal and is there no further work to do?"#
 
         // Start with all items in production; tests can opt-in to a minimal header via env flag.
         let minimal_header = std::env::var_os("CODEX_TUI_FORCE_MINIMAL_HEADER").is_some();
+        let demo_mode = self.config.demo_developer_message.is_some();
         let mut include_reasoning = !minimal_header;
         let mut include_model = !minimal_header;
         let mut include_branch = !minimal_header && branch_opt.is_some();
-        let mut include_dir = !minimal_header;
+        let mut include_dir = !minimal_header && !demo_mode;
         let mut status_spans = build_spans(
             include_reasoning,
             include_model,
