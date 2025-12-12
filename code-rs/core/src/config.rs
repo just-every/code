@@ -2305,7 +2305,11 @@ fn upgrade_legacy_model_slugs(cfg: &mut ConfigToml) {
 }
 
 fn upgrade_legacy_model_slug(slug: &str) -> Option<String> {
-    if slug.starts_with("gpt-5.1") || slug.starts_with("test-gpt-5.1") {
+    if slug.starts_with("gpt-5.2")
+        || slug.starts_with("test-gpt-5.2")
+        || slug.starts_with("gpt-5.1")
+        || slug.starts_with("test-gpt-5.1")
+    {
         return None;
     }
 
