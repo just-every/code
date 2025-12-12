@@ -1,5 +1,6 @@
 ---
 source: tui/tests/vt100_chatwidget_snapshot.rs
+assertion_line: 2267
 expression: section_open
 ---
  +------------------------------------------------------------------------------------------------+
@@ -13,12 +14,12 @@ expression: section_open
  |    Agents             |  Reason|Model Shortcuts               |                              | |
  |    Prompts            |        |                              |                              | |
  |    Auto Drive         |  GPT-5.|• Esc    Return to overview   |                              | |
- |    Review             |  Optimi|• Tab    Cycle sections       |                              | |
- |    Planning           |     Hig|• Shift+Tab  Cycle backwards  |r complex or ambiguous proble | |
- |    Validation         |     Med|• ?      Toggle this help     |sts reasoning based on the ta | |
- |    Chrome             |     Low|                              |d reasoning                   | |
- |    MCP                |        |Press Esc to close            |                              | |
- |    Notifications      |  GPT-5.+------------------------------+                              | |
+ |    Review             |  Latest|• Tab    Cycle sections       |s across knowledge, reasoning | |
+ |    Planning           |     XHi|• Shift+Tab  Cycle backwards  |for complex problems          | |
+ |    Validation         |     Hig|• ?      Toggle this help     |r complex or ambiguous proble | |
+ |    Chrome             |     Med|                              |f reasoning depth and latency | |
+ |    MCP                |     Low|Press Esc to close            |oning; useful for straightfor | |
+ |    Notifications      |        +------------------------------+                              | |
  |    Limits             |                                                                      | |
  |                       +----------------------------------------------------------------------+ |
  | ↑ ↓ Move    Enter Open    Esc Close    ? Help                                                  |

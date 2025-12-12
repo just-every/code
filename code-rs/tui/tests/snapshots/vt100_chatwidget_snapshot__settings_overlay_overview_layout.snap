@@ -1,5 +1,6 @@
 ---
 source: tui/tests/vt100_chatwidget_snapshot.rs
+assertion_line: 2179
 expression: output
 ---
  +------------------------------------------------------------------------------------------------+
@@ -7,7 +8,7 @@ expression: output
  +------------------------------------------------------------------------------------------------+
  +Settings ▸ Overview-----------------------------------------------------------------------------+
  |                                                                                                |
- | › Model              Model: GPT-5.1-Codex (Medium)                                             |
+ | › Model              Model: GPT-5.1-Codex-Max (Medium)                                         |
  |   + Choose the language model used for new completions.                                        |
  |                                                                                                |
  |   Theme              Theme: Light - Photon (16-color) · Spinner: Diamond                       |
@@ -18,7 +19,7 @@ expression: output
  |                                                                                                |
  |                                                                                                |
 
- |   Agents             Enabled: 9/10                                                             |
+ |   Agents             Enabled: 10/11                                                            |
  |   + Configure linked agents and default task permissions.                                      |
  |                                                                                                |
  | ↑ ↓ Move    Enter Open    Esc Close    ? Help                                                  |

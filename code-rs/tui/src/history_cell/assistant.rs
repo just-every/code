@@ -41,6 +41,14 @@ impl AssistantMarkdownCell {
         self.layout_cache.borrow_mut().clear();
     }
 
+    pub(crate) fn set_mid_turn(&mut self, mid_turn: bool) {
+        if self.state.mid_turn == mid_turn {
+            return;
+        }
+        self.state.mid_turn = mid_turn;
+        self.layout_cache.borrow_mut().clear();
+    }
+
     pub(crate) fn stream_id(&self) -> Option<&str> {
         self.state.stream_id.as_deref()
     }
@@ -254,6 +262,14 @@ impl HistoryCell for AssistantMarkdownCell {
         HistoryCellType::Assistant
     }
 
+    fn gutter_symbol(&self) -> Option<&'static str> {
+        if self.state.mid_turn {
+            None
+        } else {
+            super::gutter_symbol_for_kind(self.kind())
+        }
+    }
+
     fn display_lines(&self) -> Vec<Line<'static>> {
         assistant_markdown_lines_with_context(&self.state, self.file_opener, &self.cwd)
     }
@@ -305,7 +321,7 @@ pub(crate) fn assistant_markdown_lines_with_context(
         &mut out,
         file_opener,
         cwd,
-        true,
+        !state.mid_turn,
     );
     let bright = crate::colors::text_bright();
     for line in out.iter_mut().skip(1) {

@@ -116,6 +116,7 @@ pub(crate) fn stream_lines_from_state_with_context(
             .metadata
             .as_ref()
             .and_then(|meta| meta.token_usage.clone()),
+        mid_turn: false,
         created_at: state.last_updated_at,
     };
 

@@ -849,6 +849,11 @@ pub struct AssistantMessageState {
     pub citations: Vec<String>,
     pub metadata: Option<MessageMetadata>,
     pub token_usage: Option<TokenUsage>,
+    /// True when this assistant output was emitted before the final Answer
+    /// within the same turn (e.g., mid‑turn progress update). Used by the TUI
+    /// to suppress gutter/bold styling.
+    #[serde(default)]
+    pub mid_turn: bool,
     pub created_at: SystemTime,
 }
 
@@ -1494,6 +1499,7 @@ impl HistoryState {
             citations,
             metadata,
             token_usage,
+            mid_turn: false,
             created_at: SystemTime::now(),
         };
         let id = self.next_history_id();
@@ -2536,6 +2542,7 @@ mod tests {
             citations: Vec::new(),
             metadata: None,
             token_usage: None,
+            mid_turn: false,
             created_at: SystemTime::UNIX_EPOCH,
         });
 
@@ -2584,6 +2591,7 @@ mod tests {
             citations: Vec::new(),
             metadata: None,
             token_usage: None,
+            mid_turn: false,
             created_at: SystemTime::UNIX_EPOCH,
         });
 
@@ -2995,6 +3003,7 @@ mod tests {
             citations: vec!["cite".into()],
             metadata: Some(metadata.clone()),
             token_usage: metadata.token_usage.clone(),
+            mid_turn: false,
             created_at: now,
         }));
 

@@ -2333,6 +2333,14 @@ fn upgrade_legacy_model_slug(slug: &str) -> Option<String> {
         return None;
     }
 
+    if let Some(rest) = slug.strip_prefix("test-gpt-5-codex") {
+        return Some(format!("test-gpt-5.1-codex{rest}"));
+    }
+
+    if let Some(rest) = slug.strip_prefix("gpt-5-codex") {
+        return Some(format!("gpt-5.1-codex{rest}"));
+    }
+
     // Upgrade Anthropic Opus 4.1 to 4.5
     if slug.eq_ignore_ascii_case("claude-opus-4.1") {
         return Some("claude-opus-4.5".to_string());
@@ -2344,11 +2352,7 @@ fn upgrade_legacy_model_slug(slug: &str) -> Option<String> {
     }
 
     // Keep codex variants on their existing 5.1 line; there is no 5.2 codex.
-    if slug.starts_with("gpt-5.1-codex")
-        || slug.starts_with("test-gpt-5.1-codex")
-        || slug.starts_with("gpt-5-codex")
-        || slug.starts_with("test-gpt-5-codex")
-    {
+    if slug.starts_with("gpt-5.1-codex") || slug.starts_with("test-gpt-5.1-codex") {
         return None;
     }
 
@@ -3934,14 +3938,14 @@ model_verbosity = "high"
             gpt5_profile_overrides,
             fixture.code_home(),
         )?;
-        assert_eq!("gpt-5.1", gpt5_profile_config.model);
+        assert_eq!("gpt-5.2", gpt5_profile_config.model);
         assert_eq!(OPENAI_DEFAULT_REVIEW_MODEL, gpt5_profile_config.review_model);
         assert_eq!(
             ReasoningEffort::High,
             gpt5_profile_config.review_model_reasoning_effort
         );
         assert_eq!(
-            find_family_for_model("gpt-5.1").expect("known model slug"),
+            find_family_for_model("gpt-5.2").expect("known model slug"),
             gpt5_profile_config.model_family
         );
         assert!(gpt5_profile_config.model_context_window.is_some());
@@ -4135,7 +4139,7 @@ model_verbosity = "high"
         upgrade_legacy_model_slugs(&mut cfg);
 
         assert_eq!(cfg.model.as_deref(), Some("gpt-5.1-codex"));
-        assert_eq!(cfg.review_model.as_deref(), Some("gpt-5.1"));
+        assert_eq!(cfg.review_model.as_deref(), Some("gpt-5.2"));
     }
 
     #[test]
