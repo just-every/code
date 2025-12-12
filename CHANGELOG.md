@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.6.2] - 2025-12-12
+
+- Models: add a guided gpt-5.2 upgrade flow so users can move to the latest model smoothly. (ee9fc1f)
+- TUI history: keep mid-turn answers ordered, hide stray gutters, and collapse duplicate reasoning streams for cleaner transcripts. (89e485d, 0991bf2, fe40d37, d79442a)
+- Exec: guard process spawns, pair early exec ends with begins, and keep live output flowing while capping previews to avoid hangs. (1e66674, 66e650c, d1a36f0, e780d82)
+- TUI: allow user input to interrupt wait-only execs and force redraws after backpressure stalls for more responsive UI. (bcbcb95e, 5780d0d)
+- Snapshots: warn when snapshots run long and add a shell command snapshot path. (b2280d6, 29381ba)
+
 ## [0.6.1] - 2025-12-10
 
 - Auto Review: Harden locks, fallback worktrees, zero-count status, and pending-fix isolation so automated reviews stay reliable. (44234af, a62eaa3, 609432e, ae4b4ec)
