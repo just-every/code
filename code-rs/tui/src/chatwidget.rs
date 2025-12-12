@@ -12202,6 +12202,11 @@ impl ChatWidget<'_> {
                 self.stream_state.seq_answer_final = Some(event.event_seq);
                 if !id.trim().is_empty() {
                     self.note_answer_stream_seen(&id);
+                    // Any Answer item that completes before TaskComplete is considered
+                    // mid‑turn until we later determine it was the final Answer.
+                    if !self.active_task_ids.is_empty() {
+                        self.mid_turn_answer_ids_in_turn.insert(id.clone());
+                    }
                 }
                 // Strict order for the stream id
                 let ok = match event.order.as_ref() {
@@ -12508,13 +12513,20 @@ impl ChatWidget<'_> {
                 self.clear_reconnecting();
                 let had_running_execs = !self.exec.running_commands.is_empty();
                 // Finalize any active streams
-                if self.stream.is_write_cycle_active() {
+                let finalizing_streams = self.stream.is_write_cycle_active();
+                if finalizing_streams {
                     // Finalize both streams via streaming facade
                     streaming::finalize(self, StreamKind::Reasoning, true);
                     streaming::finalize(self, StreamKind::Answer, true);
                 }
                 // Remove this id from the active set (it may be a sub‑agent)
                 self.active_task_ids.remove(&id);
+                if !finalizing_streams && self.active_task_ids.is_empty() {
+                    if let Some(last_id) = self.last_seen_answer_stream_id_in_turn.clone() {
+                        self.mid_turn_answer_ids_in_turn.remove(&last_id);
+                        self.maybe_clear_mid_turn_for_last_answer(&last_id);
+                    }
+                }
                 if self.auto_resolve_enabled() {
                     self.auto_resolve_on_task_complete(last_agent_message.clone());
                 }
@@ -23902,6 +23914,44 @@ Have we met every part of this goal and is there no further work to do?"#
         }
     }
 
+    fn maybe_clear_mid_turn_for_last_answer(&mut self, stream_id: &str) {
+        let Some(last_history_id) = self.last_answer_history_id_in_turn else {
+            return;
+        };
+
+        let mut changed = false;
+
+        if let Some(record) = self.history_state.record_mut(last_history_id) {
+            if let HistoryRecord::AssistantMessage(state) = record {
+                if state.stream_id.as_deref() == Some(stream_id) && state.mid_turn {
+                    state.mid_turn = false;
+                    changed = true;
+                }
+            }
+        }
+
+        if let Some(idx) = self
+            .history_cell_ids
+            .iter()
+            .rposition(|hid| *hid == Some(last_history_id))
+        {
+            if let Some(cell) = self.history_cells[idx]
+                .as_any_mut()
+                .downcast_mut::<history_cell::AssistantMarkdownCell>()
+            {
+                if cell.stream_id() == Some(stream_id) && cell.state().mid_turn {
+                    cell.set_mid_turn(false);
+                    changed = true;
+                }
+            }
+        }
+
+        if changed {
+            self.mark_history_dirty();
+            self.request_redraw();
+        }
+    }
+
     fn finalize_answer_stream_state(
         &mut self,
         stream_id: Option<&str>,
@@ -24363,7 +24413,12 @@ Have we met every part of this goal and is there no further work to do?"#
         self.apply_mid_turn_flag(id.as_deref(), &mut state);
         let history_id = state.id;
         let cell = history_cell::AssistantMarkdownCell::from_state(state, &self.config);
-        let _ = self.history_insert_with_key_global(Box::new(cell), key);
+        self.history_insert_existing_record(
+            Box::new(cell),
+            key,
+            "answer-final",
+            history_id,
+        );
         if let Some(ref want) = id {
             self.stream_state
                 .closed_answer_ids
