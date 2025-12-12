@@ -480,6 +480,8 @@ pub async fn run_main(
         }
     };
 
+    config.demo_developer_message = cli.demo_developer_message.clone();
+
     let cli_model_override = cli.model.is_some()
         || cli_kv_overrides
             .iter()
@@ -508,7 +510,10 @@ pub async fn run_main(
                         cli_kv_overrides.clone(),
                         overrides.clone(),
                     ) {
-                        Ok(updated) => config = updated,
+                        Ok(updated) => {
+                            config = updated;
+                            config.demo_developer_message = cli.demo_developer_message.clone();
+                        }
                         Err(err) => {
                             eprintln!("Error reloading configuration: {err}");
                             std::process::exit(1);
@@ -532,7 +537,10 @@ pub async fn run_main(
                                 cli_kv_overrides.clone(),
                                 overrides.clone(),
                             ) {
-                                Ok(updated) => config = updated,
+                                Ok(updated) => {
+                                    config = updated;
+                                    config.demo_developer_message = cli.demo_developer_message.clone();
+                                }
                                 Err(err) => {
                                     eprintln!("Error reloading configuration: {err}");
                                     std::process::exit(1);

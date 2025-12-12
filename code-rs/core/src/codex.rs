@@ -222,6 +222,7 @@ pub(crate) struct TurnContext {
     pub(crate) cwd: PathBuf,
     pub(crate) base_instructions: Option<String>,
     pub(crate) user_instructions: Option<String>,
+    pub(crate) demo_developer_message: Option<String>,
     pub(crate) compact_prompt_override: Option<String>,
     pub(crate) approval_policy: AskForApproval,
     pub(crate) sandbox_policy: SandboxPolicy,
@@ -999,6 +1000,7 @@ impl Codex {
             notify: config.notify.clone(),
             cwd: config.cwd.clone(),
             resume_path: resume_path.clone(),
+            demo_developer_message: config.demo_developer_message.clone(),
         };
 
         let config = Arc::new(config);
@@ -1364,6 +1366,7 @@ pub(crate) struct Session {
     cwd: PathBuf,
     base_instructions: Option<String>,
     user_instructions: Option<String>,
+    demo_developer_message: Option<String>,
     compact_prompt_override: Option<String>,
     approval_policy: AskForApproval,
     sandbox_policy: SandboxPolicy,
@@ -2131,6 +2134,7 @@ impl Session {
             cwd: self.cwd.clone(),
             base_instructions: self.base_instructions.clone(),
             user_instructions: self.user_instructions.clone(),
+            demo_developer_message: self.demo_developer_message.clone(),
             compact_prompt_override: self.compact_prompt_override.clone(),
             approval_policy: self.approval_policy,
             sandbox_policy: self.sandbox_policy.clone(),
@@ -4263,6 +4267,7 @@ async fn submission_loop(
                 notify,
                 cwd,
                 resume_path,
+                demo_developer_message,
             } => {
                 debug!(
                     "Configuring session: model={model}; provider={provider:?}; resume={resume_path:?}"
@@ -4596,6 +4601,7 @@ async fn submission_loop(
                     tx_event: tx_event.clone(),
                     user_instructions: effective_user_instructions.clone(),
                     base_instructions,
+                    demo_developer_message: demo_developer_message.clone(),
                     compact_prompt_override: config.compact_prompt_override.clone(),
                     approval_policy,
                     sandbox_policy,
@@ -5131,6 +5137,7 @@ async fn spawn_review_thread(
         cwd: parent_turn_context.cwd.clone(),
         base_instructions: Some(REVIEW_PROMPT.to_string()),
         user_instructions: None,
+        demo_developer_message: parent_turn_context.demo_developer_message.clone(),
         compact_prompt_override: parent_turn_context.compact_prompt_override.clone(),
         approval_policy: parent_turn_context.approval_policy,
         sandbox_policy: parent_turn_context.sandbox_policy.clone(),
@@ -5749,7 +5756,11 @@ async fn run_turn(
             status_items, // Include status items with this request
             base_instructions_override: tc.base_instructions.clone(),
             include_additional_instructions: true,
-            prepend_developer_messages: Vec::new(),
+            prepend_developer_messages: tc
+                .demo_developer_message
+                .clone()
+                .into_iter()
+                .collect(),
             text_format: tc.text_format_override.clone(),
             model_override: None,
             model_family_override: None,

@@ -20634,6 +20634,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 notify: self.config.notify.clone(),
                 cwd: self.config.cwd.clone(),
                 resume_path: None,
+                demo_developer_message: self.config.demo_developer_message.clone(),
             };
             self.submit_op(op);
 
@@ -21260,6 +21261,7 @@ Have we met every part of this goal and is there no further work to do?"#
             notify: self.config.notify.clone(),
             cwd: self.config.cwd.clone(),
             resume_path: None,
+            demo_developer_message: self.config.demo_developer_message.clone(),
         };
         self.submit_op(op);
     }
@@ -21284,6 +21286,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 notify: self.config.notify.clone(),
                 cwd: self.config.cwd.clone(),
                 resume_path: None,
+                demo_developer_message: self.config.demo_developer_message.clone(),
             };
             self.submit_op(op);
         }
@@ -21488,6 +21491,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 notify: self.config.notify.clone(),
                 cwd: self.config.cwd.clone(),
                 resume_path: None,
+                demo_developer_message: self.config.demo_developer_message.clone(),
             };
             let _ = self.code_op_tx.send(op);
         } else {
@@ -21630,6 +21634,7 @@ Have we met every part of this goal and is there no further work to do?"#
             notify: self.config.notify.clone(),
             cwd: self.config.cwd.clone(),
             resume_path: None,
+            demo_developer_message: self.config.demo_developer_message.clone(),
         };
 
         self.submit_op(op);
@@ -21669,6 +21674,7 @@ Have we met every part of this goal and is there no further work to do?"#
             notify: self.config.notify.clone(),
             cwd: self.config.cwd.clone(),
             resume_path: None,
+            demo_developer_message: self.config.demo_developer_message.clone(),
         };
 
         self.submit_op(op);
@@ -22719,6 +22725,7 @@ Have we met every part of this goal and is there no further work to do?"#
             notify: self.config.notify.clone(),
             cwd: self.config.cwd.clone(),
             resume_path: None,
+            demo_developer_message: self.config.demo_developer_message.clone(),
         };
         self.submit_op(op);
 
@@ -34163,6 +34170,7 @@ impl ChatWidget<'_> {
             notify: self.config.notify.clone(),
             cwd: self.config.cwd.clone(),
             resume_path: None,
+            demo_developer_message: self.config.demo_developer_message.clone(),
         };
         self.submit_op(op);
 
