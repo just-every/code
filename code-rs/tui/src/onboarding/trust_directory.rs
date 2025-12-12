@@ -13,7 +13,7 @@ use code_protocol::config_types::SandboxMode as SandboxModeCfg;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 
-use crate::colors::light_blue;
+use crate::colors;
 
 use crate::onboarding::onboarding_screen::KeyboardHandler;
 use crate::onboarding::onboarding_screen::StepStateProvider;
@@ -41,14 +41,16 @@ pub(crate) enum TrustDirectorySelection {
 
 impl WidgetRef for &TrustDirectoryWidget {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
+        let success_style = Style::default()
+            .fg(colors::success())
+            .add_modifier(Modifier::BOLD);
         let mut lines: Vec<Line> = vec![
             Line::from(vec![
-                Span::raw("> "),
+                Span::styled("You are running Code in ", success_style),
                 Span::styled(
-                    "You are running Code in ",
-                    Style::default().add_modifier(Modifier::BOLD),
+                    self.cwd.to_string_lossy().to_string(),
+                    Style::default().fg(colors::success()),
                 ),
-                Span::raw(self.cwd.to_string_lossy().to_string()),
             ]),
             Line::from(""),
         ];
@@ -75,11 +77,9 @@ impl WidgetRef for &TrustDirectoryWidget {
                     Line::from(vec![
                         Span::styled(
                             format!("> {}. ", idx + 1),
-                            Style::default()
-                                .fg(light_blue())
-                                .add_modifier(Modifier::DIM),
+                            Style::default().fg(colors::primary()),
                         ),
-                        Span::styled(text.to_owned(), Style::default().fg(light_blue())),
+                        Span::styled(text.to_owned(), Style::default().fg(colors::primary())),
                     ])
                 } else {
                     Line::from(format!("  {}. {}", idx + 1, text))
@@ -114,9 +114,11 @@ impl WidgetRef for &TrustDirectoryWidget {
             lines.push(Line::from(format!("  {error}")).fg(crate::colors::error()));
             lines.push(Line::from(""));
         }
-        // AE: Following styles.md, this should probably be Cyan because it's a user input tip.
-        //     But leaving this for a future cleanup.
-        lines.push(Line::from("  Press Enter to continue").add_modifier(Modifier::DIM));
+        lines.push(Line::from(vec![
+            Span::raw("  Press "),
+            Span::styled("Enter", Style::default().fg(colors::function())),
+            Span::raw(" to continue"),
+        ]));
 
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })
