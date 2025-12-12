@@ -1,13 +1,12 @@
-## @just-every/code v0.6.2
+## @just-every/code v0.6.3
 
-Latest release with model upgrades, smoother TUI history, and more resilient exec handling.
+Stability update with focused fixes for build reliability and TUI polish.
 
 ### Changes
-- Models: add a guided gpt-5.2 upgrade flow so users can move to the latest model smoothly.
-- TUI history: keep mid-turn answers ordered, hide stray gutters, and collapse duplicate reasoning streams for cleaner transcripts.
-- Exec: guard process spawns, pair early exec ends with begins, and keep live output flowing while capping previews to avoid hangs.
-- TUI: allow user input to interrupt wait-only execs and force redraws after backpressure stalls for more responsive UI.
-- Snapshots: warn when snapshots run long and add a shell command snapshot path.
+
+- Build: prevent concurrent tmp-bin races in build-fast to keep artifacts isolated.
+- TUI history: handle background wait call_id to avoid orphaned exec entries.
+- Onboarding: align trust directory prompt styling with the rest of the flow.
 
 ### Install
 ```
@@ -15,4 +14,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.1...v0.6.2
+Compare: https://github.com/just-every/code/compare/v0.6.2...v0.6.3
