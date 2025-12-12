@@ -1420,6 +1420,7 @@ const AUTO_REVIEW_SHARED_WORKTREE: &str = "auto-review";
 const AUTO_REVIEW_FALLBACK_PREFIX: &str = "auto-review-";
 const AUTO_REVIEW_FALLBACK_MAX: usize = 3;
 const AUTO_REVIEW_FALLBACK_MAX_AGE_SECS: u64 = 12 * 60 * 60; // 12h
+const AUTO_REVIEW_STALE_SECS: u64 = 5 * 60;
 
 fn auto_review_branches_dir(git_root: &Path) -> Result<PathBuf, String> {
     let repo_name = git_root
@@ -31897,7 +31898,30 @@ impl ChatWidget<'_> {
     }
 
     fn recover_stuck_background_review(&mut self) {
-        // Centralized watchdog now lives in AgentManager; nothing to do client-side.
+        let Some(state) = self.background_review.as_ref() else {
+            return;
+        };
+
+        let elapsed = state.last_seen.elapsed();
+        if elapsed.as_secs() < AUTO_REVIEW_STALE_SECS {
+            return;
+        }
+
+        let stale = self.background_review.take();
+        self.background_review_guard = None;
+
+        let Some(stale) = stale else {
+            return;
+        };
+
+        if self.pending_auto_review_range.is_none() {
+            if let Some(base) = stale.base {
+                self.pending_auto_review_range = Some(PendingAutoReviewRange {
+                    base,
+                    defer_until_turn: None,
+                });
+            }
+        }
     }
 
     fn launch_background_review(&mut self, base_snapshot: Option<GhostCommit>) {
