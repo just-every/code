@@ -8,6 +8,7 @@ use once_cell::sync::Lazy;
 pub const HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG: &str = "hide_gpt5_1_migration_prompt";
 pub const HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG: &str =
     "hide_gpt-5.1-codex-max_migration_prompt";
+pub const HIDE_GPT_5_2_MIGRATION_PROMPT_CONFIG: &str = "hide_gpt5_2_migration_prompt";
 
 /// A reasoning effort option surfaced for a model.
 #[derive(Debug, Clone)]
@@ -46,6 +47,46 @@ const ALL_TEXT_VERBOSITY: &[TextVerbosityConfig] = &[
 
 static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
     vec![
+        ModelPreset {
+            id: "gpt-5.2".to_string(),
+            model: "gpt-5.2".to_string(),
+            display_name: "gpt-5.2".to_string(),
+            description:
+                "Latest frontier model with improvements across knowledge, reasoning and coding"
+                    .to_string(),
+            default_reasoning_effort: ReasoningEffort::Medium,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description:
+                        "Balances speed with some reasoning; useful for straightforward queries and short explanations"
+                            .to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description:
+                        "Provides a solid balance of reasoning depth and latency for general-purpose tasks"
+                            .to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "Maximizes reasoning depth for complex or ambiguous problems"
+                        .to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::XHigh,
+                    description: "Extra high reasoning depth for complex problems".to_string(),
+                },
+            ],
+            supported_text_verbosity: ALL_TEXT_VERBOSITY,
+            is_default: false,
+            upgrade: Some(ModelUpgrade {
+                id: "gpt-5.2".to_string(),
+                reasoning_effort_mapping: None,
+                migration_config_key: HIDE_GPT_5_2_MIGRATION_PROMPT_CONFIG.to_string(),
+            }),
+            show_in_picker: true,
+        },
         ModelPreset {
             id: "gpt-5.1-codex-max".to_string(),
             model: "gpt-5.1-codex-max".to_string(),
@@ -99,9 +140,9 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
-                id: "gpt-5.1-codex-max".to_string(),
+                id: "gpt-5.2".to_string(),
                 reasoning_effort_mapping: None,
-                migration_config_key: HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG.to_string(),
+                migration_config_key: HIDE_GPT_5_2_MIGRATION_PROMPT_CONFIG.to_string(),
             }),
             show_in_picker: true,
         },
@@ -125,9 +166,9 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
-                id: "gpt-5.1-codex-max".to_string(),
+                id: "gpt-5.2".to_string(),
                 reasoning_effort_mapping: None,
-                migration_config_key: HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG.to_string(),
+                migration_config_key: HIDE_GPT_5_2_MIGRATION_PROMPT_CONFIG.to_string(),
             }),
             show_in_picker: true,
         },
@@ -158,11 +199,11 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
-                id: "gpt-5.1-codex-max".to_string(),
+                id: "gpt-5.2".to_string(),
                 reasoning_effort_mapping: None,
-                migration_config_key: HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG.to_string(),
+                migration_config_key: HIDE_GPT_5_2_MIGRATION_PROMPT_CONFIG.to_string(),
             }),
-            show_in_picker: true,
+            show_in_picker: false,
         },
         // Deprecated GPT-5 variants kept for migrations / config compatibility.
         ModelPreset {
@@ -188,9 +229,9 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
-                id: "gpt-5.1-codex-max".to_string(),
+                id: "gpt-5.2".to_string(),
                 reasoning_effort_mapping: None,
-                migration_config_key: HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG.to_string(),
+                migration_config_key: HIDE_GPT_5_2_MIGRATION_PROMPT_CONFIG.to_string(),
             }),
             show_in_picker: false,
         },
@@ -213,9 +254,9 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
-                id: "gpt-5.1-codex-mini".to_string(),
+                id: "gpt-5.2".to_string(),
                 reasoning_effort_mapping: None,
-                migration_config_key: HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG.to_string(),
+                migration_config_key: HIDE_GPT_5_2_MIGRATION_PROMPT_CONFIG.to_string(),
             }),
             show_in_picker: false,
         },
@@ -250,9 +291,9 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
-                id: "gpt-5.1-codex-max".to_string(),
+                id: "gpt-5.2".to_string(),
                 reasoning_effort_mapping: None,
-                migration_config_key: HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG.to_string(),
+                migration_config_key: HIDE_GPT_5_2_MIGRATION_PROMPT_CONFIG.to_string(),
             }),
             show_in_picker: false,
         },

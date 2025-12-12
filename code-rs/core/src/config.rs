@@ -2305,7 +2305,7 @@ fn upgrade_legacy_model_slugs(cfg: &mut ConfigToml) {
 }
 
 fn upgrade_legacy_model_slug(slug: &str) -> Option<String> {
-    if slug.starts_with("gpt-5.1") || slug.starts_with("test-gpt-5.1") {
+    if slug.starts_with("gpt-5.2") || slug.starts_with("test-gpt-5.2") {
         return None;
     }
 
@@ -2319,20 +2319,29 @@ fn upgrade_legacy_model_slug(slug: &str) -> Option<String> {
         return Some("gemini-3-pro".to_string());
     }
 
-    if let Some(rest) = slug.strip_prefix("test-gpt-5-codex") {
-        return Some(format!("test-gpt-5.1-codex{rest}"));
+    // Keep codex variants on their existing 5.1 line; there is no 5.2 codex.
+    if slug.starts_with("gpt-5.1-codex")
+        || slug.starts_with("test-gpt-5.1-codex")
+        || slug.starts_with("gpt-5-codex")
+        || slug.starts_with("test-gpt-5-codex")
+    {
+        return None;
+    }
+
+    if let Some(rest) = slug.strip_prefix("test-gpt-5.1") {
+        return Some(format!("test-gpt-5.2{rest}"));
+    }
+
+    if let Some(rest) = slug.strip_prefix("gpt-5.1") {
+        return Some(format!("gpt-5.2{rest}"));
     }
 
     if let Some(rest) = slug.strip_prefix("test-gpt-5") {
-        return Some(format!("test-gpt-5.1{rest}"));
-    }
-
-    if let Some(rest) = slug.strip_prefix("gpt-5-codex") {
-        return Some(format!("gpt-5.1-codex{rest}"));
+        return Some(format!("test-gpt-5.2{rest}"));
     }
 
     if let Some(rest) = slug.strip_prefix("gpt-5") {
-        return Some(format!("gpt-5.1{rest}"));
+        return Some(format!("gpt-5.2{rest}"));
     }
 
     None
