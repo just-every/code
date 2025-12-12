@@ -741,6 +741,7 @@ pub struct Notice {
     pub hide_gpt5_1_migration_prompt: Option<bool>,
     #[serde(rename = "hide_gpt-5.1-codex-max_migration_prompt")]
     pub hide_gpt_5_1_codex_max_migration_prompt: Option<bool>,
+    pub hide_gpt5_2_migration_prompt: Option<bool>,
 }
 
 #[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]

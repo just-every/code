@@ -9,6 +9,7 @@ use code_common::model_presets::{
     ModelPreset,
     HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG,
     HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG,
+    HIDE_GPT_5_2_MIGRATION_PROMPT_CONFIG,
 };
 use code_core::config_edit::{self, CONFIG_KEY_EFFORT, CONFIG_KEY_MODEL};
 use code_core::config_types::Notice;
@@ -1079,26 +1080,24 @@ async fn persist_notice_hide(
 }
 
 fn set_notice_flag(notices: &mut Notice, key: &str) {
-    match key {
-        HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG => {
-            notices.hide_gpt5_1_migration_prompt = Some(true);
-        }
-        HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG => {
-            notices.hide_gpt_5_1_codex_max_migration_prompt = Some(true);
-        }
-        _ => {}
+    if key == HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG {
+        notices.hide_gpt5_1_migration_prompt = Some(true);
+    } else if key == HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG {
+        notices.hide_gpt_5_1_codex_max_migration_prompt = Some(true);
+    } else if key == HIDE_GPT_5_2_MIGRATION_PROMPT_CONFIG {
+        notices.hide_gpt5_2_migration_prompt = Some(true);
     }
 }
 
 fn notice_hidden(notices: &Notice, key: &str) -> bool {
-    match key {
-        HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG => {
-            notices.hide_gpt5_1_migration_prompt.unwrap_or(false)
-        }
-        HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG => {
-            notices.hide_gpt_5_1_codex_max_migration_prompt.unwrap_or(false)
-        }
-        _ => false,
+    if key == HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG {
+        notices.hide_gpt5_1_migration_prompt.unwrap_or(false)
+    } else if key == HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG {
+        notices.hide_gpt_5_1_codex_max_migration_prompt.unwrap_or(false)
+    } else if key == HIDE_GPT_5_2_MIGRATION_PROMPT_CONFIG {
+        notices.hide_gpt5_2_migration_prompt.unwrap_or(false)
+    } else {
+        false
     }
 }
 

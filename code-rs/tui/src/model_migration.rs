@@ -29,6 +29,15 @@ pub(crate) fn migration_copy_for_key(key: &str) -> ModelMigrationCopy {
             ],
             can_opt_out: false,
         },
+        code_common::model_presets::HIDE_GPT_5_2_MIGRATION_PROMPT_CONFIG => ModelMigrationCopy {
+            heading: "Upgrade available: gpt-5.2",
+            content: &[
+                "Our latest frontier model improves knowledge, reasoning, and coding.",
+                "Switch now to get better results; you can keep your current model if you prefer.",
+                "Learn more: www.openai.com/index/gpt-5-2",
+            ],
+            can_opt_out: true,
+        },
         _ => ModelMigrationCopy {
             heading: "Codex just got an upgrade: meet gpt-5.1-codex-max",
             content: &[
