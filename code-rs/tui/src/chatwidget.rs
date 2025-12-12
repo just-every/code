@@ -4482,17 +4482,6 @@ impl ChatWidget<'_> {
         }
     }
 
-    fn is_reasoning_anchor(cell: &Box<dyn history_cell::HistoryCell>) -> bool {
-        cell
-            .as_any()
-            .downcast_ref::<history_cell::ExploreAggregationCell>()
-            .is_some()
-            || cell
-                .as_any()
-                .downcast_ref::<history_cell::AgentRunCell>()
-                .is_some()
-    }
-
     fn reasoning_preview(lines: &[Line<'static>]) -> String {
         const MAX_LINES: usize = 3;
         const MAX_CHARS: usize = 120;
@@ -4532,16 +4521,25 @@ impl ChatWidget<'_> {
                 }
             }
         } else {
+            // When reasoning is hidden (collapsed), we still show a single summary
+            // line for the most recent reasoning in any consecutive run. Earlier
+            // reasoning cells in the run are hidden entirely.
             use std::collections::HashSet;
             let mut hide_indices: HashSet<usize> = HashSet::new();
             let len = self.history_cells.len();
             let mut idx = 0usize;
             while idx < len {
-                if !Self::is_reasoning_anchor(&self.history_cells[idx]) {
+                let cell = &self.history_cells[idx];
+                let is_reasoning = cell
+                    .as_any()
+                    .downcast_ref::<history_cell::CollapsibleReasoningCell>()
+                    .is_some();
+                if !is_reasoning {
                     idx += 1;
                     continue;
                 }
-                let mut reasoning_indices: Vec<usize> = Vec::new();
+
+                let mut reasoning_indices: Vec<usize> = vec![idx];
                 let mut j = idx + 1;
                 while j < len {
                     let cell = &self.history_cells[j];
@@ -4586,11 +4584,13 @@ impl ChatWidget<'_> {
 
                     break;
                 }
+
                 if reasoning_indices.len() > 1 {
                     for &ri in &reasoning_indices[..reasoning_indices.len() - 1] {
                         hide_indices.insert(ri);
                     }
                 }
+
                 idx = j;
             }
 
@@ -4599,11 +4599,8 @@ impl ChatWidget<'_> {
                     .as_any()
                     .downcast_ref::<history_cell::CollapsibleReasoningCell>()
                 {
-                    if hide_indices.contains(&i) {
-                        if reasoning_cell.set_hide_when_collapsed(true) {
-                            needs_invalidate = true;
-                        }
-                    } else if reasoning_cell.set_hide_when_collapsed(false) {
+                    let hide = hide_indices.contains(&i);
+                    if reasoning_cell.set_hide_when_collapsed(hide) {
                         needs_invalidate = true;
                     }
                 }
@@ -29200,7 +29197,7 @@ use code_core::protocol::OrderMeta;
     }
 
     #[test]
-    fn reasoning_collapse_hides_intermediate_titles_after_agent_anchor() {
+    fn reasoning_collapse_hides_intermediate_titles_in_consecutive_runs() {
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
 
@@ -29237,6 +29234,48 @@ use code_core::protocol::OrderMeta;
         assert!(
             reasoning_cells[0].display_lines().is_empty(),
             "intermediate reasoning should hide when collapsed after agent anchor",
+        );
+        assert!(
+            !reasoning_cells[1].display_lines().is_empty(),
+            "last reasoning should remain visible",
+        );
+    }
+
+    #[test]
+    fn reasoning_collapse_applies_without_anchor_cells() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.config.tui.show_reasoning = false;
+
+        let reasoning_one = history_cell::CollapsibleReasoningCell::new_with_id(
+            vec![Line::from("First reasoning".to_string())],
+            Some("r1".to_string()),
+        );
+        let reasoning_two = history_cell::CollapsibleReasoningCell::new_with_id(
+            vec![Line::from("Second reasoning".to_string())],
+            Some("r2".to_string()),
+        );
+
+        chat.history_push(reasoning_one);
+        chat.history_push(reasoning_two);
+
+        chat.refresh_reasoning_collapsed_visibility();
+
+        let reasoning_cells: Vec<&history_cell::CollapsibleReasoningCell> = chat
+            .history_cells
+            .iter()
+            .filter_map(|cell| {
+                cell.as_any()
+                    .downcast_ref::<history_cell::CollapsibleReasoningCell>()
+            })
+            .collect();
+
+        assert_eq!(reasoning_cells.len(), 2, "expected exactly two reasoning cells");
+
+        assert!(
+            reasoning_cells[0].display_lines().is_empty(),
+            "intermediate reasoning should hide when collapsed without an anchor",
         );
         assert!(
             !reasoning_cells[1].display_lines().is_empty(),
