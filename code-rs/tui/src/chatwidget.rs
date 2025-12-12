@@ -1610,6 +1610,11 @@ pub(crate) struct ChatWidget<'a> {
     // assistant message as a mid-turn update for styling.
     last_answer_stream_id_in_turn: Option<String>,
     last_answer_history_id_in_turn: Option<HistoryId>,
+    // Track the most recent Answer stream id we've *seen* in this turn (delta or final).
+    // Used to label earlier answers as mid-turn even if their final cell hasn't
+    // been inserted yet.
+    last_seen_answer_stream_id_in_turn: Option<String>,
+    mid_turn_answer_ids_in_turn: HashSet<String>,
     // Cache of the last user text we submitted (for context passing to review/resolve agents)
     last_user_message: Option<String>,
     // Cache of the last developer/system note we injected (hidden messages)
@@ -5844,6 +5849,8 @@ impl ChatWidget<'_> {
             last_assistant_message: None,
             last_answer_stream_id_in_turn: None,
             last_answer_history_id_in_turn: None,
+            last_seen_answer_stream_id_in_turn: None,
+            mid_turn_answer_ids_in_turn: HashSet::new(),
             last_user_message: None,
             last_developer_message: None,
             pending_turn_origin: None,
@@ -6180,6 +6187,8 @@ impl ChatWidget<'_> {
             last_assistant_message: None,
             last_answer_stream_id_in_turn: None,
             last_answer_history_id_in_turn: None,
+            last_seen_answer_stream_id_in_turn: None,
+            mid_turn_answer_ids_in_turn: HashSet::new(),
             last_user_message: None,
             last_developer_message: None,
             pending_turn_origin: None,
@@ -12192,7 +12201,7 @@ impl ChatWidget<'_> {
 
                 self.stream_state.seq_answer_final = Some(event.event_seq);
                 if !id.trim().is_empty() {
-                    self.maybe_mark_previous_answer_mid_turn(&id);
+                    self.note_answer_stream_seen(&id);
                 }
                 // Strict order for the stream id
                 let ok = match event.order.as_ref() {
@@ -12309,7 +12318,7 @@ impl ChatWidget<'_> {
                     tracing::debug!("Ignoring Answer delta for closed id={}", id);
                     return;
                 }
-                self.maybe_mark_previous_answer_mid_turn(&id);
+                self.note_answer_stream_seen(&id);
                 // Seed/refresh order key for this Answer stream id (must have OrderMeta)
                 let ok = match event.order.as_ref() {
                     Some(om) => self.provider_order_key_from_order_meta(om),
@@ -12462,6 +12471,8 @@ impl ChatWidget<'_> {
                 self.stream_state.current_kind = None;
                 self.last_answer_stream_id_in_turn = None;
                 self.last_answer_history_id_in_turn = None;
+                self.last_seen_answer_stream_id_in_turn = None;
+                self.mid_turn_answer_ids_in_turn.clear();
                 // New turn: clear closed id guards
                 self.stream_state.closed_answer_ids.clear();
                 self.stream_state.closed_reasoning_ids.clear();
@@ -23829,16 +23840,28 @@ Have we met every part of this goal and is there no further work to do?"#
         }
     }
 
-    fn maybe_mark_previous_answer_mid_turn(&mut self, new_stream_id: &str) {
-        let Some(prev_stream_id) = self.last_answer_stream_id_in_turn.as_deref() else {
+    fn note_answer_stream_seen(&mut self, new_stream_id: &str) {
+        let prev = self.last_seen_answer_stream_id_in_turn.clone();
+        if let Some(prev) = prev {
+            if prev != new_stream_id {
+                self.mid_turn_answer_ids_in_turn.insert(prev.clone());
+                self.maybe_mark_finalized_answer_mid_turn(&prev);
+            }
+        }
+        self.last_seen_answer_stream_id_in_turn = Some(new_stream_id.to_string());
+    }
+
+    fn maybe_mark_finalized_answer_mid_turn(&mut self, prev_stream_id: &str) {
+        let Some(last_final_id) = self.last_answer_stream_id_in_turn.as_deref() else {
             return;
         };
-        if prev_stream_id == new_stream_id {
+        if last_final_id != prev_stream_id {
             return;
         }
         let Some(prev_history_id) = self.last_answer_history_id_in_turn else {
             return;
         };
+
         let mut changed = false;
         if let Some(idx) = self
             .history_cell_ids
@@ -23868,6 +23891,14 @@ Have we met every part of this goal and is there no further work to do?"#
         if changed {
             self.mark_history_dirty();
             self.request_redraw();
+        }
+    }
+
+    fn apply_mid_turn_flag(&self, stream_id: Option<&str>, state: &mut AssistantMessageState) {
+        if let Some(sid) = stream_id {
+            if self.mid_turn_answer_ids_in_turn.contains(sid) {
+                state.mid_turn = true;
+            }
         }
     }
 
@@ -24033,7 +24064,8 @@ Have we met every part of this goal and is there no further work to do?"#
                 self.history_remove_at(idx);
             }
             self.last_assistant_message = Some(final_source.clone());
-            let state = self.finalize_answer_stream_state(id.as_deref(), &final_source);
+            let mut state = self.finalize_answer_stream_state(id.as_deref(), &final_source);
+            self.apply_mid_turn_flag(id.as_deref(), &mut state);
             let history_id = state.id;
             let mut key = match id.as_deref() {
                 Some(rid) => self.try_stream_order_key(StreamKind::Answer, rid).unwrap_or_else(|| {
@@ -24186,7 +24218,8 @@ Have we met every part of this goal and is there no further work to do?"#
                 "final-answer: replacing StreamingContentCell at idx={} by id match",
                 idx
             );
-            let state = self.finalize_answer_stream_state(id.as_deref(), &final_source);
+            let mut state = self.finalize_answer_stream_state(id.as_deref(), &final_source);
+            self.apply_mid_turn_flag(id.as_deref(), &mut state);
             let history_id = state.id;
             let cell = history_cell::AssistantMarkdownCell::from_state(state, &self.config);
             self.history_replace_at(idx, Box::new(cell));
@@ -24222,8 +24255,9 @@ Have we met every part of this goal and is there no further work to do?"#
                     "final-answer: replacing existing AssistantMarkdownCell at idx={} by id match",
                     idx
                 );
-                let state =
+                let mut state =
                     self.finalize_answer_stream_state(id.as_deref(), &final_source);
+                self.apply_mid_turn_flag(id.as_deref(), &mut state);
                 let history_id = state.id;
                 let cell = history_cell::AssistantMarkdownCell::from_state(state, &self.config);
                 self.history_replace_at(idx, Box::new(cell));
@@ -24272,8 +24306,9 @@ Have we met every part of this goal and is there no further work to do?"#
                 tracing::debug!(
                     "final-answer: replacing tail AssistantMarkdownCell via heuristic identical/expansion"
                 );
-                let state =
+                let mut state =
                     self.finalize_answer_stream_state(id.as_deref(), &final_source);
+                self.apply_mid_turn_flag(id.as_deref(), &mut state);
                 let history_id = state.id;
                 let cell = history_cell::AssistantMarkdownCell::from_state(state, &self.config);
                 self.history_replace_at(idx, Box::new(cell));
@@ -24324,7 +24359,8 @@ Have we met every part of this goal and is there no further work to do?"#
             id,
             Self::debug_fmt_order_key(key)
         );
-        let state = self.finalize_answer_stream_state(id.as_deref(), &final_source);
+        let mut state = self.finalize_answer_stream_state(id.as_deref(), &final_source);
+        self.apply_mid_turn_flag(id.as_deref(), &mut state);
         let history_id = state.id;
         let cell = history_cell::AssistantMarkdownCell::from_state(state, &self.config);
         let _ = self.history_insert_with_key_global(Box::new(cell), key);
