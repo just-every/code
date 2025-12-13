@@ -26794,7 +26794,7 @@ Have we met every part of this goal and is there no further work to do?"#
         agent_text: String,
         preface: String,
     ) {
-        self.submit_hidden_text_message_with_preface_and_notice(agent_text, preface, true);
+        self.submit_hidden_text_message_with_preface_and_notice(agent_text, preface, false);
     }
 
     /// Submit a hidden message with optional notice surfacing.
