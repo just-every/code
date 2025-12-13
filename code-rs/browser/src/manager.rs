@@ -7,7 +7,9 @@ use chromiumoxide::BrowserConfig as CdpConfig;
 use chromiumoxide::browser::HeadlessMode;
 use chromiumoxide::cdp::browser_protocol::emulation;
 use chromiumoxide::cdp::browser_protocol::network;
+use fs2::FileExt;
 use futures::StreamExt;
+use once_cell::sync::Lazy;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
@@ -26,6 +28,61 @@ use crate::global;
 struct JsonVersion {
     #[serde(rename = "webSocketDebuggerUrl")]
     web_socket_debugger_url: String,
+}
+
+static INTERNAL_BROWSER_LAUNCH_GUARD: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+struct BrowserLaunchLockFile {
+    file: std::fs::File,
+}
+
+impl BrowserLaunchLockFile {
+    async fn acquire(timeout: Duration) -> Result<Self> {
+        let lock_path = std::env::temp_dir().join("code-browser-launch.lock");
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&lock_path)?;
+
+        let start = Instant::now();
+        loop {
+            match file.try_lock_exclusive() {
+                Ok(()) => return Ok(Self { file }),
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    if start.elapsed() >= timeout {
+                        return Err(BrowserError::CdpError(format!(
+                            "Timed out waiting for browser launch lock at {} (another Code instance may be launching a browser).",
+                            lock_path.display()
+                        )));
+                    }
+                    sleep(Duration::from_millis(50)).await;
+                }
+                Err(err) => return Err(BrowserError::IoError(err)),
+            }
+        }
+    }
+}
+
+impl Drop for BrowserLaunchLockFile {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+fn is_temporary_internal_launch_error_message(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    // macOS: EAGAIN = os error 35
+    // Linux: ENOMEM = os error 12
+    // Common: "Too many open files" (EMFILE)
+    message.contains("resource temporarily unavailable")
+        || message.contains("temporarily unavailable")
+        || message.contains("os error 35")
+        || message.contains("eagain")
+        || message.contains("os error 12")
+        || message.contains("cannot allocate memory")
+        || message.contains("too many open files")
+        || message.contains("os error 24")
 }
 
 async fn discover_ws_via_host_port(host: &str, port: u16) -> Result<String> {
@@ -653,80 +710,109 @@ impl BrowserManager {
 
         // 2) Launch a browser
         info!("Launching new browser instance");
-        let mut builder = CdpConfig::builder();
+        // Prevent redundant browser launches within the same process.
+        let _launch_guard = INTERNAL_BROWSER_LAUNCH_GUARD.lock().await;
+        // Also serialize launches across Code processes; concurrent Chromium spawns
+        // are a common source of transient EAGAIN/ENOMEM failures on macOS.
+        let _launch_lock = BrowserLaunchLockFile::acquire(Duration::from_secs(30)).await?;
 
-        // Profile dir
-        let user_data_path = if let Some(dir) = &config.user_data_dir {
-            builder = builder.user_data_dir(dir.clone());
-            dir.to_string_lossy().to_string()
-        } else {
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis();
-            let temp_path = format!("/tmp/code-browser-{}-{}", std::process::id(), timestamp);
-            if tokio::fs::metadata(&temp_path).await.is_ok() {
-                let _ = tokio::fs::remove_dir_all(&temp_path).await;
-            }
-            builder = builder.user_data_dir(&temp_path);
-            temp_path
-        };
-
-        // Set headless mode based on config (keep original approach for stability)
-        if config.headless {
-            builder = builder.headless_mode(HeadlessMode::New);
-        }
-
-        // Configure viewport (revert to original approach for screenshot stability)
-        builder = builder.window_size(config.viewport.width, config.viewport.height);
+        const INTERNAL_LAUNCH_RETRY_DELAYS_MS: [u64; 5] = [50, 200, 500, 1000, 2000];
+        let max_attempts = INTERNAL_LAUNCH_RETRY_DELAYS_MS.len() + 1;
 
         // Add browser launch flags (keep minimal set for screenshot functionality)
         let log_file = format!("{}/code-chrome.log", std::env::temp_dir().display());
-        builder = builder
-            .arg("--disable-blink-features=AutomationControlled")
-            .arg("--no-first-run")
-            .arg("--no-default-browser-check")
-            .arg("--disable-component-extensions-with-background-pages")
-            .arg("--disable-background-networking")
-            .arg("--silent-debugger-extension-api")
-            .arg("--remote-allow-origins=*")
-            .arg("--disable-features=ChromeWhatsNewUI,TriggerFirstRunUI")
-            // Disable timeout for slow networks/pages
-            .arg("--disable-hang-monitor")
-            .arg("--disable-background-timer-throttling")
-            // Redirect Chrome logging to a file to keep terminal clean
-            .arg("--enable-logging")
-            .arg("--log-level=1") // 0 = INFO, 1 = WARNING, 2 = ERROR, 3 = FATAL (1 to reduce verbosity)
-            .arg(format!("--log-file={}", log_file))
-            // Suppress console output
-            .arg("--silent-launch")
-            // Set a longer timeout for CDP requests (60 seconds instead of default 30)
-            .request_timeout(Duration::from_secs(60));
 
-        let browser_config = builder
-            .build()
-            .map_err(|e| BrowserError::CdpError(e.to_string()))?;
-        let (browser, mut handler) = match Browser::launch(browser_config).await {
-            Ok(v) => v,
-            Err(e) => {
-                // Provide clearer diagnostics for internal browser launch failures
-                let base = format!("Failed to launch internal browser: {}", e);
-                #[cfg(target_os = "macos")]
-                let hint = "Ensure Google Chrome or Chromium is installed and runnable (e.g., /Applications/Google Chrome.app).";
-                #[cfg(target_os = "linux")]
-                let hint = "Ensure google-chrome or chromium is installed and available on PATH.";
-                #[cfg(target_os = "windows")]
-                let hint = "Ensure Chrome is installed and chrome.exe is available (typically in Program Files).";
-                #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-                let hint = "Ensure Chrome/Chromium is installed and available on PATH.";
+        let (browser, mut handler, user_data_path) = {
+            let mut attempt = 1usize;
+            loop {
+                // Profile dir
+                let (user_data_path, is_temp_profile) = if let Some(dir) = &config.user_data_dir {
+                    (dir.to_string_lossy().to_string(), false)
+                } else {
+                    let pid = std::process::id();
+                    let timestamp = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis();
+                    let temp_path = format!("/tmp/code-browser-{pid}-{timestamp}-{attempt}");
+                    if tokio::fs::metadata(&temp_path).await.is_ok() {
+                        let _ = tokio::fs::remove_dir_all(&temp_path).await;
+                    }
+                    (temp_path, true)
+                };
 
-                let msg = format!(
-                    "{}. Hint: {}. Chrome log: {}",
-                    base,
-                    hint,
-                    log_file
-                );
-                return Err(BrowserError::CdpError(msg));
+                let mut builder = CdpConfig::builder().user_data_dir(&user_data_path);
+
+                // Set headless mode based on config (keep original approach for stability)
+                if config.headless {
+                    builder = builder.headless_mode(HeadlessMode::New);
+                }
+
+                // Configure viewport (revert to original approach for screenshot stability)
+                builder = builder.window_size(config.viewport.width, config.viewport.height);
+
+                builder = builder
+                    .arg("--disable-blink-features=AutomationControlled")
+                    .arg("--no-first-run")
+                    .arg("--no-default-browser-check")
+                    .arg("--disable-component-extensions-with-background-pages")
+                    .arg("--disable-background-networking")
+                    .arg("--silent-debugger-extension-api")
+                    .arg("--remote-allow-origins=*")
+                    .arg("--disable-features=ChromeWhatsNewUI,TriggerFirstRunUI")
+                    // Disable timeout for slow networks/pages
+                    .arg("--disable-hang-monitor")
+                    .arg("--disable-background-timer-throttling")
+                    // Redirect Chrome logging to a file to keep terminal clean
+                    .arg("--enable-logging")
+                    .arg("--log-level=1") // 0 = INFO, 1 = WARNING, 2 = ERROR, 3 = FATAL (1 to reduce verbosity)
+                    .arg(format!("--log-file={log_file}"))
+                    // Suppress console output
+                    .arg("--silent-launch")
+                    // Set a longer timeout for CDP requests (60 seconds instead of default 30)
+                    .request_timeout(Duration::from_secs(60));
+
+                let browser_config = builder
+                    .build()
+                    .map_err(|e| BrowserError::CdpError(e.to_string()))?;
+
+                match Browser::launch(browser_config).await {
+                    Ok((browser, handler)) => break (browser, handler, user_data_path),
+                    Err(e) => {
+                        let message = e.to_string();
+
+                        let is_temporary = is_temporary_internal_launch_error_message(&message);
+                        if is_temp_profile {
+                            let _ = tokio::fs::remove_dir_all(&user_data_path).await;
+                        }
+
+                        if is_temporary && attempt < max_attempts {
+                            let delay_ms = INTERNAL_LAUNCH_RETRY_DELAYS_MS[attempt - 1];
+                            warn!(
+                                error = %message,
+                                attempt,
+                                delay_ms,
+                                "Internal browser launch failed with transient error; retrying"
+                            );
+                            sleep(Duration::from_millis(delay_ms)).await;
+                            attempt += 1;
+                            continue;
+                        }
+
+                        #[cfg(target_os = "macos")]
+                        let hint = "Ensure Google Chrome or Chromium is installed and runnable (e.g., /Applications/Google Chrome.app).";
+                        #[cfg(target_os = "linux")]
+                        let hint = "Ensure google-chrome or chromium is installed and available on PATH.";
+                        #[cfg(target_os = "windows")]
+                        let hint = "Ensure Chrome is installed and chrome.exe is available (typically in Program Files).";
+                        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+                        let hint = "Ensure Chrome/Chromium is installed and available on PATH.";
+
+                        return Err(BrowserError::CdpError(format!(
+                            "Failed to launch internal browser: {message}. Hint: {hint}. Chrome log: {log_file}"
+                        )));
+                    }
+                }
             }
         };
         // Optionally: browser.fetch_targets().await.ok();
