@@ -1016,6 +1016,7 @@ dependencies = [
  "chromiumoxide",
  "chromiumoxide_types",
  "chrono",
+ "fs2",
  "futures",
  "once_cell",
  "rand 0.9.2",
