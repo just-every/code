@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.6.4] - 2025-12-13
+
+- TUI: default hidden-preface injections to silent and allow silent submissions to reduce demo noise. (b1ae6f4, a086a46)
+- CLI demo: add a --demo developer message injection flag for scripted demos. (6b2e61b)
+- TUI: dim mid-turn assistant output and improve plan/cursor contrast in dark mode for clearer streams. (b688046, 1b8c8fd)
+- Exec: add a grace delay before shutdown when auto-review is enabled to avoid abrupt stops. (c6d6f49)
+- TUI: hide the directory label in demo mode for cleaner status displays. (c03b3e9)
+
 ## [0.6.3] - 2025-12-12
 
 - Build: prevent concurrent tmp-bin races in build-fast to keep artifacts isolated. (e3ae904)
