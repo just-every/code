@@ -285,6 +285,20 @@ pub(crate) fn assistant_bg() -> Color {
     }
 }
 
+/// Background for mid-turn assistant messages.
+///
+/// Uses a lighter tint than `assistant_bg` so progress inserts feel secondary.
+pub(crate) fn assistant_mid_turn_bg() -> Color {
+    match palette_mode() {
+        PaletteMode::Ansi16 => assistant_bg(),
+        PaletteMode::Ansi256 => {
+            let bg = current_theme().background;
+            let info = current_theme().info;
+            mix_toward(bg, info, 0.02)
+        }
+    }
+}
+
 /// Background for multiline code blocks rendered in assistant markdown.
 ///
 /// New behavior: match the assistant message background so code cards feel

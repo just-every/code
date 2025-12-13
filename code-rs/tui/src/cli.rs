@@ -99,6 +99,11 @@ pub struct Cli {
     #[clap(skip)]
     pub config_overrides: CliConfigOverrides,
 
+    /// Optional developer-role message to prepend to every turn for demos.
+    /// Set by the multitool root CLI via `--demo`.
+    #[clap(skip)]
+    pub demo_developer_message: Option<String>,
+
     /// Start in resume picker mode when true (used by `code resume`).
     #[clap(skip)]
     pub resume_picker: bool,

@@ -76,7 +76,9 @@ impl PlanUpdateCell {
                 spans.push(Span::raw(" "));
                 spans.push(Span::styled(
                     step.description.clone(),
-                    Style::default().add_modifier(Modifier::CROSSED_OUT | Modifier::DIM),
+                    Style::default()
+                        .fg(crate::colors::text_dim())
+                        .add_modifier(Modifier::CROSSED_OUT),
                 ));
             }
             StepStatus::InProgress => {
@@ -92,7 +94,7 @@ impl PlanUpdateCell {
                 spans.push(Span::raw(" "));
                 spans.push(Span::styled(
                     step.description.clone(),
-                    Style::default().add_modifier(Modifier::DIM),
+                    Style::default().fg(crate::colors::text_dim()),
                 ));
             }
         }

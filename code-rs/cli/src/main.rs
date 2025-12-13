@@ -88,6 +88,10 @@ struct MultitoolCli {
     #[clap(long = "auto", global = true, default_value_t = false)]
     auto_drive: bool,
 
+    /// Developer-role message to prepend to every turn for demos.
+    #[clap(long = "demo", global = true, value_name = "TEXT")]
+    demo_developer_message: Option<String>,
+
     #[clap(subcommand)]
     subcommand: Option<Subcommand>,
 }
@@ -406,10 +410,12 @@ async fn cli_main(code_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()>
         config_overrides: root_config_overrides,
         mut interactive,
         auto_drive,
+        demo_developer_message,
         subcommand,
     } = MultitoolCli::parse();
 
     interactive.finalize_defaults();
+    interactive.demo_developer_message = demo_developer_message.clone();
 
     match subcommand {
         None => {
@@ -439,6 +445,7 @@ async fn cli_main(code_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()>
             if auto_drive {
                 exec_cli.auto_drive = true;
             }
+            exec_cli.demo_developer_message = demo_developer_message.clone();
             prepend_config_flags(
                 &mut exec_cli.config_overrides,
                 root_config_overrides.clone(),
@@ -450,6 +457,7 @@ async fn cli_main(code_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()>
             if !exec_cli.full_auto && !exec_cli.dangerously_bypass_approvals_and_sandbox {
                 exec_cli.full_auto = true;
             }
+            exec_cli.demo_developer_message = demo_developer_message.clone();
             prepend_config_flags(
                 &mut exec_cli.config_overrides,
                 root_config_overrides.clone(),

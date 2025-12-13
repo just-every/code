@@ -20642,6 +20642,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 notify: self.config.notify.clone(),
                 cwd: self.config.cwd.clone(),
                 resume_path: None,
+                demo_developer_message: self.config.demo_developer_message.clone(),
             };
             self.submit_op(op);
 
@@ -21268,6 +21269,7 @@ Have we met every part of this goal and is there no further work to do?"#
             notify: self.config.notify.clone(),
             cwd: self.config.cwd.clone(),
             resume_path: None,
+            demo_developer_message: self.config.demo_developer_message.clone(),
         };
         self.submit_op(op);
     }
@@ -21292,6 +21294,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 notify: self.config.notify.clone(),
                 cwd: self.config.cwd.clone(),
                 resume_path: None,
+                demo_developer_message: self.config.demo_developer_message.clone(),
             };
             self.submit_op(op);
         }
@@ -21496,6 +21499,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 notify: self.config.notify.clone(),
                 cwd: self.config.cwd.clone(),
                 resume_path: None,
+                demo_developer_message: self.config.demo_developer_message.clone(),
             };
             let _ = self.code_op_tx.send(op);
         } else {
@@ -21638,6 +21642,7 @@ Have we met every part of this goal and is there no further work to do?"#
             notify: self.config.notify.clone(),
             cwd: self.config.cwd.clone(),
             resume_path: None,
+            demo_developer_message: self.config.demo_developer_message.clone(),
         };
 
         self.submit_op(op);
@@ -21677,6 +21682,7 @@ Have we met every part of this goal and is there no further work to do?"#
             notify: self.config.notify.clone(),
             cwd: self.config.cwd.clone(),
             resume_path: None,
+            demo_developer_message: self.config.demo_developer_message.clone(),
         };
 
         self.submit_op(op);
@@ -22727,6 +22733,7 @@ Have we met every part of this goal and is there no further work to do?"#
             notify: self.config.notify.clone(),
             cwd: self.config.cwd.clone(),
             resume_path: None,
+            demo_developer_message: self.config.demo_developer_message.clone(),
         };
         self.submit_op(op);
 
@@ -27268,10 +27275,11 @@ Have we met every part of this goal and is there no further work to do?"#
 
         // Start with all items in production; tests can opt-in to a minimal header via env flag.
         let minimal_header = std::env::var_os("CODEX_TUI_FORCE_MINIMAL_HEADER").is_some();
+        let demo_mode = self.config.demo_developer_message.is_some();
         let mut include_reasoning = !minimal_header;
         let mut include_model = !minimal_header;
         let mut include_branch = !minimal_header && branch_opt.is_some();
-        let mut include_dir = !minimal_header;
+        let mut include_dir = !minimal_header && !demo_mode;
         let mut status_spans = build_spans(
             include_reasoning,
             include_model,
@@ -32386,25 +32394,43 @@ impl ChatWidget<'_> {
         release_background_lock(&agent_id);
         let mut developer_note: Option<String> = None;
         let snapshot_note = inflight_snapshot
-            .as_ref()
-            .map(|s| format!(" Snapshot {s}."))
-            .unwrap_or_default();
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("Snapshot: {s} (review target)"))
+            .unwrap_or_else(|| "Snapshot: (unknown)".to_string());
         let agent_note = agent_id
-            .as_ref()
-            .map(|id| format!(" Agent #{:.8}.", id))
-            .unwrap_or_default();
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|id| {
+                let short = id.chars().take(8).collect::<String>();
+                format!("Agent: #{short} (auto-review)")
+            })
+            .unwrap_or_else(|| "Agent: (unknown)".to_string());
+        let summary_note = summary
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.replace('\n', " "))
+            .map(|s| format!("Summary: {s}"));
         let errored = error.is_some();
         let indicator_status = if let Some(err) = error {
             developer_note = Some(format!(
-                "[developer] Background auto-review failed in worktree '{branch}'. Error: {err}. Worktree path: {}.{snapshot_note}{agent_note}",
-                worktree_path.display()
+                "[developer] Background auto-review failed.\n\nThis auto-review ran in an isolated git worktree and did not modify your current workspace.\n\nWorktree: '{branch}'\nWorktree path: {}\n{snapshot_note}\n{agent_note}\nError: {err}",
+                worktree_path.display(),
             ));
             AutoReviewIndicatorStatus::Failed
         } else if has_findings {
-            developer_note = Some(format!(
-                "[developer] Merge the worktree '{branch}' to apply the auto-review fixes. Worktree path: {}.{snapshot_note}{agent_note}",
-                worktree_path.display()
-            ));
+            let mut note = format!(
+                "[developer] Background auto-review completed and reported {findings} issue(s).\n\nA separate LLM ran /review (and may have run auto-resolve) in an isolated git worktree. Any proposed fixes live only in that worktree until you merge them.\n\nNext: Decide if the findings are genuine. If yes, Merge the worktree '{branch}' to apply the changes (or cherry-pick selectively). If not, do not merge.\n\nWorktree path: {}\n{snapshot_note}\n{agent_note}",
+                worktree_path.display(),
+            );
+            if let Some(summary_note) = summary_note {
+                note.push('\n');
+                note.push_str(&summary_note);
+            }
+            developer_note = Some(note);
             AutoReviewIndicatorStatus::Fixed
         } else {
             AutoReviewIndicatorStatus::Clean
@@ -32430,10 +32456,7 @@ impl ChatWidget<'_> {
             // Immediately inject as a developer message so the user sees it in the
             // transcript, even if tasks/streams are still running. Do not defer to
             // pending_agent_notes; that path can be lost if the session ends.
-            self.submit_hidden_text_message_with_preface(
-                "Auto review follow-up".to_string(),
-                note,
-            );
+            self.submit_hidden_text_message_with_preface(String::new(), note);
         }
 
         // Auto review completion should never leave the composer spinner active.
@@ -34186,6 +34209,7 @@ impl ChatWidget<'_> {
             notify: self.config.notify.clone(),
             cwd: self.config.cwd.clone(),
             resume_path: None,
+            demo_developer_message: self.config.demo_developer_message.clone(),
         };
         self.submit_op(op);
 

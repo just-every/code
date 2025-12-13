@@ -76,6 +76,11 @@ pub struct Cli {
     #[clap(skip)]
     pub config_overrides: CliConfigOverrides,
 
+    /// Optional developer-role message to prepend to every turn for demos.
+    /// Set by the multitool root CLI via `--demo`.
+    #[clap(skip)]
+    pub demo_developer_message: Option<String>,
+
     /// Specifies color settings for use in the output.
     #[arg(long = "color", value_enum, default_value_t = Color::Auto)]
     pub color: Color,

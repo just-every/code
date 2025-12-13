@@ -281,6 +281,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
     };
 
     let mut config = Config::load_with_cli_overrides(cli_kv_overrides, overrides)?;
+    config.demo_developer_message = cli.demo_developer_message.clone();
     let slash_context = SlashContext {
         agents: &config.agents,
         subagent_commands: &config.subagent_commands,

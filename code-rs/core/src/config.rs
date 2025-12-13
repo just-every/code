@@ -272,6 +272,10 @@ pub struct Config {
     /// User-provided instructions from AGENTS.md.
     pub user_instructions: Option<String>,
 
+    /// Optional developer-role message to prepend to every turn for demos.
+    /// Set by the CLI via `--demo`; not loaded from disk.
+    pub demo_developer_message: Option<String>,
+
     /// Base instructions override.
     pub base_instructions: Option<String>,
 
@@ -2898,6 +2902,7 @@ impl Config {
             notify: cfg.notify,
             notices: cfg.notice.unwrap_or_default(),
             user_instructions,
+            demo_developer_message: None,
             base_instructions,
             compact_prompt_override,
             mcp_servers: cfg.mcp_servers,

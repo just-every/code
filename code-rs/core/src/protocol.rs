@@ -116,6 +116,12 @@ pub enum Op {
         /// Path to a rollout file to resume from.
         #[serde(skip_serializing_if = "Option::is_none")]
         resume_path: Option<std::path::PathBuf>,
+
+        /// Optional developer-role message to prepend to every turn for demos.
+        /// This is a CLI-only knob; it is not persisted in config files.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
+        demo_developer_message: Option<String>,
     },
 
     /// Abort current task.

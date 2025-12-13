@@ -1628,6 +1628,7 @@ fn configure_session_op_from_config(config: &Config) -> Op {
         notify: config.notify.clone(),
         cwd: config.cwd.clone(),
         resume_path: None,
+        demo_developer_message: config.demo_developer_message.clone(),
     }
 }
 

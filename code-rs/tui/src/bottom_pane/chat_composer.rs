@@ -2886,7 +2886,8 @@ impl WidgetRef for ChatComposer {
             .textarea
             .cursor_pos_with_state(padded_textarea_rect, *self.textarea_state.borrow())
         {
-            let cursor_bg = crate::theme::current_theme().cursor;
+            let theme = crate::theme::current_theme();
+            let cursor_bg = theme.cursor;
             if cx < buf.area.width.saturating_add(buf.area.x)
                 && cy < buf.area.height.saturating_add(buf.area.y)
             {
@@ -2896,9 +2897,28 @@ impl WidgetRef for ChatComposer {
                 // cursor while processing arrow keys; preserving the foreground color
                 // keeps the caret location visible instead of flashing blank cells.
                 cell.set_bg(cursor_bg);
+                let fg_bg_ratio = contrast_ratio(theme.background, cursor_bg);
+                let fg_text_ratio = contrast_ratio(theme.text_bright, cursor_bg);
+                let cursor_fg = if fg_text_ratio >= fg_bg_ratio {
+                    theme.text_bright
+                } else {
+                    theme.background
+                };
+                cell.set_fg(cursor_fg);
             }
         }
     }
+}
+
+fn relative_luminance(rgb: (u8, u8, u8)) -> f32 {
+    (0.2126 * rgb.0 as f32 + 0.7152 * rgb.1 as f32 + 0.0722 * rgb.2 as f32) / 255.0
+}
+
+fn contrast_ratio(foreground: Color, background: Color) -> f32 {
+    let lf = relative_luminance(crate::colors::color_to_rgb(foreground));
+    let lb = relative_luminance(crate::colors::color_to_rgb(background));
+    let (bright, dark) = if lf >= lb { (lf, lb) } else { (lb, lf) };
+    (bright + 0.05) / (dark + 0.05)
 }
 
 fn apply_auto_drive_border_gradient(
