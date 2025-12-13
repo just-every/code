@@ -7345,7 +7345,15 @@ impl ChatWidget<'_> {
             }
         }
 
+        let composer_was_empty = self.bottom_pane.composer_is_empty();
         let input_result = self.bottom_pane.handle_key_event(key_event);
+        let composer_is_empty = self.bottom_pane.composer_is_empty();
+        if composer_was_empty && !composer_is_empty {
+            for cell in &self.history_cells {
+                cell.trigger_fade();
+            }
+            self.request_redraw();
+        }
         self.auto_sync_goal_escape_state_from_composer();
 
         match input_result {
@@ -7354,6 +7362,9 @@ impl ChatWidget<'_> {
                 let cleaned = Self::strip_context_sections(&text);
                 self.last_user_message = (!cleaned.trim().is_empty()).then_some(cleaned);
                 if self.auto_state.should_show_goal_entry() {
+                    for cell in &self.history_cells {
+                        cell.trigger_fade();
+                    }
                     let trimmed = text.trim();
                     if trimmed.is_empty() {
                         self.bottom_pane.set_task_running(true);

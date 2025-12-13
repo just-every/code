@@ -108,8 +108,6 @@ impl HistoryCell for AnimatedWelcomeCell {
 
         if variant_changed {
             self.variant.set(Some(current_variant));
-            *self.fade_start.borrow_mut() = None;
-            self.faded_out.set(false);
             // Keep `completed` as-is so the intro animation continues when the
             // size adjusts mid-run instead of jumping to the final frame.
         } else if previous_variant.is_none() {
