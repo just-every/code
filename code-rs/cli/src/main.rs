@@ -1571,6 +1571,7 @@ mod tests {
             config_overrides: root_overrides,
             auto_drive: _,
             subcommand,
+            ..
         } = cli;
 
         let Subcommand::Resume(ResumeCommand {
