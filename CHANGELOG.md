@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.3] - 2025-12-12
+
+- Build: prevent concurrent tmp-bin races in build-fast to keep artifacts isolated. (e3ae904)
+- TUI history: handle background wait call_id to avoid orphaned exec entries. (c4c4ed6)
+- Onboarding: align trust directory prompt styling with the rest of the flow. (9de6df6)
+
 ## [0.6.2] - 2025-12-12
 
 - Models: add a guided gpt-5.2 upgrade flow so users can move to the latest model smoothly. (ee9fc1f)
