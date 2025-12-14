@@ -71,3 +71,70 @@ fn mid_turn_answer_suppresses_bullet_gutter() {
         "final assistant message should retain bullet gutter"
     );
 }
+
+#[test]
+fn missing_task_complete_does_not_stick_mid_turn_across_turns() {
+    let mut harness = ChatWidgetHarness::new();
+
+    // Turn 1 starts and emits an assistant message, but TaskComplete is never received.
+    harness.handle_event(Event {
+        id: "task-1".into(),
+        event_seq: 0,
+        msg: EventMsg::TaskStarted,
+        order: None,
+    });
+
+    harness.handle_event(Event {
+        id: "msg-1".into(),
+        event_seq: 1,
+        msg: EventMsg::AgentMessage(AgentMessageEvent {
+            message: "First answer".into(),
+        }),
+        order: Some(OrderMeta {
+            request_ordinal: 1,
+            output_index: Some(0),
+            sequence_number: None,
+        }),
+    });
+
+    // Flush pending InsertFinalAnswer.
+    let _ = render_chat_widget_to_vt100(&mut harness, 80, 24);
+
+    // Turn 2 begins. The new TaskStarted should defensively clear the stale task state
+    // from turn 1 so the assistant output from subsequent turns is not treated as mid-turn.
+    harness.handle_event(Event {
+        id: "task-2".into(),
+        event_seq: 0,
+        msg: EventMsg::TaskStarted,
+        order: None,
+    });
+
+    harness.handle_event(Event {
+        id: "msg-2".into(),
+        event_seq: 1,
+        msg: EventMsg::AgentMessage(AgentMessageEvent {
+            message: "Second answer".into(),
+        }),
+        order: Some(OrderMeta {
+            request_ordinal: 2,
+            output_index: Some(0),
+            sequence_number: None,
+        }),
+    });
+
+    let _ = render_chat_widget_to_vt100(&mut harness, 80, 24);
+
+    harness.handle_event(Event {
+        id: "task-2".into(),
+        event_seq: 2,
+        msg: EventMsg::TaskComplete(code_core::protocol::TaskCompleteEvent {
+            last_agent_message: None,
+        }),
+        order: None,
+    });
+
+    let output = render_chat_widget_to_vt100(&mut harness, 80, 24);
+
+    assert!(output.contains(" • First answer"));
+    assert!(output.contains(" • Second answer"));
+}

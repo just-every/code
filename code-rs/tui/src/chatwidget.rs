@@ -12468,6 +12468,22 @@ impl ChatWidget<'_> {
                 self.stream.insert_reasoning_section_break(&sink);
             }
             EventMsg::TaskStarted => {
+                // Defensive: if the previous turn never emitted TaskComplete (e.g. dropped event
+                // due to reconnect), `active_task_ids` can stay non-empty. That makes every
+                // subsequent Answer look like "mid-turn" forever and keeps the footer spinner
+                // stuck.
+                if !self.active_task_ids.is_empty() {
+                    tracing::warn!(
+                        "TaskStarted id={} while {} task(s) still active; assuming stale turn state",
+                        id,
+                        self.active_task_ids.len()
+                    );
+                    if let Some(last_id) = self.last_seen_answer_stream_id_in_turn.clone() {
+                        self.mid_turn_answer_ids_in_turn.remove(&last_id);
+                        self.maybe_clear_mid_turn_for_last_answer(&last_id);
+                    }
+                    self.active_task_ids.clear();
+                }
                 // Reset per-turn cleanup guard and clear any lingering running
                 // exec/tool cells if the prior turn never sent TaskComplete.
                 // This runs once per turn and is intentionally later than
