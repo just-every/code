@@ -878,6 +878,7 @@ use code_protocol::models::ReasoningItemReasoningSummary;
 use code_protocol::models::ResponseInputItem;
 use code_protocol::models::ResponseItem;
 use code_protocol::models::ShellToolCallParams;
+use code_protocol::models::SandboxPermissions;
 use crate::openai_tools::ToolsConfig;
 use crate::openai_tools::get_openai_tools;
 use crate::slash_commands::get_enabled_agents;
@@ -6518,7 +6519,7 @@ async fn handle_response_item(
                 command: action.command,
                 workdir: action.working_directory,
                 timeout_ms: action.timeout_ms,
-                with_escalated_permissions: None,
+                sandbox_permissions: None,
                 justification: None,
             };
             let effective_call_id = match (call_id, id) {
@@ -8193,12 +8194,15 @@ fn to_exec_params(params: ShellToolCallParams, sess: &Session) -> ExecParams {
     let timeout_ms = params
         .timeout_ms
         .map(|ms| ms.max(MIN_SHELL_TIMEOUT_MS));
+    let with_escalated_permissions = params
+        .sandbox_permissions
+        .and_then(|p| p.requires_escalated_permissions().then_some(true));
     ExecParams {
         command: params.command,
         cwd: sess.resolve_path(params.workdir.clone()),
         timeout_ms,
         env: create_env(&sess.shell_environment_policy),
-        with_escalated_permissions: params.with_escalated_permissions,
+        with_escalated_permissions,
         justification: params.justification,
     }
 }
@@ -8276,8 +8280,26 @@ fn parse_container_exec_arguments(
     sess: &Session,
     call_id: &str,
 ) -> Result<ExecParams, Box<ResponseInputItem>> {
-    // parse command
-    match serde_json::from_str::<ShellToolCallParams>(&arguments) {
+    // Parse command.
+    //
+    // Newer prompts use `sandbox_permissions` ("use_default" | "require_escalated");
+    // older ones used `with_escalated_permissions: bool`. Accept both.
+    let parsed: std::result::Result<serde_json::Value, serde_json::Error> =
+        serde_json::from_str(&arguments);
+
+    match parsed
+        .and_then(|mut value| {
+            if value.get("sandbox_permissions").is_none() {
+                let needs_escalated = value
+                    .get("with_escalated_permissions")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if needs_escalated {
+                    value["sandbox_permissions"] = serde_json::json!(SandboxPermissions::RequireEscalated);
+                }
+            }
+            serde_json::from_value::<ShellToolCallParams>(value)
+        }) {
         Ok(shell_tool_call_params) => Ok(to_exec_params(shell_tool_call_params, sess)),
         Err(e) => {
             // allow model to re-sample

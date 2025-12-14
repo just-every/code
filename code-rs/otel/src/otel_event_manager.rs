@@ -1,4 +1,3 @@
-use crate::otel_provider::traceparent_context_from_env;
 use chrono::SecondsFormat;
 use chrono::Utc;
 use code_app_server_protocol::AuthMode;
@@ -16,14 +15,10 @@ use reqwest::Error;
 use reqwest::Response;
 use serde::Serialize;
 use std::fmt::Display;
-use std::future::Future;
 use std::time::Duration;
 use std::time::Instant;
 use strum_macros::Display;
 use tokio::time::error::Elapsed;
-use tracing::Span;
-use tracing::info_span;
-use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 #[derive(Debug, Clone, Serialize, Display)]
 #[serde(rename_all = "snake_case")]
@@ -86,9 +81,8 @@ pub struct OtelEventMetadata {
 }
 
 #[derive(Debug, Clone)]
-pub struct OtelManager {
+pub struct OtelEventManager {
     metadata: OtelEventMetadata,
-    session_span: Span,
 }
 
 impl OtelEventManager {
@@ -100,14 +94,7 @@ impl OtelEventManager {
         auth_mode: Option<AuthMode>,
         log_user_prompts: bool,
         terminal_type: String,
-        session_source: SessionSource,
-    ) -> OtelManager {
-        let session_span = info_span!("new_session", conversation_id = %conversation_id, session_source = %session_source);
-
-        if let Some(context) = traceparent_context_from_env() {
-            session_span.set_parent(context);
-        }
-
+    ) -> OtelEventManager {
         Self {
             metadata: OtelEventMetadata {
                 conversation_id,
@@ -119,7 +106,6 @@ impl OtelEventManager {
                 app_version: env!("CARGO_PKG_VERSION"),
                 terminal_type,
             },
-            session_span,
         }
     }
 
@@ -128,30 +114,6 @@ impl OtelEventManager {
         manager.metadata.model = model.to_owned();
         manager.metadata.slug = slug.to_owned();
         manager
-    }
-
-    pub fn current_span(&self) -> &Span {
-        &self.session_span
-    }
-
-    pub fn record_responses(&self, handle_responses_span: &Span, event: &ResponseEvent) {
-        handle_responses_span.record("otel.name", OtelManager::responses_type(event));
-
-        match event {
-            ResponseEvent::OutputItemDone(item) => {
-                handle_responses_span.record("from", "output_item_done");
-                if let ResponseItem::FunctionCall { name, .. } = &item {
-                    handle_responses_span.record("tool_name", name.as_str());
-                }
-            }
-            ResponseEvent::OutputItemAdded(item) => {
-                handle_responses_span.record("from", "output_item_added");
-                if let ResponseItem::FunctionCall { name, .. } = &item {
-                    handle_responses_span.record("tool_name", name.as_str());
-                }
-            }
-            _ => {}
-        }
     }
 
     #[allow(clippy::too_many_arguments)]

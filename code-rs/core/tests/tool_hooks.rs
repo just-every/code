@@ -70,7 +70,7 @@ async fn tool_hooks_fire_for_shell_exec() {
         "command": ["bash", "-lc", "echo exec-body"],
         "workdir": config.cwd,
         "timeout_ms": null,
-        "with_escalated_permissions": null,
+        "sandbox_permissions": null,
         "justification": null,
     });
     let function_call_item = json!({

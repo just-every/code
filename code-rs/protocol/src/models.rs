@@ -10,6 +10,23 @@ use ts_rs::TS;
 
 use crate::protocol::InputItem;
 
+/// Controls whether a command should use the session sandbox or bypass it.
+#[derive(Debug, Clone, Copy, Default, Eq, Hash, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxPermissions {
+    /// Run with the configured sandbox.
+    #[default]
+    UseDefault,
+    /// Request to run outside the sandbox.
+    RequireEscalated,
+}
+
+impl SandboxPermissions {
+    pub fn requires_escalated_permissions(self) -> bool {
+        matches!(self, SandboxPermissions::RequireEscalated)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseInputItem {
@@ -256,8 +273,8 @@ pub struct ShellToolCallParams {
     /// This is the maximum time in milliseconds that the command is allowed to run.
     #[serde(alias = "timeout")]
     pub timeout_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub with_escalated_permissions: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_permissions: Option<SandboxPermissions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub justification: Option<String>,
 }
@@ -375,7 +392,7 @@ mod tests {
                 command: vec!["ls".to_string(), "-l".to_string()],
                 workdir: Some("/tmp".to_string()),
                 timeout_ms: Some(1000),
-                with_escalated_permissions: None,
+                sandbox_permissions: None,
                 justification: None,
             },
             params

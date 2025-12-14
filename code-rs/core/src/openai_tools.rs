@@ -392,15 +392,22 @@ fn create_shell_tool_for_sandbox(sandbox_policy: &SandboxPolicy) -> OpenAiTool {
 
     if matches!(sandbox_policy, SandboxPolicy::WorkspaceWrite { .. }) {
         properties.insert(
-            "with_escalated_permissions".to_string(),
-            JsonSchema::Boolean {
-                description: Some("Whether to request escalated permissions. Set to true if command needs to be run without sandbox restrictions".to_string()),
+            "sandbox_permissions".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Sandbox permissions for the command. Set to \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\"."
+                        .to_string(),
+                ),
+                allowed_values: Some(vec!["use_default".to_string(), "require_escalated".to_string()]),
             },
         );
         properties.insert(
             "justification".to_string(),
             JsonSchema::String {
-                description: Some("Only set if with_escalated_permissions is true. 1-sentence explanation of why we want to run this command.".to_string()),
+                description: Some(
+                    "Only set if sandbox_permissions is \"require_escalated\". 1-sentence explanation of why we want to run this command."
+                        .to_string(),
+                ),
                 allowed_values: None,
             },
         );
@@ -434,8 +441,8 @@ The shell tool is used to execute shell commands.
     - cargo build
     - cargo test
 - When invoking a command that will require escalated privileges:
-  - Provide the with_escalated_permissions parameter with the boolean value true
-  - Include a short, 1 sentence explanation for why we need to run with_escalated_permissions in the justification parameter.
+  - Provide the sandbox_permissions parameter with the value \"require_escalated\"
+  - Include a short, 1 sentence explanation for why we need escalated permissions in the justification parameter.
 
 Long-running commands may be backgrounded after an initial window. Use `wait` to await background tasks. Optional `timeout` can set a hard kill if needed."#,
                 roots_str,
