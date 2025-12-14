@@ -27211,7 +27211,7 @@ Have we met every part of this goal and is there no further work to do?"#
             let mut spans: Vec<Span> = Vec::new();
             // Title follows theme text color
             spans.push(Span::styled(
-                "Code",
+                "Every Code",
                 Style::default()
                     .fg(crate::colors::text())
                     .add_modifier(Modifier::BOLD),
