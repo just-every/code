@@ -668,6 +668,33 @@ struct AppliedPatch {
     new_contents: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LineEnding {
+    Lf,
+    Crlf,
+}
+
+impl LineEnding {
+    fn detect(contents: &str) -> Self {
+        if contents.contains("\r\n") {
+            Self::Crlf
+        } else {
+            Self::Lf
+        }
+    }
+
+    fn joiner(self) -> &'static str {
+        match self {
+            Self::Lf => "\n",
+            Self::Crlf => "\r\n",
+        }
+    }
+}
+
+fn normalize_line_ending(line: &str) -> &str {
+    line.strip_suffix('\r').unwrap_or(line)
+}
+
 /// Return *only* the new file contents (joined into a single `String`) after
 /// applying the chunks to the file at `path`.
 fn derive_new_contents_from_chunks(
@@ -684,7 +711,11 @@ fn derive_new_contents_from_chunks(
         }
     };
 
-    let mut original_lines: Vec<String> = original_contents.split('\n').map(String::from).collect();
+    let line_ending = LineEnding::detect(&original_contents);
+    let mut original_lines: Vec<String> = original_contents
+        .split('\n')
+        .map(|line| normalize_line_ending(line).to_string())
+        .collect();
 
     // Drop the trailing empty element that results from the final newline so
     // that line counts match the behaviour of standard `diff`.
@@ -698,7 +729,7 @@ fn derive_new_contents_from_chunks(
     if !new_lines.last().is_some_and(String::is_empty) {
         new_lines.push(String::new());
     }
-    let new_contents = new_lines.join("\n");
+    let new_contents = new_lines.join(line_ending.joiner());
     Ok(AppliedPatch {
         original_contents,
         new_contents,
@@ -744,7 +775,12 @@ fn compute_replacements(
             } else {
                 original_lines.len()
             };
-            replacements.push((insertion_idx, 0, chunk.new_lines.clone()));
+            let normalized_new_lines: Vec<String> = chunk
+                .new_lines
+                .iter()
+                .map(|line| normalize_line_ending(line).to_string())
+                .collect();
+            replacements.push((insertion_idx, 0, normalized_new_lines));
             continue;
         }
 
@@ -759,11 +795,22 @@ fn compute_replacements(
         // final element so that modifications touching the end‑of‑file can be
         // located reliably.
 
-        let mut pattern: &[String] = &chunk.old_lines;
+        let normalized_old_lines: Vec<String> = chunk
+            .old_lines
+            .iter()
+            .map(|line| normalize_line_ending(line).to_string())
+            .collect();
+        let normalized_new_lines: Vec<String> = chunk
+            .new_lines
+            .iter()
+            .map(|line| normalize_line_ending(line).to_string())
+            .collect();
+
+        let mut pattern: &[String] = &normalized_old_lines;
         let mut found =
             seek_sequence::seek_sequence(original_lines, pattern, line_index, chunk.is_end_of_file);
 
-        let mut new_slice: &[String] = &chunk.new_lines;
+        let mut new_slice: &[String] = &normalized_new_lines;
 
         if found.is_none() && pattern.last().is_some_and(String::is_empty) {
             // Retry without the trailing empty line which represents the final
@@ -788,7 +835,7 @@ fn compute_replacements(
             return Err(ApplyPatchError::ComputeReplacements(format!(
                 "Failed to find expected lines in {}:\n{}",
                 path.display(),
-                chunk.old_lines.join("\n"),
+                normalized_old_lines.join("\n"),
             )));
         }
     }
@@ -1202,6 +1249,36 @@ PATCH"#,
         assert_eq!(stderr_str, "");
         let contents = fs::read_to_string(&path).unwrap();
         assert_eq!(contents, "foo\nbaz\n");
+    }
+
+    #[test]
+    fn test_update_file_hunk_preserves_crlf_line_endings() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("update_crlf.txt");
+        fs::write(&path, "foo\r\nbar\r\n").unwrap();
+
+        let patch = wrap_patch(&format!(
+            r#"*** Update File: {}
+@@
+ foo
+-bar
++baz
+"#,
+            path.display()
+        ));
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        apply_patch(&patch, &mut stdout, &mut stderr).unwrap();
+
+        let bytes = fs::read(&path).unwrap();
+        assert!(bytes.ends_with(b"\r\n"), "file should end with CRLF");
+        for (idx, byte) in bytes.iter().enumerate() {
+            if *byte == b'\n' {
+                assert!(idx > 0 && bytes[idx - 1] == b'\r', "found bare LF at index {idx}");
+            }
+        }
+        assert_eq!(String::from_utf8_lossy(&bytes), "foo\r\nbaz\r\n");
     }
 
     #[test]
