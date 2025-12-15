@@ -7947,6 +7947,7 @@ async fn handle_wait(
                 let default_ms: u64 = 600_000; // 10 minutes default
                 let timeout_ms = parsed.timeout_ms.unwrap_or(default_ms).min(max_ms);
                 use std::sync::atomic::Ordering;
+                let (initial_wait_epoch, _) = sess.wait_interrupt_snapshot();
                 let (notify_opt, done_opt, tail, suppress_flag) = {
                     let st = sess.state.lock().unwrap();
                     match st.background_execs.get(&call_id) {
@@ -7959,23 +7960,55 @@ async fn handle_wait(
                         None => (None, None, None, None),
                     }
                 };
-                if let Some(flag) = &suppress_flag {
-                    flag.store(true, Ordering::Relaxed);
+
+                struct WaitSuppressGuard {
+                    flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
                 }
-                if let Some(done) = done_opt {
-                    let content = format_exec_output_with_limit(sess, &ctx_inner.sub_id, &ctx_inner.call_id, &done);
-                    if let Some(flag) = &suppress_flag {
-                        flag.store(true, Ordering::Relaxed);
+
+                impl WaitSuppressGuard {
+                    fn new(flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>) -> Self {
+                        if let Some(flag) = flag.as_ref() {
+                            flag.store(true, Ordering::Relaxed);
+                        }
+                        Self { flag }
                     }
+
+                    fn disarm(mut self) {
+                        self.flag = None;
+                    }
+                }
+
+                impl Drop for WaitSuppressGuard {
+                    fn drop(&mut self) {
+                        if let Some(flag) = self.flag.as_ref() {
+                            flag.store(false, Ordering::Relaxed);
+                        }
+                    }
+                }
+
+                let suppress_guard = WaitSuppressGuard::new(suppress_flag.clone());
+
+                if let Some(done) = done_opt {
+                    {
+                        let mut st = sess.state.lock().unwrap();
+                        st.background_execs.remove(&call_id);
+                    }
+                    let content = format_exec_output_with_limit(
+                        sess,
+                        &ctx_inner.sub_id,
+                        &ctx_inner.call_id,
+                        &done,
+                    );
+                    suppress_guard.disarm();
                     return ResponseInputItem::FunctionCallOutput {
                         call_id: ctx_inner.call_id.clone(),
-                        output: FunctionCallOutputPayload { content, success: Some(done.exit_code == 0) },
+                        output: FunctionCallOutputPayload {
+                            content,
+                            success: Some(done.exit_code == 0),
+                        },
                     };
                 }
                 let Some(spec_notify) = notify_opt else {
-                    if let Some(flag) = &suppress_flag {
-                        flag.store(false, Ordering::Relaxed);
-                    }
                     return ResponseInputItem::FunctionCallOutput {
                         call_id: ctx_inner.call_id.clone(),
                         output: FunctionCallOutputPayload {
@@ -7985,29 +8018,90 @@ async fn handle_wait(
                     };
                 };
                 let any_notify = ANY_BG_NOTIFY.get().cloned().unwrap();
-                let raced = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), async move {
+
+                let deadline = tokio::time::Instant::now()
+                    + std::time::Duration::from_millis(timeout_ms);
+
+                loop {
+                    let (known_done, known_missing) = {
+                        let st = sess.state.lock().unwrap();
+                        match st.background_execs.get(&call_id) {
+                            Some(bg) => (
+                                bg.result_cell.lock().unwrap().is_some(),
+                                false,
+                            ),
+                            None => (false, true),
+                        }
+                    };
+
+                    if known_missing {
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id: ctx_inner.call_id.clone(),
+                            output: FunctionCallOutputPayload {
+                                content: format!("No background job found for call_id={call_id}"),
+                                success: Some(false),
+                            },
+                        };
+                    }
+
+                    if known_done {
+                        break;
+                    }
+
+                    let (current_epoch, reason) = sess.wait_interrupt_snapshot();
+                    if current_epoch != initial_wait_epoch {
+                        let message = match reason {
+                            Some(WaitInterruptReason::UserMessage) => {
+                                format!(
+                                    "wait ended due to new user message (background job {call_id} still running)"
+                                )
+                            }
+                            _ => format!(
+                                "wait ended because the session was interrupted (background job {call_id} still running)"
+                            ),
+                        };
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id: ctx_inner.call_id.clone(),
+                            output: FunctionCallOutputPayload {
+                                content: message,
+                                success: Some(false),
+                            },
+                        };
+                    }
+
+                    let now = tokio::time::Instant::now();
+                    if now >= deadline {
+                        let tail_text = tail
+                            .as_ref()
+                            .map(|arc| String::from_utf8_lossy(&arc.lock().unwrap()).to_string())
+                            .unwrap_or_default();
+                        let msg = if tail_text.is_empty() {
+                            format!("Background job {call_id} still running...")
+                        } else {
+                            format!(
+                                "Background job {call_id} still running...\n\nOutput so far (tail):\n{tail_text}"
+                            )
+                        };
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id: ctx_inner.call_id.clone(),
+                            output: FunctionCallOutputPayload {
+                                content: msg,
+                                success: Some(false),
+                            },
+                        };
+                    }
+
+                    let remaining = deadline - now;
+                    let poll = std::time::Duration::from_millis(200);
+                    let sleep_for = std::cmp::min(poll, remaining);
+
                     tokio::select! {
-                        _ = spec_notify.notified() => (),
-                        _ = any_notify.notified() => (),
+                        _ = spec_notify.notified() => {},
+                        _ = any_notify.notified() => {},
+                        _ = tokio::time::sleep(sleep_for) => {},
                     }
-                }).await;
-                if raced.is_err() {
-                    let tail_text = tail
-                        .map(|arc| String::from_utf8_lossy(&arc.lock().unwrap()).to_string())
-                        .unwrap_or_default();
-                    let msg = if tail_text.is_empty() {
-                        format!("Background job {call_id} still running...")
-                    } else {
-                        format!("Background job {call_id} still running...\n\nOutput so far (tail):\n{tail_text}")
-                    };
-                    if let Some(flag) = &suppress_flag {
-                        flag.store(false, Ordering::Relaxed);
-                    }
-                    return ResponseInputItem::FunctionCallOutput {
-                        call_id: ctx_inner.call_id.clone(),
-                        output: FunctionCallOutputPayload { content: msg, success: Some(false) },
-                    };
                 }
+
                 let done = {
                     let mut st = sess.state.lock().unwrap();
                     if let Some(bg) = st.background_execs.remove(&call_id) {
@@ -8024,14 +8118,12 @@ async fn handle_wait(
                 };
                 if let Some(done) = done {
                     let content = format_exec_output_with_limit(sess, &ctx_inner.sub_id, &ctx_inner.call_id, &done);
+                    suppress_guard.disarm();
                     ResponseInputItem::FunctionCallOutput {
                         call_id: ctx_inner.call_id.clone(),
                         output: FunctionCallOutputPayload { content, success: Some(done.exit_code == 0) },
                     }
                 } else {
-                    if let Some(flag) = &suppress_flag {
-                        flag.store(false, Ordering::Relaxed);
-                    }
                     ResponseInputItem::FunctionCallOutput {
                         call_id: ctx_inner.call_id.clone(),
                         output: FunctionCallOutputPayload {
