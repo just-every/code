@@ -1,7 +1,3 @@
-# Every CODE
-
-&ensp;
-
 <img src="docs/images/every-logo.png" alt="Every Code Logo" width="400">
 
 &ensp;
