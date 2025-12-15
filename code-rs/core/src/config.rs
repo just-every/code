@@ -464,16 +464,14 @@ impl Config {
         let mut root_value = load_config_as_toml(&code_home)?;
 
         // Step 2: apply the `-c` overrides.
+        let cli_paths: Vec<String> = cli_overrides.iter().map(|(path, _)| path.clone()).collect();
         for (path, value) in cli_overrides.into_iter() {
             apply_toml_override(&mut root_value, &path, value);
         }
 
         // Step 3: deserialize into `ConfigToml` so that Serde can enforce the
         // correct types.
-        let cfg: ConfigToml = root_value.try_into().map_err(|e| {
-            tracing::error!("Failed to deserialize overridden config: {e}");
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-        })?;
+        let cfg = deserialize_config_toml_with_cli_warnings(&root_value, &cli_paths)?;
 
         // Step 4: merge with the strongly-typed overrides.
         Self::load_from_base_config_with_overrides(cfg, overrides, code_home)
@@ -486,14 +484,12 @@ pub fn load_config_as_toml_with_cli_overrides(
 ) -> std::io::Result<ConfigToml> {
     let mut root_value = load_config_as_toml(code_home)?;
 
+    let cli_paths: Vec<String> = cli_overrides.iter().map(|(path, _)| path.clone()).collect();
     for (path, value) in cli_overrides.into_iter() {
         apply_toml_override(&mut root_value, &path, value);
     }
 
-    let cfg: ConfigToml = root_value.try_into().map_err(|e| {
-        tracing::error!("Failed to deserialize overridden config: {e}");
-        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-    })?;
+    let cfg = deserialize_config_toml_with_cli_warnings(&root_value, &cli_paths)?;
 
     Ok(cfg)
 }
@@ -1971,6 +1967,87 @@ fn apply_toml_override(root: &mut TomlValue, path: &str, value: TomlValue) {
             }
         }
     }
+}
+
+fn warn_on_suspicious_cli_overrides(cli_paths: &[String]) {
+    if cli_paths.is_empty() {
+        return;
+    }
+
+    for cli_path in cli_paths {
+        if cli_path == "auto_drive.use_chat_model"
+            || (cli_path.starts_with("auto_drive.") && cli_path.ends_with(".use_chat_model"))
+        {
+            eprintln!(
+                "Warning: unknown config override `{cli_path}` (ignored). Did you mean `auto_drive_use_chat_model`?"
+            );
+        }
+
+        if cli_path == "auto_review_enabled" {
+            eprintln!(
+                "Warning: unknown config override `{cli_path}` (ignored). Did you mean `tui.auto_review_enabled`?"
+            );
+        }
+    }
+}
+
+fn warn_on_unknown_cli_overrides(cli_paths: &[String], ignored_paths: &[String]) {
+    if cli_paths.is_empty() || ignored_paths.is_empty() {
+        return;
+    }
+
+    for cli_path in cli_paths {
+        let mut ignored = false;
+        for ignored_path in ignored_paths {
+            if cli_path == ignored_path
+                || cli_path.starts_with(&format!("{ignored_path}."))
+                || ignored_path.starts_with(&format!("{cli_path}."))
+            {
+                ignored = true;
+                break;
+            }
+        }
+        if !ignored {
+            continue;
+        }
+
+        // Avoid duplicate warnings for known common confusions.
+        if cli_path == "auto_review_enabled"
+            || cli_path == "auto_drive.use_chat_model"
+            || (cli_path.starts_with("auto_drive.") && cli_path.ends_with(".use_chat_model"))
+        {
+            continue;
+        }
+
+        eprintln!("Warning: unknown config override `{cli_path}` (ignored). See `code exec --help` for valid keys.");
+    }
+}
+
+fn deserialize_config_toml_with_cli_warnings(
+    root_value: &TomlValue,
+    cli_paths: &[String],
+) -> std::io::Result<ConfigToml> {
+    // Note: We intentionally deserialize via `serde_json::Value` so that we can
+    // reliably detect unknown fields via `serde_ignored`. Some deserializers
+    // (including TOML implementations) may filter unknown struct fields before
+    // they reach Serde's ignored-field machinery.
+    let deserializer = serde_json::to_value(root_value).map_err(|e| {
+        tracing::error!("Failed to convert overridden config for deserialization: {e}");
+        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+    })?;
+    let mut ignored_paths: Vec<String> = Vec::new();
+
+    let cfg: ConfigToml = serde_ignored::deserialize(deserializer, |path| {
+        ignored_paths.push(path.to_string());
+    })
+    .map_err(|e| {
+        tracing::error!("Failed to deserialize overridden config: {e}");
+        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+    })?;
+
+    warn_on_suspicious_cli_overrides(cli_paths);
+    warn_on_unknown_cli_overrides(cli_paths, &ignored_paths);
+    Ok(cfg)
 }
 
 /// Base config deserialized from ~/.code/config.toml (legacy ~/.codex/config.toml is still read).
