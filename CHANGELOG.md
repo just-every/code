@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.6.6] - 2025-12-15
+
+- TUI: show Every Code title and stabilize header rendering so status bar and snapshots stay consistent. (1f77f7ac, a8b8beeb)
+- Skills: reimplement loading via SkillsManager and add skills/list op for more reliable discovery. (5d77d4db)
+- Config: clean config loading/API, expand safe commands, and refresh disk status using latest values for MCP servers. (92098d36, 49bf49c2, 163a7e31)
+- Windows: locate pwsh.exe/powershell.exe reliably and parse PowerShell output with PowerShell for sturdier scripts. (4312cae0, 90094903)
+- MCP/TUI: restore startup progress messages and show xhigh reasoning warnings for gpt-5.2 to keep users informed. (c978b6e2, 9287be76)
+
 ## [0.6.4] - 2025-12-13
 
 - TUI: default hidden-preface injections to silent and allow silent submissions to reduce demo noise. (b1ae6f4, a086a46)
