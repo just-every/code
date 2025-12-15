@@ -371,6 +371,89 @@ fn maybe_update_from_model_info<T: Copy + PartialEq>(
     }
 }
 
+#[derive(Clone, Debug)]
+struct RunTimeBudget {
+    deadline: Instant,
+    total: Duration,
+    next_nudge_at: Instant,
+}
+
+impl RunTimeBudget {
+    fn new(deadline: Instant, total: Duration) -> Self {
+        let half = total / 2;
+        let next_nudge_at = deadline.checked_sub(half).unwrap_or(deadline);
+        Self {
+            deadline,
+            total,
+            next_nudge_at,
+        }
+    }
+
+    fn maybe_nudge(&mut self, now: Instant) -> Option<String> {
+        if now < self.next_nudge_at {
+            return None;
+        }
+
+        let remaining = self.deadline.saturating_duration_since(now);
+        let elapsed = self.total.saturating_sub(remaining);
+
+        if elapsed < (self.total / 2) {
+            // Avoid time pressure early.
+            let half = self.total / 2;
+            self.next_nudge_at = self.deadline.checked_sub(half).unwrap_or(self.deadline);
+            return None;
+        }
+
+        let guidance = if remaining <= Duration::from_secs(30) {
+            "Time is nearly up: stop exploring; finish with the simplest safe path."
+        } else if remaining <= Duration::from_secs(120) {
+            "Time is tight: reduce exploration and prioritize finishing."
+        } else {
+            "Past 50% of the time budget: start converging; avoid detours."
+        };
+
+        self.next_nudge_at = now + next_budget_nudge_interval(remaining);
+
+        let total_secs = self.total.as_secs();
+        let elapsed_secs = elapsed.as_secs();
+        let remaining_secs = remaining.as_secs();
+        Some(format!(
+            "== System Status ==\n [automatic message added by system]\n\n time_budget: {total_secs}s\n elapsed: {elapsed_secs}s\n remaining: {remaining_secs}s\n\n Guidance: {guidance}"
+        ))
+    }
+}
+
+fn next_budget_nudge_interval(remaining: Duration) -> Duration {
+    if remaining >= Duration::from_secs(30 * 60) {
+        Duration::from_secs(5 * 60)
+    } else if remaining >= Duration::from_secs(10 * 60) {
+        Duration::from_secs(2 * 60)
+    } else if remaining >= Duration::from_secs(5 * 60) {
+        Duration::from_secs(60)
+    } else if remaining >= Duration::from_secs(2 * 60) {
+        Duration::from_secs(30)
+    } else if remaining >= Duration::from_secs(60) {
+        Duration::from_secs(15)
+    } else if remaining >= Duration::from_secs(30) {
+        Duration::from_secs(10)
+    } else if remaining >= Duration::from_secs(10) {
+        Duration::from_secs(5)
+    } else {
+        Duration::from_secs(2)
+    }
+}
+
+fn maybe_time_budget_status_item(sess: &Session) -> Option<ResponseItem> {
+    let mut guard = sess.time_budget.lock().unwrap();
+    let budget = guard.as_mut()?;
+    let text = budget.maybe_nudge(Instant::now())?;
+    Some(ResponseItem::Message {
+        id: Some(format!("run-budget-{}", sess.id)),
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText { text }],
+    })
+}
+
 async fn build_turn_status_items(sess: &Session) -> Vec<ResponseItem> {
     if sess.env_ctx_v2 {
         build_turn_status_items_v2(sess).await
@@ -557,6 +640,10 @@ async fn build_turn_status_items_legacy(sess: &Session) -> Vec<ResponseItem> {
         });
     }
 
+    if let Some(item) = maybe_time_budget_status_item(sess) {
+        jar.items.push(item);
+    }
+
     jar.into_items()
 }
 
@@ -576,6 +663,10 @@ async fn build_turn_status_items_v2(sess: &Session) -> Vec<ResponseItem> {
         Some(format!("{:?}", sess.client.get_reasoning_effort())),
     ) {
         items.append(&mut env_items);
+    }
+
+    if let Some(item) = maybe_time_budget_status_item(sess) {
+        items.push(item);
     }
 
     if let Some(browser_manager) = code_browser::global::get_browser_manager().await {
@@ -1406,6 +1497,7 @@ pub(crate) struct Session {
     last_system_status: Mutex<Option<String>>,
     /// Track the last screenshot path and hash to detect changes
     last_screenshot_info: Mutex<Option<(PathBuf, Vec<u8>, Vec<u8>)>>, // (path, phash, dhash)
+    time_budget: Mutex<Option<RunTimeBudget>>,
     confirm_guard: ConfirmGuardRuntime,
     project_hooks: ProjectHooks,
     project_commands: Vec<ProjectCommand>,
@@ -4624,6 +4716,13 @@ async fn submission_loop(
                     pending_browser_screenshots: Mutex::new(Vec::new()),
                     last_system_status: Mutex::new(None),
                     last_screenshot_info: Mutex::new(None),
+                    time_budget: Mutex::new(config.max_run_seconds.map(|secs| {
+                        let total = Duration::from_secs(secs);
+                        let deadline = config
+                            .max_run_deadline
+                            .unwrap_or_else(|| Instant::now() + total);
+                        RunTimeBudget::new(deadline, total)
+                    })),
                     confirm_guard: ConfirmGuardRuntime::from_config(&config.confirm_guard),
                     project_hooks: config.project_hooks.clone(),
                     project_commands: config.project_commands.clone(),
@@ -8048,6 +8147,26 @@ async fn handle_wait(
                         break;
                     }
 
+                    let time_budget_message = {
+                        let mut guard = sess.time_budget.lock().unwrap();
+                        guard
+                            .as_mut()
+                            .and_then(|budget| budget.maybe_nudge(Instant::now()))
+                    };
+
+                    if let Some(budget_text) = time_budget_message {
+                        let msg = format!(
+                            "{budget_text}\n\nWait interrupted so the assistant can adapt. Background job {call_id} still running.\n\nContinue by calling wait(call_id=\"{call_id}\")."
+                        );
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id: ctx_inner.call_id.clone(),
+                            output: FunctionCallOutputPayload {
+                                content: msg,
+                                success: Some(false),
+                            },
+                        };
+                    }
+
                     let (current_epoch, reason) = sess.wait_interrupt_snapshot();
                     if current_epoch != initial_wait_epoch {
                         let message = match reason {
@@ -9906,6 +10025,31 @@ async fn handle_wait_for_agent(
                 }
 
                 drop(manager);
+
+                let time_budget_message = {
+                    let mut guard = sess.time_budget.lock().unwrap();
+                    guard
+                        .as_mut()
+                        .and_then(|budget| budget.maybe_nudge(Instant::now()))
+                };
+
+                if let Some(budget_text) = time_budget_message {
+                    let response = serde_json::json!({
+                        "batch_id": batch_id,
+                        "status": "time_budget_update",
+                        "wait_time_seconds": start.elapsed().as_secs(),
+                        "time_budget_message": budget_text,
+                        "message": "Wait interrupted so the assistant can adapt. Agents may still be running; call agent wait again to continue.",
+                    });
+                    return ResponseInputItem::FunctionCallOutput {
+                        call_id: call_id_clone,
+                        output: FunctionCallOutputPayload {
+                            content: response.to_string(),
+                            success: Some(false),
+                        },
+                    };
+                }
+
                 let (current_epoch, reason) = sess.wait_interrupt_snapshot();
                 if current_epoch != initial_wait_epoch {
                     let message = match reason {

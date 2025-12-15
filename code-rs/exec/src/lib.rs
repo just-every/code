@@ -110,9 +110,13 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         config_overrides,
         auto_drive,
         auto_review,
+        max_seconds,
         review_output_json,
         ..
     } = cli;
+
+    let run_deadline = max_seconds.map(|seconds| Instant::now() + Duration::from_secs(seconds));
+    let run_deadline_std = run_deadline.map(|deadline| deadline.into_std());
 
     // Determine the prompt source (parent or subcommand) and read from stdin if needed.
     let prompt_arg = match &command {
@@ -281,6 +285,8 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
     };
 
     let mut config = Config::load_with_cli_overrides(cli_kv_overrides, overrides)?;
+    config.max_run_seconds = max_seconds;
+    config.max_run_deadline = run_deadline_std;
     config.demo_developer_message = cli.demo_developer_message.clone();
     let slash_context = SlashContext {
         agents: &config.agents,
@@ -491,6 +497,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
             conversation,
             event_processor,
             last_message_file,
+            run_deadline,
         )
         .await;
     }
@@ -626,7 +633,22 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
             .collect();
         let initial_images_event_id = conversation.submit(Op::UserInput { items }).await?;
         info!("Sent images with event ID: {initial_images_event_id}");
-        while let Ok(event) = conversation.next_event().await {
+        loop {
+            let event = if let Some(deadline) = run_deadline {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                match tokio::time::timeout(remaining, conversation.next_event()).await {
+                    Ok(event) => event?,
+                    Err(_) => {
+                        eprintln!("Time budget exceeded (--max-seconds={})", max_seconds.unwrap_or_default());
+                        let _ = conversation.submit(Op::Interrupt).await;
+                        let _ = conversation.submit(Op::Shutdown).await;
+                        return Err(anyhow::anyhow!("Time budget exceeded"));
+                    }
+                }
+            } else {
+                conversation.next_event().await?
+            };
+
             if event.id == initial_images_event_id
                 && matches!(
                     event.msg,
@@ -718,6 +740,19 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
     let mut auto_review_tracker = AutoReviewTracker::new(&config.cwd);
     loop {
         tokio::select! {
+            _ = async {
+                if let Some(deadline) = run_deadline {
+                    tokio::time::sleep_until(deadline).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            } => {
+                eprintln!("Time budget exceeded (--max-seconds={})", max_seconds.unwrap_or_default());
+                error_seen = true;
+                let _ = conversation.submit(Op::Interrupt).await;
+                let _ = conversation.submit(Op::Shutdown).await;
+                break;
+            }
             maybe_event = rx.recv() => {
                 let Some(event) = maybe_event else {
                     break;
@@ -1247,6 +1282,7 @@ async fn run_auto_drive_session(
     conversation: Arc<CodexConversation>,
     mut event_processor: Box<dyn EventProcessor>,
     last_message_path: Option<PathBuf>,
+    run_deadline: Option<Instant>,
 ) -> anyhow::Result<()> {
     let mut final_last_message: Option<String> = None;
     let mut error_seen = false;
@@ -1259,7 +1295,25 @@ async fn run_auto_drive_session(
             .map(|path| InputItem::LocalImage { path })
             .collect();
         let initial_images_event_id = conversation.submit(Op::UserInput { items }).await?;
-        while let Ok(event) = conversation.next_event().await {
+        loop {
+            let event = if let Some(deadline) = run_deadline {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                match tokio::time::timeout(remaining, conversation.next_event()).await {
+                    Ok(event) => event?,
+                    Err(_) => {
+                        eprintln!(
+                            "Time budget exceeded (--max-seconds={})",
+                            config.max_run_seconds.unwrap_or_default()
+                        );
+                        let _ = conversation.submit(Op::Interrupt).await;
+                        let _ = conversation.submit(Op::Shutdown).await;
+                        return Err(anyhow::anyhow!("Time budget exceeded"));
+                    }
+                }
+            } else {
+                conversation.next_event().await?
+            };
+
             let is_complete = event.id == initial_images_event_id
                 && matches!(
                     event.msg,
@@ -1300,7 +1354,27 @@ async fn run_auto_drive_session(
         false,
     )?;
 
-    while let Some(event) = auto_rx.recv().await {
+    loop {
+        let maybe_event = if let Some(deadline) = run_deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match tokio::time::timeout(remaining, auto_rx.recv()).await {
+                Ok(event) => event,
+                Err(_) => {
+                    let _ = handle.send(AutoCoordinatorCommand::Stop);
+                    handle.cancel();
+                    let _ = conversation.submit(Op::Interrupt).await;
+                    let _ = conversation.submit(Op::Shutdown).await;
+                    return Err(anyhow::anyhow!("Time budget exceeded"));
+                }
+            }
+        } else {
+            auto_rx.recv().await
+        };
+
+        let Some(event) = maybe_event else {
+            break;
+        };
+
         match event {
             AutoCoordinatorEvent::Thinking { delta, .. } => {
                 println!("[auto] {delta}");
@@ -1340,13 +1414,22 @@ async fn run_auto_drive_session(
                         let TurnResult {
                             last_agent_message,
                             error_seen: turn_error,
-                        } = submit_and_wait(
+                        } = match submit_and_wait(
                             &conversation,
                             event_processor.as_mut(),
                             &mut auto_review_tracker,
                             prompt_text.to_string(),
+                            run_deadline,
                         )
-                        .await?;
+                        .await
+                        {
+                            Ok(result) => result,
+                            Err(err) => {
+                                let _ = handle.send(AutoCoordinatorCommand::Stop);
+                                handle.cancel();
+                                return Err(err);
+                            }
+                        };
                         error_seen |= turn_error;
                         if let Some(text) = last_agent_message {
                             history.append_raw(&[make_assistant_message(text.clone())]);
@@ -1395,13 +1478,22 @@ async fn run_auto_drive_session(
                 let TurnResult {
                     last_agent_message,
                     error_seen: turn_error,
-                } = submit_and_wait(
+                } = match submit_and_wait(
                     &conversation,
                     event_processor.as_mut(),
                     &mut auto_review_tracker,
                     prompt_text,
+                    run_deadline,
                 )
-                .await?;
+                .await
+                {
+                    Ok(result) => result,
+                    Err(err) => {
+                        let _ = handle.send(AutoCoordinatorCommand::Stop);
+                        handle.cancel();
+                        return Err(err);
+                    }
+                };
                 error_seen |= turn_error;
                 if let Some(text) = last_agent_message {
                     history.append_raw(&[make_assistant_message(text.clone())]);
@@ -1450,7 +1542,25 @@ async fn run_auto_drive_session(
     }
 
     if auto_review_tracker.is_running() {
-        while let Ok(event) = conversation.next_event().await {
+        loop {
+            let event = if let Some(deadline) = run_deadline {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                match tokio::time::timeout(remaining, conversation.next_event()).await {
+                    Ok(event) => event?,
+                    Err(_) => {
+                        eprintln!(
+                            "Time budget exceeded (--max-seconds={})",
+                            config.max_run_seconds.unwrap_or_default()
+                        );
+                        let _ = conversation.submit(Op::Interrupt).await;
+                        let _ = conversation.submit(Op::Shutdown).await;
+                        return Err(anyhow::anyhow!("Time budget exceeded"));
+                    }
+                }
+            } else {
+                conversation.next_event().await?
+            };
+
             if let EventMsg::AgentStatusUpdate(status) = &event.msg {
                 let completions = auto_review_tracker.update(status);
                 for completion in completions {
@@ -1472,7 +1582,25 @@ async fn run_auto_drive_session(
 
     let _ = send_shutdown_if_ready(&conversation, &auto_review_tracker, &mut shutdown_sent).await?;
 
-    while let Ok(event) = conversation.next_event().await {
+    loop {
+        let event = if let Some(deadline) = run_deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match tokio::time::timeout(remaining, conversation.next_event()).await {
+                Ok(event) => event?,
+                Err(_) => {
+                    eprintln!(
+                        "Time budget exceeded (--max-seconds={})",
+                        config.max_run_seconds.unwrap_or_default()
+                    );
+                    let _ = conversation.submit(Op::Interrupt).await;
+                    let _ = conversation.submit(Op::Shutdown).await;
+                    return Err(anyhow::anyhow!("Time budget exceeded"));
+                }
+            }
+        } else {
+            conversation.next_event().await?
+        };
+
         if let EventMsg::AgentStatusUpdate(status) = &event.msg {
             let completions = auto_review_tracker.update(status);
             for completion in completions {
@@ -2377,6 +2505,7 @@ async fn submit_and_wait(
     event_processor: &mut dyn EventProcessor,
     auto_review_tracker: &mut AutoReviewTracker,
     prompt_text: String,
+    run_deadline: Option<Instant>,
 ) -> anyhow::Result<TurnResult> {
     let mut error_seen = false;
 
@@ -2387,47 +2516,67 @@ async fn submit_and_wait(
         .await?;
 
     loop {
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                let _ = conversation.submit(Op::Interrupt).await;
-                return Err(anyhow::anyhow!("Interrupted"));
-            }
-            res = conversation.next_event() => {
-                let event = res?;
-                let event_id = event.id.clone();
-                if matches!(event.msg, EventMsg::Error(_)) {
-                    error_seen = true;
+        let res = if let Some(deadline) = run_deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    let _ = conversation.submit(Op::Interrupt).await;
+                    return Err(anyhow::anyhow!("Interrupted"));
                 }
-
-                if let EventMsg::AgentStatusUpdate(status) = &event.msg {
-                    let completions = auto_review_tracker.update(status);
-                    for completion in completions {
-                        emit_auto_review_completion(&completion);
+                res = tokio::time::timeout(remaining, conversation.next_event()) => {
+                    match res {
+                        Ok(event) => event,
+                        Err(_) => {
+                            let _ = conversation.submit(Op::Interrupt).await;
+                            let _ = conversation.submit(Op::Shutdown).await;
+                            return Err(anyhow::anyhow!("Time budget exceeded"));
+                        }
                     }
                 }
-
-                let last_agent_message = if let EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) = &event.msg {
-                    last_agent_message.clone()
-                } else {
-                    None
-                };
-
-                let status = event_processor.process_event(event);
-
-                if matches!(status, CodexStatus::Shutdown) {
-                    return Ok(TurnResult {
-                        last_agent_message: None,
-                        error_seen,
-                    });
-                }
-
-                if last_agent_message.is_some() && event_id == submit_id {
-                    return Ok(TurnResult {
-                        last_agent_message,
-                        error_seen,
-                    });
-                }
             }
+        } else {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    let _ = conversation.submit(Op::Interrupt).await;
+                    return Err(anyhow::anyhow!("Interrupted"));
+                }
+                res = conversation.next_event() => res,
+            }
+        };
+
+        let event = res?;
+        let event_id = event.id.clone();
+        if matches!(event.msg, EventMsg::Error(_)) {
+            error_seen = true;
+        }
+
+        if let EventMsg::AgentStatusUpdate(status) = &event.msg {
+            let completions = auto_review_tracker.update(status);
+            for completion in completions {
+                emit_auto_review_completion(&completion);
+            }
+        }
+
+        let last_agent_message = if let EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) = &event.msg {
+            last_agent_message.clone()
+        } else {
+            None
+        };
+
+        let status = event_processor.process_event(event);
+
+        if matches!(status, CodexStatus::Shutdown) {
+            return Ok(TurnResult {
+                last_agent_message: None,
+                error_seen,
+            });
+        }
+
+        if last_agent_message.is_some() && event_id == submit_id {
+            return Ok(TurnResult {
+                last_agent_message,
+                error_seen,
+            });
         }
     }
 }

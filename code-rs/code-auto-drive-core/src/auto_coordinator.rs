@@ -74,6 +74,78 @@ fn supported_text_verbosity_for_model(model: &str) -> &'static [TextVerbosity] {
     }
 }
 
+#[derive(Debug, Clone)]
+struct AutoTimeBudget {
+    deadline: Instant,
+    total: Duration,
+    next_nudge_at: Instant,
+}
+
+impl AutoTimeBudget {
+    fn new(deadline: Instant, total: Duration) -> Self {
+        let half = total / 2;
+        let next_nudge_at = deadline.checked_sub(half).unwrap_or(deadline);
+        Self {
+            deadline,
+            total,
+            next_nudge_at,
+        }
+    }
+
+    fn maybe_nudge(&mut self) -> Option<String> {
+        let now = Instant::now();
+        if now < self.next_nudge_at {
+            return None;
+        }
+
+        let remaining = self.deadline.saturating_duration_since(now);
+        let elapsed = self.total.saturating_sub(remaining);
+
+        if elapsed < (self.total / 2) {
+            let half = self.total / 2;
+            self.next_nudge_at = self.deadline.checked_sub(half).unwrap_or(self.deadline);
+            return None;
+        }
+
+        let guidance = if remaining <= Duration::from_secs(30) {
+            "Time is nearly up: stop exploring; finish with the simplest safe path."
+        } else if remaining <= Duration::from_secs(120) {
+            "Time is tight: reduce exploration and prioritize finishing."
+        } else {
+            "Past 50% of the time budget: start converging; avoid detours."
+        };
+
+        self.next_nudge_at = now + next_budget_nudge_interval(remaining);
+
+        Some(format!(
+            "Time budget update: total={} elapsed={} remaining={}. {guidance}",
+            format_duration(self.total),
+            format_duration(elapsed),
+            format_duration(remaining)
+        ))
+    }
+}
+
+fn next_budget_nudge_interval(remaining: Duration) -> Duration {
+    if remaining >= Duration::from_secs(30 * 60) {
+        Duration::from_secs(5 * 60)
+    } else if remaining >= Duration::from_secs(10 * 60) {
+        Duration::from_secs(2 * 60)
+    } else if remaining >= Duration::from_secs(5 * 60) {
+        Duration::from_secs(60)
+    } else if remaining >= Duration::from_secs(2 * 60) {
+        Duration::from_secs(30)
+    } else if remaining >= Duration::from_secs(60) {
+        Duration::from_secs(15)
+    } else if remaining >= Duration::from_secs(30) {
+        Duration::from_secs(10)
+    } else if remaining >= Duration::from_secs(10) {
+        Duration::from_secs(5)
+    } else {
+        Duration::from_secs(2)
+    }
+}
+
 #[derive(Clone)]
 pub struct AutoCoordinatorEventSender {
     inner: Arc<dyn Fn(AutoCoordinatorEvent) + Send + Sync>,
@@ -1023,6 +1095,13 @@ fn run_auto_loop(
     let model_reasoning_summary = config.model_reasoning_summary;
     let model_text_verbosity = config.model_text_verbosity;
     let sandbox_policy = config.sandbox_policy.clone();
+    let mut time_budget = config.max_run_seconds.map(|secs| {
+        let total = Duration::from_secs(secs);
+        let deadline = config
+            .max_run_deadline
+            .unwrap_or_else(|| Instant::now() + total);
+        AutoTimeBudget::new(deadline, total)
+    });
     let config = Arc::new(config);
     let active_agent_names = get_enabled_agents(&config.agents);
     let client = Arc::new(ModelClient::new(
@@ -1170,12 +1249,14 @@ fn run_auto_loop(
             }
             let developer_intro = base_developer_intro.as_str();
             let mut retry_conversation = Some(conv.clone());
+            let time_budget_message = time_budget.as_mut().and_then(|budget| budget.maybe_nudge());
             match request_coordinator_decision(
                 &runtime,
                 client.as_ref(),
                 developer_intro,
                 &primary_goal_message,
                 coordinator_prompt_message.as_deref(),
+                time_budget_message.as_deref(),
                 &schema,
                 conv,
                 auto_instructions.as_deref(),
@@ -1398,12 +1479,14 @@ fn run_auto_loop(
                 let developer_intro = base_developer_intro.as_str();
                 let mut updated_conversation = conversation.clone();
                 let schema = user_turn_schema();
+                let time_budget_message = time_budget.as_mut().and_then(|budget| budget.maybe_nudge());
                 match request_user_turn_decision(
                     &runtime,
                     client.as_ref(),
                     developer_intro,
                     &primary_goal_message,
                     coordinator_prompt_message.as_deref(),
+                    time_budget_message.as_deref(),
                     &schema,
                     updated_conversation.clone(),
                     auto_instructions.as_deref(),
@@ -1778,6 +1861,7 @@ fn request_coordinator_decision(
     developer_intro: &str,
     primary_goal: &str,
     coordinator_prompt: Option<&str>,
+    time_budget_message: Option<&str>,
     schema: &Value,
     conversation: Vec<ResponseItem>,
     auto_instructions: Option<&str>,
@@ -1796,6 +1880,7 @@ fn request_coordinator_decision(
         developer_intro,
         primary_goal,
         coordinator_prompt,
+        time_budget_message,
         schema,
         &conversation,
         auto_instructions,
@@ -1826,6 +1911,7 @@ fn request_decision(
     developer_intro: &str,
     primary_goal: &str,
     coordinator_prompt: Option<&str>,
+    time_budget_message: Option<&str>,
     schema: &Value,
     conversation: &[ResponseItem],
     auto_instructions: Option<&str>,
@@ -1839,6 +1925,7 @@ fn request_decision(
         developer_intro,
         primary_goal,
         coordinator_prompt,
+        time_budget_message,
         schema,
         conversation,
         auto_instructions,
@@ -1868,6 +1955,7 @@ fn request_decision(
                     developer_intro,
                     primary_goal,
                     coordinator_prompt.as_deref(),
+                    time_budget_message,
                     schema,
                     conversation,
                     auto_instructions,
@@ -1912,6 +2000,7 @@ fn request_user_turn_decision(
     developer_intro: &str,
     primary_goal: &str,
     coordinator_prompt: Option<&str>,
+    time_budget_message: Option<&str>,
     schema: &Value,
     conversation: Vec<ResponseItem>,
     auto_instructions: Option<&str>,
@@ -1925,6 +2014,7 @@ fn request_user_turn_decision(
         developer_intro,
         primary_goal,
         coordinator_prompt,
+        time_budget_message,
         schema,
         &conversation,
         auto_instructions,
@@ -1944,6 +2034,7 @@ fn request_decision_with_model(
     developer_intro: &str,
     primary_goal: &str,
     coordinator_prompt: Option<&str>,
+    time_budget_message: Option<&str>,
     schema: &Value,
     conversation: &[ResponseItem],
     auto_instructions: Option<&str>,
@@ -1953,6 +2044,7 @@ fn request_decision_with_model(
 ) -> Result<RequestStreamResult> {
     let developer_intro = developer_intro.to_string();
     let primary_goal = primary_goal.to_string();
+    let time_budget_message = time_budget_message.map(|text| text.to_string());
     let schema = schema.clone();
     let conversation: Vec<ResponseItem> = conversation.to_vec();
     let auto_instructions = auto_instructions.map(|text| text.to_string());
@@ -1967,10 +2059,12 @@ fn request_decision_with_model(
             || {
                 let instructions = auto_instructions.clone();
                 let coordinator_prompt = coordinator_prompt.clone();
+                let time_budget_message = time_budget_message.clone();
                 let prompt = build_user_turn_prompt(
                     &developer_intro,
                     &primary_goal,
                     coordinator_prompt.as_deref(),
+                    time_budget_message.as_deref(),
                     &schema,
                     &conversation,
                     model_slug,
@@ -2123,6 +2217,7 @@ fn build_user_turn_prompt(
     developer_intro: &str,
     primary_goal: &str,
     coordinator_prompt: Option<&str>,
+    time_budget_message: Option<&str>,
     schema: &Value,
     conversation: &Vec<ResponseItem>,
     model_slug: &str,
@@ -2145,6 +2240,15 @@ fn build_user_turn_prompt(
             prompt
                 .prepend_developer_messages
                 .push(trimmed.to_string());
+        }
+    }
+
+    if let Some(message) = time_budget_message {
+        let trimmed = message.trim();
+        if !trimmed.is_empty() {
+            prompt
+                .input
+                .push(make_message("developer", trimmed.to_string()));
         }
     }
     prompt

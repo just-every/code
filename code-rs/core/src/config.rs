@@ -51,6 +51,7 @@ use crate::project_features::{load_project_commands, ProjectCommand, ProjectHook
 use code_app_server_protocol::AuthMode;
 use code_protocol::config_types::SandboxMode;
 use std::time::Duration;
+use std::time::Instant;
 use dirs::home_dir;
 use serde::Deserialize;
 use serde::de::{self, Unexpected};
@@ -428,6 +429,19 @@ pub struct Config {
     /// When set, the core will send this path in the initial ConfigureSession
     /// so the backend can attempt to resume.
     pub experimental_resume: Option<PathBuf>,
+
+    /// Optional wall-clock time budget (seconds) for the current run.
+    ///
+    /// Intended for `code exec` / benchmarks where the CLI must finish within
+    /// a hard deadline. This value is not loaded from `config.toml`; callers
+    /// should set it explicitly.
+    pub max_run_seconds: Option<u64>,
+
+    /// Optional wall-clock deadline for the current run.
+    ///
+    /// When present, countdown nudges are anchored to this deadline instead of
+    /// the session creation time so startup work doesn't delay warnings.
+    pub max_run_deadline: Option<Instant>,
 }
 
 impl Config {
@@ -2977,6 +2991,8 @@ impl Config {
                 .map(|s| s.commands)
                 .unwrap_or_default(),
             experimental_resume: cfg.experimental_resume,
+            max_run_seconds: None,
+            max_run_deadline: None,
             // Surface TUI notifications preference from config when present.
             tui_notifications: cfg
                 .tui

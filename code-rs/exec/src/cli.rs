@@ -89,6 +89,17 @@ pub struct Cli {
     #[arg(long = "json", default_value_t = false)]
     pub json: bool,
 
+    /// Maximum wall-clock time budget (seconds) before aborting the run.
+    ///
+    /// When this budget is at least 50% consumed, the coordinator receives
+    /// increasingly frequent reminders to converge and finish.
+    #[arg(
+        long = "max-seconds",
+        value_name = "SECONDS",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub max_seconds: Option<u64>,
+
     /// Whether to include the plan tool in the conversation.
     #[arg(long = "include-plan-tool", default_value_t = false)]
     pub include_plan_tool: bool,
