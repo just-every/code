@@ -31,6 +31,14 @@
 
 &ensp;
 <p align="center">
+  <a href="https://www.youtube.com/watch?v=Ra3q8IVpIOc">
+    <img src="docs/images/video-auto-review-play.jpg" alt="Play Auto Review video" width="100%">
+  </a><br>
+  <strong>Auto Review</strong>
+</p>
+
+&ensp;
+<p align="center">
   <a href="https://youtu.be/UOASHZPruQk">
     <img src="docs/images/video-auto-drive-new-play.jpg" alt="Play Introducing Auto Drive video" width="100%">
   </a><br>
