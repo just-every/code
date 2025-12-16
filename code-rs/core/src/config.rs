@@ -1357,6 +1357,8 @@ pub fn set_auto_drive_settings(
         toml_edit::value(settings.auto_resolve_review_attempts.get() as i64);
     doc["auto_drive"]["auto_review_followup_attempts"] =
         toml_edit::value(settings.auto_review_followup_attempts.get() as i64);
+    doc["auto_drive"]["coordinator_turn_cap"] =
+        toml_edit::value(settings.coordinator_turn_cap as i64);
 
     let mode_str = match settings.continue_mode {
         AutoDriveContinueMode::Immediate => "immediate",

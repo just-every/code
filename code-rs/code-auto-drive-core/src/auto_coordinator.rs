@@ -59,6 +59,7 @@ struct AutoCoordinatorCancelled;
 pub const MODEL_SLUG: &str = "gpt-5.1";
 const USER_TURN_SCHEMA_NAME: &str = "auto_coordinator_user_turn";
 const COORDINATOR_PROMPT: &str = include_str!("../../core/prompt_coordinator.md");
+const TIMEBOXED_FINISH_GUIDANCE: &str = "Time budget mode is enabled for this run. To reduce timeouts, finish promptly when you have strong, concrete evidence the goal is met (e.g., passing checks / required outputs present). Avoid repeated 'one more check' loops: do at most one final confirmation step, then use finish_success.";
 
 const ALL_TEXT_VERBOSITY: &[TextVerbosity] = &[
     TextVerbosity::Low,
@@ -1102,6 +1103,7 @@ fn run_auto_loop(
             .unwrap_or_else(|| Instant::now() + total);
         AutoTimeBudget::new(deadline, total)
     });
+    let coordinator_turn_cap = config.auto_drive.coordinator_turn_cap;
     let config = Arc::new(config);
     let active_agent_names = get_enabled_agents(&config.agents);
     let client = Arc::new(ModelClient::new(
@@ -1202,6 +1204,7 @@ fn run_auto_loop(
     let mut requests_completed: u64 = 0;
     let mut consecutive_decision_failures: u32 = 0;
     let mut session_metrics = SessionMetrics::default();
+    let mut coordinator_turns_seen: u32 = 0;
     let mut active_model_slug = config.model.clone();
     let mut prev_compact_summary: Option<String> = None;
 
@@ -1277,6 +1280,7 @@ fn run_auto_loop(
                     model_slug,
                 }) => {
                     retry_conversation.take();
+                    coordinator_turns_seen = coordinator_turns_seen.saturating_add(1);
                     if let Some(usage) = token_usage.as_ref() {
                         session_metrics.record_turn(usage);
                         emit_auto_drive_metrics(&event_tx, &session_metrics);
@@ -1287,6 +1291,35 @@ fn run_auto_loop(
                         agents.clear();
                     }
                     consecutive_decision_failures = 0;
+
+                    if coordinator_turn_cap > 0
+                        && coordinator_turns_seen >= coordinator_turn_cap
+                        && matches!(status, AutoCoordinatorStatus::Continue)
+                    {
+                        warn!(
+                            "auto coordinator turn cap reached ({coordinator_turns_seen}/{coordinator_turn_cap}); stopping"
+                        );
+                        decision_seq = decision_seq.wrapping_add(1);
+                        let current_seq = decision_seq;
+                        let event = AutoCoordinatorEvent::Decision {
+                            seq: current_seq,
+                            status: AutoCoordinatorStatus::Failed,
+                            status_title: Some("Turn limit reached".to_string()),
+                            status_sent_to_user: Some(format!(
+                                "Stopped after {coordinator_turns_seen} coordinator turns (cap={coordinator_turn_cap}) to prevent a runaway session."
+                            )),
+                            goal,
+                            cli: None,
+                            agents_timing: None,
+                            agents: Vec::new(),
+                            transcript: std::mem::take(&mut response_items),
+                        };
+                        pending_ack_seq = Some(current_seq);
+                        event_tx.send(event);
+                        stopped = true;
+                        continue;
+                    }
+
                     if let Some(goal_text) = goal
                         .as_ref()
                         .map(|value| value.trim())
@@ -1574,12 +1607,16 @@ fn is_popular_commands_message(item: &ResponseItem) -> bool {
         _ => false,
     }
 }
-fn read_coordinator_prompt(_config: &Config) -> Option<String> {
+fn read_coordinator_prompt(config: &Config) -> Option<String> {
     let trimmed = COORDINATOR_PROMPT.trim();
     if trimmed.is_empty() {
         None
     } else {
-        Some(trimmed.to_string())
+        if config.max_run_seconds.is_some() {
+            Some(format!("{trimmed}\n\n# Time Budget\n{TIMEBOXED_FINISH_GUIDANCE}"))
+        } else {
+            Some(trimmed.to_string())
+        }
     }
 }
 

@@ -23,6 +23,7 @@ use code_core::CodexConversation;
 use code_core::config::set_default_originator;
 use code_core::config::Config;
 use code_core::config::ConfigOverrides;
+use code_core::config_types::AutoDriveContinueMode;
 use code_core::model_family::{derive_default_model_family, find_family_for_model};
 use code_core::git_info::get_git_repo_root;
 use code_core::git_info::recent_commits;
@@ -111,6 +112,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         auto_drive,
         auto_review,
         max_seconds,
+        turn_cap,
         review_output_json,
         ..
     } = cli;
@@ -288,6 +290,13 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
     config.max_run_seconds = max_seconds;
     config.max_run_deadline = run_deadline_std;
     config.demo_developer_message = cli.demo_developer_message.clone();
+    if auto_drive_goal.is_some() {
+        // Exec is non-interactive; don't burn time on countdown delays between Auto Drive turns.
+        config.auto_drive.continue_mode = AutoDriveContinueMode::Immediate;
+        if let Some(turn_cap) = turn_cap {
+            config.auto_drive.coordinator_turn_cap = turn_cap;
+        }
+    }
     let slash_context = SlashContext {
         agents: &config.agents,
         subagent_commands: &config.subagent_commands,
@@ -3064,4 +3073,5 @@ mod tests {
             path_str
         );
     }
+
 }

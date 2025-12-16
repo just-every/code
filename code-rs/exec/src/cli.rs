@@ -100,6 +100,11 @@ pub struct Cli {
     )]
     pub max_seconds: Option<u64>,
 
+    /// Maximum number of Auto Drive coordinator turns before stopping (0 = unlimited).
+    /// Only meaningful when --auto is enabled.
+    #[arg(long = "turn-cap", value_name = "TURNS")]
+    pub turn_cap: Option<u32>,
+
     /// Whether to include the plan tool in the conversation.
     #[arg(long = "include-plan-tool", default_value_t = false)]
     pub include_plan_tool: bool,

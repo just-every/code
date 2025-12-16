@@ -819,6 +819,10 @@ pub struct AutoDriveSettings {
 
     #[serde(default)]
     pub auto_review_followup_attempts: AutoResolveAttemptLimit,
+
+    /// Maximum number of coordinator turns before stopping the session (0 = unlimited).
+    #[serde(default = "default_auto_drive_coordinator_turn_cap")]
+    pub coordinator_turn_cap: u32,
 }
 
 impl Default for AutoDriveSettings {
@@ -835,8 +839,13 @@ impl Default for AutoDriveSettings {
             model_reasoning_effort: default_auto_drive_reasoning_effort(),
             auto_resolve_review_attempts: AutoResolveAttemptLimit::default(),
             auto_review_followup_attempts: AutoResolveAttemptLimit::default(),
+            coordinator_turn_cap: default_auto_drive_coordinator_turn_cap(),
         }
     }
+}
+
+const fn default_auto_drive_coordinator_turn_cap() -> u32 {
+    0
 }
 
 fn default_auto_drive_model() -> String {
