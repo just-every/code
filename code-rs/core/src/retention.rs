@@ -379,6 +379,134 @@ pub fn apply_retention_policy(
     (result, stats)
 }
 
+/// Owned variant of `apply_retention_policy` that avoids cloning large history items.
+///
+/// This is used by core-side cleanup paths where the history is already owned and we
+/// want to prevent transient memory spikes from duplicating large payloads (e.g. base64
+/// screenshots, environment context snapshots).
+pub fn apply_retention_policy_owned(
+    items: Vec<ResponseItem>,
+    policy: &RetentionPolicy,
+) -> (Vec<ResponseItem>, RetentionStats) {
+    let mut stats = RetentionStats::default();
+
+    let categorized: Vec<CategorizedItem> = items
+        .into_iter()
+        .enumerate()
+        .map(|(idx, item)| CategorizedItem::new(item, idx))
+        .collect();
+
+    let mut env_baselines = Vec::new();
+    let mut env_deltas = Vec::new();
+    let mut browser_snapshots = Vec::new();
+    let mut screenshots = Vec::new();
+    let mut status_messages = Vec::new();
+    let mut other_items = Vec::new();
+
+    for cat_item in categorized {
+        match cat_item.category {
+            ItemCategory::EnvBaseline => env_baselines.push(cat_item),
+            ItemCategory::EnvDelta => env_deltas.push(cat_item),
+            ItemCategory::BrowserSnapshot => browser_snapshots.push(cat_item),
+            ItemCategory::Screenshot => screenshots.push(cat_item),
+            ItemCategory::StatusMessage => status_messages.push(cat_item),
+            _ => other_items.push(cat_item),
+        }
+    }
+
+    let mut kept: Vec<CategorizedItem> = Vec::new();
+
+    // 1. Keep all non-categorized items (real messages, assistant, tool calls)
+    for item in other_items {
+        stats.bytes_kept += item.size_bytes;
+        kept.push(item);
+    }
+
+    // 2. Keep only the latest baseline (immutable)
+    if policy.keep_latest_baseline {
+        if let Some(latest) = env_baselines.pop() {
+            stats.bytes_kept += latest.size_bytes;
+            kept.push(latest);
+        }
+    }
+
+    for item in env_baselines {
+        stats.removed_env_baselines += 1;
+        stats.bytes_removed += item.size_bytes;
+    }
+
+    // 3. Keep last N deltas
+    if env_deltas.len() > policy.max_env_deltas {
+        let to_drop = env_deltas.len().saturating_sub(policy.max_env_deltas);
+        stats.removed_env_deltas += to_drop;
+        for item in env_deltas.drain(0..to_drop) {
+            stats.bytes_removed += item.size_bytes;
+        }
+    }
+    stats.kept_env_deltas = env_deltas.len();
+    for item in env_deltas {
+        stats.bytes_kept += item.size_bytes;
+        kept.push(item);
+    }
+
+    // 4. Keep last K browser snapshots
+    if browser_snapshots.len() > policy.max_browser_snapshots {
+        let to_drop = browser_snapshots.len().saturating_sub(policy.max_browser_snapshots);
+        stats.removed_browser_snapshots += to_drop;
+        for item in browser_snapshots.drain(0..to_drop) {
+            stats.bytes_removed += item.size_bytes;
+        }
+    }
+    stats.kept_browser_snapshots = browser_snapshots.len();
+    for item in browser_snapshots {
+        stats.bytes_kept += item.size_bytes;
+        kept.push(item);
+    }
+
+    // 5. Remove all status messages and old screenshots (legacy behavior)
+    for item in status_messages {
+        stats.removed_status += 1;
+        stats.bytes_removed += item.size_bytes;
+    }
+
+    // Keep only the most recent screenshot
+    if let Some(latest) = screenshots.pop() {
+        stats.kept_recent_screenshots = 1;
+        stats.bytes_kept += latest.size_bytes;
+        kept.push(latest);
+        for item in screenshots {
+            stats.removed_screenshots += 1;
+            stats.bytes_removed += item.size_bytes;
+        }
+    }
+
+    // 6. Apply byte budget constraint
+    kept.sort_by_key(|item| item.index);
+    if stats.bytes_kept > policy.max_total_bytes {
+        let mut cumulative_bytes = 0usize;
+        let mut final_items: Vec<CategorizedItem> = Vec::new();
+        let mut bytes_kept = stats.bytes_kept;
+
+        for item in kept.into_iter().rev() {
+            if cumulative_bytes.saturating_add(item.size_bytes) <= policy.max_total_bytes {
+                cumulative_bytes = cumulative_bytes.saturating_add(item.size_bytes);
+                final_items.push(item);
+            } else {
+                stats.dropped_for_budget += 1;
+                stats.bytes_removed += item.size_bytes;
+                bytes_kept = bytes_kept.saturating_sub(item.size_bytes);
+            }
+        }
+
+        stats.bytes_kept = bytes_kept;
+        final_items.sort_by_key(|item| item.index);
+        kept = final_items;
+    }
+
+    let result = kept.into_iter().map(|item| item.item).collect();
+    (result, stats)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

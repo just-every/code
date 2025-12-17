@@ -2381,7 +2381,7 @@ impl Session {
     /// This is called when a new user message arrives to keep history manageable
     async fn cleanup_old_status_items(&self) {
         let mut state = self.state.lock().unwrap();
-        let current_items = state.history.contents();
+        let current_items = state.history.take_contents();
 
         let (items_to_keep, stats) = if self.env_ctx_v2 {
             let policy = crate::retention::RetentionPolicy {
@@ -2391,7 +2391,8 @@ impl Session {
                 keep_latest_baseline: self.retention_config.keep_latest_baseline,
             };
 
-            let (kept, retention_stats) = crate::retention::apply_retention_policy(&current_items, &policy);
+            let (kept, retention_stats) =
+                crate::retention::apply_retention_policy_owned(current_items, &policy);
 
             crate::telemetry::global_telemetry().record_retention(&retention_stats);
 
@@ -2408,11 +2409,10 @@ impl Session {
 
             (kept, legacy_stats)
         } else {
-            prune_history_items(&current_items)
+            prune_history_items_owned(current_items)
         };
 
-        state.history = ConversationHistory::new();
-        state.history.record_items(&items_to_keep);
+        state.history.replace_filtered(items_to_keep);
         drop(state);
 
         if stats.any_removed() {
@@ -3761,6 +3761,7 @@ impl CleanupStats {
     }
 }
 
+#[cfg(test)]
 fn prune_history_items(current_items: &[ResponseItem]) -> (Vec<ResponseItem>, CleanupStats) {
     let mut real_user_messages = Vec::new();
     let mut status_messages = Vec::new();
@@ -3897,6 +3898,171 @@ fn prune_history_items(current_items: &[ResponseItem]) -> (Vec<ResponseItem>, Cl
         if keep {
             items_to_keep.push(item.clone());
         } else if let ResponseItem::Message { content, .. } = item {
+            if content
+                .iter()
+                .any(|c| matches!(c, ContentItem::InputImage { .. }))
+            {
+                removed_screenshots += 1;
+            } else {
+                removed_status += 1;
+            }
+        }
+    }
+
+    let stats = CleanupStats {
+        removed_screenshots,
+        removed_status,
+        removed_env_baselines: env_baselines
+            .len()
+            .saturating_sub(if baseline_to_keep.is_some() { 1 } else { 0 }),
+        removed_env_deltas: env_deltas.len().saturating_sub(env_deltas_to_keep.len()),
+        removed_browser_snapshots: browser_snapshot_messages
+            .len()
+            .saturating_sub(browser_snapshots_to_keep.len()),
+        kept_recent_screenshots: screenshots_to_keep.len(),
+        kept_env_deltas: env_deltas_to_keep.len(),
+        kept_browser_snapshots: browser_snapshots_to_keep.len(),
+    };
+
+    (items_to_keep, stats)
+}
+
+fn prune_history_items_owned(current_items: Vec<ResponseItem>) -> (Vec<ResponseItem>, CleanupStats) {
+    let mut real_user_messages = Vec::new();
+    let mut status_messages = Vec::new();
+    let mut env_baselines = Vec::new();
+    let mut env_deltas = Vec::new();
+    let mut browser_snapshot_messages = Vec::new();
+
+    const MAX_ENV_DELTAS: usize = 3;
+    const MAX_BROWSER_SNAPSHOTS: usize = 2;
+
+    for (idx, item) in current_items.iter().enumerate() {
+        if let ResponseItem::Message { role, content, .. } = item {
+            if role != "user" {
+                continue;
+            }
+
+            let has_status = content.iter().any(|c| {
+                if let ContentItem::InputText { text } = c {
+                    text.contains("== System Status ==")
+                        || text.contains("Current working directory:")
+                        || text.contains("Git branch:")
+                        || text.contains(ENVIRONMENT_CONTEXT_OPEN_TAG)
+                        || text.contains(ENVIRONMENT_CONTEXT_DELTA_OPEN_TAG)
+                        || text.contains(BROWSER_SNAPSHOT_OPEN_TAG)
+                } else {
+                    false
+                }
+            });
+
+            let has_screenshot = content
+                .iter()
+                .any(|c| matches!(c, ContentItem::InputImage { .. }));
+
+            let has_real_text = content.iter().any(|c| {
+                if let ContentItem::InputText { text } = c {
+                    !text.contains("== System Status ==")
+                        && !text.contains("Current working directory:")
+                        && !text.contains("Git branch:")
+                        && !text.trim().is_empty()
+                        && !text.contains(ENVIRONMENT_CONTEXT_OPEN_TAG)
+                        && !text.contains(ENVIRONMENT_CONTEXT_DELTA_OPEN_TAG)
+                        && !text.contains(BROWSER_SNAPSHOT_OPEN_TAG)
+                } else {
+                    false
+                }
+            });
+
+            let has_env_baseline = content.iter().any(|c| {
+                if let ContentItem::InputText { text } = c {
+                    text.contains(ENVIRONMENT_CONTEXT_OPEN_TAG)
+                        && !text.contains(ENVIRONMENT_CONTEXT_DELTA_OPEN_TAG)
+                } else {
+                    false
+                }
+            });
+
+            let has_env_delta = content.iter().any(|c| {
+                if let ContentItem::InputText { text } = c {
+                    text.contains(ENVIRONMENT_CONTEXT_DELTA_OPEN_TAG)
+                } else {
+                    false
+                }
+            });
+
+            let has_browser_snapshot = content.iter().any(|c| {
+                if let ContentItem::InputText { text } = c {
+                    text.contains(BROWSER_SNAPSHOT_OPEN_TAG)
+                } else {
+                    false
+                }
+            });
+
+            if has_real_text && !has_status && !has_screenshot {
+                real_user_messages.push(idx);
+            } else if has_status || has_screenshot {
+                status_messages.push(idx);
+            }
+
+            if has_env_baseline {
+                env_baselines.push(idx);
+            }
+            if has_env_delta {
+                env_deltas.push(idx);
+            }
+            if has_browser_snapshot {
+                browser_snapshot_messages.push(idx);
+            }
+        }
+    }
+
+    let mut screenshots_to_keep = std::collections::HashSet::new();
+    for &user_idx in real_user_messages.iter().rev().take(2) {
+        for &status_idx in status_messages.iter() {
+            if status_idx > user_idx {
+                if let Some(ResponseItem::Message { content, .. }) = current_items.get(status_idx)
+                {
+                    if content.iter().any(|c| matches!(c, ContentItem::InputImage { .. })) {
+                        screenshots_to_keep.insert(status_idx);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    let baseline_to_keep = env_baselines.last().copied();
+    let env_deltas_to_keep: std::collections::HashSet<usize> = env_deltas
+        .iter()
+        .rev()
+        .take(MAX_ENV_DELTAS)
+        .copied()
+        .collect();
+    let browser_snapshots_to_keep: std::collections::HashSet<usize> = browser_snapshot_messages
+        .iter()
+        .rev()
+        .take(MAX_BROWSER_SNAPSHOTS)
+        .copied()
+        .collect();
+
+    let mut items_to_keep = Vec::new();
+    let mut removed_screenshots = 0usize;
+    let mut removed_status = 0usize;
+
+    for (idx, item) in current_items.into_iter().enumerate() {
+        let keep = if status_messages.contains(&idx) {
+            screenshots_to_keep.contains(&idx)
+                || browser_snapshots_to_keep.contains(&idx)
+                || baseline_to_keep == Some(idx)
+                || env_deltas_to_keep.contains(&idx)
+        } else {
+            true
+        };
+
+        if keep {
+            items_to_keep.push(item);
+        } else if let ResponseItem::Message { content, .. } = &item {
             if content
                 .iter()
                 .any(|c| matches!(c, ContentItem::InputImage { .. }))

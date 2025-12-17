@@ -17,6 +17,14 @@ impl ConversationHistory {
         self.items.clone()
     }
 
+    /// Drains and returns the contents of the transcript.
+    ///
+    /// This avoids cloning large history items (e.g., base64 screenshots) when
+    /// callers need to re-apply retention policies.
+    pub(crate) fn take_contents(&mut self) -> Vec<ResponseItem> {
+        std::mem::take(&mut self.items)
+    }
+
     /// `items` is ordered from oldest to newest.
     pub(crate) fn record_items<I>(&mut self, items: I)
     where
@@ -37,6 +45,19 @@ impl ConversationHistory {
     /// non-standard items (e.g., bridge summaries) exactly as computed.
     pub(crate) fn replace(&mut self, items: Vec<ResponseItem>) {
         self.items = items;
+    }
+
+    /// Replace the entire history, filtering out any items that should not be
+    /// re-sent to the model.
+    pub(crate) fn replace_filtered(&mut self, items: Vec<ResponseItem>) {
+        self.items.clear();
+        self.items.reserve(items.len());
+        for item in items {
+            if !is_api_message(&item) {
+                continue;
+            }
+            self.items.push(item);
+        }
     }
 
 }
