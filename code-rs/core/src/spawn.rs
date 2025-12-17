@@ -130,7 +130,14 @@ pub(crate) async fn spawn_child_async(
     // Also, on Linux, set PDEATHSIG so children die if parent dies.
     #[cfg(unix)]
     unsafe {
-        cmd.pre_exec(|| {
+        #[cfg(target_os = "linux")]
+        let exec_memory_max_bytes = match stdio_policy {
+            StdioPolicy::RedirectForShellTool => crate::cgroup::default_exec_memory_max_bytes(),
+            StdioPolicy::Inherit => None,
+        };
+        #[cfg(not(target_os = "linux"))]
+        let exec_memory_max_bytes: Option<u64> = None;
+        cmd.pre_exec(move || {
             // Start a new process group
             let _ = libc::setpgid(0, 0);
             #[cfg(target_os = "linux")]
@@ -140,6 +147,13 @@ pub(crate) async fn spawn_child_async(
                 }
                 if libc::getppid() == 1 {
                     libc::raise(libc::SIGTERM);
+                }
+
+                if let Some(memory_max_bytes) = exec_memory_max_bytes {
+                    crate::cgroup::best_effort_attach_self_to_exec_cgroup(
+                        libc::getpid() as u32,
+                        memory_max_bytes,
+                    );
                 }
             }
             Ok(())

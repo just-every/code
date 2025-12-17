@@ -64,6 +64,7 @@ use crate::EnvironmentContextEmission;
 use crate::AuthManager;
 use crate::CodexAuth;
 use crate::agent_tool::AgentStatusUpdatePayload;
+use crate::remote_models::RemoteModelsManager;
 use crate::split_command_and_args;
 use crate::git_worktree;
 use crate::protocol::ApprovedCommandMatchKind;
@@ -1080,6 +1081,7 @@ impl Codex {
         let configure_session = Op::ConfigureSession {
             provider: config.model_provider.clone(),
             model: config.model.clone(),
+            model_explicit: config.model_explicit,
             model_reasoning_effort: config.model_reasoning_effort,
             preferred_model_reasoning_effort: config.preferred_model_reasoning_effort,
             model_reasoning_summary: config.model_reasoning_summary,
@@ -1450,6 +1452,7 @@ struct BackgroundExecState {
 pub(crate) struct Session {
     id: Uuid,
     client: ModelClient,
+    remote_models_manager: Option<Arc<RemoteModelsManager>>,
     tx_event: Sender<Event>,
 
     /// The session's current working directory. All relative paths provided by
@@ -1597,6 +1600,54 @@ impl Session {
 
     pub(crate) fn get_cwd(&self) -> &Path {
         &self.cwd
+    }
+
+    pub(super) async fn apply_remote_model_overrides(&self, prompt: &mut Prompt) {
+        let configured_model = self.client.get_model();
+
+        if prompt.model_override.is_none() {
+            if !self.client.model_explicit() {
+                let auth_mode = self
+                    .client
+                    .get_auth_manager()
+                    .as_ref()
+                    .and_then(|mgr| mgr.auth())
+                    .map(|auth| auth.mode);
+
+                let default_model_slug = if auth_mode == Some(code_app_server_protocol::AuthMode::ChatGPT) {
+                    crate::config::GPT_5_CODEX_MEDIUM_MODEL
+                } else {
+                    crate::config::OPENAI_DEFAULT_MODEL
+                };
+
+                if let Some(remote) = self.remote_models_manager.as_ref()
+                    && configured_model.eq_ignore_ascii_case(default_model_slug)
+                    && let Some(default_model) = remote.default_model_slug(auth_mode).await
+                {
+                    prompt.model_override = Some(default_model);
+                }
+            }
+
+            if prompt.model_override.is_none() {
+                prompt.model_override = Some(configured_model.clone());
+            }
+        }
+
+        if prompt.model_family_override.is_none() {
+            let model_slug = prompt
+                .model_override
+                .as_deref()
+                .unwrap_or(configured_model.as_str());
+            let base_family = find_family_for_model(model_slug)
+                .unwrap_or_else(|| derive_default_model_family(model_slug));
+
+            let family = if let Some(remote) = self.remote_models_manager.as_ref() {
+                remote.apply_remote_overrides(model_slug, base_family).await
+            } else {
+                base_family
+            };
+            prompt.model_family_override = Some(family);
+        }
     }
 
     pub(crate) async fn record_bridge_event(&self, text: String) {
@@ -4348,6 +4399,7 @@ async fn submission_loop(
             Op::ConfigureSession {
                 provider,
                 model,
+                model_explicit,
                 model_reasoning_effort,
                 preferred_model_reasoning_effort,
                 model_reasoning_summary,
@@ -4387,6 +4439,7 @@ async fn submission_loop(
                 let old_model_family = updated_config.model_family.clone();
 
                 updated_config.model = model.clone();
+                updated_config.model_explicit = model_explicit;
                 updated_config.model_provider = provider.clone();
                 updated_config.model_reasoning_effort = model_reasoning_effort;
                 if let Some(preferred) = preferred_model_reasoning_effort {
@@ -4464,7 +4517,7 @@ async fn submission_loop(
 
                 let new_config = Arc::new(updated_config);
 
-                if model_changed || effort_changed || preferred_effort_changed {
+                if new_config.model_explicit && (model_changed || effort_changed || preferred_effort_changed) {
                     if let Err(err) = persist_model_selection(
                         &new_config.code_home,
                         new_config.active_profile.as_deref(),
@@ -4687,9 +4740,23 @@ async fn submission_loop(
                 tools_config.set_agent_models(agent_models);
 
                 let model_descriptions = model_guide_markdown_with_custom(&config.agents);
+                let remote_models_manager = auth_manager.as_ref().map(|mgr| {
+                    Arc::new(RemoteModelsManager::new(
+                        Arc::clone(mgr),
+                        provider.clone(),
+                        config.code_home.clone(),
+                    ))
+                });
+                if let Some(remote) = remote_models_manager.as_ref() {
+                    let remote = Arc::clone(remote);
+                    tokio::spawn(async move {
+                        remote.refresh_remote_models().await;
+                    });
+                }
                 let mut new_session = Arc::new(Session {
                     id: session_id,
                     client,
+                    remote_models_manager,
                     tools_config,
                     tx_event: tx_event.clone(),
                     user_instructions: effective_user_instructions.clone(),
@@ -5819,13 +5886,6 @@ async fn run_turn(
         manager.has_active_agents()
     };
 
-    let tools = get_openai_tools(
-        &sess.tools_config,
-        Some(sess.mcp_connection_manager.list_all_tools()),
-        browser_enabled,
-        agents_active,
-    );
-
     let mut retries = 0;
     // Ensure we only auto-compact once per turn to avoid loops
     let mut did_auto_compact = false;
@@ -5851,7 +5911,7 @@ async fn run_turn(
             prepend_developer_messages.push(HTML_SANITIZER_GUARDRAILS_MESSAGE.to_string());
         }
 
-        let prompt = Prompt {
+        let mut prompt = Prompt {
             input: attempt_input.clone(),
             store: !sess.disable_response_storage,
             user_instructions: tc.user_instructions.clone(),
@@ -5861,7 +5921,7 @@ async fn run_turn(
                 Some(tc.sandbox_policy.clone()),
                 Some(sess.user_shell.clone()),
             )),
-            tools: tools.clone(),
+            tools: Vec::new(),
             status_items, // Include status items with this request
             base_instructions_override: tc.base_instructions.clone(),
             include_additional_instructions: true,
@@ -5874,6 +5934,23 @@ async fn run_turn(
             session_id_override: None,
             model_descriptions: sess.model_descriptions.clone(),
         };
+
+        sess.apply_remote_model_overrides(&mut prompt).await;
+
+        let effective_family = prompt
+            .model_family_override
+            .as_ref()
+            .unwrap_or_else(|| tc.client.default_model_family());
+        let tools_config = tc.client.build_tools_config_with_sandbox_for_family(
+            tc.sandbox_policy.clone(),
+            effective_family,
+        );
+        prompt.tools = get_openai_tools(
+            &tools_config,
+            Some(sess.mcp_connection_manager.list_all_tools()),
+            browser_enabled,
+            agents_active,
+        );
 
         // Start a new scratchpad for this HTTP attempt
         sess.begin_attempt_scratchpad();
@@ -11250,12 +11327,18 @@ async fn handle_container_exec_with_params(
     let sandbox_policy = sess.sandbox_policy.clone();
     let sandbox_cwd = sess.get_cwd().to_path_buf();
     let code_linux_sandbox_exe = sess.code_linux_sandbox_exe.clone();
+    let exec_spool_dir = sess
+        .client
+        .code_home()
+        .join("debug_logs")
+        .join("exec");
     let result_cell_for_task = result_cell.clone();
     let notify_task = notify.clone();
     let tail_buf_task = tail_buf.clone();
     let backgrounded_task = backgrounded.clone();
     let suppress_event_flag_task = suppress_event_flag.clone();
     let display_label_task = display_label.clone();
+    let exec_spool_dir_for_task = exec_spool_dir.clone();
     let task_handle = tokio::spawn(async move {
         // Build stdout stream with tail capture. We cannot stamp via `Session` here,
         // but deltas will be delivered with neutral ordering which the UI tolerates.
@@ -11269,6 +11352,7 @@ async fn handle_container_exec_with_params(
                 session: None,
                 tail_buf: Some(tail_buf_task.clone()),
                 order: Some(order_meta_for_deltas.clone()),
+                spool_dir: Some(exec_spool_dir_for_task.clone()),
             })
         };
 
@@ -11459,6 +11543,28 @@ async fn handle_sandbox_error(
     let otel_event_manager = sess.client.get_otel_event_manager();
     let tool_name = "local_shell";
 
+    if let SandboxErr::OutOfMemory {
+        output,
+        memory_max_bytes,
+    } = &error
+    {
+        let limit_note = memory_max_bytes
+            .as_ref()
+            .map(|bytes| format!(" (memory.max={bytes} bytes)"))
+            .unwrap_or_default();
+        let tail = format_exec_output_with_limit(sess, &sub_id, &call_id, output.as_ref());
+        let content = format!(
+            "command exceeded memory limit{limit_note}. Try reducing parallelism (e.g. fewer jobs) and retry.\n\n{tail}"
+        );
+        return ResponseInputItem::FunctionCallOutput {
+            call_id,
+            output: FunctionCallOutputPayload {
+                content,
+                success: Some(false),
+            },
+        };
+    }
+
     // Early out if either the user never wants to be asked for approval, or
     // we're letting the model manage escalation requests. Otherwise, continue
     match sess.approval_policy {
@@ -11581,6 +11687,9 @@ async fn handle_sandbox_error(
                         session: None,
                         tail_buf: None,
                         order: Some(crate::protocol::OrderMeta { request_ordinal: attempt_req, output_index: None, sequence_number: None }),
+                        spool_dir: Some(
+                            sess.client.code_home().join("debug_logs").join("exec"),
+                        ),
                     })
                 },
             },

@@ -207,6 +207,26 @@ impl ModelProviderInfo {
         Ok(self.apply_http_headers(builder))
     }
 
+    /// Construct a request builder for an explicit URL using provider-specific
+    /// auth and headers.
+    pub async fn create_request_builder_for_url<'a>(
+        &'a self,
+        client: &'a reqwest::Client,
+        auth: &Option<CodexAuth>,
+        method: reqwest::Method,
+        url: reqwest::Url,
+    ) -> crate::error::Result<reqwest::RequestBuilder> {
+        let effective_auth = self.effective_auth(auth)?;
+
+        let mut builder = client.request(method, url);
+
+        if let Some(auth) = effective_auth.as_ref() {
+            builder = builder.bearer_auth(auth.get_token().await?);
+        }
+
+        Ok(self.apply_http_headers(builder))
+    }
+
     pub async fn create_compact_request_builder<'a>(
         &'a self,
         client: &'a reqwest::Client,

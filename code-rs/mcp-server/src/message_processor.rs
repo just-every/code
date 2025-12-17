@@ -1616,6 +1616,7 @@ fn configure_session_op_from_config(config: &Config) -> Op {
     Op::ConfigureSession {
         provider: config.model_provider.clone(),
         model: config.model.clone(),
+        model_explicit: config.model_explicit,
         model_reasoning_effort: config.model_reasoning_effort,
         preferred_model_reasoning_effort: config.preferred_model_reasoning_effort,
         model_reasoning_summary: config.model_reasoning_summary,

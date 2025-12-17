@@ -74,6 +74,13 @@ pub enum Op {
         /// If not specified, server will use its default model.
         model: String,
 
+        /// True when the model choice is explicitly set by the user.
+        ///
+        /// When false, the core may adopt a server-provided default model
+        /// (e.g. "codex-auto-balanced") when available.
+        #[serde(default)]
+        model_explicit: bool,
+
         model_reasoning_effort: ReasoningEffortConfig,
         /// Optional user-preferred reasoning effort for the chat model.
         /// When present, the core will persist it separately from the effective clamped effort.

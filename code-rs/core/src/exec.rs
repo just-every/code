@@ -14,6 +14,7 @@ use std::sync::Arc;
 use async_channel::Sender;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
 use tokio::io::BufReader;
 use tokio::process::Child;
 use tokio::time::Sleep;
@@ -126,6 +127,12 @@ pub struct StdoutStream {
     /// Optional ordering metadata so UIs can associate deltas with the correct
     /// provider attempt/output index even when `session` is not available.
     pub(crate) order: Option<OrderMeta>,
+
+    /// Optional directory to spool full stdout/stderr output for this exec.
+    ///
+    /// When set, Code writes raw stream bytes to disk while still keeping only
+    /// a bounded tail in memory.
+    pub(crate) spool_dir: Option<PathBuf>,
 }
 
 pub async fn process_exec_tool_call(
@@ -192,13 +199,16 @@ pub async fn process_exec_tool_call(
             #[allow(unused_mut)]
             let mut timed_out = raw_output.timed_out;
 
+            #[allow(unused_variables)]
+            let mut exit_signal: Option<i32> = None;
+
             #[cfg(target_family = "unix")]
             {
-                if let Some(signal) = raw_output.exit_status.signal() {
-                    if signal == TIMEOUT_CODE {
+                if let Some(sig) = raw_output.exit_status.signal() {
+                    if sig == TIMEOUT_CODE {
                         timed_out = true;
                     } else {
-                        return Err(CodexErr::Sandbox(SandboxErr::Signal(signal)));
+                        exit_signal = Some(sig);
                     }
                 }
             }
@@ -224,6 +234,16 @@ pub async fn process_exec_tool_call(
                 return Err(CodexErr::Sandbox(SandboxErr::Timeout {
                     output: Box::new(exec_output),
                 }));
+            }
+
+            if let Some(signal) = exit_signal {
+                if raw_output.oom_killed {
+                    return Err(CodexErr::Sandbox(SandboxErr::OutOfMemory {
+                        output: Box::new(exec_output),
+                        memory_max_bytes: raw_output.cgroup_memory_max_bytes,
+                    }));
+                }
+                return Err(CodexErr::Sandbox(SandboxErr::Signal(signal)));
             }
 
             if exit_code != 0 && is_likely_sandbox_denied(sandbox_type, exit_code) {
@@ -271,6 +291,8 @@ struct RawExecToolCallOutput {
     pub stderr: StreamOutput<Vec<u8>>,
     pub aggregated_output: StreamOutput<Vec<u8>>,
     pub timed_out: bool,
+    pub oom_killed: bool,
+    pub cgroup_memory_max_bytes: Option<u64>,
 }
 
 impl StreamOutput<String> {
@@ -357,19 +379,86 @@ async fn consume_truncated_output(
         ))
     })?;
 
-    let (agg_tx, agg_rx) = async_channel::unbounded::<Vec<u8>>();
+    #[allow(unused_variables)]
+    let pid = killer.as_mut().id();
+
+    let (spool_stdout, spool_stderr, spool_combined) = if let Some(stream) = stdout_stream.as_ref()
+        && let Some(root) = stream.spool_dir.as_ref()
+    {
+        let base_dir = root.join(&stream.sub_id).join(&stream.call_id);
+        let _ = tokio::fs::create_dir_all(&base_dir).await;
+
+        let stdout_path = base_dir.join("stdout.log");
+        let stderr_path = base_dir.join("stderr.log");
+        let combined_path = base_dir.join("combined.log");
+        let stdout = tokio::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(stdout_path)
+            .await
+            .ok();
+        let stderr = tokio::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(stderr_path)
+            .await
+            .ok();
+        let combined = tokio::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(combined_path)
+            .await
+            .ok();
+        (stdout, stderr, combined)
+    } else {
+        (None, None, None)
+    };
+
+    let (agg_tx, agg_rx) = async_channel::bounded::<Vec<u8>>(256);
+
+    let combined_handle = tokio::spawn(async move {
+        let mut combined_buf = Vec::with_capacity(AGGREGATE_BUFFER_INITIAL_CAPACITY);
+        let mut combined_truncated = false;
+        let mut combined_truncated_lines = 0u32;
+        let mut combined_truncated_bytes = 0usize;
+        let mut combined_file = spool_combined;
+        while let Ok(chunk) = agg_rx.recv().await {
+            if let Some(file) = combined_file.as_mut() {
+                let _ = file.write_all(&chunk).await;
+            }
+            append_with_cap(
+                &mut combined_buf,
+                &chunk,
+                &mut combined_truncated,
+                &mut combined_truncated_lines,
+                &mut combined_truncated_bytes,
+            );
+        }
+        StreamOutput {
+            text: combined_buf,
+            truncated_after_lines: combined_truncated
+                .then_some(combined_truncated_lines.max(1)),
+            truncated_before_bytes: (combined_truncated_bytes > 0)
+                .then_some(combined_truncated_bytes),
+        }
+    });
 
     let stdout_handle = tokio::spawn(read_capped(
         BufReader::new(stdout_reader),
         stdout_stream.clone(),
         false,
         Some(agg_tx.clone()),
+        spool_stdout,
     ));
     let stderr_handle = tokio::spawn(read_capped(
         BufReader::new(stderr_reader),
         stdout_stream.clone(),
         true,
         Some(agg_tx.clone()),
+        spool_stderr,
     ));
 
     let (exit_status, timed_out) = match timeout {
@@ -427,6 +516,7 @@ async fn consume_truncated_output(
         // Abort reader tasks to avoid hanging if pipes remain open.
         stdout_handle.abort();
         stderr_handle.abort();
+        combined_handle.abort();
         (
             StreamOutput {
                 text: Vec::new(),
@@ -445,26 +535,34 @@ async fn consume_truncated_output(
 
     drop(agg_tx);
 
-    let mut combined_buf = Vec::with_capacity(AGGREGATE_BUFFER_INITIAL_CAPACITY);
-    let mut combined_truncated = false;
-    let mut combined_truncated_lines = 0u32;
-    let mut combined_truncated_bytes = 0usize;
-    while let Ok(chunk) = agg_rx.recv().await {
-        append_with_cap(
-            &mut combined_buf,
-            &chunk,
-            &mut combined_truncated,
-            &mut combined_truncated_lines,
-            &mut combined_truncated_bytes,
-        );
-    }
-    let aggregated_output = StreamOutput {
-        text: combined_buf,
-        truncated_after_lines: combined_truncated
-            .then_some(combined_truncated_lines.max(1)),
-        truncated_before_bytes: (combined_truncated_bytes > 0)
-            .then_some(combined_truncated_bytes),
+    let aggregated_output = if timed_out {
+        StreamOutput {
+            text: Vec::new(),
+            truncated_after_lines: None,
+            truncated_before_bytes: None,
+        }
+    } else {
+        combined_handle.await.map_err(CodexErr::from)?
     };
+
+    let mut oom_killed = false;
+    let mut cgroup_memory_max_bytes: Option<u64> = None;
+    #[cfg(target_os = "linux")]
+    {
+        if !timed_out {
+            if let Some(pid) = pid {
+                if matches!(exit_status.signal(), Some(SIGKILL_CODE))
+                    && crate::cgroup::exec_cgroup_oom_killed(pid).unwrap_or(false)
+                {
+                    oom_killed = true;
+                    cgroup_memory_max_bytes = crate::cgroup::exec_cgroup_memory_max_bytes(pid);
+                }
+            }
+        }
+        if let Some(pid) = pid {
+            crate::cgroup::best_effort_cleanup_exec_cgroup(pid);
+        }
+    }
 
     Ok(RawExecToolCallOutput {
         exit_status,
@@ -472,6 +570,8 @@ async fn consume_truncated_output(
         stderr,
         aggregated_output,
         timed_out,
+        oom_killed,
+        cgroup_memory_max_bytes,
     })
 }
 
@@ -513,6 +613,7 @@ async fn read_capped<R: AsyncRead + Unpin + Send + 'static>(
     stream: Option<StdoutStream>,
     is_stderr: bool,
     aggregate_tx: Option<Sender<Vec<u8>>>,
+    mut spool: Option<tokio::fs::File>,
 ) -> io::Result<StreamOutput<Vec<u8>>> {
     let mut buf = Vec::with_capacity(AGGREGATE_BUFFER_INITIAL_CAPACITY);
     let mut truncated = false;
@@ -556,6 +657,10 @@ async fn read_capped<R: AsyncRead + Unpin + Send + 'static>(
                     } else if flush_deadline.is_none() {
                         flush_deadline = Some(Box::pin(tokio::time::sleep(EXEC_DELTA_FLUSH_INTERVAL)));
                     }
+                }
+
+                if let Some(file) = spool.as_mut() {
+                    let _ = file.write_all(&tmp[..n]).await;
                 }
 
                 if let Some(tx) = &aggregate_tx {

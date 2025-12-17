@@ -9,6 +9,7 @@ use code_core::protocol::TokenUsage;
 use code_core::git_info::CommitLogEntry;
 use code_core::protocol::ReviewContextMetadata;
 use code_file_search::FileMatch;
+use code_common::model_presets::ModelPreset;
 use crossterm::event::KeyEvent;
 use crossterm::event::MouseEvent;
 use ratatui::text::Line;
@@ -106,6 +107,17 @@ pub(crate) enum AppEvent {
 
     /// Request a redraw which will be debounced by the [`App`].
     RequestRedraw,
+
+    /// Update the model preset list used by the TUI model picker.
+    ///
+    /// The picker boots with built-in presets; when a remote-merged list arrives
+    /// asynchronously, the in-memory list is swapped and any open model
+    /// selection view is updated in-place.
+    #[allow(dead_code)]
+    ModelPresetsUpdated {
+        presets: Vec<ModelPreset>,
+        default_model: Option<String>,
+    },
 
     /// Actually draw the next frame.
     Redraw,

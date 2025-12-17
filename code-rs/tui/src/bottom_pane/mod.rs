@@ -918,6 +918,21 @@ impl BottomPane<'_> {
         self.app_event_tx.send(AppEvent::RequestRedraw)
     }
 
+    pub(crate) fn update_model_selection_presets(&mut self, presets: Vec<ModelPreset>) {
+        let Some(view) = self.active_view.as_mut() else {
+            return;
+        };
+        let Some(model_view) = view
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<ModelSelectionView>())
+        else {
+            return;
+        };
+
+        model_view.update_presets(presets);
+        self.request_redraw();
+    }
+
     // Immediate redraw path removed; all UI updates flow through the
     // debounced RequestRedraw/App::Redraw scheduler to reduce thrash.
 

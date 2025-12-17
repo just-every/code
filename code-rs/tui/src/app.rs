@@ -317,6 +317,46 @@ impl App<'_> {
         let (high_tx, app_event_rx_high) = channel();
         let (bulk_tx, app_event_rx_bulk) = channel();
         let app_event_tx = AppEventSender::new_dual(high_tx.clone(), bulk_tx.clone());
+
+        {
+            let remote_tx = app_event_tx.clone();
+            let remote_auth_manager = auth_manager.clone();
+            let remote_provider = config.model_provider.clone();
+            let remote_code_home = config.code_home.clone();
+            let remote_using_chatgpt_hint = config.using_chatgpt_auth;
+            if !crate::chatwidget::is_test_mode() {
+                tokio::spawn(async move {
+                    let remote_manager = code_core::remote_models::RemoteModelsManager::new(
+                        remote_auth_manager.clone(),
+                        remote_provider,
+                        remote_code_home,
+                    );
+                remote_manager.refresh_remote_models().await;
+                let remote_models = remote_manager.remote_models_snapshot().await;
+                if remote_models.is_empty() {
+                    return;
+                }
+
+                let auth_mode = remote_auth_manager
+                    .auth()
+                    .map(|auth| auth.mode)
+                    .or_else(|| {
+                        if remote_using_chatgpt_hint {
+                            Some(code_protocol::mcp_protocol::AuthMode::ChatGPT)
+                        } else {
+                            Some(code_protocol::mcp_protocol::AuthMode::ApiKey)
+                        }
+                    });
+                let presets = code_common::model_presets::builtin_model_presets(auth_mode);
+                let presets = crate::remote_model_presets::merge_remote_models(remote_models, presets);
+                let default_model = remote_manager.default_model_slug(auth_mode).await;
+                remote_tx.send(AppEvent::ModelPresetsUpdated {
+                    presets,
+                    default_model,
+                });
+                });
+            }
+        }
         let pending_redraw = Arc::new(AtomicBool::new(false));
         let redraw_inflight = Arc::new(AtomicBool::new(false));
         let post_frame_redraw = Arc::new(AtomicBool::new(false));
@@ -733,6 +773,49 @@ impl App<'_> {
             widget.set_using_chatgpt_auth(using_chatgpt_auth);
             let _ = widget.reload_auth();
         }
+
+        self.spawn_remote_model_discovery();
+    }
+
+    fn spawn_remote_model_discovery(&self) {
+        if crate::chatwidget::is_test_mode() {
+            return;
+        }
+        let remote_tx = self.app_event_tx.clone();
+        let remote_auth_manager = self._server.auth_manager();
+        let remote_provider = self.config.model_provider.clone();
+        let remote_code_home = self.config.code_home.clone();
+        let remote_using_chatgpt_hint = self.config.using_chatgpt_auth;
+        tokio::spawn(async move {
+            let remote_manager = code_core::remote_models::RemoteModelsManager::new(
+                remote_auth_manager.clone(),
+                remote_provider,
+                remote_code_home,
+            );
+            remote_manager.refresh_remote_models().await;
+            let remote_models = remote_manager.remote_models_snapshot().await;
+            if remote_models.is_empty() {
+                return;
+            }
+
+            let auth_mode = remote_auth_manager
+                .auth()
+                .map(|auth| auth.mode)
+                .or_else(|| {
+                    if remote_using_chatgpt_hint {
+                        Some(code_protocol::mcp_protocol::AuthMode::ChatGPT)
+                    } else {
+                        Some(code_protocol::mcp_protocol::AuthMode::ApiKey)
+                    }
+                });
+            let presets = code_common::model_presets::builtin_model_presets(auth_mode);
+            let presets = crate::remote_model_presets::merge_remote_models(remote_models, presets);
+            let default_model = remote_manager.default_model_slug(auth_mode).await;
+            remote_tx.send(AppEvent::ModelPresetsUpdated {
+                presets,
+                default_model,
+            });
+        });
     }
 
     fn start_terminal_run(
@@ -1217,6 +1300,12 @@ impl App<'_> {
                     AppState::Onboarding { .. } => {}
                 },
                 AppEvent::RequestRedraw => {
+                    self.schedule_redraw();
+                }
+                AppEvent::ModelPresetsUpdated { presets, default_model } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.update_model_presets(presets, default_model);
+                    }
                     self.schedule_redraw();
                 }
                 AppEvent::UpdatePlanningUseChatModel(use_chat) => {

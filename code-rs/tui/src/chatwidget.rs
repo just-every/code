@@ -1201,8 +1201,8 @@ struct RunningCommand {
     history_id: Option<HistoryId>,
     // Aggregated exploration entry (history index, entry index) when grouped
     explore_entry: Option<(usize, usize)>,
-    stdout: String,
-    stderr: String,
+    stdout_offset: usize,
+    stderr_offset: usize,
     wait_total: Option<Duration>,
     wait_active: bool,
     wait_notes: Vec<(String, bool)>,
@@ -1590,6 +1590,16 @@ pub(crate) struct ChatWidget<'a> {
     context_last_sequence: Option<u64>,
     context_browser_sequence: Option<u64>,
     config: Config,
+
+    /// Optional remote-merged presets list delivered asynchronously.
+    /// When absent, the TUI falls back to built-in presets.
+    remote_model_presets: Option<Vec<ModelPreset>>,
+    /// Whether remote defaults may be applied to this session.
+    /// Captured at startup so later config changes don't retroactively enable it.
+    allow_remote_default_at_startup: bool,
+    /// Tracks whether the user explicitly selected a chat model in this session.
+    chat_model_selected_explicitly: bool,
+
     planning_restore: Option<(String, ReasoningEffort)>,
     history_debug_events: Option<RefCell<Vec<String>>>,
     latest_upgrade_version: Option<String>,
@@ -5838,6 +5848,9 @@ impl ChatWidget<'_> {
             active_exec_cell: None,
             history_cells,
             config: config.clone(),
+            remote_model_presets: None,
+            allow_remote_default_at_startup: !config.model_explicit,
+            chat_model_selected_explicitly: false,
             planning_restore: None,
             history_debug_events: if history_cell_logging_enabled() {
                 Some(RefCell::new(Vec::new()))
@@ -6179,6 +6192,9 @@ impl ChatWidget<'_> {
             active_exec_cell: None,
             history_cells,
             config: config.clone(),
+            remote_model_presets: None,
+            allow_remote_default_at_startup: !config.model_explicit,
+            chat_model_selected_explicitly: false,
             planning_restore: None,
             history_debug_events: if history_cell_logging_enabled() {
                 Some(RefCell::new(Vec::new()))
@@ -12864,26 +12880,27 @@ impl ChatWidget<'_> {
                 let call_id = ExecCallId(ev.call_id.clone());
                 if let Some(running) = self.exec.running_commands.get_mut(&call_id) {
                     let chunk = String::from_utf8_lossy(&ev.chunk).to_string();
+                    let chunk_len = chunk.len();
                     let (stdout_chunk, stderr_chunk) = match ev.stream {
                         ExecOutputStream::Stdout => {
-                            let offset = running.stdout.len();
-                            running.stdout.push_str(&chunk);
+                            let offset = running.stdout_offset;
+                            running.stdout_offset = running.stdout_offset.saturating_add(chunk_len);
                             (
                                 Some(crate::history::state::ExecStreamChunk {
                                     offset,
-                                    content: chunk.clone(),
+                                    content: chunk,
                                 }),
                                 None,
                             )
                         }
                         ExecOutputStream::Stderr => {
-                            let offset = running.stderr.len();
-                            running.stderr.push_str(&chunk);
+                            let offset = running.stderr_offset;
+                            running.stderr_offset = running.stderr_offset.saturating_add(chunk_len);
                             (
                                 None,
                                 Some(crate::history::state::ExecStreamChunk {
                                     offset,
-                                    content: chunk.clone(),
+                                    content: chunk,
                                 }),
                             )
                         }
@@ -20346,12 +20363,51 @@ Have we met every part of this goal and is there no further work to do?"#
     }
 
     fn available_model_presets(&self) -> Vec<ModelPreset> {
+        if let Some(presets) = self.remote_model_presets.as_ref() {
+            return presets.clone();
+        }
         let auth_mode = if self.config.using_chatgpt_auth {
             Some(McpAuthMode::ChatGPT)
         } else {
             Some(McpAuthMode::ApiKey)
         };
         builtin_model_presets(auth_mode)
+    }
+
+    pub(crate) fn update_model_presets(
+        &mut self,
+        presets: Vec<ModelPreset>,
+        default_model: Option<String>,
+    ) {
+        if presets.is_empty() {
+            return;
+        }
+
+        self.remote_model_presets = Some(presets.clone());
+        self.bottom_pane.update_model_selection_presets(presets);
+
+        if let Some(default_model) = default_model {
+            self.maybe_apply_remote_default_model(default_model);
+        }
+
+        self.request_redraw();
+    }
+
+    fn maybe_apply_remote_default_model(&mut self, default_model: String) {
+        if !self.allow_remote_default_at_startup {
+            return;
+        }
+        if self.chat_model_selected_explicitly {
+            return;
+        }
+        if self.config.model_explicit {
+            return;
+        }
+        if self.config.model.eq_ignore_ascii_case(&default_model) {
+            return;
+        }
+
+        self.apply_model_selection_inner(default_model, None, false, false);
     }
 
     fn preset_effort_for_model(preset: &ModelPreset) -> ReasoningEffort {
@@ -20636,9 +20692,68 @@ Have we met every part of this goal and is there no further work to do?"#
     }
 
     pub(crate) fn apply_model_selection(&mut self, model: String, effort: Option<ReasoningEffort>) {
+        self.apply_model_selection_inner(model, effort, true, true);
+    }
+
+    fn clamp_reasoning_for_model_from_presets(
+        model: &str,
+        requested: ReasoningEffort,
+        presets: &[ModelPreset],
+    ) -> ReasoningEffort {
+        fn rank(effort: ReasoningEffort) -> u8 {
+            match effort {
+                ReasoningEffort::Minimal => 0,
+                ReasoningEffort::Low => 1,
+                ReasoningEffort::Medium => 2,
+                ReasoningEffort::High => 3,
+                ReasoningEffort::XHigh => 4,
+                ReasoningEffort::None => 5,
+            }
+        }
+
+        let model_lower = model.to_ascii_lowercase();
+        let Some(preset) = presets.iter().find(|preset| {
+            preset.model.eq_ignore_ascii_case(&model_lower)
+                || preset.id.eq_ignore_ascii_case(&model_lower)
+                || preset.display_name.eq_ignore_ascii_case(&model_lower)
+        }) else {
+            return Self::clamp_reasoning_for_model(model, requested);
+        };
+
+        let supported: Vec<ReasoningEffort> = preset
+            .supported_reasoning_efforts
+            .iter()
+            .map(|opt| ReasoningEffort::from(opt.effort))
+            .collect();
+        if supported.iter().any(|effort| *effort == requested) {
+            return requested;
+        }
+
+        let requested_rank = rank(requested);
+        supported
+            .into_iter()
+            .min_by_key(|effort| {
+                let effort_rank = rank(*effort);
+                (requested_rank.abs_diff(effort_rank), u8::MAX - effort_rank)
+            })
+            .unwrap_or(requested)
+    }
+
+    fn apply_model_selection_inner(
+        &mut self,
+        model: String,
+        effort: Option<ReasoningEffort>,
+        mark_explicit: bool,
+        announce: bool,
+    ) {
         let trimmed = model.trim();
         if trimmed.is_empty() {
             return;
+        }
+
+        if mark_explicit {
+            self.chat_model_selected_explicitly = true;
+            self.config.model_explicit = true;
         }
 
         let mut updated = false;
@@ -20660,7 +20775,8 @@ Have we met every part of this goal and is there no further work to do?"#
         let requested_effort = effort
             .or(self.config.preferred_model_reasoning_effort)
             .unwrap_or(self.config.model_reasoning_effort);
-        let clamped_effort = Self::clamp_reasoning_for_model(trimmed, requested_effort);
+        let presets = self.available_model_presets();
+        let clamped_effort = Self::clamp_reasoning_for_model_from_presets(trimmed, requested_effort, &presets);
 
         if self.config.model_reasoning_effort != clamped_effort {
             self.config.model_reasoning_effort = clamped_effort;
@@ -20671,6 +20787,7 @@ Have we met every part of this goal and is there no further work to do?"#
             let op = Op::ConfigureSession {
                 provider: self.config.model_provider.clone(),
                 model: self.config.model.clone(),
+                model_explicit: self.config.model_explicit,
                 model_reasoning_effort: self.config.model_reasoning_effort,
                 preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
                 model_reasoning_summary: self.config.model_reasoning_summary,
@@ -20691,17 +20808,19 @@ Have we met every part of this goal and is there no further work to do?"#
             self.refresh_settings_overview_rows();
         }
 
-        let placement = self.ui_placement_for_now();
-        let state = history_cell::new_model_output(&self.config.model, self.config.model_reasoning_effort);
-        let cell = crate::history_cell::PlainHistoryCell::from_state(state.clone());
-        self.push_system_cell(
-            Box::new(cell),
-            placement,
-            Some("ui:model".to_string()),
-            None,
-            "system",
-            Some(HistoryDomainRecord::Plain(state)),
-        );
+        if announce {
+            let placement = self.ui_placement_for_now();
+            let state = history_cell::new_model_output(&self.config.model, self.config.model_reasoning_effort);
+            let cell = crate::history_cell::PlainHistoryCell::from_state(state.clone());
+            self.push_system_cell(
+                Box::new(cell),
+                placement,
+                Some("ui:model".to_string()),
+                None,
+                "system",
+                Some(HistoryDomainRecord::Plain(state)),
+            );
+        }
 
         self.request_redraw();
     }
@@ -21298,6 +21417,7 @@ Have we met every part of this goal and is there no further work to do?"#
         let op = Op::ConfigureSession {
             provider: self.config.model_provider.clone(),
             model: self.config.model.clone(),
+            model_explicit: self.config.model_explicit,
             model_reasoning_effort: self.config.model_reasoning_effort,
             preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
             model_reasoning_summary: self.config.model_reasoning_summary,
@@ -21323,6 +21443,7 @@ Have we met every part of this goal and is there no further work to do?"#
             let op = Op::ConfigureSession {
                 provider: self.config.model_provider.clone(),
                 model: self.config.model.clone(),
+                model_explicit: self.config.model_explicit,
                 model_reasoning_effort: self.config.model_reasoning_effort,
                 preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
                 model_reasoning_summary: self.config.model_reasoning_summary,
@@ -21528,6 +21649,7 @@ Have we met every part of this goal and is there no further work to do?"#
             let op = Op::ConfigureSession {
                 provider: self.config.model_provider.clone(),
                 model: self.config.model.clone(),
+                model_explicit: self.config.model_explicit,
                 model_reasoning_effort: self.config.model_reasoning_effort,
                 preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
                 model_reasoning_summary: self.config.model_reasoning_summary,
@@ -21671,6 +21793,7 @@ Have we met every part of this goal and is there no further work to do?"#
         let op = Op::ConfigureSession {
             provider: self.config.model_provider.clone(),
             model: self.config.model.clone(),
+            model_explicit: self.config.model_explicit,
             model_reasoning_effort: clamped_effort,
             preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
             model_reasoning_summary: self.config.model_reasoning_summary,
@@ -21711,6 +21834,7 @@ Have we met every part of this goal and is there no further work to do?"#
         let op = Op::ConfigureSession {
             provider: self.config.model_provider.clone(),
             model: self.config.model.clone(),
+            model_explicit: self.config.model_explicit,
             model_reasoning_effort: self.config.model_reasoning_effort,
             preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
             model_reasoning_summary: self.config.model_reasoning_summary,
@@ -22762,6 +22886,7 @@ Have we met every part of this goal and is there no further work to do?"#
         let op = Op::ConfigureSession {
             provider: self.config.model_provider.clone(),
             model: self.config.model.clone(),
+            model_explicit: self.config.model_explicit,
             model_reasoning_effort: self.config.model_reasoning_effort,
             preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
             model_reasoning_summary: self.config.model_reasoning_summary,
@@ -28892,8 +29017,8 @@ use code_core::protocol::OrderMeta;
                 history_index: None,
                 history_id: None,
                 explore_entry: None,
-                stdout: String::new(),
-                stderr: String::new(),
+                stdout_offset: 0,
+                stderr_offset: 0,
                 wait_total: None,
                 wait_active: false,
                 wait_notes: Vec::new(),
@@ -28942,8 +29067,8 @@ use code_core::protocol::OrderMeta;
                 history_index: None,
                 history_id: None,
                 explore_entry: None,
-                stdout: String::new(),
-                stderr: String::new(),
+                stdout_offset: 0,
+                stderr_offset: 0,
                 wait_total: None,
                 wait_active: false,
                 wait_notes: Vec::new(),
@@ -29304,8 +29429,8 @@ use code_core::protocol::OrderMeta;
                 history_index: None,
                 history_id: None,
                 explore_entry: None,
-                stdout: String::new(),
-                stderr: String::new(),
+                stdout_offset: 0,
+                stderr_offset: 0,
                 wait_total: None,
                 wait_active: false,
                 wait_notes: Vec::new(),
@@ -29356,8 +29481,8 @@ use code_core::protocol::OrderMeta;
                 history_index: None,
                 history_id: None,
                 explore_entry: None,
-                stdout: String::new(),
-                stderr: String::new(),
+                stdout_offset: 0,
+                stderr_offset: 0,
                 wait_total: None,
                 wait_active: false,
                 wait_notes: Vec::new(),
@@ -34238,6 +34363,7 @@ impl ChatWidget<'_> {
         let op = Op::ConfigureSession {
             provider: self.config.model_provider.clone(),
             model: self.config.model.clone(),
+            model_explicit: self.config.model_explicit,
             model_reasoning_effort: self.config.model_reasoning_effort,
             preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
             model_reasoning_summary: self.config.model_reasoning_summary,

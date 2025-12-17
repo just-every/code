@@ -37,6 +37,18 @@ pub enum SandboxErr {
     #[error("command was killed by a signal")]
     Signal(i32),
 
+    /// Command exceeded its memory limit and was killed.
+    #[error(
+        "command exceeded memory limit{}",
+        memory_max_bytes
+            .map(|bytes| format!(": {} bytes", bytes))
+            .unwrap_or_default()
+    )]
+    OutOfMemory {
+        output: Box<ExecToolCallOutput>,
+        memory_max_bytes: Option<u64>,
+    },
+
     /// Error from linux landlock
     #[error("Landlock was not able to fully enforce all sandbox rules")]
     LandlockRestrict,
@@ -323,6 +335,15 @@ impl CodexErr {
 pub fn get_error_message_ui(e: &CodexErr) -> String {
     match e {
         CodexErr::Sandbox(SandboxErr::Denied { output }) => output.stderr.text.clone(),
+        CodexErr::Sandbox(SandboxErr::OutOfMemory {
+            output,
+            memory_max_bytes,
+        }) => {
+            let limit_note = memory_max_bytes
+                .map(|bytes| format!(" (memory.max={bytes} bytes)"))
+                .unwrap_or_default();
+            format!("error: command exceeded memory limit{limit_note}\n{}", output.stderr.text)
+        }
         // Timeouts are not sandbox errors from a UX perspective; present them plainly
         CodexErr::Sandbox(SandboxErr::Timeout { output }) => format!(
             "error: command timed out after {} ms",

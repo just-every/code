@@ -68,7 +68,7 @@ use toml_edit::Item as TomlItem;
 use toml_edit::Table as TomlTable;
 use which::which;
 
-const OPENAI_DEFAULT_MODEL: &str = "gpt-5.1-codex-max";
+pub(crate) const OPENAI_DEFAULT_MODEL: &str = "gpt-5.1-codex-max";
 const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5.1-codex-max";
 pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5.1-codex-max";
 
@@ -163,6 +163,11 @@ fn merge_with_default_agents(agents: Vec<AgentConfig>) -> Vec<AgentConfig> {
 pub struct Config {
     /// Optional override of model selection.
     pub model: String,
+
+    /// True if the model was explicitly chosen by the user (via CLI args,
+    /// config.toml, or a profile). When false, Code may adopt a server-provided
+    /// default model (e.g. "codex-auto-balanced") when available.
+    pub model_explicit: bool,
 
     /// Planning model (used when in Plan mode / Read Only access preset). Falls back to `model`.
     pub planning_model: String,
@@ -2707,6 +2712,8 @@ impl Config {
             OPENAI_DEFAULT_MODEL
         };
 
+        let model_explicit = model.is_some() || config_profile.model.is_some() || cfg.model.is_some();
+
         let model = model
             .or(config_profile.model)
             .or(cfg.model)
@@ -2957,6 +2964,7 @@ impl Config {
 
         let config = Self {
             model,
+            model_explicit,
             planning_model,
             planning_model_reasoning_effort,
             planning_use_chat_model,

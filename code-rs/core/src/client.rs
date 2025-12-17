@@ -318,8 +318,16 @@ impl ModelClient {
         &self,
         sandbox_policy: SandboxPolicy,
     ) -> ToolsConfig {
+        self.build_tools_config_with_sandbox_for_family(sandbox_policy, &self.config.model_family)
+    }
+
+    pub fn build_tools_config_with_sandbox_for_family(
+        &self,
+        sandbox_policy: SandboxPolicy,
+        model_family: &ModelFamily,
+    ) -> ToolsConfig {
         let mut tools_config = ToolsConfig::new(
-            &self.config.model_family,
+            model_family,
             self.config.approval_policy,
             sandbox_policy.clone(),
             self.config.include_plan_tool,
@@ -482,10 +490,13 @@ impl ModelClient {
             .as_deref()
             .unwrap_or(self.config.model.as_str());
         let effective_effort = clamp_reasoning_effort_for_model(request_model, self.effort);
-        let request_family = find_family_for_model(request_model)
+        let request_family = prompt
+            .model_family_override
+            .clone()
+            .or_else(|| find_family_for_model(request_model))
             .unwrap_or_else(|| self.config.model_family.clone());
 
-        let full_instructions = prompt.get_full_instructions(&self.config.model_family);
+        let full_instructions = prompt.get_full_instructions(&request_family);
         let mut tools_json = create_tools_json_for_responses_api(&prompt.tools)?;
         if matches!(effective_effort, ReasoningEffortConfig::Minimal) {
             tools_json.retain(|tool| {
@@ -984,6 +995,10 @@ impl ModelClient {
         self.config.model.clone()
     }
 
+    pub fn model_explicit(&self) -> bool {
+        self.config.model_explicit
+    }
+
     /// Returns the currently configured model family.
     #[allow(dead_code)]
     pub fn get_model_family(&self) -> ModelFamily {
@@ -1036,11 +1051,18 @@ impl ModelClient {
             request = request.header("chatgpt-account-id", account_id);
         }
 
-        let instructions = prompt
-            .get_full_instructions(&self.config.model_family)
-            .into_owned();
+        let model_slug = prompt
+            .model_override
+            .as_deref()
+            .unwrap_or(self.config.model.as_str());
+        let family = prompt
+            .model_family_override
+            .clone()
+            .or_else(|| find_family_for_model(model_slug))
+            .unwrap_or_else(|| self.config.model_family.clone());
+        let instructions = prompt.get_full_instructions(&family).into_owned();
         let payload = CompactHistoryRequest {
-            model: &self.config.model,
+            model: model_slug,
             input: &prompt.input,
             instructions: instructions.clone(),
         };

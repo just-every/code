@@ -57,6 +57,9 @@ pub mod mcp_connection_manager;
 mod mcp_tool_call;
 mod message_history;
 mod model_provider_info;
+pub mod remote_models;
+// Remote model discovery caches its own on-disk state within the module.
+mod cgroup;
 pub mod agent_defaults;
 mod agent_tool;
 pub use agent_tool::AGENT_MANAGER;
@@ -90,6 +93,7 @@ pub use auth::AuthManager;
 pub use auth::CodexAuth;
 pub use auth::RefreshTokenError;
 pub use auth::RefreshTokenErrorKind;
+pub use tool_apply_patch::ApplyPatchToolType;
 pub mod default_client;
 pub mod model_family;
 mod openai_tools;

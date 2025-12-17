@@ -71,6 +71,40 @@ fn stream_chunks_to_text(chunks: &[ExecStreamChunk]) -> String {
     combined
 }
 
+fn stream_chunks_tail_to_text(chunks: &[ExecStreamChunk], max_bytes: usize) -> String {
+    if chunks.is_empty() || max_bytes == 0 {
+        return String::new();
+    }
+
+    let mut ordered: Vec<&ExecStreamChunk> = chunks.iter().collect();
+    ordered.sort_by_key(|chunk| chunk.offset);
+
+    let mut pieces: Vec<String> = Vec::new();
+    let mut total_bytes: usize = 0;
+    for chunk in ordered.into_iter().rev() {
+        if total_bytes >= max_bytes {
+            break;
+        }
+        let remaining = max_bytes - total_bytes;
+        let content = chunk.content.as_str();
+        if content.len() <= remaining {
+            pieces.push(content.to_string());
+            total_bytes = total_bytes.saturating_add(content.len());
+            continue;
+        }
+
+        let mut start = content.len().saturating_sub(remaining);
+        while start < content.len() && !content.is_char_boundary(start) {
+            start = start.saturating_add(1);
+        }
+        pieces.push(content[start..].to_string());
+        break;
+    }
+
+    pieces.reverse();
+    pieces.concat()
+}
+
 fn explore_status_from_exec(action: ExecAction, record: &ExecRecord) -> history_cell::ExploreEntryStatus {
     match record.status {
         ExecStatus::Running => history_cell::ExploreEntryStatus::Running,
@@ -505,6 +539,7 @@ pub(super) fn finalize_all_running_as_interrupted(chat: &mut ChatWidget<'_>) {
 
 pub(super) fn finalize_all_running_due_to_answer(chat: &mut ChatWidget<'_>) {
     const STALE_MSG: &str = "Running in background after turn end.";
+    const STREAM_TAIL_MAX_BYTES: usize = 64 * 1024;
 
     // Drain running execs so we can mark them stale and stop the spinner.
     let mut agg_was_updated = false;
@@ -533,8 +568,6 @@ pub(super) fn finalize_all_running_due_to_answer(chat: &mut ChatWidget<'_>) {
             let now = SystemTime::now();
             let wait_notes_pairs = running.wait_notes.clone();
             let wait_notes_record = exec_wait_notes_from_pairs(&wait_notes_pairs);
-            let stdout_tail_event = stream_tail("", &running.stdout);
-            let stderr_tail_event = stream_tail(STALE_MSG, &running.stderr);
 
             let history_id = running
                 .history_id
@@ -544,6 +577,10 @@ pub(super) fn finalize_all_running_due_to_answer(chat: &mut ChatWidget<'_>) {
                         .history_index
                         .and_then(|idx| chat.history_cell_ids.get(idx).and_then(|h| *h))
                 });
+
+            let stderr_prefix = if running.stderr_offset > 0 { "\n" } else { "" };
+            let stderr_tail_event = Some(format!("{stderr_prefix}{STALE_MSG}"));
+            let stdout_tail_event = None;
 
             let finish_mutation = chat.history_state.apply_domain_event(
                 HistoryDomainEvent::FinishExec {
@@ -575,13 +612,50 @@ pub(super) fn finalize_all_running_due_to_answer(chat: &mut ChatWidget<'_>) {
             }
 
             if !handled_via_state {
+                let mut stdout_so_far = String::new();
+                let mut stderr_so_far = String::new();
+                if let Some(history_id) = history_id {
+                    if let Some(record) = chat.history_state.record(history_id) {
+                        match record {
+                            HistoryRecord::Exec(exec_record) => {
+                                stdout_so_far = stream_chunks_tail_to_text(
+                                    &exec_record.stdout_chunks,
+                                    STREAM_TAIL_MAX_BYTES,
+                                );
+                                stderr_so_far = stream_chunks_tail_to_text(
+                                    &exec_record.stderr_chunks,
+                                    STREAM_TAIL_MAX_BYTES,
+                                );
+                            }
+                            HistoryRecord::MergedExec(merged) => {
+                                if let Some(last) = merged.segments.last() {
+                                    stdout_so_far = stream_chunks_tail_to_text(
+                                        &last.stdout_chunks,
+                                        STREAM_TAIL_MAX_BYTES,
+                                    );
+                                    stderr_so_far = stream_chunks_tail_to_text(
+                                        &last.stderr_chunks,
+                                        STREAM_TAIL_MAX_BYTES,
+                                    );
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                if !stderr_so_far.is_empty() {
+                    stderr_so_far.push('\n');
+                }
+                stderr_so_far.push_str(STALE_MSG);
+
                 let mut completed_cell = history_cell::new_completed_exec_command(
                     running.command.clone(),
                     running.parsed.clone(),
                     CommandOutput {
                         exit_code,
-                        stdout: running.stdout.clone(),
-                        stderr: STALE_MSG.to_string(),
+                        stdout: stdout_so_far,
+                        stderr: stderr_so_far,
                     },
                 );
                 // Preserve linkage to the original call id when possible.
@@ -1040,8 +1114,8 @@ pub(super) fn handle_exec_begin_now(
                             history_index: None,
                             history_id: None,
                             explore_entry: Some((idx, entry_idx)),
-                            stdout: String::new(),
-                            stderr: String::new(),
+                            stdout_offset: 0,
+                            stderr_offset: 0,
                             wait_total: None,
                             wait_active: false,
                             wait_notes: Vec::new(),
@@ -1106,8 +1180,8 @@ pub(super) fn handle_exec_begin_now(
             history_index: Some(history_idx),
             history_id: None,
             explore_entry: None,
-            stdout: String::new(),
-            stderr: String::new(),
+            stdout_offset: 0,
+            stderr_offset: 0,
             wait_total: None,
             wait_active: false,
             wait_notes: Vec::new(),
@@ -1208,20 +1282,38 @@ pub(super) fn handle_exec_end_now(
             explore_entry,
             wait_total,
             wait_notes,
-            stdout: streamed_stdout,
-            stderr: streamed_stderr,
             ..
-        }) => (
-            command,
-            parsed,
-            history_id,
-            history_index,
-            explore_entry,
-            wait_total,
-            wait_notes,
-            streamed_stdout,
-            streamed_stderr,
-        ),
+        }) => {
+            let mut streamed_stdout = String::new();
+            let mut streamed_stderr = String::new();
+            if let Some(id) = history_id {
+                if let Some(HistoryRecord::Exec(record)) = chat.history_state.record(id).cloned() {
+                    streamed_stdout = stream_chunks_to_text(&record.stdout_chunks);
+                    streamed_stderr = stream_chunks_to_text(&record.stderr_chunks);
+                }
+            } else if let Some(idx) = history_index {
+                if let Some(exec_cell) = chat
+                    .history_cells
+                    .get(idx)
+                    .and_then(|cell| cell.as_any().downcast_ref::<history_cell::ExecCell>())
+                {
+                    streamed_stdout = stream_chunks_to_text(&exec_cell.record.stdout_chunks);
+                    streamed_stderr = stream_chunks_to_text(&exec_cell.record.stderr_chunks);
+                }
+            }
+
+            (
+                command,
+                parsed,
+                history_id,
+                history_index,
+                explore_entry,
+                wait_total,
+                wait_notes,
+                streamed_stdout,
+                streamed_stderr,
+            )
+        }
         None => {
             let mut history_id = chat
                 .history_state
