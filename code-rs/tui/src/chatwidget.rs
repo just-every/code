@@ -296,6 +296,9 @@ const AUTO_ESC_EXIT_HINT: &str = "Press Esc again to exit Auto Drive";
 const AUTO_COMPLETION_CELEBRATION_DURATION: Duration = Duration::from_secs(5);
 const HISTORY_ANIMATION_FRAME_INTERVAL: Duration = Duration::from_millis(120);
 const AUTO_BOOTSTRAP_GOAL_PLACEHOLDER: &str = "Deriving goal from recent conversation";
+const AUTO_DRIVE_SESSION_SUMMARY_NOTICE: &str = "Summarizing session";
+const AUTO_DRIVE_SESSION_SUMMARY_PROMPT: &str =
+    include_str!("../prompt_for_auto_drive_session_summary.md");
 const CONTEXT_DELTA_HISTORY: usize = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3124,6 +3127,18 @@ impl ChatWidget<'_> {
             self.auto_state.last_completion_explanation = None;
         }
         auto_drive_cards::clear(self);
+    }
+
+    fn auto_request_session_summary(&mut self) {
+        let prompt = AUTO_DRIVE_SESSION_SUMMARY_PROMPT.trim();
+        if prompt.is_empty() {
+            tracing::warn!("Auto Drive session summary prompt is empty");
+            return;
+        }
+
+        self.push_background_tail(AUTO_DRIVE_SESSION_SUMMARY_NOTICE.to_string());
+        self.request_redraw();
+        self.submit_hidden_text_message_with_preface(prompt.to_string(), String::new());
     }
 
     fn spawn_conversation_runtime(
@@ -17421,6 +17436,7 @@ Have we met every part of this goal and is there no further work to do?"#
                         AutoDriveStatus::Failed,
                         AutoDriveActionKind::Error,
                     );
+                    self.auto_request_session_summary();
                 }
                 AutoControllerEffect::StopCompleted { summary, message } => {
                     if let Some(handle) = self.auto_handle.take() {
@@ -17449,6 +17465,7 @@ Have we met every part of this goal and is there no further work to do?"#
                     if ENABLE_WARP_STRIPES {
                         self.header_wave.set_enabled(false, Instant::now());
                     }
+                    self.auto_request_session_summary();
                 }
                 AutoControllerEffect::TransientPause {
                     attempt,
