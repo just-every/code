@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.6.7] - 2025-12-17
+
+- Core/TUI: add remote model support and harden exec memory handling for safer runs. (db385786)
+- Auto Drive: summarize the last session on completion so users get a quick recap. (86f691d)
+- Exec: add a max-seconds budget with countdown nudges and clean up log paths for killed children. (0c323447, f1835d5)
+- Reliability: auto-retry turns after usage limits and avoid cloning large histories during retention cleanup. (220414d, b91e303)
+
 ## [0.6.6] - 2025-12-15
 
 - TUI: show Every Code title and stabilize header rendering so status bar and snapshots stay consistent. (1f77f7ac, a8b8beeb)
