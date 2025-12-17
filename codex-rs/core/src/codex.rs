@@ -66,8 +66,8 @@ use tracing::debug;
 use tracing::error;
 use tracing::field;
 use tracing::info;
-use tracing::info_span;
 use tracing::instrument;
+use tracing::trace_span;
 use tracing::warn;
 
 use crate::ModelProviderInfo;
@@ -77,6 +77,7 @@ use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::compact::collect_user_messages;
 use crate::config::Config;
+use crate::config::GhostSnapshotConfig;
 use crate::config::types::ShellEnvironmentPolicy;
 use crate::context_manager::ContextManager;
 use crate::environment_context::EnvironmentContext;
@@ -364,6 +365,7 @@ pub(crate) struct TurnContext {
     pub(crate) sandbox_policy: SandboxPolicy,
     pub(crate) shell_environment_policy: ShellEnvironmentPolicy,
     pub(crate) tools_config: ToolsConfig,
+    pub(crate) ghost_snapshot: GhostSnapshotConfig,
     pub(crate) final_output_json_schema: Option<Value>,
     pub(crate) codex_linux_sandbox_exe: Option<PathBuf>,
     pub(crate) tool_call_gate: Arc<ReadinessFlag>,
@@ -525,6 +527,7 @@ impl Session {
             sandbox_policy: session_configuration.sandbox_policy.clone(),
             shell_environment_policy: per_turn_config.shell_environment_policy.clone(),
             tools_config,
+            ghost_snapshot: per_turn_config.ghost_snapshot.clone(),
             final_output_json_schema: None,
             codex_linux_sandbox_exe: per_turn_config.codex_linux_sandbox_exe.clone(),
             tool_call_gate: Arc::new(ReadinessFlag::new()),
@@ -2070,6 +2073,7 @@ async fn spawn_review_thread(
         sub_id: sub_id.to_string(),
         client,
         tools_config,
+        ghost_snapshot: parent_turn_context.ghost_snapshot.clone(),
         developer_instructions: None,
         user_instructions: None,
         base_instructions: Some(base_instructions.clone()),
@@ -2145,6 +2149,16 @@ pub(crate) async fn run_task(
 ) -> Option<String> {
     if input.is_empty() {
         return None;
+    }
+
+    let auto_compact_limit = turn_context
+        .client
+        .get_model_family()
+        .auto_compact_token_limit()
+        .unwrap_or(i64::MAX);
+    let total_usage_tokens = sess.get_total_token_usage().await;
+    if total_usage_tokens >= auto_compact_limit {
+        run_auto_compact(&sess, &turn_context).await;
     }
     let event = EventMsg::TaskStarted(TaskStartedEvent {
         model_context_window: turn_context.client.get_model_context_window(),
@@ -2228,25 +2242,12 @@ pub(crate) async fn run_task(
                     needs_follow_up,
                     last_agent_message: turn_last_agent_message,
                 } = turn_output;
-                let limit = turn_context
-                    .client
-                    .get_model_family()
-                    .auto_compact_token_limit()
-                    .unwrap_or(i64::MAX);
                 let total_usage_tokens = sess.get_total_token_usage().await;
-                let token_limit_reached = total_usage_tokens >= limit;
+                let token_limit_reached = total_usage_tokens >= auto_compact_limit;
 
                 // as long as compaction works well in getting us way below the token limit, we shouldn't worry about being in an infinite loop.
-                if token_limit_reached {
-                    if should_use_remote_compact_task(
-                        sess.as_ref(),
-                        &turn_context.client.get_provider(),
-                    ) {
-                        run_inline_remote_auto_compact_task(sess.clone(), turn_context.clone())
-                            .await;
-                    } else {
-                        run_inline_auto_compact_task(sess.clone(), turn_context.clone()).await;
-                    }
+                if token_limit_reached && needs_follow_up {
+                    run_auto_compact(&sess, &turn_context).await;
                     continue;
                 }
 
@@ -2288,7 +2289,15 @@ pub(crate) async fn run_task(
     last_agent_message
 }
 
-#[instrument(
+async fn run_auto_compact(sess: &Arc<Session>, turn_context: &Arc<TurnContext>) {
+    if should_use_remote_compact_task(sess.as_ref(), &turn_context.client.get_provider()) {
+        run_inline_remote_auto_compact_task(Arc::clone(sess), Arc::clone(turn_context)).await;
+    } else {
+        run_inline_auto_compact_task(Arc::clone(sess), Arc::clone(turn_context)).await;
+    }
+}
+
+#[instrument(level = "trace",
     skip_all,
     fields(
         turn_id = %turn_context.sub_id,
@@ -2428,7 +2437,7 @@ async fn drain_in_flight(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[instrument(
+#[instrument(level = "trace",
     skip_all,
     fields(
         turn_id = %turn_context.sub_id,
@@ -2457,7 +2466,7 @@ async fn try_run_turn(
         .client
         .clone()
         .stream(prompt)
-        .instrument(info_span!("stream_request"))
+        .instrument(trace_span!("stream_request"))
         .or_cancel(&cancellation_token)
         .await??;
 
@@ -2472,9 +2481,10 @@ async fn try_run_turn(
     let mut needs_follow_up = false;
     let mut last_agent_message: Option<String> = None;
     let mut active_item: Option<TurnItem> = None;
-    let receiving_span = info_span!("receiving_stream");
+    let mut should_emit_turn_diff = false;
+    let receiving_span = trace_span!("receiving_stream");
     let outcome: CodexResult<TurnRunResult> = loop {
-        let handle_responses = info_span!(
+        let handle_responses = trace_span!(
             parent: &receiving_span,
             "handle_responses",
             otel.name = field::Empty,
@@ -2484,7 +2494,7 @@ async fn try_run_turn(
 
         let event = match stream
             .next()
-            .instrument(info_span!(parent: &handle_responses, "receiving"))
+            .instrument(trace_span!(parent: &handle_responses, "receiving"))
             .or_cancel(&cancellation_token)
             .await
         {
@@ -2547,14 +2557,7 @@ async fn try_run_turn(
             } => {
                 sess.update_token_usage_info(&turn_context, token_usage.as_ref())
                     .await;
-                let unified_diff = {
-                    let mut tracker = turn_diff_tracker.lock().await;
-                    tracker.get_unified_diff()
-                };
-                if let Ok(Some(unified_diff)) = unified_diff {
-                    let msg = EventMsg::TurnDiff(TurnDiffEvent { unified_diff });
-                    sess.send_event(&turn_context, msg).await;
-                }
+                should_emit_turn_diff = true;
 
                 break Ok(TurnRunResult {
                     needs_follow_up,
@@ -2628,7 +2631,18 @@ async fn try_run_turn(
         }
     };
 
-    drain_in_flight(&mut in_flight, sess, turn_context).await?;
+    drain_in_flight(&mut in_flight, sess.clone(), turn_context.clone()).await?;
+
+    if should_emit_turn_diff {
+        let unified_diff = {
+            let mut tracker = turn_diff_tracker.lock().await;
+            tracker.get_unified_diff()
+        };
+        if let Ok(Some(unified_diff)) = unified_diff {
+            let msg = EventMsg::TurnDiff(TurnDiffEvent { unified_diff });
+            sess.clone().send_event(&turn_context, msg).await;
+        }
+    }
 
     outcome
 }
