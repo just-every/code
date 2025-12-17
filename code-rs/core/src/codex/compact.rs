@@ -10,6 +10,7 @@ use crate::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::environment_context::EnvironmentContext;
 use crate::error::CodexErr;
+use crate::error::RetryAfter;
 use crate::error::Result as CodexResult;
 use crate::protocol::AgentMessageEvent;
 use crate::protocol::ErrorEvent;
@@ -28,8 +29,10 @@ use code_protocol::protocol::CompactedItem;
 use code_protocol::protocol::InputMessageKind;
 use code_protocol::protocol::RolloutItem;
 use base64::Engine;
+use chrono::Utc;
 use futures::prelude::*;
 use code_app_server_protocol::AuthMode;
+use std::time::Duration;
 
 pub const SUMMARIZATION_PROMPT: &str = include_str!("../../templates/compact/prompt.md");
 pub const COMPACTION_CHECKPOINT_MESSAGE: &str = "History checkpoint: earlier conversation compacted.";
@@ -259,6 +262,18 @@ pub(super) async fn perform_compaction(
                 break;
             }
             Err(CodexErr::Interrupted) => return Err(CodexErr::Interrupted),
+            Err(CodexErr::UsageLimitReached(limit_err)) => {
+                let now = Utc::now();
+                let retry_after = limit_err
+                    .retry_after(now)
+                    .unwrap_or_else(|| RetryAfter::from_duration(Duration::from_secs(5 * 60), now));
+                let mut message = format!("{limit_err} Auto-retrying");
+                message.push('…');
+                sess.notify_stream_error(&sub_id, message).await;
+                tokio::time::sleep(retry_after.delay).await;
+                retries = 0;
+                continue;
+            }
             Err(e) if is_context_overflow_error(&e) => {
                 if turn_input.len() > 1 {
                     tracing::warn!(
@@ -408,6 +423,18 @@ async fn run_compact_task_inner_inline(
                 break;
             }
             Err(CodexErr::Interrupted) => return Vec::new(),
+            Err(CodexErr::UsageLimitReached(limit_err)) => {
+                let now = Utc::now();
+                let retry_after = limit_err
+                    .retry_after(now)
+                    .unwrap_or_else(|| RetryAfter::from_duration(Duration::from_secs(5 * 60), now));
+                let mut message = format!("{limit_err} Auto-retrying");
+                message.push('…');
+                sess.notify_stream_error(&sub_id, message).await;
+                tokio::time::sleep(retry_after.delay).await;
+                retries = 0;
+                continue;
+            }
             Err(e) if is_context_overflow_error(&e) => {
                 if turn_input.len() > 1 {
                     tracing::warn!(

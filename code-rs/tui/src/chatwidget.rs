@@ -5627,14 +5627,11 @@ impl ChatWidget<'_> {
     fn mark_reconnecting(&mut self, message: String) {
         // Keep task running and surface a concise status in the input header.
         self.bottom_pane.set_task_running(true);
-        self.bottom_pane.update_status_text("Reconnecting...".to_string());
+        self.bottom_pane.update_status_text("Retrying...".to_string());
 
         if !self.reconnect_notice_active {
             self.reconnect_notice_active = true;
-            self.push_background_tail(format!(
-                "Connection lost. Auto-retrying… ({})",
-                message
-            ));
+            self.push_background_tail(format!("Auto-retrying… ({message})"));
         }
 
         // Do NOT clear running state or streams; the retry will resume them.
@@ -5648,7 +5645,7 @@ impl ChatWidget<'_> {
         self.reconnect_notice_active = false;
         self.bottom_pane.update_status_text(String::new());
         self.bottom_pane
-            .flash_footer_notice_for("Reconnected, resuming".to_string(), Duration::from_secs(2));
+            .flash_footer_notice_for("Resuming".to_string(), Duration::from_secs(2));
         self.request_redraw();
     }
 

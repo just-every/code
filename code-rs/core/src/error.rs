@@ -223,6 +223,14 @@ pub struct UsageLimitReachedError {
     pub resets_in_seconds: Option<u64>,
 }
 
+impl UsageLimitReachedError {
+    pub fn retry_after(&self, now: DateTime<Utc>) -> Option<RetryAfter> {
+        let seconds = self.resets_in_seconds?;
+        let delay = Duration::from_secs(seconds).saturating_add(Duration::from_secs(5));
+        Some(RetryAfter::from_duration(delay, now))
+    }
+}
+
 impl std::fmt::Display for UsageLimitReachedError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Base message differs slightly for legacy ChatGPT Plus plan users.
