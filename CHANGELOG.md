@@ -232,7 +232,7 @@
 - Settings overlay: consolidate every `/settings` pane into a two-level overlay so limits, themes, and automation toggles sit in one place with quick navigation.
 - TUI cards: introduce card-based history entries for Agents, Browser sessions, Web Search, and Auto Drive with grouped actions and overlays for deep detail.
 - Performance: tighten CPU and memory usage discovered in heavy automation scenarios to keep scrolling and rendering smooth.
-- Agents: let `/plan`, `/code`, and related commands target specific CLIs (e.g., `gemini-2.5-flash`, `claude-sonnet-4.5`) with future expansion handled from the new settings hub.
+- Agents: let `/plan`, `/code`, and related commands target specific CLIs (e.g., `gemini-3-flash`, `claude-sonnet-4.5`) with future expansion handled from the new settings hub.
 
 ## [0.2.188] - 2025-10-06
 

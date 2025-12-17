@@ -41,7 +41,7 @@ pub const DEFAULT_AGENT_NAMES: &[&str] = &[
     // Straightforward / cost-aware
     "code-gpt-5.1-codex-mini",
     "claude-sonnet-4.5",
-    "gemini-2.5-flash",
+    "gemini-3-flash",
     // Mixed/general and alternates
     "code-gpt-5.1",
     "claude-haiku-4.5",
@@ -94,7 +94,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         read_only_args: CODE_GPT5_READ_ONLY,
         write_args: CODE_GPT5_WRITE,
         model_args: &["--model", "gpt-5.2"],
-        description: "Latest GPT-5.2 frontier model with improvements across knowledge, reasoning, and coding.",
+        description: "Highest-capacity GPT option for tricky reasoning; use when correctness matters most.",
         enabled_by_default: true,
         aliases: &["gpt-5.2"],
         gating_env: None,
@@ -107,7 +107,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         read_only_args: CODE_GPT5_CODEX_READ_ONLY,
         write_args: CODE_GPT5_CODEX_WRITE,
         model_args: &["--model", "gpt-5.1-codex-max"],
-        description: "Frontline coding agent for all work; top of the line speed, reasoning and execution.",
+        description: "Primary coding agent for implementation and multi-file edits; strong speed and reliability.",
         enabled_by_default: true,
         aliases: &[
             "code-gpt-5.1-codex",
@@ -129,7 +129,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         read_only_args: CODE_GPT5_CODEX_READ_ONLY,
         write_args: CODE_GPT5_CODEX_WRITE,
         model_args: &["--model", "gpt-5.1-codex-mini"],
-        description: "Straightforward coding tasks: cheapest and quick; great for implementation, refactors, multi-file edits, and code reviews.",
+        description: "Budget coding agent for small changes and quick refactors; use when speed and cost matter.",
         enabled_by_default: true,
         aliases: &[
             "code-gpt-5-codex-mini",
@@ -148,7 +148,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         read_only_args: CODE_GPT5_READ_ONLY,
         write_args: CODE_GPT5_WRITE,
         model_args: &["--model", "gpt-5.1"],
-        description: "Mixed tasks that blend code with design/product reasoning; slower speed, but larger breadth.",
+        description: "General-purpose GPT model for mixed coding and product/design reasoning.",
         enabled_by_default: true,
         aliases: &[
             "code-gpt-5",
@@ -166,7 +166,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         read_only_args: CLAUDE_OPUS_READ_ONLY,
         write_args: CLAUDE_OPUS_WRITE,
         model_args: &["--model", "opus"],
-        description: "Frontline Claude for challenging or high-stakes tasks; excels at all coding tasks and novel problem solving.",
+        description: "Higher-capacity Claude model for complex reasoning; use when you want the strongest Claude.",
         enabled_by_default: true,
         aliases: &["claude-opus", "claude-opus-4.1"],
         gating_env: None,
@@ -179,7 +179,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         read_only_args: CLAUDE_SONNET_READ_ONLY,
         write_args: CLAUDE_SONNET_WRITE,
         model_args: &["--model", "sonnet"],
-        description: "Straightforward coding/support tasks; strong at implementation, tool use, debugging, and testing.",
+        description: "Balanced Claude model for implementation and debugging; a solid default when you want Claude.",
         enabled_by_default: true,
         aliases: &["claude", "claude-sonnet"],
         gating_env: None,
@@ -192,7 +192,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         read_only_args: CLAUDE_HAIKU_READ_ONLY,
         write_args: CLAUDE_HAIKU_WRITE,
         model_args: &["--model", "haiku"],
-        description: "Very fast model for simple tasks. Similar to gemini-2.5-flash in capability.",
+        description: "Fast Claude model for simple tasks, drafts, and quick iterations; pick when latency matters.",
         enabled_by_default: true,
         aliases: &["claude-haiku"],
         gating_env: None,
@@ -205,22 +205,28 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         read_only_args: GEMINI_PRO_READ_ONLY,
         write_args: GEMINI_PRO_WRITE,
         model_args: &["--model", "pro"],
-        description: "Frontline Gemini for challenging work; strong multimodal and high level reasoning.",
+        description: "Higher-capacity Gemini model for harder tasks; use when gemini-3-flash misses details.",
         enabled_by_default: true,
-        aliases: &["gemini-3-pro-preview", "gemini-3", "gemini3", "gemini", "gemini-2.5-pro"],
+        aliases: &[
+            "gemini-3-pro-preview",
+            "gemini-3",
+            "gemini3",
+            "gemini-pro",
+            "gemini-2.5-pro",
+        ],
         gating_env: None,
         is_frontline: true,
     },
     AgentModelSpec {
-        slug: "gemini-2.5-flash",
+        slug: "gemini-3-flash",
         family: "gemini",
         cli: "gemini",
         read_only_args: GEMINI_FLASH_READ_ONLY,
         write_args: GEMINI_FLASH_WRITE,
         model_args: &["--model", "flash"],
-        description: "Straightforward / budget tasks: very fast for scaffolding, minimal repros/tests, or high-volume edits.",
+        description: "Primary Gemini default for most tasks; fast and low-cost with near gemini-3-pro quality.",
         enabled_by_default: true,
-        aliases: &["gemini-flash"],
+        aliases: &["gemini", "gemini-flash", "gemini-2.5-flash"],
         gating_env: None,
         is_frontline: false,
     },
@@ -231,7 +237,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         read_only_args: QWEN_3_CODER_READ_ONLY,
         write_args: QWEN_3_CODER_WRITE,
         model_args: &["-m", "qwen-3-coder"],
-        description: "Fast and reasonably effective. Good for providing an alternative opinion as it has quite different training data to other models.",
+        description: "Fast and capable alternative; useful as a second opinion or for cross-checking.",
         enabled_by_default: true,
         aliases: &["qwen", "qwen3"],
         gating_env: None,
@@ -244,7 +250,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         read_only_args: CLOUD_GPT5_CODEX_READ_ONLY,
         write_args: CLOUD_GPT5_CODEX_WRITE,
         model_args: &["--model", "gpt-5.1-codex-max"],
-        description: "Cloud-hosted gpt-5.1-codex-max agent. Requires the CODE_ENABLE_CLOUD_AGENT_MODEL flag and carries the latency of a remote run.",
+        description: "Cloud-hosted gpt-5.1-codex-max agent; use for remote runs when enabled via CODE_ENABLE_CLOUD_AGENT_MODEL.",
         enabled_by_default: false,
         aliases: &["cloud-gpt-5.1-codex", "cloud-gpt-5-codex", "cloud"],
         gating_env: Some(CLOUD_MODEL_ENV_FLAG),
@@ -292,10 +298,7 @@ fn model_guide_intro(active_agents: &[String]) -> String {
     }
     let frontline_str = present_frontline.join(", ");
 
-    format!(
-        "Preferred agent models: use {frontline} for challenging coding/agentic work.",
-        frontline = frontline_str,
-    )
+    format!("Preferred agent models: use {frontline_str} for challenging coding/agentic work.")
 }
 
 fn model_guide_line(spec: &AgentModelSpec) -> String {

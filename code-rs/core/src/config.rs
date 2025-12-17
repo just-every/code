@@ -2453,6 +2453,11 @@ fn upgrade_legacy_model_slug(slug: &str) -> Option<String> {
         return Some("gemini-3-pro".to_string());
     }
 
+    // Upgrade Gemini 2.5 Flash to Gemini 3 Flash
+    if slug.eq_ignore_ascii_case("gemini-2.5-flash") {
+        return Some("gemini-3-flash".to_string());
+    }
+
     // Keep codex variants on their existing 5.1 line; there is no 5.2 codex.
     if slug.starts_with("gpt-5.1-codex") || slug.starts_with("test-gpt-5.1-codex") {
         return None;

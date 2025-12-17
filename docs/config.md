@@ -439,7 +439,7 @@ tool_timeout_sec = 30
 
 Sub-agents are orchestrated helper workflows you can trigger with slash commands (for example `/plan`, `/solve`, `/code`). Each entry under `[[subagents.commands]]` defines the slash command name, whether spawned agents run in read-only mode, which `agents` to launch, and extra guidance for both the orchestrator (Code) and the individual agents.
 
-By default (when no `[[agents]]` are configured) Code advertises these model slugs for multi-agent runs: `code-gpt-5.1`, `claude-sonnet-4.5`, `claude-opus-4.1`, `gemini-3-pro`, `gemini-2.5-pro`, `gemini-2.5-flash`, `qwen-3-coder`, `code-gpt-5.1-codex`, and `code-gpt-5.1-codex-mini`. The cloud counterpart, `cloud-gpt-5.1-codex`, only appears when `CODE_ENABLE_CLOUD_AGENT_MODEL=1` is set. You can override the list by defining `[[agents]]` entries or by specifying `agents = [ … ]` on a given `[[subagents.commands]]` entry.
+By default (when no `[[agents]]` are configured) Code advertises these model slugs for multi-agent runs: `code-gpt-5.2`, `code-gpt-5.1-codex-max`, `claude-opus-4.5`, `gemini-3-pro`, `code-gpt-5.1-codex-mini`, `claude-sonnet-4.5`, `gemini-3-flash`, `code-gpt-5.1`, `claude-haiku-4.5`, and `qwen-3-coder`. The cloud counterpart, `cloud-gpt-5.1-codex-max`, only appears when `CODE_ENABLE_CLOUD_AGENT_MODEL=1` is set. (`gemini` resolves to `gemini-3-flash`.) You can override the list by defining `[[agents]]` entries or by specifying `agents = [ … ]` on a given `[[subagents.commands]]` entry.
 
 ```toml
 [[subagents.commands]]
