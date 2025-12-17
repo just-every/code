@@ -7,6 +7,7 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 mod apply_patch;
+mod fs_sanitize;
 pub mod auth;
 pub mod auth_accounts;
 pub mod account_usage;

@@ -385,7 +385,9 @@ async fn consume_truncated_output(
     let (spool_stdout, spool_stderr, spool_combined) = if let Some(stream) = stdout_stream.as_ref()
         && let Some(root) = stream.spool_dir.as_ref()
     {
-        let base_dir = root.join(&stream.sub_id).join(&stream.call_id);
+        let safe_sub_id = crate::fs_sanitize::safe_path_component(&stream.sub_id, "sub");
+        let safe_call_id = crate::fs_sanitize::safe_path_component(&stream.call_id, "call");
+        let base_dir = root.join(safe_sub_id).join(safe_call_id);
         let _ = tokio::fs::create_dir_all(&base_dir).await;
 
         let stdout_path = base_dir.join("stdout.log");
@@ -461,6 +463,9 @@ async fn consume_truncated_output(
         spool_stderr,
     ));
 
+    let mut reap_after_kill = false;
+    let mut child_exited = false;
+
     let (exit_status, timed_out) = match timeout {
         Some(timeout) => {
             tokio::select! {
@@ -468,6 +473,7 @@ async fn consume_truncated_output(
                     match result {
                         Ok(status_result) => {
                             let exit_status = status_result?;
+                            child_exited = true;
                             (exit_status, false)
                         }
                         Err(_) => {
@@ -480,6 +486,7 @@ async fn consume_truncated_output(
                                 }
                             }
                             killer.as_mut().start_kill()?;
+                            reap_after_kill = true;
                             // Debatable whether `child.wait().await` should be called here.
                             (synthetic_exit_status(EXIT_CODE_SIGNAL_BASE + TIMEOUT_CODE), true)
                         }
@@ -487,6 +494,7 @@ async fn consume_truncated_output(
                 }
                 _ = tokio::signal::ctrl_c() => {
                     killer.as_mut().start_kill()?;
+                    reap_after_kill = true;
                     (synthetic_exit_status(EXIT_CODE_SIGNAL_BASE + SIGKILL_CODE), false)
                 }
             }
@@ -496,19 +504,30 @@ async fn consume_truncated_output(
             tokio::select! {
                 status_result = killer.as_mut().wait() => {
                     let exit_status = status_result?;
+                    child_exited = true;
                     (exit_status, false)
                 }
                 _ = tokio::signal::ctrl_c() => {
                     killer.as_mut().start_kill()?;
+                    reap_after_kill = true;
                     (synthetic_exit_status(EXIT_CODE_SIGNAL_BASE + SIGKILL_CODE), false)
                 }
             }
         }
     };
 
+    if reap_after_kill {
+        let reap_timeout = Duration::from_secs(2);
+        if let Ok(Ok(_)) = tokio::time::timeout(reap_timeout, killer.as_mut().wait()).await {
+            child_exited = true;
+        }
+    }
+
     // Disarm killer now that we've observed process termination status to
     // avoid re-sending a kill signal during Drop.
-    killer.disarm();
+    if child_exited {
+        killer.disarm();
+    }
 
     // If we timed out, abort the readers after a short grace to prevent hanging when pipes
     // remain open due to orphaned grandchildren.

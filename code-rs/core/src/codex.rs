@@ -2061,7 +2061,9 @@ impl Session {
         }
 
         let cwd = self.get_cwd().to_path_buf();
-        let filename = format!("user-message-{}-{}.txt", sub_id, Uuid::new_v4());
+        let safe_sub_id = crate::fs_sanitize::safe_path_component(sub_id, "sub");
+        let uuid = Uuid::new_v4();
+        let filename = format!("user-message-{safe_sub_id}-{uuid}.txt");
         let file_note = match ensure_user_dir(&cwd)
             .and_then(|dir| write_agent_file(&dir, &filename, &aggregated))
         {
@@ -6828,7 +6830,8 @@ async fn handle_response_item(
 
 // Helper utilities for agent output/progress management
 fn ensure_agent_dir(cwd: &Path, agent_id: &str) -> Result<PathBuf, String> {
-    let dir = cwd.join(".code").join("agents").join(agent_id);
+    let safe_agent_id = crate::fs_sanitize::safe_path_component(agent_id, "agent");
+    let dir = cwd.join(".code").join("agents").join(safe_agent_id);
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Failed to create agent dir {}: {}", dir.display(), e))?;
     Ok(dir)
@@ -6842,7 +6845,25 @@ fn ensure_user_dir(cwd: &Path) -> Result<PathBuf, String> {
 }
 
 fn write_agent_file(dir: &Path, filename: &str, content: &str) -> Result<PathBuf, String> {
-    let path = dir.join(filename);
+    if filename
+        .chars()
+        .any(|ch| matches!(ch, '/' | '\\' | '\0'))
+    {
+        return Err(format!("Refusing to write invalid filename: {filename}"));
+    }
+    let candidate = Path::new(filename);
+    if candidate.is_absolute() || candidate.components().count() != 1 {
+        return Err(format!("Refusing to write non-file component: {filename}"));
+    }
+    let Some(file_name) = candidate.file_name() else {
+        return Err(format!("Refusing to write invalid filename: {filename}"));
+    };
+    let file_name = file_name.to_string_lossy();
+    if file_name.is_empty() || file_name == "." || file_name == ".." {
+        return Err(format!("Refusing to write invalid filename: {filename}"));
+    }
+
+    let path = dir.join(file_name.as_ref());
     std::fs::write(&path, content)
         .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
     Ok(path)
@@ -11815,8 +11836,10 @@ fn truncate_exec_output_for_storage(
         return maybe_truncated;
     }
 
+    let safe_call_id = crate::fs_sanitize::safe_path_component(call_id, "exec");
+    let filename = format!("exec-{safe_call_id}.txt");
     let file_note = match ensure_agent_dir(cwd, sub_id)
-        .and_then(|dir| write_agent_file(&dir, &format!("exec-{call_id}.txt"), full))
+        .and_then(|dir| write_agent_file(&dir, &filename, full))
     {
         Ok(path) => format!("\n\n[Full output saved to: {}]", path.display()),
         Err(e) => format!("\n\n[Full output was too large and truncation applied; failed to save file: {e}]")
