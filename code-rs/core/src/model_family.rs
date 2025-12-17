@@ -149,7 +149,7 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
             default_reasoning_effort: Some(ReasoningEffort::Medium),
         )
-    } else if slug.starts_with("exp-codex") {
+    } else if slug.starts_with("exp-codex") || slug.starts_with("codex-1p") {
         // Same defaults as gpt-5.1-codex-max.
         model_family!(
             slug, slug,

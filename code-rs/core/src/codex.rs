@@ -11664,6 +11664,8 @@ fn truncate_middle_bytes(s: &str, max_bytes: usize) -> (String, bool, usize, usi
 fn format_exec_output_str(exec_output: &ExecToolCallOutput) -> String {
     let ExecToolCallOutput {
         aggregated_output,
+        duration,
+        timed_out,
         ..
     } = exec_output;
 
@@ -11677,6 +11679,12 @@ fn format_exec_output_str(exec_output: &ExecToolCallOutput) -> String {
             format_bytes(EXEC_CAPTURE_MAX_BYTES),
         );
         formatted_output = format!("{note}{formatted_output}");
+    }
+
+    if *timed_out {
+        let timeout_ms = duration.as_millis();
+        formatted_output =
+            format!("command timed out after {timeout_ms} milliseconds\n{formatted_output}");
     }
     if let Some(truncated_after_lines) = aggregated_output.truncated_after_lines {
         formatted_output.push_str(&format!(
