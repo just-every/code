@@ -10,7 +10,9 @@ use super::compact::{
 use super::Session;
 use super::TurnContext;
 use crate::Prompt;
+use crate::error::CodexErr;
 use crate::error::Result as CodexResult;
+use crate::error::RetryAfter;
 use crate::protocol::AgentMessageEvent;
 use crate::protocol::ErrorEvent;
 use crate::protocol::EventMsg;
@@ -20,6 +22,7 @@ use code_protocol::models::ResponseItem;
 use code_protocol::protocol::CompactedItem;
 use code_protocol::protocol::RolloutItem;
 use crate::util::backoff;
+use std::time::Duration;
 
 pub(super) async fn run_inline_remote_auto_compact_task(
     sess: Arc<Session>,
@@ -122,6 +125,18 @@ async fn run_remote_compact_task_inner(
                 }
 
                 return Err(err);
+            }
+            Err(CodexErr::UsageLimitReached(limit_err)) => {
+                let now = chrono::Utc::now();
+                let retry_after = limit_err
+                    .retry_after(now)
+                    .unwrap_or_else(|| RetryAfter::from_duration(Duration::from_secs(5 * 60), now));
+                let mut message = format!("{limit_err} Auto-retrying");
+                message.push('…');
+                sess.notify_stream_error(sub_id, message).await;
+                tokio::time::sleep(retry_after.delay).await;
+                retries = 0;
+                continue;
             }
             Err(err) => {
                 if retries < max_retries {

@@ -5891,30 +5891,42 @@ async fn run_turn(
             }
             Err(CodexErr::Interrupted) => return Err(CodexErr::Interrupted),
             Err(CodexErr::EnvVar(var)) => return Err(CodexErr::EnvVar(var)),
-            Err(e @ (CodexErr::UsageLimitReached(_)
-                | CodexErr::UsageNotIncluded
-                | CodexErr::QuotaExceeded)) => {
-                if let CodexErr::UsageLimitReached(limit_err) = &e {
-                    if let Some(ctx) = account_usage_context(&sess) {
-                        let usage_home = ctx.code_home.clone();
-                        let usage_account = ctx.account_id.clone();
-                        let usage_plan = ctx.plan.clone();
-                        let resets = limit_err.resets_in_seconds;
-                        spawn_usage_task(move || {
-                            if let Err(err) = account_usage::record_usage_limit_hint(
-                                &usage_home,
-                                &usage_account,
-                                usage_plan.as_deref(),
-                                resets,
-                                Utc::now(),
-                            ) {
-                                warn!("Failed to persist usage limit hint: {err}");
-                            }
-                        });
-                    }
+            Err(CodexErr::UsageLimitReached(limit_err)) => {
+                if let Some(ctx) = account_usage_context(sess) {
+                    let usage_home = ctx.code_home.clone();
+                    let usage_account = ctx.account_id.clone();
+                    let usage_plan = ctx.plan.clone();
+                    let resets = limit_err.resets_in_seconds;
+                    spawn_usage_task(move || {
+                        if let Err(err) = account_usage::record_usage_limit_hint(
+                            &usage_home,
+                            &usage_account,
+                            usage_plan.as_deref(),
+                            resets,
+                            Utc::now(),
+                        ) {
+                            warn!("Failed to persist usage limit hint: {err}");
+                        }
+                    });
                 }
-                return Err(e);
+
+                let now = Utc::now();
+                let retry_after = limit_err
+                    .retry_after(now)
+                    .unwrap_or_else(|| RetryAfter::from_duration(std::time::Duration::from_secs(5 * 60), now));
+                let eta = format_retry_eta(&retry_after);
+                let mut retry_message = format!("{limit_err} Auto-retrying");
+                if let Some(eta) = eta {
+                    retry_message.push_str(&format!(" at {eta}"));
+                }
+                retry_message.push('…');
+                sess.notify_stream_error(&sub_id, retry_message).await;
+                tokio::time::sleep(retry_after.delay).await;
+                retries = 0;
+                continue;
             }
+            Err(CodexErr::UsageNotIncluded) => return Err(CodexErr::UsageNotIncluded),
+            Err(CodexErr::QuotaExceeded) => return Err(CodexErr::QuotaExceeded),
             Err(e) => {
                 // Detect context-window overflow and auto-run a compact summarization once
                 if !did_auto_compact {
