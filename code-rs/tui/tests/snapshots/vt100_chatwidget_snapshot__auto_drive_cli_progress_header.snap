@@ -12,7 +12,7 @@ expression: "frames.join(\"\\n---FRAME---\\n\")"
  +----------------------------------------------------------------------------+
  | What can I code for you today?                                             |
  +----------------------------------------------------------------------------+
- • Agents Enabled  •  Diagnostics Enabled                              API key
+ • Agents Enabled  • Diagnostics Enabled                              API key
 
 ---FRAME---
  +----------------------------------------------------------------------------+
@@ -25,7 +25,7 @@ expression: "frames.join(\"\\n---FRAME---\\n\")"
  +----------------------------------------------------------------------------+
  | What can I code for you today?                                             |
  +----------------------------------------------------------------------------+
- • Agents Enabled  •  Diagnostics Enabled                              API key
+ • Agents Enabled  • Diagnostics Enabled                              API key
 
 ---FRAME---
  +----------------------------------------------------------------------------+
@@ -38,4 +38,4 @@ expression: "frames.join(\"\\n---FRAME---\\n\")"
  +----------------------------------------------------------------------------+
  | What can I code for you today?                                             |
  +----------------------------------------------------------------------------+
- • Agents Enabled  •  Diagnostics Enabled                              API key
+ • Agents Enabled  • Diagnostics Enabled                              API key

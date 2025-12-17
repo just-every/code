@@ -2123,7 +2123,7 @@ impl ChatComposer {
 
         for (index, part) in parts.iter().enumerate() {
             if index > 0 {
-                spans.push(Span::from("  •  ".to_string()).style(label_style));
+                spans.push(Span::from("  • ").style(label_style));
             } else if leading_bullet {
                 spans.push(Span::from("• ").style(label_style));
             }
@@ -2481,6 +2481,9 @@ impl ChatComposer {
                 let base_left_pad = Span::from("  ").style(label_style);
                 let base_left_pad_len = base_left_pad.content.chars().count();
 
+                let leading_bullet_pad = Span::from(" ").style(label_style);
+                let leading_bullet_pad_len = leading_bullet_pad.content.chars().count();
+
                 let mut include_auto_review_status = left_sections.iter().any(|(p, _, inc)| *p == 3 && *inc);
                 let mut include_auto_review_agent_hint =
                     right_sections.iter().any(|(p, _, inc)| *p == 3 && *inc);
@@ -2492,6 +2495,16 @@ impl ChatComposer {
                 // helper closures to rebuild assembled spans based on current flags
                 let span_len = |spans: &[Span<'static>]| -> usize {
                     spans.iter().map(|s| s.content.chars().count()).sum()
+                };
+
+                let spans_start_with_bullet = |spans: &[Span<'static>]| -> bool {
+                    spans
+                        .iter()
+                        .find_map(|span| {
+                            let trimmed = span.content.trim_start();
+                            (!trimmed.is_empty()).then(|| trimmed.starts_with('•'))
+                        })
+                        .unwrap_or(false)
                 };
 
                 let build_left = |
@@ -2610,7 +2623,16 @@ impl ChatComposer {
                     );
 
                     let add_base_pad = include_auto_review_status && !left_spans_eval.is_empty();
-                    left_len = l_len + if add_base_pad { base_left_pad_len } else { 0 };
+                    let add_leading_bullet_pad = self.auto_drive_active
+                        && !include_auto_review_status
+                        && spans_start_with_bullet(&left_spans_eval);
+                    left_len = l_len
+                        + if add_base_pad { base_left_pad_len } else { 0 }
+                        + if add_leading_bullet_pad {
+                            leading_bullet_pad_len
+                        } else {
+                            0
+                        };
                     right_len = r_len;
                     let total_len = left_len + right_len + trailing_pad;
 
@@ -2618,6 +2640,9 @@ impl ChatComposer {
                         let mut with_pad = left_spans_eval;
                         if add_base_pad {
                             with_pad.insert(0, base_left_pad.clone());
+                        }
+                        if add_leading_bullet_pad {
+                            with_pad.insert(0, leading_bullet_pad.clone());
                         }
                         final_left = with_pad;
                         final_right = right_spans_eval;
@@ -2660,6 +2685,9 @@ impl ChatComposer {
                             let mut with_pad = left_spans_eval;
                             if add_base_pad {
                                 with_pad.insert(0, base_left_pad.clone());
+                            }
+                            if add_leading_bullet_pad {
+                                with_pad.insert(0, leading_bullet_pad.clone());
                             }
                             final_left = with_pad;
                             final_right = right_spans_eval;
