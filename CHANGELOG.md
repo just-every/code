@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.8] - 2025-12-18
+
+- Agents: default frontline automation to gemini-3-flash for faster runs. (bfc41e28)
+- TUI/Auto Drive: normalize footer hint spacing so prompts align cleanly. (8da0bda7)
+
 ## [0.6.7] - 2025-12-17
 
 - Core/TUI: add remote model support and harden exec memory handling for safer runs. (db385786)
