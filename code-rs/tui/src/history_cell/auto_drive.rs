@@ -15,7 +15,9 @@ use super::{HistoryCell, HistoryCellType, ToolCellStatus};
 use crate::card_theme;
 use crate::glitch_animation::{gradient_multi, mix_rgb};
 use crate::gradient_background::{GradientBackground, RevealRender};
+use crate::util::buffer::fill_rect;
 use crate::colors;
+use crate::theme::{palette_mode, PaletteMode};
 use code_common::elapsed::format_duration_digital;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -97,6 +99,7 @@ pub(crate) struct AutoDriveCardCell {
     actions: Vec<AutoDriveAction>,
     cell_key: Option<String>,
     signature: Option<String>,
+    background_override: Option<Color>,
     reveal_started_at: Option<Instant>,
     first_action_at: Option<Instant>,
     completion_message: Option<String>,
@@ -105,16 +108,21 @@ pub(crate) struct AutoDriveCardCell {
 
 impl AutoDriveCardCell {
     pub(crate) fn new(goal: Option<String>) -> Self {
-        let reveal_started_at = active_auto_drive_theme()
-            .theme
-            .reveal
-            .map(|_| Instant::now());
+        let reveal_started_at = if palette_mode() == PaletteMode::Ansi16 {
+            None
+        } else {
+            active_auto_drive_theme()
+                .theme
+                .reveal
+                .map(|_| Instant::now())
+        };
         let cell = Self {
             goal: goal.and_then(Self::normalize_text),
             status: AutoDriveStatus::Running,
             actions: Vec::new(),
             cell_key: None,
             signature: None,
+            background_override: None,
             reveal_started_at,
             first_action_at: None,
             completion_message: None,
@@ -150,6 +158,14 @@ impl AutoDriveCardCell {
 
     pub(crate) fn set_status(&mut self, status: AutoDriveStatus) {
         self.status = status;
+    }
+
+    pub(crate) fn set_background_override(&mut self, background: Option<Color>) {
+        self.background_override = background;
+    }
+
+    pub(crate) fn disable_reveal(&mut self) {
+        self.reveal_started_at = None;
     }
 
     pub(crate) fn push_action(&mut self, text: impl Into<String>, kind: AutoDriveActionKind) {
@@ -1038,6 +1054,15 @@ impl AutoDriveCardCell {
     }
 
     fn celebration_background_style() -> Style {
+        if palette_mode() == PaletteMode::Ansi16 {
+            let fg = if is_dark_theme_active() {
+                Color::White
+            } else {
+                Color::Black
+            };
+            return Style::default().fg(fg);
+        }
+
         Style::default().fg(Color::Rgb(255, 255, 255))
     }
 
@@ -1059,21 +1084,44 @@ impl AutoDriveCardCell {
         }
         let style = auto_drive_card_style();
 
-        let reveal = self.reveal_progress().and_then(|(progress, theme)| {
-            theme.theme.reveal.map(|config| RevealRender {
-                progress,
-                variant: config.variant,
-                intro_light: !is_dark_theme_active(),
-            })
-        });
-
         let draw_width = area.width - 2;
         let render_area = Rect {
             width: draw_width,
             ..area
         };
 
-        GradientBackground::render(buf, render_area, &style.gradient, style.text_primary, reveal);
+        if let Some(bg) = self.background_override {
+            fill_rect(
+                buf,
+                render_area,
+                Some(' '),
+                Style::default().fg(style.text_primary).bg(bg),
+            );
+        } else if palette_mode() == PaletteMode::Ansi16 {
+            fill_rect(
+                buf,
+                render_area,
+                Some(' '),
+                Style::default()
+                    .fg(style.text_primary)
+                    .bg(style.gradient.left),
+            );
+        } else {
+            let reveal = self.reveal_progress().and_then(|(progress, theme)| {
+                theme.theme.reveal.map(|config| RevealRender {
+                    progress,
+                    variant: config.variant,
+                    intro_light: !is_dark_theme_active(),
+                })
+            });
+            GradientBackground::render(
+                buf,
+                render_area,
+                &style.gradient,
+                style.text_primary,
+                reveal,
+            );
+        }
 
         let rows = self.build_card_rows(render_area.width, &style);
         let lines = rows_to_lines(&rows, &style, render_area.width);

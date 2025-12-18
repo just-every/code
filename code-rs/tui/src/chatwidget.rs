@@ -13997,7 +13997,21 @@ impl ChatWidget<'_> {
         self.request_redraw();
     }
 
-    pub(crate) fn handle_demo_command(&mut self) {
+    pub(crate) fn handle_demo_command(&mut self, command_args: String) {
+        let trimmed_args = command_args.trim();
+        if !trimmed_args.is_empty() {
+            if self.handle_demo_auto_drive_card_background_palette(trimmed_args) {
+                self.request_redraw();
+                return;
+            }
+
+            self.history_push_plain_state(history_cell::new_warning_event(format!(
+                "demo: unknown args '{trimmed_args}' (try: /demo auto drive card)",
+            )));
+            self.request_redraw();
+            return;
+        }
+
         use ratatui::style::Modifier as RtModifier;
         use ratatui::style::Style as RtStyle;
         use ratatui::text::Span;
@@ -14434,6 +14448,96 @@ impl ChatWidget<'_> {
         self.schedule_auto_drive_card_celebration(Duration::from_secs(2), Some(celebration_message));
 
         self.request_redraw();
+    }
+
+    fn handle_demo_auto_drive_card_background_palette(&mut self, args: &str) -> bool {
+        if !Self::demo_command_is_auto_drive_card_backgrounds(args) {
+            return false;
+        }
+
+        let (r, g, b) = crate::colors::color_to_rgb(crate::colors::background());
+        let luminance = (0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32) / 255.0;
+        let theme_label = if luminance < 0.5 { "dark" } else { "light" };
+
+        self.history_push_plain_state(history_cell::plain_message_state_from_lines(
+            vec![
+                ratatui::text::Line::from("Auto Drive card — ANSI-16 background palette"),
+                ratatui::text::Line::from(format!(
+                    "Theme context: {theme_label} (based on current /theme background)",
+                )),
+                ratatui::text::Line::from(
+                    "Tip: switch /theme (dark/light) and rerun to compare.".to_string(),
+                ),
+            ],
+            HistoryCellType::Notice,
+        ));
+
+        use ratatui::style::Color;
+        const PALETTE: &[(Color, &str)] = &[
+            (Color::Black, "Black"),
+            (Color::Red, "Red"),
+            (Color::Green, "Green"),
+            (Color::Yellow, "Yellow"),
+            (Color::Blue, "Blue"),
+            (Color::Magenta, "Magenta"),
+            (Color::Cyan, "Cyan"),
+            (Color::Gray, "Gray"),
+            (Color::DarkGray, "DarkGray"),
+            (Color::LightRed, "LightRed"),
+            (Color::LightGreen, "LightGreen"),
+            (Color::LightYellow, "LightYellow"),
+            (Color::LightBlue, "LightBlue"),
+            (Color::LightMagenta, "LightMagenta"),
+            (Color::LightCyan, "LightCyan"),
+            (Color::White, "White"),
+        ];
+
+        for (idx, (bg, name)) in PALETTE.iter().enumerate() {
+            let ordinal = idx + 1;
+            let goal = format!("ANSI-16 bg {ordinal:02}: {name}");
+            let mut auto_drive_card = history_cell::AutoDriveCardCell::new(Some(goal));
+            auto_drive_card.disable_reveal();
+            auto_drive_card.set_background_override(Some(*bg));
+            auto_drive_card.push_action(
+                "Queued smoke tests across agents",
+                AutoDriveActionKind::Info,
+            );
+            auto_drive_card.push_action(
+                "Warning: macOS shard flaked",
+                AutoDriveActionKind::Warning,
+            );
+            auto_drive_card.push_action(
+                "Action required: retry or pause run",
+                AutoDriveActionKind::Error,
+            );
+            auto_drive_card.set_status(AutoDriveStatus::Paused);
+            self.history_push(auto_drive_card);
+        }
+
+        true
+    }
+
+    fn demo_command_is_auto_drive_card_backgrounds(args: &str) -> bool {
+        let normalized = args.trim().to_ascii_lowercase();
+        let simplified = normalized.replace(['-', '_'], " ");
+        let tokens: std::collections::HashSet<&str> = simplified.split_whitespace().collect();
+        if tokens.is_empty() {
+            return false;
+        }
+
+        let wants_auto_drive = (tokens.contains("auto") && tokens.contains("drive"))
+            || tokens.contains("autodrive")
+            || tokens.contains("auto-drive");
+        let wants_card = tokens.contains("card") || tokens.contains("cards");
+        let wants_background = tokens.contains("bg")
+            || tokens.contains("background")
+            || tokens.contains("backgrounds")
+            || tokens.contains("color")
+            || tokens.contains("colors")
+            || tokens.contains("colour")
+            || tokens.contains("colours");
+
+        wants_auto_drive && (wants_card || wants_background)
     }
 
     fn add_perf_output(&mut self, text: String) {
