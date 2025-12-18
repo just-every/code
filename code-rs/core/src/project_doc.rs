@@ -14,6 +14,8 @@
 //! 3.  We do **not** walk past the Git root.
 
 use crate::config::Config;
+use crate::skills::SkillMetadata;
+use crate::skills::render_skills_section;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use tokio::io::AsyncReadExt;
@@ -31,7 +33,12 @@ const PROJECT_DOC_SEPARATOR: &str = "\n\n--- project-doc ---\n\n";
 
 /// Combines `Config::instructions` and `AGENTS.md` (if present) into a single
 /// string of instructions.
-pub(crate) async fn get_user_instructions(config: &Config) -> Option<String> {
+pub(crate) async fn get_user_instructions(
+    config: &Config,
+    skills: Option<&[SkillMetadata]>,
+) -> Option<String> {
+    let skills_section = skills.and_then(render_skills_section);
+
     let project_doc_parts = match read_project_doc_parts(config).await {
         Ok(Some(parts)) => parts,
         Ok(None) => Vec::new(),
@@ -63,14 +70,21 @@ pub(crate) async fn get_user_instructions(config: &Config) -> Option<String> {
         }
     }
 
+    if let Some(skills_section) = skills_section {
+        let key = skills_section.trim();
+        if !key.is_empty() && seen.insert(key.to_string()) {
+            unique_project_docs.push(skills_section);
+        }
+    }
+
     match (base_instructions, unique_project_docs.is_empty()) {
         (None, true) => None,
         (Some(base), true) => Some(base),
         (None, false) => Some(unique_project_docs.join("\n\n")),
-        (Some(base), false) => Some(format!(
-            "{base}{PROJECT_DOC_SEPARATOR}{}",
-            unique_project_docs.join("\n\n")
-        )),
+        (Some(base), false) => {
+            let docs = unique_project_docs.join("\n\n");
+            Some(format!("{base}{PROJECT_DOC_SEPARATOR}{docs}"))
+        }
     }
 }
 
@@ -284,7 +298,7 @@ mod tests {
     async fn no_doc_file_returns_none() {
         let tmp = tempfile::tempdir().expect("tempdir");
 
-        let res = get_user_instructions(&make_config(&tmp, 4096, None)).await;
+        let res = get_user_instructions(&make_config(&tmp, 4096, None), None).await;
         assert!(
             res.is_none(),
             "Expected None when AGENTS.md is absent and no system instructions provided"
@@ -298,7 +312,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         fs::write(tmp.path().join("AGENTS.md"), "hello world").unwrap();
 
-        let res = get_user_instructions(&make_config(&tmp, 4096, None))
+        let res = get_user_instructions(&make_config(&tmp, 4096, None), None)
             .await
             .expect("doc expected");
 
@@ -317,7 +331,7 @@ mod tests {
         let huge = "A".repeat(LIMIT * 2); // 2 KiB
         fs::write(tmp.path().join("AGENTS.md"), &huge).unwrap();
 
-        let res = get_user_instructions(&make_config(&tmp, LIMIT, None))
+        let res = get_user_instructions(&make_config(&tmp, LIMIT, None), None)
             .await
             .expect("doc expected");
 
@@ -349,7 +363,7 @@ mod tests {
         let mut cfg = make_config(&repo, 4096, None);
         cfg.cwd = nested;
 
-        let res = get_user_instructions(&cfg).await.expect("doc expected");
+        let res = get_user_instructions(&cfg, None).await.expect("doc expected");
         assert_eq!(res, "root level doc");
     }
 
@@ -359,7 +373,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         fs::write(tmp.path().join("AGENTS.md"), "something").unwrap();
 
-        let res = get_user_instructions(&make_config(&tmp, 0, None)).await;
+        let res = get_user_instructions(&make_config(&tmp, 0, None), None).await;
         assert!(
             res.is_none(),
             "With limit 0 the function should return None"
@@ -375,7 +389,7 @@ mod tests {
 
         const INSTRUCTIONS: &str = "base instructions";
 
-        let res = get_user_instructions(&make_config(&tmp, 4096, Some(INSTRUCTIONS)))
+        let res = get_user_instructions(&make_config(&tmp, 4096, Some(INSTRUCTIONS)), None)
             .await
             .expect("should produce a combined instruction string");
 
@@ -391,7 +405,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         fs::write(tmp.path().join("AGENTS.md"), "same text").unwrap();
 
-        let res = get_user_instructions(&make_config(&tmp, 4096, Some("same text")))
+        let res = get_user_instructions(&make_config(&tmp, 4096, Some("same text")), None)
             .await
             .expect("instructions expected");
 
@@ -415,7 +429,9 @@ mod tests {
         let mut cfg = make_config(&repo, 4096, Some("shared"));
         cfg.cwd = nested;
 
-        let res = get_user_instructions(&cfg).await.expect("instructions expected");
+        let res = get_user_instructions(&cfg, None)
+            .await
+            .expect("instructions expected");
 
         assert_eq!(res, format!("shared{PROJECT_DOC_SEPARATOR}{}", "new info"));
     }
@@ -436,7 +452,7 @@ mod tests {
         let mut cfg = make_config(&repo, 4096, None);
         cfg.cwd = nested;
 
-        let res = get_user_instructions(&cfg).await.expect("doc expected");
+        let res = get_user_instructions(&cfg, None).await.expect("doc expected");
         assert_eq!(res, "root doc");
     }
 
@@ -448,7 +464,7 @@ mod tests {
 
         const INSTRUCTIONS: &str = "some instructions";
 
-        let res = get_user_instructions(&make_config(&tmp, 4096, Some(INSTRUCTIONS))).await;
+        let res = get_user_instructions(&make_config(&tmp, 4096, Some(INSTRUCTIONS)), None).await;
 
         assert_eq!(res, Some(INSTRUCTIONS.to_string()));
     }
@@ -477,7 +493,7 @@ mod tests {
         let mut cfg = make_config(&repo, 4096, None);
         cfg.cwd = nested;
 
-        let res = get_user_instructions(&cfg).await.expect("doc expected");
+        let res = get_user_instructions(&cfg, None).await.expect("doc expected");
         assert_eq!(res, "root doc\n\ncrate doc");
     }
 
