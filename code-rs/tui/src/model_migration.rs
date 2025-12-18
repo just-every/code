@@ -33,11 +33,11 @@ pub(crate) fn migration_copy_for_key(key: &str) -> ModelMigrationCopy {
             can_opt_out: false,
         },
         code_common::model_presets::HIDE_GPT_5_2_MIGRATION_PROMPT_CONFIG => ModelMigrationCopy {
-            heading: "Upgrade available: GPT-5.2",
+            heading: "Upgrade available: GPT-5.2 Codex",
             content: &[
-                "OpenAI's latest frontier model is here! Improved knowledge, reasoning, and coding.",
-                "Switch now to get better results; you can keep your current model if you prefer.",
-                "Learn more: www.openai.com/index/gpt-5-2",
+                "OpenAI's latest frontier agentic coding model is here: gpt-5.2-codex.",
+                "Switch now for better coding results; you can keep your current model if you prefer.",
+                "Learn more: openai.com/index/introducing-gpt-5-2-codex",
             ],
             can_opt_out: true,
         },
@@ -127,7 +127,7 @@ fn render_prompt(stdout: &mut io::Stdout, copy: &ModelMigrationCopy, highlighted
     stdout.execute(Clear(ClearType::All))?;
     stdout.execute(MoveTo(0, 0))?;
 
-    if copy.heading == "Upgrade available: GPT-5.2" {
+    if copy.heading == "Upgrade available: GPT-5.2 Codex" {
         let success_fg = CtColor::from(colors::success());
         write_line_fg_bold(stdout, copy.heading, success_fg)?;
     } else {

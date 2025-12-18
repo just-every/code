@@ -70,7 +70,7 @@ use which::which;
 
 pub(crate) const OPENAI_DEFAULT_MODEL: &str = "gpt-5.1-codex-max";
 const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5.1-codex-max";
-pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5.1-codex-max";
+pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5.2-codex";
 
 const fn default_true_local() -> bool {
     true
@@ -2458,7 +2458,8 @@ fn upgrade_legacy_model_slug(slug: &str) -> Option<String> {
         return Some("gemini-3-flash".to_string());
     }
 
-    // Keep codex variants on their existing 5.1 line; there is no 5.2 codex.
+    // Keep codex variants on their existing line; upgrades are surfaced via the
+    // migration prompt instead of silently rewriting explicit config.
     if slug.starts_with("gpt-5.1-codex") || slug.starts_with("test-gpt-5.1-codex") {
         return None;
     }

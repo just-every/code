@@ -51,6 +51,9 @@ pub(crate) fn merge_remote_models(remote_models: Vec<ModelInfo>, local_presets: 
 }
 
 fn model_info_to_preset(info: ModelInfo) -> ModelPreset {
+    let show_in_picker = info.visibility == ModelVisibility::List
+        && !info.slug.eq_ignore_ascii_case("gpt-5.1-codex");
+
     let supported_text_verbosity = if info.support_verbosity {
         REMOTE_TEXT_VERBOSITY_ALL
     } else {
@@ -80,7 +83,7 @@ fn model_info_to_preset(info: ModelInfo) -> ModelPreset {
             reasoning_effort_mapping: None,
             migration_config_key: info.slug,
         }),
-        show_in_picker: info.visibility == ModelVisibility::List,
+        show_in_picker,
     }
 }
 

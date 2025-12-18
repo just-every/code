@@ -485,23 +485,27 @@ impl ModelSelectionView {
     }
 
     fn model_rank(model: &str) -> u8 {
-        if model.eq_ignore_ascii_case("gpt-5.2") {
+        if model.eq_ignore_ascii_case("gpt-5.2-codex") {
             0
-        } else if model.eq_ignore_ascii_case("gpt-5.1-codex-max") {
+        } else if model.eq_ignore_ascii_case("gpt-5.2") {
             1
-        } else if model.eq_ignore_ascii_case("gpt-5.1-codex") {
+        } else if model.eq_ignore_ascii_case("gpt-5.1-codex-max") {
             2
-        } else if model.eq_ignore_ascii_case("gpt-5.1-codex-mini") {
+        } else if model.eq_ignore_ascii_case("gpt-5.1-codex") {
             3
-        } else if model.eq_ignore_ascii_case("gpt-5.1") {
+        } else if model.eq_ignore_ascii_case("gpt-5.1-codex-mini") {
             4
-        } else {
+        } else if model.eq_ignore_ascii_case("gpt-5.1") {
             5
+        } else {
+            6
         }
     }
 
     fn model_description(model: &str) -> Option<&'static str> {
-        if model.eq_ignore_ascii_case("gpt-5.2") {
+        if model.eq_ignore_ascii_case("gpt-5.2-codex") {
+            Some("Latest frontier agentic coding model.")
+        } else if model.eq_ignore_ascii_case("gpt-5.2") {
             Some("Latest frontier model with improvements across knowledge, reasoning, and coding.")
         } else if model.eq_ignore_ascii_case("gpt-5.1-codex-max") {
             Some("Latest Codex-optimized flagship for deep and fast reasoning.")

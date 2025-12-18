@@ -8,6 +8,7 @@ const GPT_5_CODEX_INSTRUCTIONS: &str = include_str!("../gpt_5_codex_prompt.md");
 const GPT_5_1_INSTRUCTIONS: &str = include_str!("../gpt_5_1_prompt.md");
 const GPT_5_2_INSTRUCTIONS: &str = include_str!("../gpt_5_2_prompt.md");
 const GPT_5_1_CODEX_MAX_INSTRUCTIONS: &str = include_str!("../gpt-5.1-codex-max_prompt.md");
+const GPT_5_2_CODEX_INSTRUCTIONS: &str = include_str!("../gpt-5.2-codex_prompt.md");
 
 const CONTEXT_WINDOW_272K: u64 = 272_000;
 const CONTEXT_WINDOW_200K: u64 = 200_000;
@@ -150,12 +151,12 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             default_reasoning_effort: Some(ReasoningEffort::Medium),
         )
     } else if slug.starts_with("exp-codex") || slug.starts_with("codex-1p") {
-        // Same defaults as gpt-5.1-codex-max.
+        // Same defaults as gpt-5.2-codex.
         model_family!(
             slug, slug,
             supports_reasoning_summaries: true,
             reasoning_summary_format: ReasoningSummaryFormat::Experimental,
-            base_instructions: GPT_5_1_CODEX_MAX_INSTRUCTIONS.to_string(),
+            base_instructions: GPT_5_2_CODEX_INSTRUCTIONS.to_string(),
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
         )
     } else if slug.starts_with("exp-") {
@@ -184,6 +185,17 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             supports_reasoning_summaries: true,
             reasoning_summary_format: ReasoningSummaryFormat::Experimental,
             base_instructions: GPT_5_CODEX_INSTRUCTIONS.to_string(),
+            apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
+            context_window: Some(CONTEXT_WINDOW_272K),
+            max_output_tokens: Some(MAX_OUTPUT_DEFAULT),
+        )
+    } else if slug.starts_with("gpt-5.2-codex") {
+        // Same defaults as gpt-5.1-codex-max.
+        model_family!(
+            slug, slug,
+            supports_reasoning_summaries: true,
+            reasoning_summary_format: ReasoningSummaryFormat::Experimental,
+            base_instructions: GPT_5_2_CODEX_INSTRUCTIONS.to_string(),
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
             context_window: Some(CONTEXT_WINDOW_272K),
             max_output_tokens: Some(MAX_OUTPUT_DEFAULT),

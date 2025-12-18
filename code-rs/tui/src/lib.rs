@@ -495,7 +495,12 @@ pub async fn run_main(
         };
         if let Some(plan) = determine_migration_plan(&config, auth_mode) {
             let should_auto_accept = matches!(auth_mode, AuthMode::ChatGPT)
-                && plan.hide_key != code_common::model_presets::HIDE_GPT_5_2_MIGRATION_PROMPT_CONFIG;
+                && (plan.hide_key != code_common::model_presets::HIDE_GPT_5_2_MIGRATION_PROMPT_CONFIG
+                    || (plan.current.id.eq_ignore_ascii_case("gpt-5.1-codex")
+                        && plan
+                            .target
+                            .id
+                            .eq_ignore_ascii_case("gpt-5.2-codex")));
 
             if should_auto_accept {
                 if let Err(err) = persist_migration_acceptance(
@@ -1021,6 +1026,7 @@ fn maybe_apply_terminal_theme_detection(config: &mut Config, theme_configured_ex
 
 #[derive(Clone, Copy)]
 struct MigrationPlan {
+    current: &'static ModelPreset,
     target: &'static ModelPreset,
     hide_key: &'static str,
     new_effort: Option<ReasoningEffort>,
@@ -1042,6 +1048,7 @@ fn determine_migration_plan(config: &Config, auth_mode: AuthMode) -> Option<Migr
     }
     let new_effort = None;
     Some(MigrationPlan {
+        current,
         target,
         hide_key: upgrade.migration_config_key.as_str(),
         new_effort,
@@ -1150,12 +1157,7 @@ fn notice_hidden(notices: &Notice, key: &str) -> bool {
 }
 
 fn auth_allows_target(auth_mode: AuthMode, target: &ModelPreset) -> bool {
-    if matches!(auth_mode, AuthMode::ApiKey)
-        && target.id.eq_ignore_ascii_case("gpt-5.1-codex-max")
-    {
-        return false;
-    }
-    true
+    !(matches!(auth_mode, AuthMode::ApiKey) && target.id.eq_ignore_ascii_case("gpt-5.2-codex"))
 }
 
 fn reasoning_effort_to_str(effort: ReasoningEffort) -> &'static str {
