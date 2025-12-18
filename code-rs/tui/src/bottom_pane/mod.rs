@@ -536,6 +536,14 @@ impl BottomPane<'_> {
         }
     }
 
+    pub(crate) fn auto_drive_view_active(&self) -> bool {
+        matches!(self.active_view_kind, ActiveViewKind::AutoCoordinator)
+    }
+
+    pub(crate) fn auto_drive_style_active(&self) -> bool {
+        self.auto_drive_active
+    }
+
     pub(crate) fn set_custom_prompts(&mut self, prompts: Vec<CustomPrompt>) {
         self.custom_prompts = prompts.clone();
         self.composer.set_custom_prompts(prompts);
