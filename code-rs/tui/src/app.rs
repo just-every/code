@@ -2355,7 +2355,7 @@ impl App<'_> {
                         }
                         SlashCommand::Demo => {
                             if let AppState::Chat { widget } = &mut self.app_state {
-                                widget.handle_demo_command();
+                                widget.handle_demo_command(command_args);
                             }
                         }
                         // Prompt-expanding commands should have been handled in submit_user_message

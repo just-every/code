@@ -99,6 +99,8 @@ typically start multiple agents. They require a task/problem description.
 
 - `/demo`: populate the chat history with assorted sample cells (available in
   dev and perf builds for UI testing).
+- `/demo auto drive card`: render the Auto Drive card once for each ANSI-16
+  background color so you can compare theme contrast.
 - `/test-approval`: test approval request (available in debug builds only).
 
 Implementation Notes
