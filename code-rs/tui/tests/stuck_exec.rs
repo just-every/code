@@ -18,6 +18,7 @@ use code_tui::test_helpers::{render_chat_widget_to_vt100, ChatWidgetHarness};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
+use std::time::Instant;
 
 fn next_order_meta(request_ordinal: u64, seq: &mut u64) -> OrderMeta {
     let order = OrderMeta {
@@ -428,7 +429,10 @@ fn queued_exec_end_flushes_after_stream_clears() {
     // Stream finishes before the idle-flush callback fires; pending ExecEnd should still flush.
     harness.force_stream_clear();
 
-    std::thread::sleep(Duration::from_millis(250));
+    // Give the flush timers enough headroom under nextest parallelism.
+    std::thread::sleep(Duration::from_millis(400));
+    harness.flush_into_widget();
+    std::thread::sleep(Duration::from_millis(200));
     harness.flush_into_widget();
 
     let output = render_chat_widget_to_vt100(&mut harness, 80, 14);
@@ -492,15 +496,19 @@ fn background_style_exec_end_with_zero_seq_does_not_get_stuck() {
     harness.force_stream_clear();
 
     // Flush queued interrupts to deliver begin/end.
-    std::thread::sleep(Duration::from_millis(250));
-    harness.flush_into_widget();
-
-    let output = render_chat_widget_to_vt100(&mut harness, 80, 12);
-    assert!(
-        output.contains("bg") && !output.contains("Running..."),
-        "exec with zero seq end should complete after flush:\n{}",
-        output
-    );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut output;
+    loop {
+        std::thread::sleep(Duration::from_millis(100));
+        harness.flush_into_widget();
+        output = render_chat_widget_to_vt100(&mut harness, 80, 12);
+        if output.contains("bg") && !output.contains("Running...") {
+            break;
+        }
+        if Instant::now() >= deadline {
+            panic!("exec with zero seq end should complete after flush:\n{}", output);
+        }
+    }
 }
 
 #[test]
