@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.10] - 2025-12-18
+
+- TUI: keep bulk command processing responsive during heavy redraw bursts. (9cf56083)
+- Performance: prevent redraw loops from starving queued work so outputs stay timely. (9cf56083)
+
 ## [0.6.9] - 2025-12-18
 
 - TUI/cards: set ANSI-16 card backgrounds for consistent styling. (820991e9)

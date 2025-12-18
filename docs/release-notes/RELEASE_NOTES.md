@@ -1,10 +1,10 @@
-## @just-every/code v0.6.9
+## @just-every/code v0.6.10
 
-Every Code 0.6.9 refreshes the TUI styling and restores the status header label.
+Stability-focused release to keep TUI command processing responsive under heavy redraws.
 
 ### Changes
-- TUI/cards: set ANSI-16 card backgrounds for consistent styling.
-- TUI/status: restore the Every Code header title in the status view.
+- TUI: keep bulk command processing responsive during heavy redraw bursts.
+- Performance: prevent redraw loops from starving queued work so outputs stay timely.
 
 ### Install
 ```
@@ -12,4 +12,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.8...v0.6.9
+Compare: https://github.com/just-every/code/compare/v0.6.9...v0.6.10
