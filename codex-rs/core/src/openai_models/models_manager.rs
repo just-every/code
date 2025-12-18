@@ -29,7 +29,8 @@ use crate::openai_models::model_presets::builtin_model_presets;
 
 const MODEL_CACHE_FILE: &str = "models_cache.json";
 const DEFAULT_MODEL_CACHE_TTL: Duration = Duration::from_secs(300);
-const OPENAI_DEFAULT_MODEL: &str = "gpt-5.1-codex-max";
+const OPENAI_DEFAULT_API_MODEL: &str = "gpt-5.1-codex-max";
+const OPENAI_DEFAULT_CHATGPT_MODEL: &str = "gpt-5.2-codex";
 const CODEX_AUTO_BALANCED_MODEL: &str = "codex-auto-balanced";
 
 /// Coordinates remote model discovery plus cached metadata on disk.
@@ -51,7 +52,7 @@ impl ModelsManager {
         let codex_home = auth_manager.codex_home().to_path_buf();
         Self {
             local_models: builtin_model_presets(auth_manager.get_auth_mode()),
-            remote_models: RwLock::new(Vec::new()),
+            remote_models: RwLock::new(Self::load_remote_models_from_file().unwrap_or_default()),
             auth_manager,
             etag: RwLock::new(None),
             codex_home,
@@ -66,7 +67,7 @@ impl ModelsManager {
         let codex_home = auth_manager.codex_home().to_path_buf();
         Self {
             local_models: builtin_model_presets(auth_manager.get_auth_mode()),
-            remote_models: RwLock::new(Vec::new()),
+            remote_models: RwLock::new(Self::load_remote_models_from_file().unwrap_or_default()),
             auth_manager,
             etag: RwLock::new(None),
             codex_home,
@@ -77,7 +78,9 @@ impl ModelsManager {
 
     /// Fetch the latest remote models, using the on-disk cache when still fresh.
     pub async fn refresh_available_models(&self, config: &Config) -> CoreResult<()> {
-        if !config.features.enabled(Feature::RemoteModels) {
+        if !config.features.enabled(Feature::RemoteModels)
+            || self.auth_manager.get_auth_mode() == Some(AuthMode::ApiKey)
+        {
             return Ok(());
         }
         if self.try_load_cache().await {
@@ -108,12 +111,12 @@ impl ModelsManager {
         if let Err(err) = self.refresh_available_models(config).await {
             error!("failed to refresh available models: {err}");
         }
-        let remote_models = self.remote_models.read().await.clone();
+        let remote_models = self.remote_models(config).await;
         self.build_available_models(remote_models)
     }
 
-    pub fn try_list_models(&self) -> Result<Vec<ModelPreset>, TryLockError> {
-        let remote_models = self.remote_models.try_read()?.clone();
+    pub fn try_list_models(&self, config: &Config) -> Result<Vec<ModelPreset>, TryLockError> {
+        let remote_models = self.try_get_remote_models(config)?;
         Ok(self.build_available_models(remote_models))
     }
 
@@ -124,7 +127,7 @@ impl ModelsManager {
     /// Look up the requested model family while applying remote metadata overrides.
     pub async fn construct_model_family(&self, model: &str, config: &Config) -> ModelFamily {
         Self::find_family_for_model(model)
-            .with_remote_overrides(self.remote_models.read().await.clone())
+            .with_remote_overrides(self.remote_models(config).await)
             .with_config_overrides(config)
     }
 
@@ -137,7 +140,7 @@ impl ModelsManager {
         }
         // if codex-auto-balanced exists & signed in with chatgpt mode, return it, otherwise return the default model
         let auth_mode = self.auth_manager.get_auth_mode();
-        let remote_models = self.remote_models.read().await.clone();
+        let remote_models = self.remote_models(config).await;
         if auth_mode == Some(AuthMode::ChatGPT)
             && self
                 .build_available_models(remote_models)
@@ -145,13 +148,15 @@ impl ModelsManager {
                 .any(|m| m.model == CODEX_AUTO_BALANCED_MODEL)
         {
             return CODEX_AUTO_BALANCED_MODEL.to_string();
+        } else if auth_mode == Some(AuthMode::ChatGPT) {
+            return OPENAI_DEFAULT_CHATGPT_MODEL.to_string();
         }
-        OPENAI_DEFAULT_MODEL.to_string()
+        OPENAI_DEFAULT_API_MODEL.to_string()
     }
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn get_model_offline(model: Option<&str>) -> String {
-        model.unwrap_or(OPENAI_DEFAULT_MODEL).to_string()
+        model.unwrap_or(OPENAI_DEFAULT_CHATGPT_MODEL).to_string()
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -163,6 +168,12 @@ impl ModelsManager {
     /// Replace the cached remote models and rebuild the derived presets list.
     async fn apply_remote_models(&self, models: Vec<ModelInfo>) {
         *self.remote_models.write().await = models;
+    }
+
+    fn load_remote_models_from_file() -> Result<Vec<ModelInfo>, std::io::Error> {
+        let file_contents = include_str!("../../models.json");
+        let response: ModelsResponse = serde_json::from_str(file_contents)?;
+        Ok(response.models)
     }
 
     /// Attempt to satisfy the refresh from the cache when it matches the provider and TTL.
@@ -209,7 +220,7 @@ impl ModelsManager {
         let remote_presets: Vec<ModelPreset> = remote_models.into_iter().map(Into::into).collect();
         let existing_presets = self.local_models.clone();
         let mut merged_presets = Self::merge_presets(remote_presets, existing_presets);
-        merged_presets = Self::filter_visible_models(merged_presets);
+        merged_presets = self.filter_visible_models(merged_presets);
 
         let has_default = merged_presets.iter().any(|preset| preset.is_default);
         if let Some(default) = merged_presets.first_mut()
@@ -221,10 +232,11 @@ impl ModelsManager {
         merged_presets
     }
 
-    fn filter_visible_models(models: Vec<ModelPreset>) -> Vec<ModelPreset> {
+    fn filter_visible_models(&self, models: Vec<ModelPreset>) -> Vec<ModelPreset> {
+        let chatgpt_mode = self.auth_manager.get_auth_mode() == Some(AuthMode::ChatGPT);
         models
             .into_iter()
-            .filter(|model| model.show_in_picker)
+            .filter(|model| model.show_in_picker && (chatgpt_mode || model.supported_in_api))
             .collect()
     }
 
@@ -251,6 +263,22 @@ impl ModelsManager {
         }
 
         merged_presets
+    }
+
+    async fn remote_models(&self, config: &Config) -> Vec<ModelInfo> {
+        if config.features.enabled(Feature::RemoteModels) {
+            self.remote_models.read().await.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn try_get_remote_models(&self, config: &Config) -> Result<Vec<ModelInfo>, TryLockError> {
+        if config.features.enabled(Feature::RemoteModels) {
+            Ok(self.remote_models.try_read()?.clone())
+        } else {
+            Ok(Vec::new())
+        }
     }
 
     fn cache_path(&self) -> PathBuf {
@@ -377,7 +405,7 @@ mod tests {
         .expect("load default test config");
         config.features.enable(Feature::RemoteModels);
         let auth_manager =
-            AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
+            AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
         let provider = provider_for(server.uri());
         let manager = ModelsManager::with_provider(auth_manager, provider);
 
@@ -385,7 +413,7 @@ mod tests {
             .refresh_available_models(&config)
             .await
             .expect("refresh succeeds");
-        let cached_remote = manager.remote_models.read().await.clone();
+        let cached_remote = manager.remote_models(&config).await;
         assert_eq!(cached_remote, remote_models);
 
         let available = manager.list_models(&config).await;
@@ -447,7 +475,7 @@ mod tests {
             .await
             .expect("first refresh succeeds");
         assert_eq!(
-            *manager.remote_models.read().await,
+            manager.remote_models(&config).await,
             remote_models,
             "remote cache should store fetched models"
         );
@@ -458,7 +486,7 @@ mod tests {
             .await
             .expect("cached refresh succeeds");
         assert_eq!(
-            *manager.remote_models.read().await,
+            manager.remote_models(&config).await,
             remote_models,
             "cache path should not mutate stored models"
         );
@@ -529,7 +557,7 @@ mod tests {
             .await
             .expect("second refresh succeeds");
         assert_eq!(
-            *manager.remote_models.read().await,
+            manager.remote_models(&config).await,
             updated_models,
             "stale cache should trigger refetch"
         );
@@ -567,7 +595,7 @@ mod tests {
         .expect("load default test config");
         config.features.enable(Feature::RemoteModels);
         let auth_manager =
-            AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
+            AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
         let provider = provider_for(server.uri());
         let mut manager = ModelsManager::with_provider(auth_manager, provider);
         manager.cache_ttl = Duration::ZERO;
@@ -594,7 +622,7 @@ mod tests {
             .expect("second refresh succeeds");
 
         let available = manager
-            .try_list_models()
+            .try_list_models(&config)
             .expect("models should be available");
         assert!(
             available.iter().any(|preset| preset.model == "remote-new"),
@@ -633,5 +661,26 @@ mod tests {
         let available = manager.build_available_models(vec![hidden_model, visible_model]);
 
         assert_eq!(available, vec![expected]);
+    }
+
+    #[test]
+    fn bundled_models_json_roundtrips() {
+        let file_contents = include_str!("../../models.json");
+        let response: ModelsResponse =
+            serde_json::from_str(file_contents).expect("bundled models.json should deserialize");
+
+        let serialized =
+            serde_json::to_string(&response).expect("bundled models.json should serialize");
+        let roundtripped: ModelsResponse =
+            serde_json::from_str(&serialized).expect("serialized models.json should deserialize");
+
+        assert_eq!(
+            response, roundtripped,
+            "bundled models.json should round trip through serde"
+        );
+        assert!(
+            !response.models.is_empty(),
+            "bundled models.json should contain at least one model"
+        );
     }
 }

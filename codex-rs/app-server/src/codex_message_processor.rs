@@ -282,7 +282,7 @@ impl CodexMessageProcessor {
     }
 
     async fn load_latest_config(&self) -> Result<Config, JSONRPCErrorError> {
-        Config::load_with_cli_overrides(self.cli_overrides.clone(), ConfigOverrides::default())
+        Config::load_with_cli_overrides(self.cli_overrides.clone())
             .await
             .map_err(|err| JSONRPCErrorError {
                 code: INTERNAL_ERROR_CODE,
@@ -393,7 +393,14 @@ impl CodexMessageProcessor {
                 self.handle_list_conversations(request_id, params).await;
             }
             ClientRequest::ModelList { request_id, params } => {
-                self.list_models(request_id, params).await;
+                let outgoing = self.outgoing.clone();
+                let conversation_manager = self.conversation_manager.clone();
+                let config = self.config.clone();
+
+                tokio::spawn(async move {
+                    Self::list_models(outgoing, conversation_manager, config, request_id, params)
+                        .await;
+                });
             }
             ClientRequest::McpServerOauthLogin { request_id, params } => {
                 self.mcp_server_oauth_login(request_id, params).await;
@@ -1896,9 +1903,17 @@ impl CodexMessageProcessor {
         Ok((items, next_cursor))
     }
 
-    async fn list_models(&self, request_id: RequestId, params: ModelListParams) {
+    async fn list_models(
+        outgoing: Arc<OutgoingMessageSender>,
+        conversation_manager: Arc<ConversationManager>,
+        config: Arc<Config>,
+        request_id: RequestId,
+        params: ModelListParams,
+    ) {
         let ModelListParams { limit, cursor } = params;
-        let models = supported_models(self.conversation_manager.clone(), &self.config).await;
+        let mut config = (*config).clone();
+        config.features.enable(Feature::RemoteModels);
+        let models = supported_models(conversation_manager, &config).await;
         let total = models.len();
 
         if total == 0 {
@@ -1906,7 +1921,7 @@ impl CodexMessageProcessor {
                 data: Vec::new(),
                 next_cursor: None,
             };
-            self.outgoing.send_response(request_id, response).await;
+            outgoing.send_response(request_id, response).await;
             return;
         }
 
@@ -1921,7 +1936,7 @@ impl CodexMessageProcessor {
                         message: format!("invalid cursor: {cursor}"),
                         data: None,
                     };
-                    self.outgoing.send_error(request_id, error).await;
+                    outgoing.send_error(request_id, error).await;
                     return;
                 }
             },
@@ -1934,7 +1949,7 @@ impl CodexMessageProcessor {
                 message: format!("cursor {start} exceeds total models {total}"),
                 data: None,
             };
-            self.outgoing.send_error(request_id, error).await;
+            outgoing.send_error(request_id, error).await;
             return;
         }
 
@@ -1949,7 +1964,7 @@ impl CodexMessageProcessor {
             data: items,
             next_cursor,
         };
-        self.outgoing.send_response(request_id, response).await;
+        outgoing.send_response(request_id, response).await;
     }
 
     async fn mcp_server_oauth_login(
@@ -2061,6 +2076,7 @@ impl CodexMessageProcessor {
         request_id: RequestId,
         params: ListMcpServerStatusParams,
     ) {
+        let outgoing = Arc::clone(&self.outgoing);
         let config = match self.load_latest_config().await {
             Ok(config) => config,
             Err(error) => {
@@ -2069,6 +2085,17 @@ impl CodexMessageProcessor {
             }
         };
 
+        tokio::spawn(async move {
+            Self::list_mcp_server_status_task(outgoing, request_id, params, config).await;
+        });
+    }
+
+    async fn list_mcp_server_status_task(
+        outgoing: Arc<OutgoingMessageSender>,
+        request_id: RequestId,
+        params: ListMcpServerStatusParams,
+        config: Config,
+    ) {
         let snapshot = collect_mcp_snapshot(&config).await;
 
         let tools_by_server = group_tools_by_server(&snapshot.tools);
@@ -2096,7 +2123,7 @@ impl CodexMessageProcessor {
                         message: format!("invalid cursor: {cursor}"),
                         data: None,
                     };
-                    self.outgoing.send_error(request_id, error).await;
+                    outgoing.send_error(request_id, error).await;
                     return;
                 }
             },
@@ -2109,7 +2136,7 @@ impl CodexMessageProcessor {
                 message: format!("cursor {start} exceeds total MCP servers {total}"),
                 data: None,
             };
-            self.outgoing.send_error(request_id, error).await;
+            outgoing.send_error(request_id, error).await;
             return;
         }
 
@@ -2143,7 +2170,7 @@ impl CodexMessageProcessor {
 
         let response = ListMcpServerStatusResponse { data, next_cursor };
 
-        self.outgoing.send_response(request_id, response).await;
+        outgoing.send_response(request_id, response).await;
     }
 
     async fn handle_resume_conversation(
@@ -2613,36 +2640,27 @@ impl CodexMessageProcessor {
     }
 
     async fn skills_list(&self, request_id: RequestId, params: SkillsListParams) {
-        let SkillsListParams { cwds } = params;
+        let SkillsListParams { cwds, force_reload } = params;
         let cwds = if cwds.is_empty() {
             vec![self.config.cwd.clone()]
         } else {
             cwds
         };
 
-        let data = if self.config.features.enabled(Feature::Skills) {
-            let skills_manager = self.conversation_manager.skills_manager();
-            cwds.into_iter()
-                .map(|cwd| {
-                    let outcome = skills_manager.skills_for_cwd(&cwd);
-                    let errors = errors_to_info(&outcome.errors);
-                    let skills = skills_to_info(&outcome.skills);
-                    codex_app_server_protocol::SkillsListEntry {
-                        cwd,
-                        skills,
-                        errors,
-                    }
-                })
-                .collect()
-        } else {
-            cwds.into_iter()
-                .map(|cwd| codex_app_server_protocol::SkillsListEntry {
+        let skills_manager = self.conversation_manager.skills_manager();
+        let data = cwds
+            .into_iter()
+            .map(|cwd| {
+                let outcome = skills_manager.skills_for_cwd_with_options(&cwd, force_reload);
+                let errors = errors_to_info(&outcome.errors);
+                let skills = skills_to_info(&outcome.skills);
+                codex_app_server_protocol::SkillsListEntry {
                     cwd,
-                    skills: Vec::new(),
-                    errors: Vec::new(),
-                })
-                .collect()
-        };
+                    skills,
+                    errors,
+                }
+            })
+            .collect();
         self.outgoing
             .send_response(request_id, SkillsListResponse { data })
             .await;
@@ -3321,7 +3339,7 @@ fn errors_to_info(
 
 async fn derive_config_from_params(
     overrides: ConfigOverrides,
-    cli_overrides: Option<std::collections::HashMap<String, serde_json::Value>>,
+    cli_overrides: Option<HashMap<String, serde_json::Value>>,
 ) -> std::io::Result<Config> {
     let cli_overrides = cli_overrides
         .unwrap_or_default()
@@ -3329,7 +3347,7 @@ async fn derive_config_from_params(
         .map(|(k, v)| (k, json_to_toml(v)))
         .collect();
 
-    Config::load_with_cli_overrides(cli_overrides, overrides).await
+    Config::load_with_cli_overrides_and_harness_overrides(cli_overrides, overrides).await
 }
 
 async fn read_summary_from_rollout(
