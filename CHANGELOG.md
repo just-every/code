@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.6.11] - 2025-12-18
+
+- Models: default to gpt-5.2-codex and migrate 5.1 presets with the new key. (e4b5d6e0, 228dd8f9)
+- TUI: make the GPT-5.2 upgrade link clickable for smoother migrations. (76450bcd)
+- Core: adopt constraint-based loading to speed startup and reduce redundancy. (b9032857)
+- Cloud: default cloud exec to the current branch to avoid mismatched runs. (425c8dc3)
+
 ## [0.6.10] - 2025-12-18
 
 - TUI: keep bulk command processing responsive during heavy redraw bursts. (9cf56083)
