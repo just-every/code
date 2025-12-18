@@ -46,7 +46,7 @@ pub(crate) fn migration_copy_for_key(key: &str) -> ModelMigrationCopy {
             content: &[
                 "OpenAI's latest frontier agentic coding model is here: gpt-5.2-codex.",
                 "Switch now for better coding results; you can keep your current model if you prefer.",
-                "Learn more: openai.com/index/introducing-gpt-5-2-codex",
+                "Learn more: https://openai.com/index/introducing-gpt-5-2-codex/",
             ],
             can_opt_out: true,
         },
