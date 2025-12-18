@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.9] - 2025-12-18
+
+- TUI/cards: set ANSI-16 card backgrounds for consistent styling. (820991e9)
+- TUI/status: restore the Every Code header title in the status view. (455ed636)
+
 ## [0.6.8] - 2025-12-18
 
 - Agents: default frontline automation to gemini-3-flash for faster runs. (bfc41e28)
