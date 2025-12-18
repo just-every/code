@@ -978,6 +978,7 @@ use crate::dry_run_guard::{analyze_command, DryRunAnalysis, DryRunDisposition, D
 use crate::parse_command::parse_command;
 use crate::plan_tool::handle_update_plan;
 use crate::project_doc::get_user_instructions;
+use crate::skills::load_skills;
 use crate::project_features::{ProjectCommand, ProjectHook, ProjectHooks};
 use crate::protocol::AgentMessageDeltaEvent;
 use crate::protocol::AgentMessageEvent;
@@ -1076,7 +1077,18 @@ impl Codex {
         let (tx_sub, rx_sub) = async_channel::unbounded();
         let (tx_event, rx_event) = async_channel::unbounded();
 
-        let user_instructions = get_user_instructions(&config).await;
+        let skills_outcome = config.skills_enabled.then(|| load_skills(&config));
+        if let Some(outcome) = &skills_outcome {
+            for err in &outcome.errors {
+                warn!("invalid skill {}: {}", err.path.display(), err.message);
+            }
+        }
+
+        let user_instructions = get_user_instructions(
+            &config,
+            skills_outcome.as_ref().map(|outcome| outcome.skills.as_slice()),
+        )
+        .await;
 
         let configure_session = Op::ConfigureSession {
             provider: config.model_provider.clone(),
@@ -4649,8 +4661,19 @@ async fn submission_loop(
                     new_auto_compact,
                 );
 
-                let computed_user_instructions =
-                    get_user_instructions(&updated_config).await;
+                let skills_outcome =
+                    updated_config.skills_enabled.then(|| load_skills(&updated_config));
+                if let Some(outcome) = &skills_outcome {
+                    for err in &outcome.errors {
+                        warn!("invalid skill {}: {}", err.path.display(), err.message);
+                    }
+                }
+
+                let computed_user_instructions = get_user_instructions(
+                    &updated_config,
+                    skills_outcome.as_ref().map(|outcome| outcome.skills.as_slice()),
+                )
+                .await;
                 updated_config.user_instructions = computed_user_instructions.clone();
 
                 let effective_user_instructions = computed_user_instructions.clone();

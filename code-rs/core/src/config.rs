@@ -68,6 +68,10 @@ use toml_edit::Item as TomlItem;
 use toml_edit::Table as TomlTable;
 use which::which;
 
+pub use crate::config_constraint::Constrained;
+pub use crate::config_constraint::ConstraintError;
+pub use crate::config_constraint::ConstraintResult;
+
 pub(crate) const OPENAI_DEFAULT_MODEL: &str = "gpt-5.1-codex-max";
 const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5.1-codex-max";
 pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5.2-codex";
@@ -407,6 +411,9 @@ pub struct Config {
     pub use_experimental_use_rmcp_client: bool,
     /// Enable the `view_image` tool that lets the agent attach local images.
     pub include_view_image_tool: bool,
+
+    /// Experimental: enable discovery and injection of skills.
+    pub skills_enabled: bool,
     /// Experimental: enable JSON-based environment context snapshots and deltas (phase gated).
     pub env_ctx_v2: bool,
     /// Retention policy for env_ctx_v2 timeline management (gated by env_ctx_v2).
@@ -479,7 +486,20 @@ impl Config {
         let cfg = deserialize_config_toml_with_cli_warnings(&root_value, &cli_paths)?;
 
         // Step 4: merge with the strongly-typed overrides.
-        Self::load_from_base_config_with_overrides(cfg, overrides, code_home)
+        let mut config = Self::load_from_base_config_with_overrides(cfg, overrides, code_home)?;
+
+        let requirements = crate::config_loader::load_config_requirements_blocking(
+            &config.code_home,
+            LoaderOverrides::default(),
+        )?;
+
+        let mut constrained_approval_policy = requirements.approval_policy;
+        constrained_approval_policy
+            .set(config.approval_policy)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
+        config.approval_policy = constrained_approval_policy.value();
+
+        Ok(config)
     }
 }
 
@@ -2248,6 +2268,9 @@ pub struct ConfigToml {
     /// Nested tools section for feature toggles
     pub tools: Option<ToolsToml>,
 
+    /// Experimental feature toggles.
+    pub features: Option<FeaturesToml>,
+
     /// When true, disables burst-paste detection for typed input entirely.
     /// All characters are inserted as they are received, and no buffering
     /// or placeholder replacement will occur for fast keypress bursts.
@@ -2327,6 +2350,13 @@ pub struct ToolsToml {
     /// Enable the `view_image` tool that lets the agent attach local images.
     #[serde(default)]
     pub view_image: Option<bool>,
+}
+
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct FeaturesToml {
+    /// Enable discovery and injection of skills.
+    #[serde(default)]
+    pub skills: Option<bool>,
 }
 
 impl ConfigToml {
@@ -2707,6 +2737,12 @@ impl Config {
             .or(cfg.tools.as_ref().and_then(|t| t.view_image))
             .unwrap_or(true);
 
+        let skills_enabled = cfg
+            .features
+            .as_ref()
+            .and_then(|features| features.skills)
+            .unwrap_or(false);
+
         let env_ctx_v2_flag = *crate::flags::CTX_UI;
 
         // Determine auth mode early so defaults like model selection can depend on it.
@@ -3071,6 +3107,7 @@ impl Config {
                 .experimental_use_rmcp_client
                 .unwrap_or(false),
             include_view_image_tool: include_view_image_tool_flag,
+            skills_enabled,
             env_ctx_v2: env_ctx_v2_flag,
             retention: crate::config_types::RetentionConfig::default(),
             responses_originator_header,

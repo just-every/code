@@ -1,6 +1,10 @@
+mod config_requirements;
 mod macos;
 
 use crate::config::CONFIG_TOML_FILE;
+use config_requirements::ConfigRequirements;
+use config_requirements::ConfigRequirementsToml;
+use config_requirements::LegacyManagedConfigToml;
 use macos::load_managed_admin_config_layer;
 use std::io;
 use std::path::Path;
@@ -12,6 +16,9 @@ use toml::Value as TomlValue;
 #[cfg(unix)]
 const CODE_MANAGED_CONFIG_SYSTEM_PATH: &str = "/etc/code/managed_config.toml";
 
+#[cfg(unix)]
+const CODE_REQUIREMENTS_SYSTEM_PATH: &str = "/etc/code/requirements.toml";
+
 #[derive(Debug)]
 pub(crate) struct LoadedConfigLayers {
     pub base: TomlValue,
@@ -22,6 +29,7 @@ pub(crate) struct LoadedConfigLayers {
 #[derive(Debug, Default)]
 pub(crate) struct LoaderOverrides {
     pub managed_config_path: Option<PathBuf>,
+    pub requirements_path: Option<PathBuf>,
     #[cfg(target_os = "macos")]
     pub managed_preferences_base64: Option<String>,
 }
@@ -69,6 +77,14 @@ pub(crate) fn load_config_as_toml_blocking(
     block_on_loader(async move { load_config_as_toml_with_overrides(&code_home, overrides).await })
 }
 
+pub(crate) fn load_config_requirements_blocking(
+    code_home: &Path,
+    overrides: LoaderOverrides,
+) -> io::Result<ConfigRequirements> {
+    let code_home = code_home.to_path_buf();
+    block_on_loader(async move { load_config_requirements_internal(&code_home, overrides).await })
+}
+
 async fn load_config_as_toml_with_overrides(
     code_home: &Path,
     overrides: LoaderOverrides,
@@ -84,12 +100,14 @@ async fn load_config_layers_internal(
     #[cfg(target_os = "macos")]
     let LoaderOverrides {
         managed_config_path,
+        requirements_path: _,
         managed_preferences_base64,
     } = overrides;
 
     #[cfg(not(target_os = "macos"))]
     let LoaderOverrides {
         managed_config_path,
+        requirements_path: _,
     } = overrides;
 
     let managed_config_path =
@@ -111,6 +129,76 @@ async fn load_config_layers_internal(
         managed_config,
         managed_preferences,
     })
+}
+
+async fn load_config_requirements_internal(
+    code_home: &Path,
+    overrides: LoaderOverrides,
+) -> io::Result<ConfigRequirements> {
+    #[cfg(target_os = "macos")]
+    let LoaderOverrides {
+        managed_config_path,
+        requirements_path,
+        managed_preferences_base64,
+    } = overrides;
+
+    #[cfg(not(target_os = "macos"))]
+    let LoaderOverrides {
+        managed_config_path,
+        requirements_path,
+    } = overrides;
+
+    let managed_config_path =
+        managed_config_path.unwrap_or_else(|| managed_config_default_path(code_home));
+    let requirements_path = requirements_path.unwrap_or_else(|| requirements_default_path(code_home));
+
+    let mut requirements = if let Some(value) = read_config_from_path(&requirements_path, false).await? {
+        let parsed: ConfigRequirementsToml =
+            value.try_into().map_err(|err: toml::de::Error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Failed to parse config requirements TOML: {err}"),
+                )
+            })?;
+        ConfigRequirements::try_from(parsed)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+    } else {
+        ConfigRequirements::default()
+    };
+
+    let managed_config = read_config_from_path(&managed_config_path, false).await?;
+
+    #[cfg(target_os = "macos")]
+    let managed_preferences =
+        load_managed_admin_config_layer(managed_preferences_base64.as_deref()).await?;
+
+    #[cfg(not(target_os = "macos"))]
+    let managed_preferences = None;
+
+    // If multiple legacy layers specify approval_policy (e.g. both a managed_config
+    // file and macOS managed preferences), allow the later/higher-precedence layer
+    // to override earlier ones.
+    let mut legacy_approval_policy = None;
+
+    for legacy in [managed_config, managed_preferences].into_iter().flatten() {
+        let legacy: LegacyManagedConfigToml = legacy.try_into().map_err(|err: toml::de::Error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Failed to parse legacy managed_config TOML: {err}"),
+            )
+        })?;
+
+        if let Some(approval_policy) = legacy.approval_policy {
+            legacy_approval_policy = Some(approval_policy);
+        }
+    }
+
+    if let Some(approval_policy) = legacy_approval_policy {
+        requirements.approval_policy.can_set(&approval_policy)?;
+        requirements.approval_policy = crate::config::Constrained::allow_only(approval_policy);
+    }
+
+    Ok(requirements)
 }
 
 async fn read_config_from_path(
@@ -167,6 +255,19 @@ fn managed_config_default_path(code_home: &Path) -> PathBuf {
     #[cfg(not(unix))]
     {
         code_home.join("managed_config.toml")
+    }
+}
+
+fn requirements_default_path(code_home: &Path) -> PathBuf {
+    #[cfg(unix)]
+    {
+        let _ = code_home;
+        PathBuf::from(CODE_REQUIREMENTS_SYSTEM_PATH)
+    }
+
+    #[cfg(not(unix))]
+    {
+        code_home.join("requirements.toml")
     }
 }
 
@@ -245,6 +346,7 @@ extra = true
 
         let overrides = LoaderOverrides {
             managed_config_path: Some(managed_path),
+            requirements_path: None,
             #[cfg(target_os = "macos")]
             managed_preferences_base64: None,
         };
@@ -272,6 +374,7 @@ extra = true
         let managed_path = tmp.path().join("managed_config.toml");
         let overrides = LoaderOverrides {
             managed_config_path: Some(managed_path),
+            requirements_path: None,
             #[cfg(target_os = "macos")]
             managed_preferences_base64: None,
         };
@@ -332,6 +435,7 @@ flag = true
 
         let overrides = LoaderOverrides {
             managed_config_path: Some(managed_path),
+            requirements_path: None,
             managed_preferences_base64: Some(encoded),
         };
 

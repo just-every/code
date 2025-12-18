@@ -16,6 +16,7 @@ use httpdate::parse_http_date;
 use regex_lite::Regex;
 use reqwest::StatusCode;
 use reqwest::header::HeaderMap;
+use reqwest::header::HeaderValue;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -69,6 +70,8 @@ use std::sync::RwLock;
 
 const RESPONSES_BETA_HEADER_V1: &str = "responses=v1";
 const RESPONSES_BETA_HEADER_EXPERIMENTAL: &str = "responses=experimental";
+
+const CODE_OPENAI_SUBAGENT_ENV: &str = "CODE_OPENAI_SUBAGENT";
 
 #[derive(Default, Debug)]
 struct StreamCheckpoint {
@@ -652,6 +655,9 @@ impl ModelClient {
                 req_builder = req_builder.header("OpenAI-Beta", beta_value);
             }
 
+            req_builder = attach_openai_subagent_header(req_builder);
+            req_builder = attach_codex_beta_features_header(req_builder, &self.config);
+
             req_builder = req_builder
                 // Send `conversation_id`/`session_id` so the server can hit the prompt-cache.
                 .header("conversation_id", session_id_str.clone())
@@ -1044,6 +1050,9 @@ impl ModelClient {
             request = request.header("OpenAI-Beta", beta_value);
         }
 
+        request = attach_openai_subagent_header(request);
+        request = attach_codex_beta_features_header(request, &self.config);
+
         if let Some(auth) = auth.as_ref()
             && auth.mode == AuthMode::ChatGPT
             && let Some(account_id) = auth.get_account_id()
@@ -1118,6 +1127,71 @@ impl ModelClient {
         let CompactHistoryResponse { output } = serde_json::from_str(&body)?;
         Ok(output)
     }
+}
+
+fn attach_codex_beta_features_header(
+    builder: reqwest::RequestBuilder,
+    config: &Config,
+) -> reqwest::RequestBuilder {
+    let Some(value) = codex_beta_features_header_value(config) else {
+        return builder;
+    };
+
+    let has_header = builder
+        .try_clone()
+        .and_then(|builder| builder.build().ok())
+        .map_or(false, |req| req.headers().contains_key("x-codex-beta-features"));
+    if has_header {
+        return builder;
+    }
+
+    builder.header("x-codex-beta-features", value)
+}
+
+fn codex_beta_features_header_value(config: &Config) -> Option<HeaderValue> {
+    let mut enabled: Vec<&'static str> = Vec::new();
+
+    if config.skills_enabled {
+        enabled.push("skills");
+    }
+    if config.tools_web_search_request {
+        enabled.push("web_search_request");
+    }
+    if config.use_experimental_use_rmcp_client {
+        enabled.push("rmcp_client");
+    }
+
+    let value = enabled.join(",");
+    if value.is_empty() {
+        return None;
+    }
+
+    HeaderValue::from_str(value.as_str()).ok()
+}
+
+fn attach_openai_subagent_header(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    let Some(value) = openai_subagent_header_value() else {
+        return builder;
+    };
+
+    let has_header = builder
+        .try_clone()
+        .and_then(|builder| builder.build().ok())
+        .map_or(false, |req| req.headers().contains_key("x-openai-subagent"));
+    if has_header {
+        return builder;
+    }
+
+    builder.header("x-openai-subagent", value)
+}
+
+fn openai_subagent_header_value() -> Option<HeaderValue> {
+    let subagent = std::env::var(CODE_OPENAI_SUBAGENT_ENV).ok()?;
+    let subagent = subagent.trim();
+    if subagent.is_empty() {
+        return None;
+    }
+    HeaderValue::from_str(subagent).ok()
 }
 
 fn clamp_text_verbosity_for_model(
