@@ -8721,13 +8721,22 @@ impl ChatWidget<'_> {
             }
         }
 
-        // Determine insertion position across the entire history
+        // Determine insertion position across the entire history.
+        // Most ordered inserts are monotonic tail-appends (we bump non-background
+        // keys to keep them strictly increasing), so avoid an O(n) scan in the
+        // common case.
+        //
+        // Exception: some early, non-background system cells (e.g. the context
+        // summary) are inserted with a low order key before any ordering state
+        // has been established. In that phase, we must still respect the order.
         let mut pos = self.history_cells.len();
-        for i in 0..self.history_cells.len() {
-            if let Some(existing) = self.cell_order_seq.get(i) {
-                if *existing > key {
-                    pos = i;
-                    break;
+        if is_background_cell || self.last_assigned_order.is_none() {
+            for i in 0..self.history_cells.len() {
+                if let Some(existing) = self.cell_order_seq.get(i) {
+                    if *existing > key {
+                        pos = i;
+                        break;
+                    }
                 }
             }
         }
@@ -8809,8 +8818,12 @@ impl ChatWidget<'_> {
 
         let mut cell = cell;
 
-        let record_index = self.record_index_for_position(pos);
         let mutation = if let Some(domain_record) = record {
+            let record_index = if pos == self.history_cells.len() {
+                self.history_state.records.len()
+            } else {
+                self.record_index_for_position(pos)
+            };
             let event = match domain_record {
                 HistoryDomainRecord::Exec(ref exec_record) => {
                     HistoryDomainEvent::StartExec {
@@ -8832,6 +8845,11 @@ impl ChatWidget<'_> {
             };
             Some(self.history_state.apply_domain_event(event))
         } else if let Some(record) = history_cell::record_from_cell(cell.as_ref()) {
+            let record_index = if pos == self.history_cells.len() {
+                self.history_state.records.len()
+            } else {
+                self.record_index_for_position(pos)
+            };
             let event = match HistoryDomainRecord::from(record) {
                 HistoryDomainRecord::Exec(exec_record) => HistoryDomainEvent::StartExec {
                     index: record_index,
@@ -8861,8 +8879,14 @@ impl ChatWidget<'_> {
             }
         }
 
-        self.history_cells.insert(pos, cell);
-        self.history_cell_ids.insert(pos, maybe_id);
+        let append = pos == self.history_cells.len();
+        if append {
+            self.history_cells.push(cell);
+            self.history_cell_ids.push(maybe_id);
+        } else {
+            self.history_cells.insert(pos, cell);
+            self.history_cell_ids.insert(pos, maybe_id);
+        }
         // In terminal mode, App mirrors history lines into the native buffer.
         // Ensure order vector is also long enough for position after cell insert
         if self.cell_order_seq.len() < pos {
@@ -8875,7 +8899,11 @@ impl ChatWidget<'_> {
                 },
             );
         }
-        self.cell_order_seq.insert(pos, key);
+        if append {
+            self.cell_order_seq.push(key);
+        } else {
+            self.cell_order_seq.insert(pos, key);
+        }
         if key_bumped {
             if let Some(stream) = self.history_cells[pos]
                 .as_any()
@@ -8916,7 +8944,11 @@ impl ChatWidget<'_> {
         if self.cell_order_dbg.len() < pos {
             self.cell_order_dbg.resize(pos, None);
         }
-        self.cell_order_dbg.insert(pos, Some(dbg));
+        if append {
+            self.cell_order_dbg.push(Some(dbg));
+        } else {
+            self.cell_order_dbg.insert(pos, Some(dbg));
+        }
         self.invalidate_height_cache();
         self.autoscroll_if_near_bottom();
         self.bottom_pane.set_has_chat_history(true);
@@ -8971,11 +9003,13 @@ impl ChatWidget<'_> {
         }
 
         let mut pos = self.history_cells.len();
-        for i in 0..self.history_cells.len() {
-            if let Some(existing) = self.cell_order_seq.get(i) {
-                if *existing > key {
-                    pos = i;
-                    break;
+        if is_background_cell || self.last_assigned_order.is_none() {
+            for i in 0..self.history_cells.len() {
+                if let Some(existing) = self.cell_order_seq.get(i) {
+                    if *existing > key {
+                        pos = i;
+                        break;
+                    }
                 }
             }
         }
@@ -9045,8 +9079,14 @@ impl ChatWidget<'_> {
 
         Self::assign_history_id_inner(&mut cell, id);
 
-        self.history_cells.insert(pos, cell);
-        self.history_cell_ids.insert(pos, Some(id));
+        let append = pos == self.history_cells.len();
+        if append {
+            self.history_cells.push(cell);
+            self.history_cell_ids.push(Some(id));
+        } else {
+            self.history_cells.insert(pos, cell);
+            self.history_cell_ids.insert(pos, Some(id));
+        }
         if self.cell_order_seq.len() < pos {
             self.cell_order_seq.resize(
                 pos,
@@ -9057,7 +9097,11 @@ impl ChatWidget<'_> {
                 },
             );
         }
-        self.cell_order_seq.insert(pos, key);
+        if append {
+            self.cell_order_seq.push(key);
+        } else {
+            self.cell_order_seq.insert(pos, key);
+        }
         if key_bumped {
             if let Some(stream) = self.history_cells[pos]
                 .as_any()
@@ -9097,7 +9141,11 @@ impl ChatWidget<'_> {
         if self.cell_order_dbg.len() < pos {
             self.cell_order_dbg.resize(pos, None);
         }
-        self.cell_order_dbg.insert(pos, Some(dbg));
+        if append {
+            self.cell_order_dbg.push(Some(dbg));
+        } else {
+            self.cell_order_dbg.insert(pos, Some(dbg));
+        }
         self.invalidate_height_cache();
         self.autoscroll_if_near_bottom();
         self.bottom_pane.set_has_chat_history(true);
@@ -11147,7 +11195,7 @@ impl ChatWidget<'_> {
 
     fn mark_history_dirty(&mut self) {
         self.history_snapshot_dirty = true;
-        self.flush_history_snapshot_if_needed(true);
+        self.flush_history_snapshot_if_needed(false);
     }
 
     fn flush_history_snapshot_if_needed(&mut self, force: bool) {

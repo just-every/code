@@ -314,6 +314,10 @@ impl ModelClient {
         &self.config.code_home
     }
 
+    pub fn debug_enabled(&self) -> bool {
+        self.config.debug
+    }
+
     pub fn build_tools_config_with_sandbox(
         &self,
         sandbox_policy: SandboxPolicy,

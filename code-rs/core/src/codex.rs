@@ -11514,18 +11514,22 @@ async fn handle_container_exec_with_params(
     let sandbox_policy = sess.sandbox_policy.clone();
     let sandbox_cwd = sess.get_cwd().to_path_buf();
     let code_linux_sandbox_exe = sess.code_linux_sandbox_exe.clone();
-    let exec_spool_dir = sess
-        .client
-        .code_home()
-        .join("debug_logs")
-        .join("exec");
+    let exec_spool_dir_for_task = if sess.client.debug_enabled() {
+        Some(
+            sess.client
+                .code_home()
+                .join("debug_logs")
+                .join("exec"),
+        )
+    } else {
+        None
+    };
     let result_cell_for_task = result_cell.clone();
     let notify_task = notify.clone();
     let tail_buf_task = tail_buf.clone();
     let backgrounded_task = backgrounded.clone();
     let suppress_event_flag_task = suppress_event_flag.clone();
     let display_label_task = display_label.clone();
-    let exec_spool_dir_for_task = exec_spool_dir.clone();
     let task_handle = tokio::spawn(async move {
         // Build stdout stream with tail capture. We cannot stamp via `Session` here,
         // but deltas will be delivered with neutral ordering which the UI tolerates.
@@ -11539,7 +11543,7 @@ async fn handle_container_exec_with_params(
                 session: None,
                 tail_buf: Some(tail_buf_task.clone()),
                 order: Some(order_meta_for_deltas.clone()),
-                spool_dir: Some(exec_spool_dir_for_task.clone()),
+                spool_dir: exec_spool_dir_for_task.clone(),
             })
         };
 
@@ -11874,9 +11878,11 @@ async fn handle_sandbox_error(
                         session: None,
                         tail_buf: None,
                         order: Some(crate::protocol::OrderMeta { request_ordinal: attempt_req, output_index: None, sequence_number: None }),
-                        spool_dir: Some(
-                            sess.client.code_home().join("debug_logs").join("exec"),
-                        ),
+                        spool_dir: if sess.client.debug_enabled() {
+                            Some(sess.client.code_home().join("debug_logs").join("exec"))
+                        } else {
+                            None
+                        },
                     })
                 },
             },
