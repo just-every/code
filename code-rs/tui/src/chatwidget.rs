@@ -3794,6 +3794,23 @@ impl ChatWidget<'_> {
         }
     }
 
+    /// Ensure we show progress when work is visible but the spinner state drifted.
+    fn ensure_spinner_for_activity(&mut self, reason: &'static str) {
+        if self.bottom_pane.auto_drive_style_active()
+            && !self.bottom_pane.auto_drive_view_active()
+            && !self.bottom_pane.has_active_modal_view()
+        {
+            tracing::debug!(
+                "Auto Drive style active without view; releasing style (reason: {reason})"
+            );
+            self.bottom_pane.release_auto_drive_style();
+        }
+        if !self.bottom_pane.is_task_running() {
+            tracing::debug!("Activity without spinner; re-enabling (reason: {reason})");
+            self.bottom_pane.set_task_running(true);
+        }
+    }
+
     #[inline]
     fn stop_spinner(&mut self) {
         self.bottom_pane.set_task_running(false);
@@ -4842,6 +4859,7 @@ impl ChatWidget<'_> {
             seq
         );
         self.handle_exec_begin_now(ev.clone(), &order);
+        self.ensure_spinner_for_activity("exec-begin");
         if let Some((pending_end, order2, _ts)) = self
             .exec
             .pending_exec_ends
@@ -12259,6 +12277,7 @@ impl ChatWidget<'_> {
                 self.flush_history_snapshot_if_needed(true);
             }
             EventMsg::WebSearchBegin(ev) => {
+                self.ensure_spinner_for_activity("web-search-begin");
                 // Enforce order presence (tool events should carry it)
                 let ok = match event.order.as_ref() {
                     Some(om) => self.provider_order_key_from_order_meta(om),
@@ -12431,6 +12450,7 @@ impl ChatWidget<'_> {
                     delta,
                     event.order.as_ref().and_then(|o| o.sequence_number),
                 );
+                self.ensure_spinner_for_activity("assistant-delta");
                 // Show responding state while assistant streams
                 self.bottom_pane
                     .update_status_text("responding".to_string());
@@ -12535,6 +12555,7 @@ impl ChatWidget<'_> {
                     delta,
                     event.order.as_ref().and_then(|o| o.sequence_number),
                 );
+                self.ensure_spinner_for_activity("reasoning-delta");
                 // Show thinking state while reasoning streams
                 self.bottom_pane.update_status_text("thinking".to_string());
             }
@@ -12596,6 +12617,7 @@ impl ChatWidget<'_> {
                 self.bottom_pane.set_task_running(true);
                 self.bottom_pane
                     .update_status_text("waiting for model".to_string());
+                self.ensure_spinner_for_activity("task-started");
                 tracing::info!("[order] EventMsg::TaskStarted id={}", id);
 
                 // Capture a baseline snapshot for this turn so background auto review only
@@ -12926,6 +12948,9 @@ impl ChatWidget<'_> {
             }
             EventMsg::ExecCommandOutputDelta(ev) => {
                 let call_id = ExecCallId(ev.call_id.clone());
+                if self.exec.running_commands.contains_key(&call_id) {
+                    self.ensure_spinner_for_activity("exec-output");
+                }
                 if let Some(running) = self.exec.running_commands.get_mut(&call_id) {
                     let chunk = String::from_utf8_lossy(&ev.chunk).to_string();
                     let chunk_len = chunk.len();
@@ -13100,6 +13125,7 @@ impl ChatWidget<'_> {
                             ev2.call_id,
                             seq
                         );
+                        this.ensure_spinner_for_activity("mcp-begin");
                         tools::mcp_begin(this, ev2, order_ok);
                     },
                 );
@@ -13132,6 +13158,7 @@ impl ChatWidget<'_> {
                 tool_name,
                 parameters,
             }) => {
+                self.ensure_spinner_for_activity("tool-begin");
                 // Any custom tool invocation should fade out the welcome animation
                 for cell in &self.history_cells {
                     cell.trigger_fade();
