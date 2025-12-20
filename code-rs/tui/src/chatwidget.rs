@@ -27502,6 +27502,12 @@ Have we met every part of this goal and is there no further work to do?"#
             None => self.config.cwd.display().to_string(),
         };
 
+        let cwd_short_str = cwd_str
+            .rsplit(|c| c == '/' || c == '\\')
+            .find(|segment| !segment.is_empty())
+            .unwrap_or(cwd_str.as_str())
+            .to_string();
+
         // Build status line spans with dynamic elision based on width.
         // Removal priority when space is tight:
         //   1) Reasoning level
@@ -27514,7 +27520,8 @@ Have we met every part of this goal and is there no further work to do?"#
         let build_spans = |include_reasoning: bool,
                            include_model: bool,
                            include_branch: bool,
-                           include_dir: bool| {
+                           include_dir: bool,
+                           dir_display: &str| {
             let mut spans: Vec<Span> = Vec::new();
             // Title follows theme text color
             spans.push(Span::styled(
@@ -27564,7 +27571,7 @@ Have we met every part of this goal and is there no further work to do?"#
                     Style::default().fg(crate::colors::text_dim()),
                 ));
                 spans.push(Span::styled(
-                    cwd_str.clone(),
+                    dir_display.to_string(),
                     Style::default().fg(crate::colors::info()),
                 ));
             }
@@ -27598,11 +27605,13 @@ Have we met every part of this goal and is there no further work to do?"#
         let mut include_model = !minimal_header;
         let mut include_branch = !minimal_header && branch_opt.is_some();
         let mut include_dir = !minimal_header && !demo_mode;
+        let mut use_short_dir = false;
         let mut status_spans = build_spans(
             include_reasoning,
             include_model,
             include_branch,
             include_dir,
+            &cwd_str,
         );
 
         // Now recompute exact available width inside the border + padding before measuring
@@ -27622,6 +27631,17 @@ Have we met every part of this goal and is there no further work to do?"#
         let measure =
             |spans: &Vec<Span>| -> usize { spans.iter().map(|s| s.content.chars().count()).sum() };
 
+        if include_dir && !use_short_dir && measure(&status_spans) > inner_width {
+            use_short_dir = true;
+            status_spans = build_spans(
+                include_reasoning,
+                include_model,
+                include_branch,
+                include_dir,
+                &cwd_short_str,
+            );
+        }
+
         // Elide items in priority order until content fits
         while measure(&status_spans) > inner_width {
             if include_reasoning {
@@ -27640,6 +27660,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 include_model,
                 include_branch,
                 include_dir,
+                if use_short_dir { &cwd_short_str } else { &cwd_str },
             );
         }
 
