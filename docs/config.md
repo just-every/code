@@ -550,8 +550,8 @@ Code spawns subprocesses (e.g. when executing a `local_shell` tool-call suggeste
 [shell_environment_policy]
 # inherit can be "all" (default), "core", or "none"
 inherit = "core"
-# set to true to *skip* the filter for `"*KEY*"` and `"*TOKEN*"`
-ignore_default_excludes = false
+# set to true to *skip* the filter for `"*KEY*"`, `"*SECRET*"`, and `"*TOKEN*"`
+ignore_default_excludes = true
 # exclude patterns (case-insensitive globs)
 exclude = ["AWS_*", "AZURE_*"]
 # force-set / override values
