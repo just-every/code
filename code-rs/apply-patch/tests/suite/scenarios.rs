@@ -36,7 +36,7 @@ fn run_apply_patch_scenario(dir: &Path) -> anyhow::Result<()> {
     // Run apply_patch in the temporary directory. We intentionally do not assert
     // on the exit status here; the scenarios are specified purely in terms of
     // final filesystem state, which we compare below.
-    Command::cargo_bin("apply_patch")?
+    Command::new(assert_cmd::cargo::cargo_bin!("apply_patch"))
         .arg(patch)
         .current_dir(tmp.path())
         .output()?;

@@ -2,7 +2,7 @@
 source: tui/tests/vt100_chatwidget_snapshot.rs
 expression: output
 ---
- +----------------------------------------------------------------------------+
+ +----------------------------- ✶ Agents... -----------------------------+
  |                                 Every Code                                 |
  +----------------------------------------------------------------------------+
  › Can you gather details from the latest docs update?
