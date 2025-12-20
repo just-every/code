@@ -2741,7 +2741,7 @@ impl Config {
             .features
             .as_ref()
             .and_then(|features| features.skills)
-            .unwrap_or(false);
+            .unwrap_or(true);
 
         let env_ctx_v2_flag = *crate::flags::CTX_UI;
 

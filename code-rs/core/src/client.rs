@@ -594,7 +594,7 @@ impl ModelClient {
                 input: &input_with_instructions,
                 tools: &tools_json,
                 tool_choice: "auto",
-                parallel_tool_calls: true,
+                parallel_tool_calls: request_family.supports_parallel_tool_calls,
                 reasoning,
                 text,
                 store: azure_workaround,

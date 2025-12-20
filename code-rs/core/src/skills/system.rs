@@ -17,6 +17,10 @@ const EMBEDDED_SYSTEM_SKILLS: &[(&str, &[u8])] = &[
         include_bytes!("assets/samples/plan/SKILL.md"),
     ),
     (
+        "plan/LICENSE.txt",
+        include_bytes!("assets/samples/plan/LICENSE.txt"),
+    ),
+    (
         "plan/scripts/create_plan.py",
         include_bytes!("assets/samples/plan/scripts/create_plan.py"),
     ),
@@ -51,6 +55,26 @@ const EMBEDDED_SYSTEM_SKILLS: &[(&str, &[u8])] = &[
     (
         "skill-creator/scripts/quick_validate.py",
         include_bytes!("assets/samples/skill-creator/scripts/quick_validate.py"),
+    ),
+    (
+        "skill-installer/SKILL.md",
+        include_bytes!("assets/samples/skill-installer/SKILL.md"),
+    ),
+    (
+        "skill-installer/LICENSE.txt",
+        include_bytes!("assets/samples/skill-installer/LICENSE.txt"),
+    ),
+    (
+        "skill-installer/scripts/github_utils.py",
+        include_bytes!("assets/samples/skill-installer/scripts/github_utils.py"),
+    ),
+    (
+        "skill-installer/scripts/install-skill-from-github.py",
+        include_bytes!("assets/samples/skill-installer/scripts/install-skill-from-github.py"),
+    ),
+    (
+        "skill-installer/scripts/list-curated-skills.py",
+        include_bytes!("assets/samples/skill-installer/scripts/list-curated-skills.py"),
     ),
 ];
 

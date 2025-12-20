@@ -5,11 +5,12 @@ Skill Packager - Creates a distributable .skill file of a skill folder
 Usage:
     python utils/package_skill.py <path/to/skill-folder> [output-directory]
 
-Example:
+Examples:
     python utils/package_skill.py skills/public/my-skill
     python utils/package_skill.py skills/public/my-skill ./dist
 """
 
+import os
 import sys
 import zipfile
 from pathlib import Path
@@ -56,21 +57,18 @@ def package_skill(skill_path, output_dir=None):
 
     # Determine output location
     skill_name = skill_path.name
-    if output_dir:
-        output_path = Path(output_dir).resolve()
-        output_path.mkdir(parents=True, exist_ok=True)
-    else:
-        output_path = Path.cwd()
+    output_path = Path(output_dir) if output_dir else Path.cwd()
+    output_path.mkdir(parents=True, exist_ok=True)
 
     skill_filename = output_path / f"{skill_name}.skill"
 
-    # Create the .skill file (zip format)
     try:
+        # Create the .skill file (zip format)
         with zipfile.ZipFile(skill_filename, "w", zipfile.ZIP_DEFLATED) as zipf:
             # Walk through the skill directory
             for file_path in skill_path.rglob("*"):
                 if file_path.is_file():
-                    # Calculate the relative path within the zip
+                    # Add file to zip with relative path
                     arcname = file_path.relative_to(skill_path.parent)
                     zipf.write(file_path, arcname)
                     print(f"  Added: {arcname}")
@@ -86,7 +84,6 @@ def package_skill(skill_path, output_dir=None):
 def main():
     if len(sys.argv) < 2:
         print("Usage: python utils/package_skill.py <path/to/skill-folder> [output-directory]")
-        print("\nExample:")
         print("  python utils/package_skill.py skills/public/my-skill")
         print("  python utils/package_skill.py skills/public/my-skill ./dist")
         sys.exit(1)

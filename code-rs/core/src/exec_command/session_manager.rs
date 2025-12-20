@@ -2,6 +2,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::ErrorKind;
 use std::io::Read;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicU32;
@@ -237,6 +238,19 @@ impl SessionManager {
         &self,
         params: ExecCommandParams,
     ) -> Result<ExecCommandOutput, String> {
+        if let Some(sandbox_permissions) = params.sandbox_permissions
+            && sandbox_permissions.requires_escalated_permissions()
+            && params
+                .justification
+                .as_ref()
+                .map(|justification| justification.trim().is_empty())
+                .unwrap_or(true)
+        {
+            return Err(
+                "sandbox_permissions=require_escalated requires a justification".to_string(),
+            );
+        }
+
         // Allocate a session id.
         let session_id = SessionId(
             self.next_session_id
@@ -408,8 +422,11 @@ async fn create_exec_command_session(
         cmd,
         yield_time_ms: _,
         max_output_tokens: _,
+        workdir,
         shell,
         login,
+        sandbox_permissions: _,
+        justification: _,
     } = params;
 
     // Use the native pty implementation for the system
@@ -428,6 +445,9 @@ async fn create_exec_command_session(
     let shell_mode_opt = if login { "-lc" } else { "-c" };
     command_builder.arg(shell_mode_opt);
     command_builder.arg(cmd);
+    if let Some(workdir) = workdir {
+        command_builder.cwd(PathBuf::from(workdir));
+    }
 
     let mut child = pair.slave.spawn_command(command_builder)?;
     // Obtain a killer that can signal the process independently of `.wait()`.
@@ -553,8 +573,11 @@ PY"#
             cmd,
             yield_time_ms: 3_000,
             max_output_tokens: 1_000, // large enough to avoid truncation here
+            workdir: None,
             shell: "/bin/bash".to_string(),
             login: false,
+            sandbox_permissions: None,
+            justification: None,
         };
         let initial_output = match session_manager
             .handle_exec_command_request(params.clone())

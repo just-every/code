@@ -111,7 +111,7 @@ mod tests {
     }
 
     #[test]
-    fn test_core_inherit_and_default_excludes() {
+    fn test_core_inherit_default_policy_skips_filters() {
         let vars = make_vars(&[
             ("PATH", "/usr/bin"),
             ("PATHEXT", ".EXE;.CMD"),
@@ -120,7 +120,7 @@ mod tests {
             ("SECRET_TOKEN", "t"),
         ]);
 
-        let policy = ShellEnvironmentPolicy::default(); // inherit Core, default excludes on
+        let policy = ShellEnvironmentPolicy::default(); // inherit Core, default excludes disabled
         let result = populate_env(vars, &policy);
 
         let mut expected: HashMap<String, String> = hashmap! {
@@ -136,6 +136,9 @@ mod tests {
             "LANG".to_string() => "C.UTF-8".to_string(),
             "LC_ALL".to_string() => "C.UTF-8".to_string(),
         };
+
+        expected.insert("API_KEY".to_string(), "secret".to_string());
+        expected.insert("SECRET_TOKEN".to_string(), "t".to_string());
 
         #[cfg(unix)]
         expected.insert("GIT_ASKPASS".to_string(), "true".to_string());
@@ -225,6 +228,7 @@ mod tests {
 
         let policy = ShellEnvironmentPolicy {
             inherit: ShellEnvironmentPolicyInherit::All,
+            ignore_default_excludes: false,
             ..Default::default()
         };
 

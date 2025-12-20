@@ -328,6 +328,7 @@ pub fn apply_model_info_overrides(info: &ModelInfo, mut family: ModelFamily) -> 
     }
 
     family.supports_reasoning_summaries = info.supports_reasoning_summaries;
+    family.supports_parallel_tool_calls = info.supports_parallel_tool_calls;
     family.default_reasoning_effort = Some(map_reasoning_effort(info.default_reasoning_level));
     family.reasoning_summary_format =
         map_reasoning_summary_format(info.reasoning_summary_format.clone());

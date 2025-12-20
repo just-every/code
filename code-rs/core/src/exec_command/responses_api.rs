@@ -11,26 +11,24 @@ pub fn create_exec_command_tool_for_responses_api() -> ResponsesApiTool {
     properties.insert(
         "cmd".to_string(),
         JsonSchema::String {
-            description: Some("The shell command to execute.".to_string()),
+            description: Some("Shell command to execute.".to_string()),
             allowed_values: None,
         },
     );
     properties.insert(
-        "yield_time_ms".to_string(),
-        JsonSchema::Number {
-            description: Some("The maximum time in milliseconds to wait for output.".to_string()),
-        },
-    );
-    properties.insert(
-        "max_output_tokens".to_string(),
-        JsonSchema::Number {
-            description: Some("The maximum number of tokens to output.".to_string()),
+        "workdir".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Optional working directory to run the command in; defaults to the turn cwd."
+                    .to_string(),
+            ),
+            allowed_values: None,
         },
     );
     properties.insert(
         "shell".to_string(),
         JsonSchema::String {
-            description: Some("The shell to use. Defaults to \"/bin/bash\".".to_string()),
+            description: Some("Shell binary to launch. Defaults to /bin/bash.".to_string()),
             allowed_values: None,
         },
     );
@@ -38,14 +36,52 @@ pub fn create_exec_command_tool_for_responses_api() -> ResponsesApiTool {
         "login".to_string(),
         JsonSchema::Boolean {
             description: Some(
-                "Whether to run the command as a login shell. Defaults to true.".to_string(),
+                "Whether to run the shell with -l/-i semantics. Defaults to true.".to_string(),
             ),
+        },
+    );
+    properties.insert(
+        "yield_time_ms".to_string(),
+        JsonSchema::Number {
+            description: Some(
+                "How long to wait (in milliseconds) for output before yielding.".to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "max_output_tokens".to_string(),
+        JsonSchema::Number {
+            description: Some(
+                "Maximum number of tokens to return. Excess output will be truncated."
+                    .to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "sandbox_permissions".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Sandbox permissions for the command. Set to \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\"."
+                    .to_string(),
+            ),
+            allowed_values: None,
+        },
+    );
+    properties.insert(
+        "justification".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Only set if sandbox_permissions is \"require_escalated\". 1-sentence explanation of why we want to run this command."
+                    .to_string(),
+            ),
+            allowed_values: None,
         },
     );
 
     ResponsesApiTool {
         name: EXEC_COMMAND_TOOL_NAME.to_owned(),
-        description: r#"Execute shell commands on the local machine with streaming output."#
+        description:
+            "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
             .to_string(),
         strict: false,
         parameters: JsonSchema::Object {
@@ -61,13 +97,13 @@ pub fn create_write_stdin_tool_for_responses_api() -> ResponsesApiTool {
     properties.insert(
         "session_id".to_string(),
         JsonSchema::Number {
-            description: Some("The ID of the exec_command session.".to_string()),
+            description: Some("Identifier of the running unified exec session.".to_string()),
         },
     );
     properties.insert(
         "chars".to_string(),
         JsonSchema::String {
-            description: Some("The characters to write to stdin.".to_string()),
+            description: Some("Bytes to write to stdin (may be empty to poll).".to_string()),
             allowed_values: None,
         },
     );
@@ -75,26 +111,29 @@ pub fn create_write_stdin_tool_for_responses_api() -> ResponsesApiTool {
         "yield_time_ms".to_string(),
         JsonSchema::Number {
             description: Some(
-                "The maximum time in milliseconds to wait for output after writing.".to_string(),
+                "How long to wait (in milliseconds) for output before yielding.".to_string(),
             ),
         },
     );
     properties.insert(
         "max_output_tokens".to_string(),
         JsonSchema::Number {
-            description: Some("The maximum number of tokens to output.".to_string()),
+            description: Some(
+                "Maximum number of tokens to return. Excess output will be truncated."
+                    .to_string(),
+            ),
         },
     );
 
     ResponsesApiTool {
         name: WRITE_STDIN_TOOL_NAME.to_owned(),
-        description: r#"Write characters to an exec session's stdin. Returns all stdout+stderr received within yield_time_ms.
-Can write control characters (\u0003 for Ctrl-C), or an empty string to just poll stdout+stderr."#
+        description:
+            "Writes characters to an existing unified exec session and returns recent output."
             .to_string(),
         strict: false,
         parameters: JsonSchema::Object {
             properties,
-            required: Some(vec!["session_id".to_string(), "chars".to_string()]),
+            required: Some(vec!["session_id".to_string()]),
             additional_properties: Some(false.into()),
         },
     }

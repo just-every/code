@@ -24,11 +24,9 @@ description: [TODO: Complete and informative explanation of what the skill does 
 
 # {skill_title}
 
-## Overview
-
 [TODO: 1-2 sentences explaining what this skill enables]
 
-## Structuring This Skill
+## Overview
 
 [TODO: Choose the structure that best fits this skill's purpose. Common patterns:
 
@@ -54,15 +52,11 @@ description: [TODO: Complete and informative explanation of what the skill does 
 
 Patterns can be mixed and matched as needed. Most skills combine patterns (e.g., start with task-based, add workflow for complex operations).
 
-Delete this entire "Structuring This Skill" section when done - it's just guidance.]
-
-## [TODO: Replace with the first main section based on chosen structure]
-
 [TODO: Add content here. See examples in existing skills:
 - Code samples for technical skills
-- Decision trees for complex workflows
-- Concrete examples with realistic user requests
-- References to scripts/templates/references as needed]
+- Step-by-step workflows
+- Decision trees for complex operations
+- Links to scripts/references]
 
 ## Resources
 
@@ -75,31 +69,21 @@ Executable code (Python/Bash/etc.) that can be run directly to perform specific 
 - PDF skill: `fill_fillable_fields.py`, `extract_form_field_info.py` - utilities for PDF manipulation
 - DOCX skill: `document.py`, `utilities.py` - Python modules for document processing
 
-**Appropriate for:** Python scripts, shell scripts, or any executable code that performs automation, data processing, or specific operations.
-
-**Note:** Scripts may be executed without loading into context, but can still be read by Codex for patching or environment adjustments.
-
 ### references/
-Documentation and reference material intended to be loaded into context to inform Codex's process and thinking.
+Detailed documentation, schemas, or reference material that doesn't belong in SKILL.md.
 
 **Examples from other skills:**
-- Product management: `communication.md`, `context_building.md` - detailed workflow guides
-- BigQuery: API reference documentation and query examples
-- Finance: Schema documentation, company policies
-
-**Appropriate for:** In-depth documentation, API references, database schemas, comprehensive guides, or any detailed information that Codex should reference while working.
+- `api_reference.md` - API endpoint documentation
+- `format_specs.md` - File format specifications
+- `examples.md` - Usage examples and patterns
 
 ### assets/
-Files not intended to be loaded into context, but rather used within the output Codex produces.
+Templates, example data, or other static files.
 
 **Examples from other skills:**
-- Brand styling: PowerPoint template files (.pptx), logo files
-- Frontend builder: HTML/React boilerplate project directories
-- Typography: Font files (.ttf, .woff2)
-
-**Appropriate for:** Templates, boilerplate code, document templates, images, icons, fonts, or any files meant to be copied or used in the final output.
-
----
+- `template.xlsx` - Spreadsheet templates
+- `sample_document.docx` - Example documents
+- `config.json` - Configuration templates
 
 **Any unneeded directories can be deleted.** Not every skill requires all three types of resources.
 """
@@ -107,19 +91,10 @@ Files not intended to be loaded into context, but rather used within the output 
 EXAMPLE_SCRIPT = '''#!/usr/bin/env python3
 """
 Example helper script for {skill_name}
-
-This is a placeholder script that can be executed directly.
-Replace with actual implementation or delete if not needed.
-
-Example real scripts from other skills:
-- pdf/scripts/fill_fillable_fields.py - Fills PDF form fields
-- pdf/scripts/convert_pdf_to_images.py - Converts PDF pages to images
 """
 
 def main():
     print("This is an example script for {skill_name}")
-    # TODO: Add actual script logic here
-    # This could be data processing, file conversion, API calls, etc.
 
 if __name__ == "__main__":
     main()
@@ -127,73 +102,35 @@ if __name__ == "__main__":
 
 EXAMPLE_REFERENCE = """# Reference Documentation for {skill_title}
 
-This is a placeholder for detailed reference documentation.
-Replace with actual reference content or delete if not needed.
+This is an example reference document. Use this space for:
 
-Example real reference docs from other skills:
-- product-management/references/communication.md - Comprehensive guide for status updates
-- product-management/references/context_building.md - Deep-dive on gathering context
-- bigquery/references/ - API references and query examples
+- Detailed specifications
+- API references
+- Format documentation
+- Edge cases and constraints
+- Examples and templates
 
-## When Reference Docs Are Useful
+## Example Section
 
-Reference docs are ideal for:
-- Comprehensive API documentation
-- Detailed workflow guides
-- Complex multi-step processes
-- Information too lengthy for main SKILL.md
-- Content that's only needed for specific use cases
-
-## Structure Suggestions
-
-### API Reference Example
-- Overview
-- Authentication
-- Endpoints with examples
-- Error codes
-- Rate limits
-
-### Workflow Guide Example
-- Prerequisites
-- Step-by-step instructions
-- Common patterns
-- Troubleshooting
-- Best practices
+Add your reference content here.
 """
 
-EXAMPLE_ASSET = """# Example Asset File
-
-This placeholder represents where asset files would be stored.
-Replace with actual asset files (templates, images, fonts, etc.) or delete if not needed.
-
-Asset files are NOT intended to be loaded into context, but rather used within
-the output Codex produces.
-
-Example asset files from other skills:
-- Brand guidelines: logo.png, slides_template.pptx
-- Frontend builder: hello-world/ directory with HTML/React boilerplate
-- Typography: custom-font.ttf, font-family.woff2
-- Data: sample_data.csv, test_dataset.json
-
-## Common Asset Types
-
-- Templates: .pptx, .docx, boilerplate directories
-- Images: .png, .jpg, .svg, .gif
-- Fonts: .ttf, .otf, .woff, .woff2
-- Boilerplate code: Project directories, starter files
-- Icons: .ico, .svg
-- Data files: .csv, .json, .xml, .yaml
-
-Note: This is a text placeholder. Actual assets can be any file type.
+EXAMPLE_ASSET = """This is an example asset file.
+Replace with actual templates, data files, or other resources as needed.
 """
 
 
 def normalize_skill_name(skill_name):
     """Normalize a skill name to lowercase hyphen-case."""
     normalized = skill_name.strip().lower()
-    normalized = re.sub(r"[^a-z0-9]+", "-", normalized)
+    # Replace spaces and underscores with hyphens
+    normalized = re.sub(r"[ _]+", "-", normalized)
+    # Remove any characters that aren't alphanumeric or hyphen
+    normalized = re.sub(r"[^a-z0-9-]", "", normalized)
+    # Collapse multiple hyphens
+    normalized = re.sub(r"-+", "-", normalized)
+    # Remove leading/trailing hyphens
     normalized = normalized.strip("-")
-    normalized = re.sub(r"-{2,}", "-", normalized)
     return normalized
 
 
@@ -319,8 +256,6 @@ def main():
 
     if result:
         sys.exit(0)
-    else:
-        sys.exit(1)
 
 
 if __name__ == "__main__":

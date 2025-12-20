@@ -6,16 +6,16 @@ Codex can automatically discover reusable "skills" you keep on disk. A skill is 
 
 ## Enable skills
 
-Skills are behind the experimental `skills` feature flag and are disabled by default.
+Skills are behind the experimental `skills` feature flag and are enabled by default.
 
-- Enable in config (preferred): add the following to `$CODEX_HOME/config.toml` (usually `~/.codex/config.toml`) and restart Codex:
+- Disable in config (preferred): add the following to `$CODEX_HOME/config.toml` (usually `~/.codex/config.toml`) and restart Codex:
 
   ```toml
   [features]
-  skills = true
+  skills = false
   ```
 
-- Enable for a single run: launch Codex with `codex --enable skills`
+- Override for a single run when disabled in config: launch Codex with `codex --enable skills`
 
 ## Where skills live
 

@@ -52,6 +52,10 @@ pub struct ModelFamily {
     // Define if we need a special handling of reasoning summary
     pub reasoning_summary_format: ReasoningSummaryFormat,
 
+    /// Whether this model supports parallel tool calls when using the
+    /// Responses API.
+    pub supports_parallel_tool_calls: bool,
+
     // This should be set to true when the model expects a tool named
     // "local_shell" to be provided. Its contract must be understood natively by
     // the model such that its description can be omitted.
@@ -81,6 +85,7 @@ macro_rules! model_family {
             supports_reasoning_summaries: false,
             default_reasoning_effort: None,
             reasoning_summary_format: ReasoningSummaryFormat::None,
+            supports_parallel_tool_calls: false,
             uses_local_shell_tool: false,
             apply_patch_tool_type: None,
             base_instructions: BASE_INSTRUCTIONS.to_string(),
@@ -148,6 +153,7 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             reasoning_summary_format: ReasoningSummaryFormat::Experimental,
             base_instructions: GPT_5_CODEX_INSTRUCTIONS.to_string(),
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
+            supports_parallel_tool_calls: true,
             default_reasoning_effort: Some(ReasoningEffort::Medium),
         )
     } else if slug.starts_with("exp-codex") || slug.starts_with("codex-1p") {
@@ -158,12 +164,14 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             reasoning_summary_format: ReasoningSummaryFormat::Experimental,
             base_instructions: GPT_5_2_CODEX_INSTRUCTIONS.to_string(),
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
+            supports_parallel_tool_calls: true,
         )
     } else if slug.starts_with("exp-") {
         model_family!(
             slug, slug,
             supports_reasoning_summaries: true,
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
+            supports_parallel_tool_calls: true,
             default_reasoning_effort: Some(ReasoningEffort::Medium),
         )
     } else if slug.starts_with("gpt-5.1-codex-max") {
@@ -197,6 +205,18 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             reasoning_summary_format: ReasoningSummaryFormat::Experimental,
             base_instructions: GPT_5_2_CODEX_INSTRUCTIONS.to_string(),
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
+            supports_parallel_tool_calls: true,
+            context_window: Some(CONTEXT_WINDOW_272K),
+            max_output_tokens: Some(MAX_OUTPUT_DEFAULT),
+        )
+    } else if slug.starts_with("bengalfox") {
+        model_family!(
+            slug, slug,
+            supports_reasoning_summaries: true,
+            reasoning_summary_format: ReasoningSummaryFormat::Experimental,
+            base_instructions: GPT_5_2_CODEX_INSTRUCTIONS.to_string(),
+            apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
+            supports_parallel_tool_calls: true,
             context_window: Some(CONTEXT_WINDOW_272K),
             max_output_tokens: Some(MAX_OUTPUT_DEFAULT),
         )
@@ -207,6 +227,18 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             base_instructions: GPT_5_2_INSTRUCTIONS.to_string(),
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
             default_reasoning_effort: Some(ReasoningEffort::Medium),
+            supports_parallel_tool_calls: true,
+            context_window: Some(CONTEXT_WINDOW_272K),
+            max_output_tokens: Some(MAX_OUTPUT_DEFAULT),
+        )
+    } else if slug.starts_with("boomslang") {
+        model_family!(
+            slug, slug,
+            supports_reasoning_summaries: true,
+            base_instructions: GPT_5_2_INSTRUCTIONS.to_string(),
+            apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
+            default_reasoning_effort: Some(ReasoningEffort::Medium),
+            supports_parallel_tool_calls: true,
             context_window: Some(CONTEXT_WINDOW_272K),
             max_output_tokens: Some(MAX_OUTPUT_DEFAULT),
         )
@@ -217,6 +249,7 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             base_instructions: GPT_5_1_INSTRUCTIONS.to_string(),
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
             default_reasoning_effort: Some(ReasoningEffort::Medium),
+            supports_parallel_tool_calls: true,
             context_window: Some(CONTEXT_WINDOW_272K),
             max_output_tokens: Some(MAX_OUTPUT_DEFAULT),
         )
@@ -244,6 +277,7 @@ pub fn derive_default_model_family(model: &str) -> ModelFamily {
         supports_reasoning_summaries: false,
         default_reasoning_effort: None,
         reasoning_summary_format: ReasoningSummaryFormat::None,
+        supports_parallel_tool_calls: false,
         uses_local_shell_tool: false,
         apply_patch_tool_type: None,
         base_instructions: BASE_INSTRUCTIONS.to_string(),

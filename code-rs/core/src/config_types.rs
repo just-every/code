@@ -1204,7 +1204,7 @@ pub type EnvironmentVariablePattern = WildMatchPattern<'*', '?'>;
 /// 3. If `exclude` is not empty, filter the map using the provided patterns.
 /// 4. Insert any entries from `r#set` into the map.
 /// 5. If non-empty, filter the map using the `include_only` patterns.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ShellEnvironmentPolicy {
     /// Starting point when building the environment.
     pub inherit: ShellEnvironmentPolicyInherit,
@@ -1226,11 +1226,24 @@ pub struct ShellEnvironmentPolicy {
     pub use_profile: bool,
 }
 
+impl Default for ShellEnvironmentPolicy {
+    fn default() -> Self {
+        Self {
+            inherit: ShellEnvironmentPolicyInherit::All,
+            ignore_default_excludes: true,
+            exclude: Vec::new(),
+            r#set: HashMap::new(),
+            include_only: Vec::new(),
+            use_profile: false,
+        }
+    }
+}
+
 impl From<ShellEnvironmentPolicyToml> for ShellEnvironmentPolicy {
     fn from(toml: ShellEnvironmentPolicyToml) -> Self {
         // Default to inheriting the full environment when not specified.
         let inherit = toml.inherit.unwrap_or(ShellEnvironmentPolicyInherit::All);
-        let ignore_default_excludes = toml.ignore_default_excludes.unwrap_or(false);
+        let ignore_default_excludes = toml.ignore_default_excludes.unwrap_or(true);
         let exclude = toml
             .exclude
             .unwrap_or_default()
