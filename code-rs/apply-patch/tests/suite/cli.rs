@@ -1,4 +1,3 @@
-use assert_cmd::prelude::*;
 use std::fs;
 use tempfile::tempdir;
 
