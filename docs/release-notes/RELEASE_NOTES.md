@@ -1,10 +1,12 @@
-## @just-every/code v0.6.10
+## @just-every/code v0.6.11
 
-Stability-focused release to keep TUI command processing responsive under heavy redraws.
+Fresh model defaults and smoother cloud runs in this release.
 
 ### Changes
-- TUI: keep bulk command processing responsive during heavy redraw bursts.
-- Performance: prevent redraw loops from starving queued work so outputs stay timely.
+- Models: default to gpt-5.2-codex and migrate 5.1 presets with the new key.
+- TUI: make the GPT-5.2 upgrade link clickable for smoother migrations.
+- Core: adopt constraint-based loading to speed startup and reduce redundancy.
+- Cloud: default cloud exec to the current branch to avoid mismatched runs.
 
 ### Install
 ```
@@ -12,4 +14,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.9...v0.6.10
+Compare: https://github.com/just-every/code/compare/v0.6.10...v0.6.11
