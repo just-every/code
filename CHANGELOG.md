@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.6.12] - 2025-12-20
+
+- TUI: coalesce transcript redraws, keep spinners live, and shorten status directory labels so streams stay smooth. (1d4463ba, 734dd0ee, e6794b7b)
+- Exec: reduce long-session stalls and collapse waiting time in unified exec so commands finish faster. (5cfb8309, 6c76d177)
+- CLI: add `/ps` and apply terminal-aware scroll scaling for clearer process visibility. (4fb0b547, df46ea48)
+- Config/Skills: backport requirements updates, add ExternalSandbox policy, and support `/etc/codex/requirements.toml` for tighter governance. (f2750fd6, 3429de21, 2f048f20)
+
 ## [0.6.10] - 2025-12-18
 
 - TUI: keep bulk command processing responsive during heavy redraw bursts. (9cf56083)
