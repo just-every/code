@@ -113,6 +113,51 @@ impl SessionMetrics {
         self.duplicate_items
     }
 
+    /// Returns a loop detection warning message if the session shows signs of
+    /// repetitive behavior (replays or high duplicate counts). Returns `None`
+    /// if no concerning patterns are detected.
+    ///
+    /// This guidance is intended to be injected into the coordinator's context
+    /// to help it break out of unproductive loops.
+    pub fn loop_detection_warning(&self) -> Option<String> {
+        let replays = self.replay_updates;
+        let duplicates = self.duplicate_items;
+
+        const REPLAY_WARNING_THRESHOLD: u32 = 2;
+        const REPLAY_CRITICAL_THRESHOLD: u32 = 4;
+        const DUPLICATE_WARNING_THRESHOLD: u32 = 3;
+
+        if replays >= REPLAY_CRITICAL_THRESHOLD {
+            return Some(format!(
+                "LOOP DETECTED: {replays} consecutive replay attempts observed. \
+                The same commands are being issued repeatedly without progress. \
+                STOP and reassess: (1) Check if the task is already complete, \
+                (2) Try a fundamentally different approach, \
+                (3) If stuck, use finish_failed with a clear explanation of the blocker."
+            ));
+        }
+
+        if replays >= REPLAY_WARNING_THRESHOLD {
+            return Some(format!(
+                "Potential loop detected: {replays} replay attempts observed. \
+                Recent actions may be repeating. Consider: \
+                (1) Verifying actual progress was made, \
+                (2) Trying a different strategy if the current approach isn't working, \
+                (3) Checking for already-completed conditions before retrying."
+            ));
+        }
+
+        if duplicates >= DUPLICATE_WARNING_THRESHOLD {
+            return Some(format!(
+                "Repetition detected: {duplicates} duplicate items in conversation history. \
+                This may indicate a stuck state. Ensure each action produces new, \
+                meaningful progress toward the goal."
+            ));
+        }
+
+        None
+    }
+
     fn push_prompt_observation(&mut self, tokens: u64) {
         if tokens == 0 {
             return;
@@ -174,5 +219,60 @@ mod tests {
         metrics.record_replay();
         metrics.record_replay();
         assert_eq!(metrics.replay_updates(), 2);
+    }
+
+    #[test]
+    fn loop_detection_warning_returns_none_when_no_issues() {
+        let metrics = SessionMetrics::default();
+        assert!(metrics.loop_detection_warning().is_none());
+    }
+
+    #[test]
+    fn loop_detection_warning_at_replay_warning_threshold() {
+        let mut metrics = SessionMetrics::default();
+        metrics.record_replay();
+        assert!(metrics.loop_detection_warning().is_none());
+
+        metrics.record_replay();
+        let warning = metrics.loop_detection_warning();
+        assert!(warning.is_some());
+        assert!(warning.unwrap().contains("Potential loop detected"));
+    }
+
+    #[test]
+    fn loop_detection_warning_at_replay_critical_threshold() {
+        let mut metrics = SessionMetrics::default();
+        for _ in 0..4 {
+            metrics.record_replay();
+        }
+        let warning = metrics.loop_detection_warning();
+        assert!(warning.is_some());
+        let warning_text = warning.unwrap();
+        assert!(warning_text.contains("LOOP DETECTED"));
+        assert!(warning_text.contains("4 consecutive replay"));
+    }
+
+    #[test]
+    fn loop_detection_warning_on_duplicate_items() {
+        let mut metrics = SessionMetrics::default();
+        metrics.record_duplicate_items(2);
+        assert!(metrics.loop_detection_warning().is_none());
+
+        metrics.record_duplicate_items(1);
+        let warning = metrics.loop_detection_warning();
+        assert!(warning.is_some());
+        assert!(warning.unwrap().contains("Repetition detected"));
+    }
+
+    #[test]
+    fn loop_detection_warning_replay_takes_priority_over_duplicates() {
+        let mut metrics = SessionMetrics::default();
+        metrics.record_duplicate_items(5);
+        metrics.record_replay();
+        metrics.record_replay();
+
+        let warning = metrics.loop_detection_warning();
+        assert!(warning.is_some());
+        assert!(warning.unwrap().contains("Potential loop detected"));
     }
 }

@@ -59,7 +59,7 @@ struct AutoCoordinatorCancelled;
 pub const MODEL_SLUG: &str = "gpt-5.1";
 const USER_TURN_SCHEMA_NAME: &str = "auto_coordinator_user_turn";
 const COORDINATOR_PROMPT: &str = include_str!("../../core/prompt_coordinator.md");
-const TIMEBOXED_FINISH_GUIDANCE: &str = "Time budget mode is enabled for this run. To reduce timeouts, finish promptly when you have strong, concrete evidence the goal is met (e.g., passing checks / required outputs present). Avoid repeated 'one more check' loops: do at most one final confirmation step, then use finish_success.";
+const TIMEBOXED_FINISH_GUIDANCE: &str = "Time budget mode is enabled for this run. Strategy: (1) identify the smallest reliable repro or failing test, (2) apply a focused fix, (3) verify with the narrowest check that proves correctness. Avoid full test suites unless required. If a rate-limit wait would consume most remaining time, summarize progress, note the next verification step, and use finish_failed instead of waiting indefinitely. Avoid repeated 'one more check' loops: do at most one final confirmation step, then use finish_success.";
 
 const ALL_TEXT_VERBOSITY: &[TextVerbosity] = &[
     TextVerbosity::Low,
@@ -80,6 +80,16 @@ struct AutoTimeBudget {
     deadline: Instant,
     total: Duration,
     next_nudge_at: Instant,
+}
+
+fn retry_max_elapsed(deadline: Option<Instant>) -> Duration {
+    let max = MAX_RETRY_ELAPSED;
+    let Some(deadline) = deadline else {
+        return max;
+    };
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let remaining = remaining.saturating_sub(RATE_LIMIT_BUFFER);
+    remaining.min(max)
 }
 
 impl AutoTimeBudget {
@@ -424,6 +434,7 @@ mod tests {
     use code_core::agent_defaults::DEFAULT_AGENT_NAMES;
     use code_core::error::RetryLimitReachedError;
     use serde_json::json;
+    use std::time::Duration;
 
     #[test]
     fn turn_descriptor_defaults_to_normal_mode() {
@@ -535,6 +546,17 @@ mod tests {
             !prompt_schema.contains_key("maxLength"),
             "schema should omit maxLength to avoid provider truncation"
         );
+    }
+
+    #[test]
+    fn retry_max_elapsed_defaults_to_global_limit() {
+        assert_eq!(retry_max_elapsed(None), MAX_RETRY_ELAPSED);
+    }
+
+    #[test]
+    fn retry_max_elapsed_zero_when_deadline_has_passed() {
+        let deadline = Instant::now();
+        assert_eq!(retry_max_elapsed(Some(deadline)), Duration::ZERO);
     }
 
     #[test]
@@ -1253,6 +1275,8 @@ fn run_auto_loop(
             let developer_intro = base_developer_intro.as_str();
             let mut retry_conversation = Some(conv.clone());
             let time_budget_message = time_budget.as_mut().and_then(|budget| budget.maybe_nudge());
+            let time_budget_deadline = time_budget.as_ref().map(|budget| budget.deadline);
+            let loop_warning = session_metrics.loop_detection_warning();
             match request_coordinator_decision(
                 &runtime,
                 client.as_ref(),
@@ -1260,6 +1284,8 @@ fn run_auto_loop(
                 &primary_goal_message,
                 coordinator_prompt_message.as_deref(),
                 time_budget_message.as_deref(),
+                time_budget_deadline,
+                loop_warning.as_deref(),
                 &schema,
                 conv,
                 auto_instructions.as_deref(),
@@ -1513,6 +1539,7 @@ fn run_auto_loop(
                 let mut updated_conversation = conversation.clone();
                 let schema = user_turn_schema();
                 let time_budget_message = time_budget.as_mut().and_then(|budget| budget.maybe_nudge());
+                let time_budget_deadline = time_budget.as_ref().map(|budget| budget.deadline);
                 match request_user_turn_decision(
                     &runtime,
                     client.as_ref(),
@@ -1520,6 +1547,7 @@ fn run_auto_loop(
                     &primary_goal_message,
                     coordinator_prompt_message.as_deref(),
                     time_budget_message.as_deref(),
+                    time_budget_deadline,
                     &schema,
                     updated_conversation.clone(),
                     auto_instructions.as_deref(),
@@ -1899,6 +1927,8 @@ fn request_coordinator_decision(
     primary_goal: &str,
     coordinator_prompt: Option<&str>,
     time_budget_message: Option<&str>,
+    time_budget_deadline: Option<Instant>,
+    loop_warning: Option<&str>,
     schema: &Value,
     conversation: Vec<ResponseItem>,
     auto_instructions: Option<&str>,
@@ -1918,6 +1948,8 @@ fn request_coordinator_decision(
         primary_goal,
         coordinator_prompt,
         time_budget_message,
+        time_budget_deadline,
+        loop_warning,
         schema,
         &conversation,
         auto_instructions,
@@ -1949,6 +1981,8 @@ fn request_decision(
     primary_goal: &str,
     coordinator_prompt: Option<&str>,
     time_budget_message: Option<&str>,
+    time_budget_deadline: Option<Instant>,
+    loop_warning: Option<&str>,
     schema: &Value,
     conversation: &[ResponseItem],
     auto_instructions: Option<&str>,
@@ -1963,6 +1997,8 @@ fn request_decision(
         primary_goal,
         coordinator_prompt,
         time_budget_message,
+        time_budget_deadline,
+        loop_warning,
         schema,
         conversation,
         auto_instructions,
@@ -1993,6 +2029,8 @@ fn request_decision(
                     primary_goal,
                     coordinator_prompt.as_deref(),
                     time_budget_message,
+                    time_budget_deadline,
+                    loop_warning,
                     schema,
                     conversation,
                     auto_instructions,
@@ -2038,6 +2076,7 @@ fn request_user_turn_decision(
     primary_goal: &str,
     coordinator_prompt: Option<&str>,
     time_budget_message: Option<&str>,
+    time_budget_deadline: Option<Instant>,
     schema: &Value,
     conversation: Vec<ResponseItem>,
     auto_instructions: Option<&str>,
@@ -2045,6 +2084,7 @@ fn request_user_turn_decision(
     cancel_token: &CancellationToken,
     preferred_model_slug: &str,
 ) -> Result<(Option<String>, Option<String>), DecisionFailure> {
+    // User turn decisions don't need loop warnings as they handle user prompts.
     let result = request_decision(
         runtime,
         client,
@@ -2052,6 +2092,8 @@ fn request_user_turn_decision(
         primary_goal,
         coordinator_prompt,
         time_budget_message,
+        time_budget_deadline,
+        None,
         schema,
         &conversation,
         auto_instructions,
@@ -2072,6 +2114,8 @@ fn request_decision_with_model(
     primary_goal: &str,
     coordinator_prompt: Option<&str>,
     time_budget_message: Option<&str>,
+    time_budget_deadline: Option<Instant>,
+    loop_warning: Option<&str>,
     schema: &Value,
     conversation: &[ResponseItem],
     auto_instructions: Option<&str>,
@@ -2082,6 +2126,7 @@ fn request_decision_with_model(
     let developer_intro = developer_intro.to_string();
     let primary_goal = primary_goal.to_string();
     let time_budget_message = time_budget_message.map(|text| text.to_string());
+    let loop_warning = loop_warning.map(|text| text.to_string());
     let schema = schema.clone();
     let conversation: Vec<ResponseItem> = conversation.to_vec();
     let auto_instructions = auto_instructions.map(|text| text.to_string());
@@ -2089,7 +2134,7 @@ fn request_decision_with_model(
     let tx = event_tx.clone();
     let cancel = cancel_token.clone();
     let classify = |error: &anyhow::Error| classify_model_error(error);
-    let options = RetryOptions::with_defaults(MAX_RETRY_ELAPSED);
+    let options = RetryOptions::with_defaults(retry_max_elapsed(time_budget_deadline));
 
     let result = runtime.block_on(async move {
         retry_with_backoff(
@@ -2097,11 +2142,13 @@ fn request_decision_with_model(
                 let instructions = auto_instructions.clone();
                 let coordinator_prompt = coordinator_prompt.clone();
                 let time_budget_message = time_budget_message.clone();
+                let loop_warning = loop_warning.clone();
                 let prompt = build_user_turn_prompt(
                     &developer_intro,
                     &primary_goal,
                     coordinator_prompt.as_deref(),
                     time_budget_message.as_deref(),
+                    loop_warning.as_deref(),
                     &schema,
                     &conversation,
                     model_slug,
@@ -2255,6 +2302,7 @@ fn build_user_turn_prompt(
     primary_goal: &str,
     coordinator_prompt: Option<&str>,
     time_budget_message: Option<&str>,
+    loop_warning: Option<&str>,
     schema: &Value,
     conversation: &Vec<ResponseItem>,
     model_slug: &str,
@@ -2282,6 +2330,14 @@ fn build_user_turn_prompt(
 
     if let Some(message) = time_budget_message {
         let trimmed = message.trim();
+        if !trimmed.is_empty() {
+            prompt
+                .input
+                .push(make_message("developer", trimmed.to_string()));
+        }
+    }
+    if let Some(warning) = loop_warning {
+        let trimmed = warning.trim();
         if !trimmed.is_empty() {
             prompt
                 .input

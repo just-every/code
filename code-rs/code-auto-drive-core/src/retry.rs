@@ -104,6 +104,24 @@ where
                             continue;
                         }
                         let sleep = wait_until.duration_since(now);
+                        let remaining = options.max_elapsed.saturating_sub(elapsed);
+                        if sleep > remaining {
+                            let timeout_reason = format!(
+                                "rate-limit wait {sleep:?} exceeds remaining retry budget {remaining:?}"
+                            );
+                            status_cb(RetryStatus {
+                                attempt,
+                                elapsed,
+                                sleep: None,
+                                resume_at: None,
+                                reason: timeout_reason.clone(),
+                                is_rate_limit: true,
+                            });
+                            return Err(RetryError::Timeout {
+                                elapsed,
+                                last_error: error.context(timeout_reason),
+                            });
+                        }
                         warn!(attempt, elapsed = ?elapsed, wait = ?sleep, resume_at = ?wait_until, "{reason}");
                         status_cb(RetryStatus {
                             attempt,
@@ -128,6 +146,24 @@ where
                     }
                     RetryDecision::RetryAfterBackoff { reason } => {
                         let sleep = compute_delay(&options, attempt, &mut rng);
+                        let remaining = options.max_elapsed.saturating_sub(elapsed);
+                        if sleep > remaining {
+                            let timeout_reason = format!(
+                                "retry delay {sleep:?} exceeds remaining retry budget {remaining:?}"
+                            );
+                            status_cb(RetryStatus {
+                                attempt,
+                                elapsed,
+                                sleep: None,
+                                resume_at: None,
+                                reason: timeout_reason.clone(),
+                                is_rate_limit: false,
+                            });
+                            return Err(RetryError::Timeout {
+                                elapsed,
+                                last_error: error.context(timeout_reason),
+                            });
+                        }
                         let resume_at = Instant::now() + sleep;
                         warn!(attempt, elapsed = ?elapsed, wait = ?sleep, resume_at = ?resume_at, "{reason}");
                         status_cb(RetryStatus {
@@ -168,5 +204,43 @@ async fn wait_with_cancel(cancel: &CancellationToken, duration: Duration) -> Res
     tokio::select! {
         _ = time::sleep(duration) => Ok(()),
         _ = cancel.cancelled() => Err(RetryError::Aborted),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::anyhow;
+    use tokio_util::sync::CancellationToken;
+
+    #[tokio::test]
+    async fn rate_limit_wait_exceeding_budget_times_out() {
+        let cancel = CancellationToken::new();
+        let options = RetryOptions {
+            base_delay: Duration::from_secs(1),
+            factor: 2.0,
+            max_delay: Duration::from_secs(60),
+            max_elapsed: Duration::from_secs(2),
+            jitter_seed: Some(1),
+        };
+        let mut attempts = 0u32;
+
+        let result: Result<(), RetryError> = retry_with_backoff(
+            || {
+                attempts += 1;
+                async { Err(anyhow!("rate limited")) }
+            },
+            |_| RetryDecision::RateLimited {
+                wait_until: Instant::now() + Duration::from_secs(60),
+                reason: "rate limited".to_string(),
+            },
+            options,
+            &cancel,
+            |_| {},
+        )
+        .await;
+
+        assert!(matches!(result, Err(RetryError::Timeout { .. })));
+        assert_eq!(attempts, 1);
     }
 }
