@@ -3784,8 +3784,25 @@ impl ChatWidget<'_> {
             || !self.tools_state.web_search_sessions.is_empty();
         let any_streaming = self.stream.is_write_cycle_active();
         let any_agents_active = self.agents_are_actively_running();
-        let any_tasks_active = !self.active_task_ids.is_empty();
+        let mut any_tasks_active = !self.active_task_ids.is_empty();
+        let final_answer_seen =
+            self.last_answer_history_id_in_turn.is_some() || self.stream_state.seq_answer_final.is_some();
         let terminal_running = self.terminal_is_running();
+
+        // If the backend never emits TaskComplete but we already received the
+        // final answer and no other activity is running, clear the spinner so
+        // we don't stay stuck on "Thinking...".
+        let stuck_on_completed_turn = any_tasks_active
+            && final_answer_seen
+            && !any_tools_running
+            && !any_streaming
+            && !any_agents_active
+            && !terminal_running;
+        if stuck_on_completed_turn {
+            self.active_task_ids.clear();
+            any_tasks_active = false;
+            self.overall_task_status = "complete".to_string();
+        }
         if !(any_tools_running
             || any_streaming
             || any_agents_active
@@ -12603,6 +12620,7 @@ impl ChatWidget<'_> {
                 // Reset stream headers for new turn
                 self.stream.reset_headers_for_new_turn();
                 self.stream_state.current_kind = None;
+                self.stream_state.seq_answer_final = None;
                 self.last_answer_stream_id_in_turn = None;
                 self.last_answer_history_id_in_turn = None;
                 self.last_seen_answer_stream_id_in_turn = None;
@@ -31076,6 +31094,59 @@ use code_core::protocol::OrderMeta;
             .expect("line available after scroll adjustment");
         let text: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
         assert_eq!(text.trim(), "old-2");
+    }
+
+    #[test]
+    fn final_answer_without_task_complete_clears_spinner() {
+        let _rt = enter_test_runtime_guard();
+        let mut harness = ChatWidgetHarness::new();
+        {
+            let chat = harness.chat();
+            reset_history(chat);
+        }
+
+        let turn_id = "turn-1".to_string();
+        let order = OrderMeta {
+            request_ordinal: 1,
+            output_index: Some(0),
+            sequence_number: Some(0),
+        };
+
+        harness.handle_event(Event {
+            id: turn_id.clone(),
+            event_seq: 0,
+            msg: EventMsg::TaskStarted,
+            order: None,
+        });
+
+        harness.handle_event(Event {
+            id: turn_id.clone(),
+            event_seq: 1,
+            msg: EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+                delta: "thinking about the change".to_string(),
+            }),
+            order: Some(order.clone()),
+        });
+
+        harness.handle_event(Event {
+            id: turn_id.clone(),
+            event_seq: 2,
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "All done".to_string(),
+            }),
+            order: Some(OrderMeta {
+                request_ordinal: 1,
+                output_index: Some(0),
+                sequence_number: Some(1),
+            }),
+        });
+
+        harness.flush_into_widget();
+
+        assert!(
+            !harness.chat().bottom_pane.is_task_running(),
+            "spinner should clear after the final answer even when TaskComplete never arrives"
+        );
     }
 
     #[test]
