@@ -1,12 +1,12 @@
-## @just-every/code v0.6.11
+## @just-every/code v0.6.12
 
-Fresh model defaults and smoother cloud runs in this release.
+This release smooths TUI rendering, speeds execs, and tightens sandbox governance.
 
 ### Changes
-- Models: default to gpt-5.2-codex and migrate 5.1 presets with the new key.
-- TUI: make the GPT-5.2 upgrade link clickable for smoother migrations.
-- Core: adopt constraint-based loading to speed startup and reduce redundancy.
-- Cloud: default cloud exec to the current branch to avoid mismatched runs.
+- TUI: coalesce transcript redraws, keep spinners live, and shorten status directory labels so streams stay smooth.
+- Exec: reduce long-session stalls and collapse waiting time in unified exec so commands finish faster.
+- CLI: add `/ps` and apply terminal-aware scroll scaling for clearer process visibility.
+- Config/Skills: backport requirements updates, add ExternalSandbox policy, and support `/etc/codex/requirements.toml` for tighter governance.
 
 ### Install
 ```
@@ -14,4 +14,7 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.10...v0.6.11
+### Thanks
+Thanks to @GalaxyDetective and @jdijk-deventit for contributions!
+
+Compare: https://github.com/just-every/code/compare/v0.6.11...v0.6.12
