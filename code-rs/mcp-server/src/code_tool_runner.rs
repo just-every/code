@@ -290,6 +290,7 @@ async fn run_code_tool_session_inner(
                     | EventMsg::EnvironmentContextFull(_)
                     | EventMsg::EnvironmentContextDelta(_)
                     | EventMsg::ListCustomPromptsResponse(_)
+                    | EventMsg::ListSkillsResponse(_)
                     | EventMsg::AgentStatusUpdate(_)
                     | EventMsg::CompactionCheckpointWarning(_)
                     | EventMsg::TurnAborted(_)

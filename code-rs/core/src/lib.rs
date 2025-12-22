@@ -11,6 +11,7 @@ mod fs_sanitize;
 pub mod auth;
 pub mod auth_accounts;
 pub mod account_usage;
+mod account_switching;
 pub mod bash;
 mod auto_drive_pid;
 mod chat_completions;

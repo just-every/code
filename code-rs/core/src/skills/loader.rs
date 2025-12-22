@@ -235,6 +235,7 @@ fn parse_skill_file(path: &Path, scope: SkillScope) -> Result<SkillMetadata, Ski
         description,
         path: resolved_path,
         scope,
+        content: contents,
     })
 }
 

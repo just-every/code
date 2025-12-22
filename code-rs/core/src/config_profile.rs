@@ -39,4 +39,12 @@ pub struct ConfigProfile {
     pub experimental_instructions_file: Option<PathBuf>,
     pub compact_prompt_override: Option<String>,
     pub compact_prompt_override_file: Option<PathBuf>,
+
+    /// When true, automatically switch to another connected account when the
+    /// current account hits a rate/usage limit.
+    pub auto_switch_accounts_on_rate_limit: Option<bool>,
+
+    /// When true, fall back to an API key account only if every connected
+    /// ChatGPT account is rate/usage limited.
+    pub api_key_fallback_on_all_accounts_limited: Option<bool>,
 }

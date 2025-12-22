@@ -206,6 +206,9 @@ impl AutoDriveCardCell {
     }
 
     fn accent_style(style: &CardStyle) -> Style {
+        if palette_mode() == PaletteMode::Ansi16 {
+            return Style::default().fg(colors::warning());
+        }
         let dim = colors::mix_toward(style.accent_fg, style.text_secondary, 0.85);
         Style::default().fg(dim)
     }
@@ -304,9 +307,19 @@ impl AutoDriveCardCell {
             format!(" · {}", self.status.label())
         };
         let combined = format!("{title_text}{status_text}");
+        let title_style = if palette_mode() == PaletteMode::Ansi16 {
+            Style::default().fg(colors::warning())
+        } else {
+            title_text_style(style)
+        };
+        let status_style = if palette_mode() == PaletteMode::Ansi16 {
+            Style::default().fg(colors::warning())
+        } else {
+            secondary_text_style(style)
+        };
 
         if UnicodeWidthStr::width(combined.as_str()) <= body_width {
-            let mut bold_title = title_text_style(style);
+            let mut bold_title = title_style;
             bold_title = bold_title.add_modifier(Modifier::BOLD);
             segments.push(CardSegment::new(
                 title_text.to_string(),
@@ -314,11 +327,11 @@ impl AutoDriveCardCell {
             ));
             segments.push(CardSegment::new(
                 status_text,
-                secondary_text_style(style),
+                status_style,
             ));
         } else {
             let display = truncate_with_ellipsis(title_text, body_width);
-            let mut bold_title = title_text_style(style);
+            let mut bold_title = title_style;
             bold_title = bold_title.add_modifier(Modifier::BOLD);
             segments.push(CardSegment::new(display, bold_title));
         }
@@ -1068,7 +1081,12 @@ impl AutoDriveCardCell {
 
     fn bottom_border_row(&self, body_width: usize, style: &CardStyle) -> CardRow {
         let text = truncate_with_ellipsis(HINT_TEXT, body_width);
-        let mut segment = CardSegment::new(text, hint_text_style(style));
+        let hint_style = if palette_mode() == PaletteMode::Ansi16 {
+            Style::default().fg(colors::warning())
+        } else {
+            hint_text_style(style)
+        };
+        let mut segment = CardSegment::new(text, hint_style);
         segment.inherit_background = true;
         CardRow::new(
             BORDER_BOTTOM.to_string(),

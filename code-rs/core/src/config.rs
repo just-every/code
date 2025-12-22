@@ -427,6 +427,14 @@ pub struct Config {
     /// Whether we're using ChatGPT authentication (affects feature availability)
     pub using_chatgpt_auth: bool,
 
+    /// When true, automatically switch to another connected account when the
+    /// current account hits a rate/usage limit.
+    pub auto_switch_accounts_on_rate_limit: bool,
+
+    /// When true, fall back to an API key account only if every connected
+    /// ChatGPT account is rate/usage limited.
+    pub api_key_fallback_on_all_accounts_limited: bool,
+
     /// GitHub integration configuration.
     pub github: GithubConfig,
 
@@ -2265,6 +2273,16 @@ pub struct ConfigToml {
     /// If set to `true`, the API key will be signed with the `originator` header.
     pub preferred_auth_method: Option<AuthMode>,
 
+    /// When true, automatically switch to another connected account when the
+    /// current account hits a rate/usage limit.
+    #[serde(default)]
+    pub auto_switch_accounts_on_rate_limit: Option<bool>,
+
+    /// When true, fall back to an API key account only if every connected
+    /// ChatGPT account is rate/usage limited.
+    #[serde(default)]
+    pub api_key_fallback_on_all_accounts_limited: Option<bool>,
+
     /// Nested tools section for feature toggles
     pub tools: Option<ToolsToml>,
 
@@ -2748,6 +2766,16 @@ impl Config {
         // Determine auth mode early so defaults like model selection can depend on it.
         let using_chatgpt_auth = Self::is_using_chatgpt_auth(&code_home);
 
+        let auto_switch_accounts_on_rate_limit = config_profile
+            .auto_switch_accounts_on_rate_limit
+            .or(cfg.auto_switch_accounts_on_rate_limit)
+            .unwrap_or(true);
+
+        let api_key_fallback_on_all_accounts_limited = config_profile
+            .api_key_fallback_on_all_accounts_limited
+            .or(cfg.api_key_fallback_on_all_accounts_limited)
+            .unwrap_or(false);
+
         let default_model_slug = if using_chatgpt_auth {
             GPT_5_CODEX_MEDIUM_MODEL
         } else {
@@ -3114,6 +3142,8 @@ impl Config {
             debug: debug.unwrap_or(false),
             // Already computed before moving code_home
             using_chatgpt_auth,
+            auto_switch_accounts_on_rate_limit,
+            api_key_fallback_on_all_accounts_limited,
             github: cfg.github.unwrap_or_default(),
             validation: cfg.validation.unwrap_or_default(),
             subagent_commands: cfg

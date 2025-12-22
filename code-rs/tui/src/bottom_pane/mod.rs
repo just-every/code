@@ -11,6 +11,7 @@ pub(crate) use bottom_pane_view::BottomPaneView;
 pub(crate) use bottom_pane_view::ConditionalUpdate;
 use crate::util::buffer::fill_rect;
 use code_protocol::custom_prompts::CustomPrompt;
+use code_protocol::skills::Skill;
 use code_core::protocol::TokenUsage;
 use code_file_search::FileMatch;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
@@ -24,6 +25,7 @@ mod approval_modal_view;
 mod approval_ui;
 mod auto_coordinator_view;
 mod auto_drive_settings_view;
+mod account_switch_settings_view;
 mod bottom_pane_view;
 mod chat_composer;
 mod chat_composer_history;
@@ -51,6 +53,7 @@ mod login_accounts_view;
 mod textarea;
 pub mod form_text_field;
 pub mod prompts_settings_view;
+pub mod skills_settings_view;
 mod theme_selection_view;
 mod planning_settings_view;
 mod verbosity_selection_view;
@@ -79,6 +82,7 @@ pub(crate) use auto_coordinator_view::{
     CountdownState,
 };
 pub(crate) use auto_drive_settings_view::AutoDriveSettingsView;
+pub(crate) use account_switch_settings_view::AccountSwitchSettingsView;
 pub(crate) use login_accounts_view::{
     LoginAccountsState,
     LoginAccountsView,
@@ -141,6 +145,7 @@ pub(crate) struct BottomPane<'a> {
     auto_drive_active: bool,
 
     custom_prompts: Vec<CustomPrompt>,
+    skills: Vec<Skill>,
 
 }
 
@@ -178,6 +183,7 @@ impl BottomPane<'_> {
             auto_drive_variant: params.auto_drive_variant,
             auto_drive_active: false,
             custom_prompts: Vec::new(),
+            skills: Vec::new(),
         }
     }
 
@@ -551,6 +557,14 @@ impl BottomPane<'_> {
 
     pub(crate) fn custom_prompts(&self) -> &[CustomPrompt] {
         &self.custom_prompts
+    }
+
+    pub(crate) fn set_skills(&mut self, skills: Vec<Skill>) {
+        self.skills = skills;
+    }
+
+    pub(crate) fn skills(&self) -> &[Skill] {
+        &self.skills
     }
 
     /// Enable or disable compact compose mode. When enabled, the spacer line

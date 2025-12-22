@@ -39,6 +39,8 @@ pub use code_protocol::protocol::RolloutItem;
 pub use code_protocol::protocol::RolloutLine;
 pub use code_protocol::protocol::ConversationPathResponseEvent;
 pub use code_protocol::protocol::ListCustomPromptsResponseEvent;
+pub use code_protocol::protocol::ListSkillsResponseEvent;
+pub use code_protocol::skills::Skill;
 pub use code_protocol::protocol::ENVIRONMENT_CONTEXT_OPEN_TAG;
 pub use code_protocol::protocol::ExitedReviewModeEvent;
 pub use code_protocol::protocol::ReviewSnapshotInfo;
@@ -231,6 +233,10 @@ pub enum Op {
     /// Request the list of available custom prompts.
     /// Reply is delivered via `EventMsg::ListCustomPromptsResponse`.
     ListCustomPrompts,
+
+    /// Request the list of available skills.
+    /// Reply is delivered via `EventMsg::ListSkillsResponse`.
+    ListSkills,
 
     /// Request the agent to summarize the current conversation context.
     /// The agent will use its existing context (either conversation history or previous response id)
@@ -794,6 +800,9 @@ pub enum EventMsg {
 
     /// List of custom prompts available to the agent.
     ListCustomPromptsResponse(ListCustomPromptsResponseEvent),
+
+    /// List of skills available to the agent.
+    ListSkillsResponse(ListSkillsResponseEvent),
 
     PlanUpdate(UpdatePlanArgs),
 

@@ -1,5 +1,6 @@
 use super::card_style::{
     agent_card_style,
+    ansi16_inverse_color,
     fill_card_background,
     hint_text_style,
     primary_text_style,
@@ -14,6 +15,7 @@ use super::card_style::{
 };
 use super::{HistoryCell, HistoryCellType, ToolCellStatus};
 use crate::colors;
+use crate::theme::{palette_mode, PaletteMode};
 use code_common::elapsed::format_duration_digital;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -355,6 +357,9 @@ impl AgentRunCell {
     }
 
     fn accent_style(style: &CardStyle) -> Style {
+        if palette_mode() == PaletteMode::Ansi16 {
+            return Style::default().fg(ansi16_inverse_color());
+        }
         let dim = colors::mix_toward(style.accent_fg, style.text_secondary, 0.85);
         Style::default().fg(dim)
     }
@@ -365,6 +370,22 @@ impl AgentRunCell {
 
     fn action_description_style(style: &CardStyle) -> Style {
         secondary_text_style(style)
+    }
+
+    fn title_border_style(style: &CardStyle) -> Style {
+        if palette_mode() == PaletteMode::Ansi16 {
+            Style::default().fg(ansi16_inverse_color())
+        } else {
+            title_text_style(style)
+        }
+    }
+
+    fn secondary_title_border_style(style: &CardStyle) -> Style {
+        if palette_mode() == PaletteMode::Ansi16 {
+            Style::default().fg(ansi16_inverse_color())
+        } else {
+            secondary_text_style(style)
+        }
     }
 
     fn top_border_row(&self, body_width: usize, style: &CardStyle) -> CardRow {
@@ -406,7 +427,10 @@ impl AgentRunCell {
             };
             let agents_width = string_width(agents_segment.as_str());
             if !agents_segment.is_empty() {
-                segments.push(CardSegment::new(agents_segment, secondary_text_style(style)));
+                segments.push(CardSegment::new(
+                    agents_segment,
+                    Self::secondary_title_border_style(style),
+                ));
             }
             remaining = remaining.saturating_sub(agents_width);
 
@@ -440,7 +464,10 @@ impl AgentRunCell {
             let trimmed_name = truncated.trim_end().to_string();
             let name_width = string_width(trimmed_name.as_str());
             if !trimmed_name.is_empty() {
-                segments.push(CardSegment::new(trimmed_name, title_text_style(style)));
+                segments.push(CardSegment::new(
+                    trimmed_name,
+                    Self::title_border_style(style),
+                ));
             }
             available = available.saturating_sub(name_width);
 
@@ -463,7 +490,7 @@ impl AgentRunCell {
     }
 
     fn mode_label_style(style: &CardStyle) -> Style {
-        secondary_text_style(style)
+        Self::secondary_title_border_style(style)
     }
 
     fn blank_border_row(&self, body_width: usize, style: &CardStyle) -> CardRow {
@@ -549,7 +576,12 @@ impl AgentRunCell {
             " [Ctrl+A] Expand".to_string()
         };
         let text = truncate_with_ellipsis(text_value.as_str(), body_width);
-        let segment = CardSegment::new(text, hint_text_style(style));
+        let hint_style = if palette_mode() == PaletteMode::Ansi16 {
+            Style::default().fg(ansi16_inverse_color())
+        } else {
+            hint_text_style(style)
+        };
+        let segment = CardSegment::new(text, hint_style);
         CardRow::new(BORDER_BOTTOM.to_string(), Self::accent_style(style), vec![segment], None)
     }
 

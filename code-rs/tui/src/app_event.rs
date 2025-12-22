@@ -624,6 +624,8 @@ pub(crate) enum AppEvent {
         latest_version: Option<String>,
     },
     SetAutoUpgradeEnabled(bool),
+    SetAutoSwitchAccountsOnRateLimit(bool),
+    SetApiKeyFallbackOnAllAccountsLimited(bool),
     RequestAgentInstall { name: String, selected_index: usize },
     AgentsOverviewSelectionChanged { index: usize },
     /// Add or update an agent's settings (enabled, params, instructions)

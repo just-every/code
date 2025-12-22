@@ -14,6 +14,7 @@ use crate::ConversationId;
 use crate::config_types::ReasoningEffort as ReasoningEffortConfig;
 use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use crate::custom_prompts::CustomPrompt;
+use crate::skills::Skill;
 use crate::message_history::HistoryEntry;
 use crate::models::ContentItem;
 use crate::models::ResponseItem;
@@ -190,6 +191,10 @@ pub enum Op {
 
     /// Request the list of available custom prompts.
     ListCustomPrompts,
+
+    /// Request the list of available skills.
+    /// Reply is delivered via `EventMsg::ListSkillsResponse`.
+    ListSkills,
 
     /// Request the agent to summarize the current conversation context.
     /// The agent will use its existing context (either conversation history or previous response id)
@@ -590,6 +595,9 @@ pub enum EventMsg {
 
     /// List of custom prompts available to the agent.
     ListCustomPromptsResponse(ListCustomPromptsResponseEvent),
+
+    /// List of skills available to the agent.
+    ListSkillsResponse(ListSkillsResponseEvent),
 
     PlanUpdate(UpdatePlanArgs),
 
@@ -1355,6 +1363,12 @@ pub struct McpListToolsResponseEvent {
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
 pub struct ListCustomPromptsResponseEvent {
     pub custom_prompts: Vec<CustomPrompt>,
+}
+
+/// Response payload for `Op::ListSkills`.
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct ListSkillsResponseEvent {
+    pub skills: Vec<Skill>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize, TS)]

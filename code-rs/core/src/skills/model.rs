@@ -13,6 +13,7 @@ pub struct SkillMetadata {
     pub description: String,
     pub path: PathBuf,
     pub scope: SkillScope,
+    pub content: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,4 +27,3 @@ pub struct SkillLoadOutcome {
     pub skills: Vec<SkillMetadata>,
     pub errors: Vec<SkillError>,
 }
-

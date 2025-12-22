@@ -62,10 +62,9 @@ impl CardRow {
 
 pub(crate) const CARD_ACCENT_WIDTH: usize = 2;
 
-pub(crate) fn agent_card_style(write_enabled: Option<bool>) -> CardStyle {
+pub(crate) fn agent_card_style(_write_enabled: Option<bool>) -> CardStyle {
     // Agent batches share the calmer green theme in full-color terminals.
-    // In ANSI-16 mode we swap to solid backgrounds for legibility (green for read,
-    // yellow when write mode is enabled).
+    // In ANSI-16 mode we keep the surface transparent and rely on inverted text.
     let is_dark = is_dark_theme_active();
     let definition = if is_dark {
         card_theme::agent_read_only_dark_theme()
@@ -75,18 +74,7 @@ pub(crate) fn agent_card_style(write_enabled: Option<bool>) -> CardStyle {
     let mut style = style_from_theme(definition, is_dark);
 
     if palette_mode() == PaletteMode::Ansi16 {
-        let bg = if write_enabled == Some(true) {
-            if is_dark {
-                Color::Yellow
-            } else {
-                Color::LightYellow
-            }
-        } else if is_dark {
-            Color::Green
-        } else {
-            Color::LightGreen
-        };
-        apply_ansi16_background(&mut style, bg, is_dark);
+        strip_ansi16_background(&mut style);
     }
 
     style
@@ -102,8 +90,7 @@ pub(crate) fn browser_card_style() -> CardStyle {
     let mut style = style_from_theme(definition, is_dark);
 
     if palette_mode() == PaletteMode::Ansi16 {
-        let bg = if is_dark { Color::Red } else { Color::LightRed };
-        apply_ansi16_background(&mut style, bg, is_dark);
+        strip_ansi16_background(&mut style);
     }
 
     style
@@ -119,7 +106,7 @@ pub(crate) fn auto_drive_card_style() -> CardStyle {
     let mut style = style_from_theme(definition, is_dark);
 
     if palette_mode() == PaletteMode::Ansi16 {
-        let bg = if is_dark { Color::Magenta } else { Color::LightMagenta };
+        let bg = if is_dark { Color::Blue } else { Color::LightBlue };
         apply_ansi16_background(&mut style, bg, is_dark);
     }
 
@@ -147,7 +134,29 @@ pub(crate) fn web_search_card_style() -> CardStyle {
     } else {
         card_theme::search_light_theme()
     };
-    style_from_theme(definition, is_dark)
+    let mut style = style_from_theme(definition, is_dark);
+
+    if palette_mode() == PaletteMode::Ansi16 {
+        strip_ansi16_background(&mut style);
+    }
+
+    style
+}
+
+pub(crate) fn ansi16_inverse_color() -> Color {
+    if is_dark_theme_active() {
+        Color::White
+    } else {
+        Color::Black
+    }
+}
+
+fn strip_ansi16_background(style: &mut CardStyle) {
+    style.gradient = GradientSpec {
+        left: Color::Reset,
+        right: Color::Reset,
+        bias: 0.0,
+    };
 }
 
 fn style_from_theme(definition: CardThemeDefinition, is_dark: bool) -> CardStyle {
@@ -200,6 +209,13 @@ fn adjust_gradient(gradient: GradientSpec, _is_dark: bool) -> GradientSpec {
 }
 
 pub(crate) fn fill_card_background(buf: &mut Buffer, area: Rect, style: &CardStyle) {
+    if palette_mode() == PaletteMode::Ansi16
+        && matches!(style.gradient.left, Color::Reset)
+        && matches!(style.gradient.right, Color::Reset)
+    {
+        return;
+    }
+
     if palette_mode() == PaletteMode::Ansi16
         && style.gradient.left == style.gradient.right
         && !matches!(style.gradient.left, Color::Rgb(_, _, _))

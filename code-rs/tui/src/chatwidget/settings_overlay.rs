@@ -11,6 +11,7 @@ use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::{
     agent_editor_view::AgentEditorView,
     agents_settings_view::SubagentEditorView,
+    AccountSwitchSettingsView,
     AutoDriveSettingsView,
     BottomPaneView,
     ConditionalUpdate,
@@ -19,6 +20,7 @@ use crate::bottom_pane::{
     ModelSelectionView,
     NotificationsSettingsView,
     prompts_settings_view::PromptsSettingsView,
+    skills_settings_view::SkillsSettingsView,
     PlanningSettingsView,
     SettingsSection,
     ThemeSelectionView,
@@ -144,7 +146,13 @@ impl SettingsHelpOverlay {
             Line::from(vec![Span::styled("• Tab    Cycle sections", hint)]),
             Line::from(vec![Span::styled("• Shift+Tab  Cycle backwards", hint)]),
         ];
-        if matches!(section, SettingsSection::Agents | SettingsSection::Mcp) {
+        if matches!(
+            section,
+            SettingsSection::Agents
+                | SettingsSection::Mcp
+                | SettingsSection::Accounts
+                | SettingsSection::Skills
+        ) {
             lines.push(Line::from(vec![Span::styled(
                 "• Enter  Activate focused action",
                 hint,
@@ -311,6 +319,55 @@ impl SettingsContent for UpdatesSettingsContent {
 
     fn is_complete(&self) -> bool {
         self.view.is_view_complete()
+    }
+}
+
+pub(crate) struct AccountsSettingsContent {
+    view: AccountSwitchSettingsView,
+}
+
+impl AccountsSettingsContent {
+    pub(crate) fn new(view: AccountSwitchSettingsView) -> Self {
+        Self { view }
+    }
+}
+
+impl SettingsContent for AccountsSettingsContent {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        self.view.render_without_frame(area, buf);
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) -> bool {
+        self.view.handle_key_event_direct(key);
+        true
+    }
+
+    fn is_complete(&self) -> bool {
+        self.view.is_view_complete()
+    }
+}
+
+pub(crate) struct SkillsSettingsContent {
+    view: SkillsSettingsView,
+}
+
+impl SkillsSettingsContent {
+    pub(crate) fn new(view: SkillsSettingsView) -> Self {
+        Self { view }
+    }
+}
+
+impl SettingsContent for SkillsSettingsContent {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        self.view.render(area, buf);
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) -> bool {
+        self.view.handle_key_event_direct(key)
+    }
+
+    fn is_complete(&self) -> bool {
+        self.view.is_complete()
     }
 }
 
@@ -1249,7 +1306,9 @@ pub(crate) struct SettingsOverlayView {
     theme_content: Option<ThemeSettingsContent>,
     updates_content: Option<UpdatesSettingsContent>,
     notifications_content: Option<NotificationsSettingsContent>,
+    accounts_content: Option<AccountsSettingsContent>,
     prompts_content: Option<PromptsSettingsContent>,
+    skills_content: Option<SkillsSettingsContent>,
     mcp_content: Option<McpSettingsContent>,
     agents_content: Option<AgentsSettingsContent>,
     review_content: Option<ReviewSettingsContent>,
@@ -1272,7 +1331,9 @@ impl SettingsOverlayView {
             theme_content: None,
             updates_content: None,
             notifications_content: None,
+            accounts_content: None,
             prompts_content: None,
+            skills_content: None,
             mcp_content: None,
             agents_content: None,
             review_content: None,
@@ -1356,8 +1417,16 @@ impl SettingsOverlayView {
         self.notifications_content = Some(content);
     }
 
+    pub(crate) fn set_accounts_content(&mut self, content: AccountsSettingsContent) {
+        self.accounts_content = Some(content);
+    }
+
     pub(crate) fn set_prompts_content(&mut self, content: PromptsSettingsContent) {
         self.prompts_content = Some(content);
+    }
+
+    pub(crate) fn set_skills_content(&mut self, content: SkillsSettingsContent) {
+        self.skills_content = Some(content);
     }
 
     pub(crate) fn set_mcp_content(&mut self, content: McpSettingsContent) {
@@ -1853,7 +1922,9 @@ impl SettingsOverlayView {
             SettingsSection::Theme => "Theme Settings",
             SettingsSection::Planning => "Planning Settings",
             SettingsSection::Updates => "Upgrade",
+            SettingsSection::Accounts => "Account Switching",
             SettingsSection::Agents => "Agents",
+            SettingsSection::Skills => "Skills",
             SettingsSection::AutoDrive => "Auto Drive Settings",
             SettingsSection::Review => "Review Settings",
             SettingsSection::Validation => "Validation Settings",
@@ -2172,12 +2243,26 @@ impl SettingsOverlayView {
                 }
                 self.render_placeholder(area, buf, SettingsSection::Agents.placeholder());
             }
+            SettingsSection::Accounts => {
+                if let Some(content) = self.accounts_content.as_ref() {
+                    content.render(area, buf);
+                    return;
+                }
+                self.render_placeholder(area, buf, SettingsSection::Accounts.placeholder());
+            }
             SettingsSection::Prompts => {
                 if let Some(content) = self.prompts_content.as_ref() {
                     content.render(area, buf);
                     return;
                 }
                 self.render_placeholder(area, buf, SettingsSection::Prompts.placeholder());
+            }
+            SettingsSection::Skills => {
+                if let Some(content) = self.skills_content.as_ref() {
+                    content.render(area, buf);
+                    return;
+                }
+                self.render_placeholder(area, buf, SettingsSection::Skills.placeholder());
             }
             SettingsSection::AutoDrive => {
                 if let Some(content) = self.auto_drive_content.as_ref() {
@@ -2264,8 +2349,16 @@ impl SettingsOverlayView {
                 .agents_content
                 .as_mut()
                 .map(|content| content as &mut dyn SettingsContent),
+            SettingsSection::Accounts => self
+                .accounts_content
+                .as_mut()
+                .map(|content| content as &mut dyn SettingsContent),
             SettingsSection::Prompts => self
                 .prompts_content
+                .as_mut()
+                .map(|content| content as &mut dyn SettingsContent),
+            SettingsSection::Skills => self
+                .skills_content
                 .as_mut()
                 .map(|content| content as &mut dyn SettingsContent),
             SettingsSection::AutoDrive => self

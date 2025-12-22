@@ -264,6 +264,7 @@ use crate::bottom_pane::{
     CountdownState,
     AgentHintLabel, AutoReviewFooterStatus, AutoReviewPhase,
     prompts_settings_view::PromptsSettingsView,
+    skills_settings_view::SkillsSettingsView,
     McpSettingsView,
     ModelSelectionView,
     NotificationsMode,
@@ -2589,6 +2590,7 @@ use self::diff_ui::DiffConfirm;
 use self::diff_ui::DiffOverlay;
 use self::settings_overlay::{
     AgentOverviewRow,
+    AccountsSettingsContent,
     AutoDriveSettingsContent,
     AgentsSettingsContent,
     LimitsSettingsContent,
@@ -2598,6 +2600,7 @@ use self::settings_overlay::{
     PlanningSettingsContent,
     NotificationsSettingsContent,
     PromptsSettingsContent,
+    SkillsSettingsContent,
     ReviewSettingsContent,
     ThemeSettingsContent,
     UpdatesSettingsContent,
@@ -12268,6 +12271,7 @@ impl ChatWidget<'_> {
 
                 // Ask core for custom prompts so the slash menu can show them.
                 self.submit_op(Op::ListCustomPrompts);
+                self.submit_op(Op::ListSkills);
 
                 if self.resume_placeholder_visible && event.history_entry_count == 0 {
                     self.replace_resume_placeholder_with_notice(RESUME_NO_HISTORY_NOTICE);
@@ -13672,6 +13676,12 @@ impl ChatWidget<'_> {
                 let len = ev.custom_prompts.len();
                 debug!("received {len} custom prompts");
                 self.bottom_pane.set_custom_prompts(ev.custom_prompts);
+            }
+            EventMsg::ListSkillsResponse(ev) => {
+                let len = ev.skills.len();
+                debug!("received {len} skills");
+                self.bottom_pane.set_skills(ev.skills);
+                self.refresh_settings_overview_rows();
             }
             EventMsg::ShutdownComplete => {
                 self.push_background_tail("🟡 ShutdownComplete".to_string());
@@ -15249,6 +15259,15 @@ impl ChatWidget<'_> {
     fn build_updates_settings_content(&mut self) -> Option<UpdatesSettingsContent> {
         self.prepare_update_settings_view()
             .map(UpdatesSettingsContent::new)
+    }
+
+    fn build_accounts_settings_content(&self) -> AccountsSettingsContent {
+        let view = crate::bottom_pane::AccountSwitchSettingsView::new(
+            self.app_event_tx.clone(),
+            self.config.auto_switch_accounts_on_rate_limit,
+            self.config.api_key_fallback_on_all_accounts_limited,
+        );
+        AccountsSettingsContent::new(view)
     }
 
     fn build_validation_settings_content(&mut self) -> ValidationSettingsContent {
@@ -22082,6 +22101,96 @@ Have we met every part of this goal and is there no further work to do?"#
         self.request_redraw();
     }
 
+    pub(crate) fn set_auto_switch_accounts_on_rate_limit(&mut self, enabled: bool) {
+        if self.config.auto_switch_accounts_on_rate_limit == enabled {
+            return;
+        }
+        self.config.auto_switch_accounts_on_rate_limit = enabled;
+
+        let code_home = self.config.code_home.clone();
+        let profile = self.config.active_profile.clone();
+        tokio::spawn(async move {
+            if let Err(err) = code_core::config_edit::persist_overrides(
+                &code_home,
+                profile.as_deref(),
+                &[(&["auto_switch_accounts_on_rate_limit"], if enabled { "true" } else { "false" })],
+            )
+            .await
+            {
+                tracing::warn!("failed to persist account auto-switch setting: {err}");
+            }
+        });
+
+        let notice = if enabled {
+            "Auto-switch accounts enabled"
+        } else {
+            "Auto-switch accounts disabled"
+        };
+        self.bottom_pane.flash_footer_notice(notice.to_string());
+
+        let should_refresh_accounts = matches!(
+            self.settings
+                .overlay
+                .as_ref()
+                .map(|overlay| overlay.active_section()),
+            Some(SettingsSection::Accounts)
+        );
+        if should_refresh_accounts {
+            let content = self.build_accounts_settings_content();
+            if let Some(overlay) = self.settings.overlay.as_mut() {
+                overlay.set_accounts_content(content);
+            }
+        }
+
+        self.refresh_settings_overview_rows();
+        self.request_redraw();
+    }
+
+    pub(crate) fn set_api_key_fallback_on_all_accounts_limited(&mut self, enabled: bool) {
+        if self.config.api_key_fallback_on_all_accounts_limited == enabled {
+            return;
+        }
+        self.config.api_key_fallback_on_all_accounts_limited = enabled;
+
+        let code_home = self.config.code_home.clone();
+        let profile = self.config.active_profile.clone();
+        tokio::spawn(async move {
+            if let Err(err) = code_core::config_edit::persist_overrides(
+                &code_home,
+                profile.as_deref(),
+                &[(&["api_key_fallback_on_all_accounts_limited"], if enabled { "true" } else { "false" })],
+            )
+            .await
+            {
+                tracing::warn!("failed to persist API key fallback setting: {err}");
+            }
+        });
+
+        let notice = if enabled {
+            "API key fallback enabled"
+        } else {
+            "API key fallback disabled"
+        };
+        self.bottom_pane.flash_footer_notice(notice.to_string());
+
+        let should_refresh_accounts = matches!(
+            self.settings
+                .overlay
+                .as_ref()
+                .map(|overlay| overlay.active_section()),
+            Some(SettingsSection::Accounts)
+        );
+        if should_refresh_accounts {
+            let content = self.build_accounts_settings_content();
+            if let Some(overlay) = self.settings.overlay.as_mut() {
+                overlay.set_accounts_content(content);
+            }
+        }
+
+        self.refresh_settings_overview_rows();
+        self.request_redraw();
+    }
+
     /// Forward file-search results to the bottom pane.
     pub(crate) fn apply_file_search_result(&mut self, query: String, matches: Vec<FileMatch>) {
         self.bottom_pane.on_file_search_result(query, matches);
@@ -22115,8 +22224,10 @@ Have we met every part of this goal and is there no further work to do?"#
         if let Some(update_content) = self.build_updates_settings_content() {
             overlay.set_updates_content(update_content);
         }
+        overlay.set_accounts_content(self.build_accounts_settings_content());
         overlay.set_notifications_content(self.build_notifications_settings_content());
         overlay.set_prompts_content(self.build_prompts_settings_content());
+        overlay.set_skills_content(self.build_skills_settings_content());
         if let Some(mcp_content) = self.build_mcp_settings_content() {
             overlay.set_mcp_content(mcp_content);
         }
@@ -22198,6 +22309,12 @@ Have we met every part of this goal and is there no further work to do?"#
         let prompts = self.bottom_pane.custom_prompts().to_vec();
         let view = PromptsSettingsView::new(prompts, self.app_event_tx.clone());
         PromptsSettingsContent::new(view)
+    }
+
+    fn build_skills_settings_content(&mut self) -> SkillsSettingsContent {
+        let skills = self.bottom_pane.skills().to_vec();
+        let view = SkillsSettingsView::new(skills, self.app_event_tx.clone());
+        SkillsSettingsContent::new(view)
     }
 
     fn build_chrome_settings_content(&self, port: Option<u16>) -> ChromeSettingsContent {
@@ -22483,8 +22600,10 @@ Have we met every part of this goal and is there no further work to do?"#
                     SettingsSection::Theme => self.settings_summary_theme(),
                     SettingsSection::Planning => self.settings_summary_planning(),
                     SettingsSection::Updates => self.settings_summary_updates(),
+                    SettingsSection::Accounts => self.settings_summary_accounts(),
                     SettingsSection::Agents => self.settings_summary_agents(),
                     SettingsSection::Prompts => self.settings_summary_prompts(),
+                    SettingsSection::Skills => self.settings_summary_skills(),
                     SettingsSection::AutoDrive => self.settings_summary_auto_drive(),
                     SettingsSection::Review => self.settings_summary_review(),
                     SettingsSection::Validation => self.settings_summary_validation(),
@@ -22563,6 +22682,22 @@ Have we met every part of this goal and is there no further work to do?"#
             parts.push(format!("Latest available: {}", latest));
         }
         Some(parts.join(" · "))
+    }
+
+    fn settings_summary_accounts(&self) -> Option<String> {
+        let auto_switch = if self.config.auto_switch_accounts_on_rate_limit {
+            "Auto-switch: On"
+        } else {
+            "Auto-switch: Off"
+        };
+
+        let api_key_fallback = if self.config.api_key_fallback_on_all_accounts_limited {
+            "API key fallback: On"
+        } else {
+            "API key fallback: Off"
+        };
+
+        Some(format!("{auto_switch} · {api_key_fallback}"))
     }
 
     fn settings_summary_agents(&self) -> Option<String> {
@@ -22707,6 +22842,11 @@ Have we met every part of this goal and is there no further work to do?"#
     fn settings_summary_prompts(&self) -> Option<String> {
         let count = self.bottom_pane.custom_prompts().len();
         Some(format!("Prompts enabled: {}", count))
+    }
+
+    fn settings_summary_skills(&self) -> Option<String> {
+        let count = self.bottom_pane.skills().len();
+        Some(format!("Skills loaded: {count}"))
     }
 
     fn refresh_settings_overview_rows(&mut self) {
@@ -22855,7 +22995,9 @@ Have we met every part of this goal and is there no further work to do?"#
             | SettingsSection::AutoDrive
             | SettingsSection::Mcp
             | SettingsSection::Notifications
-            | SettingsSection::Prompts => false,
+            | SettingsSection::Prompts
+            | SettingsSection::Accounts
+            | SettingsSection::Skills => false,
             SettingsSection::Agents => {
                 self.show_agents_overview_ui();
                 false

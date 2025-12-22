@@ -998,6 +998,7 @@ use crate::protocol::EventMsg;
 use crate::protocol::ExitedReviewModeEvent;
 use crate::protocol::ReviewSnapshotInfo;
 use crate::protocol::ListCustomPromptsResponseEvent;
+use crate::protocol::ListSkillsResponseEvent;
 use crate::protocol::{BrowserSnapshotEvent, EnvironmentContextDeltaEvent, EnvironmentContextFullEvent};
 use crate::protocol::ExecApprovalRequestEvent;
 use crate::protocol::ExecCommandBeginEvent;
@@ -5319,6 +5320,47 @@ async fn submission_loop(
                     msg: EventMsg::ListCustomPromptsResponse(ListCustomPromptsResponseEvent {
                         custom_prompts,
                     }),
+                    order: None,
+                };
+
+                sess.send_event(event).await;
+            }
+            Op::ListSkills => {
+                let sess = match sess.as_ref() {
+                    Some(sess) => Arc::clone(sess),
+                    None => {
+                        send_no_session_event(sub.id).await;
+                        continue;
+                    }
+                };
+
+                let config_for_skills = Arc::clone(&config);
+                let skill_load_outcome = tokio::task::spawn_blocking(move || {
+                    crate::skills::load_skills(&config_for_skills)
+                })
+                .await
+                .unwrap_or_default();
+
+                let skills: Vec<code_protocol::skills::Skill> = skill_load_outcome
+                    .skills
+                    .into_iter()
+                    .map(|skill| code_protocol::skills::Skill {
+                        name: skill.name,
+                        description: skill.description,
+                        path: skill.path,
+                        scope: match skill.scope {
+                            crate::skills::model::SkillScope::Repo => code_protocol::skills::SkillScope::Repo,
+                            crate::skills::model::SkillScope::User => code_protocol::skills::SkillScope::User,
+                            crate::skills::model::SkillScope::System => code_protocol::skills::SkillScope::System,
+                        },
+                        content: skill.content,
+                    })
+                    .collect();
+
+                let event = Event {
+                    id: sub.id.clone(),
+                    event_seq: 0,
+                    msg: EventMsg::ListSkillsResponse(ListSkillsResponseEvent { skills }),
                     order: None,
                 };
 

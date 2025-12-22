@@ -2002,6 +2002,18 @@ impl App<'_> {
                         self.config.auto_upgrade_enabled = enabled;
                     }
                 }
+                AppEvent::SetAutoSwitchAccountsOnRateLimit(enabled) => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.set_auto_switch_accounts_on_rate_limit(enabled);
+                    }
+                    self.config.auto_switch_accounts_on_rate_limit = enabled;
+                }
+                AppEvent::SetApiKeyFallbackOnAllAccountsLimited(enabled) => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.set_api_key_fallback_on_all_accounts_limited(enabled);
+                    }
+                    self.config.api_key_fallback_on_all_accounts_limited = enabled;
+                }
                 AppEvent::ShowAutoDriveSettings => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.show_auto_drive_settings();
