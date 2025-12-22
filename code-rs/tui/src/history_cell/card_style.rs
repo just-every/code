@@ -107,9 +107,9 @@ pub(crate) fn auto_drive_card_style() -> CardStyle {
 
     if palette_mode() == PaletteMode::Ansi16 {
         strip_ansi16_background(&mut style);
-        style.title_text = colors::primary();
-        style.accent_fg = colors::primary();
-        style.text_primary = colors::text();
+        style.title_text = Color::White;
+        style.accent_fg = Color::White;
+        style.text_primary = Color::White;
         style.text_secondary = colors::warning();
     }
 

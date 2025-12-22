@@ -308,7 +308,11 @@ impl AutoDriveCardCell {
         };
         let combined = format!("{title_text}{status_text}");
         let title_style = title_text_style(style);
-        let status_style = secondary_text_style(style);
+        let status_style = if palette_mode() == PaletteMode::Ansi16 {
+            title_text_style(style)
+        } else {
+            secondary_text_style(style)
+        };
 
         if UnicodeWidthStr::width(combined.as_str()) <= body_width {
             let mut bold_title = title_style;
@@ -380,7 +384,12 @@ impl AutoDriveCardCell {
                 } else {
                     format!("{indent}{line}")
                 };
-                let mut segment = CardSegment::new(content, secondary_text_style(style));
+                let text_style = if palette_mode() == PaletteMode::Ansi16 {
+                    primary_text_style(style)
+                } else {
+                    secondary_text_style(style)
+                };
+                let mut segment = CardSegment::new(content, text_style);
                 segment.inherit_background = true;
                 CardRow::new(
                     BORDER_BODY.to_string(),
@@ -1073,7 +1082,11 @@ impl AutoDriveCardCell {
 
     fn bottom_border_row(&self, body_width: usize, style: &CardStyle) -> CardRow {
         let text = truncate_with_ellipsis(HINT_TEXT, body_width);
-        let hint_style = hint_text_style(style);
+        let hint_style = if palette_mode() == PaletteMode::Ansi16 {
+            primary_text_style(style)
+        } else {
+            hint_text_style(style)
+        };
         let mut segment = CardSegment::new(text, hint_style);
         segment.inherit_background = true;
         CardRow::new(
