@@ -8,6 +8,7 @@ use crate::config::types::OtelConfig;
 use crate::config::types::OtelConfigToml;
 use crate::config::types::OtelExporterKind;
 use crate::config::types::SandboxWorkspaceWrite;
+use crate::config::types::ScrollInputMode;
 use crate::config::types::ShellEnvironmentPolicy;
 use crate::config::types::ShellEnvironmentPolicyToml;
 use crate::config::types::Tui;
@@ -178,6 +179,58 @@ pub struct Config {
     /// Show startup tooltips in the TUI welcome screen.
     pub show_tooltips: bool,
 
+    /// Override the events-per-wheel-tick factor for TUI2 scroll normalization.
+    ///
+    /// This is the same `tui.scroll_events_per_tick` value from `config.toml`, plumbed through the
+    /// merged [`Config`] object (see [`Tui`]) so TUI2 can normalize scroll event density per
+    /// terminal.
+    pub tui_scroll_events_per_tick: Option<u16>,
+
+    /// Override the number of lines applied per wheel tick in TUI2.
+    ///
+    /// This is the same `tui.scroll_wheel_lines` value from `config.toml` (see [`Tui`]). TUI2
+    /// applies it to wheel-like scroll streams. Trackpad-like scrolling uses a separate
+    /// `tui.scroll_trackpad_lines` setting.
+    pub tui_scroll_wheel_lines: Option<u16>,
+
+    /// Override the number of lines per tick-equivalent used for trackpad scrolling in TUI2.
+    ///
+    /// This is the same `tui.scroll_trackpad_lines` value from `config.toml` (see [`Tui`]).
+    pub tui_scroll_trackpad_lines: Option<u16>,
+
+    /// Trackpad acceleration: approximate number of events required to gain +1x speed in TUI2.
+    ///
+    /// This is the same `tui.scroll_trackpad_accel_events` value from `config.toml` (see [`Tui`]).
+    pub tui_scroll_trackpad_accel_events: Option<u16>,
+
+    /// Trackpad acceleration: maximum multiplier applied to trackpad-like streams in TUI2.
+    ///
+    /// This is the same `tui.scroll_trackpad_accel_max` value from `config.toml` (see [`Tui`]).
+    pub tui_scroll_trackpad_accel_max: Option<u16>,
+
+    /// Control how TUI2 interprets mouse scroll input (wheel vs trackpad).
+    ///
+    /// This is the same `tui.scroll_mode` value from `config.toml` (see [`Tui`]).
+    pub tui_scroll_mode: ScrollInputMode,
+
+    /// Override the wheel tick detection threshold (ms) for TUI2 auto scroll mode.
+    ///
+    /// This is the same `tui.scroll_wheel_tick_detect_max_ms` value from `config.toml` (see
+    /// [`Tui`]).
+    pub tui_scroll_wheel_tick_detect_max_ms: Option<u64>,
+
+    /// Override the wheel-like end-of-stream threshold (ms) for TUI2 auto scroll mode.
+    ///
+    /// This is the same `tui.scroll_wheel_like_max_duration_ms` value from `config.toml` (see
+    /// [`Tui`]).
+    pub tui_scroll_wheel_like_max_duration_ms: Option<u64>,
+
+    /// Invert mouse scroll direction for TUI2.
+    ///
+    /// This is the same `tui.scroll_invert` value from `config.toml` (see [`Tui`]) and is applied
+    /// consistently to both mouse wheels and trackpads.
+    pub tui_scroll_invert: bool,
+
     /// The directory that should be treated as the current working directory
     /// for the session. All relative paths inside the business-logic layer are
     /// resolved against this path.
@@ -268,10 +321,6 @@ pub struct Config {
 
     /// If set to `true`, used only the experimental unified exec tool.
     pub use_experimental_unified_exec_tool: bool,
-
-    /// If set to `true`, use the experimental official Rust MCP client.
-    /// https://github.com/modelcontextprotocol/rust-sdk
-    pub use_experimental_use_rmcp_client: bool,
 
     /// Settings for ghost snapshots (used for undo).
     pub ghost_snapshot: GhostSnapshotConfig,
@@ -774,7 +823,6 @@ pub struct ConfigToml {
     pub experimental_instructions_file: Option<AbsolutePathBuf>,
     pub experimental_compact_prompt_file: Option<AbsolutePathBuf>,
     pub experimental_use_unified_exec_tool: Option<bool>,
-    pub experimental_use_rmcp_client: Option<bool>,
     pub experimental_use_freeform_apply_patch: Option<bool>,
     /// Preferred OSS provider for local models, e.g. "lmstudio" or "ollama".
     pub oss_provider: Option<String>,
@@ -1190,7 +1238,6 @@ impl Config {
         let include_apply_patch_tool_flag = features.enabled(Feature::ApplyPatchFreeform);
         let tools_web_search_request = features.enabled(Feature::WebSearchRequest);
         let use_experimental_unified_exec_tool = features.enabled(Feature::UnifiedExec);
-        let use_experimental_use_rmcp_client = features.enabled(Feature::RmcpClient);
 
         let forced_chatgpt_workspace_id =
             cfg.forced_chatgpt_workspace_id.as_ref().and_then(|value| {
@@ -1330,7 +1377,6 @@ impl Config {
             include_apply_patch_tool: include_apply_patch_tool_flag,
             tools_web_search_request,
             use_experimental_unified_exec_tool,
-            use_experimental_use_rmcp_client,
             ghost_snapshot,
             features,
             active_profile: active_profile_name,
@@ -1346,6 +1392,27 @@ impl Config {
                 .unwrap_or_default(),
             animations: cfg.tui.as_ref().map(|t| t.animations).unwrap_or(true),
             show_tooltips: cfg.tui.as_ref().map(|t| t.show_tooltips).unwrap_or(true),
+            tui_scroll_events_per_tick: cfg.tui.as_ref().and_then(|t| t.scroll_events_per_tick),
+            tui_scroll_wheel_lines: cfg.tui.as_ref().and_then(|t| t.scroll_wheel_lines),
+            tui_scroll_trackpad_lines: cfg.tui.as_ref().and_then(|t| t.scroll_trackpad_lines),
+            tui_scroll_trackpad_accel_events: cfg
+                .tui
+                .as_ref()
+                .and_then(|t| t.scroll_trackpad_accel_events),
+            tui_scroll_trackpad_accel_max: cfg
+                .tui
+                .as_ref()
+                .and_then(|t| t.scroll_trackpad_accel_max),
+            tui_scroll_mode: cfg.tui.as_ref().map(|t| t.scroll_mode).unwrap_or_default(),
+            tui_scroll_wheel_tick_detect_max_ms: cfg
+                .tui
+                .as_ref()
+                .and_then(|t| t.scroll_wheel_tick_detect_max_ms),
+            tui_scroll_wheel_like_max_duration_ms: cfg
+                .tui
+                .as_ref()
+                .and_then(|t| t.scroll_wheel_like_max_duration_ms),
+            tui_scroll_invert: cfg.tui.as_ref().map(|t| t.scroll_invert).unwrap_or(false),
             otel: {
                 let t: OtelConfigToml = cfg.otel.unwrap_or_default();
                 let log_user_prompt = t.log_user_prompt.unwrap_or(false);
@@ -1518,8 +1585,23 @@ persistence = "none"
             .expect("TUI config without notifications should succeed");
         let tui = parsed.tui.expect("config should include tui section");
 
-        assert_eq!(tui.notifications, Notifications::Enabled(true));
-        assert!(tui.show_tooltips);
+        assert_eq!(
+            tui,
+            Tui {
+                notifications: Notifications::Enabled(true),
+                animations: true,
+                show_tooltips: true,
+                scroll_events_per_tick: None,
+                scroll_wheel_lines: None,
+                scroll_trackpad_lines: None,
+                scroll_trackpad_accel_events: None,
+                scroll_trackpad_accel_max: None,
+                scroll_mode: ScrollInputMode::Auto,
+                scroll_wheel_tick_detect_max_ms: None,
+                scroll_wheel_like_max_duration_ms: None,
+                scroll_invert: false,
+            }
+        );
     }
 
     #[test]
@@ -1908,7 +1990,6 @@ trust_level = "trusted"
         let codex_home = TempDir::new()?;
         let cfg = ConfigToml {
             experimental_use_unified_exec_tool: Some(true),
-            experimental_use_rmcp_client: Some(true),
             experimental_use_freeform_apply_patch: Some(true),
             ..Default::default()
         };
@@ -1921,12 +2002,10 @@ trust_level = "trusted"
 
         assert!(config.features.enabled(Feature::ApplyPatchFreeform));
         assert!(config.features.enabled(Feature::UnifiedExec));
-        assert!(config.features.enabled(Feature::RmcpClient));
 
         assert!(config.include_apply_patch_tool);
 
         assert!(config.use_experimental_unified_exec_tool);
-        assert!(config.use_experimental_use_rmcp_client);
 
         Ok(())
     }
@@ -3107,7 +3186,6 @@ model_verbosity = "high"
                 include_apply_patch_tool: false,
                 tools_web_search_request: false,
                 use_experimental_unified_exec_tool: false,
-                use_experimental_use_rmcp_client: false,
                 ghost_snapshot: GhostSnapshotConfig::default(),
                 features: Features::with_defaults(),
                 active_profile: Some("o3".to_string()),
@@ -3119,6 +3197,15 @@ model_verbosity = "high"
                 tui_notifications: Default::default(),
                 animations: true,
                 show_tooltips: true,
+                tui_scroll_events_per_tick: None,
+                tui_scroll_wheel_lines: None,
+                tui_scroll_trackpad_lines: None,
+                tui_scroll_trackpad_accel_events: None,
+                tui_scroll_trackpad_accel_max: None,
+                tui_scroll_mode: ScrollInputMode::Auto,
+                tui_scroll_wheel_tick_detect_max_ms: None,
+                tui_scroll_wheel_like_max_duration_ms: None,
+                tui_scroll_invert: false,
                 otel: OtelConfig::default(),
             },
             o3_profile_config
@@ -3182,7 +3269,6 @@ model_verbosity = "high"
             include_apply_patch_tool: false,
             tools_web_search_request: false,
             use_experimental_unified_exec_tool: false,
-            use_experimental_use_rmcp_client: false,
             ghost_snapshot: GhostSnapshotConfig::default(),
             features: Features::with_defaults(),
             active_profile: Some("gpt3".to_string()),
@@ -3194,6 +3280,15 @@ model_verbosity = "high"
             tui_notifications: Default::default(),
             animations: true,
             show_tooltips: true,
+            tui_scroll_events_per_tick: None,
+            tui_scroll_wheel_lines: None,
+            tui_scroll_trackpad_lines: None,
+            tui_scroll_trackpad_accel_events: None,
+            tui_scroll_trackpad_accel_max: None,
+            tui_scroll_mode: ScrollInputMode::Auto,
+            tui_scroll_wheel_tick_detect_max_ms: None,
+            tui_scroll_wheel_like_max_duration_ms: None,
+            tui_scroll_invert: false,
             otel: OtelConfig::default(),
         };
 
@@ -3272,7 +3367,6 @@ model_verbosity = "high"
             include_apply_patch_tool: false,
             tools_web_search_request: false,
             use_experimental_unified_exec_tool: false,
-            use_experimental_use_rmcp_client: false,
             ghost_snapshot: GhostSnapshotConfig::default(),
             features: Features::with_defaults(),
             active_profile: Some("zdr".to_string()),
@@ -3284,6 +3378,15 @@ model_verbosity = "high"
             tui_notifications: Default::default(),
             animations: true,
             show_tooltips: true,
+            tui_scroll_events_per_tick: None,
+            tui_scroll_wheel_lines: None,
+            tui_scroll_trackpad_lines: None,
+            tui_scroll_trackpad_accel_events: None,
+            tui_scroll_trackpad_accel_max: None,
+            tui_scroll_mode: ScrollInputMode::Auto,
+            tui_scroll_wheel_tick_detect_max_ms: None,
+            tui_scroll_wheel_like_max_duration_ms: None,
+            tui_scroll_invert: false,
             otel: OtelConfig::default(),
         };
 
@@ -3348,7 +3451,6 @@ model_verbosity = "high"
             include_apply_patch_tool: false,
             tools_web_search_request: false,
             use_experimental_unified_exec_tool: false,
-            use_experimental_use_rmcp_client: false,
             ghost_snapshot: GhostSnapshotConfig::default(),
             features: Features::with_defaults(),
             active_profile: Some("gpt5".to_string()),
@@ -3360,6 +3462,15 @@ model_verbosity = "high"
             tui_notifications: Default::default(),
             animations: true,
             show_tooltips: true,
+            tui_scroll_events_per_tick: None,
+            tui_scroll_wheel_lines: None,
+            tui_scroll_trackpad_lines: None,
+            tui_scroll_trackpad_accel_events: None,
+            tui_scroll_trackpad_accel_max: None,
+            tui_scroll_mode: ScrollInputMode::Auto,
+            tui_scroll_wheel_tick_detect_max_ms: None,
+            tui_scroll_wheel_like_max_duration_ms: None,
+            tui_scroll_invert: false,
             otel: OtelConfig::default(),
         };
 
