@@ -407,8 +407,6 @@ pub struct Config {
     pub tools_web_search_allowed_domains: Option<Vec<String>>,
     /// Experimental: enable streamable shell tool selection (off by default).
     pub use_experimental_streamable_shell_tool: bool,
-    /// Experimental: opt into the RMCP client implementation for MCP servers.
-    pub use_experimental_use_rmcp_client: bool,
     /// Enable the `view_image` tool that lets the agent attach local images.
     pub include_view_image_tool: bool,
 
@@ -2155,9 +2153,6 @@ pub struct ConfigToml {
     #[serde(default)]
     pub confirm_guard: Option<ConfirmGuardConfig>,
 
-    #[serde(default)]
-    pub experimental_use_rmcp_client: Option<bool>,
-
     /// Disable server-side response storage (sends the full conversation
     /// context with every request). Currently necessary for OpenAI customers
     /// who have opted into Zero Data Retention (ZDR).
@@ -3130,9 +3125,6 @@ impl Config {
             // Honor upstream opt-in switch name for our experimental streamable shell tool.
             use_experimental_streamable_shell_tool: cfg
                 .experimental_use_exec_command_tool
-                .unwrap_or(false),
-            use_experimental_use_rmcp_client: cfg
-                .experimental_use_rmcp_client
                 .unwrap_or(false),
             include_view_image_tool: include_view_image_tool_flag,
             skills_enabled,

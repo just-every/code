@@ -1345,9 +1345,6 @@ fn codex_beta_features_header_value(config: &Config) -> Option<HeaderValue> {
     if config.tools_web_search_request {
         enabled.push("web_search_request");
     }
-    if config.use_experimental_use_rmcp_client {
-        enabled.push("rmcp_client");
-    }
 
     let value = enabled.join(",");
     if value.is_empty() {

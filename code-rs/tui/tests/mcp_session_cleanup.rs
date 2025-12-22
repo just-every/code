@@ -121,13 +121,8 @@ async fn mcp_stdio_server_exits_before_next_session() {
     .expect("load config");
 
     let servers_map = config.mcp_servers.clone();
-    let use_rmcp = config.use_experimental_use_rmcp_client;
 
-    let (manager1, _) = McpConnectionManager::new(
-        servers_map.clone(),
-        use_rmcp,
-        HashSet::new(),
-    )
+    let (manager1, _) = McpConnectionManager::new(servers_map.clone(), HashSet::new())
     .await
     .expect("start first MCP manager");
 
@@ -144,7 +139,7 @@ async fn mcp_stdio_server_exits_before_next_session() {
         std::fs::read_to_string(&log_path).unwrap_or_default()
     );
 
-    let (_manager2, _) = McpConnectionManager::new(servers_map, use_rmcp, HashSet::new())
+    let (_manager2, _) = McpConnectionManager::new(servers_map, HashSet::new())
         .await
         .expect("start second MCP manager");
 }

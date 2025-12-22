@@ -1171,7 +1171,6 @@ dependencies = [
  "code-browser",
  "code-file-search",
  "code-git-tooling",
- "code-mcp-client",
  "code-mcp-types",
  "code-otel",
  "code-protocol",

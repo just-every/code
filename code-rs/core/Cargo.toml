@@ -22,7 +22,6 @@ chrono = { workspace = true, features = ["serde"] }
 chardetng = { workspace = true }
 code-apply-patch = { workspace = true }
 code-file-search = { workspace = true }
-code-mcp-client = { workspace = true }
 code-protocol = { workspace = true }
 code-rmcp-client = { workspace = true }
 code-app-server-protocol = { workspace = true }

@@ -61,7 +61,8 @@ async fn main() -> Result<()> {
     servers.insert("slow_ok".to_string(), slow_ok);
     servers.insert("slow_fail".to_string(), slow_fail);
 
-    let (mgr, errs) = McpConnectionManager::new(servers, false, std::collections::HashSet::new()).await?;
+    let (mgr, errs) =
+        McpConnectionManager::new(servers, std::collections::HashSet::new()).await?;
     println!("Errors: {}", errs.len());
     for (name, e) in &errs {
         println!("  {}: {}", name, e);

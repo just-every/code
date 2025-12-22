@@ -4875,7 +4875,6 @@ async fn submission_loop(
 
                 let (mcp_connection_manager, failed_clients) = match McpConnectionManager::new(
                     config.mcp_servers.clone(),
-                    config.use_experimental_use_rmcp_client,
                     excluded_tools,
                 )
                 .await

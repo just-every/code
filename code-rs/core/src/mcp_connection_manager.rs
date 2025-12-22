@@ -1,6 +1,6 @@
 //! Connection manager for Model Context Protocol (MCP) servers.
 //!
-//! The [`McpConnectionManager`] owns one [`code_mcp_client::McpClient`] per
+//! The [`McpConnectionManager`] owns one [`code_rmcp_client::RmcpClient`] per
 //! configured server (keyed by the *server name*). It offers convenience
 //! helpers to query the available tools across *all* servers and returns them
 //! in a single aggregated map using the fully-qualified tool name
@@ -15,7 +15,6 @@ use std::time::Duration;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
-use code_mcp_client::McpClient;
 use code_rmcp_client::RmcpClient;
 use mcp_types::ClientCapabilities;
 use mcp_types::Implementation;
@@ -26,7 +25,6 @@ use sha1::Digest;
 use sha1::Sha1;
 use tokio::sync::RwLock;
 use tokio::task::JoinSet;
-use tokio::task::yield_now;
 use tracing::info;
 use tracing::warn;
 
@@ -94,13 +92,11 @@ struct ManagedClient {
 
 #[derive(Clone)]
 enum McpClientAdapter {
-    Legacy(Arc<McpClient>),
     Rmcp(Arc<RmcpClient>),
 }
 
 impl McpClientAdapter {
     async fn new_stdio_client(
-        use_rmcp_client: bool,
         program: OsString,
         args: Vec<OsString>,
         env: Option<HashMap<String, String>>,
@@ -108,17 +104,11 @@ impl McpClientAdapter {
         startup_timeout: Duration,
     ) -> Result<Self> {
         tracing::debug!(
-            "new_stdio_client use_rmcp_client: {use_rmcp_client} program: {program:?} args: {args:?} env: {env:?} params: {params:?} startup_timeout: {startup_timeout:?}"
+            "new_stdio_client program: {program:?} args: {args:?} env: {env:?} params: {params:?} startup_timeout: {startup_timeout:?}"
         );
-        if use_rmcp_client {
-            let client = Arc::new(RmcpClient::new_stdio_client(program, args, env).await?);
-            client.initialize(params, Some(startup_timeout)).await?;
-            Ok(McpClientAdapter::Rmcp(client))
-        } else {
-            let client = Arc::new(McpClient::new_stdio_client(program, args, env).await?);
-            client.initialize(params, Some(startup_timeout)).await?;
-            Ok(McpClientAdapter::Legacy(client))
-        }
+        let client = Arc::new(RmcpClient::new_stdio_client(program, args, env).await?);
+        client.initialize(params, Some(startup_timeout)).await?;
+        Ok(McpClientAdapter::Rmcp(client))
     }
 
     async fn new_streamable_http_client(
@@ -138,7 +128,6 @@ impl McpClientAdapter {
         timeout: Option<Duration>,
     ) -> Result<mcp_types::ListToolsResult> {
         match self {
-            McpClientAdapter::Legacy(client) => client.list_tools(params, timeout).await,
             McpClientAdapter::Rmcp(client) => client.list_tools(params, timeout).await,
         }
     }
@@ -150,19 +139,12 @@ impl McpClientAdapter {
         timeout: Option<Duration>,
     ) -> Result<mcp_types::CallToolResult> {
         match self {
-            McpClientAdapter::Legacy(client) => client.call_tool(name, arguments, timeout).await,
             McpClientAdapter::Rmcp(client) => client.call_tool(name, arguments, timeout).await,
         }
     }
 
     async fn into_shutdown(self) {
         match self {
-            McpClientAdapter::Legacy(client) => {
-                drop(client);
-                // Yield so Tokio can propagate the kill-on-drop signal before
-                // the next session spins up a replacement server.
-                yield_now().await;
-            }
             McpClientAdapter::Rmcp(client) => {
                 client.shutdown().await;
             }
@@ -170,7 +152,7 @@ impl McpClientAdapter {
     }
 }
 
-/// A thin wrapper around a set of running [`McpClient`] instances.
+/// A thin wrapper around a set of running [`RmcpClient`] instances.
 #[derive(Default)]
 pub struct McpConnectionManager {
     /// Server-name -> client instance.
@@ -184,7 +166,7 @@ pub struct McpConnectionManager {
 }
 
 impl McpConnectionManager {
-    /// Spawn a [`McpClient`] for each configured server.
+    /// Spawn a [`RmcpClient`] for each configured server.
     ///
     /// * `mcp_servers` – Map loaded from the user configuration where *keys*
     ///   are human-readable server identifiers and *values* are the spawn
@@ -194,7 +176,6 @@ impl McpConnectionManager {
     /// user should be informed about these errors.
     pub async fn new(
         mcp_servers: HashMap<String, McpServerConfig>,
-        use_rmcp_client: bool,
         excluded_tools: HashSet<(String, String)>,
     ) -> Result<(Self, ClientStartErrors)> {
         // Early exit if no servers are configured.
@@ -216,22 +197,9 @@ impl McpConnectionManager {
                 continue;
             }
 
-            if matches!(
-                cfg.transport,
-                McpServerTransportConfig::StreamableHttp { .. }
-            ) && !use_rmcp_client
-            {
-                info!(
-                    "skipping MCP server `{}` configured with url because rmcp client is disabled",
-                    server_name
-                );
-                continue;
-            }
-
             let startup_timeout = cfg.startup_timeout_sec.unwrap_or(DEFAULT_STARTUP_TIMEOUT);
             let tool_timeout = cfg.tool_timeout_sec;
 
-            let use_rmcp_client_flag = use_rmcp_client;
             join_set.spawn(async move {
                 let McpServerConfig { transport, .. } = cfg;
                 let server_name_for_error = server_name.clone();
@@ -263,7 +231,6 @@ impl McpConnectionManager {
                         let command_os: OsString = command.into();
                         let args_os: Vec<OsString> = args.into_iter().map(Into::into).collect();
                         McpClientAdapter::new_stdio_client(
-                            use_rmcp_client_flag,
                             command_os,
                             args_os,
                             env,
@@ -569,7 +536,7 @@ mod tests {
             },
         );
 
-        let (_manager, errors) = McpConnectionManager::new(servers, false, HashSet::new())
+        let (_manager, errors) = McpConnectionManager::new(servers, HashSet::new())
             .await
             .expect("manager creation should succeed even when servers fail");
 

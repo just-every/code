@@ -13,8 +13,6 @@ use code_core::config::write_global_mcp_servers;
 use code_core::config_types::McpServerConfig;
 use code_core::config_types::McpServerTransportConfig;
 
-/// [experimental] Launch Codex as an MCP server or manage configured MCP servers.
-///
 /// Subcommands:
 /// - `serve`  — run the MCP server on stdio
 /// - `list`   — list configured servers (with `--json`)
@@ -32,16 +30,12 @@ pub struct McpCli {
 
 #[derive(Debug, clap::Subcommand)]
 pub enum McpSubcommand {
-    /// [experimental] List configured MCP servers.
     List(ListArgs),
 
-    /// [experimental] Show details for a configured MCP server.
     Get(GetArgs),
 
-    /// [experimental] Add a global MCP server entry.
     Add(AddArgs),
 
-    /// [experimental] Remove a global MCP server entry.
     Remove(RemoveArgs),
 }
 
