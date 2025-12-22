@@ -1213,7 +1213,7 @@ const RATE_LIMIT_WARNING_THRESHOLDS: [f64; 3] = [50.0, 75.0, 90.0];
 const RATE_LIMIT_REFRESH_INTERVAL: chrono::Duration = chrono::Duration::minutes(10);
 
 const MAX_TRACKED_GHOST_COMMITS: usize = 20;
-const GHOST_SNAPSHOT_NOTICE_THRESHOLD: Duration = Duration::from_secs(1);
+const GHOST_SNAPSHOT_NOTICE_THRESHOLD: Duration = Duration::from_secs(4);
 const GHOST_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
