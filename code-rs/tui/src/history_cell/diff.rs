@@ -1,5 +1,6 @@
 use super::*;
 use crate::history::state::{DiffHunk, DiffLine, DiffLineKind, DiffRecord, HistoryId};
+use crate::sanitize::{sanitize_for_tui, Mode as SanitizeMode, Options as SanitizeOptions};
 pub(crate) struct DiffCell {
     record: DiffRecord,
 }
@@ -90,21 +91,30 @@ pub(crate) fn diff_record_from_string(title: String, diff: &str) -> DiffRecord {
     };
 
     for raw_line in diff.lines() {
-        if raw_line.starts_with("@@") {
+        let line = sanitize_for_tui(
+            raw_line,
+            SanitizeMode::Plain,
+            SanitizeOptions {
+                expand_tabs: true,
+                tabstop: 4,
+                debug_markers: false,
+            },
+        );
+        if line.starts_with("@@") {
             let prev_lines = std::mem::take(&mut current_lines);
             flush_hunk(current_header.take(), prev_lines, &mut hunks);
-            current_header = Some(raw_line.to_string());
+            current_header = Some(line);
             continue;
         }
 
-        let (kind, content) = if raw_line.starts_with("+++") || raw_line.starts_with("---") {
-            (DiffLineKind::Context, raw_line.to_string())
-        } else if let Some(rest) = raw_line.strip_prefix('+') {
+        let (kind, content) = if line.starts_with("+++") || line.starts_with("---") {
+            (DiffLineKind::Context, line)
+        } else if let Some(rest) = line.strip_prefix('+') {
             (DiffLineKind::Addition, rest.to_string())
-        } else if let Some(rest) = raw_line.strip_prefix('-') {
+        } else if let Some(rest) = line.strip_prefix('-') {
             (DiffLineKind::Removal, rest.to_string())
         } else {
-            (DiffLineKind::Context, raw_line.to_string())
+            (DiffLineKind::Context, line)
         };
         current_lines.push(DiffLine { kind, content });
     }
@@ -122,4 +132,26 @@ pub(crate) fn diff_record_from_string(title: String, diff: &str) -> DiffRecord {
 pub(crate) fn new_diff_cell_from_string(diff_output: String) -> DiffCell {
     let record = diff_record_from_string(String::new(), &diff_output);
     DiffCell::from_record(record)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::diff_record_from_string;
+
+    #[test]
+    fn diff_record_strips_ansi_sequences() {
+        let diff = concat!(
+            "@@ -1 +1 @@\n",
+            "-\u{001B}[31mold\u{001B}[0m\n",
+            "+\u{001B}[32mnew\u{001B}[0m\n",
+        );
+        let record = diff_record_from_string(String::new(), diff);
+        assert_eq!(record.hunks.len(), 1);
+        let lines = &record.hunks[0].lines;
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].content, "old");
+        assert_eq!(lines[1].content, "new");
+        assert!(!lines[0].content.contains('\u{001B}'));
+        assert!(!lines[1].content.contains('\u{001B}'));
+    }
 }
