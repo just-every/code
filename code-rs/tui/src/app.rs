@@ -3419,6 +3419,11 @@ impl App<'_> {
                         widget.handle_ghost_snapshot_finished(job_id, result, elapsed);
                     }
                 }
+                AppEvent::AutoReviewBaselineCaptured { turn_sequence, result } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.handle_auto_review_baseline_captured(turn_sequence, result);
+                    }
+                }
             }
         }
         if self.alt_screen_active {

@@ -12628,10 +12628,7 @@ impl ChatWidget<'_> {
                 // covers changes made during the turn, not pre-existing local edits.
                 self.auto_review_baseline = None;
                 if self.config.tui.auto_review_enabled {
-                    match self.capture_auto_turn_commit("auto review baseline snapshot", None) {
-                        Ok(commit) => self.auto_review_baseline = Some(commit),
-                        Err(err) => tracing::warn!("failed to capture auto review baseline: {err}"),
-                    }
+                    self.spawn_auto_review_baseline_capture();
                 }
 
                 // Don't add loading cell - we have progress in the input area
@@ -18038,6 +18035,82 @@ Have we met every part of this goal and is there no further work to do?"#
             bump_snapshot_epoch_for(&self.config.cwd);
         }
         result
+    }
+
+    fn capture_auto_review_baseline_for_path(
+        repo_path: PathBuf,
+    ) -> Result<GhostCommit, GitToolingError> {
+        #[cfg(test)]
+        if let Some(stub) = CAPTURE_AUTO_TURN_COMMIT_STUB.lock().unwrap().as_ref() {
+            return stub("auto review baseline snapshot", None);
+        }
+        let hook_repo = repo_path.clone();
+        let options =
+            CreateGhostCommitOptions::new(repo_path.as_path()).message("auto review baseline snapshot");
+        let hook = move || bump_snapshot_epoch_for(&hook_repo);
+        let result = create_ghost_commit(&options.post_commit_hook(&hook));
+        if result.is_ok() {
+            bump_snapshot_epoch_for(&repo_path);
+        }
+        result
+    }
+
+    fn spawn_auto_review_baseline_capture(&mut self) {
+        let turn_sequence = self.turn_sequence;
+        let repo_path = self.config.cwd.clone();
+        let app_event_tx = self.app_event_tx.clone();
+
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let result = tokio::task::spawn_blocking(move || {
+                    ChatWidget::capture_auto_review_baseline_for_path(repo_path)
+                })
+                .await
+                .unwrap_or_else(|err| {
+                    Err(GitToolingError::Io(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("auto review baseline task failed: {err}"),
+                    )))
+                });
+                app_event_tx.send(AppEvent::AutoReviewBaselineCaptured {
+                    turn_sequence,
+                    result,
+                });
+            });
+        } else {
+            std::thread::spawn(move || {
+                let result = ChatWidget::capture_auto_review_baseline_for_path(repo_path);
+                app_event_tx.send(AppEvent::AutoReviewBaselineCaptured {
+                    turn_sequence,
+                    result,
+                });
+            });
+        }
+    }
+
+    pub(crate) fn handle_auto_review_baseline_captured(
+        &mut self,
+        turn_sequence: u64,
+        result: Result<GhostCommit, GitToolingError>,
+    ) {
+        if turn_sequence != self.turn_sequence {
+            tracing::debug!(
+                "ignored auto review baseline for stale turn_sequence={turn_sequence}"
+            );
+            return;
+        }
+        if self.auto_review_baseline.is_some() {
+            tracing::debug!("auto review baseline already set; skipping update");
+            return;
+        }
+        match result {
+            Ok(commit) => {
+                self.auto_review_baseline = Some(commit);
+            }
+            Err(err) => {
+                tracing::warn!("failed to capture auto review baseline: {err}");
+            }
+        }
     }
 
     #[cfg(any(test, feature = "test-helpers"))]
@@ -28430,6 +28503,30 @@ use code_core::protocol::OrderMeta;
         chat.maybe_trigger_auto_review();
 
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn task_started_defers_auto_review_baseline_capture() {
+        let _stub_lock = AUTO_STUB_LOCK.lock().unwrap();
+        let _rt = enter_test_runtime_guard();
+        let _capture_guard = CaptureCommitStubGuard::install(|_, _| {
+            Ok(GhostCommit::new("baseline".to_string(), None))
+        });
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+        chat.config.tui.auto_review_enabled = true;
+
+        chat.handle_code_event(Event {
+            id: "turn-1".to_string(),
+            event_seq: 0,
+            msg: EventMsg::TaskStarted,
+            order: None,
+        });
+
+        assert!(
+            chat.auto_review_baseline.is_none(),
+            "baseline capture should not block TaskStarted"
+        );
     }
 
     #[test]
