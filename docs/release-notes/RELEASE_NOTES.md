@@ -1,12 +1,13 @@
-## @just-every/code v0.6.12
+## @just-every/code v0.6.13
 
-This release smooths TUI rendering, speeds execs, and tightens sandbox governance.
+Sharper TUI ergonomics with account switching, smoother scrolling, and auto-drive polish.
 
 ### Changes
-- TUI: coalesce transcript redraws, keep spinners live, and shorten status directory labels so streams stay smooth.
-- Exec: reduce long-session stalls and collapse waiting time in unified exec so commands finish faster.
-- CLI: add `/ps` and apply terminal-aware scroll scaling for clearer process visibility.
-- Config/Skills: backport requirements updates, add ExternalSandbox policy, and support `/etc/codex/requirements.toml` for tighter governance.
+- TUI: add account switching and skills settings in the core UI.
+- TUI2: normalize wheel and trackpad scrolling for consistent transcript navigation.
+- Auto-drive: improve ansi16 styling, contrast, and ghost snapshot timing for clearer prompts.
+- Auto-drive: respect retry budgets and loop hints to avoid runaway retries.
+- Stability: prevent panics on alpha builds.
 
 ### Install
 ```
@@ -14,7 +15,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-### Thanks
-Thanks to @GalaxyDetective and @jdijk-deventit for contributions!
-
-Compare: https://github.com/just-every/code/compare/v0.6.11...v0.6.12
+Compare: https://github.com/just-every/code/compare/v0.6.12...v0.6.13

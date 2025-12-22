@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.6.13] - 2025-12-22
+
+- TUI: add account switching and skills settings in the core UI. (bcf7614a)
+- TUI2: normalize wheel and trackpad scrolling for consistent transcript navigation. (63942b88)
+- Auto-drive: improve ansi16 styling, contrast, and ghost snapshot timing for clearer prompts. (ffac25b4, 82ce5915, 6e333af8, 70e1b9f6)
+- Auto-drive: respect retry budgets and loop hints to avoid runaway retries. (f5c56198)
+- Stability: prevent panics on alpha builds. (aa83d7da)
+
 ## [0.6.12] - 2025-12-20
 
 - TUI: coalesce transcript redraws, keep spinners live, and shorten status directory labels so streams stay smooth. (1d4463ba, 734dd0ee, e6794b7b)
