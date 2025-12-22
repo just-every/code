@@ -10,17 +10,17 @@ expression: section_open
  | ›  Model              + Select Model & Reasoning --------------------------------------------+ |
  |    Theme              |                                                                      | |
  |    Updates            |  Curren+------------------------------+                              | |
- |    Agents             |  Reason|Model Shortcuts               |                              | |
- |    Prompts            |        |                              |                              | |
- |    Auto Drive         |  GPT-5.|• Esc    Return to overview   |                              | |
- |    Review             |  Latest|• Tab    Cycle sections       |s across knowledge, reasoning | |
- |    Planning           |     XHi|• Shift+Tab  Cycle backwards  |for complex problems          | |
- |    Validation         |     Hig|• ?      Toggle this help     |r complex or ambiguous proble | |
- |    Chrome             |     Med|                              |f reasoning depth and latency | |
- |    MCP                |     Low|Press Esc to close            |oning; useful for straightfor | |
- |    Notifications      |        +------------------------------+                              | |
- |    Limits             |                                                                      | |
- |                       +----------------------------------------------------------------------+ |
+ |    Accounts           |  Reason|Model Shortcuts               |                              | |
+ |    Agents             |        |                              |                              | |
+ |    Prompts            |  GPT-5.|• Esc    Return to overview   |                              | |
+ |    Skills             |  Latest|• Tab    Cycle sections       |s across knowledge, reasoning | |
+ |    Auto Drive         |     XHi|• Shift+Tab  Cycle backwards  |for complex problems          | |
+ |    Review             |     Hig|• ?      Toggle this help     |r complex or ambiguous proble | |
+ |    Planning           |     Med|                              |f reasoning depth and latency | |
+ |    Validation         |     Low|Press Esc to close            |oning; useful for straightfor | |
+ |    Chrome             |        +------------------------------+                              | |
+ |    MCP                |                                                                      | |
+ |  ↓ Notifications      +----------------------------------------------------------------------+ |
  | ↑ ↓ Move    Enter Open    Esc Close    ? Help                                                  |
  |                                                                                                |
  +------------------------------------------------------------------------------------------------+

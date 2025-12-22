@@ -18,8 +18,8 @@ expression: output
  |                                                                                                |
  |                                                                                                |
 
- |   Agents             Enabled: 10/11                                                            |
- |   + Configure linked agents and default task permissions.                                      |
+ |   Accounts           Auto-switch: On · API key fallback: Off                                   |
+ |   + Configure account switching behavior under rate and usage limits.                          |
  |                                                                                                |
  | ↑ ↓ Move    Enter Open    Esc Close    ? Help                                                  |
  |                                                                                                |

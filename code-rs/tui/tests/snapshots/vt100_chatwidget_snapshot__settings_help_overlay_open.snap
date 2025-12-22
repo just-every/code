@@ -18,8 +18,8 @@ expression: open
  |                           |• Esc    Close settings                 |                           |
  |   ------------------------|• ?      Toggle this help               |-------------------------- |
  |                           |                                        |                           |
- |   Agents             Enabl|Press Esc to close                      |                           |
- |   + Configure linked agent+----------------------------------------+                           |
+ |   Accounts           Auto-|Press Esc to close                      |                           |
+ |   + Configure account swit+----------------------------------------+.                          |
  |                                                                                                |
  | ↑ ↓ Move    Enter Open    Esc Close    ? Help                                                  |
  |                                                                                                |

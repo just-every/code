@@ -10,17 +10,17 @@ expression: section_closed
  | ›  Model              + Select Model & Reasoning --------------------------------------------+ |
  |    Theme              |                                                                      | |
  |    Updates            |  Current model: GPT-5.1-Codex-Max                                    | |
- |    Agents             |  Reasoning effort: Medium                                            | |
- |    Prompts            |                                                                      | |
- |    Auto Drive         |  GPT-5.2                                                             | |
- |    Review             |  Latest frontier model with improvements across knowledge, reasoning | |
- |    Planning           |     XHigh - Extra high reasoning depth for complex problems          | |
- |    Validation         |     High - Maximizes reasoning depth for complex or ambiguous proble | |
- |    Chrome             |     Medium - Provides a solid balance of reasoning depth and latency | |
- |    MCP                |     Low - Balances speed with some reasoning; useful for straightfor | |
- |    Notifications      |                                                                      | |
- |    Limits             |                                                                      | |
- |                       +----------------------------------------------------------------------+ |
+ |    Accounts           |  Reasoning effort: Medium                                            | |
+ |    Agents             |                                                                      | |
+ |    Prompts            |  GPT-5.2                                                             | |
+ |    Skills             |  Latest frontier model with improvements across knowledge, reasoning | |
+ |    Auto Drive         |     XHigh - Extra high reasoning depth for complex problems          | |
+ |    Review             |     High - Maximizes reasoning depth for complex or ambiguous proble | |
+ |    Planning           |     Medium - Provides a solid balance of reasoning depth and latency | |
+ |    Validation         |     Low - Balances speed with some reasoning; useful for straightfor | |
+ |    Chrome             |                                                                      | |
+ |    MCP                |                                                                      | |
+ |  ↓ Notifications      +----------------------------------------------------------------------+ |
  | ↑ ↓ Move    Enter Open    Esc Close    ? Help                                                  |
  |                                                                                                |
  +------------------------------------------------------------------------------------------------+
