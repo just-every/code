@@ -207,7 +207,7 @@ impl AutoDriveCardCell {
 
     fn accent_style(style: &CardStyle) -> Style {
         if palette_mode() == PaletteMode::Ansi16 {
-            return Style::default().fg(colors::warning());
+            return Style::default().fg(style.accent_fg);
         }
         let dim = colors::mix_toward(style.accent_fg, style.text_secondary, 0.85);
         Style::default().fg(dim)
@@ -307,16 +307,8 @@ impl AutoDriveCardCell {
             format!(" · {}", self.status.label())
         };
         let combined = format!("{title_text}{status_text}");
-        let title_style = if palette_mode() == PaletteMode::Ansi16 {
-            Style::default().fg(colors::warning())
-        } else {
-            title_text_style(style)
-        };
-        let status_style = if palette_mode() == PaletteMode::Ansi16 {
-            Style::default().fg(colors::warning())
-        } else {
-            secondary_text_style(style)
-        };
+        let title_style = title_text_style(style);
+        let status_style = secondary_text_style(style);
 
         if UnicodeWidthStr::width(combined.as_str()) <= body_width {
             let mut bold_title = title_style;
@@ -1081,11 +1073,7 @@ impl AutoDriveCardCell {
 
     fn bottom_border_row(&self, body_width: usize, style: &CardStyle) -> CardRow {
         let text = truncate_with_ellipsis(HINT_TEXT, body_width);
-        let hint_style = if palette_mode() == PaletteMode::Ansi16 {
-            Style::default().fg(colors::warning())
-        } else {
-            hint_text_style(style)
-        };
+        let hint_style = hint_text_style(style);
         let mut segment = CardSegment::new(text, hint_style);
         segment.inherit_background = true;
         CardRow::new(

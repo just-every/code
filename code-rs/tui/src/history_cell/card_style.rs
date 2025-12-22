@@ -106,25 +106,14 @@ pub(crate) fn auto_drive_card_style() -> CardStyle {
     let mut style = style_from_theme(definition, is_dark);
 
     if palette_mode() == PaletteMode::Ansi16 {
-        let bg = if is_dark { Color::Blue } else { Color::LightBlue };
-        apply_ansi16_background(&mut style, bg, is_dark);
+        strip_ansi16_background(&mut style);
+        style.title_text = colors::primary();
+        style.accent_fg = colors::primary();
+        style.text_primary = colors::text();
+        style.text_secondary = colors::warning();
     }
 
     style
-}
-
-fn apply_ansi16_background(style: &mut CardStyle, background: Color, is_dark: bool) {
-    style.gradient = GradientSpec {
-        left: background,
-        right: background,
-        bias: 0.0,
-    };
-
-    let text = if is_dark { Color::White } else { Color::Black };
-    style.accent_fg = text;
-    style.text_primary = text;
-    style.text_secondary = text;
-    style.title_text = text;
 }
 
 pub(crate) fn web_search_card_style() -> CardStyle {
