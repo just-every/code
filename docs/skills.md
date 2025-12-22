@@ -1,4 +1,4 @@
-# Skills (experimental)
+# Skills
 
 > **Warning:** This is an experimental and non-stable feature. If you depend on it, please expect breaking changes over the coming weeks and understand that there is currently no guarantee that this works well. Use at your own risk!
 
