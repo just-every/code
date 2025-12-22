@@ -85,6 +85,37 @@ fn is_temporary_internal_launch_error_message(message: &str) -> bool {
         || message.contains("os error 24")
 }
 
+const HANDLER_ERROR_LIMIT: u32 = 3;
+
+fn should_restart_handler(consecutive_errors: u32) -> bool {
+    consecutive_errors >= HANDLER_ERROR_LIMIT
+}
+
+fn should_stop_handler<E: std::fmt::Display>(
+    label: &'static str,
+    result: std::result::Result<(), E>,
+    consecutive_errors: &mut u32,
+) -> bool {
+    match result {
+        Ok(()) => {
+            *consecutive_errors = 0;
+            false
+        }
+        Err(err) => {
+            *consecutive_errors = consecutive_errors.saturating_add(1);
+            let count = *consecutive_errors;
+            if count <= HANDLER_ERROR_LIMIT {
+                debug!("{label} event handler error: {err} (count: {count})");
+            }
+            if should_restart_handler(count) {
+                warn!("{label} event handler errors exceeded limit; restarting browser connection");
+                return true;
+            }
+            false
+        }
+    }
+}
+
 async fn discover_ws_via_host_port(host: &str, port: u16) -> Result<String> {
     let url = format!("http://{}:{}/json/version", host, port);
     debug!("Requesting Chrome version info from: {}", url);
@@ -300,7 +331,12 @@ impl BrowserManager {
                 let page_arc = self.page.clone();
                 let background_page_arc = self.background_page.clone();
                 let task = tokio::spawn(async move {
-                    while let Some(_evt) = handler.next().await {}
+                    let mut consecutive_errors = 0u32;
+                    while let Some(result) = handler.next().await {
+                        if should_stop_handler("[cdp/bm]", result, &mut consecutive_errors) {
+                            break;
+                        }
+                    }
                     warn!("[cdp/bm] event handler ended; clearing browser state so it can restart");
                     *browser_arc.lock().await = None;
                     *page_arc.lock().await = None;
@@ -425,7 +461,12 @@ impl BrowserManager {
                             let page_arc = self.page.clone();
                             let background_page_arc = self.background_page.clone();
                             let task = tokio::spawn(async move {
-                                while let Some(_evt) = handler.next().await {}
+                                let mut consecutive_errors = 0u32;
+                                while let Some(result) = handler.next().await {
+                                    if should_stop_handler("[cdp/bm]", result, &mut consecutive_errors) {
+                                        break;
+                                    }
+                                }
                                 warn!("[cdp/bm] event handler ended; clearing browser state so it can restart");
                                 *browser_arc.lock().await = None;
                                 *page_arc.lock().await = None;
@@ -529,7 +570,12 @@ impl BrowserManager {
                     let page_arc = self.page.clone();
                     let background_page_arc = self.background_page.clone();
                     let task = tokio::spawn(async move {
-                        while let Some(_evt) = handler.next().await {}
+                        let mut consecutive_errors = 0u32;
+                        while let Some(result) = handler.next().await {
+                            if should_stop_handler("[cdp/bm]", result, &mut consecutive_errors) {
+                                break;
+                            }
+                        }
                         warn!("[cdp/bm] event handler ended; clearing browser state so it can restart");
                         *browser_arc.lock().await = None;
                         *page_arc.lock().await = None;
@@ -652,7 +698,12 @@ impl BrowserManager {
                             let page_arc = self.page.clone();
                             let background_page_arc = self.background_page.clone();
                             let task = tokio::spawn(async move {
-                                while let Some(_evt) = handler.next().await {}
+                                let mut consecutive_errors = 0u32;
+                                while let Some(result) = handler.next().await {
+                                    if should_stop_handler("[cdp/bm]", result, &mut consecutive_errors) {
+                                        break;
+                                    }
+                                }
                                 warn!("[cdp/bm] event handler ended; clearing browser state so it can restart");
                                 *browser_arc.lock().await = None;
                                 *page_arc.lock().await = None;
@@ -821,8 +872,11 @@ impl BrowserManager {
         let page_arc = self.page.clone();
         let background_page_arc = self.background_page.clone();
         let task = tokio::spawn(async move {
-            while let Some(event) = handler.next().await {
-                debug!("Browser event: {:?}", event);
+            let mut consecutive_errors = 0u32;
+            while let Some(result) = handler.next().await {
+                if should_stop_handler("[cdp/bm]", result, &mut consecutive_errors) {
+                    break;
+                }
             }
             warn!("[cdp/bm] event handler ended; clearing browser state so it can restart");
             *browser_arc.lock().await = None;
@@ -2232,4 +2286,17 @@ pub struct BrowserStatus {
     pub current_url: Option<String>,
     pub viewport: crate::config::ViewportConfig,
     pub fullpage: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_restart_handler;
+
+    #[test]
+    fn handler_restarts_after_repeated_errors() {
+        assert!(!should_restart_handler(0));
+        assert!(!should_restart_handler(1));
+        assert!(!should_restart_handler(2));
+        assert!(should_restart_handler(3));
+    }
 }
