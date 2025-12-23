@@ -812,9 +812,15 @@ impl ModelClient {
                         && auth_manager.is_some()
                         && auth::read_code_api_key_from_env().is_none()
                     {
-                        if let Ok(Some(current_account_id)) =
-                            auth_accounts::get_active_account_id(self.code_home())
-                        {
+                        let current_account_id = auth
+                            .as_ref()
+                            .and_then(|current| current.get_account_id())
+                            .or_else(|| {
+                                auth_accounts::get_active_account_id(self.code_home())
+                                    .ok()
+                                    .flatten()
+                            });
+                        if let Some(current_account_id) = current_account_id {
                             let mut retry_after_delay = retry_after_hint.clone();
                             if retry_after_delay.is_none() {
                                 if let Some(ErrorResponse { ref error }) = body {
@@ -862,6 +868,7 @@ impl ModelClient {
                                     &rate_limit_switch_state,
                                     self.config.api_key_fallback_on_all_accounts_limited,
                                     now,
+                                    Some(current_account_id.as_str()),
                                 )
                             {
                                 if should_record_usage_limit {
@@ -1247,9 +1254,15 @@ impl ModelClient {
                 && auth::read_code_api_key_from_env().is_none()
             {
                 let now = Utc::now();
-                if let Ok(Some(current_account_id)) =
-                    auth_accounts::get_active_account_id(self.code_home())
-                {
+                let current_account_id = auth
+                    .as_ref()
+                    .and_then(|current| current.get_account_id())
+                    .or_else(|| {
+                        auth_accounts::get_active_account_id(self.code_home())
+                            .ok()
+                            .flatten()
+                    });
+                if let Some(current_account_id) = current_account_id {
                     let current_auth_mode = auth
                         .as_ref()
                         .map(|a| a.mode)
@@ -1265,6 +1278,7 @@ impl ModelClient {
                             &rate_limit_switch_state,
                             self.config.api_key_fallback_on_all_accounts_limited,
                             now,
+                            Some(current_account_id.as_str()),
                         )
                     {
                         tracing::info!(
