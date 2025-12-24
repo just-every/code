@@ -39,6 +39,7 @@ mod environment_context;
 mod reasoning;
 pub mod retention;
 pub mod telemetry;
+pub mod timeboxed_exec_guidance;
 pub use environment_context::BrowserSnapshot;
 pub use environment_context::EnvironmentContextDelta;
 pub use environment_context::EnvironmentContextEmission;

@@ -59,7 +59,7 @@ struct AutoCoordinatorCancelled;
 pub const MODEL_SLUG: &str = "gpt-5.1";
 const USER_TURN_SCHEMA_NAME: &str = "auto_coordinator_user_turn";
 const COORDINATOR_PROMPT: &str = include_str!("../../core/prompt_coordinator.md");
-const TIMEBOXED_FINISH_GUIDANCE: &str = "Time budget mode is enabled for this run. Strategy: (1) front-load parallel reconnaissance (agents if enabled; otherwise batch independent tool calls) to quickly identify the smallest reliable repro or failing test, (2) apply a focused fix, (3) verify with the narrowest check that proves correctness. Parallelize only cheap setup (searches/downloads/formatting) while long commands run; avoid launching multiple heavy builds at once. Always get one cheap proof before finish_success (rerun the repro, a targeted test, or a small build/compile check) and confirm required output files/binaries exist at the exact paths mentioned in the prompt/tests. Check exit codes from key commands and do not proceed on failure. Avoid full test suites unless required. If a rate-limit wait would consume most remaining time, summarize progress, note the next verification step, and use finish_failed instead of waiting indefinitely. Avoid repeated 'one more check' loops: do at most one final confirmation step, then use finish_success.";
+const TIMEBOXED_EXEC_COORDINATOR_GUIDANCE: &str = "SYSTEM: Time-boxed autonomous exec is enabled.\n\nOperate contract-first and evidence-led. Steer the CLI to identify the single most trustworthy acceptance signal available (explicit success criteria/commands in the task description, a local verifier script, or the smallest relevant test). Treat that signal as the contract: exact paths, ports, formats, exit codes, and constraints.\n\nDrive convergence, not exploration. Get a failing signal early, ship a minimal first-pass fix quickly, then iterate in small diffs against the same check. Avoid speculative redesigns, broad refactors, or dependency churn unless the contract forces it.\n\nDelegate by outcomes only: each turn, provide one short, outcome-oriented directive (\"make X pass / produce Y artifact\"), and let the CLI decide tactics.\n\nTime discipline: prioritize cheap proofs before expensive runs (long builds, downloads, services). If verification is not available in the workspace, mirror the contract with a minimal self-check and keep changes conservative.\n\nFinish standard: finish_success only with proof (acceptance check green + required artifacts present exactly as specified). Otherwise finish_failed with the last check, the current error, what changed, and the next verification step.";
 
 const ALL_TEXT_VERBOSITY: &[TextVerbosity] = &[
     TextVerbosity::Low,
@@ -1642,7 +1642,7 @@ fn read_coordinator_prompt(config: &Config) -> Option<String> {
         None
     } else {
         if config.max_run_seconds.is_some() {
-            Some(format!("{trimmed}\n\n# Time Budget\n{TIMEBOXED_FINISH_GUIDANCE}"))
+            Some(format!("{trimmed}\n\n# Time Budget\n{TIMEBOXED_EXEC_COORDINATOR_GUIDANCE}"))
         } else {
             Some(trimmed.to_string())
         }
@@ -1697,10 +1697,6 @@ fn build_initial_planning_seed(
         "Please provide a clear plan to best achieve the Primary Goal. If this is not a trivial task, use your tools to research the best approach. If this is a trivial task, or the plan is already in the conversation history, immediately provide the plan. Judge the length of research and planning you perform based on the complexity of the task."
             .to_string()
     };
-
-    if time_budget_enabled {
-        cli_prompt.push_str(" Time budget is enabled: front-load parallel reconnaissance (agents/tool-call batching) and end with a lightweight verification step before declaring success.");
-    }
 
     Some(InitialPlanningSeed {
         response_json: format!(

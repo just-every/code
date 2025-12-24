@@ -460,6 +460,11 @@ pub struct Config {
     /// When present, countdown nudges are anchored to this deadline instead of
     /// the session creation time so startup work doesn't delay warnings.
     pub max_run_deadline: Option<Instant>,
+
+    /// True when exec is running Auto Drive with a max time budget.
+    ///
+    /// Set by exec; not loaded from config.toml.
+    pub timeboxed_exec_mode: bool,
 }
 
 impl Config {
@@ -3145,6 +3150,7 @@ impl Config {
             experimental_resume: cfg.experimental_resume,
             max_run_seconds: None,
             max_run_deadline: None,
+            timeboxed_exec_mode: false,
             // Surface TUI notifications preference from config when present.
             tui_notifications: cfg
                 .tui

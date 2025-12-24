@@ -79,8 +79,10 @@ use code_auto_drive_core::AutoResolveState;
 use code_core::{entry_to_rollout_path, AutoDriveMode, AutoDrivePidFile, SessionCatalog, SessionQuery};
 use code_core::protocol::SandboxPolicy;
 use code_core::git_info::current_branch_name;
-
-const AUTO_DRIVE_TEST_SUFFIX: &str = "After planning, but before you start, please ensure you can test the outcome of your changes. Test first to ensure it's failing, then again at the end to ensure it passes. Do not use work arounds or mock code to pass - solve the underlying issue. Create new tests as you work if needed. Once done, clean up your tests unless added to an existing test suite.";
+use code_core::timeboxed_exec_guidance::{
+    AUTO_EXEC_TIMEBOXED_CLI_GUIDANCE,
+    AUTO_EXEC_TIMEBOXED_GOAL_SUFFIX,
+};
 
 /// How long exec waits after task completion before sending Shutdown when Auto Review
 /// may be about to start. Guarded so sub-agents are not delayed.
@@ -190,8 +192,11 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         std::process::exit(1);
     }
 
-    if let Some(goal) = auto_drive_goal.as_mut() {
-        *goal = append_auto_drive_test_suffix(goal);
+    let timeboxed_auto_exec = auto_drive_goal.is_some() && max_seconds.is_some();
+    if timeboxed_auto_exec {
+        if let Some(goal) = auto_drive_goal.as_mut() {
+            *goal = append_timeboxed_auto_drive_goal(goal);
+        }
     }
 
     let mut prompt_to_send = prompt.clone();
@@ -290,6 +295,13 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
     config.max_run_seconds = max_seconds;
     config.max_run_deadline = run_deadline_std;
     config.demo_developer_message = cli.demo_developer_message.clone();
+    config.timeboxed_exec_mode = timeboxed_auto_exec;
+    if timeboxed_auto_exec {
+        config.demo_developer_message = merge_developer_message(
+            config.demo_developer_message.take(),
+            AUTO_EXEC_TIMEBOXED_CLI_GUIDANCE,
+        );
+    }
     if auto_drive_goal.is_some() {
         // Exec is non-interactive; don't burn time on countdown delays between Auto Drive turns.
         config.auto_drive.continue_mode = AutoDriveContinueMode::Immediate;
@@ -1640,13 +1652,31 @@ async fn run_auto_drive_session(
     Ok(())
 }
 
-fn append_auto_drive_test_suffix(goal: &str) -> String {
+fn append_timeboxed_auto_drive_goal(goal: &str) -> String {
     let trimmed_goal = goal.trim();
     if trimmed_goal.is_empty() {
-        return AUTO_DRIVE_TEST_SUFFIX.to_string();
+        return AUTO_EXEC_TIMEBOXED_GOAL_SUFFIX.to_string();
     }
 
-    format!("{trimmed_goal}\n\n{AUTO_DRIVE_TEST_SUFFIX}")
+    format!("{trimmed_goal}\n\n{AUTO_EXEC_TIMEBOXED_GOAL_SUFFIX}")
+}
+
+fn merge_developer_message(existing: Option<String>, extra: &str) -> Option<String> {
+    let extra_trimmed = extra.trim();
+    if extra_trimmed.is_empty() {
+        return existing;
+    }
+
+    match existing {
+        Some(mut message) => {
+            if !message.trim().is_empty() {
+                message.push_str("\n\n");
+            }
+            message.push_str(extra_trimmed);
+            Some(message)
+        }
+        None => Some(extra_trimmed.to_string()),
+    }
 }
 
 #[derive(Default, Debug, Clone)]

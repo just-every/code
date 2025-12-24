@@ -943,6 +943,10 @@ use crate::environment_context::{
 };
 use crate::user_instructions::UserInstructions;
 use crate::config::{persist_model_selection, Config};
+use crate::timeboxed_exec_guidance::{
+    AUTO_EXEC_TIMEBOXED_CLI_GUIDANCE,
+    AUTO_EXEC_TIMEBOXED_REVIEW_GUIDANCE,
+};
 use crate::config_types::ProjectHookEvent;
 use crate::config_types::ShellEnvironmentPolicy;
 use crate::conversation_history::ConversationHistory;
@@ -5470,6 +5474,32 @@ async fn submission_loop(
     debug!("Agent loop exited");
 }
 
+fn merge_developer_message(existing: Option<String>, extra: &str) -> Option<String> {
+    let extra_trimmed = extra.trim();
+    if extra_trimmed.is_empty() {
+        return existing;
+    }
+
+    match existing {
+        Some(mut message) => {
+            if !message.trim().is_empty() {
+                message.push_str("\n\n");
+            }
+            message.push_str(extra_trimmed);
+            Some(message)
+        }
+        None => Some(extra_trimmed.to_string()),
+    }
+}
+
+fn build_timeboxed_review_message(base: Option<String>) -> Option<String> {
+    let mut message = merge_developer_message(base.clone(), AUTO_EXEC_TIMEBOXED_REVIEW_GUIDANCE);
+    if base.as_deref() == Some(AUTO_EXEC_TIMEBOXED_CLI_GUIDANCE) {
+        message = Some(AUTO_EXEC_TIMEBOXED_REVIEW_GUIDANCE.to_string());
+    }
+    message
+}
+
 async fn spawn_review_thread(
     sess: Arc<Session>,
     config: Arc<Config>,
@@ -5531,12 +5561,18 @@ async fn spawn_review_thread(
         review_debug_logger,
     );
 
+    let review_demo_message = if config.timeboxed_exec_mode {
+        build_timeboxed_review_message(parent_turn_context.demo_developer_message.clone())
+    } else {
+        parent_turn_context.demo_developer_message.clone()
+    };
+
     let review_turn_context = Arc::new(TurnContext {
         client: review_client,
         cwd: parent_turn_context.cwd.clone(),
         base_instructions: Some(REVIEW_PROMPT.to_string()),
         user_instructions: None,
-        demo_developer_message: parent_turn_context.demo_developer_message.clone(),
+        demo_developer_message: review_demo_message,
         compact_prompt_override: parent_turn_context.compact_prompt_override.clone(),
         approval_policy: parent_turn_context.approval_policy,
         sandbox_policy: parent_turn_context.sandbox_policy.clone(),
