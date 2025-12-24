@@ -1195,8 +1195,7 @@ fn run_auto_loop(
     let mut pending_ack_seq: Option<u64> = None;
     let mut queued_updates: VecDeque<Vec<ResponseItem>> = VecDeque::new();
     if !derive_goal_from_history {
-        let time_budget_enabled = time_budget.is_some();
-        if let Some(seed) = build_initial_planning_seed(&goal_text, include_agents, time_budget_enabled) {
+        if let Some(seed) = build_initial_planning_seed(&goal_text, include_agents) {
             let transcript_item = make_message("assistant", seed.response_json.clone());
             let cli_action = AutoTurnCliAction {
                 prompt: seed.cli_prompt.clone(),
@@ -1680,17 +1679,13 @@ struct InitialPlanningSeed {
     agents_timing: Option<AutoTurnAgentsTiming>,
 }
 
-fn build_initial_planning_seed(
-    goal_text: &str,
-    include_agents: bool,
-    time_budget_enabled: bool,
-) -> Option<InitialPlanningSeed> {
+fn build_initial_planning_seed(goal_text: &str, include_agents: bool) -> Option<InitialPlanningSeed> {
     let goal = goal_text.trim();
     if goal.is_empty() {
         return None;
     }
 
-    let mut cli_prompt = if include_agents {
+    let cli_prompt = if include_agents {
         "Please provide a clear plan to best achieve the Primary Goal. If this is not a trivial task, launch agents and use your tools to research the best approach. If this is a trivial task, or the plan is already in the conversation history, immediately provide the plan. Judge the length of research and planning you perform based on the complexity of the task. For more complex tasks, you can break the plan into workstreams that can be performed at the same time."
             .to_string()
     } else {
@@ -1698,12 +1693,14 @@ fn build_initial_planning_seed(
             .to_string()
     };
 
+    let response_json = format!(
+        "{{\"finish_status\":\"continue\",\"status_title\":\"Planning\",\"status_sent_to_user\":\"Started initial planning phase\",\"prompt_sent_to_cli\":\"{cli_prompt}\"}}"
+    );
+
     Some(InitialPlanningSeed {
-        response_json: format!(
-            "{{\"finish_status\":\"continue\",\"status_title\":\"Planning\",\"status_sent_to_user\":\"Started initial planning phase\",\"prompt_sent_to_cli\":\"{cli_prompt}\"}}"
-        ),
-        cli_prompt: cli_prompt.clone(),
-        goal_message: format!("Primary Goal: {}", goal),
+        response_json,
+        cli_prompt,
+        goal_message: format!("Primary Goal: {goal}"),
         status_title: "Planning route".to_string(),
         status_sent_to_user: "Planning best route to reach the goal.".to_string(),
         agents_timing: if include_agents {
