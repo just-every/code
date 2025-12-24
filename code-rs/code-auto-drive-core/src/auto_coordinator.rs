@@ -59,7 +59,7 @@ struct AutoCoordinatorCancelled;
 pub const MODEL_SLUG: &str = "gpt-5.1";
 const USER_TURN_SCHEMA_NAME: &str = "auto_coordinator_user_turn";
 const COORDINATOR_PROMPT: &str = include_str!("../../core/prompt_coordinator.md");
-const TIMEBOXED_FINISH_GUIDANCE: &str = "Time budget mode is enabled for this run. Strategy: (1) identify the smallest reliable repro or failing test, (2) apply a focused fix, (3) verify with the narrowest check that proves correctness. Avoid full test suites unless required. If a rate-limit wait would consume most remaining time, summarize progress, note the next verification step, and use finish_failed instead of waiting indefinitely. Avoid repeated 'one more check' loops: do at most one final confirmation step, then use finish_success.";
+const TIMEBOXED_FINISH_GUIDANCE: &str = "Time budget mode is enabled for this run. Strategy: (1) front-load parallel reconnaissance (agents if enabled; otherwise batch independent tool calls) to quickly identify the smallest reliable repro or failing test, (2) apply a focused fix, (3) verify with the narrowest check that proves correctness. Parallelize only cheap setup (searches/downloads/formatting) while long commands run; avoid launching multiple heavy builds at once. Always get one cheap proof before finish_success (rerun the repro, a targeted test, or a small build/compile check) and confirm required output files/binaries exist at the exact paths mentioned in the prompt/tests. Check exit codes from key commands and do not proceed on failure. Avoid full test suites unless required. If a rate-limit wait would consume most remaining time, summarize progress, note the next verification step, and use finish_failed instead of waiting indefinitely. Avoid repeated 'one more check' loops: do at most one final confirmation step, then use finish_success.";
 
 const ALL_TEXT_VERBOSITY: &[TextVerbosity] = &[
     TextVerbosity::Low,
@@ -119,11 +119,11 @@ impl AutoTimeBudget {
         }
 
         let guidance = if remaining <= Duration::from_secs(30) {
-            "Time is nearly up: stop exploring; finish with the simplest safe path."
+            "Time is nearly up: stop exploring; take the simplest safe path and do one cheap verification before finishing."
         } else if remaining <= Duration::from_secs(120) {
-            "Time is tight: reduce exploration and prioritize finishing."
+            "Time is tight: parallelize any remaining scouting/verification (agents or tool-call batching) and finish with the cheapest proof."
         } else {
-            "Past 50% of the time budget: start converging; avoid detours."
+            "Past 50% of the time budget: start converging; parallelize remaining scouting/verification and avoid detours."
         };
 
         self.next_nudge_at = now + next_budget_nudge_interval(remaining);
@@ -1195,7 +1195,8 @@ fn run_auto_loop(
     let mut pending_ack_seq: Option<u64> = None;
     let mut queued_updates: VecDeque<Vec<ResponseItem>> = VecDeque::new();
     if !derive_goal_from_history {
-        if let Some(seed) = build_initial_planning_seed(&goal_text, include_agents) {
+        let time_budget_enabled = time_budget.is_some();
+        if let Some(seed) = build_initial_planning_seed(&goal_text, include_agents, time_budget_enabled) {
             let transcript_item = make_message("assistant", seed.response_json.clone());
             let cli_action = AutoTurnCliAction {
                 prompt: seed.cli_prompt.clone(),
@@ -1679,23 +1680,33 @@ struct InitialPlanningSeed {
     agents_timing: Option<AutoTurnAgentsTiming>,
 }
 
-fn build_initial_planning_seed(goal_text: &str, include_agents: bool) -> Option<InitialPlanningSeed> {
+fn build_initial_planning_seed(
+    goal_text: &str,
+    include_agents: bool,
+    time_budget_enabled: bool,
+) -> Option<InitialPlanningSeed> {
     let goal = goal_text.trim();
     if goal.is_empty() {
         return None;
     }
 
-    let cli_prompt = if include_agents {
-        "Please provide a clear plan to best achieve the Primary Goal. If this is not a trival task, launch agents and use your tools to research the best approach. If this is a trival task, or the plan is already in the conversation history, just imediately provide the plan. Judge the length of research and planning you perform based on the complexity of the task. For more complex tasks, you could break the plan into workstreams which can be performed at the same time."
+    let mut cli_prompt = if include_agents {
+        "Please provide a clear plan to best achieve the Primary Goal. If this is not a trivial task, launch agents and use your tools to research the best approach. If this is a trivial task, or the plan is already in the conversation history, immediately provide the plan. Judge the length of research and planning you perform based on the complexity of the task. For more complex tasks, you can break the plan into workstreams that can be performed at the same time."
+            .to_string()
     } else {
-        "Please provide a clear plan to best achieve the Primary Goal. If this is not a trival task, use your tools to research the best approach. If this is a trival task, or the plan is already in the conversation history, just imediately provide the plan. Judge the length of research and planning you perform based on the complexity of the task."
+        "Please provide a clear plan to best achieve the Primary Goal. If this is not a trivial task, use your tools to research the best approach. If this is a trivial task, or the plan is already in the conversation history, immediately provide the plan. Judge the length of research and planning you perform based on the complexity of the task."
+            .to_string()
     };
+
+    if time_budget_enabled {
+        cli_prompt.push_str(" Time budget is enabled: front-load parallel reconnaissance (agents/tool-call batching) and end with a lightweight verification step before declaring success.");
+    }
 
     Some(InitialPlanningSeed {
         response_json: format!(
             "{{\"finish_status\":\"continue\",\"status_title\":\"Planning\",\"status_sent_to_user\":\"Started initial planning phase\",\"prompt_sent_to_cli\":\"{cli_prompt}\"}}"
         ),
-        cli_prompt: cli_prompt.to_string(),
+        cli_prompt: cli_prompt.clone(),
         goal_message: format!("Primary Goal: {}", goal),
         status_title: "Planning route".to_string(),
         status_sent_to_user: "Planning best route to reach the goal.".to_string(),

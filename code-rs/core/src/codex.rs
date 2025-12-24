@@ -406,11 +406,11 @@ impl RunTimeBudget {
         }
 
         let guidance = if remaining <= Duration::from_secs(30) {
-            "Time is nearly up: stop exploring; finish with the simplest safe path."
+            "Time is nearly up: stop exploring; take the simplest safe path and do one cheap verification before finishing."
         } else if remaining <= Duration::from_secs(120) {
-            "Time is tight: reduce exploration and prioritize finishing."
+            "Time is tight: parallelize any remaining scouting/verification (batch tool calls) and finish with the cheapest proof."
         } else {
-            "Past 50% of the time budget: start converging; avoid detours."
+            "Past 50% of the time budget: start converging; parallelize remaining scouting/verification and avoid detours."
         };
 
         self.next_nudge_at = now + next_budget_nudge_interval(remaining);
