@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.6.14] - 2025-12-23
+
+- TUI: clear stale mid-turn output when starting a new task so history stays accurate. (dd610fe2)
+- TUI: clear exec spinners when a TaskComplete event is missing to avoid stuck indicators. (e047feb4)
+- Core/Auth: switch the active account based on session context to honor workspace permissions. (ac958448)
+- Browser: restart the navigation handler after repeated errors to restore browsing. (940dcc44)
+- Auto-review: defer baseline capture to keep automated review diffs stable. (6818c0b5)
+
 ## [0.6.13] - 2025-12-22
 
 - TUI: add account switching and skills settings in the core UI. (bcf7614a)
