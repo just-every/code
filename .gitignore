@@ -88,6 +88,7 @@ playwright-report/
 .tmp/
 tmp/
 temp/
+.merge-backup
 
 # logs
 *.log
