@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.16] - 2025-12-25
+
+- Auto Drive: tighten timeboxed coordinator guidance so runs lead with authoritative verifiers and outcome-only directives. (d3efecb)
+- CLI: expand timeboxed exec guidance to force early acceptance checks and proof before finishing. (d3efecb)
+
 ## [0.6.15] - 2025-12-24
 
 - Exec: add timeboxed auto-exec guidance to keep runs bounded. (8dbfdbba)
