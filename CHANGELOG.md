@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.15] - 2025-12-24
+
+- Exec: add timeboxed auto-exec guidance to keep runs bounded. (8dbfdbba)
+- Auto Drive: tighten time budget guidance and drop unused seed to reduce noise. (376fc8ff, 736e6cf0)
+
 ## [0.6.14] - 2025-12-23
 
 - TUI: clear stale mid-turn output when starting a new task so history stays accurate. (dd610fe2)
