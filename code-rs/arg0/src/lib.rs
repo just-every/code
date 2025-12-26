@@ -214,18 +214,124 @@ fn prepend_path_entry_for_apply_patch() -> std::io::Result<TempDir> {
     const PATH_SEPARATOR: &str = ";";
 
     let path_element = path.display();
-    let updated_path_env_var = match std::env::var("PATH") {
-        Ok(existing_path) => {
-            format!("{path_element}{PATH_SEPARATOR}{existing_path}")
-        }
-        Err(_) => {
-            format!("{path_element}")
-        }
-    };
+
+    let mut existing_path = std::env::var("PATH").unwrap_or_default();
+    if existing_path.is_empty() {
+        existing_path = default_path_env_var();
+    } else if !path_has_standard_dirs(&existing_path) {
+        existing_path = join_path_env(&existing_path, &default_path_env_var(), PATH_SEPARATOR);
+    }
+
+    let updated_path_env_var = join_path_env(&path_element.to_string(), &existing_path, PATH_SEPARATOR);
 
     unsafe {
         std::env::set_var("PATH", updated_path_env_var);
     }
 
     Ok(temp_dir)
+}
+
+#[cfg(unix)]
+fn default_path_env_var() -> String {
+    // When PATH is missing (common in headless/non-interactive runners), many
+    // libc implementations fall back to a built-in default search path (e.g.
+    // /bin:/usr/bin). As soon as we set PATH, that fallback stops applying.
+    // Ensure we always include standard system locations.
+    if cfg!(target_os = "macos") {
+        "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".to_string()
+    } else {
+        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string()
+    }
+}
+
+#[cfg(windows)]
+fn default_path_env_var() -> String {
+    // On Windows, rely on the system-provided default search behavior.
+    // If PATH is missing, leave it empty to avoid guessing.
+    String::new()
+}
+
+fn join_path_env(prefix: &str, suffix: &str, sep: &str) -> String {
+    match (prefix.is_empty(), suffix.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => prefix.to_string(),
+        (true, false) => suffix.to_string(),
+        (false, false) => format!("{prefix}{sep}{suffix}"),
+    }
+}
+
+#[cfg(unix)]
+fn path_has_standard_dirs(path: &str) -> bool {
+    use std::ffi::OsString;
+
+    let os = OsString::from(path);
+    std::env::split_paths(&os).any(|p| {
+        p == std::path::Path::new("/usr/bin")
+            || p == std::path::Path::new("/bin")
+            || p == std::path::Path::new("/usr/sbin")
+            || p == std::path::Path::new("/sbin")
+    })
+}
+
+#[cfg(windows)]
+fn path_has_standard_dirs(_path: &str) -> bool {
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static PATH_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn prepend_path_seeds_default_when_missing() {
+        let _guard = PATH_LOCK.lock().unwrap();
+
+        let before = std::env::var("PATH").ok();
+        unsafe { std::env::remove_var("PATH") };
+
+        let td = prepend_path_entry_for_apply_patch().unwrap();
+        let path = std::env::var("PATH").unwrap();
+
+        // The temp dir should be the first search entry so `apply_patch` resolves.
+        assert!(path.starts_with(&format!("{}", td.path().display())));
+
+        #[cfg(unix)]
+        assert!(
+            path.contains("/usr/bin") || path.contains(":/bin") || path.contains("/bin:"),
+            "PATH should include standard system dirs, got: {path}"
+        );
+
+        // Restore.
+        match before {
+            Some(v) => unsafe { std::env::set_var("PATH", v) },
+            None => unsafe { std::env::remove_var("PATH") },
+        }
+    }
+
+    #[test]
+    fn prepend_path_seeds_default_when_incomplete() {
+        let _guard = PATH_LOCK.lock().unwrap();
+
+        let before = std::env::var("PATH").ok();
+        unsafe { std::env::set_var("PATH", "/usr/local/bin") };
+
+        let td = prepend_path_entry_for_apply_patch().unwrap();
+        let path = std::env::var("PATH").unwrap();
+
+        assert!(path.starts_with(&format!("{}", td.path().display())));
+
+        #[cfg(unix)]
+        assert!(
+            path.contains("/usr/bin") || path.contains(":/bin") || path.contains("/bin:"),
+            "PATH should include standard system dirs, got: {path}"
+        );
+
+        match before {
+            Some(v) => unsafe { std::env::set_var("PATH", v) },
+            None => unsafe { std::env::remove_var("PATH") },
+        }
+    }
 }
