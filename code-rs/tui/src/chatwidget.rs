@@ -16978,6 +16978,16 @@ fi\n\
         if !self.active_task_ids.is_empty() {
             return true;
         }
+        if self.active_agents.iter().any(|agent| {
+            let is_auto_review = matches!(agent.source_kind, Some(AgentSourceKind::AutoReview))
+                || agent
+                    .batch_id
+                    .as_deref()
+                    .is_some_and(|batch| batch.eq_ignore_ascii_case("auto-review"));
+            matches!(agent.status, AgentStatus::Pending | AgentStatus::Running) && !is_auto_review
+        }) {
+            return true;
+        }
         false
     }
 
@@ -29836,6 +29846,56 @@ use code_core::protocol::OrderMeta;
 
         let auto_pending = harness.with_chat(|chat| chat.auto_pending_goal_request);
         assert!(!auto_pending);
+    }
+
+    #[test]
+    fn auto_drive_view_marks_running_when_agents_active() {
+        let mut harness = ChatWidgetHarness::new();
+        harness.with_chat(|chat| {
+            chat.auto_state.set_phase(AutoRunPhase::Active);
+            chat.auto_state.goal = Some("Ship feature".to_string());
+            chat.auto_rebuild_live_ring();
+        });
+
+        harness.handle_event(Event {
+            id: "turn-1".to_string(),
+            event_seq: 0,
+            msg: EventMsg::AgentStatusUpdate(AgentStatusUpdateEvent {
+                agents: vec![CoreAgentInfo {
+                    id: "agent-1".to_string(),
+                    name: "Worker".to_string(),
+                    status: "running".to_string(),
+                    batch_id: Some("batch-1".to_string()),
+                    model: None,
+                    last_progress: None,
+                    result: None,
+                    error: None,
+                    elapsed_ms: None,
+                    token_count: None,
+                    last_activity_at: None,
+                    seconds_since_last_activity: None,
+                    source_kind: None,
+                }],
+                context: None,
+                task: None,
+            }),
+            order: None,
+        });
+
+        let cli_running = harness.with_chat(|chat| {
+            chat
+                .bottom_pane
+                .auto_view_model()
+                .and_then(|model| match model {
+                    AutoCoordinatorViewModel::Active(active) => Some(active.cli_running),
+                })
+                .unwrap_or(false)
+        });
+
+        assert!(
+            cli_running,
+            "auto drive view should treat running agents as active"
+        );
     }
 
     #[test]
