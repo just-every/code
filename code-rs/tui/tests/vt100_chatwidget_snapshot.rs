@@ -2325,6 +2325,16 @@ fn agent_status_missing_batch_displays_error() {
 }
 
 #[test]
+fn agents_overlay_narrow_terminal_does_not_panic() {
+    let mut harness = ChatWidgetHarness::new();
+    harness.send_key(make_key(KeyCode::Char('a'), KeyModifiers::CONTROL));
+
+    let output = render_chat_widget_to_vt100(&mut harness, 52, 18);
+    let output = normalize_output(output);
+    assert!(output.contains("Agents"), "Agents overlay did not render");
+}
+
+#[test]
 fn agents_toggle_claude_opus_persists_via_slash_command() {
     let _lock = ENV_LOCK.lock().unwrap();
     let env = EnvGuard::new(&["HOME", "CODE_HOME", "CODEX_HOME"]);

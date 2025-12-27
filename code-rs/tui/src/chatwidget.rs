@@ -35866,7 +35866,8 @@ impl ChatWidget<'_> {
             body_area.width
         } else {
             let max_allowed = body_area.width.saturating_sub(30).max(18);
-            desired_sidebar.clamp(24, max_allowed)
+            let min_allowed = 24.min(max_allowed);
+            desired_sidebar.clamp(min_allowed, max_allowed)
         };
 
         let constraints = if body_area.width <= sidebar_width {
