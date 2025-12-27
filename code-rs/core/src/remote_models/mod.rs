@@ -8,7 +8,6 @@ use code_protocol::openai_models::ApplyPatchToolType as ProtocolApplyPatchToolTy
 use code_protocol::openai_models::ModelInfo;
 use code_protocol::openai_models::ModelsResponse;
 use code_protocol::openai_models::ReasoningEffort as ProtocolReasoningEffort;
-use code_protocol::openai_models::ReasoningSummaryFormat as ProtocolReasoningSummaryFormat;
 use reqwest::header;
 use reqwest::Method;
 use reqwest::Url;
@@ -330,9 +329,6 @@ pub fn apply_model_info_overrides(info: &ModelInfo, mut family: ModelFamily) -> 
     family.supports_reasoning_summaries = info.supports_reasoning_summaries;
     family.supports_parallel_tool_calls = info.supports_parallel_tool_calls;
     family.default_reasoning_effort = Some(map_reasoning_effort(info.default_reasoning_level));
-    family.reasoning_summary_format =
-        map_reasoning_summary_format(info.reasoning_summary_format.clone());
-
     family
 }
 
@@ -353,17 +349,6 @@ fn map_reasoning_effort(effort: ProtocolReasoningEffort) -> crate::config_types:
         ProtocolReasoningEffort::Medium => LocalEffort::Medium,
         ProtocolReasoningEffort::High => LocalEffort::High,
         ProtocolReasoningEffort::XHigh => LocalEffort::XHigh,
-    }
-}
-
-fn map_reasoning_summary_format(
-    format: ProtocolReasoningSummaryFormat,
-) -> crate::config_types::ReasoningSummaryFormat {
-    match format {
-        ProtocolReasoningSummaryFormat::None => crate::config_types::ReasoningSummaryFormat::None,
-        ProtocolReasoningSummaryFormat::Experimental => {
-            crate::config_types::ReasoningSummaryFormat::Experimental
-        }
     }
 }
 

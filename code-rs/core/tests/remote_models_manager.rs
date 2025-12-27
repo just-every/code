@@ -27,7 +27,6 @@ fn remote_model(slug: &str, display: &str, priority: i32) -> ModelInfo {
         ],
         "shell_type": "shell_command",
         "visibility": "list",
-        "minimal_client_version": [0, 1, 0],
         "supported_in_api": true,
         "priority": priority,
         "upgrade": null,
@@ -39,7 +38,6 @@ fn remote_model(slug: &str, display: &str, priority: i32) -> ModelInfo {
         "truncation_policy": {"mode": "bytes", "limit": 10_000},
         "supports_parallel_tool_calls": false,
         "context_window": null,
-        "reasoning_summary_format": "none",
         "experimental_supported_tools": [],
     }))
     .expect("valid model")
@@ -250,7 +248,6 @@ async fn construct_model_family_applies_remote_overrides() {
         "supported_reasoning_levels": [],
         "shell_type": "shell_command",
         "visibility": "list",
-        "minimal_client_version": [0, 1, 0],
         "supported_in_api": true,
         "priority": 0,
         "upgrade": null,
@@ -262,7 +259,6 @@ async fn construct_model_family_applies_remote_overrides() {
         "truncation_policy": {"mode": "bytes", "limit": 10_000},
         "supports_parallel_tool_calls": false,
         "context_window": 12345,
-        "reasoning_summary_format": "experimental",
         "experimental_supported_tools": [],
     }))
     .expect("model info");
@@ -300,9 +296,4 @@ async fn construct_model_family_applies_remote_overrides() {
         family.default_reasoning_effort,
         Some(code_core::config_types::ReasoningEffort::High)
     );
-    assert_eq!(
-        family.reasoning_summary_format,
-        code_core::config_types::ReasoningSummaryFormat::Experimental
-    );
 }
-

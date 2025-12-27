@@ -615,6 +615,35 @@ pub enum EventMsg {
     ExitedReviewMode(ExitedReviewModeEvent),
 }
 
+/// Codex errors that we expose to clients.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum CodexErrorInfo {
+    ContextWindowExceeded,
+    UsageLimitExceeded,
+    HttpConnectionFailed {
+        http_status_code: Option<u16>,
+    },
+    /// Failed to connect to the response SSE stream.
+    ResponseStreamConnectionFailed {
+        http_status_code: Option<u16>,
+    },
+    InternalServerError,
+    Unauthorized,
+    BadRequest,
+    SandboxError,
+    /// The response SSE stream disconnected in the middle of a turnbefore completion.
+    ResponseStreamDisconnected {
+        http_status_code: Option<u16>,
+    },
+    /// Reached the retry limit for responses.
+    ResponseTooManyFailedAttempts {
+        http_status_code: Option<u16>,
+    },
+    Other,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
 pub struct ExitedReviewModeEvent {
     pub review_output: Option<ReviewOutputEvent>,
@@ -1126,6 +1155,23 @@ pub struct TurnContextItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<ReasoningEffortConfig>,
     pub summary: ReasoningSummaryConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_instructions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_instructions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub developer_instructions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_output_json_schema: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncation_policy: Option<TruncationPolicy>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(tag = "mode", content = "limit", rename_all = "snake_case")]
+pub enum TruncationPolicy {
+    Bytes(usize),
+    Tokens(usize),
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -1314,6 +1360,13 @@ pub struct BackgroundEventEvent {
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
 pub struct StreamErrorEvent {
     pub message: String,
+    #[serde(default)]
+    pub codex_error_info: Option<CodexErrorInfo>,
+    /// Optional details about the underlying stream failure (often the same
+    /// human-readable message that is surfaced as the terminal error if retries
+    /// are exhausted).
+    #[serde(default)]
+    pub additional_details: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
