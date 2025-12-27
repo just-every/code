@@ -302,6 +302,14 @@ enum RateLimitSwitchPromptState {
     Shown,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ExternalEditorState {
+    #[default]
+    Closed,
+    Requested,
+    Active,
+}
+
 pub(crate) struct ChatWidget {
     app_event_tx: AppEventSender,
     codex_op_tx: UnboundedSender<Op>,
@@ -360,6 +368,7 @@ pub(crate) struct ChatWidget {
     feedback: codex_feedback::CodexFeedback,
     // Current session rollout path (if known)
     current_rollout_path: Option<PathBuf>,
+    external_editor_state: ExternalEditorState,
 }
 
 struct UserMessage {
@@ -402,15 +411,22 @@ impl ChatWidget {
         }
     }
 
-    fn set_status_header(&mut self, header: String) {
+    /// Update the status indicator header and details.
+    ///
+    /// Passing `None` clears any existing details.
+    fn set_status(&mut self, header: String, details: Option<String>) {
         self.current_status_header = header.clone();
-        self.bottom_pane.update_status_header(header);
+        self.bottom_pane.update_status(header, details);
+    }
+
+    /// Convenience wrapper around [`Self::set_status`];
+    /// updates the status indicator header and clears any existing details.
+    fn set_status_header(&mut self, header: String) {
+        self.set_status(header, None);
     }
 
     fn restore_retry_status_header_if_present(&mut self) {
-        if let Some(header) = self.retry_status_header.take()
-            && self.current_status_header != header
-        {
+        if let Some(header) = self.retry_status_header.take() {
             self.set_status_header(header);
         }
     }
@@ -521,14 +537,11 @@ impl ChatWidget {
     }
 
     fn on_agent_reasoning_final(&mut self) {
-        let reasoning_summary_format = self.get_model_family().reasoning_summary_format;
         // At the end of a reasoning block, record transcript-only content.
         self.full_reasoning_buffer.push_str(&self.reasoning_buffer);
         if !self.full_reasoning_buffer.is_empty() {
-            let cell = history_cell::new_reasoning_summary_block(
-                self.full_reasoning_buffer.clone(),
-                reasoning_summary_format,
-            );
+            let cell =
+                history_cell::new_reasoning_summary_block(self.full_reasoning_buffer.clone());
             self.add_boxed_history(cell);
         }
         self.reasoning_buffer.clear();
@@ -1086,11 +1099,11 @@ impl ChatWidget {
         }
     }
 
-    fn on_stream_error(&mut self, message: String) {
+    fn on_stream_error(&mut self, message: String, additional_details: Option<String>) {
         if self.retry_status_header.is_none() {
             self.retry_status_header = Some(self.current_status_header.clone());
         }
-        self.set_status_header(message);
+        self.set_status(message, additional_details);
     }
 
     /// Periodic tick to commit at most one queued line to history with a small delay,
@@ -1469,6 +1482,7 @@ impl ChatWidget {
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
             current_rollout_path: None,
+            external_editor_state: ExternalEditorState::Closed,
         };
 
         widget.prefetch_rate_limits();
@@ -1555,6 +1569,7 @@ impl ChatWidget {
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
             current_rollout_path: None,
+            external_editor_state: ExternalEditorState::Closed,
         };
 
         widget.prefetch_rate_limits();
@@ -1651,6 +1666,31 @@ impl ChatWidget {
         self.bottom_pane
             .attach_image(path, width, height, format_label);
         self.request_redraw();
+    }
+
+    pub(crate) fn composer_text_with_pending(&self) -> String {
+        self.bottom_pane.composer_text_with_pending()
+    }
+
+    pub(crate) fn apply_external_edit(&mut self, text: String) {
+        self.bottom_pane.apply_external_edit(text);
+        self.request_redraw();
+    }
+
+    pub(crate) fn external_editor_state(&self) -> ExternalEditorState {
+        self.external_editor_state
+    }
+
+    pub(crate) fn set_external_editor_state(&mut self, state: ExternalEditorState) {
+        self.external_editor_state = state;
+    }
+
+    pub(crate) fn set_footer_hint_override(&mut self, items: Option<Vec<(String, String)>>) {
+        self.bottom_pane.set_footer_hint_override(items);
+    }
+
+    pub(crate) fn can_launch_external_editor(&self) -> bool {
+        self.bottom_pane.can_launch_external_editor()
     }
 
     fn dispatch_command(&mut self, cmd: SlashCommand) {
@@ -1854,7 +1894,7 @@ impl ChatWidget {
             .send(AppEvent::InsertHistoryCell(Box::new(cell)));
     }
 
-    fn add_to_history(&mut self, cell: impl HistoryCell + 'static) {
+    pub(crate) fn add_to_history(&mut self, cell: impl HistoryCell + 'static) {
         self.add_boxed_history(Box::new(cell));
     }
 
@@ -2062,9 +2102,11 @@ impl ChatWidget {
             }
             EventMsg::UndoStarted(ev) => self.on_undo_started(ev),
             EventMsg::UndoCompleted(ev) => self.on_undo_completed(ev),
-            EventMsg::StreamError(StreamErrorEvent { message, .. }) => {
-                self.on_stream_error(message)
-            }
+            EventMsg::StreamError(StreamErrorEvent {
+                message,
+                additional_details,
+                ..
+            }) => self.on_stream_error(message, additional_details),
             EventMsg::UserMessage(ev) => {
                 if from_replay {
                     self.on_user_message_event(ev);
