@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.6.17] - 2025-12-28
+
+- TUI2: improve transcript selection with multi-click, drag start, copy shortcut, and corruption fixes when copying offscreen text. (0130a2fa, 28285493, 414fbe0d, 310f2114, 7d0c5c7b)
+- Auto Drive: keep agent runs alive and clamp overlays to avoid misaligned prompts. (eafae4bc, 7b28c36b)
+- Config: honor /etc/codex/config.toml, in-repo config sources, and project_root_markers for workspace detection. (e27d9bd8, 8ff16a77, 314937fb)
+- Exec/CLI: limit unified exec output size and improve ripgrep download diagnostics for clearer failures. (fb24c47b, f2b740c9)
+- Performance: cache history render requests and cap redraw scheduling to 60fps to reduce TUI CPU usage. (72b6650f, 96a65ff0)
+
 ## [0.6.16] - 2025-12-25
 
 - Auto Drive: tighten timeboxed coordinator guidance so runs lead with authoritative verifiers and outcome-only directives. (d3efecb)
