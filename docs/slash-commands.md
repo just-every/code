@@ -21,8 +21,8 @@ Notes
 - `/logout`: log out of Code.
 - `/login`: manage Code sign-ins (select, add, or disconnect accounts).
 - `/settings [section]`: open the settings panel. Optional section argument
-  jumps directly to `model`, `theme`, `agents`, `auto`, `review`, `validation`,
-  `limits`, `chrome`, `mcp`, or `notifications`.
+  jumps directly to `model`, `theme`, `agents`, `skills`, `auto`, `review`,
+  `validation`, `limits`, `chrome`, `mcp`, or `notifications`.
 
 ## Workspace & Git
 
@@ -59,7 +59,8 @@ Notes
 - `/verbosity (high|medium|low)`: change text verbosity.
 - `/model`: choose your default model.
 - `/reasoning (minimal|low|medium|high)`: change reasoning effort.
-- `/prompts`: show example prompts.
+- `/prompts`: manage custom prompts.
+- `/skills`: manage skills.
 - `/status`: show current session configuration and token usage.
 - `/limits`: adjust session limits and visualize hourly and weekly rate-limit
   usage.

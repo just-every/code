@@ -15210,6 +15210,18 @@ impl ChatWidget<'_> {
         self.show_settings_overlay(Some(SettingsSection::Prompts));
     }
 
+    pub(crate) fn handle_skills_command(&mut self, args: &str) {
+        if !args.trim().is_empty() {
+            self.history_push_plain_state(history_cell::new_error_event(
+                "Usage: /skills".to_string(),
+            ));
+            return;
+        }
+
+        self.submit_op(Op::ListSkills);
+        self.show_settings_overlay(Some(SettingsSection::Skills));
+    }
+
     #[allow(dead_code)]
     pub(crate) fn add_agents_output(&mut self) {
         use ratatui::text::Line;

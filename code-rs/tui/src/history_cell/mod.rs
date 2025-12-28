@@ -2177,9 +2177,9 @@ fn popular_commands_lines(_latest_version: Option<&str>) -> Vec<Line<'static>> {
             .style(Style::default().add_modifier(Modifier::DIM)),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("/prompts", Style::default().fg(crate::colors::primary())),
+        Span::styled("/skills", Style::default().fg(crate::colors::primary())),
         Span::from(" - "),
-        Span::from(SlashCommand::Prompts.description())
+        Span::from(SlashCommand::Skills.description())
             .style(Style::default().add_modifier(Modifier::DIM)),
         Span::styled(
             " NEW",
@@ -5963,6 +5963,7 @@ fn is_title_line(line: &Line) -> bool {
             | "/diff"
             | "/status"
             | "/prompts"
+            | "/skills"
             | "reasoning effort"
             | "error"
     ) || text.starts_with("⚡")
