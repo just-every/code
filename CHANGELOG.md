@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.18] - 2025-12-28
+
+- TUI: add `/skills` slash command to list available skills inline. (7087feb)
+- Exec: handle missing wait output to keep execution results consistent. (d1cc1a2)
+- Auto Drive: stop runs after fatal errors to avoid hanging sessions. (a481b54)
+
 ## [0.6.17] - 2025-12-28
 
 - TUI2: improve transcript selection with multi-click, drag start, copy shortcut, and corruption fixes when copying offscreen text. (0130a2fa, 28285493, 414fbe0d, 310f2114, 7d0c5c7b)

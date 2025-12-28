@@ -1,13 +1,11 @@
-## @just-every/code v0.6.17
+## @just-every/code v0.6.18
 
-This release refines transcript selection, hardens automation runs, and speeds up TUI rendering.
+This release adds a skills slash command plus stability fixes for exec and Auto Drive flows.
 
 ### Changes
-- TUI2: improve transcript selection with multi-click, drag start, copy shortcut, and corruption fixes when copying offscreen text.
-- Auto Drive: keep agent runs alive and clamp overlays to avoid misaligned prompts.
-- Config: honor /etc/codex/config.toml, in-repo config sources, and project_root_markers for workspace detection.
-- Exec/CLI: limit unified exec output size and improve ripgrep download diagnostics for clearer failures.
-- Performance: cache history render requests and cap redraw scheduling to 60fps to reduce TUI CPU usage.
+- TUI: add `/skills` slash command to list available skills inline.
+- Exec: handle missing wait output to keep execution results consistent.
+- Auto Drive: stop runs after fatal errors to avoid hanging sessions.
 
 ### Install
 ```
@@ -15,7 +13,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-### Thanks
-Thanks to @RosarioYui for contributions!
-
-Compare: https://github.com/just-every/code/compare/v0.6.16...v0.6.17
+Compare: https://github.com/just-every/code/compare/v0.6.17...v0.6.18
