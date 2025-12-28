@@ -1,6 +1,8 @@
 use code_core::protocol::{
     AgentMessageEvent,
     AgentMessageDeltaEvent,
+    CustomToolCallBeginEvent,
+    CustomToolCallEndEvent,
     Event,
     EventMsg,
     ErrorEvent,
@@ -14,6 +16,7 @@ use code_core::protocol::{
     PatchApplyBeginEvent,
     PatchApplyEndEvent,
 };
+use code_core::parse_command::ParsedCommand as CoreParsedCommand;
 use code_tui::test_helpers::{render_chat_widget_to_vt100, ChatWidgetHarness};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -232,6 +235,241 @@ fn synthetic_end_clears_cancelled_exec_spinner() {
         after.contains("Command cancelled by user."),
         "expected cancellation context in output, got:\n{}",
         after
+    );
+}
+
+#[test]
+fn wait_tool_missing_background_job_clears_exec_wait() {
+    let mut harness = ChatWidgetHarness::new();
+    let mut seq = 0_u64;
+    let exec_call_id = "call_wait_missing";
+    let wait_call_id = "wait-1";
+    let cwd = PathBuf::from("/tmp");
+
+    harness.handle_event(Event {
+        id: "exec-begin".to_string(),
+        event_seq: 0,
+        msg: EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
+            call_id: exec_call_id.to_string(),
+            command: vec!["bash".into(), "-lc".into(), "gh run watch".into()],
+            cwd: cwd.clone(),
+            parsed_cmd: Vec::new(),
+        }),
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    harness.handle_event(Event {
+        id: "wait-begin".to_string(),
+        event_seq: 1,
+        msg: EventMsg::CustomToolCallBegin(CustomToolCallBeginEvent {
+            call_id: wait_call_id.to_string(),
+            tool_name: "wait".to_string(),
+            parameters: Some(serde_json::json!({"call_id": exec_call_id})),
+        }),
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    harness.handle_event(Event {
+        id: "wait-end".to_string(),
+        event_seq: 2,
+        msg: EventMsg::CustomToolCallEnd(CustomToolCallEndEvent {
+            call_id: wait_call_id.to_string(),
+            tool_name: "wait".to_string(),
+            parameters: Some(serde_json::json!({"call_id": exec_call_id})),
+            duration: Duration::from_secs(5),
+            result: Err(format!(
+                "No background job found for call_id={exec_call_id}"
+            )),
+        }),
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    let output = render_chat_widget_to_vt100(&mut harness, 80, 14);
+    assert!(
+        !output.contains("Waiting..."),
+        "wait status should clear when background job is missing:\n{}",
+        output
+    );
+    assert!(
+        output.contains("No background job found for call_id=call_wait_missing"),
+        "missing-job note should be visible:\n{}",
+        output
+    );
+}
+
+#[test]
+fn wait_interrupt_after_exec_end_does_not_mutate_exec() {
+    let mut harness = ChatWidgetHarness::new();
+    let mut seq = 0_u64;
+    let exec_call_id = "call_wait_interrupt";
+    let wait_call_id = "wait-2";
+    let cwd = PathBuf::from("/tmp");
+
+    harness.handle_event(Event {
+        id: "exec-begin".to_string(),
+        event_seq: 0,
+        msg: EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
+            call_id: exec_call_id.to_string(),
+            command: vec!["bash".into(), "-lc".into(), "echo done".into()],
+            cwd: cwd.clone(),
+            parsed_cmd: Vec::new(),
+        }),
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    harness.handle_event(Event {
+        id: "wait-begin".to_string(),
+        event_seq: 1,
+        msg: EventMsg::CustomToolCallBegin(CustomToolCallBeginEvent {
+            call_id: wait_call_id.to_string(),
+            tool_name: "wait".to_string(),
+            parameters: Some(serde_json::json!({"call_id": exec_call_id})),
+        }),
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    harness.handle_event(Event {
+        id: "exec-end".to_string(),
+        event_seq: 2,
+        msg: EventMsg::ExecCommandEnd(ExecCommandEndEvent {
+            call_id: exec_call_id.to_string(),
+            stdout: "done".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            duration: Duration::from_millis(5),
+        }),
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    harness.handle_event(Event {
+        id: "wait-end".to_string(),
+        event_seq: 3,
+        msg: EventMsg::CustomToolCallEnd(CustomToolCallEndEvent {
+            call_id: wait_call_id.to_string(),
+            tool_name: "wait".to_string(),
+            parameters: Some(serde_json::json!({"call_id": exec_call_id})),
+            duration: Duration::from_secs(1),
+            result: Err(format!(
+                "wait ended due to new user message (background job {exec_call_id} still running)"
+            )),
+        }),
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    let output = render_chat_widget_to_vt100(&mut harness, 80, 14);
+    assert!(
+        output.contains("done"),
+        "exec output should remain visible:\n{}",
+        output
+    );
+    assert!(
+        !output.contains("wait ended due to new user message"),
+        "wait interruption text should not overwrite completed exec:\n{}",
+        output
+    );
+}
+
+#[test]
+fn wait_missing_job_skips_merged_exec() {
+    let mut harness = ChatWidgetHarness::new();
+    let mut seq = 0_u64;
+    let exec_call_id = "call_wait_merge_a";
+    let exec_call_id_b = "call_wait_merge_b";
+    let wait_call_id = "wait-merge";
+    let cwd = PathBuf::from("/tmp");
+    let parsed_search = vec![CoreParsedCommand::Search {
+        cmd: "rg foo".to_string(),
+        query: Some("foo".to_string()),
+        path: Some(".".to_string()),
+    }];
+
+    harness.handle_event(Event {
+        id: "exec-begin".to_string(),
+        event_seq: 0,
+        msg: EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
+            call_id: exec_call_id.to_string(),
+            command: vec!["rg".into(), "foo".into(), ".".into()],
+            cwd: cwd.clone(),
+            parsed_cmd: parsed_search.clone(),
+        }),
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    harness.handle_event(Event {
+        id: "wait-begin".to_string(),
+        event_seq: 1,
+        msg: EventMsg::CustomToolCallBegin(CustomToolCallBeginEvent {
+            call_id: wait_call_id.to_string(),
+            tool_name: "wait".to_string(),
+            parameters: Some(serde_json::json!({"call_id": exec_call_id})),
+        }),
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    harness.handle_event(Event {
+        id: "exec-end".to_string(),
+        event_seq: 2,
+        msg: EventMsg::ExecCommandEnd(ExecCommandEndEvent {
+            call_id: exec_call_id.to_string(),
+            stdout: "match-1".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            duration: Duration::from_millis(5),
+        }),
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    harness.handle_event(Event {
+        id: "exec-begin-2".to_string(),
+        event_seq: 3,
+        msg: EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
+            call_id: exec_call_id_b.to_string(),
+            command: vec!["rg".into(), "foo".into(), ".".into()],
+            cwd: cwd.clone(),
+            parsed_cmd: parsed_search,
+        }),
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    harness.handle_event(Event {
+        id: "exec-end-2".to_string(),
+        event_seq: 4,
+        msg: EventMsg::ExecCommandEnd(ExecCommandEndEvent {
+            call_id: exec_call_id_b.to_string(),
+            stdout: "match-2".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            duration: Duration::from_millis(5),
+        }),
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    harness.handle_event(Event {
+        id: "wait-end".to_string(),
+        event_seq: 5,
+        msg: EventMsg::CustomToolCallEnd(CustomToolCallEndEvent {
+            call_id: wait_call_id.to_string(),
+            tool_name: "wait".to_string(),
+            parameters: Some(serde_json::json!({"call_id": exec_call_id})),
+            duration: Duration::from_secs(1),
+            result: Err(format!(
+                "No background job found for call_id={exec_call_id}"
+            )),
+        }),
+        order: Some(next_order_meta(1, &mut seq)),
+    });
+
+    let output = render_chat_widget_to_vt100(&mut harness, 80, 16);
+    let search_count = output.matches("Search foo in /tmp/.").count();
+    assert!(
+        search_count >= 2,
+        "merged exec should retain both search entries:\n{}",
+        output
+    );
+    assert!(
+        !output.contains("No background job found"),
+        "wait error should not overwrite merged exec:\n{}",
+        output
     );
 }
 

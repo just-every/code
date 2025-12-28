@@ -1084,6 +1084,7 @@ use crate::history::state::{
     AssistantStreamState,
     DiffLineKind,
     DiffRecord,
+    ExecStatus,
     ExecWaitNote,
     HistoryDomainEvent,
     HistoryDomainRecord,
@@ -2767,6 +2768,24 @@ fn wait_exec_call_id_from_params(params: Option<&String>) -> Option<ExecCallId> 
     params
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
         .and_then(|json| json.get("call_id").and_then(|v| v.as_str()).map(|s| ExecCallId(s.to_string())))
+}
+
+fn wait_result_missing_background_job(message: &str) -> bool {
+    let trimmed = message.trim();
+    trimmed.starts_with("No background job found for call_id=")
+        || trimmed == "No completed background job found"
+}
+
+fn wait_result_interrupted(message: &str) -> bool {
+    let trimmed = message.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    lower.contains("wait ended due to new user message")
+        || lower.contains("wait ended because the session was interrupted")
+        || lower.contains("wait interrupted so the assistant can adapt")
+        || (lower.contains("background job") && lower.contains("still running"))
 }
 
 impl std::fmt::Display for ExecCallId {
@@ -13637,7 +13656,12 @@ impl ChatWidget<'_> {
                         .remove(&ToolCallId(call_id.clone()))
                     {
                         let trimmed = content.trim();
-                        let wait_still_pending = !success && trimmed != "Cancelled by user.";
+                        let wait_missing_job = wait_result_missing_background_job(trimmed);
+                        let wait_interrupted = wait_result_interrupted(trimmed);
+                        let mut wait_still_pending =
+                            !success && trimmed != "Cancelled by user." && !wait_missing_job;
+                        let mut exec_running = false;
+                        let mut exec_completed = false;
                         let mut note_lines: Vec<(String, bool)> = Vec::new();
                         let suppress_json_notes = serde_json::from_str::<serde_json::Value>(
                             trimmed,
@@ -13663,6 +13687,7 @@ impl ChatWidget<'_> {
                         let mut wait_total: Option<Duration> = None;
                         let mut wait_notes_snapshot: Vec<(String, bool)> = Vec::new();
                         if let Some(running) = self.exec.running_commands.get_mut(&exec_call_id) {
+                            exec_running = true;
                             let base = running.wait_total.unwrap_or_default();
                             let total = base.saturating_add(duration);
                             running.wait_total = Some(total);
@@ -13706,6 +13731,7 @@ impl ChatWidget<'_> {
                                 .index_of(id)
                                 .and_then(|idx| self.history_state.get(idx).cloned());
                             if let Some(HistoryRecord::Exec(record)) = exec_record {
+                                exec_completed = !matches!(record.status, ExecStatus::Running);
                                 if wait_total.is_none() {
                                     let base = record.wait_total.unwrap_or_default();
                                     wait_total = Some(base.saturating_add(duration));
@@ -13723,12 +13749,29 @@ impl ChatWidget<'_> {
                                     Self::append_wait_pairs(&mut wait_notes_snapshot, &note_lines);
                                 }
                             }
-                            let _ = self.update_exec_wait_state_with_pairs(
-                                id,
-                                wait_total,
-                                wait_still_pending,
-                                &wait_notes_snapshot,
-                            );
+                            if exec_completed {
+                                wait_still_pending = false;
+                            } else if wait_interrupted && !exec_running {
+                                wait_still_pending = false;
+                            }
+
+                            if !exec_completed {
+                                let _ = self.update_exec_wait_state_with_pairs(
+                                    id,
+                                    wait_total,
+                                    wait_still_pending,
+                                    &wait_notes_snapshot,
+                                );
+                            }
+                        }
+
+                        if exec_completed {
+                            self.bottom_pane
+                                .update_status_text("responding".to_string());
+                            self.maybe_hide_spinner();
+                            self.invalidate_height_cache();
+                            self.request_redraw();
+                            return;
                         }
 
                         if success {
@@ -13739,6 +13782,21 @@ impl ChatWidget<'_> {
                         } else if trimmed == "Cancelled by user." {
                             self.bottom_pane
                                 .update_status_text("wait cancelled".to_string());
+                        } else if wait_missing_job || (wait_interrupted && !exec_running) {
+                            let finalized = exec_tools::finalize_wait_missing_exec(
+                                self,
+                                exec_call_id.clone(),
+                                trimmed,
+                            );
+                            if finalized {
+                                self.bottom_pane.update_status_text(
+                                    "command finished (output unavailable)".to_string(),
+                                );
+                            } else {
+                                self.bottom_pane.update_status_text(
+                                    "command status unavailable".to_string(),
+                                );
+                            }
                         } else {
                             self.bottom_pane
                                 .update_status_text("waiting for command".to_string());
