@@ -5791,6 +5791,7 @@ impl ChatWidget<'_> {
             "epilogue",
             Some(HistoryDomainRecord::Plain(state)),
         );
+        let should_stop_auto = self.auto_state.is_active();
         self.bottom_pane.set_task_running(false);
         // Ensure any running exec/tool cells are finalized so spinners don't linger
         // after fatal errors.
@@ -5800,6 +5801,9 @@ impl ChatWidget<'_> {
         self.agents_ready_to_start = false;
         self.active_task_ids.clear();
         self.maybe_hide_spinner();
+        if should_stop_auto {
+            self.auto_stop(Some("Auto Drive stopped after error.".to_string()));
+        }
         self.mark_needs_redraw();
     }
 
@@ -28642,6 +28646,7 @@ use code_core::protocol::OrderMeta;
         AskForApproval,
         AgentMessageEvent,
         AgentStatusUpdateEvent,
+        ErrorEvent,
         Event,
         EventMsg,
         ExecCommandBeginEvent,
@@ -29895,6 +29900,32 @@ use code_core::protocol::OrderMeta;
         assert!(
             cli_running,
             "auto drive view should treat running agents as active"
+        );
+    }
+
+    #[test]
+    fn auto_drive_error_clears_waiting_state() {
+        let mut harness = ChatWidgetHarness::new();
+        harness.with_chat(|chat| {
+            chat.auto_state.set_phase(AutoRunPhase::Active);
+            chat.auto_state.goal = Some("Ship feature".to_string());
+            chat.auto_state.on_prompt_ready(true);
+            chat.auto_rebuild_live_ring();
+        });
+
+        harness.handle_event(Event {
+            id: "turn-1".to_string(),
+            event_seq: 0,
+            msg: EventMsg::Error(ErrorEvent {
+                message: "internal error; agent loop died unexpectedly".to_string(),
+            }),
+            order: None,
+        });
+
+        let still_active = harness.with_chat(|chat| chat.auto_state.is_active());
+        assert!(
+            !still_active,
+            "auto drive should stop after a fatal error event"
         );
     }
 
