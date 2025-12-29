@@ -241,7 +241,7 @@ mod tests {
         let plan_prompt = result.unwrap();
         assert!(plan_prompt.contains("final, comprehensive plan"));
         // Default agents list should include non-Codex providers when no [[agents]] configured
-        assert!(plan_prompt.contains("code-gpt-5.1"));
+        assert!(plan_prompt.contains("code-gpt-5.2"));
         assert!(!plan_prompt.contains("cloud-gpt-5.1-codex-max"));
 
         // Test /solve command

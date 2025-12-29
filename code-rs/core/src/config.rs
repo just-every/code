@@ -2850,7 +2850,7 @@ impl Config {
                 || agent.name.eq_ignore_ascii_case("cloud")
             {
                 tracing::warn!(
-                    "legacy agent name '{}' detected; update config to use model slugs (e.g., code-gpt-5.1-codex-max)",
+                    "legacy agent name '{}' detected; update config to use model slugs (e.g., code-gpt-5.2-codex)",
                     agent.name
                 );
             }
@@ -4394,7 +4394,7 @@ model_verbosity = "high"
 
         let mut cfg = fixture.cfg.clone();
         cfg.agents = vec![AgentConfig {
-            name: "code-gpt-5.1-codex".to_string(),
+            name: "code-gpt-5.2-codex".to_string(),
             command: String::new(),
             args: Vec::new(),
             read_only: false,
@@ -4424,7 +4424,8 @@ model_verbosity = "high"
             .map(|agent| agent.name.to_ascii_lowercase())
             .collect();
 
-        assert!(enabled_names.contains("code-gpt-5.1-codex-max"));
+        assert!(enabled_names.contains("code-gpt-5.2-codex"));
+        assert!(enabled_names.contains("code-gpt-5.2"));
         assert!(enabled_names.contains("claude-sonnet-4.5"));
         assert!(enabled_names.contains("gemini-3-pro"));
         assert!(enabled_names.contains("qwen-3-coder"));

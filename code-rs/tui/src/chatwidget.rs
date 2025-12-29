@@ -147,8 +147,8 @@ mod agent_summary_counts_tests {
     #[test]
     fn missing_builtins_default_to_disabled() {
         let agents = vec![
-            make_agent("code-gpt-5.1-codex-max", true),
-            make_agent("code-gpt-5.1", true),
+            make_agent("code-gpt-5.2-codex", true),
+            make_agent("code-gpt-5.2", true),
         ];
 
         let (enabled, total) = agent_summary_counts(&agents);
@@ -161,7 +161,7 @@ mod agent_summary_counts_tests {
     #[test]
     fn custom_agents_are_counted() {
         let agents = vec![
-            make_agent("code-gpt-5.1-codex-max", true),
+            make_agent("code-gpt-5.2-codex", true),
             make_agent("my-custom-agent", false),
         ];
 
@@ -14719,7 +14719,7 @@ impl ChatWidget<'_> {
         running_preview.id = "demo-running".to_string();
         running_preview.name = "Lint Fixer".to_string();
         running_preview.status = "Running".to_string();
-        running_preview.model = Some("code-gpt-5.1".to_string());
+        running_preview.model = Some("code-gpt-5.2".to_string());
         running_preview.details = vec![history_cell::AgentDetail::Progress(
             "Refining suggested fixes".to_string(),
         )];

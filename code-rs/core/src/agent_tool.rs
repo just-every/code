@@ -2041,7 +2041,7 @@ pub fn create_agent_tool(allowed_models: &[String]) -> OpenAiTool {
                 },
             }),
                 description: Some(
-                    "Optional array of model names (e.g., ['code-gpt-5.2','claude-sonnet-4.5','code-gpt-5.1-codex-max','gemini-3-flash'])".to_string(),
+                    "Optional array of model names (e.g., ['code-gpt-5.2','claude-sonnet-4.5','code-gpt-5.2-codex','gemini-3-flash'])".to_string(),
                 ),
         },
     );
@@ -2488,7 +2488,7 @@ mod tests {
 
     fn agent_with_command(command: &str) -> AgentConfig {
         AgentConfig {
-            name: "code-gpt-5.1-codex-max".to_string(),
+            name: "code-gpt-5.2-codex".to_string(),
             command: command.to_string(),
             args: Vec::new(),
             read_only: false,

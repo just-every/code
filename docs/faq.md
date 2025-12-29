@@ -6,7 +6,7 @@ Only by name. The 2021 Codex model was deprecated in March 2023. Every Code is a
 
 ### Which models are supported?
 
-We recommend the built-in Code presets that wrap GPT-5.1 (for example `code-gpt-5.1-codex-max`). The default reasoning level is medium, and you can upgrade to high for complex tasks with `/model`.
+We recommend the built-in Code presets that wrap GPT-5.2 (for example `code-gpt-5.2-codex`). The default reasoning level is medium, and you can upgrade to high for complex tasks with `/model`.
 
 You can also use older models by using API-based auth and launching Code with the `--model` flag.
 

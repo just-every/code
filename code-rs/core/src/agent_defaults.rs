@@ -35,7 +35,7 @@ const CLOUD_GPT5_CODEX_WRITE: &[&str] = &[];
 pub const DEFAULT_AGENT_NAMES: &[&str] = &[
     // Frontline for moderate/challenging tasks
     "code-gpt-5.2",
-    "code-gpt-5.1-codex-max",
+    "code-gpt-5.2-codex",
     "claude-opus-4.5",
     "gemini-3-pro",
     // Straightforward / cost-aware
@@ -43,7 +43,6 @@ pub const DEFAULT_AGENT_NAMES: &[&str] = &[
     "claude-sonnet-4.5",
     "gemini-3-flash",
     // Mixed/general and alternates
-    "code-gpt-5.1",
     "claude-haiku-4.5",
     "qwen-3-coder",
     "cloud-gpt-5.1-codex-max",
@@ -96,22 +95,31 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         model_args: &["--model", "gpt-5.2"],
         description: "Highest-capacity GPT option for tricky reasoning; use when correctness matters most.",
         enabled_by_default: true,
-        aliases: &["gpt-5.2"],
+        aliases: &[
+            "gpt-5.2",
+            "code-gpt-5.1",
+            "code-gpt-5",
+            "gpt-5.1",
+            "gpt-5",
+            "coder-gpt-5",
+        ],
         gating_env: None,
         is_frontline: true,
     },
     AgentModelSpec {
-        slug: "code-gpt-5.1-codex-max",
+        slug: "code-gpt-5.2-codex",
         family: "code",
         cli: "coder",
         read_only_args: CODE_GPT5_CODEX_READ_ONLY,
         write_args: CODE_GPT5_CODEX_WRITE,
-        model_args: &["--model", "gpt-5.1-codex-max"],
+        model_args: &["--model", "gpt-5.2-codex"],
         description: "Primary coding agent for implementation and multi-file edits; strong speed and reliability.",
         enabled_by_default: true,
         aliases: &[
+            "code-gpt-5.1-codex-max",
             "code-gpt-5.1-codex",
             "code-gpt-5-codex",
+            "gpt-5.2-codex",
             "gpt-5.1-codex-max",
             "gpt-5.1-codex",
             "gpt-5-codex",
@@ -137,24 +145,6 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
             "gpt-5-codex-mini",
             "codex-mini",
             "coder-mini",
-        ],
-        gating_env: None,
-        is_frontline: false,
-    },
-    AgentModelSpec {
-        slug: "code-gpt-5.1",
-        family: "code",
-        cli: "coder",
-        read_only_args: CODE_GPT5_READ_ONLY,
-        write_args: CODE_GPT5_WRITE,
-        model_args: &["--model", "gpt-5.1"],
-        description: "General-purpose GPT model for mixed coding and product/design reasoning.",
-        enabled_by_default: true,
-        aliases: &[
-            "code-gpt-5",
-            "gpt-5.1",
-            "gpt-5",
-            "coder-gpt-5",
         ],
         gating_env: None,
         is_frontline: false,
@@ -453,16 +443,16 @@ mod tests {
 
     #[test]
     fn gpt_codex_aliases_resolve() {
-        let max = agent_model_spec("gpt-5.1-codex").expect("alias for max present");
-        assert_eq!(max.slug, "code-gpt-5.1-codex-max");
+        let codex = agent_model_spec("gpt-5.1-codex").expect("alias for codex present");
+        assert_eq!(codex.slug, "code-gpt-5.2-codex");
 
-        let max_direct = agent_model_spec("gpt-5.1-codex-max").expect("max present");
-        assert_eq!(max_direct.slug, "code-gpt-5.1-codex-max");
+        let codex_direct = agent_model_spec("gpt-5.1-codex-max").expect("codex present");
+        assert_eq!(codex_direct.slug, "code-gpt-5.2-codex");
 
         let mini = agent_model_spec("gpt-5.1-codex-mini").expect("mini alias present");
         assert_eq!(mini.slug, "code-gpt-5.1-codex-mini");
 
         let mid = agent_model_spec("gpt-5.1").expect("mid alias present");
-        assert_eq!(mid.slug, "code-gpt-5.1");
+        assert_eq!(mid.slug, "code-gpt-5.2");
     }
 }
