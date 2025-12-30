@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.19] - 2025-12-29
+
+- Agents: default built-in slugs to code-gpt-5.2-codex for faster, higher-quality automation. (8afe9b8c)
+- Agents: expand GPT-5 alias coverage and docs so configs map cleanly to the new defaults. (8afe9b8c)
+
 ## [0.6.18] - 2025-12-28
 
 - TUI: add `/skills` slash command to list available skills inline. (7087feb)
