@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.21] - 2025-12-30
+
+- Core: add gh_run_wait tool to poll GitHub Actions runs and return completion summaries. (c72798a)
+- Core: clear orphaned background jobs when tasks end without results to surface failures. (c72798a)
+
 ## [0.6.20] - 2025-12-30
 
 - Auto Drive: keep retrying after errors so runs recover instead of stopping early. (7f6c12e8)
