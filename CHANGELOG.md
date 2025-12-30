@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.20] - 2025-12-30
+
+- Auto Drive: keep retrying after errors so runs recover instead of stopping early. (7f6c12e8)
+- Auto Drive: schedule restarts without depending on Tokio to avoid stalled recoveries. (bae785e9)
+
 ## [0.6.19] - 2025-12-29
 
 - Agents: default built-in slugs to code-gpt-5.2-codex for faster, higher-quality automation. (8afe9b8c)

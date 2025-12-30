@@ -1,10 +1,10 @@
-## @just-every/code v0.6.19
+## @just-every/code v0.6.20
 
-This release refreshes the agent defaults around GPT-5.2 Codex for better coding runs.
+Auto Drive reliability improvements for smoother hands-free runs.
 
 ### Changes
-- Agents: default built-in slugs to code-gpt-5.2-codex for faster, higher-quality automation.
-- Agents: expand GPT-5 alias coverage and docs so configs map cleanly to the new defaults.
+- Auto Drive: keep retrying after errors so runs recover instead of stopping early.
+- Auto Drive: schedule restarts without depending on Tokio to avoid stalled recoveries.
 
 ### Install
 ```
@@ -12,4 +12,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.18...v0.6.19
+Compare: https://github.com/just-every/code/compare/v0.6.19...v0.6.20
