@@ -1517,7 +1517,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            tools[7],
+            tools[8],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "dash/tags".to_string(),
                 parameters: JsonSchema::Object {
