@@ -7221,6 +7221,7 @@ async fn handle_function_call(
         "browser" => handle_browser_tool(sess, &ctx, arguments).await,
         "web_fetch" => handle_web_fetch(sess, &ctx, arguments).await,
         "wait" => handle_wait(sess, &ctx, arguments).await,
+        "gh_run_wait" => handle_gh_run_wait(sess, &ctx, arguments).await,
         "kill" => handle_kill(sess, &ctx, arguments).await,
         "code_bridge" | "code_bridge_subscription" => handle_code_bridge(sess, &ctx, arguments).await,
         _ => {
@@ -8556,14 +8557,17 @@ async fn handle_wait(
                     + std::time::Duration::from_millis(timeout_ms);
 
                 loop {
-                    let (known_done, known_missing) = {
+                    let (known_done, known_missing, task_finished) = {
                         let st = sess.state.lock().unwrap();
                         match st.background_execs.get(&call_id) {
                             Some(bg) => (
                                 bg.result_cell.lock().unwrap().is_some(),
                                 false,
+                                bg.task_handle
+                                    .as_ref()
+                                    .is_some_and(|handle| handle.is_finished()),
                             ),
-                            None => (false, true),
+                            None => (false, true, false),
                         }
                     };
 
@@ -8572,6 +8576,20 @@ async fn handle_wait(
                             call_id: ctx_inner.call_id.clone(),
                             output: FunctionCallOutputPayload {
                                 content: format!("No background job found for call_id={call_id}"),
+                                success: Some(false),
+                            },
+                        };
+                    }
+
+                    if task_finished && !known_done {
+                        let mut st = sess.state.lock().unwrap();
+                        st.background_execs.remove(&call_id);
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id: ctx_inner.call_id.clone(),
+                            output: FunctionCallOutputPayload {
+                                content: format!(
+                                    "Background job {call_id} ended without a result; it may have been cancelled or crashed."
+                                ),
                                 success: Some(false),
                             },
                         };
@@ -8687,6 +8705,295 @@ async fn handle_wait(
                 }
         }
     ).await
+}
+
+async fn handle_gh_run_wait(
+    sess: &Session,
+    ctx: &ToolCallCtx,
+    arguments: String,
+) -> ResponseInputItem {
+    use serde::Deserialize;
+    use serde_json::Value;
+
+    #[derive(Deserialize, Clone)]
+    struct Params {
+        #[serde(default)]
+        run_id: Option<Value>,
+        #[serde(default)]
+        workflow: Option<String>,
+        #[serde(default)]
+        branch: Option<String>,
+        #[serde(default)]
+        interval_seconds: Option<u64>,
+    }
+
+    async fn run_gh(args: &[&str]) -> Result<String, String> {
+        let output = tokio::process::Command::new("gh")
+            .args(args)
+            .output()
+            .await
+            .map_err(|err| format!("failed to run gh {}: {err}", args.join(" ")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let message = if !stderr.is_empty() { stderr } else { stdout };
+            return Err(format!(
+                "gh {} failed{}",
+                args.join(" "),
+                if message.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {message}")
+                }
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    let mut params_for_event = serde_json::from_str::<Value>(&arguments).ok();
+    let parsed: Params = match serde_json::from_str(&arguments) {
+        Ok(p) => p,
+        Err(e) => {
+            return ResponseInputItem::FunctionCallOutput {
+                call_id: ctx.call_id.clone(),
+                output: FunctionCallOutputPayload {
+                    content: format!("Invalid gh_run_wait arguments: {e}"),
+                    success: Some(false),
+                },
+            };
+        }
+    };
+
+    execute_custom_tool(
+        sess,
+        ctx,
+        "gh_run_wait".to_string(),
+        params_for_event.take(),
+        move || async move {
+            let call_id = ctx.call_id.clone();
+            let run_id = match parsed.run_id {
+                Some(Value::String(value)) if !value.trim().is_empty() => Some(value),
+                Some(Value::Number(num)) => num.as_u64().map(|v| v.to_string()),
+                _ => None,
+            };
+
+            let mut resolved_run_id = run_id;
+            if resolved_run_id.is_none() {
+                let workflow = match parsed.workflow.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                    Some(name) => name.to_string(),
+                    None => {
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id,
+                            output: FunctionCallOutputPayload {
+                                content: "gh_run_wait requires run_id or workflow".to_string(),
+                                success: Some(false),
+                            },
+                        };
+                    }
+                };
+                let branch = parsed
+                    .branch
+                    .as_ref()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("main")
+                    .to_string();
+
+                let json = match run_gh(&[
+                    "run",
+                    "list",
+                    "--workflow",
+                    &workflow,
+                    "--branch",
+                    &branch,
+                    "--limit",
+                    "1",
+                    "--json",
+                    "databaseId,displayTitle,workflowName,headBranch,status,conclusion",
+                ])
+                .await
+                {
+                    Ok(out) => out,
+                    Err(err) => {
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id,
+                            output: FunctionCallOutputPayload {
+                                content: err,
+                                success: Some(false),
+                            },
+                        };
+                    }
+                };
+
+                let runs: Vec<Value> = serde_json::from_str(&json).unwrap_or_default();
+                let run = runs.into_iter().next();
+                let run_id = run
+                    .and_then(|item| item.get("databaseId").cloned())
+                    .and_then(|val| match val {
+                        Value::Number(num) => num.as_u64().map(|v| v.to_string()),
+                        Value::String(s) => Some(s),
+                        _ => None,
+                    });
+                if run_id.is_none() {
+                    return ResponseInputItem::FunctionCallOutput {
+                        call_id,
+                        output: FunctionCallOutputPayload {
+                            content: format!("No runs found for workflow '{workflow}' on {branch}"),
+                            success: Some(false),
+                        },
+                    };
+                }
+                resolved_run_id = run_id;
+            }
+
+            let run_id = resolved_run_id.unwrap_or_default();
+            if run_id.is_empty() {
+                return ResponseInputItem::FunctionCallOutput {
+                    call_id,
+                    output: FunctionCallOutputPayload {
+                        content: "gh_run_wait requires a valid run_id".to_string(),
+                        success: Some(false),
+                    },
+                };
+            }
+
+            let interval = parsed.interval_seconds.unwrap_or(8).max(1);
+            let (initial_wait_epoch, _) = sess.wait_interrupt_snapshot();
+
+            loop {
+                let json = match run_gh(&[
+                    "run",
+                    "view",
+                    &run_id,
+                    "--json",
+                    "status,conclusion,jobs,htmlURL,displayTitle,workflowName",
+                ])
+                .await
+                {
+                    Ok(out) => out,
+                    Err(err) => {
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id,
+                            output: FunctionCallOutputPayload {
+                                content: err,
+                                success: Some(false),
+                            },
+                        };
+                    }
+                };
+
+                let view: Value = serde_json::from_str(&json).unwrap_or(Value::Null);
+                let status = view
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let conclusion = view
+                    .get("conclusion")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let display_title = view
+                    .get("displayTitle")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let workflow_name = view
+                    .get("workflowName")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let html_url = view
+                    .get("htmlURL")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                let jobs = view
+                    .get("jobs")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let total_jobs = jobs.len();
+                let mut completed_jobs = 0usize;
+                let mut active_jobs = 0usize;
+                for job in &jobs {
+                    let job_status = job.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                    if job_status == "completed" {
+                        completed_jobs += 1;
+                    } else {
+                        active_jobs += 1;
+                    }
+                }
+                let jobs_complete = total_jobs > 0 && completed_jobs == total_jobs;
+                let run_complete = status == "completed" || (jobs_complete && active_jobs == 0);
+
+                if run_complete {
+                    let summary = serde_json::json!({
+                        "run_id": run_id,
+                        "status": status,
+                        "conclusion": if conclusion.is_empty() { None::<String> } else { Some(conclusion.clone()) },
+                        "workflow": workflow_name,
+                        "title": display_title,
+                        "url": html_url,
+                        "jobs": {
+                            "total": total_jobs,
+                            "completed": completed_jobs,
+                            "active": active_jobs,
+                        }
+                    });
+                    let success = if conclusion.is_empty() {
+                        None
+                    } else {
+                        Some(conclusion == "success")
+                    };
+                    return ResponseInputItem::FunctionCallOutput {
+                        call_id,
+                        output: FunctionCallOutputPayload {
+                            content: summary.to_string(),
+                            success,
+                        },
+                    };
+                }
+
+                let time_budget_message = {
+                    let mut guard = sess.time_budget.lock().unwrap();
+                    guard
+                        .as_mut()
+                        .and_then(|budget| budget.maybe_nudge(std::time::Instant::now()))
+                };
+
+                if let Some(budget_text) = time_budget_message {
+                    return ResponseInputItem::FunctionCallOutput {
+                        call_id,
+                        output: FunctionCallOutputPayload {
+                            content: format!(
+                                "{budget_text}\n\nRun {run_id} still in progress. Call gh_run_wait again to continue."
+                            ),
+                            success: Some(false),
+                        },
+                    };
+                }
+
+                let (current_epoch, reason) = sess.wait_interrupt_snapshot();
+                if current_epoch != initial_wait_epoch {
+                    let message = match reason {
+                        Some(WaitInterruptReason::UserMessage) => {
+                            "wait ended due to new user message".to_string()
+                        }
+                        _ => "wait ended because the session was interrupted".to_string(),
+                    };
+                    return ResponseInputItem::FunctionCallOutput {
+                        call_id,
+                        output: FunctionCallOutputPayload {
+                            content: message,
+                            success: Some(false),
+                        },
+                    };
+                }
+
+                tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+            }
+        },
+    )
+    .await
 }
 
 // Kill a background shell execution by call_id.

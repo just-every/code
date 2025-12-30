@@ -35111,7 +35111,7 @@ impl ChatWidget<'_> {
             steps.push("Perform a git push.".to_string());
             if gh_available && workflows_exist {
                 steps.push(
-                    "Use gh to see if any workflows were triggered. If they are wait until they finish with `gh run watch`."
+                    "Use gh_run_wait to monitor any triggered workflows."
                         .to_string(),
                 );
                 steps.push(

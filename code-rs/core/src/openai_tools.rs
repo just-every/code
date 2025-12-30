@@ -716,6 +716,7 @@ pub fn get_openai_tools(
     // Add general wait tool for background completions
     tools.push(create_wait_tool());
     tools.push(create_kill_tool());
+    tools.push(create_gh_run_wait_tool());
     tools.push(create_bridge_tool());
 
     if config.web_search_request {
@@ -801,6 +802,53 @@ pub fn create_kill_tool() -> OpenAiTool {
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["call_id".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
+pub fn create_gh_run_wait_tool() -> OpenAiTool {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "run_id".to_string(),
+        JsonSchema::String {
+            description: Some("GitHub Actions run id to wait for.".to_string()),
+            allowed_values: None,
+        },
+    );
+    properties.insert(
+        "workflow".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Workflow name or filename (used to select latest run when run_id is omitted)."
+                    .to_string(),
+            ),
+            allowed_values: None,
+        },
+    );
+    properties.insert(
+        "branch".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Branch to filter when selecting latest run (default: main).".to_string(),
+            ),
+            allowed_values: None,
+        },
+    );
+    properties.insert(
+        "interval_seconds".to_string(),
+        JsonSchema::Number {
+            description: Some("Polling interval in seconds (default 8).".to_string()),
+        },
+    );
+    OpenAiTool::Function(ResponsesApiTool {
+        name: "gh_run_wait".to_string(),
+        description: "Wait for a GitHub Actions run to finish, using gh run view polling."
+            .to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: None,
             additional_properties: Some(false.into()),
         },
     })
