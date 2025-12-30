@@ -198,7 +198,6 @@ use code_auto_drive_core::{
     AutoTurnReviewState,
     AutoResolveState,
     AutoResolvePhase,
-    AUTO_RESTART_MAX_ATTEMPTS,
     AUTO_RESOLVE_REVIEW_FOLLOWUP,
     CoordinatorContext,
     CoordinatorRouterResponse,
@@ -5799,7 +5798,7 @@ impl ChatWidget<'_> {
             self.request_redraw();
         }
 
-        // Fatal error path: show an error cell and clear running state.
+        // Error path: show an error cell and clear running state.
         self.clear_resume_placeholder();
         let key = self.next_internal_key();
         let state = history_cell::new_error_event(message.clone());
@@ -5810,18 +5809,18 @@ impl ChatWidget<'_> {
             "epilogue",
             Some(HistoryDomainRecord::Plain(state)),
         );
-        let should_stop_auto = self.auto_state.is_active();
+        let should_recover_auto = self.auto_state.is_active();
         self.bottom_pane.set_task_running(false);
         // Ensure any running exec/tool cells are finalized so spinners don't linger
-        // after fatal errors.
+        // after errors.
         self.finalize_all_running_as_interrupted();
         self.stream.clear_all();
         self.stream_state.drop_streaming = false;
         self.agents_ready_to_start = false;
         self.active_task_ids.clear();
         self.maybe_hide_spinner();
-        if should_stop_auto {
-            self.auto_stop(Some("Auto Drive stopped after error.".to_string()));
+        if should_recover_auto {
+            self.auto_pause_for_transient_failure(message);
         }
         self.mark_needs_redraw();
     }
@@ -18028,7 +18027,7 @@ Have we met every part of this goal and is there no further work to do?"#
                         "Press Esc again to exit Auto Drive".to_string(),
                     ));
                     let message = format!(
-                        "Auto Drive will retry automatically in {human_delay} (attempt {attempt}/{AUTO_RESTART_MAX_ATTEMPTS}). Last error: {reason}"
+                        "Auto Drive will retry automatically in {human_delay} (attempt {attempt}). Last error: {reason}"
                     );
                     self.auto_card_add_action(message, AutoDriveActionKind::Warning);
                     self.auto_card_set_status(AutoDriveStatus::Paused);
@@ -18160,12 +18159,10 @@ Have we met every part of this goal and is there no further work to do?"#
         self.auto_state.restart_token = token;
 
         let resume_message = if restart.reason.is_empty() {
-            format!(
-                "Auto Drive resuming automatically (attempt {attempt}/{AUTO_RESTART_MAX_ATTEMPTS})."
-            )
+            format!("Auto Drive resuming automatically (attempt {attempt}).")
         } else {
             format!(
-                "Auto Drive resuming automatically (attempt {attempt}/{AUTO_RESTART_MAX_ATTEMPTS}); previous error: {}",
+                "Auto Drive resuming automatically (attempt {attempt}); previous error: {}",
                 restart.reason
             )
         };
@@ -29974,7 +29971,7 @@ use code_core::protocol::OrderMeta;
     }
 
     #[test]
-    fn auto_drive_error_clears_waiting_state() {
+    fn auto_drive_error_enters_transient_recovery() {
         let mut harness = ChatWidgetHarness::new();
         harness.with_chat(|chat| {
             chat.auto_state.set_phase(AutoRunPhase::Active);
@@ -29992,10 +29989,12 @@ use code_core::protocol::OrderMeta;
             order: None,
         });
 
-        let still_active = harness.with_chat(|chat| chat.auto_state.is_active());
+        let (still_active, in_recovery) = harness.with_chat(|chat| {
+            (chat.auto_state.is_active(), chat.auto_state.in_transient_recovery())
+        });
         assert!(
-            !still_active,
-            "auto drive should stop after a fatal error event"
+            still_active && in_recovery,
+            "auto drive should pause for recovery after an error event"
         );
     }
 

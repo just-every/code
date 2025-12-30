@@ -257,7 +257,6 @@ pub enum AutoResolvePhase {
     AwaitingJudge { review: ReviewOutputEvent },
 }
 
-pub const AUTO_RESTART_MAX_ATTEMPTS: u32 = 6;
 pub const AUTO_RESTART_BASE_DELAY: Duration = Duration::from_secs(5);
 pub const AUTO_RESTART_MAX_DELAY: Duration = Duration::from_secs(120);
 pub const AUTO_RESOLVE_MAX_REVIEW_ATTEMPTS: u32 = 3;
@@ -600,7 +599,7 @@ impl AutoDriveController {
 
     pub fn pause_for_transient_failure(
         &mut self,
-        now: Instant,
+        _now: Instant,
         reason: String,
     ) -> Vec<AutoControllerEffect> {
         let pending_attempt = self.transient_restart_attempts.saturating_add(1);
@@ -614,40 +613,6 @@ impl AutoDriveController {
         let delay = Self::auto_restart_delay(pending_attempt);
         self.apply_phase(AutoRunPhase::TransientRecovery { backoff_ms: delay.as_millis() as u64 });
 
-        if pending_attempt > AUTO_RESTART_MAX_ATTEMPTS {
-            self.transient_restart_attempts = pending_attempt;
-            let summary = AutoRunSummary {
-                duration: self
-                    .started_at
-                    .map(|start| now.saturating_duration_since(start))
-                    .unwrap_or_default(),
-                turns_completed: self.turns_completed,
-                message: Some(format!(
-                    "Auto Drive stopped after {AUTO_RESTART_MAX_ATTEMPTS} reconnect attempts."
-                )),
-                goal: self.goal.clone(),
-            };
-            self.reset();
-            self.last_run_summary = Some(summary.clone());
-            self.apply_phase(AutoRunPhase::AwaitingGoalEntry);
-
-            return vec![
-                AutoControllerEffect::CancelCoordinator,
-                AutoControllerEffect::ResetHistory,
-                AutoControllerEffect::ClearCoordinatorView,
-                AutoControllerEffect::UpdateTerminalHint { hint: None },
-                AutoControllerEffect::SetTaskRunning { running: false },
-                AutoControllerEffect::EnsureInputFocus,
-                AutoControllerEffect::StopCompleted {
-                    summary,
-                    message: Some(format!(
-                        "Auto Drive stopped after {AUTO_RESTART_MAX_ATTEMPTS} reconnect attempts. Last error: {truncated_reason}"
-                    )),
-                },
-                AutoControllerEffect::RefreshUi,
-            ];
-        }
-
         self.transient_restart_attempts = pending_attempt;
         let delay = Self::auto_restart_delay(pending_attempt);
         let token = self.restart_token.wrapping_add(1);
@@ -660,7 +625,7 @@ impl AutoDriveController {
 
         let human_delay = format_duration(delay);
         self.current_display_line = Some(format!(
-            "Waiting for connection… retrying in {human_delay} (attempt {pending_attempt}/{AUTO_RESTART_MAX_ATTEMPTS})"
+            "Waiting for connection… retrying in {human_delay} (attempt {pending_attempt})"
         ));
         self.current_display_is_summary = true;
         self.current_status_title = Some(format!("Retrying after error"));
@@ -949,7 +914,7 @@ impl AutoDriveController {
 
 #[cfg(test)]
 mod tests {
-    use super::{AutoControllerEffect, AutoDriveController, AutoRunPhase, AUTO_RESTART_MAX_ATTEMPTS};
+    use super::{AutoControllerEffect, AutoDriveController, AutoRunPhase};
     use std::time::Instant;
 
     #[test]
@@ -996,9 +961,8 @@ mod tests {
     }
 
     #[test]
-    fn restart_exhaustion_emits_cancel_coordinator_effect() {
+    fn transient_failure_enters_recovery_and_schedules_restart() {
         let mut controller = AutoDriveController::default();
-        controller.transient_restart_attempts = AUTO_RESTART_MAX_ATTEMPTS;
         controller.goal = Some("Investigate outage".to_string());
         controller.started_at = Some(Instant::now());
 
@@ -1010,8 +974,14 @@ mod tests {
         assert!(effects
             .iter()
             .any(|effect| matches!(effect, AutoControllerEffect::CancelCoordinator)));
-        assert!(matches!(controller.current_phase(), AutoRunPhase::AwaitingGoalEntry));
-        assert!(controller.last_run_summary.is_some());
+        assert!(effects
+            .iter()
+            .any(|effect| matches!(effect, AutoControllerEffect::ScheduleRestart { .. })));
+        assert!(matches!(
+            controller.current_phase(),
+            AutoRunPhase::TransientRecovery { .. }
+        ));
+        assert!(controller.last_run_summary.is_none());
     }
 
     #[test]

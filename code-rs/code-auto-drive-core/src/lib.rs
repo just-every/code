@@ -40,7 +40,6 @@ pub use controller::{
     PhaseTransition,
     TransitionEffects,
     AUTO_RESTART_BASE_DELAY,
-    AUTO_RESTART_MAX_ATTEMPTS,
     AUTO_RESTART_MAX_DELAY,
     AUTO_RESOLVE_MAX_REVIEW_ATTEMPTS,
     AUTO_RESOLVE_REVIEW_FOLLOWUP,

@@ -6007,9 +6007,12 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
                 // repeated compaction attempts within a single iteration.
                 if token_limit_reached && !did_proactive_compact_this_iteration {
                     did_proactive_compact_this_iteration = true;
+                    let attempt_req = sess.current_request_ordinal();
+                    let order = sess.next_background_order(&sub_id, attempt_req, None);
                     sess
-                        .notify_stream_error(
+                        .notify_background_event_with_order(
                             &sub_id,
+                            order,
                             "Token limit reached; running /compact and continuing…".to_string(),
                         )
                         .await;
