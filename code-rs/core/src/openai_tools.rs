@@ -981,6 +981,7 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
+                "gh_run_wait",
                 "code_bridge",
                 "web_search",
             ],
@@ -1013,6 +1014,7 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
+                "gh_run_wait",
                 "code_bridge",
                 "web_search",
             ],
@@ -1044,6 +1046,7 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
+                "gh_run_wait",
                 "code_bridge",
                 "web_search",
             ],
@@ -1112,6 +1115,7 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
+                "gh_run_wait",
                 "code_bridge",
                 "web_search",
                 "test_server/do_something_cool",
@@ -1119,7 +1123,7 @@ mod tests {
         );
 
         assert_eq!(
-            tools[7],
+            tools[8],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "test_server/do_something_cool".to_string(),
                 parameters: JsonSchema::Object {
@@ -1233,6 +1237,7 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
+                "gh_run_wait",
                 "code_bridge",
                 "web_search",
                 "test_server/do_something_cool",
@@ -1240,7 +1245,7 @@ mod tests {
         );
 
         assert_eq!(
-            tools[7],
+            tools[8],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "test_server/do_something_cool".to_string(),
                 parameters: JsonSchema::Object {
@@ -1356,6 +1361,7 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
+                "gh_run_wait",
                 "code_bridge",
                 "web_search",
                 "dash/search",
@@ -1363,7 +1369,7 @@ mod tests {
         );
 
         assert_eq!(
-            tools[7],
+            tools[8],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "dash/search".to_string(),
                 parameters: JsonSchema::Object {
@@ -1429,6 +1435,7 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
+                "gh_run_wait",
                 "code_bridge",
                 "web_search",
                 "dash/paginate",
@@ -1503,6 +1510,7 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
+                "gh_run_wait",
                 "code_bridge",
                 "web_search",
                 "dash/tags",
@@ -1575,13 +1583,14 @@ mod tests {
                 "agent",
                 "wait",
                 "kill",
+                "gh_run_wait",
                 "code_bridge",
                 "web_search",
                 "dash/value",
             ],
         );
         assert_eq!(
-            tools[7],
+            tools[8],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "dash/value".to_string(),
                 parameters: JsonSchema::Object {
