@@ -17584,12 +17584,21 @@ fi\n\
 
     fn auto_schedule_restart_event(&self, token: u64, attempt: u32, delay: Duration) {
         let tx = self.app_event_tx.clone();
-        tokio::spawn(async move {
-            if !delay.is_zero() {
-                tokio::time::sleep(delay).await;
-            }
-            tx.send(AppEvent::AutoCoordinatorRestart { token, attempt });
-        });
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                }
+                tx.send(AppEvent::AutoCoordinatorRestart { token, attempt });
+            });
+        } else {
+            std::thread::spawn(move || {
+                if !delay.is_zero() {
+                    std::thread::sleep(delay);
+                }
+                tx.send(AppEvent::AutoCoordinatorRestart { token, attempt });
+            });
+        }
     }
 
     fn auto_pause_for_transient_failure(&mut self, message: String) {
