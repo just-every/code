@@ -198,6 +198,14 @@ impl HistoryRenderState {
         lines
     }
 
+    pub(crate) fn cached_height(&self, history_id: HistoryId, settings: RenderSettings) -> Option<u16> {
+        if history_id == HistoryId::ZERO {
+            return None;
+        }
+        let key = CacheKey::new(history_id, settings);
+        self.height_cache.borrow().get(&key).copied()
+    }
+
     pub(crate) fn update_spacing_ranges(&self, ranges: Vec<(u16, u16)>) {
         *self.spacing_ranges.borrow_mut() = ranges;
     }

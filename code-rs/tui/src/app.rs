@@ -1325,6 +1325,12 @@ impl App<'_> {
                     }
                     self.schedule_redraw();
                 }
+                AppEvent::SyncHistoryVirtualization => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.sync_history_virtualization();
+                    }
+                    self.schedule_redraw();
+                }
                 AppEvent::FlushInterruptsIfIdle => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.flush_interrupts_if_stream_idle();

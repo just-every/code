@@ -13,6 +13,7 @@ pub(super) fn autoscroll_if_near_bottom(chat: &mut ChatWidget<'_>) {
             .borrow_mut()
             .record_event(HeightEvent::ComposerModeChange);
         chat.perf_track_scroll_delta(before, chat.layout.scroll_offset);
+        chat.sync_history_virtualization();
     }
 }
 
@@ -26,6 +27,7 @@ pub(super) fn page_up(chat: &mut ChatWidget<'_>) {
     chat.layout.scroll_offset = new_offset;
     chat.bottom_pane.set_compact_compose(true);
     flash_scrollbar(chat);
+    chat.sync_history_virtualization();
     chat.app_event_tx.send(crate::app_event::AppEvent::RequestRedraw);
     chat.height_manager.borrow_mut().record_event(crate::height_manager::HeightEvent::UserScroll);
     chat.maybe_show_history_nav_hint_on_first_scroll();
@@ -46,6 +48,7 @@ pub(super) fn line_up(chat: &mut ChatWidget<'_>) {
     chat.layout.scroll_offset = new_offset;
     chat.bottom_pane.set_compact_compose(true);
     flash_scrollbar(chat);
+    chat.sync_history_virtualization();
     chat.app_event_tx.send(crate::app_event::AppEvent::RequestRedraw);
     chat.height_manager
         .borrow_mut()
@@ -66,6 +69,7 @@ pub(super) fn line_down(chat: &mut ChatWidget<'_>) {
         chat.bottom_pane.set_compact_compose(false);
     }
     flash_scrollbar(chat);
+    chat.sync_history_virtualization();
     chat.app_event_tx.send(crate::app_event::AppEvent::RequestRedraw);
     chat.height_manager
         .borrow_mut()
@@ -84,6 +88,7 @@ pub(super) fn page_down(chat: &mut ChatWidget<'_>) {
         chat.bottom_pane.set_compact_compose(false);
     }
     flash_scrollbar(chat);
+    chat.sync_history_virtualization();
     chat.app_event_tx.send(crate::app_event::AppEvent::RequestRedraw);
     chat.height_manager.borrow_mut().record_event(crate::height_manager::HeightEvent::UserScroll);
     chat.maybe_show_history_nav_hint_on_first_scroll();
@@ -102,15 +107,18 @@ pub(super) fn mouse_scroll(chat: &mut ChatWidget<'_>, up: bool) {
         if chat.layout.scroll_offset > 0 {
             chat.bottom_pane.set_compact_compose(true);
         }
+        chat.sync_history_virtualization();
         chat.app_event_tx.send(crate::app_event::AppEvent::RequestRedraw);
         chat.maybe_show_history_nav_hint_on_first_scroll();
     } else {
         if chat.layout.scroll_offset >= 3 {
             chat.layout.scroll_offset = chat.layout.scroll_offset.saturating_sub(3);
+            chat.sync_history_virtualization();
             chat.app_event_tx.send(crate::app_event::AppEvent::RequestRedraw);
             chat.maybe_show_history_nav_hint_on_first_scroll();
         } else if chat.layout.scroll_offset > 0 {
             chat.layout.scroll_offset = 0;
+            chat.sync_history_virtualization();
             chat.app_event_tx.send(crate::app_event::AppEvent::RequestRedraw);
             chat.maybe_show_history_nav_hint_on_first_scroll();
         }
@@ -139,6 +147,7 @@ pub(super) fn to_top(chat: &mut ChatWidget<'_>) {
     chat.layout.scroll_offset = chat.layout.last_max_scroll.get();
     chat.bottom_pane.set_compact_compose(true);
     flash_scrollbar(chat);
+    chat.sync_history_virtualization();
     chat.app_event_tx
         .send(crate::app_event::AppEvent::RequestRedraw);
     chat.height_manager
@@ -154,6 +163,7 @@ pub(super) fn to_bottom(chat: &mut ChatWidget<'_>) {
     chat.layout.scroll_offset = 0;
     chat.bottom_pane.set_compact_compose(false);
     flash_scrollbar(chat);
+    chat.sync_history_virtualization();
     chat.app_event_tx
         .send(crate::app_event::AppEvent::RequestRedraw);
     chat.height_manager

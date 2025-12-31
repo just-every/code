@@ -149,6 +149,8 @@ pub(crate) enum AppEvent {
     /// receive a matching ExecBegin within a short pairing window. This lets
     /// the TUI render a fallback "Ran call_<id>" cell so output is not lost.
     FlushPendingExecEnds,
+    /// Internal: refresh frozen history cell heights after resize.
+    SyncHistoryVirtualization,
     /// Internal: when interrupts queue up behind a stalled/idle stream,
     /// finalize the stream and flush the queue so Exec/Tool cells render.
     FlushInterruptsIfIdle,

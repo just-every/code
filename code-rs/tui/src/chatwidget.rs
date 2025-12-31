@@ -1068,6 +1068,7 @@ use crate::history_cell::clean_wait_command;
 #[cfg(target_os = "macos")]
 use crate::agent_install_helpers::macos_brew_formula_for_command;
 use crate::history_cell::ExecCell;
+use crate::history_cell::FrozenHistoryCell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::HistoryCellType;
 use crate::history_cell::PatchEventType;
@@ -1107,6 +1108,7 @@ use crate::history::state::{
     RateLimitsRecord,
     TextTone,
     TextEmphasis,
+    ToolStatus,
 };
 use crate::cloud_tasks_service::CloudEnvironment;
 use crate::sanitize::{sanitize_for_tui, Mode as SanitizeMode, Options as SanitizeOptions};
@@ -1589,7 +1591,12 @@ pub(crate) struct ChatWidget<'a> {
     active_exec_cell: Option<ExecCell>,
     history_cells: Vec<Box<dyn HistoryCell>>, // Store all history in memory
     history_cell_ids: Vec<Option<HistoryId>>,
+    history_live_window: Option<(usize, usize)>,
+    history_frozen_width: u16,
+    history_frozen_count: usize,
     history_render: HistoryRenderState,
+    last_render_settings: Cell<RenderSettings>,
+    history_virtualization_sync_pending: Cell<bool>,
     render_request_cache: RefCell<Vec<RenderRequestSeed>>,
     render_request_cache_dirty: Cell<bool>,
     history_prefix_append_only: Cell<bool>,
@@ -4680,7 +4687,7 @@ impl ChatWidget<'_> {
                         continue;
                     }
 
-                    if cell.display_lines_trimmed().is_empty() {
+                    if self.cell_lines_trimmed_is_empty(j, cell.as_ref()) {
                         j += 1;
                         continue;
                     }
@@ -4789,92 +4796,133 @@ impl ChatWidget<'_> {
         self.render_request_cache_dirty.set(true);
     }
 
+    fn is_frozen_cell(cell: &dyn HistoryCell) -> bool {
+        cell.as_any().downcast_ref::<FrozenHistoryCell>().is_some()
+    }
+
+    fn history_record_for_index(&self, idx: usize) -> Option<&HistoryRecord> {
+        if let Some(record) = self
+            .history_cell_ids
+            .get(idx)
+            .and_then(|entry| entry.map(|id| self.history_state.record(id)))
+            .flatten()
+        {
+            return Some(record);
+        }
+
+        self.history_cells
+            .get(idx)
+            .and_then(|cell| cell.as_any().downcast_ref::<FrozenHistoryCell>())
+            .and_then(|frozen| self.history_state.record(frozen.history_id()))
+    }
+
+    fn record_from_cell_or_state(&self, idx: usize, cell: &dyn HistoryCell) -> Option<HistoryRecord> {
+        history_cell::record_from_cell(cell)
+            .or_else(|| self.history_record_for_index(idx).cloned())
+    }
+
+    fn render_request_seed_for_cell(&self, idx: usize, cell: &dyn HistoryCell) -> RenderRequestSeed {
+        let (history_id, has_record) = if let Some(Some(id)) = self.history_cell_ids.get(idx) {
+            let exists = self.history_state.index_of(*id).is_some();
+            (*id, exists)
+        } else {
+            (HistoryId::ZERO, false)
+        };
+
+        let cell_has_custom_render = cell.has_custom_render();
+        let is_streaming = cell
+            .as_any()
+            .downcast_ref::<crate::history_cell::StreamingContentCell>()
+            .is_some();
+
+        let mut use_cache = history_id != HistoryId::ZERO
+            && has_record
+            && !cell_has_custom_render
+            && !cell.is_animating()
+            && !is_streaming;
+
+        let is_frozen = Self::is_frozen_cell(cell);
+        let mut kind = RenderRequestKind::Legacy;
+        if history_id != HistoryId::ZERO && !is_frozen {
+            if let Some(record) = self.history_state.record(history_id) {
+                match record {
+                    HistoryRecord::Exec(_) => {
+                        kind = RenderRequestKind::Exec { id: history_id };
+                    }
+                    HistoryRecord::MergedExec(_) => {
+                        kind = RenderRequestKind::MergedExec { id: history_id };
+                    }
+                    HistoryRecord::Explore(_) => {
+                        let hold_header = self.rendered_explore_should_hold(idx);
+                        kind = RenderRequestKind::Explore {
+                            id: history_id,
+                            hold_header,
+                            full_detail: self.is_reasoning_shown(),
+                        };
+                    }
+                    HistoryRecord::Diff(_) => {
+                        kind = RenderRequestKind::Diff { id: history_id };
+                    }
+                    HistoryRecord::AssistantStream(stream_state) => {
+                        kind = RenderRequestKind::Streaming { id: history_id };
+                        if stream_state.in_progress {
+                            use_cache = false;
+                        }
+                    }
+                    HistoryRecord::AssistantMessage(_) => {
+                        kind = RenderRequestKind::Assistant { id: history_id };
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let mut fallback_lines: Option<Rc<Vec<Line<'static>>>> = None;
+        if !cell_has_custom_render && !is_streaming {
+            if history_id != HistoryId::ZERO {
+                if let Some(record) = self.history_state.record(history_id) {
+                    if let Some(lines) = self.fallback_lines_for_record(cell, record) {
+                        let cached = self.history_render.cached_fallback_lines(history_id, || lines);
+                        fallback_lines = Some(cached);
+                    }
+                }
+            } else {
+                let lines = cell.display_lines_trimmed();
+                if !lines.is_empty() {
+                    fallback_lines = Some(Rc::new(lines));
+                }
+            }
+        }
+
+        RenderRequestSeed {
+            history_id,
+            use_cache,
+            fallback_lines,
+            kind,
+        }
+    }
+
+    fn update_render_request_seed(&self, idx: usize) {
+        let cache_len = self.render_request_cache.borrow().len();
+        if cache_len != self.history_cells.len() {
+            self.render_request_cache_dirty.set(true);
+            return;
+        }
+
+        if let Some(cell) = self.history_cells.get(idx) {
+            let seed = self.render_request_seed_for_cell(idx, cell.as_ref());
+            self.render_request_cache.borrow_mut()[idx] = seed;
+        }
+    }
+
     fn rebuild_render_request_cache(&self) {
         let mut cache = self.render_request_cache.borrow_mut();
         cache.clear();
         cache.reserve(self.history_cells.len());
 
-        let reasoning_visible = self.is_reasoning_shown();
         for (idx, cell) in self.history_cells.iter().enumerate() {
-            let (history_id, has_record) = if let Some(Some(id)) = self.history_cell_ids.get(idx) {
-                let exists = self.history_state.index_of(*id).is_some();
-                (*id, exists)
-            } else {
-                (HistoryId::ZERO, false)
-            };
-
-            let cell_has_custom_render = cell.has_custom_render();
-            let is_streaming = cell
-                .as_any()
-                .downcast_ref::<crate::history_cell::StreamingContentCell>()
-                .is_some();
-
-            let mut use_cache = history_id != HistoryId::ZERO
-                && has_record
-                && !cell_has_custom_render
-                && !cell.is_animating()
-                && !is_streaming;
-
-            let mut kind = RenderRequestKind::Legacy;
-            if history_id != HistoryId::ZERO {
-                if let Some(record) = self.history_state.record(history_id) {
-                    match record {
-                        HistoryRecord::Exec(_) => {
-                            kind = RenderRequestKind::Exec { id: history_id };
-                        }
-                        HistoryRecord::MergedExec(_) => {
-                            kind = RenderRequestKind::MergedExec { id: history_id };
-                        }
-                        HistoryRecord::Explore(_) => {
-                            let hold_header = self.rendered_explore_should_hold(idx);
-                            kind = RenderRequestKind::Explore {
-                                id: history_id,
-                                hold_header,
-                                full_detail: reasoning_visible,
-                            };
-                        }
-                        HistoryRecord::Diff(_) => {
-                            kind = RenderRequestKind::Diff { id: history_id };
-                        }
-                        HistoryRecord::AssistantStream(stream_state) => {
-                            kind = RenderRequestKind::Streaming { id: history_id };
-                            if stream_state.in_progress {
-                                use_cache = false;
-                            }
-                        }
-                        HistoryRecord::AssistantMessage(_) => {
-                            kind = RenderRequestKind::Assistant { id: history_id };
-                        }
-                        _ => {}
-                    }
-                }
-            }
-
-            let mut fallback_lines: Option<Rc<Vec<Line<'static>>>> = None;
-            if !cell_has_custom_render && !is_streaming {
-                if history_id != HistoryId::ZERO {
-                    if let Some(record) = self.history_state.record(history_id) {
-                        if let Some(lines) = self.fallback_lines_for_record(cell.as_ref(), record) {
-                            let cached = self
-                                .history_render
-                                .cached_fallback_lines(history_id, || lines);
-                            fallback_lines = Some(cached);
-                        }
-                    }
-                } else {
-                    let lines = cell.display_lines_trimmed();
-                    if !lines.is_empty() {
-                        fallback_lines = Some(Rc::new(lines));
-                    }
-                }
-            }
-
-            cache.push(RenderRequestSeed {
-                history_id,
-                use_cache,
-                fallback_lines,
-                kind,
-            });
+            let seed = self.render_request_seed_for_cell(idx, cell.as_ref());
+            cache.push(seed);
         }
 
         self.render_request_cache_dirty.set(false);
@@ -4903,6 +4951,278 @@ impl ChatWidget<'_> {
         } else {
             Some(history_cell::lines_from_record(record, &self.config))
         }
+    }
+
+    fn cell_lines_for_index(&self, idx: usize, cell: &dyn HistoryCell) -> Vec<Line<'static>> {
+        if Self::is_frozen_cell(cell) {
+            if let Some(record) = self.history_record_for_index(idx) {
+                return history_cell::lines_from_record(record, &self.config);
+            }
+        }
+        cell.display_lines()
+    }
+
+    fn cell_lines_trimmed_is_empty(&self, idx: usize, cell: &dyn HistoryCell) -> bool {
+        if Self::is_frozen_cell(cell) {
+            if let Some(record) = self.history_record_for_index(idx) {
+                return history_cell::lines_from_record(record, &self.config).is_empty();
+            }
+        }
+        cell.display_lines_trimmed().is_empty()
+    }
+
+    fn cell_lines_for_terminal_index(
+        &self,
+        idx: usize,
+        cell: &dyn HistoryCell,
+    ) -> Vec<Line<'static>> {
+        if Self::is_frozen_cell(cell) {
+            if let Some(record) = self.history_record_for_index(idx) {
+                return history_cell::cell_from_record(record, &self.config).display_lines();
+            }
+        }
+        cell.display_lines()
+    }
+
+    fn freeze_eligible_record(&self, record: &HistoryRecord) -> bool {
+        match record {
+            HistoryRecord::PlainMessage(_)
+            | HistoryRecord::AssistantMessage(_)
+            | HistoryRecord::BackgroundEvent(_)
+            | HistoryRecord::Notice(_)
+            | HistoryRecord::Diff(_)
+            | HistoryRecord::Patch(_)
+            | HistoryRecord::Image(_)
+            | HistoryRecord::UpgradeNotice(_)
+            | HistoryRecord::RateLimits(_) => true,
+            HistoryRecord::Exec(state) => !matches!(state.status, ExecStatus::Running),
+            HistoryRecord::MergedExec(_) => true,
+            HistoryRecord::ToolCall(state) => state.status != ToolStatus::Running,
+            HistoryRecord::AssistantStream(state) => !state.in_progress,
+            _ => false,
+        }
+    }
+
+    fn freeze_history_cell_at(&mut self, idx: usize, render_settings: RenderSettings) -> bool {
+        if idx >= self.history_cells.len() {
+            return false;
+        }
+        let Some(Some(history_id)) = self.history_cell_ids.get(idx) else {
+            return false;
+        };
+        let Some(record) = self.history_state.record(*history_id) else {
+            return false;
+        };
+        if !self.freeze_eligible_record(record) {
+            return false;
+        }
+        let cell = &self.history_cells[idx];
+        if Self::is_frozen_cell(cell.as_ref()) || cell.is_animating() {
+            return false;
+        }
+
+        let cached_height = self
+            .history_render
+            .cached_height(*history_id, render_settings)
+            .unwrap_or_else(|| cell.desired_height(render_settings.width));
+        let frozen = FrozenHistoryCell::new(
+            *history_id,
+            cell.kind(),
+            render_settings.width,
+            cached_height,
+        );
+        self.history_cells[idx] = Box::new(frozen);
+        self.history_frozen_count = self.history_frozen_count.saturating_add(1);
+        self.update_render_request_seed(idx);
+        true
+    }
+
+    fn thaw_history_cell_at(&mut self, idx: usize) -> bool {
+        if idx >= self.history_cells.len() {
+            return false;
+        }
+        let Some(frozen) = self.history_cells[idx]
+            .as_any()
+            .downcast_ref::<FrozenHistoryCell>()
+        else {
+            return false;
+        };
+
+        let history_id = frozen.history_id();
+        let Some(record) = self.history_state.record(history_id).cloned() else {
+            return false;
+        };
+        let mut cell = match self.build_cell_from_record(&record) {
+            Some(cell) => cell,
+            None => return false,
+        };
+        Self::assign_history_id_inner(&mut cell, history_id);
+        self.history_cells[idx] = cell;
+        if idx < self.history_cell_ids.len() {
+            self.history_cell_ids[idx] = Some(history_id);
+        }
+        self.history_frozen_count = self.history_frozen_count.saturating_sub(1);
+        self.update_render_request_seed(idx);
+        true
+    }
+
+    fn refresh_frozen_heights(&mut self, render_settings: RenderSettings) {
+        let width = render_settings.width;
+        if self.history_frozen_width == width {
+            return;
+        }
+
+        for idx in 0..self.history_cells.len() {
+            let (history_id, cached_width, cached_height) = match self.history_cells[idx]
+                .as_any()
+                .downcast_ref::<FrozenHistoryCell>()
+            {
+                Some(frozen) => (frozen.history_id(), frozen.cached_width(), frozen.cached_height()),
+                None => continue,
+            };
+
+            if cached_width == width {
+                continue;
+            }
+
+            let height = self
+                .history_render
+                .cached_height(history_id, render_settings)
+                .or_else(|| {
+                    self.history_state.record(history_id).cloned().and_then(|record| {
+                        self.build_cell_from_record(&record)
+                            .map(|cell| cell.desired_height(width))
+                    })
+                })
+                .unwrap_or(cached_height);
+
+            if let Some(frozen) = self.history_cells[idx]
+                .as_any_mut()
+                .downcast_mut::<FrozenHistoryCell>()
+            {
+                frozen.update_cached_height(width, height);
+            }
+        }
+
+        self.history_frozen_width = width;
+    }
+
+    fn thaw_range(&mut self, start: usize, end: usize) -> bool {
+        let mut changed = false;
+        let upper = end.min(self.history_cells.len());
+        for idx in start.min(self.history_cells.len())..upper {
+            if self.thaw_history_cell_at(idx) {
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    fn freeze_range(&mut self, start: usize, end: usize, render_settings: RenderSettings) -> bool {
+        let mut changed = false;
+        let upper = end.min(self.history_cells.len());
+        for idx in start.min(self.history_cells.len())..upper {
+            if self.freeze_history_cell_at(idx, render_settings) {
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    fn update_history_live_window(
+        &mut self,
+        scroll_pos: u16,
+        viewport_rows: u16,
+        total_height: u16,
+        render_settings: RenderSettings,
+    ) -> bool {
+        if self.history_cells.is_empty() || viewport_rows == 0 {
+            self.history_live_window = None;
+            return false;
+        }
+
+        let live_margin = viewport_rows / 2;
+        let live_start = scroll_pos.saturating_sub(live_margin);
+        let live_end = scroll_pos
+            .saturating_add(viewport_rows)
+            .saturating_add(live_margin)
+            .min(total_height);
+
+        let (mut start_idx, mut end_idx) = {
+            let ps_ref = self.history_render.prefix_sums.borrow();
+            let ps: &Vec<u16> = &ps_ref;
+            if ps.len() <= 1 {
+                return false;
+            }
+
+            let start_idx = match ps.binary_search(&live_start) {
+                Ok(i) => i,
+                Err(i) => i.saturating_sub(1),
+            };
+            let end_idx = match ps.binary_search(&live_end) {
+                Ok(i) => i,
+                Err(i) => i,
+            };
+
+            (start_idx, end_idx)
+        };
+
+        let history_len = self.history_cells.len();
+        start_idx = start_idx.min(history_len);
+        end_idx = end_idx.min(history_len);
+        if start_idx > end_idx {
+            start_idx = end_idx;
+        }
+
+        let new_range = (start_idx, end_idx);
+        if self.history_live_window == Some(new_range) {
+            return false;
+        }
+
+        let mut changed = false;
+        if let Some((prev_start, prev_end)) = self.history_live_window {
+            if new_range.0 < prev_start {
+                changed |= self.thaw_range(new_range.0, prev_start);
+            }
+            if prev_end < new_range.1 {
+                changed |= self.thaw_range(prev_end, new_range.1);
+            }
+            if prev_start < new_range.0 {
+                changed |= self.freeze_range(prev_start, new_range.0, render_settings);
+            }
+            if new_range.1 < prev_end {
+                changed |= self.freeze_range(new_range.1, prev_end, render_settings);
+            }
+        } else {
+            changed |= self.thaw_range(new_range.0, new_range.1);
+            changed |= self.freeze_range(0, new_range.0, render_settings);
+            changed |= self.freeze_range(new_range.1, history_len, render_settings);
+        }
+
+        self.history_live_window = Some(new_range);
+        changed
+    }
+
+    pub(crate) fn sync_history_virtualization(&mut self) {
+        self.history_virtualization_sync_pending.set(false);
+        self.ensure_render_request_cache();
+        let render_settings = self.last_render_settings.get();
+        if render_settings.width == 0 {
+            return;
+        }
+
+        self.refresh_frozen_heights(render_settings);
+
+        let viewport_rows = self.layout.last_history_viewport_height.get();
+        if viewport_rows == 0 {
+            return;
+        }
+        let total_height = self.history_render.last_total_height();
+        let max_scroll = total_height.saturating_sub(viewport_rows);
+        let clamped_offset = self.layout.scroll_offset.min(max_scroll);
+        let scroll_pos = max_scroll.saturating_sub(clamped_offset);
+
+        self.update_history_live_window(scroll_pos, viewport_rows, total_height, render_settings);
     }
     /// Handle exec approval request immediately
     fn handle_exec_approval_now(&mut self, _id: String, ev: ExecApprovalRequestEvent) {
@@ -5169,7 +5489,7 @@ impl ChatWidget<'_> {
                 if let Some(record) = self
                     .history_cells
                     .get(idx)
-                    .and_then(|existing| history_cell::record_from_cell(existing.as_ref()))
+                    .and_then(|existing| self.record_from_cell_or_state(idx, existing.as_ref()))
                 {
                     if let HistoryRecord::Patch(mut patch_record) = record {
                         patch_record.patch_type = HistoryPatchEventType::ApplySuccess;
@@ -5210,7 +5530,7 @@ impl ChatWidget<'_> {
             if let Some(record) = self
                 .history_cells
                 .get(idx)
-                .and_then(|existing| history_cell::record_from_cell(existing.as_ref()))
+                .and_then(|existing| self.record_from_cell_or_state(idx, existing.as_ref()))
             {
                 if let HistoryRecord::Patch(mut patch_record) = record {
                     patch_record.patch_type = HistoryPatchEventType::ApplyFailure;
@@ -6155,6 +6475,7 @@ impl ChatWidget<'_> {
             agents_terminal: AgentsTerminalState::new(),
             pending_upgrade_notice: None,
             history_render: HistoryRenderState::new(),
+            last_render_settings: Cell::new(RenderSettings::new(0, 0, false)),
             render_theme_epoch: 0,
             history_state: HistoryState::new(),
             history_snapshot_dirty: false,
@@ -6164,6 +6485,9 @@ impl ChatWidget<'_> {
             context_last_sequence: None,
             context_browser_sequence: None,
             history_cell_ids: Vec::new(),
+            history_live_window: None,
+            history_frozen_width: 0,
+            history_frozen_count: 0,
             height_manager: RefCell::new(HeightManager::new(
                 crate::height_manager::HeightManagerConfig::default(),
             )),
@@ -6196,6 +6520,7 @@ impl ChatWidget<'_> {
             active_ghost_snapshot: None,
             next_ghost_snapshot_id: 0,
             pending_snapshot_dispatches: VecDeque::new(),
+            history_virtualization_sync_pending: Cell::new(false),
             auto_drive_card_sequence: 0,
             auto_drive_variant,
             auto_state: AutoDriveController::default(),
@@ -6515,6 +6840,7 @@ impl ChatWidget<'_> {
             agents_terminal: AgentsTerminalState::new(),
             pending_upgrade_notice: None,
             history_render: HistoryRenderState::new(),
+            last_render_settings: Cell::new(RenderSettings::new(0, 0, false)),
             render_theme_epoch: 0,
             history_state: HistoryState::new(),
             history_snapshot_dirty: false,
@@ -6524,6 +6850,9 @@ impl ChatWidget<'_> {
             context_last_sequence: None,
             context_browser_sequence: None,
             history_cell_ids: Vec::new(),
+            history_live_window: None,
+            history_frozen_width: 0,
+            history_frozen_count: 0,
             height_manager: RefCell::new(HeightManager::new(
                 crate::height_manager::HeightManagerConfig::default(),
             )),
@@ -6556,6 +6885,7 @@ impl ChatWidget<'_> {
             active_ghost_snapshot: None,
             next_ghost_snapshot_id: 0,
             pending_snapshot_dispatches: VecDeque::new(),
+            history_virtualization_sync_pending: Cell::new(false),
             auto_drive_card_sequence: 0,
             auto_drive_variant,
             auto_state: AutoDriveController::default(),
@@ -6671,8 +7001,9 @@ impl ChatWidget<'_> {
         }
     }
 
-    fn auto_drive_cell_text(cell: &dyn HistoryCell) -> Option<String> {
-        let text = Self::auto_drive_lines_to_string(cell.display_lines());
+    fn auto_drive_cell_text_for_index(&self, idx: usize, cell: &dyn HistoryCell) -> Option<String> {
+        let lines = self.cell_lines_for_index(idx, cell);
+        let text = Self::auto_drive_lines_to_string(lines);
         if text.trim().is_empty() {
             None
         } else {
@@ -6898,7 +7229,9 @@ impl ChatWidget<'_> {
             };
 
             let text = match cell.kind() {
-                HistoryCellType::Reasoning => Self::auto_drive_cell_text(cell.as_ref()).map(|text| (text, true)),
+                HistoryCellType::Reasoning => self
+                    .auto_drive_cell_text_for_index(idx, cell.as_ref())
+                    .map(|text| (text, true)),
                 HistoryCellType::PlanUpdate => {
                     if let Some(plan) = cell.as_any().downcast_ref::<PlanUpdateCell>() {
                         let state = plan.state();
@@ -6929,17 +7262,21 @@ impl ChatWidget<'_> {
                         let text = lines.join("\n");
                         Some((text, false))
                     } else {
-                        Self::auto_drive_cell_text(cell.as_ref()).map(|text| (text, false))
+                        self.auto_drive_cell_text_for_index(idx, cell.as_ref())
+                            .map(|text| (text, false))
                     }
                 }
                 HistoryCellType::Diff => {
                     if let Some(diff_cell) = cell.as_any().downcast_ref::<DiffCell>() {
                         Self::auto_drive_diff_summary(diff_cell.record()).map(|text| (text, false))
                     } else {
-                        Self::auto_drive_cell_text(cell.as_ref()).map(|text| (text, false))
+                        self.auto_drive_cell_text_for_index(idx, cell.as_ref())
+                            .map(|text| (text, false))
                     }
                 }
-                _ => Self::auto_drive_cell_text(cell.as_ref()).map(|text| (text, false)),
+                _ => self
+                    .auto_drive_cell_text_for_index(idx, cell.as_ref())
+                    .map(|text| (text, false)),
             };
 
             let Some((text, is_reasoning)) = text else {
@@ -7071,11 +7408,11 @@ impl ChatWidget<'_> {
         use code_protocol::models::ContentItem;
         use code_protocol::models::ResponseItem;
         let mut items = Vec::new();
-        for cell in &self.history_cells {
+        for (idx, cell) in self.history_cells.iter().enumerate() {
             match cell.kind() {
                 crate::history_cell::HistoryCellType::User => {
-                    let text = cell
-                        .display_lines()
+                    let text = self
+                        .cell_lines_for_index(idx, cell.as_ref())
                         .iter()
                         .map(|l| {
                             l.spans
@@ -7094,8 +7431,8 @@ impl ChatWidget<'_> {
                     });
                 }
                 crate::history_cell::HistoryCellType::Assistant => {
-                    let text = cell
-                        .display_lines()
+                    let text = self
+                        .cell_lines_for_index(idx, cell.as_ref())
                         .iter()
                         .map(|l| {
                             l.spans
@@ -7689,6 +8026,7 @@ impl ChatWidget<'_> {
                     .min(self.layout.last_max_scroll.get());
                 self.layout.scroll_offset = new_offset;
                 self.flash_scrollbar();
+                self.sync_history_virtualization();
                 // Enable compact mode so history can use the spacer line
                 if self.layout.scroll_offset > 0 {
                     self.bottom_pane.set_compact_compose(true);
@@ -7720,6 +8058,7 @@ impl ChatWidget<'_> {
                 if self.layout.scroll_offset == 0 {
                     // Already at bottom: ensure spacer above input is enabled.
                     self.bottom_pane.set_compact_compose(false);
+                    self.sync_history_virtualization();
                     self.app_event_tx.send(AppEvent::RequestRedraw);
                     self.height_manager
                         .borrow_mut()
@@ -7733,6 +8072,7 @@ impl ChatWidget<'_> {
                     // Move towards bottom but do NOT toggle spacer yet; wait until
                     // the user confirms by pressing Down again at bottom.
                     self.layout.scroll_offset = self.layout.scroll_offset.saturating_sub(3);
+                    self.sync_history_virtualization();
                     self.app_event_tx.send(AppEvent::RequestRedraw);
                     self.height_manager
                         .borrow_mut()
@@ -7744,6 +8084,7 @@ impl ChatWidget<'_> {
                     // a subsequent Down to re-enable the spacer so the input
                     // doesn't move when scrolling into the line above it.
                     self.layout.scroll_offset = 0;
+                    self.sync_history_virtualization();
                     self.app_event_tx.send(AppEvent::RequestRedraw);
                     self.height_manager
                         .borrow_mut()
@@ -10282,8 +10623,8 @@ impl ChatWidget<'_> {
             return;
         }
         let needle = "Connecting MCP servers…";
-        if let Some((idx, cell)) = self.history_cells.iter().enumerate().find(|(_, cell)| {
-            cell.display_lines().iter().any(|line| {
+        if let Some((idx, cell)) = self.history_cells.iter().enumerate().find(|(idx, cell)| {
+            self.cell_lines_for_index(*idx, cell.as_ref()).iter().any(|line| {
                 line.spans
                     .iter()
                     .any(|span| span.content.as_ref() == needle)
@@ -10378,7 +10719,7 @@ impl ChatWidget<'_> {
                 continue;
             }
 
-            if cell.display_lines_trimmed().is_empty() {
+            if self.cell_lines_trimmed_is_empty(next, cell.as_ref()) {
                 next += 1;
                 continue;
             }
@@ -11483,6 +11824,7 @@ impl ChatWidget<'_> {
         self.history_snapshot_dirty = true;
         self.render_request_cache_dirty.set(true);
         self.flush_history_snapshot_if_needed(false);
+        self.sync_history_virtualization();
     }
 
     fn flush_history_snapshot_if_needed(&mut self, force: bool) {
@@ -12058,6 +12400,10 @@ impl ChatWidget<'_> {
 
         self.history_cells.clear();
         self.history_cell_ids.clear();
+        self.history_live_window = None;
+        self.history_frozen_width = 0;
+        self.history_frozen_count = 0;
+        self.history_virtualization_sync_pending.set(false);
         self.cell_order_seq.clear();
         self.cell_order_dbg.clear();
 
@@ -27903,8 +28249,8 @@ Have we met every part of this goal and is there no further work to do?"#
     /// and include gutter icons and a blank line between items for readability.
     pub(crate) fn export_transcript_lines_for_buffer(&self) -> Vec<ratatui::text::Line<'static>> {
         let mut out: Vec<ratatui::text::Line<'static>> = Vec::new();
-        for cell in &self.history_cells {
-            out.extend(self.render_lines_for_terminal(cell.as_ref()));
+        for (idx, cell) in self.history_cells.iter().enumerate() {
+            out.extend(self.render_lines_for_terminal(idx, cell.as_ref()));
         }
         // Include streaming preview if present (treat like assistant output)
         let mut streaming_lines = self
@@ -27932,9 +28278,10 @@ Have we met every part of this goal and is there no further work to do?"#
     /// - Add a single blank line after the cell as a separator.
     fn render_lines_for_terminal(
         &self,
+        idx: usize,
         cell: &dyn crate::history_cell::HistoryCell,
     ) -> Vec<ratatui::text::Line<'static>> {
-        let mut lines = cell.display_lines();
+        let mut lines = self.cell_lines_for_terminal_index(idx, cell);
         let _has_icon = cell.gutter_symbol().is_some();
         let first_prefix = if let Some(sym) = cell.gutter_symbol() {
             format!(" {} ", sym) // one space, icon, one space
@@ -29443,6 +29790,10 @@ use code_core::protocol::OrderMeta;
         );
         chat.history_cells.clear();
         chat.history_cell_ids.clear();
+        chat.history_live_window = None;
+        chat.history_frozen_width = 0;
+        chat.history_frozen_count = 0;
+        chat.history_virtualization_sync_pending.set(false);
         chat.history_state = HistoryState::new();
         chat.history_render.invalidate_all();
         chat.cell_order_seq.clear();
@@ -37019,63 +37370,67 @@ impl WidgetRef for &ChatWidget<'_> {
 
         self.ensure_render_request_cache();
 
-        let render_request_cache = self.render_request_cache.borrow();
-        let mut render_requests: Vec<RenderRequest> =
-            Vec::with_capacity(self.history_cells.len().saturating_add(3));
-        for (cell, seed) in self
-            .history_cells
-            .iter()
-            .zip(render_request_cache.iter())
-        {
-            let assistant = cell
-                .as_any()
-                .downcast_ref::<crate::history_cell::AssistantMarkdownCell>();
-            render_requests.push(RenderRequest {
-                history_id: seed.history_id,
-                cell: Some(cell.as_ref()),
-                assistant,
-                use_cache: seed.use_cache,
-                fallback_lines: seed.fallback_lines.clone(),
-                kind: seed.kind.clone(),
-                config: &self.config,
-            });
-        }
+        let render_requests: Vec<RenderRequest> = {
+            let render_request_cache = self.render_request_cache.borrow();
+            let mut render_requests =
+                Vec::with_capacity(self.history_cells.len().saturating_add(3));
+            for (cell, seed) in self
+                .history_cells
+                .iter()
+                .zip(render_request_cache.iter())
+            {
+                let assistant = cell
+                    .as_any()
+                    .downcast_ref::<crate::history_cell::AssistantMarkdownCell>();
+                render_requests.push(RenderRequest {
+                    history_id: seed.history_id,
+                    cell: Some(cell.as_ref()),
+                    assistant,
+                    use_cache: seed.use_cache,
+                    fallback_lines: seed.fallback_lines.clone(),
+                    kind: seed.kind.clone(),
+                    config: &self.config,
+                });
+            }
 
-        if let Some(ref cell) = self.active_exec_cell {
-            render_requests.push(RenderRequest {
-                history_id: HistoryId::ZERO,
-                cell: Some(cell as &dyn HistoryCell),
-                assistant: None,
-                use_cache: false,
-                fallback_lines: None,
-                kind: RenderRequestKind::Legacy,
-                config: &self.config,
-            });
-        }
+            if let Some(ref cell) = self.active_exec_cell {
+                render_requests.push(RenderRequest {
+                    history_id: HistoryId::ZERO,
+                    cell: Some(cell as &dyn HistoryCell),
+                    assistant: None,
+                    use_cache: false,
+                    fallback_lines: None,
+                    kind: RenderRequestKind::Legacy,
+                    config: &self.config,
+                });
+            }
 
-        if let Some(ref cell) = streaming_cell {
-            render_requests.push(RenderRequest {
-                history_id: HistoryId::ZERO,
-                cell: Some(cell as &dyn HistoryCell),
-                assistant: None,
-                use_cache: false,
-                fallback_lines: None,
-                kind: RenderRequestKind::Legacy,
-                config: &self.config,
-            });
-        }
+            if let Some(ref cell) = streaming_cell {
+                render_requests.push(RenderRequest {
+                    history_id: HistoryId::ZERO,
+                    cell: Some(cell as &dyn HistoryCell),
+                    assistant: None,
+                    use_cache: false,
+                    fallback_lines: None,
+                    kind: RenderRequestKind::Legacy,
+                    config: &self.config,
+                });
+            }
 
-        for c in &queued_preview_cells {
-            render_requests.push(RenderRequest {
-                history_id: HistoryId::ZERO,
-                cell: Some(c as &dyn HistoryCell),
-                assistant: None,
-                use_cache: false,
-                fallback_lines: None,
-                kind: RenderRequestKind::Legacy,
-                config: &self.config,
-            });
-        }
+            for c in &queued_preview_cells {
+                render_requests.push(RenderRequest {
+                    history_id: HistoryId::ZERO,
+                    cell: Some(c as &dyn HistoryCell),
+                    assistant: None,
+                    use_cache: false,
+                    fallback_lines: None,
+                    kind: RenderRequestKind::Legacy,
+                    config: &self.config,
+                });
+            }
+
+            render_requests
+        };
 
         // Calculate total content height using prefix sums; build if needed
         let spacing = 1u16; // Standard spacing between cells
@@ -37093,6 +37448,14 @@ impl WidgetRef for &ChatWidget<'_> {
         }
 
         let render_settings = RenderSettings::new(cache_width, self.render_theme_epoch, reasoning_visible);
+        self.last_render_settings.set(render_settings);
+        if self.history_frozen_count > 0
+            && self.history_frozen_width != render_settings.width
+            && !self.history_virtualization_sync_pending.get()
+        {
+            self.history_virtualization_sync_pending.set(true);
+            self.app_event_tx.send(AppEvent::SyncHistoryVirtualization);
+        }
         let request_count = render_requests.len();
         let needs_prefix_rebuild =
             self.history_render

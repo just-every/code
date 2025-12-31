@@ -78,6 +78,7 @@ mod context;
 mod card_style;
 mod exec;
 mod diff;
+mod frozen;
 mod explore;
 mod image;
 mod loading;
@@ -117,6 +118,7 @@ pub(crate) use diff::{
     new_diff_cell_from_string,
     DiffCell,
 };
+pub(crate) use frozen::FrozenHistoryCell;
 pub(crate) use browser::BrowserSessionCell;
 pub(crate) use auto_drive::{AutoDriveActionKind, AutoDriveCardCell, AutoDriveStatus};
 pub(crate) use web_search::{
