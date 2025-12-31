@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.23] - 2025-12-31
+
+- TUI: align welcome layout height with width to keep the intro balanced. (36aef09f)
+- TUI: stabilize welcome intro sizing across resolutions to avoid jitter. (6b4cebed, 117863e2)
+
 ## [0.6.22] - 2025-12-31
 
 - Agents: wake on batch completion to avoid stalled automation runs. (0c461689)
