@@ -988,6 +988,7 @@ use crate::protocol::AgentMessageDeltaEvent;
 use crate::protocol::AgentMessageEvent;
 use crate::protocol::AgentReasoningDeltaEvent;
 use crate::protocol::AgentReasoningEvent;
+use crate::protocol::AgentSourceKind;
 use crate::protocol::AgentReasoningRawContentDeltaEvent;
 use crate::protocol::AgentReasoningRawContentEvent;
 use crate::protocol::AgentReasoningSectionBreakEvent;
@@ -1302,6 +1303,8 @@ struct State {
     /// `return_all=false`.
     /// This enables sequential waiting behavior across multiple calls.
     seen_completed_agents_by_batch: HashMap<String, HashSet<String>>,
+    /// Tracks agent batches that already triggered a wake-up after completion.
+    agent_completion_wake_batches: HashSet<String>,
     /// Scratchpad that buffers streamed items/deltas for the current HTTP attempt
     /// so we can seed retries without losing progress.
     turn_scratchpad: Option<TurnScratchpad>,
@@ -5100,6 +5103,17 @@ async fn submission_loop(
                     let tx_event_clone = tx_event.clone();
                     tokio::spawn(async move {
                         while let Some(payload) = agent_rx.recv().await {
+                            let wake_messages = {
+                                let mut state = sess_for_agents.state.lock().unwrap();
+                                agent_completion_wake_messages(
+                                    &payload,
+                                    &mut state.agent_completion_wake_batches,
+                                )
+                            };
+                            if !wake_messages.is_empty() {
+                                enqueue_agent_completion_wake(&sess_for_agents, wake_messages)
+                                    .await;
+                            }
                             let status_event = sess_for_agents.make_event(
                                 "agent_status",
                                 EventMsg::AgentStatusUpdate(AgentStatusUpdateEvent {
@@ -12546,6 +12560,182 @@ async fn capture_browser_screenshot(_sess: &Session) -> Result<(PathBuf, String)
             tracing::warn!("{}", msg);
             Err(msg)
         }
+    }
+}
+
+#[derive(Default)]
+struct AgentBatchCompletionStatus {
+    has_terminal: bool,
+    has_non_terminal: bool,
+}
+
+fn is_terminal_agent_status(status: &str) -> bool {
+    matches!(
+        status.trim().to_ascii_lowercase().as_str(),
+        "completed" | "failed" | "cancelled" | "canceled"
+    )
+}
+
+fn is_auto_review_agent_info(agent: &crate::protocol::AgentInfo) -> bool {
+    matches!(agent.source_kind, Some(AgentSourceKind::AutoReview))
+        || agent
+            .batch_id
+            .as_deref()
+            .map(|batch| batch.eq_ignore_ascii_case("auto-review"))
+            .unwrap_or(false)
+}
+
+fn build_agent_completion_wake_message(batch_id: &str) -> ResponseInputItem {
+    let text = format!(
+        "Agents in batch {batch_id} have completed. Call agent {{\"action\":\"wait\",\"wait\":{{\"batch_id\":\"{batch_id}\",\"return_all\":true}}}} to collect their results, then continue the task.",
+    );
+    ResponseInputItem::Message {
+        role: "developer".to_string(),
+        content: vec![ContentItem::InputText { text }],
+    }
+}
+
+fn agent_completion_wake_messages(
+    payload: &AgentStatusUpdatePayload,
+    seen_batches: &mut HashSet<String>,
+) -> Vec<ResponseInputItem> {
+    let mut batches: HashMap<String, AgentBatchCompletionStatus> = HashMap::new();
+
+    for agent in &payload.agents {
+        if is_auto_review_agent_info(agent) {
+            continue;
+        }
+        let Some(batch_id) = agent.batch_id.as_ref() else {
+            continue;
+        };
+        let trimmed = batch_id.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let status = batches.entry(trimmed.to_string()).or_default();
+        if is_terminal_agent_status(agent.status.as_str()) {
+            status.has_terminal = true;
+        } else {
+            status.has_non_terminal = true;
+        }
+    }
+
+    let mut messages = Vec::new();
+    for (batch_id, status) in batches {
+        if !status.has_terminal || status.has_non_terminal {
+            continue;
+        }
+        if !seen_batches.insert(batch_id.clone()) {
+            continue;
+        }
+        messages.push(build_agent_completion_wake_message(batch_id.as_str()));
+    }
+
+    messages
+}
+
+async fn enqueue_agent_completion_wake(
+    sess: &Arc<Session>,
+    messages: Vec<ResponseInputItem>,
+) {
+    if messages.is_empty() {
+        return;
+    }
+
+    let mut should_start_turn = false;
+    for message in messages {
+        if sess.enqueue_out_of_turn_item(message) {
+            should_start_turn = true;
+        }
+    }
+
+    if should_start_turn {
+        sess.cleanup_old_status_items().await;
+        let turn_context = sess.make_turn_context();
+        let sub_id = sess.next_internal_sub_id();
+        let sentinel_input = vec![InputItem::Text {
+            text: PENDING_ONLY_SENTINEL.to_string(),
+        }];
+        let agent = AgentTask::spawn(Arc::clone(sess), turn_context, sub_id, sentinel_input);
+        sess.set_task(agent);
+    }
+}
+
+#[cfg(test)]
+mod agent_completion_wake_tests {
+    use std::collections::HashSet;
+
+    use super::agent_completion_wake_messages;
+    use super::AgentSourceKind;
+    use crate::agent_tool::AgentStatusUpdatePayload;
+    use crate::protocol::AgentInfo;
+
+    fn agent_info(
+        id: &str,
+        status: &str,
+        batch_id: Option<&str>,
+        source_kind: Option<AgentSourceKind>,
+    ) -> AgentInfo {
+        AgentInfo {
+            id: id.to_string(),
+            name: id.to_string(),
+            status: status.to_string(),
+            batch_id: batch_id.map(str::to_string),
+            model: None,
+            last_progress: None,
+            result: None,
+            error: None,
+            elapsed_ms: None,
+            token_count: None,
+            last_activity_at: None,
+            seconds_since_last_activity: None,
+            source_kind,
+        }
+    }
+
+    #[test]
+    fn agent_completion_wake_messages_dedupes_and_skips_non_terminal() {
+        let mut seen = HashSet::new();
+        let running = AgentStatusUpdatePayload {
+            agents: vec![agent_info("agent-1", "running", Some("batch-1"), None)],
+            context: None,
+            task: None,
+        };
+        assert!(agent_completion_wake_messages(&running, &mut seen).is_empty());
+
+        let mixed = AgentStatusUpdatePayload {
+            agents: vec![
+                agent_info("agent-1", "completed", Some("batch-1"), None),
+                agent_info("agent-2", "running", Some("batch-1"), None),
+            ],
+            context: None,
+            task: None,
+        };
+        assert!(agent_completion_wake_messages(&mixed, &mut seen).is_empty());
+
+        let completed = AgentStatusUpdatePayload {
+            agents: vec![agent_info("agent-1", "completed", Some("batch-1"), None)],
+            context: None,
+            task: None,
+        };
+        let messages = agent_completion_wake_messages(&completed, &mut seen);
+        assert_eq!(messages.len(), 1);
+
+        let messages_again = agent_completion_wake_messages(&completed, &mut seen);
+        assert!(messages_again.is_empty());
+
+        let auto_review = AgentStatusUpdatePayload {
+            agents: vec![agent_info(
+                "agent-3",
+                "completed",
+                Some("auto-review"),
+                Some(AgentSourceKind::AutoReview),
+            )],
+            context: None,
+            task: None,
+        };
+        assert!(agent_completion_wake_messages(&auto_review, &mut seen).is_empty());
     }
 }
 
