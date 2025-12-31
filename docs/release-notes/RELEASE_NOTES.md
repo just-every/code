@@ -1,10 +1,10 @@
-## @just-every/code v0.6.20
+## @just-every/code v0.6.21
 
-Auto Drive reliability improvements for smoother hands-free runs.
+Add gh_run_wait to poll GitHub Actions runs and tighten background job cleanup for clearer failures.
 
 ### Changes
-- Auto Drive: keep retrying after errors so runs recover instead of stopping early.
-- Auto Drive: schedule restarts without depending on Tokio to avoid stalled recoveries.
+- Core: add gh_run_wait tool to poll GitHub Actions runs and return completion summaries.
+- Core: clear orphaned background jobs when tasks end without results to surface failures.
 
 ### Install
 ```
@@ -12,4 +12,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.19...v0.6.20
+Compare: https://github.com/just-every/code/compare/v0.6.20...v0.6.21
