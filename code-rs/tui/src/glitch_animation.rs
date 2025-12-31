@@ -32,7 +32,7 @@ pub fn intro_art_size_for_width(width: u16) -> IntroArtSize {
     }
 }
 
-pub fn intro_art_size_for_area(width: u16, height: u16) -> IntroArtSize {
+pub(crate) fn intro_art_size_for_area(width: u16, height: u16) -> IntroArtSize {
     if width >= LARGE_MIN_WIDTH && height >= LARGE_MIN_HEIGHT {
         IntroArtSize::Large
     } else if width >= MEDIUM_MIN_WIDTH && height >= MEDIUM_MIN_HEIGHT {
@@ -53,23 +53,14 @@ pub fn intro_art_height(size: IntroArtSize) -> u16 {
     }
 }
 
-pub fn render_intro_animation_with_size(
-    area: Rect,
-    buf: &mut Buffer,
-    t: f32,
-    size: IntroArtSize,
-    version: &str,
-) {
-    render_intro_animation_with_size_and_alpha(area, buf, t, 1.0, size, version);
-}
-
-pub fn render_intro_animation_with_size_and_alpha(
+pub(crate) fn render_intro_animation_with_size_and_alpha_offset(
     area: Rect,
     buf: &mut Buffer,
     t: f32,
     alpha: f32,
     size: IntroArtSize,
     version: &str,
+    row_offset: u16,
 ) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -83,7 +74,24 @@ pub fn render_intro_animation_with_size_and_alpha(
     let scan_p = smoothstep(0.55, 0.85, t);
     let frame = (t * 60.0) as u32;
 
-    let lines = welcome_lines(size, version);
+    let mut lines = welcome_lines(size, version);
+    let full_width = lines.iter().map(|line| line.chars().count()).max().unwrap_or(0);
+    let start = row_offset as usize;
+    if start >= lines.len() {
+        return;
+    }
+    let end = (start + area.height as usize).min(lines.len());
+    if start > 0 || end < lines.len() {
+        lines = lines[start..end].iter().cloned().collect();
+        if full_width > 0 {
+            for line in &mut lines {
+                let len = line.chars().count();
+                if len < full_width {
+                    line.push_str(&" ".repeat(full_width - len));
+                }
+            }
+        }
+    }
     let (char_mask, anim_mask, shadow_mask, w, h) =
         lines_masks(&lines, |ch| ANIMATED_CHARS.contains(&ch));
     if w == 0 || h == 0 {
@@ -616,7 +624,15 @@ mod tests {
         let rect = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(rect);
 
-        render_intro_animation_with_size(rect, &mut buf, 1.0, IntroArtSize::Large, &version);
+        render_intro_animation_with_size_and_alpha_offset(
+            rect,
+            &mut buf,
+            1.0,
+            1.0,
+            IntroArtSize::Large,
+            &version,
+            0,
+        );
 
         let rendered = buffer_to_strings(&buf, rect);
         assert_eq!(trim_lines(rendered), trim_lines(expected));
@@ -631,7 +647,15 @@ mod tests {
         let rect = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(rect);
 
-        render_intro_animation_with_size(rect, &mut buf, 1.0, IntroArtSize::Medium, &version);
+        render_intro_animation_with_size_and_alpha_offset(
+            rect,
+            &mut buf,
+            1.0,
+            1.0,
+            IntroArtSize::Medium,
+            &version,
+            0,
+        );
 
         let rendered = buffer_to_strings(&buf, rect);
         assert_eq!(trim_lines(rendered), trim_lines(expected));
@@ -645,7 +669,15 @@ mod tests {
         let rect = Rect::new(0, 0, width, 1);
         let mut buf = Buffer::empty(rect);
 
-        render_intro_animation_with_size(rect, &mut buf, 1.0, IntroArtSize::Small, &version);
+        render_intro_animation_with_size_and_alpha_offset(
+            rect,
+            &mut buf,
+            1.0,
+            1.0,
+            IntroArtSize::Small,
+            &version,
+            0,
+        );
 
         let rendered = buffer_to_strings(&buf, rect);
         assert_eq!(trim_lines(rendered), trim_lines(expected));

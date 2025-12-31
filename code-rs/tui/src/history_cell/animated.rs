@@ -7,7 +7,7 @@ pub(crate) struct AnimatedWelcomeCell {
     completed: Cell<bool>,
     fade_start: RefCell<Option<Instant>>,
     faded_out: Cell<bool>,
-    locked_height: Cell<Option<u16>>,
+    available_height: Cell<Option<u16>>,
     variant: Cell<Option<crate::glitch_animation::IntroArtSize>>,
     version_label: String,
     hidden: Cell<bool>,
@@ -20,11 +20,15 @@ impl AnimatedWelcomeCell {
             completed: Cell::new(false),
             fade_start: RefCell::new(None),
             faded_out: Cell::new(false),
-            locked_height: Cell::new(None),
+            available_height: Cell::new(None),
             variant: Cell::new(None),
             version_label: format!("v{}", code_version::version()),
             hidden: Cell::new(false),
         }
+    }
+
+    pub(crate) fn set_available_height(&self, height: u16) {
+        self.available_height.set(Some(height));
     }
 
     fn fade_start(&self) -> Option<Instant> {
@@ -71,13 +75,16 @@ impl HistoryCell for AnimatedWelcomeCell {
     }
 
     fn desired_height(&self, width: u16) -> u16 {
-        // Lock height to the largest art that fits the current width so we can
-        // grow back when vertical space returns (instead of permanently
-        // shrinking after a tight layout). Height is recomputed on every
-        // measurement so width changes immediately refresh the locked value.
-        let variant_for_width = crate::glitch_animation::intro_art_size_for_width(width);
-        let h = crate::glitch_animation::intro_art_height(variant_for_width);
-        self.locked_height.set(Some(h));
+        let height_hint = self.available_height.get();
+        let variant = height_hint
+            .map(|height| {
+                crate::glitch_animation::intro_art_size_for_area(
+                    width,
+                    height.saturating_sub(3),
+                )
+            })
+            .unwrap_or_else(|| crate::glitch_animation::intro_art_size_for_width(width));
+        let h = crate::glitch_animation::intro_art_height(variant);
         h.saturating_add(3)
     }
 
@@ -86,6 +93,10 @@ impl HistoryCell for AnimatedWelcomeCell {
     }
 
     fn custom_render(&self, area: Rect, buf: &mut Buffer) {
+        self.custom_render_with_skip(area, buf, 0);
+    }
+
+    fn custom_render_with_skip(&self, area: Rect, buf: &mut Buffer, skip_rows: u16) {
         if self.hidden.get() {
             return;
         }
@@ -102,7 +113,11 @@ impl HistoryCell for AnimatedWelcomeCell {
             }
         }
 
-        let current_variant = crate::glitch_animation::intro_art_size_for_area(area.width, area.height);
+        let height_hint = self.available_height.get().unwrap_or(area.height);
+        let current_variant = crate::glitch_animation::intro_art_size_for_area(
+            area.width,
+            height_hint.saturating_sub(3),
+        );
         let previous_variant = self.variant.get();
         let variant_changed = previous_variant.map_or(false, |v| v != current_variant);
 
@@ -117,17 +132,30 @@ impl HistoryCell for AnimatedWelcomeCell {
 
         let variant_for_render = current_variant;
 
-        let art_height = crate::glitch_animation::intro_art_height(current_variant).min(area.height);
+        let art_height = crate::glitch_animation::intro_art_height(current_variant);
+        let full_height = art_height.saturating_add(3);
         // Prefer the logo low in the cell so spare lines sit above it. Keep a
         // small bottom gap (up to 2 rows) when there's room; otherwise center.
-        let slack = area.height.saturating_sub(art_height);
+        let slack = full_height.saturating_sub(art_height);
         let bottom_pad = slack.min(2);
         let top_pad = slack.saturating_sub(bottom_pad);
+        let art_top = top_pad;
+        let art_bottom = art_top.saturating_add(art_height);
+        let vis_top = skip_rows;
+        let vis_bottom = skip_rows.saturating_add(area.height);
+        let intersection_top = art_top.max(vis_top);
+        let intersection_bottom = art_bottom.min(vis_bottom);
+        if intersection_bottom <= intersection_top {
+            return;
+        }
+        let row_offset = intersection_top.saturating_sub(art_top);
+        let y_offset = intersection_top.saturating_sub(vis_top);
+        let visible_height = intersection_bottom.saturating_sub(intersection_top);
         let positioned_area = Rect {
             x: area.x,
-            y: area.y.saturating_add(top_pad),
+            y: area.y.saturating_add(y_offset),
             width: area.width,
-            height: art_height,
+            height: visible_height,
         };
 
         let fade_duration = Duration::from_millis(800);
@@ -137,13 +165,14 @@ impl HistoryCell for AnimatedWelcomeCell {
             if fade_elapsed < fade_duration && !self.faded_out.get() {
                 let fade_progress = fade_elapsed.as_secs_f32() / fade_duration.as_secs_f32();
                 let alpha = 1.0 - fade_progress;
-                crate::glitch_animation::render_intro_animation_with_size_and_alpha(
+                crate::glitch_animation::render_intro_animation_with_size_and_alpha_offset(
                     positioned_area,
                     buf,
                     1.0,
                     alpha,
                     current_variant,
                     &self.version_label,
+                    row_offset,
                 );
             } else {
                 self.faded_out.set(true);
@@ -163,12 +192,14 @@ impl HistoryCell for AnimatedWelcomeCell {
             1.0
         };
 
-        crate::glitch_animation::render_intro_animation_with_size(
+        crate::glitch_animation::render_intro_animation_with_size_and_alpha_offset(
             positioned_area,
             buf,
             progress,
+            1.0,
             variant_for_render,
             &self.version_label,
+            row_offset,
         );
     }
 

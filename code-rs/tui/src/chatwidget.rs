@@ -4796,6 +4796,17 @@ impl ChatWidget<'_> {
         self.render_request_cache_dirty.set(true);
     }
 
+    fn update_welcome_height_hint(&self, height: u16) {
+        for cell in self.history_cells.iter() {
+            if let Some(welcome) = cell
+                .as_any()
+                .downcast_ref::<crate::history_cell::AnimatedWelcomeCell>()
+            {
+                welcome.set_available_height(height);
+            }
+        }
+    }
+
     fn is_frozen_cell(cell: &dyn HistoryCell) -> bool {
         cell.as_any().downcast_ref::<FrozenHistoryCell>().is_some()
     }
@@ -37333,6 +37344,8 @@ impl WidgetRef for &ChatWidget<'_> {
             width: history_area.width.saturating_sub(padding * 2),
             height: history_area.height,
         };
+
+        self.update_welcome_height_hint(content_area.height);
 
         // Reset the full history region to the baseline theme background once per frame.
         // Individual cells only repaint when their visuals differ (e.g., assistant tint),
