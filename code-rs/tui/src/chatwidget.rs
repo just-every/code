@@ -5219,6 +5219,12 @@ impl ChatWidget<'_> {
         self.ensure_render_request_cache();
         let render_settings = self.last_render_settings.get();
         if render_settings.width == 0 {
+            self.history_virtualization_sync_pending.set(true);
+            return;
+        }
+
+        if self.history_cells.is_empty() {
+            self.history_live_window = None;
             return;
         }
 
@@ -5226,14 +5232,30 @@ impl ChatWidget<'_> {
 
         let viewport_rows = self.layout.last_history_viewport_height.get();
         if viewport_rows == 0 {
+            self.history_virtualization_sync_pending.set(true);
             return;
         }
         let total_height = self.history_render.last_total_height();
         let max_scroll = total_height.saturating_sub(viewport_rows);
         let clamped_offset = self.layout.scroll_offset.min(max_scroll);
         let scroll_pos = max_scroll.saturating_sub(clamped_offset);
+        let history_len = self.history_cells.len();
+        let history_total = {
+            let ps_ref = self.history_render.prefix_sums.borrow();
+            if ps_ref.len() <= history_len {
+                self.history_virtualization_sync_pending.set(true);
+                return;
+            }
+            ps_ref[history_len]
+        };
+        let history_scroll_pos = scroll_pos.min(history_total.saturating_sub(1));
 
-        self.update_history_live_window(scroll_pos, viewport_rows, total_height, render_settings);
+        self.update_history_live_window(
+            history_scroll_pos,
+            viewport_rows,
+            history_total,
+            render_settings,
+        );
     }
     /// Handle exec approval request immediately
     fn handle_exec_approval_now(&mut self, _id: String, ev: ExecApprovalRequestEvent) {
@@ -37582,6 +37604,19 @@ impl WidgetRef for &ChatWidget<'_> {
             self.history_render.update_spacing_ranges(spacing_ranges);
             rendered_cells_full = Some(cells);
             self.history_prefix_append_only.set(true);
+            }
+        }
+
+        if self.history_virtualization_sync_pending.get()
+            && !self.history_cells.is_empty()
+            && render_settings.width > 0
+            && content_area.height > 0
+        {
+            let prefix_ready = self.history_render.prefix_sums.borrow().len()
+                > self.history_cells.len();
+            if prefix_ready {
+                self.history_virtualization_sync_pending.set(false);
+                let _ = self.app_event_tx.send(AppEvent::SyncHistoryVirtualization);
             }
         }
 
