@@ -28,7 +28,10 @@ impl AnimatedWelcomeCell {
     }
 
     pub(crate) fn set_available_height(&self, height: u16) {
-        self.available_height.set(Some(height));
+        let prev = self.available_height.get();
+        if prev.map_or(true, |current| height > current) {
+            self.available_height.set(Some(height));
+        }
     }
 
     fn fade_start(&self) -> Option<Instant> {
