@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.22] - 2025-12-31
+
+- Agents: wake on batch completion to avoid stalled automation runs. (0c461689)
+- Core: refresh codex-rs mirror to upstream main to stay aligned with engine updates. (92641d9f)
+- Deps: bump tokio, tracing-subscriber, toml_edit, regex-lite in codex-rs for stability. (a48904de, 4313e0a7, ce3ff299, 13c42a07)
+
 ## [0.6.20] - 2025-12-30
 
 - Auto Drive: keep retrying after errors so runs recover instead of stopping early. (7f6c12e8)
