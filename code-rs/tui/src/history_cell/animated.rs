@@ -78,16 +78,8 @@ impl HistoryCell for AnimatedWelcomeCell {
     }
 
     fn desired_height(&self, width: u16) -> u16 {
-        let height_hint = self.available_height.get();
-        let variant = height_hint
-            .map(|height| {
-                crate::glitch_animation::intro_art_size_for_area(
-                    width,
-                    height.saturating_sub(3),
-                )
-            })
-            .unwrap_or_else(|| crate::glitch_animation::intro_art_size_for_width(width));
-        let h = crate::glitch_animation::intro_art_height(variant);
+        let variant_for_width = crate::glitch_animation::intro_art_size_for_width(width);
+        let h = crate::glitch_animation::intro_art_height(variant_for_width);
         h.saturating_add(3)
     }
 
