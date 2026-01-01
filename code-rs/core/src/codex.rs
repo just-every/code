@@ -8901,7 +8901,7 @@ async fn handle_gh_run_wait(
                     "view",
                     &run_id,
                     "--json",
-                    "status,conclusion,jobs,htmlURL,displayTitle,workflowName",
+                    "status,conclusion,jobs,url,displayTitle,workflowName",
                 ],
                 repo.as_deref(),
                 )
@@ -8939,7 +8939,7 @@ async fn handle_gh_run_wait(
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
                 let html_url = view
-                    .get("htmlURL")
+                    .get("url")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 

@@ -158,10 +158,78 @@ impl RunningToolCallCell {
         duration
     }
 
+    fn compact_duration(duration: Duration) -> String {
+        Self::strip_zero_seconds_suffix(format_duration(duration)).replace(' ', "")
+    }
+
     fn spinner_frame(&self) -> &'static str {
         const FRAMES: [&str; 4] = ["◐", "◓", "◑", "◒"];
         let idx = ((self.start_clock.elapsed().as_millis() / 100) as usize) % FRAMES.len();
         FRAMES[idx]
+    }
+
+    fn is_gh_run_wait(&self) -> bool {
+        self.state.title == "Gh Run Wait..."
+    }
+
+    fn tool_argument_text(&self, name: &str) -> Option<String> {
+        self.state
+            .arguments
+            .iter()
+            .find(|arg| arg.name == name)
+            .and_then(|arg| match &arg.value {
+                ArgumentValue::Text(text) => Some(text.clone()),
+                ArgumentValue::Json(json) => {
+                    let raw = json.to_string();
+                    Some(format_json_compact(&raw).unwrap_or(raw))
+                }
+                ArgumentValue::Secret => None,
+            })
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty())
+    }
+
+    fn render_gh_run_wait(&self, elapsed: Duration) -> Vec<Line<'static>> {
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        lines.push(Line::styled(
+            "Monitoring GitHub Workflow",
+            Style::default()
+                .fg(crate::colors::info())
+                .add_modifier(Modifier::BOLD),
+        ));
+
+        let dim = Style::default().fg(crate::colors::text_dim());
+        let text = Style::default().fg(crate::colors::text());
+        if let Some(branch) = self.tool_argument_text("branch") {
+            lines.push(Line::from(vec![
+                Span::styled("│ ", dim),
+                Span::styled("branch ", dim),
+                Span::styled(branch, text),
+            ]));
+        }
+        if let Some(run_id) = self.tool_argument_text("run_id") {
+            lines.push(Line::from(vec![
+                Span::styled("│ ", dim),
+                Span::styled("run ", dim),
+                Span::styled(run_id, text),
+            ]));
+        }
+        if let Some(workflow) = self.tool_argument_text("workflow") {
+            lines.push(Line::from(vec![
+                Span::styled("│ ", dim),
+                Span::styled("workflow ", dim),
+                Span::styled(workflow, text),
+            ]));
+        }
+
+        let elapsed_str = Self::compact_duration(elapsed);
+        lines.push(Line::from(vec![
+            Span::styled("└ ", dim),
+            Span::styled("Waiting for ", dim),
+            Span::styled(elapsed_str, text),
+        ]));
+        lines.push(Line::from(""));
+        lines
     }
 
     pub(crate) fn has_title(&self, title: &str) -> bool {
@@ -235,6 +303,8 @@ impl HistoryCell for RunningToolCallCell {
                 Style::default().fg(crate::colors::text_dim()),
             ));
             lines.push(Line::from(spans));
+        } else if self.is_gh_run_wait() {
+            return self.render_gh_run_wait(elapsed);
         } else {
             lines.push(Line::styled(
                 format!("{} ({})", self.state.title, format_duration(elapsed)),
