@@ -1151,7 +1151,6 @@ mod tests {
             &tools,
             &[
                 "shell",
-                "image_view",
                 "browser",
                 "agent",
                 "wait",
@@ -1164,7 +1163,7 @@ mod tests {
         );
 
         assert_eq!(
-            tools[9],
+            tools[8],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "test_server/do_something_cool".to_string(),
                 parameters: JsonSchema::Object {
@@ -1274,6 +1273,7 @@ mod tests {
             &tools,
             &[
                 "shell",
+                "image_view",
                 "browser",
                 "agent",
                 "wait",
@@ -1286,7 +1286,7 @@ mod tests {
         );
 
         assert_eq!(
-            tools[8],
+            tools[9],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "test_server/do_something_cool".to_string(),
                 parameters: JsonSchema::Object {
