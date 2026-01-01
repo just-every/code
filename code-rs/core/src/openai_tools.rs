@@ -817,6 +817,13 @@ pub fn create_gh_run_wait_tool() -> OpenAiTool {
         },
     );
     properties.insert(
+        "repo".to_string(),
+        JsonSchema::String {
+            description: Some("Repository in OWNER/REPO form (optional).".to_string()),
+            allowed_values: None,
+        },
+    );
+    properties.insert(
         "workflow".to_string(),
         JsonSchema::String {
             description: Some(

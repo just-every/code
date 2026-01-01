@@ -8734,6 +8734,8 @@ async fn handle_gh_run_wait(
         #[serde(default)]
         run_id: Option<Value>,
         #[serde(default)]
+        repo: Option<String>,
+        #[serde(default)]
         workflow: Option<String>,
         #[serde(default)]
         branch: Option<String>,
@@ -8741,19 +8743,30 @@ async fn handle_gh_run_wait(
         interval_seconds: Option<u64>,
     }
 
-    async fn run_gh(args: &[&str]) -> Result<String, String> {
-        let output = tokio::process::Command::new("gh")
+    async fn run_gh(args: &[&str], repo: Option<&str>) -> Result<String, String> {
+        let mut display_args = Vec::new();
+        if let Some(repo) = repo {
+            display_args.push("-R");
+            display_args.push(repo);
+        }
+        display_args.extend_from_slice(args);
+
+        let mut command = tokio::process::Command::new("gh");
+        if let Some(repo) = repo {
+            command.arg("-R").arg(repo);
+        }
+        let output = command
             .args(args)
             .output()
             .await
-            .map_err(|err| format!("failed to run gh {}: {err}", args.join(" ")))?;
+            .map_err(|err| format!("failed to run gh {}: {err}", display_args.join(" ")))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let message = if !stderr.is_empty() { stderr } else { stdout };
             return Err(format!(
                 "gh {} failed{}",
-                args.join(" "),
+                display_args.join(" "),
                 if message.is_empty() {
                     String::new()
                 } else {
@@ -8790,6 +8803,12 @@ async fn handle_gh_run_wait(
                 Some(Value::Number(num)) => num.as_u64().map(|v| v.to_string()),
                 _ => None,
             };
+            let repo = parsed
+                .repo
+                .as_ref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
 
             let mut resolved_run_id = run_id;
             if resolved_run_id.is_none() {
@@ -8824,7 +8843,9 @@ async fn handle_gh_run_wait(
                     "1",
                     "--json",
                     "databaseId,displayTitle,workflowName,headBranch,status,conclusion",
-                ])
+                ],
+                repo.as_deref(),
+                )
                 .await
                 {
                     Ok(out) => out,
@@ -8881,7 +8902,9 @@ async fn handle_gh_run_wait(
                     &run_id,
                     "--json",
                     "status,conclusion,jobs,htmlURL,displayTitle,workflowName",
-                ])
+                ],
+                repo.as_deref(),
+                )
                 .await
                 {
                     Ok(out) => out,
