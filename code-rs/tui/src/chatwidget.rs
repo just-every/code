@@ -4790,6 +4790,7 @@ impl ChatWidget<'_> {
         self.history_render.invalidate_height_cache();
         self.mark_render_requests_dirty();
         self.history_prefix_append_only.set(false);
+        self.history_virtualization_sync_pending.set(true);
     }
 
     fn mark_render_requests_dirty(&self) {
@@ -5151,41 +5152,45 @@ impl ChatWidget<'_> {
             self.history_live_window = None;
             return false;
         }
+        let history_len = self.history_cells.len();
+        let new_range = if scroll_pos >= total_height {
+            // Tail-only content fills the viewport; keep all history frozen.
+            (history_len, history_len)
+        } else {
+            let live_margin = viewport_rows / 2;
+            let live_start = scroll_pos.saturating_sub(live_margin);
+            let live_end = scroll_pos
+                .saturating_add(viewport_rows)
+                .saturating_add(live_margin)
+                .min(total_height);
 
-        let live_margin = viewport_rows / 2;
-        let live_start = scroll_pos.saturating_sub(live_margin);
-        let live_end = scroll_pos
-            .saturating_add(viewport_rows)
-            .saturating_add(live_margin)
-            .min(total_height);
+            let (mut start_idx, mut end_idx) = {
+                let ps_ref = self.history_render.prefix_sums.borrow();
+                let ps: &Vec<u16> = &ps_ref;
+                if ps.len() <= 1 {
+                    return false;
+                }
 
-        let (mut start_idx, mut end_idx) = {
-            let ps_ref = self.history_render.prefix_sums.borrow();
-            let ps: &Vec<u16> = &ps_ref;
-            if ps.len() <= 1 {
-                return false;
+                let start_idx = match ps.binary_search(&live_start) {
+                    Ok(i) => i,
+                    Err(i) => i.saturating_sub(1),
+                };
+                let end_idx = match ps.binary_search(&live_end) {
+                    Ok(i) => i,
+                    Err(i) => i,
+                };
+
+                (start_idx, end_idx)
+            };
+
+            start_idx = start_idx.min(history_len);
+            end_idx = end_idx.min(history_len);
+            if start_idx > end_idx {
+                start_idx = end_idx;
             }
-
-            let start_idx = match ps.binary_search(&live_start) {
-                Ok(i) => i,
-                Err(i) => i.saturating_sub(1),
-            };
-            let end_idx = match ps.binary_search(&live_end) {
-                Ok(i) => i,
-                Err(i) => i,
-            };
 
             (start_idx, end_idx)
         };
-
-        let history_len = self.history_cells.len();
-        start_idx = start_idx.min(history_len);
-        end_idx = end_idx.min(history_len);
-        if start_idx > end_idx {
-            start_idx = end_idx;
-        }
-
-        let new_range = (start_idx, end_idx);
         if self.history_live_window == Some(new_range) {
             return false;
         }
@@ -5248,10 +5253,8 @@ impl ChatWidget<'_> {
             }
             ps_ref[history_len]
         };
-        let history_scroll_pos = scroll_pos.min(history_total.saturating_sub(1));
-
         self.update_history_live_window(
-            history_scroll_pos,
+            scroll_pos,
             viewport_rows,
             history_total,
             render_settings,
