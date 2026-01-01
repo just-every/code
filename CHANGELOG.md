@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.25] - 2026-01-01
+
+- CLI/GH: use GitHub run URLs when waiting on Actions to avoid stale links. (a7f6402a)
+- CLI/GH: show wait details while following GitHub Actions runs for clarity. (a7f6402a)
+
 ## [0.6.24] - 2026-01-01
 
 - TUI: keep virtualization frozen for tail-only views to avoid redraw churn. (77f37f33)

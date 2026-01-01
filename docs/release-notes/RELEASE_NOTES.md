@@ -1,11 +1,10 @@
-## @just-every/code v0.6.24
+## @just-every/code v0.6.25
 
-Small stability fixes for history virtualization and GitHub release monitoring.
+This release improves GitHub Actions monitoring from the CLI with clearer links and progress details.
 
 ### Changes
-- TUI: keep virtualization frozen for tail-only views to avoid redraw churn.
-- TUI: defer virtualization sync until the view is ready to prevent flicker.
-- Core/GH: allow gh_run_wait to target specific repos for release monitoring.
+- CLI/GH: use GitHub run URLs when waiting on Actions to avoid stale links.
+- CLI/GH: show wait details while following GitHub Actions runs for clarity.
 
 ### Install
 ```
@@ -13,4 +12,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.23...v0.6.24
+Compare: https://github.com/just-every/code/compare/v0.6.24...v0.6.25
