@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.24] - 2026-01-01
+
+- TUI: keep virtualization frozen for tail-only views to avoid redraw churn. (77f37f33)
+- TUI: defer virtualization sync until the view is ready to prevent flicker. (6c11ec70)
+- Core/GH: allow gh_run_wait to target specific repos for release monitoring. (a83514b4)
+
 ## [0.6.23] - 2025-12-31
 
 - TUI: align welcome layout height with width to keep the intro balanced. (36aef09f)
