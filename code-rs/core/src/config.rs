@@ -407,7 +407,7 @@ pub struct Config {
     pub tools_web_search_allowed_domains: Option<Vec<String>>,
     /// Experimental: enable streamable shell tool selection (off by default).
     pub use_experimental_streamable_shell_tool: bool,
-    /// Enable the `view_image` tool that lets the agent attach local images.
+    /// Enable the `image_view` tool that lets the agent attach local images.
     pub include_view_image_tool: bool,
 
     /// Experimental: enable discovery and injection of skills.
@@ -2365,7 +2365,7 @@ pub struct ToolsToml {
     #[serde(default)]
     pub web_search_allowed_domains: Option<Vec<String>>,
 
-    /// Enable the `view_image` tool that lets the agent attach local images.
+    /// Enable the `image_view` tool that lets the agent attach local images.
     #[serde(default)]
     pub view_image: Option<bool>,
 }

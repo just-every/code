@@ -300,7 +300,8 @@ async fn run_code_tool_session_inner(
                     | EventMsg::EnteredReviewMode(_)
                     | EventMsg::ExitedReviewMode(_)
                     | EventMsg::CustomToolCallBegin(_)
-                    | EventMsg::CustomToolCallEnd(_) => {
+                    | EventMsg::CustomToolCallEnd(_)
+                    | EventMsg::ViewImageToolCall(_) => {
                         // For now, we do not do anything extra for these
                         // events. Note that
                         // send(code_event_to_notification(&event)) above has

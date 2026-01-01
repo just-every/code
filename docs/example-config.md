@@ -198,7 +198,7 @@ project_doc_fallback_filenames = []
 # Enable web search tool (alias: web_search_request). Default: false
 web_search = false
 
-# Enable the view_image tool so the agent can attach local images. Default: true
+# Enable the image_view tool so the agent can attach local images. Default: true
 view_image = true
 
 # (Alias accepted) You can also write:

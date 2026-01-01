@@ -40,6 +40,7 @@ pub use code_protocol::protocol::RolloutLine;
 pub use code_protocol::protocol::ConversationPathResponseEvent;
 pub use code_protocol::protocol::ListCustomPromptsResponseEvent;
 pub use code_protocol::protocol::ListSkillsResponseEvent;
+pub use code_protocol::protocol::ViewImageToolCallEvent;
 pub use code_protocol::skills::Skill;
 pub use code_protocol::protocol::ENVIRONMENT_CONTEXT_OPEN_TAG;
 pub use code_protocol::protocol::ExitedReviewModeEvent;
@@ -808,6 +809,9 @@ pub enum EventMsg {
 
     /// Browser screenshot has been captured and is ready for display
     BrowserScreenshotUpdate(BrowserScreenshotUpdateEvent),
+
+    /// Notification that the agent attached a local image via the image_view tool.
+    ViewImageToolCall(ViewImageToolCallEvent),
 
     /// Agent status has been updated
     AgentStatusUpdate(AgentStatusUpdateEvent),

@@ -364,6 +364,35 @@ fn create_shell_tool() -> OpenAiTool {
     })
 }
 
+fn create_image_view_tool() -> OpenAiTool {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "path".to_string(),
+        JsonSchema::String {
+            description: Some("Local filesystem path to an image file.".to_string()),
+            allowed_values: None,
+        },
+    );
+    properties.insert(
+        "alt_text".to_string(),
+        JsonSchema::String {
+            description: Some("Optional label for the image.".to_string()),
+            allowed_values: None,
+        },
+    );
+
+    OpenAiTool::Function(ResponsesApiTool {
+        name: "image_view".to_string(),
+        description: "Attach a local image so the model can view it.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["path".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
 fn create_shell_tool_for_sandbox(sandbox_policy: &SandboxPolicy) -> OpenAiTool {
     let mut properties = BTreeMap::new();
     properties.insert(
@@ -694,6 +723,10 @@ pub fn get_openai_tools(
                 crate::exec_command::create_write_stdin_tool_for_responses_api(),
             ));
         }
+    }
+
+    if config.include_view_image_tool {
+        tools.push(create_image_view_tool());
     }
 
     if let Some(apply_patch_tool_type) = &config.apply_patch_tool_type {
@@ -1118,6 +1151,7 @@ mod tests {
             &tools,
             &[
                 "shell",
+                "image_view",
                 "browser",
                 "agent",
                 "wait",
@@ -1130,7 +1164,7 @@ mod tests {
         );
 
         assert_eq!(
-            tools[8],
+            tools[9],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "test_server/do_something_cool".to_string(),
                 parameters: JsonSchema::Object {
@@ -1364,6 +1398,7 @@ mod tests {
             &tools,
             &[
                 "shell",
+                "image_view",
                 "browser",
                 "agent",
                 "wait",
@@ -1376,7 +1411,7 @@ mod tests {
         );
 
         assert_eq!(
-            tools[8],
+            tools[9],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "dash/search".to_string(),
                 parameters: JsonSchema::Object {

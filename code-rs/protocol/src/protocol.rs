@@ -565,7 +565,7 @@ pub enum EventMsg {
 
     ExecCommandEnd(ExecCommandEndEvent),
 
-    /// Notification that the agent attached a local image via the view_image tool.
+    /// Notification that the agent attached a local image via the image_view tool.
     ViewImageToolCall(ViewImageToolCallEvent),
 
     ExecApprovalRequest(ExecApprovalRequestEvent),

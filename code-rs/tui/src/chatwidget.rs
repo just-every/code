@@ -253,6 +253,7 @@ use code_core::protocol::PatchApplyEndEvent;
 use code_core::protocol::TaskCompleteEvent;
 use code_core::protocol::TokenUsage;
 use code_core::protocol::TurnDiffEvent;
+use code_core::protocol::ViewImageToolCallEvent;
 use code_core::review_coord::{bump_snapshot_epoch_for, try_acquire_lock, ReviewGuard};
 use code_core::ConversationManager;
 use code_core::codex::compact::COMPACTION_CHECKPOINT_MESSAGE;
@@ -1077,6 +1078,7 @@ use crate::history_cell::PlanUpdateCell;
 use crate::history_cell::DiffCell;
 use crate::history_cell::BrowserSessionCell;
 use crate::history_cell::{AutoDriveActionKind, AutoDriveStatus};
+use sha2::{Digest, Sha256};
 use crate::history::state::PatchEventType as HistoryPatchEventType;
 use crate::history::state::{
     AssistantMessageState,
@@ -1097,6 +1099,7 @@ use crate::history::state::{
     MessageLine,
     MessageLineKind,
     MessageHeader,
+    ImageRecord,
     PlainMessageKind,
     PlainMessageRole,
     PlainMessageState,
@@ -2792,6 +2795,70 @@ fn wait_result_interrupted(message: &str) -> bool {
         || lower.contains("wait ended because the session was interrupted")
         || lower.contains("wait interrupted so the assistant can adapt")
         || (lower.contains("background job") && lower.contains("still running"))
+}
+
+fn image_mime_from_path(path: &Path) -> Option<String> {
+    let ext = path.extension().and_then(|ext| ext.to_str())?;
+    let mime = match ext.to_ascii_lowercase().as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "ico" => "image/x-icon",
+        "tif" | "tiff" => "image/tiff",
+        _ => return None,
+    };
+    Some(mime.to_string())
+}
+
+fn image_record_from_path(path: &Path) -> Option<ImageRecord> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            tracing::warn!("Failed to read image {}: {err}", path.display());
+            return None;
+        }
+    };
+    let (width, height) = match image::image_dimensions(path) {
+        Ok((w, h)) => (
+            w.min(u16::MAX as u32) as u16,
+            h.min(u16::MAX as u32) as u16,
+        ),
+        Err(err) => {
+            tracing::warn!("Failed to read image dimensions for {}: {err}", path.display());
+            (0, 0)
+        }
+    };
+    let sha_hex = format!("{:x}", Sha256::digest(&bytes));
+    let byte_len = bytes.len().min(u32::MAX as usize) as u32;
+    Some(ImageRecord {
+        id: HistoryId::ZERO,
+        source_path: Some(path.to_path_buf()),
+        alt_text: None,
+        width,
+        height,
+        sha256: Some(sha_hex),
+        mime_type: image_mime_from_path(path),
+        byte_len: Some(byte_len),
+    })
+}
+
+fn image_view_path_from_params(params: &serde_json::Value, cwd: &Path) -> Option<PathBuf> {
+    let path = params.get("path").and_then(|value| value.as_str())?;
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut resolved = PathBuf::from(trimmed);
+    if resolved.is_relative() {
+        resolved = cwd.join(&resolved);
+    }
+    if let Ok(canon) = resolved.canonicalize() {
+        resolved = canon;
+    }
+    Some(resolved)
 }
 
 impl std::fmt::Display for ExecCallId {
@@ -6778,6 +6845,7 @@ impl ChatWidget<'_> {
                 web_search_by_order: HashMap::new(),
                 running_wait_tools: HashMap::new(),
                 running_kill_tools: HashMap::new(),
+                image_viewed_calls: HashSet::new(),
                 browser_sessions: HashMap::new(),
                 browser_session_by_call: HashMap::new(),
                 browser_session_by_order: HashMap::new(),
@@ -14017,6 +14085,20 @@ impl ChatWidget<'_> {
                         self.next_internal_key()
                     }
                 };
+                let image_view_seen = if tool_name == "image_view" {
+                    self.tools_state
+                        .image_viewed_calls
+                        .remove(&ToolCallId(call_id.clone()))
+                } else {
+                    false
+                };
+                let image_view_path = if tool_name == "image_view" && !image_view_seen {
+                    params_json
+                        .as_ref()
+                        .and_then(|value| image_view_path_from_params(value, &self.config.cwd))
+                } else {
+                    None
+                };
                 tracing::info!(
                     "[order] CustomToolCallEnd call_id={} tool={} seq={}",
                     call_id,
@@ -14347,10 +14429,33 @@ impl ChatWidget<'_> {
                     let _ = self.history_insert_with_key_global(Box::new(completed), ok);
                 }
 
+                if let Some(path) = image_view_path.as_ref() {
+                    if let Some(record) = image_record_from_path(path) {
+                        let cell = Box::new(history_cell::ImageOutputCell::from_record(record));
+                        let _ = self.history_insert_with_key_global(cell, ok);
+                    }
+                }
+
                 // After tool completes, likely transitioning to response
                 self.bottom_pane
                     .update_status_text("responding".to_string());
                 self.maybe_hide_spinner();
+            }
+            EventMsg::ViewImageToolCall(ViewImageToolCallEvent { call_id, path }) => {
+                let ok = match event.order.as_ref() {
+                    Some(om) => self.provider_order_key_from_order_meta(om),
+                    None => {
+                        tracing::warn!("missing OrderMeta on ViewImageToolCall; using synthetic key");
+                        self.next_internal_key()
+                    }
+                };
+                if let Some(record) = image_record_from_path(&path) {
+                    let cell = Box::new(history_cell::ImageOutputCell::from_record(record));
+                    let _ = self.history_insert_with_key_global(cell, ok);
+                    self.tools_state
+                        .image_viewed_calls
+                        .insert(ToolCallId(call_id));
+                }
             }
             EventMsg::GetHistoryEntryResponse(event) => {
                 let code_core::protocol::GetHistoryEntryResponseEvent {
@@ -39336,6 +39441,7 @@ struct ToolState {
     web_search_by_order: HashMap<u64, String>,
     running_wait_tools: HashMap<ToolCallId, ExecCallId>,
     running_kill_tools: HashMap<ToolCallId, ExecCallId>,
+    image_viewed_calls: HashSet<ToolCallId>,
     browser_sessions: HashMap<String, browser_sessions::BrowserSessionTracker>,
     browser_session_by_call: HashMap<String, String>,
     browser_session_by_order: HashMap<BrowserSessionOrderKey, String>,

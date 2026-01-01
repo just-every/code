@@ -202,7 +202,8 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             | EventMsg::EnvironmentContextDelta(_)
             | EventMsg::BrowserSnapshot(_)
             | EventMsg::ListCustomPromptsResponse(_)
-            | EventMsg::ListSkillsResponse(_) => {
+            | EventMsg::ListSkillsResponse(_)
+            | EventMsg::ViewImageToolCall(_) => {
                 // Environment context events are consumed by the TUI; the CLI runner
                 // does not surface them alongside the human-readable transcript.
             }
