@@ -1,10 +1,12 @@
-## @just-every/code v0.6.27
+## @just-every/code v0.6.28
 
-This release tightens automation reviews and streamlines GitHub run waiting defaults.
+This release focuses on fresher model data, smoother limits UI, and clearer assistant code output.
 
 ### Changes
-- Auto-review: skip re-reviews when files are unchanged to cut noise.
-- Core/GH: auto-resolve gh_run_wait defaults for smoother release checks.
+- TUI: wrap assistant code blocks to keep long outputs readable.
+- TUI: auto-refresh secondary limit windows so status stays current.
+- Core/Limits: retry after reset even when the prior attempt failed.
+- Core/Models: refresh when models etag changes or mismatches to stay current.
 
 ### Install
 ```
@@ -12,4 +14,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.26...v0.6.27
+Compare: https://github.com/just-every/code/compare/v0.6.27...v0.6.28

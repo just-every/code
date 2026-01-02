@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.6.28] - 2026-01-02
+
+- TUI: wrap assistant code blocks to keep long outputs readable. (605c2ba1)
+- TUI: auto-refresh secondary limit windows so status stays current. (68b9d353)
+- Core/Limits: retry after reset even when the prior attempt failed. (8b62febf)
+- Core/Models: refresh when models etag changes or mismatches to stay current. (e266fd24, 66b7c673)
+
 ## [0.6.27] - 2026-01-02
 
 - Auto-review: skip re-reviews when files are unchanged to cut noise. (0dddef81)
