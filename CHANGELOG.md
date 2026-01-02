@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.27] - 2026-01-02
+
+- Auto-review: skip re-reviews when files are unchanged to cut noise. (0dddef81)
+- Core/GH: auto-resolve gh_run_wait defaults for smoother release checks. (a865bee5)
+
 ## [0.6.26] - 2026-01-01
 
 - Image view: render local image attachments in transcripts and tools. (71a68a2)

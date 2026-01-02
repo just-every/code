@@ -1,10 +1,10 @@
-## @just-every/code v0.6.26
+## @just-every/code v0.6.27
 
-This release adds richer image handling and tightens tool coverage for image attachments.
+This release tightens automation reviews and streamlines GitHub run waiting defaults.
 
 ### Changes
-- Image view renders local image attachments in transcripts and tools.
-- Core/Tools aligns image_view tool coverage to match supported sources.
+- Auto-review: skip re-reviews when files are unchanged to cut noise.
+- Core/GH: auto-resolve gh_run_wait defaults for smoother release checks.
 
 ### Install
 ```
@@ -12,4 +12,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.25...v0.6.26
+Compare: https://github.com/just-every/code/compare/v0.6.26...v0.6.27
