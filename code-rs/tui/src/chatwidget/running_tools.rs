@@ -97,7 +97,7 @@ pub(super) fn rehydrate(chat: &mut ChatWidget<'_>) {
 }
 
 pub(super) fn resolve_entry_index(
-    chat: &ChatWidget<'_>,
+    chat: &mut ChatWidget<'_>,
     entry: &RunningToolEntry,
     call_id: &str,
 ) -> Option<usize> {

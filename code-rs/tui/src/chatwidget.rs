@@ -1597,6 +1597,9 @@ pub(crate) struct ChatWidget<'a> {
     active_exec_cell: Option<ExecCell>,
     history_cells: Vec<Box<dyn HistoryCell>>, // Store all history in memory
     history_cell_ids: Vec<Option<HistoryId>>,
+    history_id_to_cell_index: HashMap<HistoryId, usize>,
+    history_id_index_dirty: bool,
+    last_history_state_mismatch_warn: Option<Instant>,
     history_live_window: Option<(usize, usize)>,
     history_frozen_width: u16,
     history_frozen_count: usize,
@@ -4847,10 +4850,12 @@ impl ChatWidget<'_> {
             self.history_cells = kept_cells;
             self.history_cell_ids = kept_ids;
             if removed_any {
+                self.mark_history_id_index_dirty();
                 self.invalidate_height_cache();
             }
         } else if !self.history_cell_ids.is_empty() {
             self.history_cell_ids.clear();
+            self.mark_history_id_index_dirty();
         }
 
         // Send a redraw event to trigger UI update
@@ -5143,7 +5148,9 @@ impl ChatWidget<'_> {
         Self::assign_history_id_inner(&mut cell, history_id);
         self.history_cells[idx] = cell;
         if idx < self.history_cell_ids.len() {
+            let old_id = self.history_cell_ids.get(idx).and_then(|slot| *slot);
             self.history_cell_ids[idx] = Some(history_id);
+            self.update_history_id_index_after_assignment(idx, old_id, Some(history_id));
         }
         self.history_frozen_count = self.history_frozen_count.saturating_sub(1);
         self.update_render_request_seed(idx);
@@ -5612,7 +5619,13 @@ impl ChatWidget<'_> {
                             });
                         if let Some(id) = self.apply_mutation_to_cell_index(idx, mutation) {
                             if idx < self.history_cell_ids.len() {
+                                let old_id = self.history_cell_ids.get(idx).and_then(|slot| *slot);
                                 self.history_cell_ids[idx] = Some(id);
+                                self.update_history_id_index_after_assignment(
+                                    idx,
+                                    old_id,
+                                    Some(id),
+                                );
                             }
                             self.maybe_hide_spinner();
                             return;
@@ -5817,9 +5830,23 @@ impl ChatWidget<'_> {
                     id,
                 );
                 if idx < self.history_cell_ids.len() {
+                    let old_id = self.history_cell_ids.get(idx).and_then(|slot| *slot);
                     self.history_cell_ids[idx] = Some(id);
+                    self.update_history_id_index_after_assignment(idx, old_id, Some(id));
                 } else {
                     self.history_cell_ids.push(Some(id));
+                    if id != HistoryId::ZERO && !self.history_id_index_dirty {
+                        let needs_dirty = match self.history_id_to_cell_index.entry(id) {
+                            Entry::Vacant(entry) => {
+                                entry.insert(idx);
+                                false
+                            }
+                            Entry::Occupied(_) => true,
+                        };
+                        if needs_dirty {
+                            self.history_id_index_dirty = true;
+                        }
+                    }
                 }
                 self.context_cell_id = Some(id);
                 self.mark_history_dirty();
@@ -6307,9 +6334,14 @@ impl ChatWidget<'_> {
         }
 
         let mut has_wait_running = false;
-        for (call_id, entry) in self.tools_state.running_custom_tools.iter() {
-            if let Some(idx) = running_tools::resolve_entry_index(self, entry, &call_id.0)
-            {
+        let running_entries: Vec<(ToolCallId, RunningToolEntry)> = self
+            .tools_state
+            .running_custom_tools
+            .iter()
+            .map(|(call_id, entry)| (call_id.clone(), *entry))
+            .collect();
+        for (call_id, entry) in running_entries {
+            if let Some(idx) = running_tools::resolve_entry_index(self, &entry, &call_id.0) {
                 if let Some(cell) = self.history_cells.get(idx).and_then(|c| c
                     .as_any()
                     .downcast_ref::<history_cell::RunningToolCallCell>())
@@ -6595,6 +6627,9 @@ impl ChatWidget<'_> {
             context_last_sequence: None,
             context_browser_sequence: None,
             history_cell_ids: Vec::new(),
+            history_id_to_cell_index: HashMap::new(),
+            history_id_index_dirty: true,
+            last_history_state_mismatch_warn: None,
             history_live_window: None,
             history_frozen_width: 0,
             history_frozen_count: 0,
@@ -6721,8 +6756,8 @@ impl ChatWidget<'_> {
             let notice_key = w.next_req_key_top();
             let _ = w.history_insert_plain_state_with_key(notice_state, notice_key, "prelude");
             if connecting_mcp && !w.test_mode {
-                // Render connecting status as a separate cell with standard gutter and spacing
-                w.history_push_top_next_req(history_cell::new_connecting_mcp_status());
+                // Render connecting status as a background cell using the background helper.
+                w.push_background_before_next_output("\nConnecting MCP servers…");
             }
             // Mark welcome as shown to avoid duplicating the Popular commands section
             // when SessionConfigured arrives shortly after.
@@ -6964,6 +6999,9 @@ impl ChatWidget<'_> {
             context_last_sequence: None,
             context_browser_sequence: None,
             history_cell_ids: Vec::new(),
+            history_id_to_cell_index: HashMap::new(),
+            history_id_index_dirty: true,
+            last_history_state_mismatch_warn: None,
             history_live_window: None,
             history_frozen_width: 0,
             history_frozen_count: 0,
@@ -9598,6 +9636,24 @@ impl ChatWidget<'_> {
             self.history_cells.insert(pos, cell);
             self.history_cell_ids.insert(pos, maybe_id);
         }
+        if append {
+            if let Some(id) = maybe_id.filter(|id| *id != HistoryId::ZERO) {
+                if !self.history_id_index_dirty {
+                    let needs_dirty = match self.history_id_to_cell_index.entry(id) {
+                        Entry::Vacant(entry) => {
+                            entry.insert(pos);
+                            false
+                        }
+                        Entry::Occupied(_) => true,
+                    };
+                    if needs_dirty {
+                        self.history_id_index_dirty = true;
+                    }
+                }
+            }
+        } else {
+            self.mark_history_id_index_dirty();
+        }
         // In terminal mode, App mirrors history lines into the native buffer.
         // Ensure order vector is also long enough for position after cell insert
         if self.cell_order_seq.len() < pos {
@@ -9809,6 +9865,22 @@ impl ChatWidget<'_> {
         } else {
             self.history_cells.insert(pos, cell);
             self.history_cell_ids.insert(pos, Some(id));
+        }
+        if append {
+            if id != HistoryId::ZERO && !self.history_id_index_dirty {
+                let needs_dirty = match self.history_id_to_cell_index.entry(id) {
+                    Entry::Vacant(entry) => {
+                        entry.insert(pos);
+                        false
+                    }
+                    Entry::Occupied(_) => true,
+                };
+                if needs_dirty {
+                    self.history_id_index_dirty = true;
+                }
+            }
+        } else {
+            self.mark_history_id_index_dirty();
         }
         if self.cell_order_seq.len() < pos {
             self.cell_order_seq.resize(
@@ -10186,7 +10258,81 @@ impl ChatWidget<'_> {
         }
     }
 
-    fn cell_index_for_history_id(&self, id: HistoryId) -> Option<usize> {
+    fn mark_history_id_index_dirty(&mut self) {
+        self.history_id_index_dirty = true;
+    }
+
+    fn rebuild_history_id_index_if_dirty(&mut self) {
+        if !self.history_id_index_dirty {
+            return;
+        }
+
+        self.history_id_to_cell_index.clear();
+        self.history_id_to_cell_index
+            .reserve(self.history_cell_ids.len());
+        let mut duplicates = 0usize;
+        for (idx, maybe_id) in self.history_cell_ids.iter().enumerate() {
+            let Some(id) = *maybe_id else {
+                continue;
+            };
+            if id == HistoryId::ZERO {
+                continue;
+            }
+            match self.history_id_to_cell_index.entry(id) {
+                Entry::Vacant(entry) => {
+                    entry.insert(idx);
+                }
+                Entry::Occupied(_) => {
+                    duplicates = duplicates.saturating_add(1);
+                }
+            }
+        }
+        self.history_id_index_dirty = false;
+
+        if cfg!(debug_assertions) && duplicates > 0 {
+            tracing::warn!("history id index rebuild saw {duplicates} duplicate ids");
+        }
+    }
+
+    fn update_history_id_index_after_assignment(
+        &mut self,
+        idx: usize,
+        old_id: Option<HistoryId>,
+        new_id: Option<HistoryId>,
+    ) {
+        if old_id == new_id {
+            return;
+        }
+        if self.history_id_index_dirty {
+            return;
+        }
+
+        if let Some(old_id) = old_id.filter(|id| *id != HistoryId::ZERO) {
+            if let Some(stored_idx) = self.history_id_to_cell_index.get(&old_id).copied() {
+                if stored_idx == idx {
+                    self.history_id_to_cell_index.remove(&old_id);
+                } else {
+                    self.mark_history_id_index_dirty();
+                    return;
+                }
+            }
+        }
+
+        if let Some(new_id) = new_id.filter(|id| *id != HistoryId::ZERO) {
+            let needs_dirty = match self.history_id_to_cell_index.entry(new_id) {
+                Entry::Vacant(entry) => {
+                    entry.insert(idx);
+                    false
+                }
+                Entry::Occupied(entry) => *entry.get() != idx,
+            };
+            if needs_dirty {
+                self.history_id_index_dirty = true;
+            }
+        }
+    }
+
+    fn cell_index_for_history_id_slow(&self, id: HistoryId) -> Option<usize> {
         if let Some(idx) = self
             .history_cell_ids
             .iter()
@@ -10196,11 +10342,72 @@ impl ChatWidget<'_> {
         }
 
         self.history_cells.iter().enumerate().find_map(|(idx, cell)| {
-        history_cell::record_from_cell(cell.as_ref())
+            history_cell::record_from_cell(cell.as_ref())
                 .map(|record| record.id() == id)
                 .filter(|matched| *matched)
                 .map(|_| idx)
         })
+    }
+
+    fn cell_index_for_history_id(&mut self, id: HistoryId) -> Option<usize> {
+        if id == HistoryId::ZERO {
+            return None;
+        }
+
+        self.rebuild_history_id_index_if_dirty();
+        if let Some(idx) = self.history_id_to_cell_index.get(&id).copied() {
+            if self.history_cell_ids.get(idx) == Some(&Some(id)) {
+                return Some(idx);
+            }
+
+            self.mark_history_id_index_dirty();
+            self.rebuild_history_id_index_if_dirty();
+            if let Some(idx) = self.history_id_to_cell_index.get(&id).copied() {
+                if self.history_cell_ids.get(idx) == Some(&Some(id)) {
+                    return Some(idx);
+                }
+            }
+        }
+
+        let idx = self.cell_index_for_history_id_slow(id)?;
+        if !self.history_id_index_dirty && self.history_cell_ids.get(idx) == Some(&Some(id)) {
+            self.history_id_to_cell_index.insert(id, idx);
+        }
+        Some(idx)
+    }
+
+    fn should_warn_history_state_mismatch(&mut self) -> bool {
+        let now = Instant::now();
+        let should_warn = self
+            .last_history_state_mismatch_warn
+            .map(|last| now.duration_since(last) >= Duration::from_secs(10))
+            .unwrap_or(true);
+        if should_warn {
+            self.last_history_state_mismatch_warn = Some(now);
+        }
+        should_warn
+    }
+
+    #[cfg(test)]
+    fn debug_validate_history_id_index(&mut self) {
+        self.rebuild_history_id_index_if_dirty();
+        for (idx, maybe_id) in self.history_cell_ids.iter().enumerate() {
+            let Some(id) = *maybe_id else {
+                continue;
+            };
+            if id == HistoryId::ZERO {
+                continue;
+            }
+            let mapped = self.history_id_to_cell_index.get(&id).copied();
+            assert_eq!(mapped, Some(idx), "history id map missing {id:?}");
+        }
+        for (id, idx) in &self.history_id_to_cell_index {
+            let stored = self
+                .history_cell_ids
+                .get(*idx)
+                .and_then(|slot| *slot);
+            assert_eq!(stored, Some(*id), "history id map mismatch for {id:?}");
+        }
     }
 
     fn update_cell_from_record(&mut self, id: HistoryId, record: HistoryRecord) {
@@ -10222,15 +10429,19 @@ impl ChatWidget<'_> {
             }
 
             if idx < self.history_cell_ids.len() {
+                let old_id = self.history_cell_ids.get(idx).and_then(|slot| *slot);
                 self.history_cell_ids[idx] = Some(id);
+                self.update_history_id_index_after_assignment(idx, old_id, Some(id));
             }
             self.invalidate_height_cache();
             self.request_redraw();
         } else {
-            tracing::warn!(
-                "history-state mismatch: unable to locate cell for id {:?}",
-                id
-            );
+            if self.should_warn_history_state_mismatch() {
+                tracing::warn!(
+                    "history-state mismatch: unable to locate cell for id {:?}",
+                    id
+                );
+            }
         }
     }
 
@@ -10512,6 +10723,7 @@ impl ChatWidget<'_> {
             return;
         }
 
+        let old_id = self.history_cell_ids.get(idx).and_then(|slot| *slot);
         let record_idx = self
             .record_index_for_cell(idx)
             .unwrap_or_else(|| self.record_index_for_position(idx));
@@ -10528,6 +10740,10 @@ impl ChatWidget<'_> {
         }
 
         self.history_cells[idx] = cell;
+        let new_id = self.history_cell_ids.get(idx).and_then(|slot| *slot);
+        if old_id != new_id {
+            self.mark_history_id_index_dirty();
+        }
         self.invalidate_height_cache();
         self.request_redraw();
         self.refresh_explore_trailing_flags();
@@ -10579,6 +10795,9 @@ impl ChatWidget<'_> {
         if idx < self.history_cell_ids.len() {
             self.history_cell_ids[idx] = maybe_id;
         }
+        if old_id != maybe_id {
+            self.mark_history_id_index_dirty();
+        }
         if let Some(id) = old_id {
             self.history_render.invalidate_history_id(id);
         } else {
@@ -10602,6 +10821,7 @@ impl ChatWidget<'_> {
             return;
         }
 
+        let len_before = self.history_cells.len();
         let removed_id = self.history_cell_ids.get(idx).and_then(|id| *id);
         if let Some(record_idx) = self.record_index_for_cell(idx) {
             let _ = self
@@ -10612,6 +10832,21 @@ impl ChatWidget<'_> {
         self.history_cells.remove(idx);
         if idx < self.history_cell_ids.len() {
             self.history_cell_ids.remove(idx);
+        }
+        if idx + 1 == len_before {
+            if !self.history_id_index_dirty {
+                if let Some(id) = removed_id.filter(|id| *id != HistoryId::ZERO) {
+                    if let Some(stored_idx) = self.history_id_to_cell_index.get(&id).copied() {
+                        if stored_idx == idx {
+                            self.history_id_to_cell_index.remove(&id);
+                        } else {
+                            self.history_id_index_dirty = true;
+                        }
+                    }
+                }
+            }
+        } else {
+            self.mark_history_id_index_dirty();
         }
         if idx < self.cell_order_seq.len() {
             self.cell_order_seq.remove(idx);
@@ -11948,7 +12183,7 @@ impl ChatWidget<'_> {
         }
         if !force {
             if let Some(last) = self.history_snapshot_last_flush {
-                if last.elapsed() < Duration::from_millis(400) {
+                if last.elapsed() < Duration::from_millis(5000) {
                     return;
                 }
             }
@@ -12515,6 +12750,8 @@ impl ChatWidget<'_> {
 
         self.history_cells.clear();
         self.history_cell_ids.clear();
+        self.history_id_to_cell_index.clear();
+        self.history_id_index_dirty = true;
         self.history_live_window = None;
         self.history_frozen_width = 0;
         self.history_frozen_count = 0;
@@ -30142,6 +30379,8 @@ use code_core::protocol::OrderMeta;
         );
         chat.history_cells.clear();
         chat.history_cell_ids.clear();
+        chat.history_id_to_cell_index.clear();
+        chat.history_id_index_dirty = true;
         chat.history_live_window = None;
         chat.history_frozen_width = 0;
         chat.history_frozen_count = 0;
@@ -31922,6 +32161,69 @@ use code_core::protocol::OrderMeta;
             !chat.exec.running_commands.contains_key(&exec_call_id),
             "finalization should clear the running command"
         );
+    }
+
+    #[test]
+    fn history_id_index_stays_consistent_under_churn() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+        reset_history(chat);
+
+        insert_plain_cell(chat, &["one"]);
+        insert_plain_cell(chat, &["two"]);
+        insert_plain_cell(chat, &["three"]);
+        chat.debug_validate_history_id_index();
+
+        let target_id = chat
+            .history_cell_ids
+            .get(1)
+            .and_then(|slot| *slot)
+            .expect("expected a history id at index 1");
+        let record = chat
+            .history_state
+            .record(target_id)
+            .cloned()
+            .expect("expected record for history id");
+        chat.update_cell_from_record(target_id, record);
+        chat.debug_validate_history_id_index();
+
+        let background = history_cell::new_background_event("bg".to_string());
+        let insert_key = OrderKey {
+            req: 0,
+            out: -1,
+            seq: 0,
+        };
+        let idx = chat.history_insert_with_key_global_tagged(
+            Box::new(background),
+            insert_key,
+            "background",
+            None,
+        );
+        assert_eq!(idx, 0, "expected background insert at head");
+        chat.debug_validate_history_id_index();
+
+        let replace_idx = 1.min(chat.history_cells.len().saturating_sub(1));
+        let replacement = history_cell::plain_message_state_from_paragraphs(
+            PlainMessageKind::Plain,
+            PlainMessageRole::System,
+            ["replacement"],
+        );
+        chat.history_replace_at(
+            replace_idx,
+            Box::new(history_cell::PlainHistoryCell::from_state(replacement)),
+        );
+        chat.debug_validate_history_id_index();
+
+        if chat.history_cells.len() > 2 {
+            chat.history_remove_at(1);
+        }
+        chat.debug_validate_history_id_index();
+
+        if !chat.history_cells.is_empty() {
+            let last_idx = chat.history_cells.len().saturating_sub(1);
+            chat.history_remove_at(last_idx);
+        }
+        chat.debug_validate_history_id_index();
     }
 
     #[test]
