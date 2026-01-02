@@ -537,7 +537,7 @@ fn wrap_code_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
         out: &mut Vec<Line<'static>>,
         current_spans: &mut Vec<Span<'static>>,
         style: Style,
-        alignment: Alignment,
+        alignment: Option<Alignment>,
         current_width: &mut usize,
     ) {
         if current_spans.is_empty() {
