@@ -423,6 +423,12 @@ pub(crate) fn compute_assistant_layout_with_context(
                 continue;
             }
 
+            let code_wrap_width = width.saturating_sub(6) as usize;
+            let content_lines = wrap_code_lines(content_lines, code_wrap_width);
+            if content_lines.is_empty() {
+                continue;
+            }
+
             let max_line_width = content_lines
                 .iter()
                 .map(|l| measure_line(l))
@@ -507,6 +513,116 @@ pub(crate) enum AssistantSeg {
         lang_label: Option<String>,
         max_line_width: u16,
     },
+}
+
+fn wrap_code_lines(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
+    if width == 0 {
+        return lines;
+    }
+
+    let mut out = Vec::new();
+    for line in lines {
+        let trimmed = trim_code_line_padding(line);
+        out.extend(wrap_code_line(trimmed, width));
+    }
+    out
+}
+
+fn wrap_code_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
+    if width == 0 {
+        return vec![line];
+    }
+
+    let line_width: usize = line
+        .spans
+        .iter()
+        .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+        .sum();
+    if line_width <= width {
+        return vec![line];
+    }
+
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let mut current_spans: Vec<Span<'static>> = Vec::new();
+    let mut current_width = 0usize;
+    let style = line.style;
+    let alignment = line.alignment;
+
+    for span in line.spans {
+        let span_style = span.style;
+        let mut remaining = span.content.into_owned();
+        while !remaining.is_empty() {
+            if current_width >= width {
+                out.push(Line {
+                    style,
+                    alignment,
+                    spans: std::mem::take(&mut current_spans),
+                });
+                current_width = 0;
+            }
+
+            let available = width.saturating_sub(current_width);
+            if available == 0 {
+                continue;
+            }
+
+            let (prefix, suffix, taken) = crate::live_wrap::take_prefix_by_width(&remaining, available);
+            if taken == 0 {
+                if let Some((idx, ch)) = remaining.char_indices().next() {
+                    let len = idx + ch.len_utf8();
+                    let piece = remaining[..len].to_string();
+                    current_width += unicode_width::UnicodeWidthStr::width(piece.as_str());
+                    current_spans.push(Span::styled(piece, span_style));
+                    remaining = remaining[len..].to_string();
+                } else {
+                    break;
+                }
+            } else {
+                current_width += taken;
+                current_spans.push(Span::styled(prefix, span_style));
+                remaining = suffix.to_string();
+            }
+
+            if current_width >= width {
+                out.push(Line {
+                    style,
+                    alignment,
+                    spans: std::mem::take(&mut current_spans),
+                });
+                current_width = 0;
+            }
+        }
+    }
+
+    if !current_spans.is_empty() {
+        out.push(Line {
+            style,
+            alignment,
+            spans: current_spans,
+        });
+    } else if out.is_empty() {
+        out.push(Line {
+            style,
+            alignment,
+            spans: Vec::new(),
+        });
+    }
+
+    out
+}
+
+fn trim_code_line_padding(mut line: Line<'static>) -> Line<'static> {
+    let pad_style = Style::default().bg(crate::colors::code_block_bg());
+    while let Some(last) = line.spans.last() {
+        if last.style != pad_style {
+            break;
+        }
+        if !last.content.chars().all(|ch| ch == ' ') {
+            break;
+        }
+        line.spans.pop();
+    }
+    line
 }
 
 // Detect lines that start with a markdown bullet produced by our renderer and return (indent, bullet)
