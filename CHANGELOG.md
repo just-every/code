@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.29] - 2026-01-02
+
+- TUI/Markdown: wrap wide code graphemes to avoid overflow in rendered blocks. (8519507)
+- TUI/Markdown: flush wrapped code rows so virtualized views stay aligned. (b4d8264)
+
 ## [0.6.27] - 2026-01-02
 
 - Auto-review: skip re-reviews when files are unchanged to cut noise. (0dddef81)

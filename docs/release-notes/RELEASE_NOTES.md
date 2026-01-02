@@ -1,10 +1,10 @@
-## @just-every/code v0.6.27
+## @just-every/code v0.6.29
 
-This release tightens automation reviews and streamlines GitHub run waiting defaults.
+Markdown rendering now handles wide code blocks more gracefully in the TUI.
 
 ### Changes
-- Auto-review: skip re-reviews when files are unchanged to cut noise.
-- Core/GH: auto-resolve gh_run_wait defaults for smoother release checks.
+- TUI/Markdown: wrap wide code graphemes to avoid overflow in rendered blocks.
+- TUI/Markdown: flush wrapped code rows so virtualized views stay aligned.
 
 ### Install
 ```
@@ -12,4 +12,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.26...v0.6.27
+Compare: https://github.com/just-every/code/compare/v0.6.28...v0.6.29
