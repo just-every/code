@@ -29218,6 +29218,8 @@ use code_core::protocol::OrderMeta;
     };
     use code_core::protocol::AgentInfo as CoreAgentInfo;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::process::Command;
+    use tempfile::tempdir;
     use std::sync::Arc;
     use std::path::PathBuf;
 
@@ -29339,6 +29341,52 @@ use code_core::protocol::OrderMeta;
         chat.maybe_trigger_auto_review();
 
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn auto_review_skips_when_no_changes_since_reviewed_snapshot() {
+        let _rt = enter_test_runtime_guard();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_clone = calls.clone();
+        let _guard = AutoReviewStubGuard::install(move || {
+            calls_clone.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let repo = tempdir().expect("temp repo");
+        let repo_path = repo.path();
+        let git = |args: &[&str]| {
+            let status = Command::new("git")
+                .current_dir(repo_path)
+                .args(args)
+                .status()
+                .expect("git command");
+            assert!(status.success(), "git command failed: {args:?}");
+        };
+
+        git(&["init"]);
+        git(&["config", "user.email", "auto@review.test"]);
+        git(&["config", "user.name", "Auto Review"]);
+        std::fs::write(repo_path.join("README.md"), "hello")
+            .expect("write README");
+        git(&["add", "."]);
+        git(&["commit", "-m", "init"]);
+
+        let snapshot = create_ghost_commit(
+            &CreateGhostCommitOptions::new(repo_path).message("auto review snapshot"),
+        )
+        .expect("ghost snapshot");
+
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+        chat.config.cwd = repo_path.to_path_buf();
+        chat.config.tui.auto_review_enabled = true;
+        chat.turn_had_code_edits = true;
+        chat.auto_review_reviewed_marker = Some(snapshot);
+
+        chat.maybe_trigger_auto_review();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "auto review should skip");
+        assert!(chat.background_review.is_none());
     }
 
     #[test]
@@ -33443,6 +33491,12 @@ impl ChatWidget<'_> {
             return;
         }
 
+        if let Some(reviewed) = self.auto_review_reviewed_marker.as_ref() {
+            if !self.auto_review_has_changes_since(reviewed) {
+                return;
+            }
+        }
+
         if self.background_review.is_some() || self.is_review_flow_active() {
             if let Some(base) = self.take_or_capture_auto_review_baseline() {
                 self.queue_skipped_auto_review(base);
@@ -33459,6 +33513,64 @@ impl ChatWidget<'_> {
         if let Some(base) = base_snapshot {
             self.launch_background_review(Some(base));
         }
+    }
+
+    fn auto_review_has_changes_since(&self, reviewed: &GhostCommit) -> bool {
+        let reviewed_id = reviewed.id();
+        let tracked_changes = match self.run_git_command(
+            ["diff", "--name-only", reviewed_id],
+            |stdout| {
+                Ok(stdout.lines().any(|line| !line.trim().is_empty()))
+            },
+        ) {
+            Ok(changed) => changed,
+            Err(err) => {
+                tracing::warn!("auto review diff failed for {reviewed_id}: {err}");
+                return true;
+            }
+        };
+
+        if tracked_changes {
+            return true;
+        }
+
+        let snapshot_paths = match self.run_git_command(
+            ["ls-tree", "-r", "--name-only", reviewed_id],
+            |stdout| {
+                let mut paths = HashSet::new();
+                for line in stdout.lines().map(str::trim) {
+                    if !line.is_empty() {
+                        paths.insert(line.to_string());
+                    }
+                }
+                Ok(paths)
+            },
+        ) {
+            Ok(paths) => paths,
+            Err(err) => {
+                tracing::warn!("auto review snapshot listing failed for {reviewed_id}: {err}");
+                return true;
+            }
+        };
+
+        let untracked_changes = match self.run_git_command(
+            ["ls-files", "--others", "--exclude-standard"],
+            |stdout| {
+                Ok(stdout
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .any(|path| !snapshot_paths.contains(path)))
+            },
+        ) {
+            Ok(changed) => changed,
+            Err(err) => {
+                tracing::warn!("auto review untracked check failed: {err}");
+                return true;
+            }
+        };
+
+        untracked_changes
     }
 
     fn pending_auto_review_deferred_for_current_turn(&self) -> bool {
@@ -34058,6 +34170,12 @@ impl ChatWidget<'_> {
     ) {
         let was_skipped = !has_findings && !errored && snapshot.is_none();
 
+        if !errored {
+            if let Some(id) = snapshot.as_ref() {
+                self.auto_review_reviewed_marker = Some(GhostCommit::new(id.clone(), None));
+            }
+        }
+
         if was_skipped || errored {
             if let Some(base) = inflight_base {
                 self.queue_skipped_auto_review(base);
@@ -34077,10 +34195,6 @@ impl ChatWidget<'_> {
                 });
             }
             return;
-        }
-
-        if let Some(id) = snapshot {
-            self.auto_review_reviewed_marker = Some(GhostCommit::new(id, None));
         }
 
         if let Some(pending) = self.pending_auto_review_range.take() {
