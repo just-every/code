@@ -870,7 +870,8 @@ pub fn create_gh_run_wait_tool() -> OpenAiTool {
         "branch".to_string(),
         JsonSchema::String {
             description: Some(
-                "Branch to filter when selecting latest run (default: main).".to_string(),
+                "Branch to filter when selecting latest run (default: current branch, falling back to main)."
+                    .to_string(),
             ),
             allowed_values: None,
         },
@@ -883,7 +884,7 @@ pub fn create_gh_run_wait_tool() -> OpenAiTool {
     );
     OpenAiTool::Function(ResponsesApiTool {
         name: "gh_run_wait".to_string(),
-        description: "Wait for a GitHub Actions run to finish, using gh run view polling."
+        description: "Wait for a GitHub Actions run to finish, using gh run view polling. If run_id is omitted, selects the latest run for the workflow/branch; if both are omitted, selects the latest run on the current branch."
             .to_string(),
         strict: false,
         parameters: JsonSchema::Object {

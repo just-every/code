@@ -8886,6 +8886,7 @@ async fn handle_gh_run_wait(
 ) -> ResponseInputItem {
     use serde::Deserialize;
     use serde_json::Value;
+    use std::path::Path;
 
     #[derive(Deserialize, Clone)]
     struct Params {
@@ -8935,6 +8936,55 @@ async fn handle_gh_run_wait(
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
+    async fn run_git(cwd: &Path, args: &[&str]) -> Option<String> {
+        let output = tokio::process::Command::new("git")
+            .current_dir(cwd)
+            .args(args)
+            .output()
+            .await
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let value = String::from_utf8(output.stdout).ok()?;
+        let trimmed = value.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    }
+
+    async fn detect_branch(cwd: &Path) -> String {
+        if let Some(branch) = run_git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).await {
+            if branch != "HEAD" {
+                return branch;
+            }
+        }
+
+        if let Some(symref) = run_git(cwd, &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]).await {
+            if let Some((_, name)) = symref.rsplit_once('/') {
+                if !name.is_empty() {
+                    return name.to_string();
+                }
+            }
+        }
+
+        if let Some(show) = run_git(cwd, &["remote", "show", "origin"]).await {
+            for line in show.lines() {
+                let line = line.trim();
+                if let Some(rest) = line.strip_prefix("HEAD branch:") {
+                    let name = rest.trim();
+                    if !name.is_empty() {
+                        return name.to_string();
+                    }
+                }
+            }
+        }
+
+        "main".to_string()
+    }
+
     let mut params_for_event = serde_json::from_str::<Value>(&arguments).ok();
     let parsed: Params = match serde_json::from_str(&arguments) {
         Ok(p) => p,
@@ -8948,6 +8998,8 @@ async fn handle_gh_run_wait(
             };
         }
     };
+
+    let cwd = sess.cwd.clone();
 
     execute_custom_tool(
         sess,
@@ -8969,69 +9021,108 @@ async fn handle_gh_run_wait(
                 .map(|s| s.to_string());
 
             let mut resolved_run_id = run_id;
-            if resolved_run_id.is_none() {
-                let workflow = match parsed.workflow.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
-                    Some(name) => name.to_string(),
-                    None => {
-                        return ResponseInputItem::FunctionCallOutput {
-                            call_id,
-                            output: FunctionCallOutputPayload {
-                                content: "gh_run_wait requires run_id or workflow".to_string(),
-                                success: Some(false),
-                            },
-                        };
-                    }
-                };
-                let branch = parsed
-                    .branch
-                    .as_ref()
-                    .map(|s| s.trim())
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("main")
-                    .to_string();
+            let mut resolved_workflow = parsed
+                .workflow
+                .as_ref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            let branch = match parsed
+                .branch
+                .as_ref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+            {
+                Some(value) => value.to_string(),
+                None => detect_branch(&cwd).await,
+            };
 
-                let json = match run_gh(&[
-                    "run",
-                    "list",
-                    "--workflow",
-                    &workflow,
-                    "--branch",
-                    &branch,
-                    "--limit",
-                    "1",
-                    "--json",
-                    "databaseId,displayTitle,workflowName,headBranch,status,conclusion",
-                ],
-                repo.as_deref(),
-                )
-                .await
-                {
-                    Ok(out) => out,
-                    Err(err) => {
-                        return ResponseInputItem::FunctionCallOutput {
-                            call_id,
-                            output: FunctionCallOutputPayload {
-                                content: err,
-                                success: Some(false),
-                            },
-                        };
-                    }
+            if resolved_run_id.is_none() {
+                let (json, branch_label) = if let Some(workflow) = resolved_workflow.as_ref() {
+                    let json = match run_gh(&[
+                        "run",
+                        "list",
+                        "--workflow",
+                        workflow,
+                        "--branch",
+                        &branch,
+                        "--limit",
+                        "1",
+                        "--json",
+                        "databaseId,displayTitle,workflowName,headBranch,status,conclusion",
+                    ],
+                    repo.as_deref(),
+                    )
+                    .await
+                    {
+                        Ok(out) => out,
+                        Err(err) => {
+                            return ResponseInputItem::FunctionCallOutput {
+                                call_id,
+                                output: FunctionCallOutputPayload {
+                                    content: err,
+                                    success: Some(false),
+                                },
+                            };
+                        }
+                    };
+                    (json, branch.clone())
+                } else {
+                    let json = match run_gh(&[
+                        "run",
+                        "list",
+                        "--branch",
+                        &branch,
+                        "--limit",
+                        "1",
+                        "--json",
+                        "databaseId,displayTitle,workflowName,headBranch,status,conclusion",
+                    ],
+                    repo.as_deref(),
+                    )
+                    .await
+                    {
+                        Ok(out) => out,
+                        Err(err) => {
+                            return ResponseInputItem::FunctionCallOutput {
+                                call_id,
+                                output: FunctionCallOutputPayload {
+                                    content: err,
+                                    success: Some(false),
+                                },
+                            };
+                        }
+                    };
+                    (json, branch.clone())
                 };
 
                 let runs: Vec<Value> = serde_json::from_str(&json).unwrap_or_default();
                 let run = runs.into_iter().next();
                 let run_id = run
+                    .as_ref()
                     .and_then(|item| item.get("databaseId").cloned())
                     .and_then(|val| match val {
                         Value::Number(num) => num.as_u64().map(|v| v.to_string()),
                         Value::String(s) => Some(s),
                         _ => None,
                     });
+                if resolved_workflow.is_none() {
+                    resolved_workflow = run
+                        .as_ref()
+                        .and_then(|item| item.get("workflowName"))
+                        .and_then(|value| value.as_str())
+                        .map(|value| value.to_string());
+                }
                 if run_id.is_none() {
+                    let detail = if let Some(workflow) = resolved_workflow.as_ref() {
+                        format!("workflow '{workflow}' on {branch_label}")
+                    } else {
+                        format!("branch {branch_label}")
+                    };
                     return ResponseInputItem::FunctionCallOutput {
                         call_id,
                         output: FunctionCallOutputPayload {
-                            content: format!("No runs found for workflow '{workflow}' on {branch}"),
+                            content: format!("No runs found for {detail}"),
                             success: Some(false),
                         },
                     };
@@ -9125,9 +9216,10 @@ async fn handle_gh_run_wait(
                         "run_id": run_id,
                         "status": status,
                         "conclusion": if conclusion.is_empty() { None::<String> } else { Some(conclusion.clone()) },
-                        "workflow": workflow_name,
+                        "workflow": workflow_name.or_else(|| resolved_workflow.clone()),
                         "title": display_title,
                         "url": html_url,
+                        "branch": branch,
                         "jobs": {
                             "total": total_jobs,
                             "completed": completed_jobs,

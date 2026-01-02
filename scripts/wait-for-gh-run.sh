@@ -4,6 +4,7 @@
 # Usage examples:
 #   scripts/wait-for-gh-run.sh --run 17901972778
 #   scripts/wait-for-gh-run.sh --workflow Release --branch main
+#   scripts/wait-for-gh-run.sh  # picks latest run on current branch
 #
 # Dependencies: gh (GitHub CLI), jq.
 
@@ -16,12 +17,13 @@ Usage: wait-for-gh-run.sh [OPTIONS]
 Options:
   -r, --run ID           Run ID to monitor.
   -w, --workflow NAME    Workflow name or filename to pick the latest run.
-  -b, --branch BRANCH    Branch to filter when selecting a run (default: main).
+  -b, --branch BRANCH    Branch to filter when selecting a run (default: current branch).
   -i, --interval SECONDS Polling interval in seconds (default: 8).
   -L, --failure-logs     Print logs for any job that does not finish successfully.
   -h, --help             Show this help message.
 
-Either --run or --workflow must be supplied.
+If neither --run nor --workflow is provided, the latest run on the current
+branch is selected automatically.
 EOF
 }
 
@@ -34,9 +36,10 @@ require_binary() {
 
 RUN_ID=""
 WORKFLOW=""
-BRANCH="main"
+BRANCH=""
 INTERVAL="8"
 PRINT_FAILURE_LOGS=false
+AUTO_SELECTED_RUN=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -72,14 +75,37 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$RUN_ID" && -z "$WORKFLOW" ]]; then
-  echo "error: either --run or --workflow must be specified" >&2
-  usage >&2
-  exit 1
-fi
-
 require_binary gh
 require_binary jq
+
+default_branch() {
+  local branch=""
+  if command -v git >/dev/null 2>&1; then
+    if branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null); then
+      if [[ -n "$branch" && "$branch" != "HEAD" ]]; then
+        echo "$branch"
+        return 0
+      fi
+    fi
+
+    if branch=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null); then
+      branch="${branch#origin/}"
+      if [[ -n "$branch" ]]; then
+        echo "$branch"
+        return 0
+      fi
+    fi
+
+    if branch=$(git remote show origin 2>/dev/null | awk '/HEAD branch/ {print $NF}'); then
+      if [[ -n "$branch" ]]; then
+        echo "$branch"
+        return 0
+      fi
+    fi
+  fi
+
+  echo "main"
+}
 
 select_latest_run() {
   local workflow="$1"
@@ -98,8 +124,49 @@ select_latest_run() {
   jq -r '.[0].databaseId' <<<"$json"
 }
 
+select_latest_run_any() {
+  local branch="$1"
+  local json
+  if ! json=$(gh run list --branch "$branch" --limit 1 --json databaseId,workflowName,displayTitle,headBranch 2>/dev/null); then
+    echo "error: failed to list runs on branch '$branch'" >&2
+    exit 1
+  fi
+
+  if [[ $(jq 'length' <<<"$json") -eq 0 ]]; then
+    echo "error: no runs found on branch '$branch'" >&2
+    exit 1
+  fi
+
+  WORKFLOW=$(jq -r '.[0].workflowName // ""' <<<"$json")
+  jq -r '.[0].databaseId' <<<"$json"
+}
+
+format_duration() {
+  local total="$1"
+  local hours=$((total / 3600))
+  local minutes=$(((total % 3600) / 60))
+  local seconds=$((total % 60))
+  if [[ $hours -gt 0 ]]; then
+    printf '%dh%02dm%02ds' "$hours" "$minutes" "$seconds"
+  elif [[ $minutes -gt 0 ]]; then
+    printf '%dm%02ds' "$minutes" "$seconds"
+  else
+    printf '%ds' "$seconds"
+  fi
+}
+
+if [[ -z "$BRANCH" ]]; then
+  BRANCH=$(default_branch)
+fi
+
 if [[ -z "$RUN_ID" ]]; then
-  RUN_ID=$(select_latest_run "$WORKFLOW" "$BRANCH")
+  if [[ -n "$WORKFLOW" ]]; then
+    RUN_ID=$(select_latest_run "$WORKFLOW" "$BRANCH")
+    AUTO_SELECTED_RUN=true
+  else
+    RUN_ID=$(select_latest_run_any "$BRANCH")
+    AUTO_SELECTED_RUN=true
+  fi
 fi
 
 if [[ -z "$RUN_ID" ]]; then
@@ -108,9 +175,19 @@ if [[ -z "$RUN_ID" ]]; then
 fi
 
 echo "Waiting for GitHub Actions run $RUN_ID..." >&2
+if [[ "$AUTO_SELECTED_RUN" == true ]]; then
+  if [[ -z "$WORKFLOW" ]]; then
+    echo "Auto-selected latest run on branch '$BRANCH'." >&2
+  else
+    echo "Auto-selected latest '$WORKFLOW' run on branch '$BRANCH'." >&2
+  fi
+elif [[ -n "$WORKFLOW" ]]; then
+  echo "Using workflow '$WORKFLOW' on branch '$BRANCH'." >&2
+fi
 
 last_status=""
 last_jobs_snapshot=""
+last_progress_snapshot=""
 
 while true; do
   json=""
@@ -141,6 +218,17 @@ while true; do
       jq -r '.jobs[]? | "  - " + (.name // "(no name)") + ": " + (.status // "?") + (if .status == "completed" and .conclusion != null then " (" + .conclusion + ")" else "" end)' <<<"$json" >&2
     fi
     last_jobs_snapshot="$jobs_snapshot"
+  fi
+
+  total_jobs=$(jq -r '.jobs | length' <<<"$json")
+  completed_jobs=$(jq -r '[.jobs[]? | select(.status == "completed")] | length' <<<"$json")
+  in_progress_jobs=$(jq -r '[.jobs[]? | select(.status == "in_progress")] | length' <<<"$json")
+  queued_jobs=$(jq -r '[.jobs[]? | select(.status == "queued")] | length' <<<"$json")
+  progress_snapshot="$completed_jobs/$total_jobs/$in_progress_jobs/$queued_jobs"
+
+  if [[ "$status" != "completed" && "$total_jobs" != "0" && "$progress_snapshot" != "$last_progress_snapshot" ]]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') progress: $completed_jobs/$total_jobs completed ($in_progress_jobs in_progress, $queued_jobs queued)" >&2
+    last_progress_snapshot="$progress_snapshot"
   fi
 
   failing_jobs=$(jq -c '
@@ -177,8 +265,22 @@ while true; do
   fi
 
   if [[ "$status" == "completed" ]]; then
+    started_at=$(jq -r '.startedAt // ""' <<<"$json")
+    updated_at=$(jq -r '.updatedAt // ""' <<<"$json")
+    duration=""
+    if [[ -n "$started_at" && -n "$updated_at" ]]; then
+      start_epoch=$(date -d "$started_at" +%s 2>/dev/null || true)
+      end_epoch=$(date -d "$updated_at" +%s 2>/dev/null || true)
+      if [[ -n "$start_epoch" && -n "$end_epoch" && "$end_epoch" -ge "$start_epoch" ]]; then
+        duration=$(format_duration $((end_epoch - start_epoch)))
+      fi
+    fi
     if [[ "$conclusion" == "success" ]]; then
-      echo "Run $RUN_ID succeeded." >&2
+      if [[ -n "$duration" ]]; then
+        echo "Run $RUN_ID succeeded in $duration." >&2
+      else
+        echo "Run $RUN_ID succeeded." >&2
+      fi
       exit 0
     else
       if [[ "$PRINT_FAILURE_LOGS" == true ]]; then
@@ -193,7 +295,11 @@ while true; do
               echo "--- End logs for job: $job_name ---" >&2
             done
       fi
-      echo "Run $RUN_ID finished with conclusion '$conclusion'." >&2
+      if [[ -n "$duration" ]]; then
+        echo "Run $RUN_ID finished with conclusion '$conclusion' in $duration." >&2
+      else
+        echo "Run $RUN_ID finished with conclusion '$conclusion'." >&2
+      fi
       exit 1
     fi
   fi
