@@ -533,6 +533,24 @@ fn wrap_code_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
         return vec![line];
     }
 
+    fn flush_current_line(
+        out: &mut Vec<Line<'static>>,
+        current_spans: &mut Vec<Span<'static>>,
+        style: Style,
+        alignment: Alignment,
+        current_width: &mut usize,
+    ) {
+        if current_spans.is_empty() {
+            return;
+        }
+        out.push(Line {
+            style,
+            alignment,
+            spans: std::mem::take(current_spans),
+        });
+        *current_width = 0;
+    }
+
     let line_width: usize = line
         .spans
         .iter()
@@ -553,12 +571,7 @@ fn wrap_code_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
         let mut remaining = span.content.into_owned();
         while !remaining.is_empty() {
             if current_width >= width {
-                out.push(Line {
-                    style,
-                    alignment,
-                    spans: std::mem::take(&mut current_spans),
-                });
-                current_width = 0;
+                flush_current_line(&mut out, &mut current_spans, style, alignment, &mut current_width);
             }
 
             let available = width.saturating_sub(current_width);
@@ -568,6 +581,9 @@ fn wrap_code_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
 
             let (prefix, suffix, taken) = crate::live_wrap::take_prefix_by_width(&remaining, available);
             if taken == 0 {
+                if current_width > 0 {
+                    flush_current_line(&mut out, &mut current_spans, style, alignment, &mut current_width);
+                }
                 if let Some((idx, ch)) = remaining.char_indices().next() {
                     let len = idx + ch.len_utf8();
                     let piece = remaining[..len].to_string();
@@ -584,12 +600,7 @@ fn wrap_code_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
             }
 
             if current_width >= width {
-                out.push(Line {
-                    style,
-                    alignment,
-                    spans: std::mem::take(&mut current_spans),
-                });
-                current_width = 0;
+                flush_current_line(&mut out, &mut current_spans, style, alignment, &mut current_width);
             }
         }
     }
@@ -873,4 +884,24 @@ pub(crate) fn is_horizontal_rule_line(line: &ratatui::text::Line<'_>) -> bool {
     (only('-') && chars.iter().filter(|c| **c == '-').count() >= 3)
         || (only('*') && chars.iter().filter(|c| **c == '*').count() >= 3)
         || (only('_') && chars.iter().filter(|c| **c == '_').count() >= 3)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn wrap_code_line_moves_wide_grapheme() {
+        let line = Line::from(vec![Span::raw("abc界")]);
+        let wrapped = wrap_code_line(line, 4);
+        let rendered: Vec<String> = wrapped.iter().map(line_text).collect();
+        assert_eq!(rendered, vec!["abc", "界"]);
+        for text in rendered {
+            assert!(unicode_width::UnicodeWidthStr::width(text.as_str()) <= 4);
+        }
+    }
 }
