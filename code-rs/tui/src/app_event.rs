@@ -516,6 +516,9 @@ pub(crate) enum AppEvent {
     /// Background rate limit refresh failed (threaded request).
     RateLimitFetchFailed { message: String },
 
+    /// Background rate limit refresh persisted an account snapshot.
+    RateLimitSnapshotStored { account_id: String },
+
     #[allow(dead_code)]
     StartCommitAnimation,
     #[allow(dead_code)]

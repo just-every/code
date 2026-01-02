@@ -290,6 +290,26 @@ impl CodexAuth {
             crate::default_client::create_client(crate::default_client::DEFAULT_ORIGINATOR),
         )
     }
+
+    pub fn from_tokens_with_originator(
+        tokens: TokenData,
+        last_refresh: Option<DateTime<Utc>>,
+        originator: &str,
+    ) -> Self {
+        let auth_dot_json = AuthDotJson {
+            openai_api_key: None,
+            tokens: Some(tokens),
+            last_refresh,
+        };
+
+        Self {
+            api_key: None,
+            mode: AuthMode::ChatGPT,
+            auth_file: PathBuf::new(),
+            auth_dot_json: Arc::new(Mutex::new(Some(auth_dot_json))),
+            client: crate::default_client::create_client(originator),
+        }
+    }
 }
 
 pub const OPENAI_API_KEY_ENV_VAR: &str = "OPENAI_API_KEY";
@@ -341,6 +361,88 @@ pub fn login_with_api_key(code_home: &Path, api_key: &str) -> std::io::Result<()
         true,
     )?;
     Ok(())
+}
+
+pub async fn auth_for_stored_account(
+    code_home: &Path,
+    account: &crate::auth_accounts::StoredAccount,
+    originator: &str,
+) -> std::io::Result<CodexAuth> {
+    match account.mode {
+        AuthMode::ApiKey => {
+            let api_key = account.openai_api_key.clone().ok_or_else(|| {
+                std::io::Error::other("stored API key account is missing the key value")
+            })?;
+            Ok(CodexAuth::from_api_key_with_client(
+                &api_key,
+                crate::default_client::create_client(originator),
+            ))
+        }
+        AuthMode::ChatGPT => {
+            let mut tokens = account.tokens.clone().ok_or_else(|| {
+                std::io::Error::other("stored ChatGPT account is missing token data")
+            })?;
+            let mut last_refresh = account.last_refresh;
+            let now = Utc::now();
+            let refresh_needed = last_refresh
+                .map(|last| last < now - chrono::Duration::days(28))
+                .unwrap_or(true);
+
+            if refresh_needed {
+                let client = crate::default_client::create_client(originator);
+                let refresh_response = tokio::time::timeout(
+                    Duration::from_secs(60),
+                    try_refresh_token(tokens.refresh_token.clone(), &client),
+                )
+                .await
+                .map_err(|_| {
+                    std::io::Error::other("timed out while refreshing OpenAI API key")
+                })?;
+
+                let refresh_response = match refresh_response {
+                    Ok(response) => response,
+                    Err(err) => {
+                        if err.is_refresh_token_reused() {
+                            if let Ok(Some(updated)) =
+                                crate::auth_accounts::find_account(code_home, &account.id)
+                            {
+                                if let Some(updated_tokens) = updated.tokens {
+                                    return Ok(CodexAuth::from_tokens_with_originator(
+                                        updated_tokens,
+                                        updated.last_refresh,
+                                        originator,
+                                    ));
+                                }
+                            }
+                        }
+                        return Err(std::io::Error::other(err));
+                    }
+                };
+                tokens.id_token =
+                    parse_id_token(&refresh_response.id_token).map_err(std::io::Error::other)?;
+                if let Some(access_token) = refresh_response.access_token {
+                    tokens.access_token = access_token;
+                }
+                if let Some(refresh_token) = refresh_response.refresh_token {
+                    tokens.refresh_token = refresh_token;
+                }
+                last_refresh = Some(now);
+                let _ = crate::auth_accounts::upsert_chatgpt_account(
+                    code_home,
+                    tokens.clone(),
+                    now,
+                    account.label.clone(),
+                    false,
+                )?;
+            }
+
+            Ok(CodexAuth::from_tokens_with_originator(
+                tokens,
+                last_refresh,
+                originator,
+            ))
+        }
+    }
 }
 
 /// Activate a stored account by writing its credentials to auth.json and
@@ -1163,6 +1265,19 @@ impl AuthManager {
             code_home: PathBuf::new(),
             originator: "code_cli_rs".to_string(),
             inner: RwLock::new(cached),
+            enable_code_api_key_env: false,
+        })
+    }
+
+    pub fn from_auth(auth: CodexAuth, code_home: PathBuf, originator: String) -> Arc<Self> {
+        let preferred_auth_mode = auth.mode;
+        Arc::new(Self {
+            code_home,
+            originator,
+            inner: RwLock::new(CachedAuth {
+                preferred_auth_mode,
+                auth: Some(auth),
+            }),
             enable_code_api_key_env: false,
         })
     }

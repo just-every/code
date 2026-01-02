@@ -208,7 +208,10 @@ use code_auto_drive_core::{
 use self::limits_overlay::{LimitsOverlayContent, LimitsTab};
 use crate::chrome_launch::ChromeLaunchOption;
 use crate::insert_history::word_wrap_lines;
-use self::rate_limit_refresh::start_rate_limit_refresh;
+use self::rate_limit_refresh::{
+    start_rate_limit_refresh,
+    start_rate_limit_refresh_for_account,
+};
 use self::history_render::{
     CachedLayout, HistoryRenderState, RenderRequest, RenderRequestKind, RenderSettings, VisibleCell,
 };
@@ -1635,6 +1638,8 @@ pub(crate) struct ChatWidget<'a> {
     rate_limit_last_fetch_at: Option<DateTime<Utc>>,
     rate_limit_primary_next_reset_at: Option<DateTime<Utc>>,
     rate_limit_secondary_next_reset_at: Option<DateTime<Utc>>,
+    rate_limit_refresh_scheduled_for: Option<DateTime<Utc>>,
+    rate_limit_refresh_schedule_id: Arc<AtomicU64>,
     content_buffer: String,
     // Buffer for streaming assistant answer text; we do not surface partial
     // We wait for the final AgentMessage event and then emit the full text
@@ -6470,6 +6475,8 @@ impl ChatWidget<'_> {
             rate_limit_last_fetch_at: None,
             rate_limit_primary_next_reset_at: None,
             rate_limit_secondary_next_reset_at: None,
+            rate_limit_refresh_scheduled_for: None,
+            rate_limit_refresh_schedule_id: Arc::new(AtomicU64::new(0)),
             content_buffer: String::new(),
             last_assistant_message: None,
             last_answer_stream_id_in_turn: None,
@@ -6678,6 +6685,7 @@ impl ChatWidget<'_> {
                 if let Some(record) = records.into_iter().find(|r| r.account_id == active_id) {
                     new_widget.rate_limit_primary_next_reset_at = record.primary_next_reset_at;
                     new_widget.rate_limit_secondary_next_reset_at = record.secondary_next_reset_at;
+                    new_widget.maybe_schedule_rate_limit_refresh();
                 }
             }
         }
@@ -6819,6 +6827,8 @@ impl ChatWidget<'_> {
             rate_limit_last_fetch_at: None,
             rate_limit_primary_next_reset_at: None,
             rate_limit_secondary_next_reset_at: None,
+            rate_limit_refresh_scheduled_for: None,
+            rate_limit_refresh_schedule_id: Arc::new(AtomicU64::new(0)),
             content_buffer: String::new(),
             last_assistant_message: None,
             last_answer_stream_id_in_turn: None,
@@ -7043,6 +7053,7 @@ impl ChatWidget<'_> {
                 if let Some(record) = records.into_iter().find(|r| r.account_id == active_id) {
                     w.rate_limit_primary_next_reset_at = record.primary_next_reset_at;
                     w.rate_limit_secondary_next_reset_at = record.secondary_next_reset_at;
+                    w.maybe_schedule_rate_limit_refresh();
                 }
             }
         }
@@ -15469,6 +15480,62 @@ impl ChatWidget<'_> {
         if needs_refresh {
             self.request_latest_rate_limits(snapshot.is_none());
         }
+
+        self.refresh_limits_for_other_accounts_if_due();
+    }
+
+    fn refresh_limits_for_other_accounts_if_due(&mut self) {
+        let code_home = self.config.code_home.clone();
+        let active_id = auth_accounts::get_active_account_id(&code_home)
+            .ok()
+            .flatten();
+        let accounts = auth_accounts::list_accounts(&code_home).unwrap_or_default();
+        if accounts.is_empty() {
+            return;
+        }
+
+        let usage_records = account_usage::list_rate_limit_snapshots(&code_home).unwrap_or_default();
+        let snapshot_map: HashMap<String, StoredRateLimitSnapshot> = usage_records
+            .into_iter()
+            .map(|record| (record.account_id.clone(), record))
+            .collect();
+        let now = Utc::now();
+        let stale_interval = account_usage::rate_limit_refresh_stale_interval();
+
+        for account in accounts {
+            if active_id.as_deref() == Some(account.id.as_str()) {
+                continue;
+            }
+
+            let reset_at = snapshot_map
+                .get(&account.id)
+                .and_then(|record| record.secondary_next_reset_at);
+            let plan = account
+                .tokens
+                .as_ref()
+                .and_then(|tokens| tokens.id_token.get_chatgpt_plan_type());
+
+            let should_refresh = account_usage::mark_rate_limit_refresh_attempt_if_due(
+                &code_home,
+                &account.id,
+                plan.as_deref(),
+                reset_at,
+                now,
+                stale_interval,
+            )
+            .unwrap_or(false);
+
+            if should_refresh {
+                start_rate_limit_refresh_for_account(
+                    self.app_event_tx.clone(),
+                    self.config.clone(),
+                    self.config.debug,
+                    account,
+                    false,
+                    false,
+                );
+            }
+        }
     }
 
     fn request_latest_rate_limits(&mut self, show_loading: bool) {
@@ -15524,6 +15591,23 @@ impl ChatWidget<'_> {
         }
     }
 
+    pub(crate) fn on_rate_limit_snapshot_stored(&mut self, _account_id: String) {
+        self.refresh_settings_overview_rows();
+        let refresh_limits_settings = self
+            .settings
+            .overlay
+            .as_ref()
+            .map(|overlay| {
+                overlay.active_section() == SettingsSection::Limits && !overlay.is_menu_active()
+            })
+            .unwrap_or(false);
+        if refresh_limits_settings {
+            self.show_limits_settings_ui();
+        } else {
+            self.request_redraw();
+        }
+    }
+
     fn rate_limit_reset_info(&self) -> RateLimitResetInfo {
         let auto_compact_limit = self
             .config
@@ -15574,6 +15658,85 @@ impl ChatWidget<'_> {
                 Some(now + ChronoDuration::seconds(secs as i64));
         } else {
             self.rate_limit_secondary_next_reset_at = None;
+        }
+        self.maybe_schedule_rate_limit_refresh();
+    }
+
+    fn maybe_schedule_rate_limit_refresh(&mut self) {
+        let Some(reset_at) = self.rate_limit_secondary_next_reset_at else {
+            self.rate_limit_refresh_scheduled_for = None;
+            self.rate_limit_refresh_schedule_id.fetch_add(1, Ordering::SeqCst);
+            return;
+        };
+
+        if self.rate_limit_refresh_scheduled_for == Some(reset_at) {
+            return;
+        }
+
+        self.rate_limit_refresh_scheduled_for = Some(reset_at);
+        let schedule_id = self
+            .rate_limit_refresh_schedule_id
+            .fetch_add(1, Ordering::SeqCst)
+            .saturating_add(1);
+        let schedule_token = self.rate_limit_refresh_schedule_id.clone();
+        let app_event_tx = self.app_event_tx.clone();
+        let config = self.config.clone();
+        let debug_enabled = self.config.debug;
+        let account = auth_accounts::get_active_account_id(&config.code_home)
+            .ok()
+            .flatten()
+            .and_then(|id| auth_accounts::find_account(&config.code_home, &id).ok())
+            .flatten();
+
+        if account.is_none() {
+            return;
+        }
+
+        if thread_spawner::spawn_lightweight("rate-reset-refresh", move || {
+            let now = Utc::now();
+            let delay = reset_at.signed_duration_since(now) + ChronoDuration::seconds(1);
+            if let Ok(delay) = delay.to_std() {
+                if !delay.is_zero() {
+                    std::thread::sleep(delay);
+                }
+            }
+
+            if schedule_token.load(Ordering::SeqCst) != schedule_id {
+                return;
+            }
+
+            let Some(account) = account else {
+                return;
+            };
+
+            let plan = account
+                .tokens
+                .as_ref()
+                .and_then(|tokens| tokens.id_token.get_chatgpt_plan_type());
+            let should_refresh = account_usage::mark_rate_limit_refresh_attempt_if_due(
+                &config.code_home,
+                &account.id,
+                plan.as_deref(),
+                Some(reset_at),
+                Utc::now(),
+                account_usage::rate_limit_refresh_stale_interval(),
+            )
+            .unwrap_or(false);
+
+            if should_refresh {
+                start_rate_limit_refresh_for_account(
+                    app_event_tx,
+                    config,
+                    debug_enabled,
+                    account,
+                    true,
+                    false,
+                );
+            }
+        })
+        .is_none()
+        {
+            tracing::warn!("rate reset refresh scheduling failed: worker unavailable");
         }
     }
 

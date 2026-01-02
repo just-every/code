@@ -16,6 +16,7 @@ const USAGE_SUBDIR: &str = "usage";
 const HOURLY_HISTORY_DAYS: i64 = 183; // retain ~6 months of hourly usage for history views
 const UNKNOWN_RESET_RELOG_INTERVAL: Duration = Duration::hours(24);
 const RESET_PASSED_TOLERANCE: Duration = Duration::seconds(5);
+const RATE_LIMIT_REFRESH_STALE_INTERVAL_SECS: i64 = 30 * 60;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum RateLimitWarningScope {
@@ -100,6 +101,8 @@ struct RateLimitInfo {
     primary_next_reset_at: Option<DateTime<Utc>>,
     #[serde(default)]
     secondary_next_reset_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    last_refresh_attempt_at: Option<DateTime<Utc>>,
     #[serde(default)]
     last_usage_limit_hit_at: Option<DateTime<Utc>>,
     #[serde(default)]
@@ -533,6 +536,53 @@ pub fn record_usage_limit_hint(
         }
         data.rate_limit = Some(info);
     })
+}
+
+pub fn rate_limit_refresh_stale_interval() -> Duration {
+    Duration::seconds(RATE_LIMIT_REFRESH_STALE_INTERVAL_SECS)
+}
+
+pub fn mark_rate_limit_refresh_attempt_if_due(
+    code_home: &Path,
+    account_id: &str,
+    plan: Option<&str>,
+    reset_at: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+    stale_interval: Duration,
+) -> std::io::Result<bool> {
+    let mut should_refresh = false;
+    with_usage_file(code_home, account_id, plan, |data| {
+        let had_info = data.rate_limit.is_some();
+        let mut info = data.rate_limit.take().unwrap_or_default();
+        let last_attempt = info.last_refresh_attempt_at;
+
+        let refresh_due = if let Some(reset_at) = reset_at {
+            if now + RESET_PASSED_TOLERANCE < reset_at {
+                false
+            } else if last_attempt
+                .is_some_and(|attempt| attempt + RESET_PASSED_TOLERANCE >= reset_at)
+            {
+                false
+            } else {
+                true
+            }
+        } else {
+            match last_attempt {
+                Some(attempt) => now.signed_duration_since(attempt) >= stale_interval,
+                None => true,
+            }
+        };
+
+        if refresh_due {
+            info.last_refresh_attempt_at = Some(now);
+            should_refresh = true;
+        }
+
+        if refresh_due || had_info {
+            data.rate_limit = Some(info);
+        }
+    })?;
+    Ok(should_refresh)
 }
 
 fn record_threshold_log(

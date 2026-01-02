@@ -1304,6 +1304,12 @@ impl App<'_> {
                     AppState::Chat { widget } => widget.on_rate_limit_refresh_failed(message),
                     AppState::Onboarding { .. } => {}
                 },
+                AppEvent::RateLimitSnapshotStored { account_id } => match &mut self.app_state {
+                    AppState::Chat { widget } => {
+                        widget.on_rate_limit_snapshot_stored(account_id)
+                    }
+                    AppState::Onboarding { .. } => {}
+                },
                 AppEvent::RequestRedraw => {
                     self.schedule_redraw();
                 }
