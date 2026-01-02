@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.26] - 2026-01-01
+
+- Image view: render local image attachments in transcripts and tools. (71a68a2)
+- Core/Tools: align image_view tool coverage to match supported sources. (fcb3afb)
+
 ## [0.6.25] - 2026-01-01
 
 - CLI/GH: use GitHub run URLs when waiting on Actions to avoid stale links. (a7f6402a)
