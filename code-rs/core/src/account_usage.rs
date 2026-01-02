@@ -555,16 +555,28 @@ pub fn mark_rate_limit_refresh_attempt_if_due(
         let had_info = data.rate_limit.is_some();
         let mut info = data.rate_limit.take().unwrap_or_default();
         let last_attempt = info.last_refresh_attempt_at;
+        let last_observed = info.observed_at;
 
         let refresh_due = if let Some(reset_at) = reset_at {
             if now + RESET_PASSED_TOLERANCE < reset_at {
                 false
-            } else if last_attempt
-                .is_some_and(|attempt| attempt + RESET_PASSED_TOLERANCE >= reset_at)
+            } else if last_observed
+                .is_some_and(|observed| observed + RESET_PASSED_TOLERANCE >= reset_at)
             {
+                // We've already stored a successful snapshot at/after this reset.
                 false
             } else {
-                true
+                let attempted_after_reset = last_attempt
+                    .is_some_and(|attempt| attempt >= reset_at);
+
+                if !attempted_after_reset {
+                    true
+                } else {
+                    match last_attempt {
+                        Some(attempt) => now.signed_duration_since(attempt) >= stale_interval,
+                        None => true,
+                    }
+                }
             }
         } else {
             match last_attempt {
