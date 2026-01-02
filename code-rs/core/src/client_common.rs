@@ -307,6 +307,7 @@ pub enum ResponseEvent {
         query: Option<String>,
     },
     RateLimits(RateLimitSnapshotEvent),
+    ModelsEtag(String),
 }
 
 #[derive(Debug, Serialize)]

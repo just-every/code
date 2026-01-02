@@ -74,12 +74,15 @@ async fn refresh_remote_models_uses_cache_when_fresh() {
     let server = MockServer::start().await;
     let response = ModelsResponse {
         models: vec![remote_model("cached", "Cached", 1)],
-        etag: "etag-1".to_string(),
     };
 
     Mock::given(method("GET"))
         .and(path("/models"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(&response)
+                .insert_header("ETag", "etag-1"),
+        )
         .up_to_n_times(1)
         .mount(&server)
         .await;
@@ -119,12 +122,15 @@ async fn refresh_remote_models_refetches_when_cache_stale() {
     let server = MockServer::start().await;
     let initial = ModelsResponse {
         models: vec![remote_model("stale", "Stale", 1)],
-        etag: "etag-stale".to_string(),
     };
 
     Mock::given(method("GET"))
         .and(path("/models"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(&initial))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(&initial)
+                .insert_header("ETag", "etag-stale"),
+        )
         .up_to_n_times(1)
         .mount(&server)
         .await;
@@ -150,13 +156,16 @@ async fn refresh_remote_models_refetches_when_cache_stale() {
 
     let updated = ModelsResponse {
         models: vec![remote_model("fresh", "Fresh", 0)],
-        etag: "etag-fresh".to_string(),
     };
 
     server.reset().await;
     Mock::given(method("GET"))
         .and(path("/models"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(&updated))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(&updated)
+                .insert_header("ETag", "etag-fresh"),
+        )
         .up_to_n_times(1)
         .mount(&server)
         .await;
@@ -186,12 +195,15 @@ async fn refresh_remote_models_sends_if_none_match_and_handles_304() {
     let server = MockServer::start().await;
     let initial = ModelsResponse {
         models: vec![remote_model("cached", "Cached", 1)],
-        etag: "etag-304".to_string(),
     };
 
     Mock::given(method("GET"))
         .and(path("/models"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(&initial))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(&initial)
+                .insert_header("ETag", "etag-304"),
+        )
         .up_to_n_times(1)
         .mount(&server)
         .await;
@@ -265,7 +277,6 @@ async fn construct_model_family_applies_remote_overrides() {
 
     let response = ModelsResponse {
         models: vec![info],
-        etag: String::new(),
     };
 
     Mock::given(method("GET"))

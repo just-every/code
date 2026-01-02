@@ -6925,6 +6925,11 @@ async fn try_run_turn(
                     sess.tx_event.send(stamped).await.ok();
                 }
             }
+            ResponseEvent::ModelsEtag(etag) => {
+                if let Some(remote) = sess.remote_models_manager.as_ref() {
+                    remote.refresh_if_new_etag(etag).await;
+                }
+            }
             ResponseEvent::RateLimits(snapshot) => {
                 let mut state = sess.state.lock().unwrap();
                 state.latest_rate_limits = Some(snapshot.clone());

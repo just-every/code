@@ -749,6 +749,21 @@ impl ModelClient {
                         }
                     }
 
+                    let models_etag = resp
+                        .headers()
+                        .get("X-Models-Etag")
+                        .and_then(|value| value.to_str().ok())
+                        .map(ToString::to_string);
+                    if let Some(etag) = models_etag {
+                        if tx_event
+                            .send(Ok(ResponseEvent::ModelsEtag(etag)))
+                            .await
+                            .is_err()
+                        {
+                            debug!("receiver dropped models etag event");
+                        }
+                    }
+
                     // spawn task to process SSE
                     let stream = resp.bytes_stream().map_err(CodexErr::Reqwest);
                     let debug_logger = Arc::clone(&self.debug_logger);
