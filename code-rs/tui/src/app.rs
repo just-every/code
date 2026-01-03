@@ -204,7 +204,8 @@ pub(crate) struct App<'a> {
     file_search: FileSearchManager,
 
     /// True when a redraw has been scheduled but not yet executed (debounce window).
-    pending_redraw: Arc<AtomicBool>,
+    pending_redraw: bool,
+    pending_redraw_deadline: Option<Instant>,
     /// Tracks whether a frame is currently queued or being drawn. Used to coalesce
     /// rapid-fire redraw requests without dropping the final state.
     redraw_inflight: Arc<AtomicBool>,
@@ -361,7 +362,8 @@ impl App<'_> {
                 });
             }
         }
-        let pending_redraw = Arc::new(AtomicBool::new(false));
+        let pending_redraw = false;
+        let pending_redraw_deadline = None;
         let redraw_inflight = Arc::new(AtomicBool::new(false));
         let post_frame_redraw = Arc::new(AtomicBool::new(false));
         let frame_timer = Arc::new(FrameTimer::new());
@@ -574,6 +576,7 @@ impl App<'_> {
             latest_upgrade_version,
             file_search,
             pending_redraw,
+            pending_redraw_deadline,
             redraw_inflight,
             post_frame_redraw,
             stdout_backpressure_skips: 0,
@@ -691,7 +694,8 @@ impl App<'_> {
     /// animation scheduled a future frame), we still trigger an immediate redraw
     /// to keep keypress echo latency low.
     #[allow(clippy::unwrap_used)]
-    fn schedule_redraw(&self) {
+    fn schedule_redraw(&mut self) {
+        self.expire_pending_redraw_if_due();
         // Only queue a new frame when one is not already in flight; otherwise record
         // that we owe a follow-up immediately after the active frame completes.
         let should_send = self
@@ -705,21 +709,26 @@ impl App<'_> {
         }
 
         // Arm debounce window if not already armed.
-        if self
-            .pending_redraw
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok()
-        {
-            let pending_redraw = self.pending_redraw.clone();
-            let pending_redraw_for_thread = pending_redraw.clone();
-            if thread_spawner::spawn_lightweight("redraw-debounce", move || {
-                thread::sleep(REDRAW_DEBOUNCE);
-                pending_redraw_for_thread.store(false, Ordering::Release);
-            })
-            .is_none()
-            {
-                pending_redraw.store(false, Ordering::Release);
-            }
+        if !self.pending_redraw {
+            self.pending_redraw = true;
+            self.pending_redraw_deadline = Some(Instant::now() + REDRAW_DEBOUNCE);
+        }
+    }
+
+    fn expire_pending_redraw_if_due(&mut self) {
+        if !self.pending_redraw {
+            self.pending_redraw_deadline = None;
+            return;
+        }
+
+        let Some(deadline) = self.pending_redraw_deadline else {
+            self.pending_redraw = false;
+            return;
+        };
+
+        if Instant::now() >= deadline {
+            self.pending_redraw = false;
+            self.pending_redraw_deadline = None;
         }
     }
     
@@ -1224,6 +1233,7 @@ impl App<'_> {
 
         'main: loop {
             let event = match self.next_event_priority() { Some(e) => e, None => break 'main };
+            self.expire_pending_redraw_if_due();
             match event {
                 AppEvent::InsertHistory(mut lines) => match &mut self.app_state {
                     AppState::Chat { widget } => {
@@ -1430,7 +1440,7 @@ impl App<'_> {
                     self.commit_anim_running.store(false, Ordering::Release);
                 }
                 AppEvent::CommitTick => {
-                    if self.pending_redraw.load(Ordering::Relaxed) { continue; }
+                    if self.pending_redraw { continue; }
                     // Advance streaming animation: commit at most one queued line
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.on_commit_tick();
