@@ -421,6 +421,10 @@ pub struct AgentConfig {
     #[serde(default)]
     pub env: Option<HashMap<String, String>>,
 
+    /// When true, set IS_SANDBOX=1 for Claude CLI launches (opt-in; ignored for other agents).
+    #[serde(default)]
+    pub claude_is_sandbox: bool,
+
     /// Optional arguments to pass only when the agent is executed in
     /// read-only mode. When present, these are preferred over `args` for
     /// read-only runs.

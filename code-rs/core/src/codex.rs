@@ -9479,6 +9479,7 @@ mod resolve_read_only_tests {
             enabled: true,
             description: None,
             env: None,
+            claude_is_sandbox: false,
             args_read_only: None,
             args_write: None,
             instructions: None,

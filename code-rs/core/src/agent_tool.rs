@@ -1420,6 +1420,15 @@ fn command_exists(cmd: &str) -> bool {
         if let Some(ref e) = cfg.env { for (k, v) in e { env.insert(k.clone(), v.clone()); } }
     }
 
+    let claude_is_sandbox = config
+        .as_ref()
+        .map(|cfg| cfg.claude_is_sandbox)
+        .unwrap_or(false);
+    if family == "claude" && claude_is_sandbox {
+        env.entry("IS_SANDBOX".to_string())
+            .or_insert_with(|| "1".to_string());
+    }
+
     if debug_subagent {
         env.entry("CODE_SUBAGENT_DEBUG".to_string())
             .or_insert_with(|| "1".to_string());
@@ -2495,6 +2504,7 @@ mod tests {
             enabled: true,
             description: None,
             env: None,
+            claude_is_sandbox: false,
             args_read_only: None,
             args_write: None,
             instructions: None,
