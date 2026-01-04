@@ -64,8 +64,9 @@ pub(super) fn mcp_end(chat: &mut ChatWidget<'_>, ev: McpToolCallEndEvent, key: O
         .remove(&map_key);
     let resolved_idx = entry_removed
         .as_ref()
-        .and_then(|entry| running_tools::resolve_entry_index(chat, entry, &call_id))
-        .or_else(|| running_tools::find_by_call_id(chat, &call_id));
+        .and_then(|entry| running_tools::resolve_entry_index(chat, entry, &call_id));
+    let resolved_idx =
+        resolved_idx.or_else(|| running_tools::find_by_call_id(chat, &call_id));
 
     if let Some(idx) = resolved_idx {
         chat.history_replace_at(idx, Box::new(completed));

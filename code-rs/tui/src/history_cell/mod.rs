@@ -2243,19 +2243,6 @@ pub(crate) fn new_popular_commands_notice(
     plain_message_state_from_lines(lines, HistoryCellType::Notice)
 }
 
-/// Background status cell shown during startup while external MCP servers
-/// are being connected. Uses the standard background-event gutter (»)
-/// and inserts a blank line above the message for visual separation from
-/// the Popular commands block.
-pub(crate) fn new_connecting_mcp_status() -> BackgroundEventCell {
-    let record = BackgroundEventRecord {
-        id: HistoryId::ZERO,
-        title: String::new(),
-        description: "\nConnecting MCP servers…".to_string(),
-    };
-    BackgroundEventCell::new(record)
-}
-
 pub(crate) fn new_user_prompt(message: String) -> PlainMessageState {
     let mut lines: Vec<Line<'static>> = Vec::new();
     lines.push(Line::from("user"));

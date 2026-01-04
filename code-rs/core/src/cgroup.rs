@@ -1,3 +1,4 @@
+#[cfg(target_os = "linux")]
 use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "linux")]
@@ -172,24 +173,3 @@ pub(crate) fn best_effort_cleanup_exec_cgroup(pid: u32) {
     // Only remove the per-pid directory. The parent container stays.
     let _ = std::fs::remove_dir(&dir);
 }
-
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn default_exec_memory_max_bytes() -> Option<u64> {
-    None
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn best_effort_attach_self_to_exec_cgroup(_pid: u32, _memory_max_bytes: u64) {}
-
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn exec_cgroup_oom_killed(_pid: u32) -> Option<bool> {
-    None
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn exec_cgroup_memory_max_bytes(_pid: u32) -> Option<u64> {
-    None
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn best_effort_cleanup_exec_cgroup(_pid: u32) {}
