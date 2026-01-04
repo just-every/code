@@ -10051,7 +10051,7 @@ impl ChatWidget<'_> {
                     .as_any_mut()
                     .downcast_mut::<crate::history_cell::PatchSummaryCell>()
                 {
-                    *patch.record_mut() = state.clone();
+                    patch.update_record(state.clone());
                     return true;
                 }
             }
@@ -37791,67 +37791,12 @@ impl WidgetRef for &ChatWidget<'_> {
 
         self.ensure_render_request_cache();
 
-        let render_requests: Vec<RenderRequest> = {
-            let render_request_cache = self.render_request_cache.borrow();
-            let mut render_requests =
-                Vec::with_capacity(self.history_cells.len().saturating_add(3));
-            for (cell, seed) in self
-                .history_cells
-                .iter()
-                .zip(render_request_cache.iter())
-            {
-                let assistant = cell
-                    .as_any()
-                    .downcast_ref::<crate::history_cell::AssistantMarkdownCell>();
-                render_requests.push(RenderRequest {
-                    history_id: seed.history_id,
-                    cell: Some(cell.as_ref()),
-                    assistant,
-                    use_cache: seed.use_cache,
-                    fallback_lines: seed.fallback_lines.clone(),
-                    kind: seed.kind.clone(),
-                    config: &self.config,
-                });
-            }
+        let extra_count = (self.active_exec_cell.is_some() as usize)
+            .saturating_add(streaming_cell.is_some() as usize)
+            .saturating_add(queued_preview_cells.len());
+        let request_count = self.history_cells.len().saturating_add(extra_count);
 
-            if let Some(ref cell) = self.active_exec_cell {
-                render_requests.push(RenderRequest {
-                    history_id: HistoryId::ZERO,
-                    cell: Some(cell as &dyn HistoryCell),
-                    assistant: None,
-                    use_cache: false,
-                    fallback_lines: None,
-                    kind: RenderRequestKind::Legacy,
-                    config: &self.config,
-                });
-            }
-
-            if let Some(ref cell) = streaming_cell {
-                render_requests.push(RenderRequest {
-                    history_id: HistoryId::ZERO,
-                    cell: Some(cell as &dyn HistoryCell),
-                    assistant: None,
-                    use_cache: false,
-                    fallback_lines: None,
-                    kind: RenderRequestKind::Legacy,
-                    config: &self.config,
-                });
-            }
-
-            for c in &queued_preview_cells {
-                render_requests.push(RenderRequest {
-                    history_id: HistoryId::ZERO,
-                    cell: Some(c as &dyn HistoryCell),
-                    assistant: None,
-                    use_cache: false,
-                    fallback_lines: None,
-                    kind: RenderRequestKind::Legacy,
-                    config: &self.config,
-                });
-            }
-
-            render_requests
-        };
+        let mut render_requests_full: Option<Vec<RenderRequest>> = None;
 
         // Calculate total content height using prefix sums; build if needed
         let spacing = 1u16; // Standard spacing between cells
@@ -37877,14 +37822,82 @@ impl WidgetRef for &ChatWidget<'_> {
             self.history_virtualization_sync_pending.set(true);
             self.app_event_tx.send(AppEvent::SyncHistoryVirtualization);
         }
-        let request_count = render_requests.len();
+        let perf_enabled = self.perf_state.enabled;
         let needs_prefix_rebuild =
             self.history_render
                 .should_rebuild_prefix(content_area.width, request_count);
-
-        let perf_enabled = self.perf_state.enabled;
         let mut rendered_cells_full: Option<Vec<VisibleCell>> = None;
         if needs_prefix_rebuild {
+            if render_requests_full.is_none() {
+                let render_request_cache = self.render_request_cache.borrow();
+                let mut render_requests = Vec::with_capacity(request_count);
+                for (cell, seed) in self
+                    .history_cells
+                    .iter()
+                    .zip(render_request_cache.iter())
+                {
+                    let assistant = cell
+                        .as_any()
+                        .downcast_ref::<crate::history_cell::AssistantMarkdownCell>();
+                    render_requests.push(RenderRequest {
+                        history_id: seed.history_id,
+                        cell: Some(cell.as_ref()),
+                        assistant,
+                        use_cache: seed.use_cache,
+                        fallback_lines: seed.fallback_lines.clone(),
+                        kind: seed.kind.clone(),
+                        config: &self.config,
+                    });
+                }
+
+                if let Some(ref cell) = self.active_exec_cell {
+                    render_requests.push(RenderRequest {
+                        history_id: HistoryId::ZERO,
+                        cell: Some(cell as &dyn HistoryCell),
+                        assistant: None,
+                        use_cache: false,
+                        fallback_lines: None,
+                        kind: RenderRequestKind::Legacy,
+                        config: &self.config,
+                    });
+                }
+
+                if let Some(ref cell) = streaming_cell {
+                    render_requests.push(RenderRequest {
+                        history_id: HistoryId::ZERO,
+                        cell: Some(cell as &dyn HistoryCell),
+                        assistant: None,
+                        use_cache: false,
+                        fallback_lines: None,
+                        kind: RenderRequestKind::Legacy,
+                        config: &self.config,
+                    });
+                }
+
+                for c in &queued_preview_cells {
+                    render_requests.push(RenderRequest {
+                        history_id: HistoryId::ZERO,
+                        cell: Some(c as &dyn HistoryCell),
+                        assistant: None,
+                        use_cache: false,
+                        fallback_lines: None,
+                        kind: RenderRequestKind::Legacy,
+                        config: &self.config,
+                    });
+                }
+
+                if perf_enabled {
+                    let mut p = self.perf_state.stats.borrow_mut();
+                    p.render_requests_full =
+                        p.render_requests_full.saturating_add(render_requests.len() as u64);
+                }
+
+                render_requests_full = Some(render_requests);
+            }
+
+            let render_requests = render_requests_full
+                .as_ref()
+                .expect("render requests missing after rebuild");
             let mut used_fast_append = false;
             if self.try_append_prefix_fast(&render_requests, render_settings, content_area.width) {
                 used_fast_append = true;
@@ -38170,13 +38183,105 @@ impl WidgetRef for &ChatWidget<'_> {
         };
         end_idx = end_idx.saturating_add(1).min(request_count);
 
+        enum VisibleRequests<'a> {
+            Full(&'a [RenderRequest<'a>]),
+            Owned(Vec<RenderRequest<'a>>),
+        }
+
+        let history_len = self.history_cells.len();
+        let visible_requests = if let Some(ref full_requests) = render_requests_full {
+            VisibleRequests::Full(&full_requests[start_idx..end_idx])
+        } else {
+            let render_request_cache = self.render_request_cache.borrow();
+            let mut requests = Vec::with_capacity(end_idx.saturating_sub(start_idx));
+            for idx in start_idx..end_idx {
+                if idx < history_len {
+                    let cell = &self.history_cells[idx];
+                    let seed = &render_request_cache[idx];
+                    let assistant = cell
+                        .as_any()
+                        .downcast_ref::<crate::history_cell::AssistantMarkdownCell>();
+                    requests.push(RenderRequest {
+                        history_id: seed.history_id,
+                        cell: Some(cell.as_ref()),
+                        assistant,
+                        use_cache: seed.use_cache,
+                        fallback_lines: seed.fallback_lines.clone(),
+                        kind: seed.kind.clone(),
+                        config: &self.config,
+                    });
+                    continue;
+                }
+
+                let extra_idx = idx.saturating_sub(history_len);
+                let mut extra_cursor = 0usize;
+                if let Some(ref cell) = self.active_exec_cell {
+                    if extra_idx == extra_cursor {
+                        requests.push(RenderRequest {
+                            history_id: HistoryId::ZERO,
+                            cell: Some(cell as &dyn HistoryCell),
+                            assistant: None,
+                            use_cache: false,
+                            fallback_lines: None,
+                            kind: RenderRequestKind::Legacy,
+                            config: &self.config,
+                        });
+                        continue;
+                    }
+                    extra_cursor = extra_cursor.saturating_add(1);
+                }
+
+                if let Some(ref cell) = streaming_cell {
+                    if extra_idx == extra_cursor {
+                        requests.push(RenderRequest {
+                            history_id: HistoryId::ZERO,
+                            cell: Some(cell as &dyn HistoryCell),
+                            assistant: None,
+                            use_cache: false,
+                            fallback_lines: None,
+                            kind: RenderRequestKind::Legacy,
+                            config: &self.config,
+                        });
+                        continue;
+                    }
+                    extra_cursor = extra_cursor.saturating_add(1);
+                }
+
+                let queued_idx = extra_idx.saturating_sub(extra_cursor);
+                if let Some(cell) = queued_preview_cells.get(queued_idx) {
+                    requests.push(RenderRequest {
+                        history_id: HistoryId::ZERO,
+                        cell: Some(cell as &dyn HistoryCell),
+                        assistant: None,
+                        use_cache: false,
+                        fallback_lines: None,
+                        kind: RenderRequestKind::Legacy,
+                        config: &self.config,
+                    });
+                }
+            }
+            VisibleRequests::Owned(requests)
+        };
+
+        let visible_requests_slice = match &visible_requests {
+            VisibleRequests::Full(slice) => *slice,
+            VisibleRequests::Owned(vec) => vec.as_slice(),
+        };
+
+        if perf_enabled {
+            let mut p = self.perf_state.stats.borrow_mut();
+            p.render_requests_visible = p
+                .render_requests_visible
+                .saturating_add(visible_requests_slice.len() as u64);
+        }
+
         let mut _subset_rendered: Option<Vec<VisibleCell>> = None;
         let visible_slice: &[VisibleCell] = if let Some(ref full) = rendered_cells_full {
             &full[start_idx..end_idx]
         } else {
             _subset_rendered = Some(self.history_render.visible_cells(
                 &self.history_state,
-                &render_requests[start_idx..end_idx],
+                visible_requests_slice,
                 render_settings,
             ));
             _subset_rendered.as_ref().map(|v| v.as_slice()).unwrap_or(&[])
@@ -38210,6 +38315,19 @@ impl WidgetRef for &ChatWidget<'_> {
         }
 
         let mut height_mismatches: Vec<HeightMismatch> = Vec::new();
+        let is_collapsed_reasoning_at = |idx: usize| {
+            if idx >= request_count {
+                return false;
+            }
+            if idx < history_len {
+                return self.history_cells[idx]
+                    .as_any()
+                    .downcast_ref::<crate::history_cell::CollapsibleReasoningCell>()
+                    .map(|rc| rc.is_collapsed())
+                    .unwrap_or(false);
+            }
+            false
+        };
 
         for (offset, visible) in visible_slice.iter().enumerate() {
             let idx = start_idx + offset;
@@ -38234,7 +38352,7 @@ impl WidgetRef for &ChatWidget<'_> {
 
             let item_height = visible.height;
             if content_area.width > 0 {
-                if let Some(req) = render_requests.get(idx) {
+                if let Some(req) = visible_requests_slice.get(offset) {
                     if req.history_id != HistoryId::ZERO
                         && matches!(item.kind(), history_cell::HistoryCellType::Reasoning)
                     {
@@ -38636,24 +38754,11 @@ impl WidgetRef for &ChatWidget<'_> {
                     .map(|rc| rc.is_collapsed())
                     .unwrap_or(false);
                 if this_is_collapsed_reasoning {
-                    let prev_is_collapsed_reasoning = render_requests
-                        .get(idx.saturating_sub(1))
-                        .and_then(|req| req.cell)
-                        .and_then(|c| {
-                            c.as_any()
-                                .downcast_ref::<crate::history_cell::CollapsibleReasoningCell>()
-                                .map(|rc| rc.is_collapsed())
-                        })
+                    let prev_is_collapsed_reasoning = idx
+                        .checked_sub(1)
+                        .map(is_collapsed_reasoning_at)
                         .unwrap_or(false);
-                    let next_is_collapsed_reasoning = render_requests
-                        .get(idx + 1)
-                        .and_then(|req| req.cell)
-                        .and_then(|c| {
-                            c.as_any()
-                                .downcast_ref::<crate::history_cell::CollapsibleReasoningCell>()
-                                .map(|rc| rc.is_collapsed())
-                        })
-                        .unwrap_or(false);
+                    let next_is_collapsed_reasoning = is_collapsed_reasoning_at(idx + 1);
                     if prev_is_collapsed_reasoning && next_is_collapsed_reasoning {
                         should_add_spacing = false;
                     }

@@ -1,16 +1,21 @@
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // Background tasks occasionally spin up Tokio runtimes or TLS stacks; keep a
 // modest stack while avoiding stack overflow in heavier workers.
 const STACK_SIZE_BYTES: usize = 1024 * 1024;
 const MAX_BACKGROUND_THREADS: usize = 32;
-const LIMIT_LOG_THROTTLE: Duration = Duration::from_secs(5);
+const LIMIT_LOG_THROTTLE_SECS: u64 = 5;
 
 static ACTIVE_THREADS: AtomicUsize = AtomicUsize::new(0);
-static LIMIT_LOG_STATE: OnceLock<Mutex<HashMap<String, (Instant, u64)>>> = OnceLock::new();
+static LAST_LIMIT_LOG_SECS: AtomicU64 = AtomicU64::new(0);
+
+fn now_epoch_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
 
 struct ThreadCountGuard;
 
@@ -26,24 +31,6 @@ impl Drop for ThreadCountGuard {
     }
 }
 
-fn throttle_limit_log(name: &str) -> Option<u64> {
-    let now = Instant::now();
-    let state = LIMIT_LOG_STATE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut state = state.lock().unwrap();
-    let entry = state
-        .entry(name.to_string())
-        .or_insert((now - LIMIT_LOG_THROTTLE, 0));
-    if now.duration_since(entry.0) >= LIMIT_LOG_THROTTLE {
-        let suppressed = entry.1;
-        entry.0 = now;
-        entry.1 = 0;
-        Some(suppressed)
-    } else {
-        entry.1 = entry.1.saturating_add(1);
-        None
-    }
-}
-
 /// Lightweight helper to spawn background threads with a lower stack size and
 /// a descriptive, namespaced thread name. Keeps a simple global cap to avoid
 /// runaway spawns when review flows create timers repeatedly.
@@ -54,12 +41,17 @@ where
     let mut observed = ACTIVE_THREADS.load(Ordering::SeqCst);
     loop {
         if observed >= MAX_BACKGROUND_THREADS {
-            if let Some(suppressed) = throttle_limit_log(name) {
+            let now = now_epoch_secs();
+            let last = LAST_LIMIT_LOG_SECS.load(Ordering::Relaxed);
+            if now.saturating_sub(last) >= LIMIT_LOG_THROTTLE_SECS
+                && LAST_LIMIT_LOG_SECS
+                    .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+            {
                 tracing::error!(
                     active_threads = observed,
                     max_threads = MAX_BACKGROUND_THREADS,
                     thread_name = name,
-                    suppressed,
                     "background thread spawn rejected: limit reached"
                 );
             }

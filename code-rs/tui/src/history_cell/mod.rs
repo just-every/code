@@ -62,6 +62,7 @@ use ratatui::widgets::WidgetRef;
 use ratatui::widgets::Wrap;
 use shlex::Shlex;
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::Path;
@@ -5698,6 +5699,30 @@ pub(crate) struct PatchSummaryCell {
     pub(crate) title: String,
     pub(crate) kind: PatchKind,
     pub(crate) record: PatchRecord,
+    cached_layout: RefCell<Option<PatchLayoutCache>>,
+}
+
+#[derive(Clone)]
+struct PatchLayoutCache {
+    width: u16,
+    lines: Vec<Line<'static>>,
+    height: u16,
+}
+
+impl PatchLayoutCache {
+    fn new(width: u16, lines: Vec<Line<'static>>) -> Self {
+        let trimmed = trim_empty_lines(lines);
+        let height = Paragraph::new(Text::from(trimmed.clone()))
+            .wrap(Wrap { trim: false })
+            .line_count(width)
+            .try_into()
+            .unwrap_or(0);
+        Self {
+            width,
+            lines: trimmed,
+            height,
+        }
+    }
 }
 
 fn patch_changes_are_rename_only(changes: &HashMap<PathBuf, FileChange>) -> bool {
@@ -5769,34 +5794,39 @@ fn diff_contains_metadata_markers_excluding_rename(diff: &str) -> bool {
         || diff.contains("new mode")
 }
 
+fn patch_kind_and_title(record: &PatchRecord) -> (PatchKind, String) {
+    let kind = match record.patch_type {
+        HistoryPatchEventType::ApprovalRequest => PatchKind::Proposed,
+        HistoryPatchEventType::ApplyBegin { .. } => PatchKind::ApplyBegin,
+        HistoryPatchEventType::ApplySuccess => PatchKind::ApplySuccess,
+        HistoryPatchEventType::ApplyFailure => PatchKind::ApplyFailure,
+    };
+    let rename_only = patch_changes_are_rename_only(&record.changes);
+    let noop_only = patch_changes_are_noop(&record.changes);
+    let title = match record.patch_type {
+        HistoryPatchEventType::ApprovalRequest => "proposed patch".to_string(),
+        HistoryPatchEventType::ApplyFailure => "Patch failed".to_string(),
+        HistoryPatchEventType::ApplyBegin { .. } | HistoryPatchEventType::ApplySuccess => {
+            if rename_only {
+                "Renamed".to_string()
+            } else if noop_only {
+                "No changes".to_string()
+            } else {
+                "Updated".to_string()
+            }
+        }
+    };
+    (kind, title)
+}
+
 impl PatchSummaryCell {
     pub(crate) fn from_record(record: PatchRecord) -> Self {
-        let kind = match record.patch_type {
-            HistoryPatchEventType::ApprovalRequest => PatchKind::Proposed,
-            HistoryPatchEventType::ApplyBegin { .. } => PatchKind::ApplyBegin,
-            HistoryPatchEventType::ApplySuccess => PatchKind::ApplySuccess,
-            HistoryPatchEventType::ApplyFailure => PatchKind::ApplyFailure,
-        };
-        let rename_only = patch_changes_are_rename_only(&record.changes);
-        let noop_only = patch_changes_are_noop(&record.changes);
-        let title = match record.patch_type {
-            HistoryPatchEventType::ApprovalRequest => "proposed patch".to_string(),
-            HistoryPatchEventType::ApplyFailure => "Patch failed".to_string(),
-            HistoryPatchEventType::ApplyBegin { .. }
-            | HistoryPatchEventType::ApplySuccess => {
-                if rename_only {
-                    "Renamed".to_string()
-                } else if noop_only {
-                    "No changes".to_string()
-                } else {
-                    "Updated".to_string()
-                }
-            }
-        };
+        let (kind, title) = patch_kind_and_title(&record);
         Self {
             title,
             kind,
             record,
+            cached_layout: RefCell::new(None),
         }
     }
 
@@ -5816,7 +5846,41 @@ impl PatchSummaryCell {
     }
 
     pub(crate) fn record_mut(&mut self) -> &mut PatchRecord {
+        self.invalidate_layout_cache();
         &mut self.record
+    }
+
+    pub(crate) fn update_record(&mut self, record: PatchRecord) {
+        let (kind, title) = patch_kind_and_title(&record);
+        self.record = record;
+        self.kind = kind;
+        self.title = title;
+        self.invalidate_layout_cache();
+    }
+
+    fn invalidate_layout_cache(&self) {
+        self.cached_layout.borrow_mut().take();
+    }
+
+    fn layout_for_width(&self, width: u16) -> std::cell::Ref<'_, PatchLayoutCache> {
+        let effective_width = width.max(1);
+        let needs_rebuild = {
+            let cache = self.cached_layout.borrow();
+            cache
+                .as_ref()
+                .map(|layout| layout.width != effective_width)
+                .unwrap_or(true)
+        };
+
+        if needs_rebuild {
+            let lines = self.build_lines(effective_width);
+            let layout = PatchLayoutCache::new(effective_width, lines);
+            *self.cached_layout.borrow_mut() = Some(layout);
+        }
+
+        std::cell::Ref::map(self.cached_layout.borrow(), |cache| {
+            cache.as_ref().expect("patch layout cache missing")
+        })
     }
 
     fn build_lines(&self, width: u16) -> Vec<Line<'static>> {
@@ -5884,7 +5948,7 @@ impl HistoryCell for PatchSummaryCell {
     // We compute lines based on width at render time; provide a conservative
     // default for non-width callers (not normally used in our pipeline).
     fn display_lines(&self) -> Vec<Line<'static>> {
-        self.build_lines(80)
+        self.layout_for_width(80).lines.clone()
     }
 
     fn has_custom_render(&self) -> bool {
@@ -5892,20 +5956,14 @@ impl HistoryCell for PatchSummaryCell {
     }
 
     fn desired_height(&self, width: u16) -> u16 {
-        // Trim leading/trailing empty lines to keep height in sync with render.
-        let lines = trim_empty_lines(self.build_lines(width));
-        Paragraph::new(Text::from(lines))
-            .wrap(Wrap { trim: false })
-            .line_count(width)
-            .try_into()
-            .unwrap_or(0)
+        self.layout_for_width(width).height
     }
 
     fn custom_render_with_skip(&self, area: Rect, buf: &mut Buffer, skip_rows: u16) {
         // Render with trimmed lines and pre-clear the area to avoid residual glyphs
         // when content shrinks (e.g., after width changes or trimming).
-        let lines = trim_empty_lines(self.build_lines(area.width));
-        let text = Text::from(lines);
+        let layout = self.layout_for_width(area.width);
+        let text = Text::from(layout.lines.clone());
 
         let cell_bg = crate::colors::background();
         let bg_block = Block::default().style(Style::default().bg(cell_bg));
@@ -6020,6 +6078,65 @@ pub(crate) fn trim_empty_lines(mut lines: Vec<Line<'static>>) -> Vec<Line<'stati
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use code_core::history::state::{HistoryId, PatchEventType, PatchRecord};
+    use code_core::protocol::FileChange;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    #[test]
+    fn patch_summary_caches_layout_by_width() {
+        let mut changes = HashMap::new();
+        changes.insert(
+            PathBuf::from("index.html"),
+            FileChange::Update {
+                unified_diff: "@@ -1 +1 @@\n-hello\n+world\n".to_string(),
+                move_path: None,
+                original_content: "hello".to_string(),
+                new_content: "world".to_string(),
+            },
+        );
+        let record = PatchRecord {
+            id: HistoryId::ZERO,
+            patch_type: PatchEventType::ApplySuccess,
+            changes,
+            failure: None,
+        };
+
+        let cell = PatchSummaryCell::from_record(record);
+        assert!(cell.cached_layout.borrow().is_none());
+
+        let _ = cell.desired_height(80);
+        assert_eq!(
+            cell.cached_layout
+                .borrow()
+                .as_ref()
+                .map(|layout| layout.width),
+            Some(80)
+        );
+
+        let _ = cell.desired_height(80);
+        assert_eq!(
+            cell.cached_layout
+                .borrow()
+                .as_ref()
+                .map(|layout| layout.width),
+            Some(80)
+        );
+
+        let _ = cell.desired_height(120);
+        assert_eq!(
+            cell.cached_layout
+                .borrow()
+                .as_ref()
+                .map(|layout| layout.width),
+            Some(120)
+        );
+    }
 }
 
 pub(crate) fn cell_from_record(record: &crate::history::state::HistoryRecord, cfg: &Config) -> Box<dyn HistoryCell> {

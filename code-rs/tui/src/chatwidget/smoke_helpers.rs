@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use super::{ChatWidget, ExecCallId, RunningCommand};
+use super::{perf::PerfStats, ChatWidget, ExecCallId, RunningCommand};
 use crate::app_event::{AppEvent, AutoContinueMode};
 use crate::app_event_sender::AppEventSender;
 use crate::history_cell::{self, HistoryCellType};
@@ -284,6 +284,18 @@ impl ChatWidgetHarness {
             .into_iter()
             .filter(|event| matches!(event, AppEvent::ScheduleFrameIn(_)))
             .count()
+    }
+
+    pub fn enable_perf(&mut self, enabled: bool) {
+        self.chat.enable_perf(enabled);
+    }
+
+    pub fn perf_stats_snapshot(&self) -> PerfStats {
+        self.chat.perf_state.stats.borrow().clone()
+    }
+
+    pub fn history_len(&self) -> usize {
+        self.chat.history_cells.len()
     }
 
     pub fn bottom_spacer_lines(&self) -> u16 {

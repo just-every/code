@@ -25,6 +25,8 @@ pub struct PerfStats {
     pub cells_overlay_scrim: u64,
     pub ns_overlay_body_bg: u128,
     pub cells_overlay_body_bg: u64,
+    pub render_requests_full: u64,
+    pub render_requests_visible: u64,
     // Hotspots: time spent computing heights on cache misses
     pub hot_total: std::collections::HashMap<(usize, u16), ItemStat>,
     pub hot_render: std::collections::HashMap<(usize, u16), ItemStat>,
@@ -61,9 +63,11 @@ impl PerfStats {
         let ms_overlay_body = (self.ns_overlay_body_bg as f64) / 1_000_000.0;
         let mut out = String::new();
         out.push_str(&format!(
-            "perf: frames={}\n  prefix_rebuilds={}\n  height_cache: total hits={} misses={}\n  height_cache (render): hits={} misses={}\n  time: total_height={:.2}ms render_visible={:.2}ms\n  time: widget_render_total={:.2}ms\n  paint: history_clear={:.2}ms (cells={}) gutter_bg={:.2}ms (cells={})\n  paint: overlay_scrim={:.2}ms (cells={}) overlay_body_bg={:.2}ms (cells={})",
+            "perf: frames={}\n  prefix_rebuilds={}\n  render_requests: full={} visible={}\n  height_cache: total hits={} misses={}\n  height_cache (render): hits={} misses={}\n  time: total_height={:.2}ms render_visible={:.2}ms\n  time: widget_render_total={:.2}ms\n  paint: history_clear={:.2}ms (cells={}) gutter_bg={:.2}ms (cells={})\n  paint: overlay_scrim={:.2}ms (cells={}) overlay_body_bg={:.2}ms (cells={})",
             self.frames,
             self.prefix_rebuilds,
+            self.render_requests_full,
+            self.render_requests_visible,
             self.height_hits_total,
             self.height_misses_total,
             self.height_hits_render,
@@ -213,4 +217,3 @@ impl PerfStats {
         self.ns_undo_restore = self.ns_undo_restore.saturating_add(ns);
     }
 }
-
