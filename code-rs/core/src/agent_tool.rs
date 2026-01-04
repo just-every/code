@@ -1370,6 +1370,10 @@ fn command_exists(cmd: &str) -> bool {
         }
     }
 
+    if family == "claude" && !final_args.iter().any(|arg| arg == "--dangerously-skip-permissions") {
+        final_args.push("--dangerously-skip-permissions".to_string());
+    }
+
     let log_tag_owned = log_tag.map(str::to_string);
     let debug_subagent = debug_subagents_enabled()
         && matches!(source_kind, Some(AgentSourceKind::AutoReview));
@@ -1420,11 +1424,7 @@ fn command_exists(cmd: &str) -> bool {
         if let Some(ref e) = cfg.env { for (k, v) in e { env.insert(k.clone(), v.clone()); } }
     }
 
-    let claude_is_sandbox = config
-        .as_ref()
-        .map(|cfg| cfg.claude_is_sandbox)
-        .unwrap_or(false);
-    if family == "claude" && claude_is_sandbox {
+    if family == "claude" {
         env.entry("IS_SANDBOX".to_string())
             .or_insert_with(|| "1".to_string());
     }

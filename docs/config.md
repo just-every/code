@@ -206,6 +206,8 @@ command = "claude"
 claude-is-sandbox = true
 ```
 
+Code now forces `IS_SANDBOX=1` and appends `--dangerously-skip-permissions` whenever it launches Claude subagents, so you do not need to set this flag to avoid root/sudo failures.
+
 ## notice
 
 Code stores acknowledgement flags for one-time upgrade prompts inside a `[notice]`

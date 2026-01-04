@@ -397,6 +397,8 @@ env = { API_KEY = "value" }  # Environment variables
 claude-is-sandbox = true   # Opt-in: set IS_SANDBOX=1 for Claude CLI
 ```
 
+Code now forces `IS_SANDBOX=1` and appends `--dangerously-skip-permissions` whenever it launches Claude subagents, so you do not need to set this flag to avoid root/sudo failures.
+
 ### Configuring agent commands
 
 The `command` field specifies how to invoke the agent. Code supports three approaches:

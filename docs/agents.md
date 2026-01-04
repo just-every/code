@@ -19,6 +19,8 @@ instructions = "Preamble added to this agent’s prompt"
 ```
 Field recap: `name` (slug/alias), `command` (absolute paths ok), `args*` (RO/RW lists override base), `env`, `claude-is-sandbox` (Claude-only), `read-only`, `enabled`, optional `description` and `instructions`.
 
+Claude subagents always run with `IS_SANDBOX=1` and `--dangerously-skip-permissions` so they can execute under root/sudo without failing.
+
 ### Built-in defaults
 If no `[[agents]]` are configured, Code advertises built-ins (gated by env `CODE_ENABLE_CLOUD_AGENT_MODEL` for cloud variants): `code-gpt-5.2`, `code-gpt-5.2-codex`, `claude-opus-4.5`, `gemini-3-pro`, `code-gpt-5.1-codex-mini`, `claude-sonnet-4.5`, `gemini-3-flash`, `claude-haiku-4.5`, `qwen-3-coder`, `cloud-gpt-5.1-codex-max`. Built-ins strip any user `--model/-m` flags to avoid conflicts and inject their own.
 
