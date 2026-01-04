@@ -10050,7 +10050,7 @@ impl ChatWidget<'_> {
                     .as_any_mut()
                     .downcast_mut::<crate::history_cell::PatchSummaryCell>()
                 {
-                    *patch.record_mut() = state.clone();
+                    patch.update_record(state.clone());
                     return true;
                 }
             }
