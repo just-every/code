@@ -6723,7 +6723,7 @@ impl ChatWidget<'_> {
             if connecting_mcp && !w.test_mode {
                 // Render connecting status as a separate cell with standard gutter and spacing
                 let message = history_cell::connecting_mcp_status_message();
-                w.insert_background_event_early(message);
+                w.insert_background_event_prelude(message);
             }
             // Mark welcome as shown to avoid duplicating the Popular commands section
             // when SessionConfigured arrives shortly after.
@@ -10400,6 +10400,19 @@ impl ChatWidget<'_> {
             message,
             BackgroundPlacement::BeforeNextOutput,
             Some(ticket.next_order()),
+        );
+    }
+    /// Insert a background event ahead of the very first user prompt.
+    pub(crate) fn insert_background_event_prelude(&mut self, message: String) {
+        let cell = history_cell::new_background_event(message);
+        let record = HistoryDomainRecord::BackgroundEvent(cell.state().clone());
+        self.push_system_cell(
+            Box::new(cell),
+            SystemPlacement::PrePromptInCurrent,
+            None,
+            None,
+            "background",
+            Some(record),
         );
     }
     /// Insert a background event using the specified placement semantics.
