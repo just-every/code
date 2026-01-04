@@ -401,6 +401,7 @@ pub fn agent_config_from_spec(spec: &AgentModelSpec) -> AgentConfig {
         enabled: spec.is_enabled(),
         description: None,
         env: None,
+        claude_is_sandbox: false,
         args_read_only: some_args(spec.read_only_args),
         args_write: some_args(spec.write_args),
         instructions: None,

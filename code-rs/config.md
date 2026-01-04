@@ -394,7 +394,10 @@ read-only = false         # Restrict to read-only operations (default: false)
 description = "Claude AI assistant"  # Description shown in UI
 args = ["--dangerously-skip-permissions"]  # Default arguments
 env = { API_KEY = "value" }  # Environment variables
+claude-is-sandbox = true   # Opt-in: set IS_SANDBOX=1 for Claude CLI
 ```
+
+Code now forces `IS_SANDBOX=1` and appends `--dangerously-skip-permissions` whenever it launches Claude subagents, so you do not need to set this flag to avoid root/sudo failures.
 
 ### Configuring agent commands
 
@@ -451,8 +454,8 @@ You can specify different arguments for read-only vs. write modes:
 name = "custom-agent"
 command = "custom-agent"
 args = ["--base-arg"]           # Always included
-args_read_only = ["--read-only"]  # Added in read-only mode
-args_write = ["--allow-writes"]   # Added in write mode
+args-read-only = ["--read-only"]  # Added in read-only mode
+args-write = ["--allow-writes"]   # Added in write mode
 ```
 
 ### Environment variables

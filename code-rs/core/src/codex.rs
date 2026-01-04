@@ -9479,6 +9479,7 @@ mod resolve_read_only_tests {
             enabled: true,
             description: None,
             env: None,
+            claude_is_sandbox: false,
             args_read_only: None,
             args_write: None,
             instructions: None,
@@ -10157,10 +10158,17 @@ pub(crate) async fn handle_run_agent(
             let mut skipped: Vec<String> = Vec::new();
             for model in models {
                 let model_key = model.to_lowercase();
+                let model_slug = agent_model_spec(&model)
+                    .map(|spec| spec.slug.to_ascii_lowercase())
+                    .unwrap_or_else(|| model_key.clone());
                 // Check if this model is configured and enabled
                 let agent_config = sess.agents.iter().find(|a| {
-                    a.name.to_lowercase() == model_key
-                        || a.command.to_lowercase() == model_key
+                    let name_key = a.name.to_ascii_lowercase();
+                    if name_key == model_key || name_key == model_slug {
+                        return true;
+                    }
+                    let command_key = a.command.to_ascii_lowercase();
+                    command_key == model_key || command_key == model_slug
                 });
 
                 if let Some(config) = agent_config {
