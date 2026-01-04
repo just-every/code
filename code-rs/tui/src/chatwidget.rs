@@ -6722,7 +6722,8 @@ impl ChatWidget<'_> {
             let _ = w.history_insert_plain_state_with_key(notice_state, notice_key, "prelude");
             if connecting_mcp && !w.test_mode {
                 // Render connecting status as a separate cell with standard gutter and spacing
-                w.history_push_top_next_req(history_cell::new_connecting_mcp_status());
+                let message = history_cell::connecting_mcp_status_message();
+                w.insert_background_event_early(message);
             }
             // Mark welcome as shown to avoid duplicating the Popular commands section
             // when SessionConfigured arrives shortly after.
@@ -25037,6 +25038,8 @@ Have we met every part of this goal and is there no further work to do?"#
         self.bottom_pane.set_task_running(false);
         self.bottom_pane.clear_live_ring();
         self.maybe_hide_spinner();
+        self.flush_history_snapshot_if_needed(true);
+        self.submit_op(Op::Shutdown);
     }
 
     pub(crate) fn register_approved_command(

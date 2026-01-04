@@ -72,6 +72,12 @@ const BACKPRESSURE_FORCED_DRAW_SKIPS: u32 = 4;
 const DEFAULT_PTY_ROWS: u16 = 24;
 const DEFAULT_PTY_COLS: u16 = 80;
 
+fn config_for_new_chat(config: &Config) -> Config {
+    let mut new_config = config.clone();
+    new_config.experimental_resume = None;
+    new_config
+}
+
 /// Top-level application state: which full-screen view is currently active.
 #[allow(clippy::large_enum_variant)]
 enum AppState<'a> {
@@ -2225,7 +2231,7 @@ impl App<'_> {
                             // Start a brand new conversation (core session) with no carried history.
                             // Replace the chat widget entirely, mirroring SwitchCwd flow but without import.
                             let mut new_widget = ChatWidget::new(
-                                self.config.clone(),
+                                config_for_new_chat(&self.config),
                                 self.app_event_tx.clone(),
                                 None,
                                 Vec::new(),
@@ -3974,6 +3980,30 @@ mod next_event_priority_tests {
         assert!(
             saw_bulk,
             "bulk event should not be starved behind continuous high-priority events"
+        );
+    }
+}
+
+#[cfg(test)]
+mod new_chat_config_tests {
+    use super::config_for_new_chat;
+    use code_core::config::{ConfigOverrides, ConfigToml, Config};
+
+    #[test]
+    fn new_chat_config_clears_resume_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut config = Config::load_from_base_config_with_overrides(
+            ConfigToml::default(),
+            ConfigOverrides::default(),
+            temp.path().to_path_buf(),
+        )
+        .expect("load config");
+        config.experimental_resume = Some(temp.path().join("resume.json"));
+
+        let new_config = config_for_new_chat(&config);
+        assert!(
+            new_config.experimental_resume.is_none(),
+            "new chat should not carry experimental_resume"
         );
     }
 }
