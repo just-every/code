@@ -1,11 +1,21 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // Background tasks occasionally spin up Tokio runtimes or TLS stacks; keep a
 // modest stack while avoiding stack overflow in heavier workers.
 const STACK_SIZE_BYTES: usize = 1024 * 1024;
 const MAX_BACKGROUND_THREADS: usize = 32;
+const LIMIT_LOG_THROTTLE_SECS: u64 = 5;
 
 static ACTIVE_THREADS: AtomicUsize = AtomicUsize::new(0);
+static LAST_LIMIT_LOG_SECS: AtomicU64 = AtomicU64::new(0);
+
+fn now_epoch_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
 
 struct ThreadCountGuard;
 
@@ -31,12 +41,20 @@ where
     let mut observed = ACTIVE_THREADS.load(Ordering::SeqCst);
     loop {
         if observed >= MAX_BACKGROUND_THREADS {
-            tracing::error!(
-                active_threads = observed,
-                max_threads = MAX_BACKGROUND_THREADS,
-                thread_name = name,
-                "background thread spawn rejected: limit reached"
-            );
+            let now = now_epoch_secs();
+            let last = LAST_LIMIT_LOG_SECS.load(Ordering::Relaxed);
+            if now.saturating_sub(last) >= LIMIT_LOG_THROTTLE_SECS
+                && LAST_LIMIT_LOG_SECS
+                    .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+            {
+                tracing::error!(
+                    active_threads = observed,
+                    max_threads = MAX_BACKGROUND_THREADS,
+                    thread_name = name,
+                    "background thread spawn rejected: limit reached"
+                );
+            }
             return None;
         }
         match ACTIVE_THREADS.compare_exchange(
