@@ -92,6 +92,7 @@ mod running_tools;
 #[cfg(any(test, feature = "test-helpers"))]
 pub mod smoke_helpers;
 
+#[cfg(test)]
 pub(crate) use self::esc::EscIntent;
 use self::agent_summary::agent_summary_counts;
 use self::esc::AutoGoalEscState;

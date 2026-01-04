@@ -825,7 +825,7 @@ impl TextArea {
         {
             self.text[..first_non_ws]
                 .rfind(|c: char| c.is_whitespace())
-                .map(|i| i + 1)
+                .map(|i| i + self.text[i..].chars().next().unwrap().len_utf8())
                 .unwrap_or(0)
         } else {
             0
@@ -990,6 +990,25 @@ mod tests {
             textarea.text().is_empty(),
             "Ctrl+Alt symbol should not insert printable characters on non-Windows"
         );
+    }
+
+    #[test]
+    fn alt_left_keeps_cursor_on_char_boundary_with_multibyte_space() {
+        let mut textarea = TextArea::new();
+        let text = "alpha\u{202f}beta".to_string();
+        textarea.set_text(&text);
+        textarea.set_cursor(text.len());
+
+        textarea.input(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+
+        let cursor = textarea.cursor();
+        assert!(
+            textarea.text().is_char_boundary(cursor),
+            "cursor should stay on a character boundary"
+        );
+        let ws_index = textarea.text().find('\u{202f}').expect("whitespace");
+        let expected = ws_index + '\u{202f}'.len_utf8();
+        assert_eq!(cursor, expected, "expected cursor to land after whitespace");
     }
 }
 

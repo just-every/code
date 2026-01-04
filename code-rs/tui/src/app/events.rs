@@ -18,7 +18,7 @@ use portable_pty::PtySize;
 
 use crate::app_event::AppEvent;
 use crate::bottom_pane::SettingsSection;
-use crate::chatwidget::{ChatWidget, EscIntent};
+use crate::chatwidget::ChatWidget;
 use crate::cloud_tasks_service;
 use crate::exec_command::strip_bash_lc_and_escape;
 use crate::get_git_diff::get_git_diff;
@@ -386,72 +386,7 @@ impl App<'_> {
                     match key_event {
                         KeyEvent { code: KeyCode::Esc, kind: KeyEventKind::Press | KeyEventKind::Repeat, .. } => {
                             if let AppState::Chat { widget } = &mut self.app_state {
-                                let now = Instant::now();
-                                const THRESHOLD: Duration = Duration::from_millis(600);
-                                let double_ready = self
-                                    .last_esc_time
-                                    .is_some_and(|prev| now.duration_since(prev) <= THRESHOLD);
-
-                                let mut handled = false;
-                                let mut attempts = 0;
-                                let esc_event = key_event;
-
-                                while attempts < 8 {
-                                    attempts += 1;
-                                    let route = widget.describe_esc_context();
-                                    let mut intent = route.intent;
-
-                                    if intent == EscIntent::None {
-                                        break;
-                                    }
-
-                                    if intent == EscIntent::ShowUndoHint
-                                        && route.allows_double_esc
-                                        && double_ready
-                                    {
-                                        intent = EscIntent::OpenUndoTimeline;
-                                    }
-
-                                    let performed = widget.execute_esc_intent(intent, esc_event);
-
-                                    match intent {
-                                        EscIntent::CloseFilePopup if !route.consume => {
-                                            if !performed {
-                                                break;
-                                            }
-                                            continue;
-                                        }
-                                        EscIntent::CloseFilePopup => {
-                                            handled = true;
-                                            break;
-                                        }
-                                        EscIntent::ShowUndoHint => {
-                                            if route.allows_double_esc && !double_ready {
-                                                self.last_esc_time = Some(now);
-                                            } else {
-                                                self.last_esc_time = None;
-                                            }
-                                            handled = true;
-                                            break;
-                                        }
-                                        EscIntent::OpenUndoTimeline => {
-                                            self.last_esc_time = None;
-                                            handled = true;
-                                            break;
-                                        }
-                                        EscIntent::CancelTask | EscIntent::ClearComposer => {
-                                            self.last_esc_time = Some(now);
-                                            handled = true;
-                                            break;
-                                        }
-                                        _ => {
-                                            handled = true;
-                                            break;
-                                        }
-                                    }
-                                }
-
-                                if handled {
+                                if widget.handle_app_esc(key_event, &mut self.last_esc_time) {
                                     continue;
                                 }
                             }

@@ -1,4 +1,5 @@
 use crossterm::event::KeyEvent;
+use std::time::{Duration, Instant};
 
 use super::{ChatWidget, AUTO_ESC_EXIT_HINT, DOUBLE_ESC_HINT};
 
@@ -258,6 +259,78 @@ impl ChatWidget<'_> {
         }
     }
 
+    pub(crate) fn handle_app_esc(
+        &mut self,
+        esc_event: KeyEvent,
+        last_esc_time: &mut Option<Instant>,
+    ) -> bool {
+        let now = Instant::now();
+        const THRESHOLD: Duration = Duration::from_millis(600);
+        let double_ready = last_esc_time.is_some_and(|prev| now.duration_since(prev) <= THRESHOLD);
+
+        let mut handled = false;
+        let mut attempts = 0;
+
+        while attempts < 8 {
+            attempts += 1;
+            let route = self.describe_esc_context();
+            let mut intent = route.intent;
+
+            if intent == EscIntent::None {
+                break;
+            }
+
+            if intent == EscIntent::ShowUndoHint && route.allows_double_esc && double_ready {
+                intent = EscIntent::OpenUndoTimeline;
+            }
+
+            let performed = self.execute_esc_intent(intent, esc_event);
+
+            match intent {
+                EscIntent::CloseFilePopup if !route.consume => {
+                    if !performed {
+                        break;
+                    }
+                    continue;
+                }
+                EscIntent::CloseFilePopup => {
+                    handled = true;
+                    break;
+                }
+                EscIntent::ShowUndoHint => {
+                    if route.allows_double_esc && !double_ready {
+                        *last_esc_time = Some(now);
+                    } else {
+                        *last_esc_time = None;
+                    }
+                    handled = true;
+                    break;
+                }
+                EscIntent::OpenUndoTimeline => {
+                    *last_esc_time = None;
+                    handled = true;
+                    break;
+                }
+                EscIntent::CancelTask | EscIntent::ClearComposer => {
+                    let route_after = self.describe_esc_context();
+                    if route_after.intent == EscIntent::ShowUndoHint && route_after.allows_double_esc {
+                        *last_esc_time = Some(now);
+                    } else {
+                        *last_esc_time = None;
+                    }
+                    handled = true;
+                    break;
+                }
+                _ => {
+                    handled = true;
+                    break;
+                }
+            }
+        }
+
+        handled
+    }
+
     pub(super) fn auto_sync_goal_escape_state_from_composer(&mut self) {
         if !self.auto_state.should_show_goal_entry() {
             return;
@@ -276,5 +349,54 @@ impl ChatWidget<'_> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::chatwidget::message::UserMessage;
+    use crate::chatwidget::smoke_helpers::ChatWidgetHarness;
+    use crate::chatwidget::{ExecCallId, RunningCommand};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn make_running_command() -> RunningCommand {
+        RunningCommand {
+            command: vec!["sleep".to_string(), "1".to_string()],
+            parsed: Vec::new(),
+            history_index: None,
+            history_id: None,
+            explore_entry: None,
+            stdout_offset: 0,
+            stderr_offset: 0,
+            wait_total: None,
+            wait_active: false,
+            wait_notes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn esc_cancel_does_not_prime_undo_when_queue_restores_composer() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.exec
+            .running_commands
+            .insert(ExecCallId("exec-1".to_string()), make_running_command());
+        chat.bottom_pane.set_task_running(true);
+        chat.queued_user_messages
+            .push_back(UserMessage::from("next prompt".to_string()));
+
+        let esc_event = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        let mut last_esc_time = None;
+
+        assert!(chat.handle_app_esc(esc_event, &mut last_esc_time));
+        assert!(
+            !chat.composer_is_empty(),
+            "queued message should restore into composer after cancel"
+        );
+        assert!(
+            last_esc_time.is_none(),
+            "double-esc should not prime while composer refilled after cancel"
+        );
     }
 }
