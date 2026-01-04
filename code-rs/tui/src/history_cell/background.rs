@@ -1,7 +1,8 @@
 //! Background event cell used for status messages derived from `BackgroundEventRecord`.
 
 use super::*;
-use crate::history::state::BackgroundEventRecord;
+use crate::history::state::{BackgroundEventRecord, HistoryId};
+use code_ansi_escape::ansi_escape_line;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
@@ -66,4 +67,37 @@ impl HistoryCell for BackgroundEventCell {
     fn display_lines(&self) -> Vec<Line<'static>> {
         self.lines()
     }
+}
+
+pub(crate) fn new_background_event(message: String) -> BackgroundEventCell {
+    let normalized = normalize_overwrite_sequences(&message);
+    let mut collected: Vec<String> = Vec::new();
+    for line in normalized.lines() {
+        let sanitized_line = ansi_escape_line(line)
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        collected.push(sanitized_line);
+    }
+    let description = collected.join("\n");
+    let record = BackgroundEventRecord {
+        id: HistoryId::ZERO,
+        title: String::new(),
+        description,
+    };
+    BackgroundEventCell::new(record)
+}
+
+/// Background status cell shown during startup while external MCP servers
+/// are being connected. Uses the standard background-event gutter (»)
+/// and inserts a blank line above the message for visual separation from
+/// the Popular commands block.
+pub(crate) fn new_connecting_mcp_status() -> BackgroundEventCell {
+    let record = BackgroundEventRecord {
+        id: HistoryId::ZERO,
+        title: String::new(),
+        description: "\nConnecting MCP servers…".to_string(),
+    };
+    BackgroundEventCell::new(record)
 }

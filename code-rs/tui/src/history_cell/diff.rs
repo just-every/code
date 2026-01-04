@@ -129,6 +129,11 @@ pub(crate) fn diff_record_from_string(title: String, diff: &str) -> DiffRecord {
 }
 
 #[allow(dead_code)]
+pub(crate) fn new_diff_output(diff_output: String) -> DiffCell {
+    new_diff_cell_from_string(diff_output)
+}
+
+#[allow(dead_code)]
 pub(crate) fn new_diff_cell_from_string(diff_output: String) -> DiffCell {
     let record = diff_record_from_string(String::new(), &diff_output);
     DiffCell::from_record(record)

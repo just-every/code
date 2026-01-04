@@ -69,3 +69,8 @@ impl HistoryCell for LoadingCell {
         true
     }
 }
+
+#[allow(dead_code)]
+pub(crate) fn new_loading_cell(message: String) -> LoadingCell {
+    LoadingCell::new(message)
+}

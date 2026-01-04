@@ -227,3 +227,7 @@ impl HistoryCell for AnimatedWelcomeCell {
         AnimatedWelcomeCell::should_remove(self)
     }
 }
+
+pub(crate) fn new_animated_welcome() -> AnimatedWelcomeCell {
+    AnimatedWelcomeCell::new()
+}

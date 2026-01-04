@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::history::state::{HistoryId, PlanIcon, PlanProgress, PlanStep, PlanUpdateState};
-use code_core::plan_tool::StepStatus;
+use code_core::plan_tool::{PlanItemArg, StepStatus, UpdatePlanArgs};
 
 pub(crate) struct PlanUpdateCell {
     state: PlanUpdateState,
@@ -170,4 +170,55 @@ fn icon_symbol(icon: &PlanIcon) -> &'static str {
             _ => "•",
         },
     }
+}
+
+fn plan_progress_icon(total: usize, completed: usize) -> PlanIcon {
+    if total == 0 || completed == 0 {
+        PlanIcon::Custom("progress-empty".to_string())
+    } else if completed >= total {
+        PlanIcon::Custom("progress-complete".to_string())
+    } else if completed.saturating_mul(3) <= total {
+        PlanIcon::Custom("progress-start".to_string())
+    } else if completed.saturating_mul(3) < total.saturating_mul(2) {
+        PlanIcon::Custom("progress-mid".to_string())
+    } else {
+        PlanIcon::Custom("progress-late".to_string())
+    }
+}
+
+pub(crate) fn new_plan_update(update: UpdatePlanArgs) -> PlanUpdateCell {
+    let UpdatePlanArgs { name, plan } = update;
+
+    let total = plan.len();
+    let completed = plan
+        .iter()
+        .filter(|p| matches!(p.status, StepStatus::Completed))
+        .count();
+    let icon = plan_progress_icon(total, completed);
+    let progress = PlanProgress { completed, total };
+
+    let name = name
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Plan")
+        .to_string();
+
+    let steps: Vec<PlanStep> = plan
+        .into_iter()
+        .map(|PlanItemArg { step, status }| PlanStep {
+            description: step,
+            status,
+        })
+        .collect();
+
+    let state = PlanUpdateState {
+        id: HistoryId::ZERO,
+        name,
+        icon,
+        progress,
+        steps,
+    };
+
+    PlanUpdateCell::new(state)
 }

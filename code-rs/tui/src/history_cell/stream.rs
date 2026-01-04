@@ -1,6 +1,7 @@
 use super::*;
 use crate::history::{AssistantMessageState, AssistantStreamState};
 use code_core::history::state::MAX_ASSISTANT_STREAM_RETAINED_BYTES;
+use code_core::config::Config;
 use code_core::config_types::UriBasedFileOpener;
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -171,4 +172,11 @@ fn format_bytes(bytes: usize) -> String {
     } else {
         format!("{bytes} B")
     }
+}
+
+pub(crate) fn new_streaming_content(
+    state: AssistantStreamState,
+    cfg: &Config,
+) -> StreamingContentCell {
+    StreamingContentCell::from_state(state, cfg.file_opener, cfg.cwd.clone())
 }

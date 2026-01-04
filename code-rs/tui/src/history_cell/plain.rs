@@ -1,5 +1,6 @@
 use super::*;
 use super::text::{message_lines_from_ratatui, message_lines_to_ratatui};
+use crate::account_label::key_suffix;
 use crate::history::state::{
     HistoryId,
     InlineSpan,
@@ -14,12 +15,23 @@ use crate::history::state::{
     TextTone,
 };
 use crate::colors;
+use crate::sanitize::Mode as SanitizeMode;
+use crate::sanitize::Options as SanitizeOptions;
+use crate::sanitize::sanitize_for_tui;
+use crate::slash_command::SlashCommand;
 use crate::theme::{current_theme, Theme};
+use code_ansi_escape::ansi_escape_line;
+use code_common::create_config_summary_entries;
+use code_core::config::Config;
+use code_core::config_types::ReasoningEffort;
+use code_core::protocol::{SessionConfiguredEvent, TokenUsage};
+use code_protocol::num_format::format_with_separators;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Padding, Paragraph, Wrap};
+use std::collections::HashMap;
 
 struct PlainLayoutCache {
     requested_width: u16,
@@ -522,4 +534,465 @@ fn line_plain_text(line: &Line<'_>) -> String {
             .collect::<Vec<String>>()
             .join("")
     }
+}
+
+pub(crate) fn new_session_info(
+    config: &Config,
+    event: SessionConfiguredEvent,
+    is_first_event: bool,
+    latest_version: Option<&str>,
+) -> PlainMessageState {
+    let SessionConfiguredEvent {
+        model,
+        session_id: _,
+        history_log_id: _,
+        history_entry_count: _,
+        ..
+    } = event;
+
+    if is_first_event {
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        lines.push(Line::from("notice".dim()));
+        lines.extend(popular_commands_lines(latest_version));
+        plain_message_state_from_lines(lines, HistoryCellType::Notice)
+    } else if config.model == model {
+        plain_message_state_from_lines(Vec::new(), HistoryCellType::Notice)
+    } else {
+        let lines = vec![
+            Line::from("model changed:")
+                .fg(crate::colors::keyword())
+                .bold(),
+            Line::from(format!("requested: {}", config.model)),
+            Line::from(format!("used: {model}")),
+            // No empty line at end - trimming and spacing handled by renderer
+        ];
+        plain_message_state_from_lines(lines, HistoryCellType::Notice)
+    }
+}
+
+/// Build the common lines for the "Popular commands" section (without the leading
+/// "notice" marker). Shared between the initial session info and the startup prelude.
+fn popular_commands_lines(_latest_version: Option<&str>) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::styled(
+        "Popular commands:",
+        Style::default().fg(crate::colors::text_bright()),
+    ));
+    lines.push(Line::from(vec![
+        Span::styled("/settings", Style::default().fg(crate::colors::primary())),
+        Span::from(" - "),
+        Span::from(SlashCommand::Settings.description())
+            .style(Style::default().add_modifier(Modifier::DIM)),
+        Span::styled(
+            " UPDATED",
+            Style::default().fg(crate::colors::primary()),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("/auto", Style::default().fg(crate::colors::primary())),
+        Span::from(" - "),
+        Span::from(SlashCommand::Auto.description())
+            .style(Style::default().add_modifier(Modifier::DIM)),
+        Span::styled(
+            " UPDATED",
+            Style::default().fg(crate::colors::primary()),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("/chrome", Style::default().fg(crate::colors::primary())),
+        Span::from(" - "),
+        Span::from(SlashCommand::Chrome.description())
+            .style(Style::default().add_modifier(Modifier::DIM)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("/plan", Style::default().fg(crate::colors::primary())),
+        Span::from(" - "),
+        Span::from(SlashCommand::Plan.description())
+            .style(Style::default().add_modifier(Modifier::DIM)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("/code", Style::default().fg(crate::colors::primary())),
+        Span::from(" - "),
+        Span::from(SlashCommand::Code.description())
+            .style(Style::default().add_modifier(Modifier::DIM)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("/skills", Style::default().fg(crate::colors::primary())),
+        Span::from(" - "),
+        Span::from(SlashCommand::Skills.description())
+            .style(Style::default().add_modifier(Modifier::DIM)),
+        Span::styled(
+            " NEW",
+            Style::default().fg(crate::colors::primary()),
+        ),
+    ]));
+
+    lines
+}
+
+pub(crate) fn new_popular_commands_notice(
+    _connecting_mcp: bool,
+    latest_version: Option<&str>,
+) -> PlainMessageState {
+    if crate::chatwidget::is_test_mode() {
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        lines.push(Line::from(""));
+        let legacy_line = "  /code - perform a coding task (multiple agents)";
+        #[cfg(any(test, feature = "test-helpers"))]
+        println!("legacy command line: {legacy_line}");
+        lines.push(Line::from(legacy_line));
+        return plain_message_state_from_lines(lines, HistoryCellType::Notice);
+    }
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from("notice".dim()));
+    lines.extend(popular_commands_lines(latest_version));
+    // Connecting status is now rendered as a separate BackgroundEvent cell
+    // with its own gutter icon and spacing. Keep this notice focused.
+    plain_message_state_from_lines(lines, HistoryCellType::Notice)
+}
+
+pub(crate) fn new_user_prompt(message: String) -> PlainMessageState {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from("user"));
+    // Sanitize user-provided text for terminal safety and stable layout:
+    // - Normalize common TTY overwrite sequences (\r, \x08, ESC[K)
+    // - Expand tabs to spaces with a fixed tab stop so wrapping is deterministic
+    // - Parse ANSI sequences into spans so we never emit raw control bytes
+    let normalized = normalize_overwrite_sequences(&message);
+    let sanitized = sanitize_for_tui(
+        &normalized,
+        SanitizeMode::AnsiPreserving,
+        SanitizeOptions {
+            expand_tabs: true,
+            tabstop: 4,
+            debug_markers: false,
+        },
+    );
+    // Build content lines with ANSI converted to styled spans
+    let content: Vec<Line<'static>> = sanitized.lines().map(|l| ansi_escape_line(l)).collect();
+    let content = trim_empty_lines(content);
+    lines.extend(content);
+    // No empty line at end - trimming and spacing handled by renderer
+    plain_message_state_from_lines(lines, HistoryCellType::User)
+}
+
+/// Render a queued user message that will be sent in the next turn.
+/// Visually identical to a normal user cell, but the header shows a
+/// small "(queued)" suffix so it’s clear it hasn’t been executed yet.
+pub(crate) fn new_queued_user_prompt(message: String) -> PlainMessageState {
+    use ratatui::style::Style;
+    use ratatui::text::Span;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    // Header: "user (queued)"
+    lines.push(Line::from(vec![
+        Span::from("user "),
+        Span::from("(queued)").style(Style::default().fg(crate::colors::text_dim())),
+    ]));
+    // Normalize and render body like normal user messages
+    let normalized = normalize_overwrite_sequences(&message);
+    let sanitized = sanitize_for_tui(
+        &normalized,
+        SanitizeMode::AnsiPreserving,
+        SanitizeOptions {
+            expand_tabs: true,
+            tabstop: 4,
+            debug_markers: false,
+        },
+    );
+    let content: Vec<Line<'static>> = sanitized.lines().map(|l| ansi_escape_line(l)).collect();
+    let content = trim_empty_lines(content);
+    lines.extend(content);
+    plain_message_state_from_lines(lines, HistoryCellType::User)
+}
+
+#[allow(dead_code)]
+pub(crate) fn new_text_line(line: Line<'static>) -> PlainMessageState {
+    plain_message_state_from_lines(vec![line], HistoryCellType::Notice)
+}
+
+pub(crate) fn new_error_event(message: String) -> PlainMessageState {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::styled(
+        "error",
+        Style::default()
+            .fg(crate::colors::error())
+            .add_modifier(Modifier::BOLD),
+    ));
+    let msg_norm = normalize_overwrite_sequences(&message);
+    lines.extend(
+        msg_norm
+            .lines()
+            .map(|line| ansi_escape_line(line).style(Style::default().fg(crate::colors::error()))),
+    );
+    // No empty line at end - trimming and spacing handled by renderer
+    plain_message_state_from_lines(lines, HistoryCellType::Error)
+}
+
+pub(crate) fn new_reasoning_output(reasoning_effort: &ReasoningEffort) -> PlainMessageState {
+    let lines = vec![
+        Line::from(""),
+        Line::from("Reasoning Effort")
+            .fg(crate::colors::keyword())
+            .bold(),
+        Line::from(format!("Value: {}", reasoning_effort)),
+    ];
+    plain_message_state_from_lines(lines, HistoryCellType::Notice)
+}
+
+pub(crate) fn new_model_output(model: &str, effort: ReasoningEffort) -> PlainMessageState {
+    let lines = vec![
+        Line::from(""),
+        Line::from("Model Selection")
+            .fg(crate::colors::keyword())
+            .bold(),
+        Line::from(format!("Model: {}", model)),
+        Line::from(format!("Reasoning Effort: {}", effort)),
+    ];
+    plain_message_state_from_lines(lines, HistoryCellType::Notice)
+}
+
+pub(crate) fn new_status_output(
+    config: &Config,
+    total_usage: &TokenUsage,
+    last_usage: &TokenUsage,
+) -> PlainMessageState {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    lines.push(Line::from("/status").fg(crate::colors::keyword()));
+    lines.push(Line::from(""));
+
+    // 🔧 Configuration
+    lines.push(Line::from(vec!["🔧 ".into(), "Configuration".bold()]));
+
+    // Prepare config summary with custom prettification
+    let summary_entries = create_config_summary_entries(config);
+    let summary_map: HashMap<String, String> = summary_entries
+        .iter()
+        .map(|(key, value)| (key.to_string(), value.clone()))
+        .collect();
+
+    let lookup = |key: &str| -> String { summary_map.get(key).unwrap_or(&String::new()).clone() };
+    let title_case = |s: &str| -> String {
+        s.split_whitespace()
+            .map(|w| {
+                let mut chars = w.chars();
+                match chars.next() {
+                    None => String::new(),
+                    Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+
+    // Format model name with proper capitalization
+    let formatted_model = if config.model.to_lowercase().starts_with("gpt-") {
+        format!("GPT{}", &config.model[3..])
+    } else {
+        config.model.clone()
+    };
+    lines.push(Line::from(vec![
+        "  • Name: ".into(),
+        formatted_model.into(),
+    ]));
+    let provider_disp = pretty_provider_name(&config.model_provider_id);
+    lines.push(Line::from(vec![
+        "  • Provider: ".into(),
+        provider_disp.into(),
+    ]));
+
+    // Only show Reasoning fields if present in config summary
+    let reff = lookup("reasoning effort");
+    if !reff.is_empty() {
+        lines.push(Line::from(vec![
+            "  • Reasoning Effort: ".into(),
+            title_case(&reff).into(),
+        ]));
+    }
+    let rsum = lookup("reasoning summaries");
+    if !rsum.is_empty() {
+        lines.push(Line::from(vec![
+            "  • Reasoning Summaries: ".into(),
+            title_case(&rsum).into(),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+
+    // 🔐 Authentication
+    lines.push(Line::from(vec!["🔐 ".into(), "Authentication".bold()]));
+    {
+        use code_login::AuthMode;
+        use code_login::CodexAuth;
+        use code_login::OPENAI_API_KEY_ENV_VAR;
+        use code_login::try_read_auth_json;
+
+        // Determine effective auth mode the core would choose
+        let auth_result = CodexAuth::from_code_home(
+            &config.code_home,
+            AuthMode::ChatGPT,
+            &config.responses_originator_header,
+        );
+
+        match auth_result {
+            Ok(Some(auth)) => match auth.mode {
+                AuthMode::ApiKey => {
+                    // Prefer suffix from auth.json; fall back to env var if needed
+                    let suffix =
+                        try_read_auth_json(&code_login::get_auth_file(&config.code_home))
+                            .ok()
+                            .and_then(|a| a.openai_api_key)
+                            .or_else(|| std::env::var(OPENAI_API_KEY_ENV_VAR).ok())
+                            .map(|k| key_suffix(&k))
+                            .unwrap_or_else(|| "????".to_string());
+                    lines.push(Line::from(format!("  • Method: API key (…{suffix})")));
+                }
+                AuthMode::ChatGPT => {
+                    let account_id = auth
+                        .get_account_id()
+                        .unwrap_or_else(|| "unknown".to_string());
+                    lines.push(Line::from(format!(
+                        "  • Method: ChatGPT account (account_id: {account_id})"
+                    )));
+                }
+            },
+            _ => {
+                lines.push(Line::from("  • Method: unauthenticated"));
+            }
+        }
+    }
+
+    lines.push(Line::from(""));
+
+    // 📊 Token Usage
+    lines.push(Line::from(vec!["📊 ".into(), "Token Usage".bold()]));
+    // Input: <input> [+ <cached> cached]
+    let mut input_line_spans: Vec<Span<'static>> = vec![
+        "  • Input: ".into(),
+        format_with_separators(last_usage.non_cached_input()).into(),
+    ];
+    if last_usage.cached_input_tokens > 0 {
+        input_line_spans.push(
+            format!(
+                " (+ {} cached)",
+                format_with_separators(last_usage.cached_input_tokens)
+            )
+            .into(),
+        );
+    }
+    lines.push(Line::from(input_line_spans));
+    // Output: <output>
+    lines.push(Line::from(vec![
+        "  • Output: ".into(),
+        format_with_separators(last_usage.output_tokens).into(),
+    ]));
+    // Total: <total>
+    lines.push(Line::from(vec![
+        "  • Total: ".into(),
+        format_with_separators(last_usage.blended_total()).into(),
+    ]));
+    lines.push(Line::from(vec![
+        "  • Session total: ".into(),
+        format_with_separators(total_usage.blended_total()).into(),
+    ]));
+
+    // 📐 Model Limits
+    let context_window = config.model_context_window;
+    let max_output_tokens = config.model_max_output_tokens;
+    let auto_compact_limit = config.model_auto_compact_token_limit;
+
+    if context_window.is_some() || max_output_tokens.is_some() || auto_compact_limit.is_some() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec!["📐 ".into(), "Model Limits".bold()]));
+
+        if let Some(context_window) = context_window {
+            let used = last_usage.tokens_in_context_window().min(context_window);
+            let percent_full = if context_window > 0 {
+                ((used as f64 / context_window as f64) * 100.0).min(100.0)
+            } else {
+                0.0
+            };
+            lines.push(Line::from(format!(
+                "  • Context window: {} used of {} ({:.0}% full)",
+                format_with_separators(used),
+                format_with_separators(context_window),
+                percent_full
+            )));
+        }
+
+        if let Some(max_output_tokens) = max_output_tokens {
+            lines.push(Line::from(format!(
+                "  • Max output tokens: {}",
+                format_with_separators(max_output_tokens)
+            )));
+        }
+
+        match auto_compact_limit {
+            Some(limit) if limit > 0 => {
+                let limit_u64 = limit as u64;
+                let remaining = limit_u64.saturating_sub(total_usage.total_tokens);
+                lines.push(Line::from(format!(
+                    "  • Auto-compact threshold: {} ({} remaining)",
+                    format_with_separators(limit_u64),
+                    format_with_separators(remaining)
+                )));
+                if total_usage.total_tokens > limit_u64 {
+                    lines.push(Line::from("    • Compacting will trigger on the next turn".dim()));
+                }
+            }
+            _ => {
+                if let Some(window) = context_window {
+                    if window > 0 {
+                        let used = last_usage.tokens_in_context_window();
+                        let remaining = window.saturating_sub(used);
+                        let percent_left = if window == 0 {
+                            0.0
+                        } else {
+                            (remaining as f64 / window as f64) * 100.0
+                        };
+                        lines.push(Line::from(format!(
+                            "  • Context window: {} used of {} ({:.0}% left)",
+                            format_with_separators(used),
+                            format_with_separators(window),
+                            percent_left
+                        )));
+                        lines.push(Line::from(format!(
+                            "  • {} tokens before overflow",
+                            format_with_separators(remaining)
+                        )));
+                        lines.push(Line::from("  • Auto-compaction runs after overflow errors".to_string()));
+                    } else {
+                        lines.push(Line::from("  • Auto-compaction runs after overflow errors".to_string()));
+                    }
+                } else {
+                    lines.push(Line::from("  • Auto-compaction runs after overflow errors".to_string()));
+                }
+            }
+        }
+    }
+
+    plain_message_state_from_lines(lines, HistoryCellType::Notice)
+}
+
+pub(crate) fn new_warning_event(message: String) -> PlainMessageState {
+    let warn_style = Style::default().fg(crate::colors::warning());
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(2);
+    lines.push(Line::from("notice"));
+    lines.push(Line::from(vec![Span::styled(format!("⚠ {message}"), warn_style)]));
+    plain_message_state_from_lines(lines, HistoryCellType::Notice)
+}
+
+pub(crate) fn new_prompts_output() -> PlainMessageState {
+    let lines: Vec<Line<'static>> = vec![
+        Line::from("/prompts").fg(crate::colors::keyword()),
+        Line::from(""),
+        Line::from(" 1. Explain this codebase"),
+        Line::from(" 2. Summarize recent commits"),
+        Line::from(" 3. Implement {feature}"),
+        Line::from(" 4. Find and fix a bug in @filename"),
+        Line::from(" 5. Write tests for @filename"),
+        Line::from(" 6. Improve documentation in @filename"),
+        Line::from(""),
+    ];
+    plain_message_state_from_lines(lines, HistoryCellType::Notice)
 }

@@ -1,8 +1,10 @@
 use super::*;
 use crate::history::state::{HistoryId, TextTone, WaitStatusDetail, WaitStatusHeader, WaitStatusState};
 use crate::theme::{current_theme, Theme};
+use code_common::elapsed::format_duration;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use std::time::Duration;
 
 pub(crate) struct WaitStatusCell {
     state: WaitStatusState,
@@ -103,4 +105,35 @@ fn color_for_tone(tone: TextTone, theme: &Theme) -> ratatui::style::Color {
         TextTone::Error => theme.error,
         TextTone::Info => theme.info,
     }
+}
+
+pub(crate) fn new_completed_wait_tool_call(target: String, duration: Duration) -> WaitStatusCell {
+    let mut duration_str = format_duration(duration);
+    if duration_str.ends_with(" 00s") {
+        duration_str.truncate(duration_str.len().saturating_sub(4));
+    }
+
+    let header = crate::history::WaitStatusHeader {
+        title: "Waited".to_string(),
+        title_tone: crate::history::TextTone::Success,
+        summary: Some(duration_str),
+        summary_tone: crate::history::TextTone::Dim,
+    };
+
+    let mut details: Vec<crate::history::WaitStatusDetail> = Vec::new();
+    if !target.is_empty() {
+        details.push(crate::history::WaitStatusDetail {
+            label: "for".to_string(),
+            value: Some(target),
+            tone: crate::history::TextTone::Dim,
+        });
+    }
+
+    let state = crate::history::WaitStatusState {
+        id: crate::history::HistoryId::ZERO,
+        header,
+        details,
+    };
+
+    WaitStatusCell::new(state)
 }

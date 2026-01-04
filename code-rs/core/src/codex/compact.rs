@@ -1,11 +1,11 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use super::AgentTask;
+use super::streaming::AgentTask;
 use super::Session;
 use super::compact_remote;
 use super::TurnContext;
-use super::get_last_assistant_message_from_turn;
+use super::streaming::get_last_assistant_message_from_turn;
 use crate::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::environment_context::EnvironmentContext;
