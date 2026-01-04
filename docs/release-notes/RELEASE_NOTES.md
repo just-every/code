@@ -1,10 +1,11 @@
-## @just-every/code v0.6.29
+## @just-every/code v0.6.30
 
-Markdown rendering now handles wide code blocks more gracefully in the TUI.
+Bugfix release improving TUI rendering stability and log noise handling.
 
 ### Changes
-- TUI/Markdown: wrap wide code graphemes to avoid overflow in rendered blocks.
-- TUI/Markdown: flush wrapped code rows so virtualized views stay aligned.
+- TUI/Auto Drive: avoid full render rebuilds to cut redraw overhead during runs.
+- TUI/History: cache patch summary layout to reduce churn and flicker.
+- TUI/Logs: throttle thread spawn errors to prevent repeated warnings.
 
 ### Install
 ```
@@ -12,4 +13,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.28...v0.6.29
+Compare: https://github.com/just-every/code/compare/v0.6.29...v0.6.30

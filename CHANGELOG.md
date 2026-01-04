@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.30] - 2026-01-04
+
+- TUI/Auto Drive: avoid full render rebuilds to cut redraw overhead during runs. (6db1e0b)
+- TUI/History: cache patch summary layout to reduce churn and flicker. (845d63e)
+- TUI/Logs: throttle thread spawn errors to prevent repeated warnings. (e91ce8c)
+
 ## [0.6.29] - 2026-01-02
 
 - TUI/Markdown: wrap wide code graphemes to avoid overflow in rendered blocks. (8519507)
