@@ -1498,11 +1498,14 @@ pub fn log_dir(cfg: &Config) -> std::io::Result<PathBuf> {
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
     use crate::config_types::HistoryPersistence;
+    use crate::config_types::McpServerTransportConfig;
     use crate::config_types::Notifications;
 
     use super::*;
     use pretty_assertions::assert_eq;
+    use std::collections::BTreeMap;
     use std::ffi::OsString;
+    use tempfile::NamedTempFile;
     use tempfile::TempDir;
 
     struct EnvVarGuard {
