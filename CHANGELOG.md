@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.31] - 2026-01-04
+
+- Core/Config: add missing test imports to keep config checks stable. (97672cc7)
+- TUI/Logging: throttle frame timer spam to reduce noisy redraw logs. (3eeef61c)
+- Core/TUI: split large modules to improve stability and maintainability. (5c9d9743)
+
 ## [0.6.30] - 2026-01-04
 
 - TUI/Auto Drive: avoid full render rebuilds to cut redraw overhead during runs. (6db1e0b)
