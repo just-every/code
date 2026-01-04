@@ -1,11 +1,9 @@
-## @just-every/code v0.6.31
-
-Core stability and TUI logging improvements for a smoother release.
+## @just-every/code v0.6.32
+This release tightens TUI keyboard handling for more reliable escapes and word navigation.
 
 ### Changes
-- Core/Config: add missing test imports to keep config checks stable.
-- TUI/Logging: throttle frame timer spam to reduce noisy redraw logs.
-- Core/TUI: split large modules to improve stability and maintainability.
+- TUI: prevent Esc undo priming from sticking and stabilize word-motion shortcuts.
+- TUI: refactor Esc handling into a dedicated module for clearer behavior.
 
 ### Install
 ```
@@ -13,4 +11,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.30...v0.6.31
+Compare: https://github.com/just-every/code/compare/v0.6.31...v0.6.32

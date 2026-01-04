@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.32] - 2026-01-04
+
+- TUI: prevent Esc undo priming from sticking and stabilize word-motion shortcuts. (d90b0f9)
+- TUI: refactor Esc handling into a dedicated module for clearer behavior. (d90b0f9)
+
 ## [0.6.31] - 2026-01-04
 
 - Core/Config: add missing test imports to keep config checks stable. (97672cc7)
