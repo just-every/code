@@ -481,6 +481,9 @@ Code includes built-in support for these agents:
 - **qwen** - Qwen AI assistant (requires `qwen` CLI)
 - **cloud** - Cloud-based agents (optional, gated by `CODE_ENABLE_CLOUD_AGENT_MODEL`)
 
+Code prepends `AGENTS.md` contents (repo root to cwd, capped by `project_doc_max_bytes`)
+to external agent prompts (claude, gemini, qwen) so repo guidance is honored.
+
 ### Custom agent example
 
 ```toml

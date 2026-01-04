@@ -5,6 +5,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use uuid::Uuid;
 use std::fs::{self, OpenOptions};
+use std::io::Read;
 use std::io::Write as IoWrite;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -89,6 +90,7 @@ fn resolve_in_path(command: &str) -> Option<std::path::PathBuf> {
 }
 
 use crate::agent_defaults::{agent_model_spec, default_params_for};
+use crate::config::PROJECT_DOC_MAX_BYTES;
 use shlex::split as shlex_split;
 use crate::config_types::AgentConfig;
 use crate::openai_tools::JsonSchema;
@@ -180,6 +182,120 @@ fn find_repo_root(start: std::path::PathBuf) -> Option<std::path::PathBuf> {
         dir = path.parent();
     }
     None
+}
+
+const AGENTS_DOC_FILENAME: &str = "AGENTS.md";
+
+fn agent_doc_search_dirs(start_dir: &std::path::Path) -> Vec<PathBuf> {
+    let start = start_dir
+        .canonicalize()
+        .unwrap_or_else(|_| start_dir.to_path_buf());
+    let Some(root) = find_repo_root(start.clone()) else {
+        return vec![start];
+    };
+    let root = root.canonicalize().unwrap_or(root);
+
+    let mut dirs = Vec::new();
+    let mut cursor = start.clone();
+    dirs.push(cursor.clone());
+    while cursor != root {
+        let Some(parent) = cursor.parent() else { break; };
+        let parent = parent.to_path_buf();
+        if parent == cursor {
+            break;
+        }
+        dirs.push(parent.clone());
+        cursor = parent;
+    }
+    dirs.reverse();
+    dirs
+}
+
+fn read_agents_docs(start_dir: &std::path::Path) -> Option<String> {
+    let mut remaining = PROJECT_DOC_MAX_BYTES as u64;
+    let mut parts: Vec<String> = Vec::new();
+
+    for dir in agent_doc_search_dirs(start_dir) {
+        if remaining == 0 {
+            break;
+        }
+
+        let path = dir.join(AGENTS_DOC_FILENAME);
+        let file = match fs::File::open(&path) {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                warn!("failed to read {path}: {err}", path = path.display());
+                continue;
+            }
+        };
+
+        let size = match file.metadata() {
+            Ok(meta) => meta.len(),
+            Err(err) => {
+                warn!("failed to stat {path}: {err}", path = path.display());
+                continue;
+            }
+        };
+
+        let mut reader = std::io::BufReader::new(file).take(remaining);
+        let mut data: Vec<u8> = Vec::new();
+        if let Err(err) = reader.read_to_end(&mut data) {
+            warn!("failed to read {path}: {err}", path = path.display());
+            continue;
+        }
+
+        if size > remaining {
+            warn!(
+                "AGENTS.md at {path} exceeds remaining budget ({remaining} bytes), truncating",
+                path = path.display(),
+                remaining = remaining
+            );
+        }
+
+        let text = String::from_utf8_lossy(&data).to_string();
+        if !text.trim().is_empty() {
+            parts.push(text);
+            remaining = remaining.saturating_sub(data.len() as u64);
+        }
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
+}
+
+fn should_inject_agents_docs(family: &str) -> bool {
+    matches!(family, "claude" | "gemini" | "qwen")
+}
+
+fn prepend_agents_docs(
+    prompt: &str,
+    working_dir: Option<&std::path::Path>,
+    family: &str,
+) -> String {
+    if !should_inject_agents_docs(family) {
+        return prompt.to_string();
+    }
+
+    let base_dir = working_dir
+        .map(|dir| dir.to_path_buf())
+        .or_else(|| std::env::current_dir().ok());
+    let Some(dir) = base_dir.as_ref() else {
+        return prompt.to_string();
+    };
+    let Some(doc) = read_agents_docs(dir) else {
+        return prompt.to_string();
+    };
+
+    let trimmed = doc.trim();
+    if trimmed.is_empty() {
+        return prompt.to_string();
+    }
+
+    format!("Project instructions (AGENTS.md):\n\n{trimmed}\n\n{prompt}")
 }
 
 /// Format a helpful error message when an agent command is not found.
@@ -1240,6 +1356,7 @@ fn command_exists(cmd: &str) -> bool {
 
     let command_missing = !command_exists(&command_for_spawn);
     let use_current_exe = should_use_current_exe_for_agent(family, command_missing, config.as_ref());
+    let prompt = prepend_agents_docs(prompt, working_dir.as_deref(), family);
 
     let mut cmd = if use_current_exe {
         match current_code_binary_path() {
@@ -1325,7 +1442,7 @@ fn command_exists(cmd: &str) -> bool {
             final_args.extend(defaults);
             final_args.extend(spec_model_args.iter().cloned());
             final_args.push("-p".into());
-            final_args.push(prompt.to_string());
+            final_args.push(prompt.clone());
         }
         "codex" | "code" => {
             let have_mode_args = config
@@ -1342,7 +1459,7 @@ fn command_exists(cmd: &str) -> bool {
             final_args.push(effort_override.clone());
             final_args.push("-c".into());
             final_args.push(auto_effort_override.clone());
-            final_args.push(prompt.to_string());
+            final_args.push(prompt.clone());
         }
         "cloud" => {
             if built_in_cloud {
@@ -1362,11 +1479,11 @@ fn command_exists(cmd: &str) -> bool {
             final_args.push(effort_override.clone());
             final_args.push("-c".into());
             final_args.push(auto_effort_override);
-            final_args.push(prompt.to_string());
+            final_args.push(prompt.clone());
         }
         _ => {
             final_args.extend(spec_model_args.iter().cloned());
-            final_args.push(prompt.to_string());
+            final_args.push(prompt.clone());
         }
     }
 
