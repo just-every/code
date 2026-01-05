@@ -1,7 +1,6 @@
 use super::*;
 use super::streaming::{
     AgentTask,
-    MAX_TOOL_OUTPUT_BYTES_FOR_MODEL,
     TRUNCATION_MARKER,
     TimelineReplayContext,
     debug_history,
@@ -361,6 +360,7 @@ pub(crate) struct Session {
     pub(super) confirm_guard: ConfirmGuardRuntime,
     pub(super) project_hooks: ProjectHooks,
     pub(super) project_commands: Vec<ProjectCommand>,
+    pub(super) tool_output_max_bytes: usize,
     pub(super) hook_guard: AtomicBool,
     pub(super) github: Arc<RwLock<crate::config_types::GithubConfig>>,
     pub(super) validation: Arc<RwLock<crate::config_types::ValidationConfig>>,
@@ -915,7 +915,7 @@ impl Session {
         }
 
         let (_, was_truncated, prefix_end, suffix_start) =
-            truncate_middle_bytes(&aggregated, MAX_TOOL_OUTPUT_BYTES_FOR_MODEL);
+            truncate_middle_bytes(&aggregated, self.tool_output_max_bytes);
         if !was_truncated {
             return;
         }

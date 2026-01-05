@@ -715,6 +715,10 @@ In general, Codex knows the context window for the most common OpenAI models, bu
 
 This is analogous to `model_context_window`, but for the maximum number of output tokens for the model.
 
+## tool_output_max_bytes
+
+Maximum number of bytes of tool output (including shell command output and file reads) to include in a model request. Defaults to 32 KiB. Increase this if you need to send larger outputs to the model (note the exec capture cap remains 32 MiB per stream).
+
 ## project_doc_max_bytes
 
 Maximum number of bytes to read from an `AGENTS.md` file to include in the instructions sent with the first turn of a session. Defaults to 32 KiB.

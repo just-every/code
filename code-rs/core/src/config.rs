@@ -109,6 +109,8 @@ pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5.2-codex";
 /// files are *silently truncated* to this size so we do not take up too much of
 /// the context window.
 pub(crate) const PROJECT_DOC_MAX_BYTES: usize = 32 * 1024; // 32 KiB
+/// Maximum number of bytes of tool output included in a model request.
+pub(crate) const DEFAULT_TOOL_OUTPUT_MAX_BYTES: usize = 32 * 1024; // 32 KiB
 
 pub(crate) const CONFIG_TOML_FILE: &str = "config.toml";
 
@@ -296,6 +298,9 @@ pub struct Config {
 
     /// Maximum number of bytes to include from an AGENTS.md project doc file.
     pub project_doc_max_bytes: usize,
+
+    /// Maximum number of bytes of tool output to include in a model request.
+    pub tool_output_max_bytes: usize,
 
     /// Ordered list of fallback filenames to consider when loading project docs.
     pub project_doc_fallback_filenames: Vec<String>,
@@ -557,6 +562,9 @@ pub struct ConfigToml {
 
     /// Maximum number of bytes to include from an AGENTS.md project doc file.
     pub project_doc_max_bytes: Option<usize>,
+
+    /// Maximum number of bytes of tool output to include in a model request.
+    pub tool_output_max_bytes: Option<usize>,
 
     /// Ordered list of fallback filenames to look for when AGENTS.md is missing.
     pub project_doc_fallback_filenames: Option<Vec<String>>,
@@ -1363,6 +1371,9 @@ impl Config {
             agents,
             model_providers,
             project_doc_max_bytes: cfg.project_doc_max_bytes.unwrap_or(PROJECT_DOC_MAX_BYTES),
+            tool_output_max_bytes: cfg
+                .tool_output_max_bytes
+                .unwrap_or(DEFAULT_TOOL_OUTPUT_MAX_BYTES),
             project_doc_fallback_filenames: cfg
                 .project_doc_fallback_filenames
                 .unwrap_or_default()
@@ -1642,6 +1653,28 @@ persistence = "none"
         let parsed_bool = toml::from_str::<ConfigToml>(cfg_bool)
             .expect("boolean should deserialize");
         assert_eq!(parsed_bool.auto_upgrade_enabled, Some(true));
+    }
+
+    #[test]
+    fn tool_output_max_bytes_defaults_and_overrides() -> std::io::Result<()> {
+        let code_home = TempDir::new()?;
+
+        let default_config = Config::load_from_base_config_with_overrides(
+            ConfigToml::default(),
+            ConfigOverrides::default(),
+            code_home.path().to_path_buf(),
+        )?;
+        assert_eq!(default_config.tool_output_max_bytes, DEFAULT_TOOL_OUTPUT_MAX_BYTES);
+
+        let cfg = toml::from_str::<ConfigToml>("tool_output_max_bytes = 65536")
+            .expect("TOML should deserialize");
+        let overridden = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            code_home.path().to_path_buf(),
+        )?;
+        assert_eq!(overridden.tool_output_max_bytes, 65_536);
+        Ok(())
     }
 
     #[test]
