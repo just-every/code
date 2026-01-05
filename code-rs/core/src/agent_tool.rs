@@ -1241,33 +1241,6 @@ fn command_exists(cmd: &str) -> bool {
     let command_missing = !command_exists(&command_for_spawn);
     let use_current_exe = should_use_current_exe_for_agent(family, command_missing, config.as_ref());
 
-    let mut cmd = if use_current_exe {
-        match current_code_binary_path() {
-            Ok(path) => Command::new(path),
-            Err(e) => {
-                return Err(format!(
-                    "Current code binary is unavailable (deleted or moved): {e}. Rebuild with ./build-fast.sh or reinstall 'code' to continue."
-                ));
-            }
-        }
-    } else {
-        Command::new(command_for_spawn.clone())
-    };
-
-    // Set working directory if provided
-    if let Some(dir) = working_dir.clone() {
-        cmd.current_dir(dir);
-    }
-
-    // Add environment variables from config if provided
-    if let Some(ref cfg) = config {
-        if let Some(ref env) = cfg.env {
-            for (key, value) in env {
-                cmd.env(key, value);
-            }
-        }
-    }
-
     let mut final_args: Vec<String> = command_extra_args;
 
     if let Some(ref cfg) = config {
@@ -1509,10 +1482,14 @@ fn command_exists(cmd: &str) -> bool {
             }
         }
     } else {
-        // Read-only path: stream output via tokio::process for consistency.
-        #[cfg(target_os = "windows")]
-        if let Some(resolved) = resolve_in_path(&command_for_spawn) {
-            cmd = Command::new(resolved);
+        // Read-only path: must honor resolve_program_path (and CODE_BINARY_PATH) just
+        // like the write path; skipping this can regress to PATH resolution and
+        // launch the npm shim on Windows (issue #497).
+        let program = resolve_program_path(use_current_exe, &command_for_spawn)?;
+        let mut cmd = Command::new(program);
+
+        if let Some(dir) = working_dir.clone() {
+            cmd.current_dir(dir);
         }
 
         cmd.args(final_args.clone());
@@ -2433,14 +2410,19 @@ where
 mod tests {
     use super::normalize_agent_name;
     use super::maybe_set_gemini_config_dir;
+    use super::execute_model_with_permissions;
     use super::resolve_program_path;
     use super::should_use_current_exe_for_agent;
     use super::prefer_json_result;
     use super::current_code_binary_path;
     use crate::config_types::AgentConfig;
+    use code_protocol::config_types::ReasoningEffort;
     use std::collections::HashMap;
+    use std::ffi::OsString;
     use tempfile::tempdir;
+    use std::path::Path;
     use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
 
     #[test]
     fn drops_empty_names() {
@@ -2530,6 +2512,108 @@ mod tests {
 
         let custom = resolve_program_path(false, "custom-coder").expect("resolved custom");
         assert_eq!(custom, std::path::PathBuf::from("custom-coder"));
+    }
+
+    #[tokio::test]
+    async fn read_only_agents_use_code_binary_path() {
+        let _lock = env_lock().lock().expect("env lock");
+        let _reset_path = EnvReset::capture("PATH");
+        let _reset_binary = EnvReset::capture("CODE_BINARY_PATH");
+
+        let dir = tempdir().expect("tempdir");
+        let current = script_path(dir.path(), "current");
+        let shim = script_path(dir.path(), "coder");
+
+        write_script(&current, "current");
+        write_script(&shim, "path");
+
+        unsafe {
+            std::env::set_var("CODE_BINARY_PATH", &current);
+            std::env::set_var("PATH", prepend_path(dir.path()));
+        }
+
+        let output = execute_model_with_permissions(
+            "agent-test",
+            "code-gpt-5.2-codex",
+            "ok",
+            true,
+            None,
+            None,
+            ReasoningEffort::Low,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("execute read-only agent");
+
+        assert_eq!(output.trim(), "current");
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct EnvReset {
+        key: &'static str,
+        value: Option<OsString>,
+    }
+
+    impl EnvReset {
+        fn capture(key: &'static str) -> Self {
+            let value = std::env::var_os(key);
+            Self { key, value }
+        }
+    }
+
+    impl Drop for EnvReset {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.value {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
+    fn prepend_path(dir: &Path) -> OsString {
+        let original = std::env::var_os("PATH");
+        let mut parts: Vec<OsString> = Vec::new();
+        parts.push(dir.as_os_str().to_os_string());
+        if let Some(orig) = original {
+            parts.extend(std::env::split_paths(&orig).map(|p| p.into_os_string()));
+        }
+        std::env::join_paths(parts).expect("join PATH")
+    }
+
+    #[cfg(target_os = "windows")]
+    fn script_path(dir: &Path, name: &str) -> PathBuf {
+        dir.join(format!("{name}.cmd"))
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn script_path(dir: &Path, name: &str) -> PathBuf {
+        dir.join(name)
+    }
+
+    #[cfg(target_os = "windows")]
+    fn write_script(path: &Path, marker: &str) {
+        let script = format!("@echo off\r\necho {marker}\r\nexit /b 0\r\n");
+        std::fs::write(path, script).expect("write cmd");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn write_script(path: &Path, marker: &str) {
+        let script = format!("#!/bin/sh\necho {marker}\nexit 0\n");
+        std::fs::write(path, script).expect("write script");
+        let mut perms = std::fs::metadata(path)
+            .expect("script metadata")
+            .permissions();
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms).expect("chmod script");
     }
 
     #[test]
