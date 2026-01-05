@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.35] - 2026-01-05
+
+- Core/Agent: keep packaged code executable available for read-only agents to avoid missing-binary failures. (d1557c5)
+- Core/Agent: fall back to local dev build when the running binary disappears to keep agent commands working. (d1557c5)
+
 ## [0.6.34] - 2026-01-05
 
 - Core/Auth: auto-switch to another account when usage limits hit to keep runs moving. (590f46be)
