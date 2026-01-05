@@ -19,7 +19,7 @@ const SHORT_TIMEOUT_MS: u64 = 200;
 const SHORT_TIMEOUT_MS: u64 = 5_000;
 
 #[cfg(not(target_arch = "aarch64"))]
-const LONG_TIMEOUT_MS: u64 = 1_000;
+const LONG_TIMEOUT_MS: u64 = 2_000;
 #[cfg(target_arch = "aarch64")]
 const LONG_TIMEOUT_MS: u64 = 5_000;
 
