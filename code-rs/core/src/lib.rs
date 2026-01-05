@@ -12,6 +12,7 @@ pub mod auth;
 pub mod auth_accounts;
 pub mod account_usage;
 mod account_switching;
+pub use account_switching::{RateLimitSwitchState, switch_active_account_on_rate_limit};
 pub mod bash;
 mod auto_drive_pid;
 mod chat_completions;

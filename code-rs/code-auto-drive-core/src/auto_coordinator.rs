@@ -15,6 +15,9 @@ use code_core::project_doc::read_auto_drive_docs;
 use code_core::protocol::SandboxPolicy;
 use code_core::slash_commands::get_enabled_agents;
 use code_core::{AuthManager, ModelClient, Prompt, ResponseEvent, TextFormat};
+use code_core::{RateLimitSwitchState, switch_active_account_on_rate_limit};
+use code_core::auth;
+use code_core::auth_accounts;
 use code_core::error::CodexErr;
 use code_common::model_presets::clamp_reasoning_effort_for_model;
 use code_protocol::models::{ContentItem, ReasoningItemContent, ResponseItem};
@@ -2137,7 +2140,10 @@ fn request_decision_with_model(
     let coordinator_prompt = coordinator_prompt.map(|text| text.to_string());
     let tx = event_tx.clone();
     let cancel = cancel_token.clone();
-    let classify = |error: &anyhow::Error| classify_model_error(error);
+    let mut rate_limit_switch_state = RateLimitSwitchState::default();
+    let classify = |error: &anyhow::Error| {
+        classify_model_error_with_auto_switch(client, &mut rate_limit_switch_state, event_tx, error)
+    };
     let options = RetryOptions::with_defaults(retry_max_elapsed(time_budget_deadline));
 
     let result = runtime.block_on(async move {
@@ -2494,6 +2500,104 @@ pub(crate) fn classify_model_error(error: &anyhow::Error) -> RetryDecision {
     }
 
     RetryDecision::Fatal(anyhow!(error.to_string()))
+}
+
+fn classify_model_error_with_auto_switch(
+    client: &ModelClient,
+    state: &mut RateLimitSwitchState,
+    event_tx: &AutoCoordinatorEventSender,
+    error: &anyhow::Error,
+) -> RetryDecision {
+    if let Some(code_err) = find_in_chain::<CodexErr>(error) {
+        if let CodexErr::UsageLimitReached(limit) = code_err {
+            if client.auto_switch_accounts_on_rate_limit()
+                && auth::read_code_api_key_from_env().is_none()
+            {
+                if let Some(auth_manager) = client.get_auth_manager() {
+                    let auth = auth_manager.auth();
+                    let current_account_id = auth
+                        .as_ref()
+                        .and_then(|current| current.get_account_id())
+                        .or_else(|| {
+                            auth_accounts::get_active_account_id(client.code_home())
+                                .ok()
+                                .flatten()
+                        });
+                    if let Some(current_account_id) = current_account_id {
+                        let now = Utc::now();
+                        let blocked_until = limit
+                            .resets_in_seconds
+                            .map(|seconds| now + chrono::Duration::seconds(seconds as i64));
+                        let current_auth_mode = auth
+                            .as_ref()
+                            .map(|current| current.mode)
+                            .or_else(|| {
+                                auth_accounts::find_account(
+                                    client.code_home(),
+                                    current_account_id.as_str(),
+                                )
+                                .ok()
+                                .flatten()
+                                .map(|account| account.mode)
+                            });
+                        if let Some(current_auth_mode) = current_auth_mode {
+                            match switch_active_account_on_rate_limit(
+                                client.code_home(),
+                                state,
+                                client.api_key_fallback_on_all_accounts_limited(),
+                                now,
+                                current_account_id.as_str(),
+                                current_auth_mode,
+                                blocked_until,
+                            ) {
+                                Ok(Some(next_account_id)) => {
+                                    let next_label = auth_accounts::find_account(
+                                        client.code_home(),
+                                        &next_account_id,
+                                    )
+                                    .ok()
+                                    .flatten()
+                                    .and_then(|account| account.label)
+                                    .unwrap_or_else(|| next_account_id.clone());
+                                    tracing::info!(
+                                        from_account_id = %current_account_id,
+                                        to_account_id = %next_account_id,
+                                        reason = "usage_limit_reached",
+                                        "rate limit hit; auto-switching active account"
+                                    );
+                                    auth_manager.reload();
+                                    event_tx.send(AutoCoordinatorEvent::Action {
+                                        message: format!(
+                                            "Auto-switch: now using {next_label} due to usage limit."
+                                        ),
+                                    });
+                                    return RetryDecision::RateLimited {
+                                        wait_until: Instant::now(),
+                                        reason: "usage limit reached; switched accounts".to_string(),
+                                    };
+                                }
+                                Ok(None) => {}
+                                Err(err) => {
+                                    warn!(
+                                        from_account_id = %current_account_id,
+                                        error = %err,
+                                        "failed to activate account after usage limit"
+                                    );
+                                }
+                            }
+                        } else {
+                            warn!(
+                                from_account_id = %current_account_id,
+                                "skipping account switch after usage limit: missing auth mode"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    classify_model_error(error)
 }
 
 fn classify_reqwest_error(err: &reqwest::Error) -> RetryDecision {

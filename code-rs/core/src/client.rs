@@ -324,6 +324,14 @@ impl ModelClient {
         self.config.debug
     }
 
+    pub fn auto_switch_accounts_on_rate_limit(&self) -> bool {
+        self.config.auto_switch_accounts_on_rate_limit
+    }
+
+    pub fn api_key_fallback_on_all_accounts_limited(&self) -> bool {
+        self.config.api_key_fallback_on_all_accounts_limited
+    }
+
     pub fn build_tools_config_with_sandbox(
         &self,
         sandbox_policy: SandboxPolicy,

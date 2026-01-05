@@ -15,6 +15,10 @@ use super::session::{
     is_connectivity_error,
     spawn_usage_task,
 };
+use crate::auth;
+use crate::auth_accounts;
+use crate::account_switching::RateLimitSwitchState;
+use code_app_server_protocol::AuthMode as AppAuthMode;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum AgentTaskKind {
@@ -1822,6 +1826,7 @@ async fn run_turn(
     };
 
     let mut retries = 0;
+    let mut rate_limit_switch_state = RateLimitSwitchState::default();
     // Ensure we only auto-compact once per turn to avoid loops
     let mut did_auto_compact = false;
     // Attempt input starts as the provided input, and may be augmented with
@@ -1920,6 +1925,85 @@ async fn run_turn(
                             warn!("Failed to persist usage limit hint: {err}");
                         }
                     });
+                }
+
+                let mut switched = false;
+                if sess.client.auto_switch_accounts_on_rate_limit()
+                    && auth::read_code_api_key_from_env().is_none()
+                {
+                    if let Some(auth_manager) = sess.client.get_auth_manager() {
+                        let auth = auth_manager.auth();
+                        let current_account_id = auth
+                            .as_ref()
+                            .and_then(|current| current.get_account_id())
+                            .or_else(|| {
+                                auth_accounts::get_active_account_id(sess.client.code_home())
+                                    .ok()
+                                    .flatten()
+                            });
+                        if let Some(current_account_id) = current_account_id {
+                            let now = Utc::now();
+                            let blocked_until = limit_err.resets_in_seconds.map(|seconds| {
+                                now + chrono::Duration::seconds(seconds as i64)
+                            });
+                            let current_auth_mode = auth
+                                .as_ref()
+                                .map(|current| current.mode)
+                                .unwrap_or(AppAuthMode::ApiKey);
+                            match crate::account_switching::switch_active_account_on_rate_limit(
+                                sess.client.code_home(),
+                                &mut rate_limit_switch_state,
+                                sess.client.api_key_fallback_on_all_accounts_limited(),
+                                now,
+                                current_account_id.as_str(),
+                                current_auth_mode,
+                                blocked_until,
+                            ) {
+                                Ok(Some(next_account_id)) => {
+                                    let next_label = auth_accounts::find_account(
+                                        sess.client.code_home(),
+                                        &next_account_id,
+                                    )
+                                    .ok()
+                                    .flatten()
+                                    .and_then(|account| account.label)
+                                    .unwrap_or_else(|| next_account_id.clone());
+                                    tracing::info!(
+                                        from_account_id = %current_account_id,
+                                        to_account_id = %next_account_id,
+                                        reason = "usage_limit_reached",
+                                        "rate limit hit; auto-switching active account"
+                                    );
+                                    auth_manager.reload();
+                                    let order = sess.next_background_order(&sub_id, attempt_req, None);
+                                    let notice = format!(
+                                        "Auto-switch: now using {next_label} due to usage limit."
+                                    );
+                                    sess
+                                        .notify_background_event_with_order(
+                                            &sub_id,
+                                            order,
+                                            notice,
+                                        )
+                                        .await;
+                                    switched = true;
+                                }
+                                Ok(None) => {}
+                                Err(err) => {
+                                    tracing::warn!(
+                                        from_account_id = %current_account_id,
+                                        error = %err,
+                                        "failed to activate account after usage limit"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if switched {
+                    retries = 0;
+                    continue;
                 }
 
                 let now = Utc::now();
