@@ -139,6 +139,10 @@ impl ChatWidget<'_> {
             return EscRoute::new(EscIntent::AutoStopActive, true, false);
         }
 
+        if self.has_cancelable_agents() {
+            return EscRoute::new(EscIntent::CancelAgents, true, false);
+        }
+
         if self.auto_state.should_show_goal_entry() {
             return EscRoute::new(
                 match self.auto_goal_escape_state {
@@ -149,10 +153,6 @@ impl ChatWidget<'_> {
                 true,
                 false,
             );
-        }
-
-        if self.has_cancelable_agents() {
-            return EscRoute::new(EscIntent::CancelAgents, true, false);
         }
 
         if self.auto_state.last_run_summary.is_some() {

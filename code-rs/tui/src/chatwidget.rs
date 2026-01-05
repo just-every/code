@@ -30062,6 +30062,7 @@ use code_core::protocol::OrderMeta;
         assert_eq!(route.intent, EscIntent::CancelAgents);
         assert!(chat.execute_esc_intent(route.intent, esc_event));
         assert!(!chat.auto_state.is_active());
+        assert!(chat.has_cancelable_agents());
         assert!(chat.auto_state.last_run_summary.is_none());
     }
 
@@ -30168,7 +30169,7 @@ use code_core::protocol::OrderMeta;
         assert!(chat.auto_state.last_run_summary.is_none());
 
         let route = chat.describe_esc_context();
-        assert_eq!(route.intent, EscIntent::AutoGoalExitPreserveDraft);
+        assert_eq!(route.intent, EscIntent::CancelAgents);
     }
 
     #[allow(dead_code)]
