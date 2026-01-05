@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.33] - 2026-01-05
+
+- TUI: keep cancelable agents prioritized when Esc is pressed. (195c768)
+- TUI: prompt to init git before git-dependent actions run. (6d693c3f)
+- Logging: overhaul debug log handling for clearer diagnostics. (afba3b9c)
+
 ## [0.6.32] - 2026-01-04
 
 - TUI: prevent Esc undo priming from sticking and stabilize word-motion shortcuts. (d90b0f9)
