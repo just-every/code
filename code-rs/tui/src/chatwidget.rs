@@ -25821,10 +25821,10 @@ Have we met every part of this goal and is there no further work to do?"#
 
     fn launch_chrome_with_profile(&mut self, port: u16) {
         use std::process::Stdio;
+        let log_path = self.chrome_log_path();
 
         #[cfg(target_os = "macos")]
         {
-            let log_path = format!("{}/code-chrome.log", std::env::temp_dir().display());
             let mut cmd = std::process::Command::new(
                 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
             );
@@ -25838,12 +25838,10 @@ Have we met every part of this goal and is there no further work to do?"#
                 .arg("--disable-features=ChromeWhatsNewUI,TriggerFirstRunUI")
                 .arg("--disable-hang-monitor")
                 .arg("--disable-background-timer-throttling")
-                .arg("--enable-logging")
-                .arg("--log-level=1")
-                .arg(format!("--log-file={}", log_path))
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .stdin(Stdio::null());
+            self.apply_chrome_logging(&mut cmd, log_path.as_deref());
             if let Err(err) = spawn_std_command_with_retry(&mut cmd) {
                 tracing::warn!("failed to launch Chrome with profile: {err}");
             }
@@ -25851,7 +25849,6 @@ Have we met every part of this goal and is there no further work to do?"#
 
         #[cfg(target_os = "linux")]
         {
-            let log_path = format!("{}/code-chrome.log", std::env::temp_dir().display());
             let mut cmd = std::process::Command::new("google-chrome");
             cmd.arg(format!("--remote-debugging-port={}", port))
                 .arg("--no-first-run")
@@ -25863,12 +25860,10 @@ Have we met every part of this goal and is there no further work to do?"#
                 .arg("--disable-features=ChromeWhatsNewUI,TriggerFirstRunUI")
                 .arg("--disable-hang-monitor")
                 .arg("--disable-background-timer-throttling")
-                .arg("--enable-logging")
-                .arg("--log-level=1")
-                .arg(format!("--log-file={}", log_path))
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .stdin(Stdio::null());
+            self.apply_chrome_logging(&mut cmd, log_path.as_deref());
             if let Err(err) = spawn_std_command_with_retry(&mut cmd) {
                 tracing::warn!("failed to launch Chrome with profile: {err}");
             }
@@ -25876,7 +25871,6 @@ Have we met every part of this goal and is there no further work to do?"#
 
         #[cfg(target_os = "windows")]
         {
-            let log_path = format!("{}\\code-chrome.log", std::env::temp_dir().display());
             let chrome_paths = vec![
                 "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe".to_string(),
                 "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe".to_string(),
@@ -25899,12 +25893,10 @@ Have we met every part of this goal and is there no further work to do?"#
                         .arg("--disable-features=ChromeWhatsNewUI,TriggerFirstRunUI")
                         .arg("--disable-hang-monitor")
                         .arg("--disable-background-timer-throttling")
-                        .arg("--enable-logging")
-                        .arg("--log-level=1")
-                        .arg(format!("--log-file={}", log_path))
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
                         .stdin(Stdio::null());
+                    self.apply_chrome_logging(&mut cmd, log_path.as_deref());
                     if let Err(err) = spawn_std_command_with_retry(&mut cmd) {
                         tracing::warn!("failed to launch Chrome with profile: {err}");
                     }
@@ -25918,6 +25910,22 @@ Have we met every part of this goal and is there no further work to do?"#
         // Show browsing state in input border after launch
         self.bottom_pane
             .update_status_text("using browser".to_string());
+    }
+
+    fn chrome_log_path(&self) -> Option<String> {
+        if !self.config.debug {
+            return None;
+        }
+        let log_dir = code_core::config::log_dir(&self.config).ok()?;
+        Some(log_dir.join("code-chrome.log").display().to_string())
+    }
+
+    fn apply_chrome_logging(&self, cmd: &mut std::process::Command, log_path: Option<&str>) {
+        if let Some(path) = log_path {
+            cmd.arg("--enable-logging")
+                .arg("--log-level=1")
+                .arg(format!("--log-file={path}"));
+        }
     }
 
     fn connect_to_chrome_after_launch(
@@ -26467,10 +26475,10 @@ Have we met every part of this goal and is there no further work to do?"#
 
         let temp_dir = std::env::temp_dir();
         let profile_dir = temp_dir.join(format!("code-chrome-temp-{}", port));
+        let log_path = self.chrome_log_path();
 
         #[cfg(target_os = "macos")]
         {
-            let log_path = format!("{}/code-chrome.log", std::env::temp_dir().display());
             let mut cmd = std::process::Command::new(
                 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
             );
@@ -26485,12 +26493,10 @@ Have we met every part of this goal and is there no further work to do?"#
                 .arg("--disable-features=ChromeWhatsNewUI,TriggerFirstRunUI")
                 .arg("--disable-hang-monitor")
                 .arg("--disable-background-timer-throttling")
-                .arg("--enable-logging")
-                .arg("--log-level=1")
-                .arg(format!("--log-file={}", log_path))
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .stdin(Stdio::null());
+            self.apply_chrome_logging(&mut cmd, log_path.as_deref());
             if let Err(err) = spawn_std_command_with_retry(&mut cmd) {
                 tracing::warn!("failed to launch Chrome with temp profile: {err}");
             }
@@ -26498,7 +26504,6 @@ Have we met every part of this goal and is there no further work to do?"#
 
         #[cfg(target_os = "linux")]
         {
-            let log_path = format!("{}/code-chrome.log", std::env::temp_dir().display());
             let mut cmd = std::process::Command::new("google-chrome");
             cmd.arg(format!("--remote-debugging-port={}", port))
                 .arg(format!("--user-data-dir={}", profile_dir.display()))
@@ -26511,12 +26516,10 @@ Have we met every part of this goal and is there no further work to do?"#
                 .arg("--disable-features=ChromeWhatsNewUI,TriggerFirstRunUI")
                 .arg("--disable-hang-monitor")
                 .arg("--disable-background-timer-throttling")
-                .arg("--enable-logging")
-                .arg("--log-level=1")
-                .arg(format!("--log-file={}", log_path))
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .stdin(Stdio::null());
+            self.apply_chrome_logging(&mut cmd, log_path.as_deref());
             if let Err(err) = spawn_std_command_with_retry(&mut cmd) {
                 tracing::warn!("failed to launch Chrome with temp profile: {err}");
             }
@@ -26524,7 +26527,6 @@ Have we met every part of this goal and is there no further work to do?"#
 
         #[cfg(target_os = "windows")]
         {
-            let log_path = format!("{}\\code-chrome.log", std::env::temp_dir().display());
             let chrome_paths = vec![
                 "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe".to_string(),
                 "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe".to_string(),
@@ -26548,12 +26550,10 @@ Have we met every part of this goal and is there no further work to do?"#
                         .arg("--disable-features=ChromeWhatsNewUI,TriggerFirstRunUI")
                         .arg("--disable-hang-monitor")
                         .arg("--disable-background-timer-throttling")
-                        .arg("--enable-logging")
-                        .arg("--log-level=1")
-                        .arg(format!("--log-file={}", log_path))
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
                         .stdin(Stdio::null());
+                    self.apply_chrome_logging(&mut cmd, log_path.as_deref());
                     if let Err(err) = spawn_std_command_with_retry(&mut cmd) {
                         tracing::warn!("failed to launch Chrome with temp profile: {err}");
                     }

@@ -12,6 +12,9 @@ use crate::TurnAttempt;
 use crate::api::TaskText;
 use chrono::DateTime;
 use chrono::Utc;
+use std::borrow::Cow;
+use std::path::Path;
+use std::path::PathBuf;
 
 use code_backend_client as backend;
 use code_backend_client::CodeTaskDetailsResponseExt;
@@ -141,7 +144,7 @@ mod api {
                 .map(map_task_list_item_to_summary)
                 .collect();
 
-            append_error_log(&format!(
+            append_debug_log(&format!(
                 "http.list_tasks: env={} items={}",
                 env.unwrap_or("<all>"),
                 tasks.len()
@@ -260,7 +263,7 @@ mod api {
 
             match self.backend.create_task(request_body).await {
                 Ok(id) => {
-                    append_error_log(&format!(
+                    append_info_log(&format!(
                         "new_task: created id={id} env={} prompt_chars={}",
                         env_id,
                         prompt.chars().count()
@@ -756,14 +759,190 @@ mod api {
     }
 }
 
+const CLOUD_TASKS_LOG_FILE: &str = "cloud-tasks.log";
+const CLOUD_TASKS_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
+const CLOUD_TASKS_LOG_BACKUPS: usize = 2;
+const CLOUD_TASKS_LOG_MAX_MESSAGE_BYTES: usize = 64 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum CloudLogLevel {
+    Off = 0,
+    Error = 1,
+    Info = 2,
+    Debug = 3,
+}
+
+fn log_level_from_env() -> CloudLogLevel {
+    if let Ok(raw) = std::env::var("CODEX_CLOUD_TASKS_LOG_LEVEL") {
+        let value = raw.trim().to_ascii_lowercase();
+        return match value.as_str() {
+            "off" | "none" | "0" => CloudLogLevel::Off,
+            "error" | "warn" | "1" => CloudLogLevel::Error,
+            "info" | "2" => CloudLogLevel::Info,
+            "debug" | "trace" | "3" => CloudLogLevel::Debug,
+            _ => CloudLogLevel::Error,
+        };
+    }
+
+    if env_truthy("CODE_SUBAGENT_DEBUG") || env_truthy("CODEX_CLOUD_TASKS_DEBUG") {
+        return CloudLogLevel::Debug;
+    }
+
+    CloudLogLevel::Off
+}
+
+fn env_truthy(key: &str) -> bool {
+    std::env::var(key)
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
+}
+
+fn should_log(level: CloudLogLevel) -> bool {
+    let configured = log_level_from_env();
+    configured != CloudLogLevel::Off && level <= configured
+}
+
+fn user_home_dir() -> Option<PathBuf> {
+    if let Ok(home) = std::env::var("HOME") {
+        return Some(PathBuf::from(home));
+    }
+    if let Ok(home) = std::env::var("USERPROFILE") {
+        return Some(PathBuf::from(home));
+    }
+    None
+}
+
+fn resolve_log_path() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("CODEX_CLOUD_TASKS_LOG_PATH") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
+
+    let base = if let Ok(dir) = std::env::var("CODEX_CLOUD_TASKS_LOG_DIR") {
+        PathBuf::from(dir)
+    } else if let Ok(home) = std::env::var("CODE_HOME").or_else(|_| std::env::var("CODEX_HOME")) {
+        PathBuf::from(home).join("debug_logs")
+    } else if let Some(home) = user_home_dir() {
+        home.join(".code").join("debug_logs")
+    } else {
+        return None;
+    };
+
+    Some(base.join(CLOUD_TASKS_LOG_FILE))
+}
+
+fn ensure_parent_dir(path: &Path) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+}
+
+fn rotate_log_file(path: &Path, max_bytes: u64, backups: usize) {
+    if backups == 0 {
+        let _ = std::fs::remove_file(path);
+        return;
+    }
+
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    if meta.len() <= max_bytes {
+        return;
+    }
+
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    let Some(dir) = path.parent() else {
+        return;
+    };
+
+    let lock_path = dir.join(format!("{file_name}.rotate.lock"));
+    let lock_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path);
+    let Ok(_lock_file) = lock_file else {
+        return;
+    };
+
+    let Ok(meta) = std::fs::metadata(path) else {
+        let _ = std::fs::remove_file(&lock_path);
+        return;
+    };
+    if meta.len() <= max_bytes {
+        let _ = std::fs::remove_file(&lock_path);
+        return;
+    }
+
+    let oldest = dir.join(format!("{file_name}.{backups}"));
+    let _ = std::fs::remove_file(&oldest);
+
+    if backups > 1 {
+        for idx in (1..backups).rev() {
+            let from = dir.join(format!("{file_name}.{idx}"));
+            let to = dir.join(format!("{file_name}.{}", idx + 1));
+            let _ = std::fs::rename(&from, &to);
+        }
+    }
+
+    let rotated = dir.join(format!("{file_name}.1"));
+    let _ = std::fs::copy(path, &rotated);
+    if let Ok(file) = std::fs::OpenOptions::new().write(true).open(path) {
+        let _ = file.set_len(0);
+    }
+
+    let _ = std::fs::remove_file(&lock_path);
+}
+
+fn truncate_message(message: &str, max_bytes: usize) -> Cow<'_, str> {
+    if message.len() <= max_bytes {
+        return Cow::Borrowed(message);
+    }
+    let bytes = message.as_bytes();
+    let head = String::from_utf8_lossy(&bytes[..max_bytes]).to_string();
+    Cow::Owned(format!("{head}\n...truncated..."))
+}
+
 fn append_error_log(message: &str) {
+    append_cloud_log(CloudLogLevel::Error, message);
+}
+
+fn append_info_log(message: &str) {
+    append_cloud_log(CloudLogLevel::Info, message);
+}
+
+fn append_debug_log(message: &str) {
+    append_cloud_log(CloudLogLevel::Debug, message);
+}
+
+fn append_cloud_log(level: CloudLogLevel, message: &str) {
+    if !should_log(level) {
+        return;
+    }
+
+    let Some(path) = resolve_log_path() else {
+        return;
+    };
+    ensure_parent_dir(&path);
+    rotate_log_file(&path, CLOUD_TASKS_LOG_MAX_BYTES, CLOUD_TASKS_LOG_BACKUPS);
+
     let ts = Utc::now().to_rfc3339();
+    let level_label = match level {
+        CloudLogLevel::Error => "ERROR",
+        CloudLogLevel::Info => "INFO",
+        CloudLogLevel::Debug => "DEBUG",
+        CloudLogLevel::Off => return,
+    };
+    let message = truncate_message(message, CLOUD_TASKS_LOG_MAX_MESSAGE_BYTES);
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open("error.log")
+        .open(&path)
     {
         use std::io::Write as _;
-        let _ = writeln!(f, "[{ts}] {message}");
+        let _ = writeln!(f, "[{ts}] {level_label} {message}");
     }
 }

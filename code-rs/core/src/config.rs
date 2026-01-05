@@ -1490,8 +1490,67 @@ impl Config {
 
 pub fn log_dir(cfg: &Config) -> std::io::Result<PathBuf> {
     let mut p = cfg.code_home.clone();
-    p.push("log");
+    p.push("debug_logs");
     Ok(p)
+}
+
+pub fn migrate_legacy_log_dirs(code_home: &Path) {
+    let target = code_home.join("debug_logs");
+    let legacy_dirs = [code_home.join("log"), code_home.join("logs")];
+    for legacy in legacy_dirs {
+        let _ = migrate_dir_contents(&legacy, &target);
+    }
+}
+
+fn migrate_dir_contents(source: &Path, target: &Path) -> std::io::Result<()> {
+    if !source.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(target)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        migrate_entry(&entry.path(), target)?;
+    }
+    let _ = std::fs::remove_dir(source);
+    Ok(())
+}
+
+fn migrate_entry(path: &Path, target_dir: &Path) -> std::io::Result<()> {
+    let Some(file_name) = path.file_name() else {
+        return Ok(());
+    };
+    let mut target = target_dir.join(file_name);
+    if target.exists() {
+        let base = file_name.to_string_lossy();
+        let mut idx = 1u32;
+        loop {
+            let candidate = target_dir.join(format!("{base}.legacy.{idx}"));
+            if !candidate.exists() {
+                target = candidate;
+                break;
+            }
+            idx = idx.saturating_add(1);
+        }
+    }
+
+    if path.is_dir() {
+        std::fs::create_dir_all(&target)?;
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            migrate_entry(&entry.path(), &target)?;
+        }
+        let _ = std::fs::remove_dir_all(path);
+        return Ok(());
+    }
+
+    match std::fs::rename(path, &target) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            std::fs::copy(path, &target)?;
+            std::fs::remove_file(path)?;
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]

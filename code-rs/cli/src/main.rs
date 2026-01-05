@@ -378,8 +378,7 @@ struct OrderReplayArgs {
     /// Path to a response.json captured under ~/.code/debug_logs/*_response.json
     /// (legacy ~/.codex/debug_logs/ is still read).
     response_json: std::path::PathBuf,
-    /// Path to codex-tui.log (typically ~/.code/log/codex-tui.log; legacy
-    /// ~/.codex/log/codex-tui.log is still read).
+    /// Path to codex-tui.log (typically ~/.code/debug_logs/codex-tui.log).
     tui_log: std::path::PathBuf,
 }
 

@@ -13,6 +13,7 @@ use once_cell::sync::Lazy;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
@@ -83,6 +84,43 @@ fn is_temporary_internal_launch_error_message(message: &str) -> bool {
         || message.contains("cannot allocate memory")
         || message.contains("too many open files")
         || message.contains("os error 24")
+}
+
+fn chrome_logging_enabled() -> bool {
+    env_truthy("CODE_SUBAGENT_DEBUG") || env_truthy("CODEX_BROWSER_LOG")
+}
+
+fn env_truthy(key: &str) -> bool {
+    std::env::var(key)
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
+}
+
+fn resolve_chrome_log_path() -> Option<PathBuf> {
+    if !chrome_logging_enabled() {
+        return None;
+    }
+
+    if let Ok(path) = std::env::var("CODEX_BROWSER_LOG_PATH") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
+
+    let base = if let Ok(home) = std::env::var("CODE_HOME").or_else(|_| std::env::var("CODEX_HOME")) {
+        PathBuf::from(home).join("debug_logs")
+    } else if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home).join(".code").join("debug_logs")
+    } else {
+        return Some(std::env::temp_dir().join("code-chrome.log"));
+    };
+
+    let path = base.join("code-chrome.log");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    Some(path)
 }
 
 const HANDLER_ERROR_LIMIT: u32 = 3;
@@ -771,7 +809,7 @@ impl BrowserManager {
         let max_attempts = INTERNAL_LAUNCH_RETRY_DELAYS_MS.len() + 1;
 
         // Add browser launch flags (keep minimal set for screenshot functionality)
-        let log_file = format!("{}/code-chrome.log", std::env::temp_dir().display());
+        let log_file = resolve_chrome_log_path();
 
         let (browser, mut handler, user_data_path) = {
             let mut attempt = 1usize;
@@ -814,14 +852,17 @@ impl BrowserManager {
                     // Disable timeout for slow networks/pages
                     .arg("--disable-hang-monitor")
                     .arg("--disable-background-timer-throttling")
-                    // Redirect Chrome logging to a file to keep terminal clean
-                    .arg("--enable-logging")
-                    .arg("--log-level=1") // 0 = INFO, 1 = WARNING, 2 = ERROR, 3 = FATAL (1 to reduce verbosity)
-                    .arg(format!("--log-file={log_file}"))
                     // Suppress console output
                     .arg("--silent-launch")
                     // Set a longer timeout for CDP requests (60 seconds instead of default 30)
                     .request_timeout(Duration::from_secs(60));
+
+                if let Some(ref log_file) = log_file {
+                    builder = builder
+                        .arg("--enable-logging")
+                        .arg("--log-level=1")
+                        .arg(format!("--log-file={}", log_file.display()));
+                }
 
                 let browser_config = builder
                     .build()
@@ -859,8 +900,12 @@ impl BrowserManager {
                         #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
                         let hint = "Ensure Chrome/Chromium is installed and available on PATH.";
 
+                        let log_note = log_file
+                            .as_ref()
+                            .map(|path| format!(" Chrome log: {}", path.display()))
+                            .unwrap_or_default();
                         return Err(BrowserError::CdpError(format!(
-                            "Failed to launch internal browser: {message}. Hint: {hint}. Chrome log: {log_file}"
+                            "Failed to launch internal browser: {message}. Hint: {hint}.{log_note}"
                         )));
                     }
                 }

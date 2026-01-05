@@ -50,14 +50,14 @@ Notes:
 
 Because Code is written in Rust, it honors the `RUST_LOG` environment variable to configure its logging behavior.
 
-The TUI defaults to `RUST_LOG=code_core=info,code_tui=info,code_browser=info,code_auto_drive_core=info` and log messages are written to `~/.code/log/codex-tui.log` (Code still reads the legacy `~/.codex/log/` path), so you can leave the following running in a separate terminal to monitor log messages as they are written:
+When you run the TUI with `--debug`, log messages are written to `~/.code/debug_logs/codex-tui.log`, so you can leave the following running in a separate terminal to monitor log messages as they are written:
 
 ```
-tail -F ~/.code/log/codex-tui.log
+tail -F ~/.code/debug_logs/codex-tui.log
 ```
 
-When you also enable the CLI `--debug` flag, request/response JSON is
-partitioned into helper-specific folders under `~/.code/debug_logs/`. Expect
+When you enable the CLI `--debug` flag, request/response JSON is partitioned
+into helper-specific folders under `~/.code/debug_logs/`. Expect
 subdirectories such as:
 
 - `auto/coordinator`
@@ -73,6 +73,9 @@ subdirectories such as:
 
 Tags become nested path components, so custom helpers appear alongside the
 existing timestamped filenames.
+
+Without `--debug`, Code only writes critical crash/error logs to
+`~/.code/debug_logs/critical.log.*`; routine log output is suppressed.
 
 By comparison, the non-interactive mode (`code exec`) defaults to `RUST_LOG=error`, but messages are printed inline, so there is no need to monitor a separate file.
 

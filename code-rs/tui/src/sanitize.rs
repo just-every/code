@@ -1,3 +1,4 @@
+use std::sync::OnceLock;
 use unicode_width::UnicodeWidthChar;
 
 /// Sanitization mode:
@@ -26,7 +27,29 @@ pub fn sanitize_for_tui(input: &str, mode: Mode, opts: Options) -> String {
     // with spaces we insert.
     let mut text = if opts.expand_tabs { expand_tabs_to_spaces(input, opts.tabstop) } else { input.to_string() };
     text = strip_specials(text, mode, opts.debug_markers);
+    if ascii_only_enabled() {
+        text = force_ascii(text);
+    }
     text
+}
+
+fn ascii_only_enabled() -> bool {
+    static ASCII_ONLY: OnceLock<bool> = OnceLock::new();
+    *ASCII_ONLY.get_or_init(|| {
+        std::env::var("CODEX_TUI_ASCII")
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(false)
+    })
+}
+
+fn force_ascii(input: String) -> String {
+    if input.is_ascii() {
+        return input;
+    }
+    input
+        .chars()
+        .map(|ch| if ch.is_ascii() { ch } else { '?' })
+        .collect()
 }
 
 fn expand_tabs_to_spaces(input: &str, tabstop: usize) -> String {
