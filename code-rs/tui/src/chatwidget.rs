@@ -920,6 +920,7 @@ use crate::app_event::{
     AppEvent,
     AutoContinueMode,
     BackgroundPlacement,
+    GitInitResume,
     ModelSelectionKind,
     TerminalAfter,
     TerminalCommandGate,
@@ -1645,6 +1646,10 @@ pub(crate) struct ChatWidget<'a> {
 
     // State for the Agents Terminal view
     agents_terminal: AgentsTerminalState,
+
+    pending_git_init_resume: Option<GitInitResume>,
+    git_init_inflight: bool,
+    git_init_declined: bool,
 
     pending_upgrade_notice: Option<(u64, String)>,
 
@@ -3722,32 +3727,13 @@ impl ChatWidget<'_> {
             status_parts.join(", ")
         };
         let auto_active = self.auto_state.is_active();
-        let non_agent_activity =
-            self.has_running_commands_or_tools() || !self.active_task_ids.is_empty();
         self.push_background_tail(format!("Cancelling {descriptor}…"));
         self.bottom_pane
             .update_status_text("Cancelling agents…".to_string());
         self.bottom_pane.set_task_running(true);
         self.submit_op(Op::CancelAgents { batch_ids, agent_ids });
 
-        // Mark agents locally so Esc can progress to stopping Auto Drive even if
-        // backend acknowledgements arrive later.
         self.agents_ready_to_start = false;
-        for agent in &mut self.active_agents {
-            if Self::agent_is_cancelable(agent) {
-                agent.status = AgentStatus::Cancelled;
-            }
-        }
-        let status_message = if auto_active {
-            "Agents cancelled. Esc stops Auto Drive.".to_string()
-        } else if non_agent_activity {
-            "Agents cancelled. Esc cancels the running command.".to_string()
-        } else {
-            "Agents cancelled.".to_string()
-        };
-        self.bottom_pane.update_status_text(status_message);
-        self.bottom_pane
-            .set_task_running(auto_active || non_agent_activity);
 
         if auto_active {
             self.show_auto_drive_exit_hint();
@@ -6461,6 +6447,9 @@ impl ChatWidget<'_> {
             pending_manual_terminal: HashMap::new(),
             agents_overview_selected_index: 0,
             agents_terminal: AgentsTerminalState::new(),
+            pending_git_init_resume: None,
+            git_init_inflight: false,
+            git_init_declined: false,
             pending_upgrade_notice: None,
             history_render: HistoryRenderState::new(),
             last_render_settings: Cell::new(RenderSettings::new(0, 0, false)),
@@ -6830,6 +6819,9 @@ impl ChatWidget<'_> {
             pending_manual_terminal: HashMap::new(),
             agents_overview_selected_index: 0,
             agents_terminal: AgentsTerminalState::new(),
+            pending_git_init_resume: None,
+            git_init_inflight: false,
+            git_init_declined: false,
             pending_upgrade_notice: None,
             history_render: HistoryRenderState::new(),
             last_render_settings: Cell::new(RenderSettings::new(0, 0, false)),
@@ -11019,6 +11011,16 @@ impl ChatWidget<'_> {
                         Some(&self.config.agents),
                         Some(&self.config.subagent_commands),
                     );
+                    if !res.read_only
+                        && self.ensure_git_repo_for_action(
+                            GitInitResume::SubmitText {
+                                text: original_text.clone(),
+                            },
+                            "Write-enabled agents require a git repository.",
+                        )
+                    {
+                        return;
+                    }
                     // Acknowledge configuration
                     let mode = if res.read_only { "read-only" } else { "write" };
                     let agents = if res.models.is_empty() {
@@ -11069,6 +11071,16 @@ impl ChatWidget<'_> {
                         Some(&self.config.agents),
                         Some(&self.config.subagent_commands),
                     );
+                    if !res.read_only
+                        && self.ensure_git_repo_for_action(
+                            GitInitResume::SubmitText {
+                                text: original_text.clone(),
+                            },
+                            "Write-enabled agents require a git repository.",
+                        )
+                    {
+                        return;
+                    }
 
                     // Replace the message with the resolved prompt and suppress the
                     // agent launch hint that would otherwise echo back immediately.
@@ -30042,16 +30054,12 @@ use code_core::protocol::OrderMeta;
         let esc_event = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
 
         let route = chat.describe_esc_context();
-        assert_eq!(route.intent, EscIntent::CancelAgents);
+        assert_eq!(route.intent, EscIntent::AutoStopActive);
         assert!(chat.execute_esc_intent(route.intent, esc_event));
-        assert!(chat.auto_state.is_active(), "Auto Drive remains active until follow-up Esc");
-        assert!(chat
-            .active_agents
-            .iter()
-            .all(|agent| matches!(agent.status, AgentStatus::Cancelled)));
+        assert!(!chat.auto_state.is_active(), "Auto Drive stops before canceling agents");
         let esc_event = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         let route = chat.describe_esc_context();
-        assert_eq!(route.intent, EscIntent::CancelTask);
+        assert_eq!(route.intent, EscIntent::CancelAgents);
         assert!(chat.execute_esc_intent(route.intent, esc_event));
         assert!(!chat.auto_state.is_active());
         assert!(chat.auto_state.last_run_summary.is_none());
@@ -30104,14 +30112,11 @@ use code_core::protocol::OrderMeta;
         ));
 
         assert!(!chat.auto_state.is_active(), "Auto Drive remains inactive");
-        assert!(chat
-            .active_agents
-            .iter()
-            .all(|agent| matches!(agent.status, AgentStatus::Cancelled)));
+        assert!(chat.has_cancelable_agents());
         chat.maybe_hide_spinner();
         assert!(
-            !chat.bottom_pane.is_task_running(),
-            "Spinner now clears once overlays dismiss and no other work remains",
+            chat.bottom_pane.is_task_running(),
+            "Spinner stays active while agents or terminal work are still running",
         );
     }
 
@@ -30152,12 +30157,12 @@ use code_core::protocol::OrderMeta;
 
         let esc_event = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         let route = chat.describe_esc_context();
-        assert_eq!(route.intent, EscIntent::CancelAgents);
+        assert_eq!(route.intent, EscIntent::CancelTask);
         assert!(chat.execute_esc_intent(route.intent, esc_event));
 
         let esc_event = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         let route = chat.describe_esc_context();
-        assert_eq!(route.intent, EscIntent::CancelTask);
+        assert_eq!(route.intent, EscIntent::CancelAgents);
         assert!(chat.execute_esc_intent(route.intent, esc_event));
         assert!(!chat.auto_state.is_active(), "Auto Drive should stop after cancelling the command");
         assert!(chat.auto_state.last_run_summary.is_none());
@@ -30204,10 +30209,7 @@ use code_core::protocol::OrderMeta;
         let route = chat.describe_esc_context();
         assert_eq!(route.intent, EscIntent::CancelAgents);
         assert!(chat.execute_esc_intent(route.intent, esc_event));
-        assert!(chat
-            .active_agents
-            .iter()
-            .all(|agent| matches!(agent.status, AgentStatus::Cancelled)));
+        assert!(chat.has_cancelable_agents());
         assert!(
             chat.bottom_pane.standard_terminal_hint().is_none(),
             "Auto Drive exit hint should not display when Auto Drive is inactive",
@@ -35160,8 +35162,208 @@ impl ChatWidget<'_> {
             .iter()
             .find(|task| task.id.0 == task_id)
     }
+
+    fn ensure_git_repo_for_action(&mut self, resume: GitInitResume, reason: &str) -> bool {
+        if code_core::git_info::get_git_repo_root(&self.config.cwd).is_some() {
+            if self.git_init_declined {
+                self.git_init_declined = false;
+            }
+            return false;
+        }
+
+        if self.git_init_inflight {
+            self.bottom_pane
+                .flash_footer_notice("Initializing git repository...".to_string());
+            return true;
+        }
+
+        if self.git_init_declined {
+            let notice = format!(
+                "{reason} Run `git init` in {} to enable write-enabled agents and worktrees.",
+                self.config.cwd.display()
+            );
+            self.history_push_plain_paragraphs(
+                PlainMessageKind::Notice,
+                vec!["Git repository not initialized.".to_string(), notice],
+            );
+            self.request_redraw();
+            return true;
+        }
+
+        self.show_git_init_prompt(resume, reason);
+        true
+    }
+
+    fn show_git_init_prompt(&mut self, resume: GitInitResume, reason: &str) {
+        let subtitle = format!(
+            "{reason}\nInitialize a git repository in {}?",
+            self.config.cwd.display()
+        );
+        let resume_init = resume.clone();
+        let items = vec![
+            SelectionItem {
+                name: "Initialize git repository".to_string(),
+                description: Some("Run `git init` in this folder (recommended).".to_string()),
+                is_current: true,
+                actions: vec![Box::new(move |tx: &AppEventSender| {
+                    tx.send(AppEvent::ConfirmGitInit {
+                        resume: resume_init.clone(),
+                    });
+                })],
+            },
+            SelectionItem {
+                name: "Continue without git".to_string(),
+                description: Some("Write-enabled agents and worktrees will be unavailable.".to_string()),
+                is_current: false,
+                actions: vec![Box::new(|tx: &AppEventSender| {
+                    tx.send(AppEvent::DeclineGitInit);
+                })],
+            },
+        ];
+
+        let view = ListSelectionView::new(
+            " Git repository required ".to_string(),
+            Some(subtitle),
+            Some("Enter select - Esc cancel".to_string()),
+            items,
+            self.app_event_tx.clone(),
+            6,
+        );
+        self.bottom_pane.show_list_selection(
+            "Git repository required".to_string(),
+            None,
+            None,
+            view,
+        );
+        self.request_redraw();
+    }
+
+    pub(crate) fn confirm_git_init(&mut self, resume: GitInitResume) {
+        if self.git_init_inflight {
+            self.bottom_pane
+                .flash_footer_notice("Git init already running...".to_string());
+            return;
+        }
+
+        self.pending_git_init_resume = Some(resume);
+        self.git_init_inflight = true;
+
+        let cwd = self.config.cwd.clone();
+        let ticket = self.make_background_tail_ticket();
+        self.app_event_tx.send_background_event_with_ticket(
+            &ticket,
+            format!("Initializing git repository in {}...", cwd.display()),
+        );
+
+        let tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let output = tokio::process::Command::new("git")
+                .current_dir(&cwd)
+                .arg("init")
+                .output()
+                .await;
+
+            let (ok, message) = match output {
+                Ok(out) if out.status.success() => {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    let trimmed = stdout.trim();
+                    let msg = if trimmed.is_empty() {
+                        format!("Initialized git repository in {}.", cwd.display())
+                    } else {
+                        trimmed.to_string()
+                    };
+                    (true, msg)
+                }
+                Ok(out) => {
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    let detail = if !stderr.trim().is_empty() {
+                        stderr.trim().to_string()
+                    } else {
+                        stdout.trim().to_string()
+                    };
+                    let msg = if detail.is_empty() {
+                        "git init failed.".to_string()
+                    } else {
+                        format!("git init failed: {detail}")
+                    };
+                    (false, msg)
+                }
+                Err(e) => (false, format!("Failed to run git init: {e}")),
+            };
+
+            tx.send(AppEvent::GitInitFinished { ok, message });
+        });
+    }
+
+    pub(crate) fn decline_git_init(&mut self) {
+        self.git_init_declined = true;
+        let notice = format!(
+            "Write-enabled agents and worktrees are unavailable until you run `git init` in {}.",
+            self.config.cwd.display()
+        );
+        self.history_push_plain_paragraphs(
+            PlainMessageKind::Notice,
+            vec!["Git repository not initialized.".to_string(), notice],
+        );
+        self.request_redraw();
+    }
+
+    pub(crate) fn handle_git_init_finished(&mut self, ok: bool, message: String) {
+        self.git_init_inflight = false;
+        if ok {
+            self.git_init_declined = false;
+            let notice = if message.trim().is_empty() {
+                format!("Initialized git repository in {}.", self.config.cwd.display())
+            } else {
+                message
+            };
+            self.push_background_tail(notice);
+            if let Some(resume) = self.pending_git_init_resume.take() {
+                match resume {
+                    GitInitResume::SubmitText { text } => {
+                        self.app_event_tx.send(AppEvent::SubmitTextWithPreface {
+                            visible: text,
+                            preface: String::new(),
+                        });
+                    }
+                    GitInitResume::DispatchCommand {
+                        command,
+                        command_text,
+                    } => {
+                        self.app_event_tx
+                            .send(AppEvent::DispatchCommand(command, command_text));
+                    }
+                }
+            }
+        } else {
+            let err = if message.trim().is_empty() {
+                "git init failed.".to_string()
+            } else {
+                message
+            };
+            self.history_push_plain_state(history_cell::new_error_event(err));
+            self.pending_git_init_resume = None;
+        }
+        self.request_redraw();
+    }
+
     pub(crate) fn handle_branch_command(&mut self, args: String) {
         self.consume_pending_prompt_for_ui_only_turn();
+        let command_text = if args.trim().is_empty() {
+            "/branch".to_string()
+        } else {
+            format!("/branch {}", args.trim())
+        };
+        if self.ensure_git_repo_for_action(
+            GitInitResume::DispatchCommand {
+                command: SlashCommand::Branch,
+                command_text,
+            },
+            "Creating a branch worktree requires a git repository.",
+        ) {
+            return;
+        }
         if Self::is_branch_worktree_path(&self.config.cwd) {
             self.history_push_plain_state(crate::history_cell::new_error_event(
                 "`/branch` — already inside a branch worktree; switch to the repo root before creating another branch."
@@ -35377,6 +35579,15 @@ impl ChatWidget<'_> {
 
     pub(crate) fn handle_push_command(&mut self) {
         self.consume_pending_prompt_for_ui_only_turn();
+        if self.ensure_git_repo_for_action(
+            GitInitResume::DispatchCommand {
+                command: SlashCommand::Push,
+                command_text: "/push".to_string(),
+            },
+            "Pushing changes requires a git repository.",
+        ) {
+            return;
+        }
         let Some(git_root) =
             code_core::git_info::resolve_root_git_project_for_trust(&self.config.cwd)
         else {
@@ -35716,6 +35927,15 @@ impl ChatWidget<'_> {
     /// with explicit manual instructions.
     pub(crate) fn handle_merge_command(&mut self) {
         self.consume_pending_prompt_for_ui_only_turn();
+        if self.ensure_git_repo_for_action(
+            GitInitResume::DispatchCommand {
+                command: SlashCommand::Merge,
+                command_text: "/merge".to_string(),
+            },
+            "Merging a branch worktree requires a git repository.",
+        ) {
+            return;
+        }
         if !Self::is_branch_worktree_path(&self.config.cwd) {
             self.history_push_plain_state(crate::history_cell::new_error_event(
                 "`/merge` — run this command from inside a branch worktree created with '/branch'.".to_string(),

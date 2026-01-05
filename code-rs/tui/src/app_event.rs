@@ -84,6 +84,12 @@ pub(crate) enum TerminalAfter {
     RefreshAgentsAndClose { selected_index: usize },
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum GitInitResume {
+    SubmitText { text: String },
+    DispatchCommand { command: SlashCommand, command_text: String },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BackgroundPlacement {
     /// Default: append to the end of the current request/history window.
@@ -347,6 +353,13 @@ pub(crate) enum AppEvent {
     /// Prefill the composer input with the given text
     #[allow(dead_code)]
     PrefillComposer(String),
+
+    /// Confirm and run git init, then resume a pending action.
+    ConfirmGitInit { resume: GitInitResume },
+    /// Continue without git; disables git-dependent actions for this session.
+    DeclineGitInit,
+    /// Git init completed (success or failure).
+    GitInitFinished { ok: bool, message: String },
 
     /// Submit a message with hidden preface instructions
     SubmitTextWithPreface { visible: String, preface: String },

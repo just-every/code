@@ -128,10 +128,6 @@ impl ChatWidget<'_> {
                 return EscRoute::new(EscIntent::AutoPauseForEdit, true, false);
             }
 
-            if self.has_cancelable_agents() {
-                return EscRoute::new(EscIntent::CancelAgents, true, false);
-            }
-
             if self.is_task_running() {
                 return EscRoute::new(EscIntent::CancelTask, true, false);
             }

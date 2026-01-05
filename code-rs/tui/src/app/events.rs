@@ -1477,6 +1477,21 @@ impl App<'_> {
                         widget.insert_str(&text);
                     }
                 }
+                AppEvent::ConfirmGitInit { resume } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.confirm_git_init(resume);
+                    }
+                }
+                AppEvent::DeclineGitInit => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.decline_git_init();
+                    }
+                }
+                AppEvent::GitInitFinished { ok, message } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.handle_git_init_finished(ok, message);
+                    }
+                }
                 AppEvent::SubmitTextWithPreface { visible, preface } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.submit_text_message_with_preface(visible, preface);
