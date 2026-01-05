@@ -128,7 +128,7 @@ impl ChatWidget<'_> {
                 return EscRoute::new(EscIntent::AutoPauseForEdit, true, false);
             }
 
-            if self.is_task_running() {
+            if self.has_cancelable_task_activity() {
                 return EscRoute::new(EscIntent::CancelTask, true, false);
             }
 
@@ -137,6 +137,10 @@ impl ChatWidget<'_> {
             }
 
             return EscRoute::new(EscIntent::AutoStopActive, true, false);
+        }
+
+        if self.has_cancelable_task_activity() {
+            return EscRoute::new(EscIntent::CancelTask, true, false);
         }
 
         if self.has_cancelable_agents() {
@@ -163,15 +167,22 @@ impl ChatWidget<'_> {
             return EscRoute::new(EscIntent::ClearComposer, true, false);
         }
 
-        if self.is_task_running() {
-            return EscRoute::new(EscIntent::CancelTask, true, false);
-        }
-
         if !self.composer_is_empty() {
             return EscRoute::new(EscIntent::ClearComposer, true, false);
         }
 
         EscRoute::new(EscIntent::ShowUndoHint, true, true)
+    }
+
+    fn has_cancelable_task_activity(&self) -> bool {
+        self.stream.is_write_cycle_active()
+            || !self.active_task_ids.is_empty()
+            || self.terminal_is_running()
+            || !self.exec.running_commands.is_empty()
+            || !self.tools_state.running_custom_tools.is_empty()
+            || !self.tools_state.web_search_sessions.is_empty()
+            || !self.tools_state.running_wait_tools.is_empty()
+            || !self.tools_state.running_kill_tools.is_empty()
     }
 
     pub(crate) fn execute_esc_intent(&mut self, intent: EscIntent, key_event: KeyEvent) -> bool {

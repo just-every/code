@@ -29936,7 +29936,30 @@ use code_core::protocol::OrderMeta;
     }
 
     #[test]
-    fn esc_router_prioritizes_agent_cancel_before_cli_interrupt() {
+    fn esc_router_prioritizes_cli_interrupt_before_agent_cancel() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.active_agents.push(AgentInfo {
+            id: "agent-1".to_string(),
+            name: "Agent 1".to_string(),
+            status: AgentStatus::Running,
+            source_kind: None,
+            batch_id: Some("batch-1".to_string()),
+            model: None,
+            result: None,
+            error: None,
+            last_progress: None,
+        });
+        chat.active_task_ids.insert("turn-1".to_string());
+        chat.bottom_pane.set_task_running(true);
+
+        let route = chat.describe_esc_context();
+        assert_eq!(route.intent, EscIntent::CancelTask);
+    }
+
+    #[test]
+    fn esc_router_cancels_agents_when_only_agents_running() {
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
 
@@ -30667,6 +30690,7 @@ use code_core::protocol::OrderMeta;
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
 
+        chat.active_task_ids.insert("turn-1".to_string());
         chat.bottom_pane.set_task_running(true);
 
         let route = chat.describe_esc_context();
