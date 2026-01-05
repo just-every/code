@@ -13,6 +13,8 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+const BROWSER_CONSOLE_EVENT_PREFIX: &str = "[browser console]";
+
 pub(super) struct BrowserSessionTracker {
     pub slot: ToolCardSlot,
     pub cell: BrowserSessionCell,
@@ -212,6 +214,11 @@ pub(super) fn handle_custom_tool_end(
         summary.value.clone(),
         summary.outcome.clone(),
     );
+    if tool_name == "browser_console" {
+        for line in console_lines_from_result(result) {
+            tracker.cell.add_console_message(line);
+        }
+    }
     if let Some(code) = summary.status_code {
         tracker.cell.set_status_code(Some(code));
     }
@@ -247,6 +254,14 @@ pub(super) fn handle_background_event(
         return false;
     }
 
+    let payload = match message.strip_prefix(BROWSER_CONSOLE_EVENT_PREFIX) {
+        Some(rest) => rest.trim(),
+        None => return false,
+    };
+    if payload.is_empty() {
+        return false;
+    }
+
     let key = key_from_order_or_last(chat, order);
     let Some(key) = key else { return false; };
 
@@ -260,12 +275,14 @@ pub(super) fn handle_background_event(
         .unwrap_or(tracker.slot.order_key);
     tracker.slot.set_order_key(order_key);
 
-    let console_line = if message.starts_with("⚠️") {
-        message.to_string()
-    } else {
-        format!("⚠️  {}", message)
-    };
-    tracker.cell.add_console_message(console_line);
+    let console_lines = parse_console_output(payload);
+    if console_lines.is_empty() {
+        chat.tools_state.browser_sessions.insert(key, tracker);
+        return false;
+    }
+    for line in console_lines {
+        tracker.cell.add_console_message(line);
+    }
 
     ensure_cell_picker(chat, &tracker.cell);
     if tracker.slot.has_order_change() && !tracker.anchor_inserted {
@@ -658,6 +675,142 @@ fn extract_leading_status_code(text: &str) -> Option<String> {
         Some(digits)
     } else {
         None
+    }
+}
+
+fn console_lines_from_result(result: &Result<String, String>) -> Vec<String> {
+    match result {
+        Ok(output) => parse_console_output(output),
+        Err(err) => {
+            let trimmed = err.trim();
+            if trimmed.is_empty() {
+                Vec::new()
+            } else {
+                vec![format_warning_line(trimmed)]
+            }
+        }
+    }
+}
+
+fn parse_console_output(output: &str) -> Vec<String> {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    if let Ok(Value::Array(entries)) = serde_json::from_str::<Value>(trimmed) {
+        return format_console_entries(&entries);
+    }
+
+    if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(trimmed) {
+        if let Some(Value::Array(entries)) = map.get("logs") {
+            return format_console_entries(entries);
+        }
+    }
+
+    let mut lines = Vec::new();
+    for line in trimmed.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.eq_ignore_ascii_case("console logs:") {
+            continue;
+        }
+        let normalized = normalize_console_line(line);
+        if !normalized.is_empty() {
+            lines.push(normalized);
+        }
+    }
+    lines
+}
+
+fn format_console_entries(entries: &[Value]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for entry in entries {
+        let line = match entry {
+            Value::Object(map) => format_console_entry(map),
+            Value::String(text) => {
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            }
+            _ => None,
+        };
+        if let Some(line) = line {
+            let normalized = normalize_console_line(line.as_str());
+            if !normalized.is_empty() {
+                lines.push(normalized);
+            }
+        }
+    }
+    lines
+}
+
+fn format_console_entry(entry: &serde_json::Map<String, Value>) -> Option<String> {
+    let message = entry
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if message.is_empty() {
+        return None;
+    }
+
+    let level = entry
+        .get("level")
+        .and_then(Value::as_str)
+        .unwrap_or("log")
+        .to_uppercase();
+
+    let timestamp = entry
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .map(|s| s.to_string())
+        .or_else(|| {
+            entry.get("ts_unix_ms").and_then(|value| match value {
+                Value::Number(num) => Some(num.to_string()),
+                Value::String(s) => Some(s.clone()),
+                _ => None,
+            })
+        })
+        .unwrap_or_default();
+
+    if timestamp.is_empty() {
+        Some(format!("[{level}] {message}"))
+    } else {
+        Some(format!("[{timestamp}] [{level}] {message}"))
+    }
+}
+
+fn normalize_console_line(line: &str) -> String {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let upper = trimmed.to_ascii_uppercase();
+    let is_warning = upper.contains("[WARN]")
+        || upper.contains("[WARNING]")
+        || upper.contains("[ERROR]")
+        || upper.contains("[EXCEPTION]")
+        || upper.contains("[UNHANDLEDREJECTION]");
+
+    if is_warning {
+        format_warning_line(trimmed)
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn format_warning_line(line: &str) -> String {
+    if line.contains('⚠') {
+        line.to_string()
+    } else {
+        format!("⚠️ {}", line)
     }
 }
 
