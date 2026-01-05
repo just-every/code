@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.34] - 2026-01-05
+
+- Core/Auth: auto-switch to another account when usage limits hit to keep runs moving. (590f46be)
+- UX: show notices when accounts auto-switch due to rate limits so users stay informed. (590f46be)
+
 ## [0.6.33] - 2026-01-05
 
 - TUI: keep cancelable agents prioritized when Esc is pressed. (195c768)
