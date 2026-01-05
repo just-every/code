@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.36] - 2026-01-05
+
+- TUI: prioritize task cancellation on Esc before agent input to make stopping runs reliable. (76e3dd8)
+- Tests: reduce linux sandbox and TUI timeout flakes for steadier CI runs. (9d5dbfc)
+
 ## [0.6.35] - 2026-01-05
 
 - Core/Agent: keep packaged code executable available for read-only agents to avoid missing-binary failures. (d1557c5)
