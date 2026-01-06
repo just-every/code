@@ -17795,7 +17795,7 @@ fi\n\
                     }
                     AutoCoordinatorEvent::CompactedHistory { conversation, show_notice } => {
                         app_event_tx.send(AppEvent::AutoCoordinatorCompactedHistory {
-                            conversation: conversation.to_vec(),
+                            conversation,
                             show_notice,
                         });
                     }
