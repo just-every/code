@@ -506,6 +506,16 @@ pub(super) fn build_precompact_hook_payload(sess: &Session, reason: &str) -> Val
     Value::Object(base)
 }
 
+pub(super) fn build_postcompact_hook_payload(sess: &Session, reason: &str) -> Value {
+    let mut base = build_base_hook_payload(sess, ProjectHookEvent::PostCompact);
+    base.insert(
+        "event".to_string(),
+        Value::String(ProjectHookEvent::PostCompact.as_str().to_string()),
+    );
+    base.insert("reason".to_string(), Value::String(reason.to_string()));
+    Value::Object(base)
+}
+
 pub(super) fn build_notification_hook_payload(
     sess: &Session,
     notification: &UserNotification,

@@ -6,8 +6,10 @@ use super::Session;
 use super::compact_remote;
 use super::TurnContext;
 use super::streaming::get_last_assistant_message_from_turn;
+use super::exec::build_postcompact_hook_payload;
 use crate::Prompt;
 use crate::client_common::ResponseEvent;
+use crate::config_types::ProjectHookEvent;
 use crate::environment_context::EnvironmentContext;
 use crate::error::CodexErr;
 use crate::error::RetryAfter;
@@ -15,6 +17,7 @@ use crate::error::Result as CodexResult;
 use crate::protocol::AgentMessageEvent;
 use crate::protocol::ErrorEvent;
 use crate::protocol::EventMsg;
+use crate::turn_diff_tracker::TurnDiffTracker;
 use code_protocol::protocol::CompactionCheckpointWarningEvent;
 use crate::protocol::InputItem;
 use crate::protocol::TaskCompleteEvent;
@@ -175,7 +178,7 @@ pub(super) async fn run_inline_auto_compact_task(
     let sub_id = sess.next_internal_sub_id();
     let prompt_text = resolve_compact_prompt_text(turn_context.compact_prompt_override.as_deref());
     let input = vec![InputItem::Text { text: prompt_text.clone() }];
-    run_compact_task_inner_inline(sess, turn_context, sub_id, input).await
+    run_compact_task_inner_inline(sess, turn_context, sub_id, input, "auto").await
 }
 
 pub(super) async fn run_compact_task(
@@ -192,6 +195,7 @@ pub(super) async fn run_compact_task(
             Arc::clone(&turn_context),
             sub_id.clone(),
             input,
+            "manual",
         )
         .await
     } else {
@@ -201,6 +205,7 @@ pub(super) async fn run_compact_task(
             sub_id.clone(),
             input,
             true,
+            "manual",
         )
         .await
     };
@@ -222,6 +227,7 @@ pub(super) async fn perform_compaction(
     sub_id: String,
     input: Vec<InputItem>,
     remove_task_on_completion: bool,
+    reason: &str,
 ) -> CodexResult<()> {
     // Convert core InputItem -> ResponseInputItem using the same logic as the main turn flow
     let initial_input_for_turn: ResponseInputItem = response_input_from_core_items(input);
@@ -361,6 +367,8 @@ pub(super) async fn perform_compaction(
     // state bookkeeping stays centralized.
     sess.replace_history(new_history);
 
+    run_postcompact_hook(&sess, reason).await;
+
     send_compaction_checkpoint_warning(&sess, &sub_id).await;
 
     let rollout_item = RolloutItem::Compacted(CompactedItem {
@@ -389,6 +397,7 @@ async fn run_compact_task_inner_inline(
     turn_context: Arc<TurnContext>,
     sub_id: String,
     input: Vec<InputItem>,
+    reason: &str,
 ) -> Vec<ResponseItem> {
     // Convert core InputItem -> ResponseInputItem and build prompt
     let initial_input_for_turn: ResponseInputItem = response_input_from_core_items(input);
@@ -526,6 +535,8 @@ async fn run_compact_task_inner_inline(
         state.token_usage_info = None;
     }
 
+    run_postcompact_hook(&sess, reason).await;
+
     send_compaction_checkpoint_warning(&sess, &sub_id).await;
 
     let rollout_item = RolloutItem::Compacted(CompactedItem {
@@ -547,6 +558,22 @@ async fn run_compact_task_inner_inline(
     sess.send_event(event).await;
 
     new_history
+}
+
+pub(super) async fn run_postcompact_hook(sess: &Session, reason: &str) {
+    let payload = build_postcompact_hook_payload(sess, reason);
+    let mut tracker = TurnDiffTracker::new();
+    let attempt_req = sess.current_request_ordinal();
+    let result = sess
+        .run_hooks_for_event(
+            &mut tracker,
+            ProjectHookEvent::PostCompact,
+            &payload,
+            None,
+            attempt_req,
+        )
+        .await;
+    sess.enqueue_hook_system_messages(result.system_messages);
 }
 
 pub fn content_items_to_text(content: &[ContentItem]) -> Option<String> {

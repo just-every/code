@@ -452,6 +452,41 @@ async fn precompact_hook_fires() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn postcompact_hook_fires() {
+    let _guard = hook_test_guard();
+    let code_home = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    let log_path = project_dir.path().join("hooks.log");
+    File::create(&log_path).unwrap();
+
+    let mut config = base_config(&code_home, &project_dir);
+    let hook_configs = vec![hook_config(ProjectHookEvent::PostCompact, "postcompact", &log_path)];
+    config.project_hooks = ProjectHooks::from_configs(&hook_configs, &config.cwd);
+
+    let server = MockServer::start().await;
+    attach_mock_provider(&mut config, &server);
+
+    let body = sse_message_body("summary", "msg-1", "resp-1");
+    Mock::given(method("POST"))
+        .and(path_regex(".*/responses$"))
+        .respond_with(sse_response(body))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    let conversation_manager = ConversationManager::with_auth(CodexAuth::from_api_key("Test API Key"));
+    let codex = conversation_manager
+        .new_conversation(config)
+        .await
+        .expect("create conversation")
+        .conversation;
+
+    codex.submit(Op::Compact).await.unwrap();
+    let _ = wait_for_event(&codex, |msg| matches!(msg, EventMsg::TaskComplete(_))).await;
+    wait_for_log_contains(&log_path, "postcompact:post.compact").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn subagent_stop_hook_fires() {
     let _guard = hook_test_guard();
     let code_home = TempDir::new().unwrap();

@@ -1385,6 +1385,13 @@ pub enum ProjectHookEvent {
         alias = "PreCompact"
     )]
     PreCompact,
+    #[serde(
+        rename = "post.compact",
+        alias = "post_compact",
+        alias = "post-compact",
+        alias = "PostCompact"
+    )]
+    PostCompact,
     #[serde(rename = "notification", alias = "Notification", alias = "notify")]
     Notification,
 }
@@ -1402,6 +1409,7 @@ impl ProjectHookEvent {
             ProjectHookEvent::SubagentStop => "subagent.stop",
             ProjectHookEvent::UserPromptSubmit => "user.prompt_submit",
             ProjectHookEvent::PreCompact => "pre.compact",
+            ProjectHookEvent::PostCompact => "post.compact",
             ProjectHookEvent::Notification => "notification",
         }
     }
@@ -1418,6 +1426,7 @@ impl ProjectHookEvent {
             ProjectHookEvent::SubagentStop => "SubagentStop",
             ProjectHookEvent::UserPromptSubmit => "UserPromptSubmit",
             ProjectHookEvent::PreCompact => "PreCompact",
+            ProjectHookEvent::PostCompact => "PostCompact",
             ProjectHookEvent::Notification => "Notification",
         }
     }
@@ -1434,6 +1443,7 @@ impl ProjectHookEvent {
             ProjectHookEvent::SubagentStop => "subagent_stop",
             ProjectHookEvent::UserPromptSubmit => "user_prompt_submit",
             ProjectHookEvent::PreCompact => "pre_compact",
+            ProjectHookEvent::PostCompact => "post_compact",
             ProjectHookEvent::Notification => "notification",
         }
     }
