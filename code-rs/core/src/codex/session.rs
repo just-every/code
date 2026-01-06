@@ -1844,7 +1844,15 @@ impl Session {
     /// Spawn the configured notifier (if any) with the given JSON payload as
     /// the last argument. Failures are logged but otherwise ignored so that
     /// notification issues do not interfere with the main workflow.
-    pub(super) fn maybe_notify(&self, notification: UserNotification) {
+    pub(super) async fn maybe_notify(&self, notification: UserNotification) {
+        let payload = build_notification_hook_payload(self, &notification);
+        let mut tracker = TurnDiffTracker::new();
+        let attempt_req = self.current_request_ordinal();
+        let result = self
+            .run_hooks_for_event(&mut tracker, ProjectHookEvent::Notification, &payload, None, attempt_req)
+            .await;
+        self.enqueue_hook_system_messages(result.system_messages);
+
         let Some(notify_command) = &self.notify else {
             return;
         };

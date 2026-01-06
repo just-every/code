@@ -13,7 +13,7 @@ use code_cloud_tasks_client::{CloudTaskError, TaskId};
 use code_core::config::add_project_allowed_command;
 use code_core::config_types::Notifications;
 use code_core::protocol::{Event, Op, SandboxPolicy};
-use code_login::{AuthManager, AuthMode, ServerOptions};
+use code_login::{AuthManager, ServerOptions};
 use portable_pty::PtySize;
 
 use crate::app_event::AppEvent;
@@ -2198,7 +2198,7 @@ impl App<'_> {
                     } else {
                         let auth_manager = AuthManager::shared_with_mode_and_originator(
                             cfg.code_home.clone(),
-                            AuthMode::ApiKey,
+                            cfg.preferred_auth_mode(),
                             cfg.responses_originator_header.clone(),
                         );
                         let mut new_widget = ChatWidget::new_from_existing(

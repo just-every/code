@@ -3,6 +3,9 @@ use super::exec::{
     ApplyPatchCommandContext,
     ExecCommandContext,
     ExecInvokeArgs,
+    build_precompact_hook_payload,
+    build_stop_hook_payload,
+    build_user_prompt_hook_payload,
     maybe_run_with_user_profile,
 };
 use super::session::{
@@ -127,6 +130,23 @@ impl AgentTask {
                 sess.send_event(event).await;
             });
         }
+    }
+}
+
+fn user_prompt_text_from_items(items: &[InputItem]) -> Option<String> {
+    let mut parts = Vec::new();
+    for item in items {
+        if let InputItem::Text { text } = item {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                parts.push(trimmed.to_string());
+            }
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n"))
     }
 }
 
@@ -777,6 +797,34 @@ pub(super) async fn submission_loop(
                                 }),
                             );
                             let _ = tx_event_clone.send(status_event).await;
+
+                            for agent in &payload.agents {
+                                if agent.status != "completed" {
+                                    continue;
+                                }
+                                let payload = build_stop_hook_payload(
+                                    &sess_for_agents,
+                                    ProjectHookEvent::SubagentStop,
+                                    Some("subagent_complete".to_string()),
+                                    Some(serde_json::json!({
+                                        "agent_id": agent.id,
+                                        "agent_name": agent.name,
+                                        "status": agent.status,
+                                    })),
+                                );
+                                let mut tracker = TurnDiffTracker::new();
+                                let attempt_req = sess_for_agents.current_request_ordinal();
+                                let result = sess_for_agents
+                                    .run_hooks_for_event(
+                                        &mut tracker,
+                                        ProjectHookEvent::SubagentStop,
+                                        &payload,
+                                        None,
+                                        attempt_req,
+                                    )
+                                    .await;
+                                sess_for_agents.enqueue_hook_system_messages(result.system_messages);
+                            }
                         }
                     });
                     agent_manager_initialized = true;
@@ -794,6 +842,22 @@ pub(super) async fn submission_loop(
                 // Clean up old status items when new user input arrives
                 // This prevents token buildup from old screenshots/status messages
                 sess.cleanup_old_status_items().await;
+
+                if let Some(prompt_text) = user_prompt_text_from_items(&items) {
+                    let payload = build_user_prompt_hook_payload(sess, &prompt_text);
+                    let mut tracker = TurnDiffTracker::new();
+                    let attempt_req = sess.current_request_ordinal();
+                    let result = sess
+                        .run_hooks_for_event(
+                            &mut tracker,
+                            ProjectHookEvent::UserPromptSubmit,
+                            &payload,
+                            None,
+                            attempt_req,
+                        )
+                        .await;
+                    sess.enqueue_hook_system_messages(result.system_messages);
+                }
 
                 // Abort synchronously here to avoid a race that can kill the
                 // newly spawned agent if the async abort runs after set_task.
@@ -827,6 +891,21 @@ pub(super) async fn submission_loop(
                 } else {
                     // No task running: treat this as immediate user input without aborting.
                     sess.cleanup_old_status_items().await;
+                    if let Some(prompt_text) = user_prompt_text_from_items(&items) {
+                        let payload = build_user_prompt_hook_payload(sess, &prompt_text);
+                        let mut tracker = TurnDiffTracker::new();
+                        let attempt_req = sess.current_request_ordinal();
+                        let result = sess
+                            .run_hooks_for_event(
+                                &mut tracker,
+                                ProjectHookEvent::UserPromptSubmit,
+                                &payload,
+                                None,
+                                attempt_req,
+                            )
+                            .await;
+                        sess.enqueue_hook_system_messages(result.system_messages);
+                    }
                     let turn_context = sess.make_turn_context();
                     let agent = AgentTask::spawn(Arc::clone(&sess), turn_context, sub.id.clone(), items);
                     sess.set_task(agent);
@@ -1045,6 +1124,20 @@ pub(super) async fn submission_loop(
                         continue;
                     }
                 };
+
+                let payload = build_precompact_hook_payload(sess, "manual");
+                let mut tracker = TurnDiffTracker::new();
+                let attempt_req = sess.current_request_ordinal();
+                let result = sess
+                    .run_hooks_for_event(
+                        &mut tracker,
+                        ProjectHookEvent::PreCompact,
+                        &payload,
+                        None,
+                        attempt_req,
+                    )
+                    .await;
+                sess.enqueue_hook_system_messages(result.system_messages);
 
                 let prompt_text = sess.compact_prompt_text();
                 // Attempt to inject input into current task
@@ -1443,6 +1536,8 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
     }
 
     let mut last_task_message: Option<String> = None;
+    let mut last_turn_input_messages: Vec<String> = Vec::new();
+    let mut did_notify = false;
     // Although from the perspective of codex.rs, TurnDiffTracker has the lifecycle of a Agent which contains
     // many turns, from the perspective of the user, it is a single turn.
     let mut turn_diff_tracker = TurnDiffTracker::new();
@@ -1528,6 +1623,7 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
                 })
             })
             .collect();
+        last_turn_input_messages = turn_input_messages.clone();
         match run_turn(
             &sess,
             &turn_context,
@@ -1727,11 +1823,34 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
                     if let Some(m) = last_task_message.as_ref() {
                         tracing::info!("core.turn completed: last_assistant_message.len={}", m.len());
                     }
-                    sess.maybe_notify(UserNotification::AgentTurnComplete {
+                    let stop_payload = build_stop_hook_payload(
+                        sess,
+                        ProjectHookEvent::Stop,
+                        Some("turn_complete".to_string()),
+                        Some(serde_json::json!({
+                            "last_assistant_message": last_task_message.clone(),
+                        })),
+                    );
+                    let mut tracker = TurnDiffTracker::new();
+                    let attempt_req = sess.current_request_ordinal();
+                    let stop_result = sess
+                        .run_hooks_for_event(
+                            &mut tracker,
+                            ProjectHookEvent::Stop,
+                            &stop_payload,
+                            None,
+                            attempt_req,
+                        )
+                        .await;
+                    sess.enqueue_hook_system_messages(stop_result.system_messages);
+                    sess
+                        .maybe_notify(UserNotification::AgentTurnComplete {
                         turn_id: sub_id.clone(),
                         input_messages: turn_input_messages,
                         last_assistant_message: last_task_message.clone(),
-                    });
+                    })
+                        .await;
+                    did_notify = true;
                     break;
                 }
             }
@@ -1751,6 +1870,17 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
             }
         }
     }
+
+    if !did_notify {
+        sess
+            .maybe_notify(UserNotification::AgentTurnComplete {
+            turn_id: sub_id.clone(),
+            input_messages: last_turn_input_messages,
+            last_assistant_message: last_task_message.clone(),
+        })
+            .await;
+    }
+
     if is_review_mode && !review_exit_emitted {
         let combined = if !review_messages.is_empty() {
             review_messages.join("\n\n")

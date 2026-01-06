@@ -14,7 +14,7 @@ use signal_hook::flag;
 
 use code_core::config::Config;
 use code_core::ConversationManager;
-use code_login::{AuthManager, AuthMode};
+use code_login::AuthManager;
 use code_protocol::protocol::SessionSource;
 
 use crate::app_event::AppEvent;
@@ -44,7 +44,7 @@ impl App<'_> {
     ) -> Self {
         let auth_manager = AuthManager::shared_with_mode_and_originator(
             config.code_home.clone(),
-            AuthMode::ApiKey,
+            config.preferred_auth_mode(),
             config.responses_originator_header.clone(),
         );
         let conversation_manager = Arc::new(ConversationManager::new(

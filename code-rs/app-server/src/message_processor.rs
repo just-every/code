@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use crate::code_message_processor::CodexMessageProcessor;
 use crate::error_code::INVALID_REQUEST_ERROR_CODE;
 use crate::outgoing_message::OutgoingMessageSender;
-use code_protocol::mcp_protocol::AuthMode;
 use code_protocol::mcp_protocol::ClientInfo;
 use code_protocol::mcp_protocol::ClientRequest;
 use code_protocol::mcp_protocol::InitializeResponse;
@@ -39,7 +38,7 @@ impl MessageProcessor {
         let outgoing = Arc::new(outgoing);
         let auth_manager = AuthManager::shared_with_mode_and_originator(
             config.code_home.clone(),
-            AuthMode::ApiKey,
+            config.preferred_auth_mode(),
             config.responses_originator_header.clone(),
         );
         let conversation_manager = Arc::new(ConversationManager::new(

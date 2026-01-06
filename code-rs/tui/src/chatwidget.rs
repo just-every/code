@@ -53,7 +53,6 @@ use code_core::account_usage::{
 };
 use code_core::auth_accounts::{self, StoredAccount};
 use code_login::AuthManager;
-use code_login::AuthMode;
 use code_protocol::mcp_protocol::AuthMode as McpAuthMode;
 use code_protocol::protocol::SessionSource;
 use code_protocol::num_format::format_with_separators;
@@ -6280,7 +6279,7 @@ impl ChatWidget<'_> {
 
         let auth_manager = AuthManager::shared_with_mode_and_originator(
             config.code_home.clone(),
-            AuthMode::ApiKey,
+            config.preferred_auth_mode(),
             config.responses_originator_header.clone(),
         );
 

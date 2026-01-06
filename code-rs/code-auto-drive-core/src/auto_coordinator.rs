@@ -1105,16 +1105,11 @@ fn run_auto_loop(
     let compact_prompt_text =
         resolve_compact_prompt_text(config.compact_prompt_override.as_deref());
 
-    let preferred_auth = if config.using_chatgpt_auth {
-        code_protocol::mcp_protocol::AuthMode::ChatGPT
-    } else {
-        code_protocol::mcp_protocol::AuthMode::ApiKey
-    };
     let code_home = config.code_home.clone();
     let responses_originator_header = config.responses_originator_header.clone();
     let auth_mgr = AuthManager::shared_with_mode_and_originator(
         code_home,
-        preferred_auth,
+        config.preferred_auth_mode(),
         responses_originator_header,
     );
     let model_provider = config.model_provider.clone();
