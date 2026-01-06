@@ -4,6 +4,8 @@ use super::exec::{
     ExecCommandContext,
     ExecInvokeArgs,
     HookPermissionDecision,
+    HookRunResult,
+    apply_updated_exec_params,
     build_precompact_hook_payload,
     build_stop_hook_payload,
     build_user_prompt_hook_payload,
@@ -7827,7 +7829,57 @@ async fn handle_container_exec_with_params(
                     attempt_req,
                 )
                 .await;
-            sess.enqueue_hook_system_messages(hook_result.system_messages);
+            let HookRunResult {
+                permission_decision,
+                system_messages,
+                ..
+            } = hook_result;
+            let hook_reason = hook_reason_from_messages(&system_messages);
+            sess.enqueue_hook_system_messages(system_messages);
+
+            let mut hook_user_approved = false;
+            if let Some(decision) = permission_decision {
+                match decision {
+                    HookPermissionDecision::Allow => {}
+                    HookPermissionDecision::Deny => {
+                        let content = match hook_reason {
+                            Some(reason) => format!("apply_patch blocked by hook: {reason}"),
+                            None => "apply_patch blocked by hook".to_string(),
+                        };
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id,
+                            output: FunctionCallOutputPayload { content, success: None },
+                        };
+                    }
+                    HookPermissionDecision::Ask => {
+                        let rx_approve = sess
+                            .request_command_approval(
+                                sub_id.clone(),
+                                call_id.clone(),
+                                params.command.clone(),
+                                params.cwd.clone(),
+                                hook_reason.clone(),
+                            )
+                            .await;
+                        let decision = rx_approve.await.unwrap_or_default();
+                        match decision {
+                            ReviewDecision::Approved | ReviewDecision::ApprovedForSession => {
+                                hook_user_approved = true;
+                            }
+                            ReviewDecision::Denied | ReviewDecision::Abort => {
+                                let content = match hook_reason {
+                                    Some(reason) => format!("apply_patch blocked by hook: {reason}"),
+                                    None => "apply_patch blocked by hook".to_string(),
+                                };
+                                return ResponseInputItem::FunctionCallOutput {
+                                    call_id,
+                                    output: FunctionCallOutputPayload { content, success: None },
+                                };
+                            }
+                        }
+                    }
+                }
+            }
 
             let patch_start = std::time::Instant::now();
 
@@ -7844,7 +7896,7 @@ async fn handle_container_exec_with_params(
                 ApplyPatchResult::Reply(item) => return item,
                 ApplyPatchResult::Applied(run) => {
                     hook_ctx.apply_patch.as_mut().map(|ctx| {
-                        ctx.user_explicitly_approved_this_action = !run.auto_approved;
+                        ctx.user_explicitly_approved_this_action = hook_user_approved || !run.auto_approved;
                     });
 
                     let order_begin = crate::protocol::OrderMeta {
@@ -7957,6 +8009,44 @@ async fn handle_container_exec_with_params(
         MaybeApplyPatchVerified::NotApplyPatch => {}
     }
 
+    let harness_summary_json: Option<String> = None;
+
+    let mut exec_command_context = ExecCommandContext {
+        sub_id: sub_id.clone(),
+        call_id: call_id.clone(),
+        command_for_display: params.command.clone(),
+        cwd: params.cwd.clone(),
+        apply_patch: None,
+    };
+
+    params = maybe_run_with_user_profile(params, sess);
+
+    // ToolBefore hook for shell/container.exec commands
+    let mut params_for_hooks = params.clone();
+    let hook_result = sess
+        .run_hooks_for_exec_event(
+            turn_diff_tracker,
+            ProjectHookEvent::ToolBefore,
+            &exec_command_context,
+            &params_for_hooks,
+            None,
+            attempt_req,
+        )
+        .await;
+    let HookRunResult {
+        updated_input,
+        permission_decision,
+        system_messages,
+        ..
+    } = hook_result;
+    let hook_reason = hook_reason_from_messages(&system_messages);
+    sess.enqueue_hook_system_messages(system_messages);
+    if let Some(updated_input) = updated_input {
+        if apply_updated_exec_params(&mut params, &mut exec_command_context, updated_input) {
+            params_for_hooks = params.clone();
+        }
+    }
+
     let safety = {
         let state = sess.state.lock().unwrap();
         assess_command_safety(
@@ -7967,8 +8057,53 @@ async fn handle_container_exec_with_params(
             params.with_escalated_permissions.unwrap_or(false),
         )
     };
-    let command_for_display = params.command.clone();
-    let harness_summary_json: Option<String> = None;
+    if let Some(decision) = permission_decision {
+        match decision {
+            HookPermissionDecision::Allow => {}
+            HookPermissionDecision::Deny => {
+                let content = match hook_reason {
+                    Some(reason) => format!("exec command blocked by hook: {reason}"),
+                    None => "exec command blocked by hook".to_string(),
+                };
+                return ResponseInputItem::FunctionCallOutput {
+                    call_id,
+                    output: FunctionCallOutputPayload { content, success: None },
+                };
+            }
+            HookPermissionDecision::Ask => {
+                let rx_approve = sess
+                    .request_command_approval(
+                        sub_id.clone(),
+                        call_id.clone(),
+                        params.command.clone(),
+                        params.cwd.clone(),
+                        hook_reason.clone(),
+                    )
+                    .await;
+                let decision = rx_approve.await.unwrap_or_default();
+                match decision {
+                    ReviewDecision::Approved => {}
+                    ReviewDecision::ApprovedForSession => {
+                        sess.add_approved_command(ApprovedCommandPattern::new(
+                            params.command.clone(),
+                            ApprovedCommandMatchKind::Exact,
+                            None,
+                        ));
+                    }
+                    ReviewDecision::Denied | ReviewDecision::Abort => {
+                        let content = match hook_reason {
+                            Some(reason) => format!("exec command blocked by hook: {reason}"),
+                            None => "exec command blocked by hook".to_string(),
+                        };
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id,
+                            output: FunctionCallOutputPayload { content, success: None },
+                        };
+                    }
+                }
+            }
+        }
+    }
 
     let sandbox_type = match safety {
         SafetyCheck::AutoApprove {
@@ -8050,78 +8185,7 @@ async fn handle_container_exec_with_params(
         }
     };
 
-    let exec_command_context = ExecCommandContext {
-        sub_id: sub_id.clone(),
-        call_id: call_id.clone(),
-        command_for_display: command_for_display.clone(),
-        cwd: params.cwd.clone(),
-        apply_patch: None,
-    };
-
     let display_label = crate::util::strip_bash_lc_and_escape(&exec_command_context.command_for_display);
-    let params = maybe_run_with_user_profile(params, sess);
-
-    // ToolBefore hook for shell/container.exec commands
-    let params_for_hooks = params.clone();
-    let hook_result = sess
-        .run_hooks_for_exec_event(
-            turn_diff_tracker,
-            ProjectHookEvent::ToolBefore,
-            &exec_command_context,
-            &params_for_hooks,
-            None,
-            attempt_req,
-        )
-        .await;
-    let hook_reason = hook_reason_from_messages(&hook_result.system_messages);
-    sess.enqueue_hook_system_messages(hook_result.system_messages);
-    if let Some(decision) = hook_result.permission_decision {
-        match decision {
-            HookPermissionDecision::Allow => {}
-            HookPermissionDecision::Deny => {
-                let content = match hook_reason {
-                    Some(reason) => format!("exec command blocked by hook: {reason}"),
-                    None => "exec command blocked by hook".to_string(),
-                };
-                return ResponseInputItem::FunctionCallOutput {
-                    call_id,
-                    output: FunctionCallOutputPayload { content, success: None },
-                };
-            }
-            HookPermissionDecision::Ask => {
-                let rx_approve = sess
-                    .request_command_approval(
-                        sub_id.clone(),
-                        call_id.clone(),
-                        params.command.clone(),
-                        params.cwd.clone(),
-                        hook_reason.clone(),
-                    )
-                    .await;
-                let decision = rx_approve.await.unwrap_or_default();
-                match decision {
-                    ReviewDecision::Approved => {}
-                    ReviewDecision::ApprovedForSession => {
-                        sess.add_approved_command(ApprovedCommandPattern::new(
-                            params.command.clone(),
-                            ApprovedCommandMatchKind::Exact,
-                            None,
-                        ));
-                    }
-                    ReviewDecision::Denied | ReviewDecision::Abort => {
-                        let content = match hook_reason {
-                            Some(reason) => format!("exec command blocked by hook: {reason}"),
-                            None => "exec command blocked by hook".to_string(),
-                        };
-                        return ResponseInputItem::FunctionCallOutput {
-                            call_id,
-                            output: FunctionCallOutputPayload { content, success: None },
-                        };
-                    }
-                }
-            }
-        }
-    }
 
     // Prepare tail buffer and background registry entry
     let tail_buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));

@@ -2,6 +2,7 @@ use super::*;
 use super::session::{HookGuard, RunningExecMeta};
 use code_protocol::models::ContentItem;
 use serde_json::{json, Map, Value};
+use shlex::split as shlex_split;
 
 fn synthetic_exec_end_payload(cancelled: bool) -> (i32, String) {
     if cancelled {
@@ -194,6 +195,88 @@ fn hook_reason_from_messages(messages: &[String]) -> Option<String> {
         .iter()
         .find(|message| !message.trim().is_empty())
         .map(|message| message.trim().to_string())
+}
+
+fn command_from_value(value: &Value) -> Option<Vec<String>> {
+    match value {
+        Value::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                let text = item.as_str()?;
+                out.push(text.to_string());
+            }
+            if out.is_empty() { None } else { Some(out) }
+        }
+        Value::String(text) => shlex_split(text).filter(|tokens| !tokens.is_empty()),
+        _ => None,
+    }
+}
+
+pub(super) fn apply_updated_exec_params(
+    params: &mut ExecParams,
+    ctx: &mut ExecCommandContext,
+    updated_input: Value,
+) -> bool {
+    if updated_input.is_null() {
+        return false;
+    }
+
+    let mut changed = false;
+    match updated_input {
+        Value::Array(_) | Value::String(_) => {
+            if let Some(command) = command_from_value(&updated_input) {
+                params.command = command;
+                changed = true;
+            }
+        }
+        Value::Object(map) => {
+            if let Some(command_value) = map.get("command") {
+                if let Some(command) = command_from_value(command_value) {
+                    params.command = command;
+                    changed = true;
+                }
+            }
+            if let Some(cwd_value) = map.get("cwd").and_then(|value| value.as_str()) {
+                let trimmed = cwd_value.trim();
+                if !trimmed.is_empty() {
+                    let path = PathBuf::from(trimmed);
+                    params.cwd = if path.is_absolute() {
+                        path
+                    } else {
+                        params.cwd.join(path)
+                    };
+                    changed = true;
+                }
+            }
+            if let Some(timeout_value) = map.get("timeout_ms") {
+                if timeout_value.is_null() {
+                    if params.timeout_ms.is_some() {
+                        params.timeout_ms = None;
+                        changed = true;
+                    }
+                } else if let Some(timeout_ms) = timeout_value.as_u64() {
+                    params.timeout_ms = Some(timeout_ms);
+                    changed = true;
+                }
+            }
+            if let Some(env_map) = map.get("env").and_then(|value| value.as_object()) {
+                for (key, value) in env_map {
+                    if let Some(text) = value.as_str() {
+                        params.env.insert(key.clone(), text.to_string());
+                        changed = true;
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
+    if changed {
+        ctx.command_for_display = params.command.clone();
+        ctx.cwd = params.cwd.clone();
+    }
+
+    changed
 }
 
 fn merge_permission_decision(
@@ -802,7 +885,7 @@ impl Session {
     async fn run_exec_with_events_inner<'a>(
         &self,
         turn_diff_tracker: &mut TurnDiffTracker,
-        begin_ctx: ExecCommandContext,
+        mut begin_ctx: ExecCommandContext,
         exec_args: ExecInvokeArgs<'a>,
         seq_hint: Option<u64>,
         output_index: Option<u32>,
@@ -834,10 +917,8 @@ impl Session {
         );
 
         let ExecInvokeArgs { params, sandbox_type, sandbox_policy, sandbox_cwd, code_linux_sandbox_exe, stdout_stream } = exec_args;
-        let tracking_command = params.command.clone();
-        let dry_run_analysis = analyze_command(&tracking_command);
-        let params = maybe_run_with_user_profile(params, self);
-        let params_for_hooks = if enable_hooks {
+        let mut params = maybe_run_with_user_profile(params, self);
+        let mut params_for_hooks = if enable_hooks {
             Some(params.clone())
         } else {
             None
@@ -860,9 +941,22 @@ impl Session {
                         attempt_req,
                     )
                     .await;
-                let hook_reason = hook_reason_from_messages(&hook_result.system_messages);
-                self.enqueue_hook_system_messages(hook_result.system_messages);
-                if let Some(decision) = hook_result.permission_decision {
+                let HookRunResult {
+                    updated_input,
+                    permission_decision,
+                    system_messages,
+                    ..
+                } = hook_result;
+                let hook_reason = hook_reason_from_messages(&system_messages);
+                self.enqueue_hook_system_messages(system_messages);
+                if let Some(updated_input) = updated_input {
+                    if apply_updated_exec_params(&mut params, &mut begin_ctx, updated_input) {
+                        if let Some(params_ref) = params_for_hooks.as_mut() {
+                            *params_ref = params.clone();
+                        }
+                    }
+                }
+                if let Some(decision) = permission_decision {
                     let rejection = match decision {
                         HookPermissionDecision::Allow => None,
                         HookPermissionDecision::Deny => Some("exec command blocked by hook".to_string()),
@@ -934,6 +1028,9 @@ impl Session {
                 }
             }
         }
+
+        let tracking_command = params.command.clone();
+        let dry_run_analysis = analyze_command(&tracking_command);
 
         self.on_exec_command_begin(turn_diff_tracker, begin_ctx.clone(), seq_hint, output_index, attempt_req)
             .await;
