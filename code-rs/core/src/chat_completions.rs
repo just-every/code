@@ -9,6 +9,7 @@ use futures::StreamExt;
 use futures::TryStreamExt;
 use reqwest::StatusCode;
 use reqwest::header::HeaderMap;
+use serde_json::Value;
 use serde_json::json;
 use std::pin::Pin;
 use std::task::Context;
@@ -219,24 +220,16 @@ pub(crate) async fn stream_chat_completions(
                 call_id,
                 ..
             } => {
-                let mut msg = json!({
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [{
-                        "id": call_id,
-                        "type": "function",
-                        "function": {
-                            "name": name,
-                            "arguments": arguments,
-                        }
-                    }]
-                });
-                if let Some(reasoning) = reasoning_by_anchor_index.get(&idx) {
-                    if let Some(obj) = msg.as_object_mut() {
-                        obj.insert("reasoning".to_string(), json!(reasoning));
+                let reasoning = reasoning_by_anchor_index.get(&idx).map(String::as_str);
+                let tool_call = json!({
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": arguments,
                     }
-                }
-                messages.push(msg);
+                });
+                push_tool_call_message(&mut messages, tool_call, reasoning);
             }
             ResponseItem::LocalShellCall {
                 id,
@@ -245,22 +238,14 @@ pub(crate) async fn stream_chat_completions(
                 action,
             } => {
                 // Confirm with API team.
-                let mut msg = json!({
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [{
-                        "id": id.clone().unwrap_or_else(|| "".to_string()),
-                        "type": "local_shell_call",
-                        "status": status,
-                        "action": action,
-                    }]
+                let reasoning = reasoning_by_anchor_index.get(&idx).map(String::as_str);
+                let tool_call = json!({
+                    "id": id.clone().unwrap_or_default(),
+                    "type": "local_shell_call",
+                    "status": status,
+                    "action": action,
                 });
-                if let Some(reasoning) = reasoning_by_anchor_index.get(&idx) {
-                    if let Some(obj) = msg.as_object_mut() {
-                        obj.insert("reasoning".to_string(), json!(reasoning));
-                    }
-                }
-                messages.push(msg);
+                push_tool_call_message(&mut messages, tool_call, reasoning);
             }
             ResponseItem::FunctionCallOutput { call_id, output } => {
                 messages.push(json!({
@@ -276,18 +261,16 @@ pub(crate) async fn stream_chat_completions(
                 input,
                 status: _,
             } => {
-                messages.push(json!({
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [{
-                        "id": id,
-                        "type": "custom",
-                        "custom": {
-                            "name": name,
-                            "input": input,
-                        }
-                    }]
-                }));
+                let reasoning = reasoning_by_anchor_index.get(&idx).map(String::as_str);
+                let tool_call = json!({
+                    "id": id,
+                    "type": "custom",
+                    "custom": {
+                        "name": name,
+                        "input": input,
+                    }
+                });
+                push_tool_call_message(&mut messages, tool_call, reasoning);
             }
             ResponseItem::CustomToolCallOutput { call_id, output } => {
                 messages.push(json!({
@@ -492,6 +475,41 @@ pub(crate) async fn stream_chat_completions(
     }
 }
 
+fn push_tool_call_message(messages: &mut Vec<Value>, tool_call: Value, reasoning: Option<&str>) {
+    // Chat Completions requires that tool calls are grouped into a single assistant message
+    // (with `tool_calls: [...]`) followed by tool role responses.
+    if let Some(Value::Object(obj)) = messages.last_mut()
+        && obj.get("role").and_then(Value::as_str) == Some("assistant")
+        && obj.get("content").is_some_and(Value::is_null)
+        && let Some(tool_calls) = obj.get_mut("tool_calls").and_then(Value::as_array_mut)
+    {
+        tool_calls.push(tool_call);
+        if let Some(reasoning) = reasoning {
+            if let Some(Value::String(existing)) = obj.get_mut("reasoning") {
+                if !existing.is_empty() {
+                    existing.push('\n');
+                }
+                existing.push_str(reasoning);
+            } else {
+                obj.insert("reasoning".to_string(), Value::String(reasoning.to_string()));
+            }
+        }
+        return;
+    }
+
+    let mut msg = json!({
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [tool_call],
+    });
+    if let Some(reasoning) = reasoning
+        && let Some(obj) = msg.as_object_mut()
+    {
+        obj.insert("reasoning".to_string(), json!(reasoning));
+    }
+    messages.push(msg);
+}
+
 /// Lightweight SSE processor for the Chat Completions streaming format. The
 /// output is mapped onto Codex's internal [`ResponseEvent`] so that the rest
 /// of the pipeline can stay agnostic of the underlying wire format.
@@ -524,6 +542,62 @@ async fn process_chat_sse<S>(
     let mut assistant_text = String::new();
     let mut reasoning_text = String::new();
     let mut current_item_id: Option<String> = None;
+
+    async fn flush_and_complete(
+        tx_event: &mpsc::Sender<Result<ResponseEvent>>,
+        assistant_text: &mut String,
+        reasoning_text: &mut String,
+        current_item_id: &Option<String>,
+        debug_logger: &Arc<Mutex<DebugLogger>>,
+        request_id: &str,
+    ) {
+        // Emit any finalized items before closing so downstream consumers receive
+        // terminal events for both assistant content and raw reasoning.
+        if !assistant_text.is_empty() {
+            let item = ResponseItem::Message {
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: std::mem::take(assistant_text),
+                }],
+                id: current_item_id.clone(),
+            };
+            let _ = tx_event
+                .send(Ok(ResponseEvent::OutputItemDone {
+                    item,
+                    sequence_number: None,
+                    output_index: None,
+                }))
+                .await;
+        }
+
+        if !reasoning_text.is_empty() {
+            let item = ResponseItem::Reasoning {
+                id: current_item_id.clone().unwrap_or_else(String::new),
+                summary: Vec::new(),
+                content: Some(vec![ReasoningItemContent::ReasoningText {
+                    text: std::mem::take(reasoning_text),
+                }]),
+                encrypted_content: None,
+            };
+            let _ = tx_event
+                .send(Ok(ResponseEvent::OutputItemDone {
+                    item,
+                    sequence_number: None,
+                    output_index: None,
+                }))
+                .await;
+        }
+
+        let _ = tx_event
+            .send(Ok(ResponseEvent::Completed {
+                response_id: String::new(),
+                token_usage: None,
+            }))
+            .await;
+        if let Ok(logger) = debug_logger.lock() {
+            let _ = logger.end_request_log(request_id);
+        }
+    }
 
     loop {
         let next_event = if let Some(manager) = otel_event_manager.as_ref() {
@@ -559,15 +633,15 @@ async fn process_chat_sse<S>(
                         }),
                     );
                 }
-                let _ = tx_event
-                    .send(Ok(ResponseEvent::Completed {
-                        response_id: String::new(),
-                        token_usage: None,
-                    }))
-                    .await;
-                if let Ok(logger) = debug_logger.lock() {
-                    let _ = logger.end_request_log(&request_id);
-                }
+                flush_and_complete(
+                    &tx_event,
+                    &mut assistant_text,
+                    &mut reasoning_text,
+                    &current_item_id,
+                    &debug_logger,
+                    &request_id,
+                )
+                .await;
                 return;
             }
             Err(_) => {
@@ -582,48 +656,28 @@ async fn process_chat_sse<S>(
             }
         };
 
+        let data = sse.data.trim();
+
+        if data.is_empty() {
+            continue;
+        }
+
         // OpenAI Chat streaming sends a literal string "[DONE]" when finished.
-        if sse.data.trim() == "[DONE]" {
-            // Emit any finalized items before closing so downstream consumers receive
-            // terminal events for both assistant content and raw reasoning.
-            if !assistant_text.is_empty() {
-                let item = ResponseItem::Message {
-                    role: "assistant".to_string(),
-                    content: vec![ContentItem::OutputText {
-                        text: std::mem::take(&mut assistant_text),
-                    }],
-                    id: current_item_id.clone(),
-                };
-                let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone { item, sequence_number: None, output_index: None })).await;
-            }
-
-            if !reasoning_text.is_empty() {
-                let item = ResponseItem::Reasoning {
-                    id: current_item_id.clone().unwrap_or_else(String::new),
-                    summary: Vec::new(),
-                    content: Some(vec![ReasoningItemContent::ReasoningText {
-                        text: std::mem::take(&mut reasoning_text),
-                    }]),
-                    encrypted_content: None,
-                };
-                let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone { item, sequence_number: None, output_index: None })).await;
-            }
-
-            let _ = tx_event
-                .send(Ok(ResponseEvent::Completed {
-                    response_id: String::new(),
-                    token_usage: None,
-                }))
-                .await;
-            // Mark the request log as complete
-            if let Ok(logger) = debug_logger.lock() {
-                let _ = logger.end_request_log(&request_id);
-            }
+        if data == "[DONE]" || data == "DONE" {
+            flush_and_complete(
+                &tx_event,
+                &mut assistant_text,
+                &mut reasoning_text,
+                &current_item_id,
+                &debug_logger,
+                &request_id,
+            )
+            .await;
             return;
         }
 
         // Parse JSON chunk
-        let chunk: serde_json::Value = match serde_json::from_str(&sse.data) {
+        let chunk: serde_json::Value = match serde_json::from_str(data) {
             Ok(v) => v,
             Err(e) => {
                 // Surface parse errors to logs and debug logger for diagnostics, then skip

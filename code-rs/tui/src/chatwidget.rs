@@ -11502,6 +11502,7 @@ impl ChatWidget<'_> {
                 .code_op_tx
                 .send(Op::UserInput {
                     items: combined_items,
+                    final_output_json_schema: None,
                 })
             {
                 tracing::error!("failed to send Op::UserInput: {e}");
@@ -28080,7 +28081,10 @@ Have we met every part of this goal and is there no further work to do?"#
         }
 
         let items = message.ordered_items.clone();
-        if let Err(e) = self.code_op_tx.send(Op::UserInput { items }) {
+        if let Err(e) = self.code_op_tx.send(Op::UserInput {
+            items,
+            final_output_json_schema: None,
+        }) {
             tracing::error!("failed to send immediate UserInput: {e}");
         }
 

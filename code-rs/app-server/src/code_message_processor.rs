@@ -236,6 +236,7 @@ impl CodexMessageProcessor {
         let _ = conversation
             .submit(Op::UserInput {
                 items: mapped_items,
+                final_output_json_schema: None,
             })
             .await;
 
@@ -284,7 +285,10 @@ impl CodexMessageProcessor {
         // Core protocol compatibility: older cores do not support per-turn overrides.
         // Submit only the user input items.
         let _ = conversation
-            .submit(Op::UserInput { items: mapped_items })
+            .submit(Op::UserInput {
+                items: mapped_items,
+                final_output_json_schema: None,
+            })
             .await;
 
         self.outgoing
@@ -525,6 +529,7 @@ impl CodexMessageProcessor {
         let _ = conversation
             .submit(Op::UserInput {
                 items: mapped_items,
+                final_output_json_schema: None,
             })
             .await;
 

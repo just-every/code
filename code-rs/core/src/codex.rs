@@ -238,6 +238,7 @@ pub(crate) struct TurnContext {
     pub(crate) shell_environment_policy: ShellEnvironmentPolicy,
     pub(crate) is_review_mode: bool,
     pub(crate) text_format_override: Option<TextFormat>,
+    pub(crate) final_output_json_schema: Option<Value>,
 }
 
 /// Gather ephemeral, per-turn context that should not be persisted to history.

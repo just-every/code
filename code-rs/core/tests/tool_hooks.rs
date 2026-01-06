@@ -164,6 +164,7 @@ event: response.completed\ndata: {}\n\n",
             items: vec![InputItem::Text {
                 text: "run hook".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();

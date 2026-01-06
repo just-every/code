@@ -783,7 +783,10 @@ pub(super) async fn submission_loop(
                     agent_manager_initialized = true;
                 }
             }
-            Op::UserInput { items } => {
+            Op::UserInput {
+                items,
+                final_output_json_schema,
+            } => {
                 let sess = match sess.as_ref() {
                     Some(sess) => sess,
                     None => {
@@ -802,7 +805,7 @@ pub(super) async fn submission_loop(
                 sess.abort();
 
                 // Spawn a new agent for this user input.
-                let turn_context = sess.make_turn_context();
+                let turn_context = sess.make_turn_context_with_schema(final_output_json_schema);
                 let agent = AgentTask::spawn(Arc::clone(&sess), turn_context, sub.id.clone(), items);
                 sess.set_task(agent);
             }
@@ -1248,6 +1251,7 @@ async fn spawn_review_thread(
         shell_environment_policy: parent_turn_context.shell_environment_policy.clone(),
         is_review_mode: true,
         text_format_override: None,
+        final_output_json_schema: None,
     });
 
     let review_prompt_text = format!(
@@ -1870,7 +1874,7 @@ async fn run_turn(
             text_format: tc.text_format_override.clone(),
             model_override: None,
             model_family_override: None,
-            output_schema: None,
+            output_schema: tc.final_output_json_schema.clone(),
             log_tag: Some("codex/turn".to_string()),
             session_id_override: None,
             model_descriptions: sess.model_descriptions.clone(),

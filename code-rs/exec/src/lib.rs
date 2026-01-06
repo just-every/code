@@ -652,7 +652,12 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
             .into_iter()
             .map(|path| InputItem::LocalImage { path })
             .collect();
-        let initial_images_event_id = conversation.submit(Op::UserInput { items }).await?;
+        let initial_images_event_id = conversation
+            .submit(Op::UserInput {
+                items,
+                final_output_json_schema: None,
+            })
+            .await?;
         info!("Sent images with event ID: {initial_images_event_id}");
         loop {
             let event = if let Some(deadline) = run_deadline {
@@ -744,7 +749,10 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         let items: Vec<InputItem> = vec![InputItem::Text { text: prompt_to_send }];
         // Fallback for older core protocol: send only user input items.
         let event_id = conversation
-            .submit(Op::UserInput { items })
+            .submit(Op::UserInput {
+                items,
+                final_output_json_schema: None,
+            })
             .await?;
         info!("Sent prompt with event ID: {event_id}");
         event_id
@@ -1315,7 +1323,12 @@ async fn run_auto_drive_session(
             .into_iter()
             .map(|path| InputItem::LocalImage { path })
             .collect();
-        let initial_images_event_id = conversation.submit(Op::UserInput { items }).await?;
+        let initial_images_event_id = conversation
+            .submit(Op::UserInput {
+                items,
+                final_output_json_schema: None,
+            })
+            .await?;
         loop {
             let event = if let Some(deadline) = run_deadline {
                 let remaining = deadline.saturating_duration_since(Instant::now());
@@ -2119,7 +2132,12 @@ async fn dispatch_auto_fix(
 ) -> anyhow::Result<()> {
     let fix_prompt = build_fix_prompt(review);
     let items: Vec<InputItem> = vec![InputItem::Text { text: fix_prompt }];
-    let _ = conversation.submit(Op::UserInput { items }).await?;
+    let _ = conversation
+        .submit(Op::UserInput {
+            items,
+            final_output_json_schema: None,
+        })
+        .await?;
     Ok(())
 }
 
@@ -2551,6 +2569,7 @@ async fn submit_and_wait(
     let submit_id = conversation
         .submit(Op::UserInput {
             items: vec![InputItem::Text { text: prompt_text }],
+            final_output_json_schema: None,
         })
         .await?;
 

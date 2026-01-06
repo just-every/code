@@ -73,7 +73,10 @@ pub async fn prompt(
         .collect();
 
     codex
-        .submit(Op::UserInput { items })
+        .submit(Op::UserInput {
+            items,
+            final_output_json_schema: None,
+        })
         .await
         .context("failed to submit prompt to Codex")?;
 
