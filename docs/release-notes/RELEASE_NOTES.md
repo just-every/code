@@ -1,12 +1,10 @@
-## @just-every/code v0.6.37
-Focused polish across TUI visuals and config overrides for the latest release.
+## @just-every/code v0.6.38
+
+Small docs update clarifying model provider requirements and proxy usage.
 
 ### Changes
-- TUI/Image: render view image cards so attached visuals show inline.
-- TUI/Browser: scope console logs to each browser card to avoid spillover.
-- TUI/Resume: prevent footer underflow in resume layouts.
-- TUI/Composer: guard composer height to keep the input stable.
-- Core/Config: allow tool output size override to honor config limits.
+- Docs/Config: clarify `--model` applies to the active provider and call out OpenAI-compatible requirements for custom providers.
+- Docs/Config: add a proxy example for routing OpenAI-style requests to other vendors.
 
 ### Install
 ```
@@ -14,4 +12,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.36...v0.6.37
+Compare: https://github.com/just-every/code/compare/v0.6.37...v0.6.38

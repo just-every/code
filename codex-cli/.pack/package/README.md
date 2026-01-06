@@ -1,26 +1,19 @@
-# EVERY CODE (Code)
-
-&ensp;
-
-<p align="center">
-  <img src="docs/logo.png" alt="Every Code Logo" width="400">
-</p>
+<img src="docs/images/every-logo.png" alt="Every Code Logo" width="400">
 
 &ensp;
 
 **Every Code** (Code for short) is a fast, local coding agent for your terminal. It's a community-driven fork of `openai/codex` focused on real developer ergonomics: Browser integration, multi-agents, theming, and reasoning control — all while staying compatible with upstream.
 
 &ensp;
-## What's new in v0.5.0 (November 2025)
+## What's new in v0.6.0 (December 2025)
 
-- **Renamed to Every Code** – new name for better discoverability while keeping the `code` shorthand.
-- **Auto Drive upgraded** – hand `/auto` a task and it now plans, coordinates agents, reruns checks, and recovers from hiccups without babysitting.
-- **Unified settings** – `/settings` centralizes limits, model routing, themes, and CLI integrations so you can audit configuration in one place.
-- **Card-based activity** – Agents, browser sessions, web search, and Auto Drive render as compact cards with drill-down overlays for full logs.
-- **Turbocharged performance** – History rendering and streaming were optimized to stay smooth even during long multi-agent sessions.
-- **Smarter agents** – Mix and match orchestrator CLIs (Claude, Gemini, GPT-5, Qwen, and more) per `/plan`, `/code`, or `/solve` run.
+- **Auto Review** – background ghost-commit watcher runs reviews in a separate worktree whenever a turn changes code; uses `codex-5.1-mini-high` and reports issues plus ready-to-apply fixes without blocking the main thread.
+- **Code Bridge** – Sentry-style local bridge that streams errors, console, screenshots, and control from running apps into Code; ships an MCP server; install by asking Code to pull `https://github.com/just-every/code-bridge`.
+- **Plays well with Auto Drive** – reviews run in parallel with long Auto Drive tasks so quality checks land while the flow keeps moving.
+- **Quality-first focus** – the release shifts emphasis from "can the model write this file" to "did we verify it works".
+- _From v0.5.0:_ rename to Every Code, upgraded `/auto` planning/recovery, unified `/settings`, faster streaming/history with card-based activity, and more reliable `/resume` + `/undo`.
 
-Read the full notes in `docs/release-notes/RELEASE_NOTES.md`.
+ [Read the full notes in RELEASE_NOTES.md](docs/release-notes/RELEASE_NOTES.md)
 
 &ensp;
 ## Why Every Code
@@ -38,8 +31,16 @@ Read the full notes in `docs/release-notes/RELEASE_NOTES.md`.
 
 &ensp;
 <p align="center">
+  <a href="https://www.youtube.com/watch?v=Ra3q8IVpIOc">
+    <img src="docs/images/video-auto-review-play.jpg" alt="Play Auto Review video" width="100%">
+  </a><br>
+  <strong>Auto Review</strong>
+</p>
+
+&ensp;
+<p align="center">
   <a href="https://youtu.be/UOASHZPruQk">
-    <img src="docs/screenshots/video-auto-drive-new-play.jpg" alt="Play Introducing Auto Drive video" width="100%">
+    <img src="docs/images/video-auto-drive-new-play.jpg" alt="Play Introducing Auto Drive video" width="100%">
   </a><br>
   <strong>Auto Drive Overview</strong>
 </p>
@@ -47,7 +48,7 @@ Read the full notes in `docs/release-notes/RELEASE_NOTES.md`.
 &ensp;
 <p align="center">
   <a href="https://youtu.be/sV317OhiysQ">
-    <img src="docs/screenshots/video-v03-play.jpg" alt="Play Multi-Agent Support video" width="100%">
+    <img src="docs/images/video-v03-play.jpg" alt="Play Multi-Agent Support video" width="100%">
   </a><br>
   <strong>Multi-Agent Promo</strong>
 </p>
@@ -162,7 +163,7 @@ qwen --version
 code [options] [prompt]
 
 Options:
-  --model <name>        Override the model (gpt-5, claude-opus, etc.)
+  --model <name>        Override the model for the active provider (e.g. gpt-5.1)
   --read-only          Prevent file modifications
   --no-approval        Skip approval prompts (use with caution)
   --config <key=val>   Override config values
@@ -172,6 +173,8 @@ Options:
   --debug             Log API requests and responses to file
   --version           Show version number
 ```
+
+Note: `--model` only changes the model name sent to the active provider. To use a different provider, set `model_provider` in `config.toml`. Providers must expose an OpenAI-compatible API (Chat Completions or Responses).
 
 &ensp;
 ## Memory & project docs
@@ -192,7 +195,7 @@ This is a React TypeScript application with:
 - `/server/` - Backend services
 ```
 
-2. **Session memory**: Code maintains conversation history
+2. **Session memory**: Every Code maintains conversation history
 3. **Codebase analysis**: Automatically understands project structure
 
 &ensp;
@@ -239,7 +242,7 @@ Main config file: `~/.code/config.toml`
 
 ```toml
 # Model settings
-model = "gpt-5"
+model = "gpt-5.1"
 model_provider = "openai"
 
 # Behavior
@@ -253,7 +256,7 @@ name = "light-photon"
 
 # Add config for specific models
 [profiles.gpt-5]
-model = "gpt-5"
+model = "gpt-5.1"
 model_provider = "openai"
 approval_policy = "never"
 model_reasoning_effort = "high"
@@ -264,7 +267,7 @@ model_reasoning_summary = "detailed"
 
 - `CODE_HOME`: Override config directory location
 - `OPENAI_API_KEY`: Use API key instead of ChatGPT auth
-- `OPENAI_BASE_URL`: Use alternative API endpoints
+- `OPENAI_BASE_URL`: Use OpenAI-compatible API endpoints (chat or responses)
 - `OPENAI_WIRE_API`: Force the built-in OpenAI provider to use `chat` or `responses` wiring
 
 &ensp;
@@ -301,6 +304,16 @@ npm install
 # Run locally
 ./code-rs/target/dev-fast/code
 ```
+
+#### Git hooks
+
+This repo ships shared hooks under `.githooks/`. To enable them locally:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The `pre-push` hook runs `./pre-release.sh` automatically when pushing to `main`.
 
 ### Opening a pull request
 
