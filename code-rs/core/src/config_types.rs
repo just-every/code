@@ -1334,18 +1334,59 @@ where
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProjectHookEvent {
-    #[serde(rename = "session.start")]
+    #[serde(rename = "session.start", alias = "session_start", alias = "session-start", alias = "SessionStart")]
     SessionStart,
-    #[serde(rename = "session.end")]
+    #[serde(rename = "session.end", alias = "session_end", alias = "session-end", alias = "SessionEnd")]
     SessionEnd,
-    #[serde(rename = "tool.before")]
+    #[serde(
+        rename = "tool.before",
+        alias = "tool_before",
+        alias = "tool-before",
+        alias = "PreToolUse",
+        alias = "pre_tool_use",
+        alias = "pre-tool-use",
+        alias = "pretooluse"
+    )]
     ToolBefore,
-    #[serde(rename = "tool.after")]
+    #[serde(
+        rename = "tool.after",
+        alias = "tool_after",
+        alias = "tool-after",
+        alias = "PostToolUse",
+        alias = "post_tool_use",
+        alias = "post-tool-use",
+        alias = "posttooluse"
+    )]
     ToolAfter,
-    #[serde(rename = "file.before_write")]
+    #[serde(rename = "file.before_write", alias = "file_before_write", alias = "file-before-write")]
     FileBeforeWrite,
-    #[serde(rename = "file.after_write")]
+    #[serde(rename = "file.after_write", alias = "file_after_write", alias = "file-after-write")]
     FileAfterWrite,
+    #[serde(rename = "stop", alias = "Stop")]
+    Stop,
+    #[serde(
+        rename = "subagent.stop",
+        alias = "subagent_stop",
+        alias = "subagent-stop",
+        alias = "SubagentStop"
+    )]
+    SubagentStop,
+    #[serde(
+        rename = "user.prompt_submit",
+        alias = "user_prompt_submit",
+        alias = "user-prompt-submit",
+        alias = "UserPromptSubmit"
+    )]
+    UserPromptSubmit,
+    #[serde(
+        rename = "pre.compact",
+        alias = "pre_compact",
+        alias = "pre-compact",
+        alias = "PreCompact"
+    )]
+    PreCompact,
+    #[serde(rename = "notification", alias = "Notification", alias = "notify")]
+    Notification,
 }
 
 impl ProjectHookEvent {
@@ -1357,6 +1398,27 @@ impl ProjectHookEvent {
             ProjectHookEvent::ToolAfter => "tool.after",
             ProjectHookEvent::FileBeforeWrite => "file.before_write",
             ProjectHookEvent::FileAfterWrite => "file.after_write",
+            ProjectHookEvent::Stop => "stop",
+            ProjectHookEvent::SubagentStop => "subagent.stop",
+            ProjectHookEvent::UserPromptSubmit => "user.prompt_submit",
+            ProjectHookEvent::PreCompact => "pre.compact",
+            ProjectHookEvent::Notification => "notification",
+        }
+    }
+
+    pub fn hook_event_name(&self) -> &'static str {
+        match self {
+            ProjectHookEvent::SessionStart => "SessionStart",
+            ProjectHookEvent::SessionEnd => "SessionEnd",
+            ProjectHookEvent::ToolBefore => "PreToolUse",
+            ProjectHookEvent::ToolAfter => "PostToolUse",
+            ProjectHookEvent::FileBeforeWrite => "FileBeforeWrite",
+            ProjectHookEvent::FileAfterWrite => "FileAfterWrite",
+            ProjectHookEvent::Stop => "Stop",
+            ProjectHookEvent::SubagentStop => "SubagentStop",
+            ProjectHookEvent::UserPromptSubmit => "UserPromptSubmit",
+            ProjectHookEvent::PreCompact => "PreCompact",
+            ProjectHookEvent::Notification => "Notification",
         }
     }
 
@@ -1368,6 +1430,11 @@ impl ProjectHookEvent {
             ProjectHookEvent::ToolAfter => "tool_after",
             ProjectHookEvent::FileBeforeWrite => "file_before_write",
             ProjectHookEvent::FileAfterWrite => "file_after_write",
+            ProjectHookEvent::Stop => "stop",
+            ProjectHookEvent::SubagentStop => "subagent_stop",
+            ProjectHookEvent::UserPromptSubmit => "user_prompt_submit",
+            ProjectHookEvent::PreCompact => "pre_compact",
+            ProjectHookEvent::Notification => "notification",
         }
     }
 }

@@ -469,25 +469,6 @@ fn build_exec_hook_payload(
     }
 }
 
-pub(super) fn build_tool_hook_payload(
-    sess: &Session,
-    event: ProjectHookEvent,
-    tool_name: &str,
-    tool_input: Option<Value>,
-    tool_result: Option<Value>,
-    tool_use_id: &str,
-) -> Value {
-    let mut base = build_base_hook_payload(sess, event);
-    base.insert("event".to_string(), Value::String(event.as_str().to_string()));
-    base.insert("tool_name".to_string(), Value::String(tool_name.to_string()));
-    base.insert("tool_use_id".to_string(), Value::String(tool_use_id.to_string()));
-    base.insert("tool_input".to_string(), tool_input.unwrap_or(Value::Null));
-    if let Some(result) = tool_result {
-        base.insert("tool_result".to_string(), result);
-    }
-    Value::Object(base)
-}
-
 pub(super) fn build_user_prompt_hook_payload(sess: &Session, prompt: &str) -> Value {
     let mut base = build_base_hook_payload(sess, ProjectHookEvent::UserPromptSubmit);
     base.insert(

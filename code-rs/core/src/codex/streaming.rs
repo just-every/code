@@ -803,7 +803,7 @@ pub(super) async fn submission_loop(
                                     continue;
                                 }
                                 let payload = build_stop_hook_payload(
-                                    &sess_for_agents,
+                                    sess_for_agents.as_ref(),
                                     ProjectHookEvent::SubagentStop,
                                     Some("subagent_complete".to_string()),
                                     Some(serde_json::json!({
@@ -1824,7 +1824,7 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
                         tracing::info!("core.turn completed: last_assistant_message.len={}", m.len());
                     }
                     let stop_payload = build_stop_hook_payload(
-                        sess,
+                        sess.as_ref(),
                         ProjectHookEvent::Stop,
                         Some("turn_complete".to_string()),
                         Some(serde_json::json!({
