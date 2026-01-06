@@ -118,6 +118,21 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             show_in_picker: true,
         },
         ModelPreset {
+            id: "glm-4.7".to_string(),
+            model: "glm-4.7".to_string(),
+            display_name: "glm-4.7".to_string(),
+            description: "Z.AI flagship coding model with thinking always enabled.".to_string(),
+            default_reasoning_effort: ReasoningEffort::Medium,
+            supported_reasoning_efforts: vec![ReasoningEffortPreset {
+                effort: ReasoningEffort::Medium,
+                description: "Thinking is always enabled for GLM-4.7".to_string(),
+            }],
+            supported_text_verbosity: &[TextVerbosityConfig::Medium],
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+        },
+        ModelPreset {
             id: "bengalfox".to_string(),
             model: "bengalfox".to_string(),
             display_name: "bengalfox".to_string(),

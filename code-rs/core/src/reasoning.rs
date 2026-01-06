@@ -61,6 +61,7 @@ const DEFAULT_EFFORTS: &[ReasoningEffort] = &[
     ReasoningEffort::Medium,
     ReasoningEffort::High,
 ];
+const GLM_4_7_EFFORTS: &[ReasoningEffort] = &[ReasoningEffort::Medium];
 
 fn reasoning_effort_rank(effort: ReasoningEffort) -> u8 {
     match effort {
@@ -106,6 +107,10 @@ pub fn supported_reasoning_efforts_for_model(model: &str) -> &'static [Reasoning
 
     if lower.starts_with("gpt-5") {
         return GPT5_EFFORTS;
+    }
+
+    if lower.starts_with("glm-4.7") {
+        return GLM_4_7_EFFORTS;
     }
 
     if lower.starts_with("codex-") {

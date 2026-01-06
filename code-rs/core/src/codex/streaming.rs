@@ -377,6 +377,7 @@ pub(super) async fn submission_loop(
                         &new_config.model,
                         Some(new_config.model_reasoning_effort),
                         new_config.preferred_model_reasoning_effort,
+                        Some(&new_config.model_provider_id),
                     )
                     .await
                     {

@@ -1604,12 +1604,42 @@ fn apply_model_selection(config: &mut Config, model: &str, effort: ReasoningEffo
         updated = true;
     }
 
+    if update_provider_for_model(config, model) {
+        updated = true;
+    }
+
     if config.model_reasoning_effort != clamped_effort {
         config.model_reasoning_effort = clamped_effort;
         updated = true;
     }
 
     updated
+}
+
+fn update_provider_for_model(config: &mut Config, model: &str) -> bool {
+    const ZAI_PROVIDER_ID: &str = "zai";
+    const GLM_4_7_MODEL: &str = "glm-4.7";
+
+    if model.eq_ignore_ascii_case(GLM_4_7_MODEL) {
+        if !config.model_provider_id.eq_ignore_ascii_case(ZAI_PROVIDER_ID) {
+            if let Some(provider) = config.model_providers.get(ZAI_PROVIDER_ID) {
+                config.model_provider_id = ZAI_PROVIDER_ID.to_string();
+                config.model_provider = provider.clone();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    if config.model_provider_id.eq_ignore_ascii_case(ZAI_PROVIDER_ID) {
+        if let Some(provider) = config.model_providers.get("openai") {
+            config.model_provider_id = "openai".to_string();
+            config.model_provider = provider.clone();
+            return true;
+        }
+    }
+
+    false
 }
 
 fn configure_session_op_from_config(config: &Config) -> Op {

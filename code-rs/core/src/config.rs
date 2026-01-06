@@ -917,11 +917,11 @@ impl Config {
             model_providers.entry(key).or_insert(provider);
         }
 
-        let model_provider_id = model_provider
+        let mut model_provider_id = model_provider
             .or(config_profile.model_provider)
             .or(cfg.model_provider)
             .unwrap_or_else(|| "openai".to_string());
-        let model_provider = model_providers
+        let mut model_provider = model_providers
             .get(&model_provider_id)
             .ok_or_else(|| {
                 std::io::Error::new(
@@ -1081,6 +1081,32 @@ impl Config {
 
         let model_family =
             find_family_for_model(&model).unwrap_or_else(|| derive_default_model_family(&model));
+
+        if model.eq_ignore_ascii_case("glm-4.7") {
+            if !model_provider_id.eq_ignore_ascii_case("zai") {
+                model_provider = model_providers
+                    .get("zai")
+                    .ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "Model provider `zai` not found",
+                        )
+                    })?
+                    .clone();
+                model_provider_id = "zai".to_string();
+            }
+        } else if model_provider_id.eq_ignore_ascii_case("zai") {
+            model_provider = model_providers
+                .get("openai")
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "Model provider `openai` not found",
+                    )
+                })?
+                .clone();
+            model_provider_id = "openai".to_string();
+        }
 
         // Chat model reasoning effort (used when other flows follow the chat model).
         let preferred_model_reasoning_effort = config_profile
@@ -1870,6 +1896,7 @@ args = ["-y", "@upstash/context7-mcp"]
             "gpt-5.1-codex",
             Some(ReasoningEffort::High),
             None,
+            None,
         )
         .await?;
 
@@ -1906,6 +1933,7 @@ model = "gpt-4.1"
             "o4-mini",
             Some(ReasoningEffort::High),
             None,
+            None,
         )
         .await?;
 
@@ -1934,6 +1962,7 @@ model = "gpt-4.1"
             Some("dev"),
             "gpt-5.1-codex",
             Some(ReasoningEffort::Medium),
+            None,
             None,
         )
         .await?;
@@ -1978,6 +2007,7 @@ model = "gpt-5.1-codex"
             Some("dev"),
             "o4-high",
             Some(ReasoningEffort::Medium),
+            None,
             None,
         )
         .await?;
