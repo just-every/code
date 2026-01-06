@@ -17,7 +17,7 @@ expression: output
    |   Actions
    |    MM:SS  Opened  https://example.com
    |
-   |   Console: ⚠️  Encountering captcha challenge on checkout
+   |   Console: Encountering captcha challenge on checkout
    |
    +- [Ctrl+B] View · [Esc] Stop
 

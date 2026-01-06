@@ -25,7 +25,7 @@ expression: output
    |    MM:SS  Scrolled  dy=640
    |    MM:SS  Typed     docs search
    |
-   |   Console: ⚠️  cdp warning: Refused to load script from cdn.example....
+   |   Console: cdp warning: Refused to load script from cdn.example.com
    |
    +- [Ctrl+B] View · [Esc] Stop
 
