@@ -18003,7 +18003,7 @@ fi\n\
         if !self.auto_state.is_paused_manual() {
             self.auto_state.clear_bypass_coordinator_flag();
         }
-        let conversation = self.current_auto_history();
+        let conversation = std::sync::Arc::<[ResponseItem]>::from(self.current_auto_history());
         let Some(handle) = self.auto_handle.as_ref() else {
             return;
         };
@@ -18042,7 +18042,7 @@ fi\n\
         if !self.auto_state.is_paused_manual() {
             self.auto_state.clear_bypass_coordinator_flag();
         }
-        let conversation = self.current_auto_history();
+        let conversation = std::sync::Arc::<[ResponseItem]>::from(self.current_auto_history());
         let Some(handle) = self.auto_handle.as_ref() else {
             return;
         };
@@ -18440,13 +18440,14 @@ Have we met every part of this goal and is there no further work to do?"#
 
     pub(crate) fn auto_handle_compacted_history(
         &mut self,
-        conversation: Vec<ResponseItem>,
+        conversation: std::sync::Arc<[ResponseItem]>,
         show_notice: bool,
     ) {
         let (previous_items, previous_indices) = self.export_auto_drive_items_with_indices();
-        self.auto_history.replace_all(conversation.clone());
-        self.auto_compaction_overlay =
-            self.derive_compaction_overlay(&previous_items, &previous_indices, &conversation);
+        let conversation = conversation.as_ref().to_vec();
+        self.auto_compaction_overlay = self
+            .derive_compaction_overlay(&previous_items, &previous_indices, &conversation);
+        self.auto_history.replace_all(conversation);
         if show_notice {
             self.history_push_plain_paragraphs(
                 PlainMessageKind::Notice,
@@ -30514,7 +30515,7 @@ use code_core::protocol::OrderMeta;
                 .expect("assistant message"),
         ];
 
-        chat.auto_handle_compacted_history(conversation, false);
+        chat.auto_handle_compacted_history(std::sync::Arc::from(conversation), false);
 
         let has_checkpoint = chat.history_cells.iter().any(|cell| {
             cell.display_lines_trimmed().iter().any(|line| {

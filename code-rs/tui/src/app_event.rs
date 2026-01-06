@@ -205,7 +205,7 @@ pub(crate) enum AppEvent {
         replay_updates: u32,
     },
     AutoCoordinatorCompactedHistory {
-        conversation: Vec<ResponseItem>,
+        conversation: std::sync::Arc<[ResponseItem]>,
         show_notice: bool,
     },
     AutoCoordinatorStopAck,
