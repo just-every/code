@@ -3,6 +3,7 @@ use super::exec::{
     ApplyPatchCommandContext,
     ExecCommandContext,
     ExecInvokeArgs,
+    HookPermissionDecision,
     build_precompact_hook_payload,
     build_stop_hook_payload,
     build_user_prompt_hook_payload,
@@ -147,6 +148,124 @@ fn user_prompt_text_from_items(items: &[InputItem]) -> Option<String> {
         None
     } else {
         Some(parts.join("\n"))
+    }
+}
+
+fn hook_reason_from_messages(messages: &[String]) -> Option<String> {
+    messages
+        .iter()
+        .find(|message| !message.trim().is_empty())
+        .map(|message| message.trim().to_string())
+}
+
+fn apply_updated_prompt_items(items: &mut Vec<InputItem>, updated_input: serde_json::Value) -> bool {
+    if updated_input.is_null() {
+        return false;
+    }
+
+    if let Ok(replacement) = serde_json::from_value::<Vec<InputItem>>(updated_input.clone()) {
+        *items = replacement;
+        return true;
+    }
+
+    if let Ok(replacement) = serde_json::from_value::<InputItem>(updated_input.clone()) {
+        *items = vec![replacement];
+        return true;
+    }
+
+    let Some(text) = updated_input.as_str() else {
+        return false;
+    };
+
+    let mut updated_items = Vec::with_capacity(items.len().saturating_add(1));
+    let mut replaced = false;
+    for item in items.drain(..) {
+        match item {
+            InputItem::Text { .. } if !replaced => {
+                updated_items.push(InputItem::Text {
+                    text: text.to_string(),
+                });
+                replaced = true;
+            }
+            InputItem::Text { .. } => {}
+            other => updated_items.push(other),
+        }
+    }
+    if !replaced {
+        updated_items.push(InputItem::Text {
+            text: text.to_string(),
+        });
+    }
+    *items = updated_items;
+    true
+}
+
+async fn apply_user_prompt_hook_gate(
+    sess: &Session,
+    sub_id: &str,
+    items: Vec<InputItem>,
+) -> Option<Vec<InputItem>> {
+    let Some(prompt_text) = user_prompt_text_from_items(&items) else {
+        return Some(items);
+    };
+
+    let payload = build_user_prompt_hook_payload(sess, &prompt_text);
+    let mut tracker = TurnDiffTracker::new();
+    let attempt_req = sess.current_request_ordinal();
+    let result = sess
+        .run_hooks_for_event(
+            &mut tracker,
+            ProjectHookEvent::UserPromptSubmit,
+            &payload,
+            None,
+            attempt_req,
+        )
+        .await;
+
+    let reason = hook_reason_from_messages(&result.system_messages);
+    sess.enqueue_hook_system_messages(result.system_messages);
+
+    let mut items = items;
+    if let Some(updated_input) = result.updated_input {
+        apply_updated_prompt_items(&mut items, updated_input);
+    }
+
+    match result.permission_decision {
+        None | Some(HookPermissionDecision::Allow) => Some(items),
+        Some(HookPermissionDecision::Deny) => {
+            let message = match reason {
+                Some(reason) => format!("user prompt blocked by hook: {reason}"),
+                None => "user prompt blocked by hook".to_string(),
+            };
+            sess.notify_stream_error(sub_id, message).await;
+            None
+        }
+        Some(HookPermissionDecision::Ask) => {
+            let prompt_text = user_prompt_text_from_items(&items).unwrap_or(prompt_text);
+            let (preview, _) = preview_first_n_lines(&prompt_text, 12);
+            let approval_call_id = format!("user_prompt_hook_{}", uuid::Uuid::new_v4());
+            let rx_approve = sess
+                .request_command_approval(
+                    sub_id.to_string(),
+                    approval_call_id,
+                    vec!["user.prompt".to_string(), preview],
+                    sess.get_cwd().to_path_buf(),
+                    reason.clone(),
+                )
+                .await;
+            let decision = rx_approve.await.unwrap_or_default();
+            match decision {
+                ReviewDecision::Approved | ReviewDecision::ApprovedForSession => Some(items),
+                ReviewDecision::Denied | ReviewDecision::Abort => {
+                    let message = match reason {
+                        Some(reason) => format!("user prompt blocked by hook: {reason}"),
+                        None => "user prompt blocked by hook".to_string(),
+                    };
+                    sess.notify_stream_error(sub_id, message).await;
+                    None
+                }
+            }
+        }
     }
 }
 
@@ -843,21 +962,10 @@ pub(super) async fn submission_loop(
                 // This prevents token buildup from old screenshots/status messages
                 sess.cleanup_old_status_items().await;
 
-                if let Some(prompt_text) = user_prompt_text_from_items(&items) {
-                    let payload = build_user_prompt_hook_payload(sess, &prompt_text);
-                    let mut tracker = TurnDiffTracker::new();
-                    let attempt_req = sess.current_request_ordinal();
-                    let result = sess
-                        .run_hooks_for_event(
-                            &mut tracker,
-                            ProjectHookEvent::UserPromptSubmit,
-                            &payload,
-                            None,
-                            attempt_req,
-                        )
-                        .await;
-                    sess.enqueue_hook_system_messages(result.system_messages);
-                }
+                let items = match apply_user_prompt_hook_gate(sess, &sub.id, items).await {
+                    Some(items) => items,
+                    None => continue,
+                };
 
                 // Abort synchronously here to avoid a race that can kill the
                 // newly spawned agent if the async abort runs after set_task.
@@ -891,21 +999,10 @@ pub(super) async fn submission_loop(
                 } else {
                     // No task running: treat this as immediate user input without aborting.
                     sess.cleanup_old_status_items().await;
-                    if let Some(prompt_text) = user_prompt_text_from_items(&items) {
-                        let payload = build_user_prompt_hook_payload(sess, &prompt_text);
-                        let mut tracker = TurnDiffTracker::new();
-                        let attempt_req = sess.current_request_ordinal();
-                        let result = sess
-                            .run_hooks_for_event(
-                                &mut tracker,
-                                ProjectHookEvent::UserPromptSubmit,
-                                &payload,
-                                None,
-                                attempt_req,
-                            )
-                            .await;
-                        sess.enqueue_hook_system_messages(result.system_messages);
-                    }
+                    let items = match apply_user_prompt_hook_gate(sess, &sub.id, items).await {
+                        Some(items) => items,
+                        None => continue,
+                    };
                     let turn_context = sess.make_turn_context();
                     let agent = AgentTask::spawn(Arc::clone(&sess), turn_context, sub.id.clone(), items);
                     sess.set_task(agent);
@@ -1931,6 +2028,9 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
             let turn_context = sess_clone.make_turn_context();
             let submission_id = queued.submission_id;
             let items = queued.core_items;
+            let Some(items) = apply_user_prompt_hook_gate(&sess_clone, &submission_id, items).await else {
+                return;
+            };
             let agent = AgentTask::spawn(Arc::clone(&sess_clone), turn_context, submission_id, items);
             sess_clone.set_task(agent);
         });
@@ -7717,7 +7817,7 @@ async fn handle_container_exec_with_params(
             };
 
             // FileBeforeWrite hook for apply_patch
-            sess
+            let hook_result = sess
                 .run_hooks_for_exec_event(
                     turn_diff_tracker,
                     ProjectHookEvent::FileBeforeWrite,
@@ -7727,6 +7827,7 @@ async fn handle_container_exec_with_params(
                     attempt_req,
                 )
                 .await;
+            sess.enqueue_hook_system_messages(hook_result.system_messages);
 
             let patch_start = std::time::Instant::now();
 
@@ -7795,7 +7896,7 @@ async fn handle_container_exec_with_params(
                         timed_out: false,
                     };
 
-                    sess
+                    let hook_result = sess
                         .run_hooks_for_exec_event(
                             turn_diff_tracker,
                             ProjectHookEvent::FileAfterWrite,
@@ -7805,6 +7906,7 @@ async fn handle_container_exec_with_params(
                             attempt_req,
                         )
                         .await;
+                    sess.enqueue_hook_system_messages(hook_result.system_messages);
 
                     if let Ok(Some(unified_diff)) = turn_diff_tracker.get_unified_diff() {
                         let diff_event = sess.make_event(
@@ -7961,7 +8063,7 @@ async fn handle_container_exec_with_params(
 
     // ToolBefore hook for shell/container.exec commands
     let params_for_hooks = params.clone();
-    sess
+    let hook_result = sess
         .run_hooks_for_exec_event(
             turn_diff_tracker,
             ProjectHookEvent::ToolBefore,
@@ -7971,6 +8073,55 @@ async fn handle_container_exec_with_params(
             attempt_req,
         )
         .await;
+    let hook_reason = hook_reason_from_messages(&hook_result.system_messages);
+    sess.enqueue_hook_system_messages(hook_result.system_messages);
+    if let Some(decision) = hook_result.permission_decision {
+        match decision {
+            HookPermissionDecision::Allow => {}
+            HookPermissionDecision::Deny => {
+                let content = match hook_reason {
+                    Some(reason) => format!("exec command blocked by hook: {reason}"),
+                    None => "exec command blocked by hook".to_string(),
+                };
+                return ResponseInputItem::FunctionCallOutput {
+                    call_id,
+                    output: FunctionCallOutputPayload { content, success: None },
+                };
+            }
+            HookPermissionDecision::Ask => {
+                let rx_approve = sess
+                    .request_command_approval(
+                        sub_id.clone(),
+                        call_id.clone(),
+                        params.command.clone(),
+                        params.cwd.clone(),
+                        hook_reason.clone(),
+                    )
+                    .await;
+                let decision = rx_approve.await.unwrap_or_default();
+                match decision {
+                    ReviewDecision::Approved => {}
+                    ReviewDecision::ApprovedForSession => {
+                        sess.add_approved_command(ApprovedCommandPattern::new(
+                            params.command.clone(),
+                            ApprovedCommandMatchKind::Exact,
+                            None,
+                        ));
+                    }
+                    ReviewDecision::Denied | ReviewDecision::Abort => {
+                        let content = match hook_reason {
+                            Some(reason) => format!("exec command blocked by hook: {reason}"),
+                            None => "exec command blocked by hook".to_string(),
+                        };
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id,
+                            output: FunctionCallOutputPayload { content, success: None },
+                        };
+                    }
+                }
+            }
+        }
+    }
 
     // Prepare tail buffer and background registry entry
     let tail_buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
@@ -8110,21 +8261,22 @@ async fn handle_container_exec_with_params(
             *slot = Some(out.clone());
         }
 
-        if backgrounded_task.load(std::sync::atomic::Ordering::Relaxed) {
-            if let Some(sess_arc) = sess_for_hooks.clone() {
-                let mut hook_tracker = TurnDiffTracker::new();
-                sess_arc
-                    .run_hooks_for_exec_event(
-                        &mut hook_tracker,
-                        ProjectHookEvent::ToolAfter,
-                        &exec_ctx_for_hooks,
-                        &params_for_after_hooks,
-                        Some(&out),
-                        attempt_req_for_task,
-                    )
-                    .await;
+            if backgrounded_task.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Some(sess_arc) = sess_for_hooks.clone() {
+                    let mut hook_tracker = TurnDiffTracker::new();
+                    let hook_result = sess_arc
+                        .run_hooks_for_exec_event(
+                            &mut hook_tracker,
+                            ProjectHookEvent::ToolAfter,
+                            &exec_ctx_for_hooks,
+                            &params_for_after_hooks,
+                            Some(&out),
+                            attempt_req_for_task,
+                        )
+                        .await;
+                    sess_arc.enqueue_hook_system_messages(hook_result.system_messages);
+                }
             }
-        }
         // Only emit background completion notifications if the command actually backgrounded
         if backgrounded_task.load(std::sync::atomic::Ordering::Relaxed) {
             if !suppress_event_flag_task.load(std::sync::atomic::Ordering::Relaxed) {
@@ -8198,7 +8350,7 @@ async fn handle_container_exec_with_params(
                 }
             }
 
-            sess
+            let hook_result = sess
                 .run_hooks_for_exec_event(
                     turn_diff_tracker,
                     ProjectHookEvent::ToolAfter,
@@ -8208,6 +8360,7 @@ async fn handle_container_exec_with_params(
                     attempt_req,
                 )
                 .await;
+            sess.enqueue_hook_system_messages(hook_result.system_messages);
 
             return ResponseInputItem::FunctionCallOutput { call_id: call_id.clone(), output: FunctionCallOutputPayload { content, success: Some(is_success) } };
         } else {

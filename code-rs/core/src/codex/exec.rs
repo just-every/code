@@ -189,6 +189,13 @@ impl HookRunResult {
     }
 }
 
+fn hook_reason_from_messages(messages: &[String]) -> Option<String> {
+    messages
+        .iter()
+        .find(|message| !message.trim().is_empty())
+        .map(|message| message.trim().to_string())
+}
+
 fn merge_permission_decision(
     current: Option<HookPermissionDecision>,
     next: HookPermissionDecision,
@@ -843,7 +850,7 @@ impl Session {
                 } else {
                     ProjectHookEvent::ToolBefore
                 };
-                self
+                let hook_result = self
                     .run_hooks_for_exec_event(
                         turn_diff_tracker,
                         before_event,
@@ -853,6 +860,78 @@ impl Session {
                         attempt_req,
                     )
                     .await;
+                let hook_reason = hook_reason_from_messages(&hook_result.system_messages);
+                self.enqueue_hook_system_messages(hook_result.system_messages);
+                if let Some(decision) = hook_result.permission_decision {
+                    let rejection = match decision {
+                        HookPermissionDecision::Allow => None,
+                        HookPermissionDecision::Deny => Some("exec command blocked by hook".to_string()),
+                        HookPermissionDecision::Ask => {
+                            let rx_approve = self
+                                .request_command_approval(
+                                    sub_id.clone(),
+                                    call_id.clone(),
+                                    params.command.clone(),
+                                    params.cwd.clone(),
+                                    hook_reason.clone(),
+                                )
+                                .await;
+                            let decision = rx_approve.await.unwrap_or_default();
+                            match decision {
+                                ReviewDecision::Approved => None,
+                                ReviewDecision::ApprovedForSession => {
+                                    self.add_approved_command(ApprovedCommandPattern::new(
+                                        params.command.clone(),
+                                        ApprovedCommandMatchKind::Exact,
+                                        None,
+                                    ));
+                                    None
+                                }
+                                ReviewDecision::Denied | ReviewDecision::Abort => {
+                                    Some("exec command blocked by hook".to_string())
+                                }
+                            }
+                        }
+                    };
+
+                    if let Some(message) = rejection {
+                        let message = match hook_reason {
+                            Some(reason) => format!("{message}: {reason}"),
+                            None => message,
+                        };
+                        let output = ExecToolCallOutput {
+                            exit_code: 1,
+                            stdout: StreamOutput::new(String::new()),
+                            stderr: StreamOutput::new(message.clone()),
+                            aggregated_output: StreamOutput::new(message.clone()),
+                            duration: Duration::ZERO,
+                            timed_out: false,
+                        };
+                        self.on_exec_command_begin(
+                            turn_diff_tracker,
+                            begin_ctx.clone(),
+                            seq_hint,
+                            output_index,
+                            attempt_req,
+                        )
+                        .await;
+                        self
+                            .on_exec_command_end(
+                                turn_diff_tracker,
+                                &sub_id,
+                                &call_id,
+                                &output,
+                                is_apply_patch,
+                                seq_hint.map(|h| h.saturating_add(1)),
+                                output_index,
+                                attempt_req,
+                            )
+                            .await;
+                        exec_guard.mark_completed();
+                        self.finalize_cancelled_execs(&sub_id).await;
+                        return Ok(output);
+                    }
+                }
             }
         }
 
@@ -900,7 +979,7 @@ impl Session {
                 } else {
                     ProjectHookEvent::ToolAfter
                 };
-                self
+                let hook_result = self
                     .run_hooks_for_exec_event(
                         turn_diff_tracker,
                         after_event,
@@ -910,6 +989,7 @@ impl Session {
                         attempt_req,
                     )
                     .await;
+                self.enqueue_hook_system_messages(hook_result.system_messages);
             }
         }
 
