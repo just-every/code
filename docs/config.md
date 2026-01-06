@@ -27,7 +27,7 @@ model = "o3"  # overrides the default of "gpt-5.1-codex"
 
 ## model_providers
 
-This option lets you override and amend the default set of model providers bundled with Code. This value is a map where the key is the value to use with `model_provider` to select the corresponding provider.
+This option lets you override and amend the default set of model providers bundled with Code. This value is a map where the key is the value to use with `model_provider` to select the corresponding provider. Providers must expose an OpenAI-compatible HTTP API (Chat Completions or Responses); native Anthropic/Gemini APIs are not supported directly without a proxy.
 
 For example, if you wanted to add a provider that uses the OpenAI 4o model via the chat completions API, then you could add the following configuration:
 
@@ -68,6 +68,20 @@ Or a third-party provider (using a distinct environment variable for the API key
 name = "Mistral"
 base_url = "https://api.mistral.ai/v1"
 env_key = "MISTRAL_API_KEY"
+```
+
+Or a proxy that converts OpenAI-compatible requests to another vendor (e.g., Anthropic or Gemini):
+
+```toml
+model = "claude-opus-4.5"
+model_provider = "claude-proxy"
+
+[model_providers.claude-proxy]
+name = "Claude (proxy)"
+base_url = "http://127.0.0.1:8000/v1"
+env_key = "ANTHROPIC_API_KEY"
+wire_api = "responses"  # or "chat" if your proxy only supports chat-completions
+requires_openai_auth = false
 ```
 
 It is also possible to configure a provider to include extra HTTP headers with a request. These can be hardcoded values (`http_headers`) or values read from environment variables (`env_http_headers`):
