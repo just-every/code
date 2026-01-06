@@ -168,6 +168,13 @@ pub(crate) async fn stream_chat_completions(
     for (idx, item) in input.iter().enumerate() {
         match item {
             ResponseItem::Message { role, content, .. } => {
+                let effective_role = if model_slug.eq_ignore_ascii_case("glm-4.7")
+                    && role.eq_ignore_ascii_case("developer")
+                {
+                    "system"
+                } else {
+                    role.as_str()
+                };
                 // If the message contains any images, we must use the
                 // multi-modal array form supported by Chat Completions:
                 //   [{ type: "text", text: "..." }, { type: "image_url", image_url: { url: "data:..." } }]
@@ -190,7 +197,7 @@ pub(crate) async fn stream_chat_completions(
                             }
                         }
                     }
-                    messages.push(json!({"role": role, "content": parts}));
+                    messages.push(json!({"role": effective_role, "content": parts}));
                 } else {
                     // Text-only messages can be sent as a single string for
                     // maximal compatibility with providers that only accept
@@ -205,7 +212,7 @@ pub(crate) async fn stream_chat_completions(
                             _ => {}
                         }
                     }
-                    messages.push(json!({"role": role, "content": text}));
+                    messages.push(json!({"role": effective_role, "content": text}));
                 }
             }
             ResponseItem::CompactionSummary { .. } => {
@@ -312,6 +319,13 @@ pub(crate) async fn stream_chat_completions(
         "stream": true,
         "tools": tools_json,
     });
+
+    if model_slug.eq_ignore_ascii_case("glm-4.7") {
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("temperature".to_string(), json!(1.0));
+            obj.insert("thinking".to_string(), json!({ "type": "enabled" }));
+        }
+    }
 
     if let Some(openrouter_cfg) = provider.openrouter_config() {
         if let Some(obj) = payload.as_object_mut() {

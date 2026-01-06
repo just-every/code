@@ -147,6 +147,7 @@ pub async fn persist_model_selection(
     model: &str,
     effort: Option<ReasoningEffort>,
     preferred_effort: Option<ReasoningEffort>,
+    model_provider_id: Option<&str>,
 ) -> anyhow::Result<()> {
     use tokio::fs;
 
@@ -208,6 +209,12 @@ pub async fn persist_model_selection(
             } else {
                 profile_table.remove("preferred_model_reasoning_effort");
             }
+
+            if let Some(provider_id) = model_provider_id {
+                profile_table["model_provider"] = toml_edit::value(provider_id.to_string());
+            } else {
+                profile_table.remove("model_provider");
+            }
         } else {
             root["model"] = toml_edit::value(model.to_string());
             match effort {
@@ -228,6 +235,11 @@ pub async fn persist_model_selection(
                 None => {
                     root.remove("preferred_model_reasoning_effort");
                 }
+            }
+            if let Some(provider_id) = model_provider_id {
+                root["model_provider"] = toml_edit::value(provider_id.to_string());
+            } else {
+                root.remove("model_provider");
             }
         }
     }
