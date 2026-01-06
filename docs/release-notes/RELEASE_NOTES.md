@@ -1,10 +1,12 @@
-## @just-every/code v0.6.36
-
-Small stability release focused on Esc handling and reducing CI flakes.
+## @just-every/code v0.6.37
+Focused polish across TUI visuals and config overrides for the latest release.
 
 ### Changes
-- TUI: prioritize task cancellation on Esc before agent input to make stopping runs reliable.
-- Tests: reduce linux sandbox and TUI timeout flakes for steadier CI runs.
+- TUI/Image: render view image cards so attached visuals show inline.
+- TUI/Browser: scope console logs to each browser card to avoid spillover.
+- TUI/Resume: prevent footer underflow in resume layouts.
+- TUI/Composer: guard composer height to keep the input stable.
+- Core/Config: allow tool output size override to honor config limits.
 
 ### Install
 ```
@@ -12,4 +14,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.35...v0.6.36
+Compare: https://github.com/just-every/code/compare/v0.6.36...v0.6.37

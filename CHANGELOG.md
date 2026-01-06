@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.6.37] - 2026-01-06
+
+- TUI/Image: render view image cards so attached visuals show inline. (658ddfb)
+- TUI/Browser: scope console logs to each browser card to avoid spillover. (e1d8f12)
+- TUI/Resume: prevent footer underflow in resume layouts. (deef15a)
+- TUI/Composer: guard composer height to keep the input stable. (041dff4)
+- Core/Config: allow tool output size override to honor config limits. (c3782ba)
+
 ## [0.6.36] - 2026-01-05
 
 - TUI: prioritize task cancellation on Esc before agent input to make stopping runs reliable. (76e3dd8)
