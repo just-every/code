@@ -9085,16 +9085,44 @@ async fn handle_browser_open(sess: &Session, ctx: &ToolCallCtx, arguments: Strin
                                     },
                                 }
                             }
-                            Err(e) => ResponseInputItem::FunctionCallOutput {
-                                call_id: call_id_clone.clone(),
-                                output: FunctionCallOutputPayload {
-                                    content: format!(
-                                        "Failed to navigate browser to {}: {}",
-                                        url, e
-                                    ),
-                                    success: Some(false),
-                                },
-                            },
+                            Err(e) => {
+                                let error_string = e.to_string();
+                                let error_lower = error_string.to_ascii_lowercase();
+                                let url_lower = url.to_ascii_lowercase();
+                                let is_local = url_lower.starts_with("http://localhost")
+                                    || url_lower.starts_with("https://localhost")
+                                    || url_lower.starts_with("http://127.")
+                                    || url_lower.starts_with("https://127.")
+                                    || url_lower.starts_with("http://[::1]")
+                                    || url_lower.starts_with("https://[::1]")
+                                    || url_lower.starts_with("http://0.0.0.0")
+                                    || url_lower.starts_with("https://0.0.0.0");
+                                let mut content =
+                                    format!("Failed to navigate browser to {url}: {error_string}");
+                                if error_lower.contains("oneshot canceled")
+                                    || error_lower.contains("oneshot cancelled")
+                                {
+                                    content.push_str(
+                                        " The CDP navigation was cancelled before it completed.",
+                                    );
+                                    if is_local {
+                                        content.push_str(
+                                            " If this is a local server, make sure it is reachable from the browser process (binding to 0.0.0.0 or using the machine IP can help).",
+                                        );
+                                    } else {
+                                        content.push_str(
+                                            " Reopening the browser page and retrying can resolve transient target resets.",
+                                        );
+                                    }
+                                }
+                                ResponseInputItem::FunctionCallOutput {
+                                    call_id: call_id_clone.clone(),
+                                    output: FunctionCallOutputPayload {
+                                        content,
+                                        success: Some(false),
+                                    },
+                                }
+                            }
                         }
                     } else {
                         ResponseInputItem::FunctionCallOutput {
