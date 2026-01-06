@@ -1,4 +1,4 @@
-# Example config.toml
+# Sample configuration
 
 Use this example configuration as a starting point. For an explanation of each field and additional context, see [Configuration](./config.md). Copy the snippet below to `~/.codex/config.toml` and adjust values as needed.
 

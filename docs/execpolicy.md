@@ -1,4 +1,4 @@
-# Execpolicy quickstart
+# Execution policy
 
 Every Code can enforce your own rules-based execution policy before it runs shell commands. Policies live in Starlark `.codexpolicy` files under `~/.code/policy` (Code still reads `~/.codex/policy` for backward compatibility).
 

@@ -1,4 +1,4 @@
-## Custom Prompts
+# Custom prompts
 
 Save frequently used prompts as Markdown files and reuse them quickly from the slash menu.
 
