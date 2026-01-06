@@ -35,6 +35,7 @@ use chrono::{DateTime, Duration as ChronoDuration, Utc};
 const AUTH_REQUIRED_MESSAGE: &str = "Authentication required. Run `code login` to continue.";
 
 use crate::agent_defaults::{default_agent_configs, enabled_agent_model_specs};
+use crate::chat_completions::AggregateStreamExt;
 use crate::chat_completions::stream_chat_completions;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
@@ -457,8 +458,13 @@ impl ModelClient {
                 // Wrap it with the aggregation adapter so callers see *only*
                 // the final assistant message per turn (matching the
                 // behaviour of the Responses API).
-// For Chat Completions API, always use streaming mode so tokens appear as they arrive.
-                let mut aggregated = crate::chat_completions::AggregatedChatStream::streaming_mode(response_stream);
+                let mut aggregated = if self.config.show_raw_agent_reasoning {
+                    crate::chat_completions::AggregatedChatStream::streaming_mode(response_stream)
+                } else {
+                    response_stream.aggregate()
+                };
+
+                // Bridge the aggregated stream back into a standard
                 // `ResponseStream` by forwarding events through a channel.
                 let (tx, rx) = mpsc::channel::<Result<ResponseEvent>>(16);
 

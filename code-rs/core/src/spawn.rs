@@ -87,6 +87,7 @@ pub async fn spawn_tokio_command_with_retry(cmd: &mut Command) -> io::Result<Chi
 #[derive(Debug, Clone, Copy)]
 pub enum StdioPolicy {
     RedirectForShellTool,
+    RedirectForShellToolWithStdin,
     Inherit,
 }
 
@@ -132,7 +133,9 @@ pub(crate) async fn spawn_child_async(
     unsafe {
         #[cfg(target_os = "linux")]
         let exec_memory_max_bytes = match stdio_policy {
-            StdioPolicy::RedirectForShellTool => crate::cgroup::default_exec_memory_max_bytes(),
+            StdioPolicy::RedirectForShellTool | StdioPolicy::RedirectForShellToolWithStdin => {
+                crate::cgroup::default_exec_memory_max_bytes()
+            }
             StdioPolicy::Inherit => None,
         };
         #[cfg(not(target_os = "linux"))]
@@ -168,6 +171,10 @@ pub(crate) async fn spawn_child_async(
             // https://github.com/BurntSushi/ripgrep/blob/e2362d4d5185d02fa857bf381e7bd52e66fafc73/crates/core/flags/hiargs.rs#L1101-L1103
             cmd.stdin(Stdio::null());
 
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        }
+        StdioPolicy::RedirectForShellToolWithStdin => {
+            cmd.stdin(Stdio::piped());
             cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         }
         StdioPolicy::Inherit => {

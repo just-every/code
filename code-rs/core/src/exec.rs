@@ -92,6 +92,7 @@ pub struct ExecParams {
     pub cwd: PathBuf,
     pub timeout_ms: Option<u64>,
     pub env: HashMap<String, String>,
+    pub stdin: Option<Vec<u8>>,
     pub with_escalated_permissions: Option<bool>,
     pub justification: Option<String>,
 }
@@ -155,42 +156,54 @@ pub async fn process_exec_tool_call(
                 command,
                 cwd: command_cwd,
                 env,
+                stdin,
                 ..
             } = params;
+            let stdio_policy = if stdin.is_some() {
+                StdioPolicy::RedirectForShellToolWithStdin
+            } else {
+                StdioPolicy::RedirectForShellTool
+            };
             let child = spawn_command_under_seatbelt(
                 command,
                 command_cwd,
                 sandbox_policy,
                 sandbox_cwd,
-                StdioPolicy::RedirectForShellTool,
+                stdio_policy,
                 env,
             )
             .await?;
-            consume_truncated_output(child, timeout_duration, stdout_stream.clone()).await
+            consume_truncated_output(child, timeout_duration, stdout_stream.clone(), stdin).await
         }
         SandboxType::LinuxSeccomp => {
             let ExecParams {
                 command,
                 cwd: command_cwd,
                 env,
+                stdin,
                 ..
             } = params;
 
             let code_linux_sandbox_exe = code_linux_sandbox_exe
                 .as_ref()
                 .ok_or(CodexErr::LandlockSandboxExecutableNotProvided)?;
+            let stdio_policy = if stdin.is_some() {
+                StdioPolicy::RedirectForShellToolWithStdin
+            } else {
+                StdioPolicy::RedirectForShellTool
+            };
             let child = spawn_command_under_linux_sandbox(
                 code_linux_sandbox_exe,
                 command,
                 command_cwd,
                 sandbox_policy,
                 sandbox_cwd,
-                StdioPolicy::RedirectForShellTool,
+                stdio_policy,
                 env,
             )
             .await?;
 
-            consume_truncated_output(child, timeout_duration, stdout_stream).await
+            consume_truncated_output(child, timeout_duration, stdout_stream, stdin).await
         }
     };
     let duration = start.elapsed();
@@ -332,7 +345,11 @@ async fn exec(
 ) -> Result<RawExecToolCallOutput> {
     let timeout = params.maybe_timeout_duration();
     let ExecParams {
-        command, cwd, env, ..
+        command,
+        cwd,
+        env,
+        stdin,
+        ..
     } = params;
 
     let (program, args) = command.split_first().ok_or_else(|| {
@@ -342,17 +359,23 @@ async fn exec(
         ))
     })?;
     let arg0 = None;
+    let stdin_enabled = stdin.is_some();
+    let stdio_policy = if stdin_enabled {
+        StdioPolicy::RedirectForShellToolWithStdin
+    } else {
+        StdioPolicy::RedirectForShellTool
+    };
     let child = spawn_child_async(
         PathBuf::from(program),
         args.into(),
         arg0,
         cwd,
         sandbox_policy,
-        StdioPolicy::RedirectForShellTool,
+        stdio_policy,
         env,
     )
     .await?;
-    consume_truncated_output(child, timeout, stdout_stream).await
+    consume_truncated_output(child, timeout, stdout_stream, stdin).await
 }
 
 /// Consumes the output of a child process, truncating it so it is suitable for
@@ -361,12 +384,19 @@ async fn consume_truncated_output(
     child: Child,
     timeout: Option<Duration>,
     stdout_stream: Option<StdoutStream>,
+    stdin: Option<Vec<u8>>,
 ) -> Result<RawExecToolCallOutput> {
     // Both stdout and stderr were configured with `Stdio::piped()`
     // above, therefore `take()` should normally return `Some`.  If it doesn't
     // we treat it as an exceptional I/O error
 
     let mut killer = KillOnDrop::new(child);
+
+    if let Some(input) = stdin {
+        if let Some(mut stdin_handle) = killer.as_mut().stdin.take() {
+            let _ = stdin_handle.write_all(&input).await;
+        }
+    }
 
     let stdout_reader = killer.as_mut().stdout.take().ok_or_else(|| {
         CodexErr::Io(io::Error::other(

@@ -114,6 +114,240 @@ pub(crate) struct ApplyPatchCommandContext {
     pub(crate) changes: HashMap<PathBuf, FileChange>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HookPermissionDecision {
+    Allow,
+    Deny,
+    Ask,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum HookStopDecision {
+    Approve,
+    Block { reason: Option<String> },
+}
+
+#[derive(Debug, Default, Clone)]
+pub(super) struct HookOutput {
+    continue_processing: Option<bool>,
+    suppress_output: Option<bool>,
+    system_message: Option<String>,
+    permission_decision: Option<HookPermissionDecision>,
+    updated_input: Option<Value>,
+    stop_decision: Option<HookStopDecision>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct HookRunResult {
+    pub(super) continue_processing: bool,
+    pub(super) suppress_output: bool,
+    pub(super) system_messages: Vec<String>,
+    pub(super) permission_decision: Option<HookPermissionDecision>,
+    pub(super) updated_input: Option<Value>,
+    pub(super) stop_decision: Option<HookStopDecision>,
+}
+
+impl Default for HookRunResult {
+    fn default() -> Self {
+        Self {
+            continue_processing: true,
+            suppress_output: false,
+            system_messages: Vec::new(),
+            permission_decision: None,
+            updated_input: None,
+            stop_decision: None,
+        }
+    }
+}
+
+impl HookRunResult {
+    fn apply(&mut self, output: HookOutput) {
+        if let Some(flag) = output.continue_processing {
+            if !flag {
+                self.continue_processing = false;
+            }
+        }
+        if matches!(output.suppress_output, Some(true)) {
+            self.suppress_output = true;
+        }
+        if let Some(message) = output.system_message {
+            if !message.trim().is_empty() {
+                self.system_messages.push(message);
+            }
+        }
+        if let Some(decision) = output.permission_decision {
+            self.permission_decision = Some(merge_permission_decision(self.permission_decision, decision));
+        }
+        if let Some(updated) = output.updated_input {
+            self.updated_input = Some(updated);
+        }
+        if let Some(decision) = output.stop_decision {
+            self.stop_decision = Some(merge_stop_decision(self.stop_decision.take(), decision));
+        }
+    }
+}
+
+fn merge_permission_decision(
+    current: Option<HookPermissionDecision>,
+    next: HookPermissionDecision,
+) -> HookPermissionDecision {
+    fn rank(decision: HookPermissionDecision) -> u8 {
+        match decision {
+            HookPermissionDecision::Deny => 3,
+            HookPermissionDecision::Ask => 2,
+            HookPermissionDecision::Allow => 1,
+        }
+    }
+    match current {
+        None => next,
+        Some(existing) => {
+            if rank(next) >= rank(existing) {
+                next
+            } else {
+                existing
+            }
+        }
+    }
+}
+
+fn merge_stop_decision(
+    current: Option<HookStopDecision>,
+    next: HookStopDecision,
+) -> HookStopDecision {
+    match (current, next) {
+        (Some(HookStopDecision::Block { reason }), HookStopDecision::Block { reason: next_reason }) => {
+            HookStopDecision::Block { reason: reason.or(next_reason) }
+        }
+        (Some(HookStopDecision::Block { reason }), HookStopDecision::Approve) => {
+            HookStopDecision::Block { reason }
+        }
+        (Some(HookStopDecision::Approve), HookStopDecision::Block { reason }) => {
+            HookStopDecision::Block { reason }
+        }
+        (None, HookStopDecision::Block { reason }) => HookStopDecision::Block { reason },
+        _ => HookStopDecision::Approve,
+    }
+}
+
+fn parse_hook_permission_decision(value: &str) -> Option<HookPermissionDecision> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "allow" | "approve" => Some(HookPermissionDecision::Allow),
+        "deny" | "block" => Some(HookPermissionDecision::Deny),
+        "ask" | "confirm" => Some(HookPermissionDecision::Ask),
+        _ => None,
+    }
+}
+
+fn parse_stop_decision(value: &str, reason: Option<String>) -> Option<HookStopDecision> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "approve" | "allow" => Some(HookStopDecision::Approve),
+        "block" | "deny" => Some(HookStopDecision::Block { reason }),
+        _ => None,
+    }
+}
+
+fn extract_json_from_text(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let stripped = if trimmed.starts_with("```") {
+        let mut lines = trimmed.lines();
+        let _ = lines.next();
+        let mut body = lines.collect::<Vec<_>>().join("\n");
+        if let Some(idx) = body.rfind("```") {
+            body.truncate(idx);
+        }
+        body.trim().to_string()
+    } else {
+        trimmed.to_string()
+    };
+
+    if serde_json::from_str::<Value>(&stripped).is_ok() {
+        return Some(stripped);
+    }
+
+    let start = stripped.find('{')?;
+    let end = stripped.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+    let candidate = stripped[start..=end].trim();
+    serde_json::from_str::<Value>(candidate).ok()?;
+    Some(candidate.to_string())
+}
+
+fn parse_hook_output_from_text(raw: &str) -> HookOutput {
+    let mut output = HookOutput::default();
+    let Some(json_text) = extract_json_from_text(raw) else {
+        return output;
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&json_text) else {
+        return output;
+    };
+
+    if let Some(flag) = value.get("continue").and_then(|v| v.as_bool()) {
+        output.continue_processing = Some(flag);
+    }
+    if let Some(flag) = value.get("suppressOutput").and_then(|v| v.as_bool()) {
+        output.suppress_output = Some(flag);
+    }
+    if let Some(message) = value.get("systemMessage").and_then(|v| v.as_str()) {
+        output.system_message = Some(message.to_string());
+    }
+
+    let permission = value
+        .pointer("/hookSpecificOutput/permissionDecision")
+        .and_then(|v| v.as_str())
+        .or_else(|| value.get("permissionDecision").and_then(|v| v.as_str()));
+    output.permission_decision = permission.and_then(parse_hook_permission_decision);
+
+    output.updated_input = value
+        .pointer("/hookSpecificOutput/updatedInput")
+        .cloned()
+        .or_else(|| value.get("updatedInput").cloned());
+
+    if let Some(decision) = value.get("decision").and_then(|v| v.as_str()) {
+        let reason = value.get("reason").and_then(|v| v.as_str()).map(|s| s.to_string());
+        output.stop_decision = parse_stop_decision(decision, reason);
+    }
+
+    output
+}
+
+fn payload_value_to_string(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::String(s)) => s.clone(),
+        Some(v) => serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string()),
+        None => String::new(),
+    }
+}
+
+fn render_hook_prompt(template: &str, payload: &Value) -> String {
+    let mut rendered = template.to_string();
+    let replacements = [
+        ("$SESSION_ID", payload_value_to_string(payload.get("session_id"))),
+        ("$TRANSCRIPT_PATH", payload_value_to_string(payload.get("transcript_path"))),
+        ("$CWD", payload_value_to_string(payload.get("cwd"))),
+        ("$PERMISSION_MODE", payload_value_to_string(payload.get("permission_mode"))),
+        ("$HOOK_EVENT_NAME", payload_value_to_string(payload.get("hook_event_name"))),
+        ("$TOOL_NAME", payload_value_to_string(payload.get("tool_name"))),
+        ("$TOOL_INPUT", payload_value_to_string(payload.get("tool_input"))),
+        ("$TOOL_RESULT", payload_value_to_string(payload.get("tool_result"))),
+        ("$TOOL_USE_ID", payload_value_to_string(payload.get("tool_use_id"))),
+        ("$USER_PROMPT", payload_value_to_string(payload.get("user_prompt"))),
+        ("$REASON", payload_value_to_string(payload.get("reason"))),
+        ("$NOTIFICATION", payload_value_to_string(payload.get("notification"))),
+    ];
+    for (token, value) in replacements {
+        if rendered.contains(token) {
+            rendered = rendered.replace(token, &value);
+        }
+    }
+    rendered
+}
+
 fn sanitize_identifier(value: &str) -> String {
     let mut slug = String::with_capacity(value.len());
     for ch in value.chars() {
@@ -142,39 +376,111 @@ fn truncate_payload(text: &str, limit: usize) -> String {
     }
 }
 
+fn permission_mode_label(policy: AskForApproval) -> &'static str {
+    match policy {
+        AskForApproval::Never => "allow",
+        _ => "ask",
+    }
+}
+
+pub(super) fn build_base_hook_payload(
+    sess: &Session,
+    event: ProjectHookEvent,
+) -> serde_json::Map<String, Value> {
+    let mut base = serde_json::Map::new();
+    base.insert("session_id".to_string(), Value::String(sess.id.to_string()));
+    let transcript_path = sess
+        .rollout
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|r| r.rollout_path.to_string_lossy().to_string());
+    base.insert(
+        "transcript_path".to_string(),
+        transcript_path
+            .map(Value::String)
+            .unwrap_or(Value::Null),
+    );
+    base.insert(
+        "cwd".to_string(),
+        Value::String(sess.cwd.to_string_lossy().to_string()),
+    );
+    base.insert(
+        "permission_mode".to_string(),
+        Value::String(permission_mode_label(sess.approval_policy).to_string()),
+    );
+    base.insert(
+        "hook_event_name".to_string(),
+        Value::String(event.hook_event_name().to_string()),
+    );
+    base
+}
+
 fn build_exec_hook_payload(
+    sess: &Session,
     event: ProjectHookEvent,
     ctx: &ExecCommandContext,
     params: &ExecParams,
     output: Option<&ExecToolCallOutput>,
+    tool_name: Option<&str>,
 ) -> Value {
-    let base = json!({
-        "event": event.as_str(),
-        "call_id": ctx.call_id,
-        "cwd": ctx.cwd.to_string_lossy(),
-        "command": params.command,
-        "timeout_ms": params.timeout_ms,
-    });
+    let mut base = build_base_hook_payload(sess, event);
+    base.insert("event".to_string(), Value::String(event.as_str().to_string()));
+    base.insert("call_id".to_string(), Value::String(ctx.call_id.clone()));
+    base.insert(
+        "cwd".to_string(),
+        Value::String(ctx.cwd.to_string_lossy().to_string()),
+    );
+    base.insert("command".to_string(), json!(params.command));
+    base.insert("timeout_ms".to_string(), json!(params.timeout_ms));
+    if let Some(tool_name) = tool_name {
+        base.insert("tool_name".to_string(), Value::String(tool_name.to_string()));
+        base.insert("tool_use_id".to_string(), Value::String(ctx.call_id.clone()));
+        base.insert(
+            "tool_input".to_string(),
+            json!({
+                "command": params.command,
+                "cwd": params.cwd,
+                "timeout_ms": params.timeout_ms,
+            }),
+        );
+    }
 
     match event {
-        ProjectHookEvent::ToolBefore => base,
+        ProjectHookEvent::ToolBefore => Value::Object(base),
         ProjectHookEvent::ToolAfter => {
             if let Some(out) = output {
-                json!({
-                    "event": event.as_str(),
-                    "call_id": ctx.call_id,
-                    "cwd": ctx.cwd.to_string_lossy(),
-                    "command": params.command,
-                    "timeout_ms": params.timeout_ms,
-                    "exit_code": out.exit_code,
-                    "duration_ms": out.duration.as_millis(),
-                    "timed_out": out.timed_out,
-                    "stdout": truncate_payload(&out.stdout.text, HOOK_OUTPUT_LIMIT),
-                    "stderr": truncate_payload(&out.stderr.text, HOOK_OUTPUT_LIMIT),
-                })
-            } else {
-                base
+                base.insert(
+                    "tool_result".to_string(),
+                    json!({
+                        "exit_code": out.exit_code,
+                        "duration_ms": out.duration.as_millis(),
+                        "timed_out": out.timed_out,
+                        "stdout": truncate_payload(&out.stdout.text, HOOK_OUTPUT_LIMIT),
+                        "stderr": truncate_payload(&out.stderr.text, HOOK_OUTPUT_LIMIT),
+                        "success": out.exit_code == 0,
+                    }),
+                );
             }
+            if let Some(out) = output {
+                base.insert("exit_code".to_string(), json!(out.exit_code));
+                base.insert(
+                    "duration_ms".to_string(),
+                    json!(out.duration.as_millis()),
+                );
+                base.insert("timed_out".to_string(), json!(out.timed_out));
+                base.insert(
+                    "stdout".to_string(),
+                    json!(truncate_payload(&out.stdout.text, HOOK_OUTPUT_LIMIT)),
+                );
+                base.insert(
+                    "stderr".to_string(),
+                    json!(truncate_payload(&out.stderr.text, HOOK_OUTPUT_LIMIT)),
+                );
+            } else {
+                // no-op
+            }
+            Value::Object(base)
         }
         ProjectHookEvent::FileBeforeWrite => {
             let changes = ctx
@@ -182,14 +488,8 @@ fn build_exec_hook_payload(
                 .as_ref()
                 .and_then(|p| serde_json::to_value(&p.changes).ok())
                 .unwrap_or(Value::Null);
-            json!({
-                "event": event.as_str(),
-                "call_id": ctx.call_id,
-                "cwd": ctx.cwd.to_string_lossy(),
-                "command": params.command,
-                "timeout_ms": params.timeout_ms,
-                "changes": changes,
-            })
+            base.insert("changes".to_string(), changes);
+            Value::Object(base)
         }
         ProjectHookEvent::FileAfterWrite => {
             let changes = ctx
@@ -198,33 +498,52 @@ fn build_exec_hook_payload(
                 .and_then(|p| serde_json::to_value(&p.changes).ok())
                 .unwrap_or(Value::Null);
             if let Some(out) = output {
-                json!({
-                    "event": event.as_str(),
-                    "call_id": ctx.call_id,
-                    "cwd": ctx.cwd.to_string_lossy(),
-                    "command": params.command,
-                    "timeout_ms": params.timeout_ms,
-                    "changes": changes,
-                    "exit_code": out.exit_code,
-                    "duration_ms": out.duration.as_millis(),
-                    "timed_out": out.timed_out,
-                    "stdout": truncate_payload(&out.stdout.text, HOOK_OUTPUT_LIMIT),
-                    "stderr": truncate_payload(&out.stderr.text, HOOK_OUTPUT_LIMIT),
-                    "success": out.exit_code == 0,
-                })
+                base.insert("changes".to_string(), changes);
+                base.insert("exit_code".to_string(), json!(out.exit_code));
+                base.insert(
+                    "duration_ms".to_string(),
+                    json!(out.duration.as_millis()),
+                );
+                base.insert("timed_out".to_string(), json!(out.timed_out));
+                base.insert(
+                    "stdout".to_string(),
+                    json!(truncate_payload(&out.stdout.text, HOOK_OUTPUT_LIMIT)),
+                );
+                base.insert(
+                    "stderr".to_string(),
+                    json!(truncate_payload(&out.stderr.text, HOOK_OUTPUT_LIMIT)),
+                );
+                base.insert("success".to_string(), json!(out.exit_code == 0));
+                Value::Object(base)
             } else {
-                json!({
-                    "event": event.as_str(),
-                    "call_id": ctx.call_id,
-                    "cwd": ctx.cwd.to_string_lossy(),
-                    "command": params.command,
-                    "timeout_ms": params.timeout_ms,
-                    "changes": changes,
-                })
+                base.insert("changes".to_string(), changes);
+                Value::Object(base)
             }
         }
-        _ => base,
+        _ => Value::Object(base),
     }
+}
+
+pub(super) fn build_tool_hook_payload(
+    sess: &Session,
+    event: ProjectHookEvent,
+    tool_name: &str,
+    tool_input: Option<Value>,
+    tool_result: Option<Value>,
+    tool_use_id: &str,
+) -> Value {
+    let mut base = build_base_hook_payload(sess, event);
+    base.insert("event".to_string(), Value::String(event.as_str().to_string()));
+    base.insert("tool_name".to_string(), Value::String(tool_name.to_string()));
+    base.insert("tool_use_id".to_string(), Value::String(tool_use_id.to_string()));
+    base.insert(
+        "tool_input".to_string(),
+        tool_input.unwrap_or(Value::Null),
+    );
+    if let Some(result) = tool_result {
+        base.insert("tool_result".to_string(), result);
+    }
+    Value::Object(base)
 }
 
 pub struct ExecInvokeArgs<'a> {
@@ -853,6 +1172,7 @@ impl Session {
             cwd: command.resolved_cwd(self.get_cwd()),
             timeout_ms: command.timeout_ms,
             env,
+            stdin: None,
             with_escalated_permissions: Some(false),
             justification: None,
         };

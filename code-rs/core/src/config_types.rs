@@ -519,6 +519,37 @@ impl Default for ValidationGroups {
     }
 }
 
+#[derive(Deserialize, Debug, Clone, PartialEq)]
+pub struct HooksSettings {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_hooks_model")]
+    pub model: String,
+    #[serde(default = "default_hooks_reasoning_effort")]
+    pub model_reasoning_effort: ReasoningEffort,
+    #[serde(default)]
+    pub model_provider: Option<String>,
+}
+
+impl Default for HooksSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            model: default_hooks_model(),
+            model_reasoning_effort: default_hooks_reasoning_effort(),
+            model_provider: None,
+        }
+    }
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct HooksSettingsOverride {
+    pub enabled: Option<bool>,
+    pub model: Option<String>,
+    pub model_reasoning_effort: Option<ReasoningEffort>,
+    pub model_provider: Option<String>,
+}
+
 #[derive(Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct ValidationTools {
     pub shellcheck: Option<bool>,
@@ -856,6 +887,14 @@ fn default_auto_drive_model() -> String {
 
 const fn default_auto_drive_reasoning_effort() -> ReasoningEffort {
     ReasoningEffort::High
+}
+
+fn default_hooks_model() -> String {
+    String::from("codex-mini-latest")
+}
+
+const fn default_hooks_reasoning_effort() -> ReasoningEffort {
+    ReasoningEffort::Low
 }
 
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -1334,18 +1373,59 @@ where
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProjectHookEvent {
-    #[serde(rename = "session.start")]
+    #[serde(rename = "session.start", alias = "session_start", alias = "session-start", alias = "SessionStart")]
     SessionStart,
-    #[serde(rename = "session.end")]
+    #[serde(rename = "session.end", alias = "session_end", alias = "session-end", alias = "SessionEnd")]
     SessionEnd,
-    #[serde(rename = "tool.before")]
+    #[serde(
+        rename = "tool.before",
+        alias = "tool_before",
+        alias = "tool-before",
+        alias = "PreToolUse",
+        alias = "pre_tool_use",
+        alias = "pre-tool-use",
+        alias = "pretooluse"
+    )]
     ToolBefore,
-    #[serde(rename = "tool.after")]
+    #[serde(
+        rename = "tool.after",
+        alias = "tool_after",
+        alias = "tool-after",
+        alias = "PostToolUse",
+        alias = "post_tool_use",
+        alias = "post-tool-use",
+        alias = "posttooluse"
+    )]
     ToolAfter,
-    #[serde(rename = "file.before_write")]
+    #[serde(rename = "file.before_write", alias = "file_before_write", alias = "file-before-write")]
     FileBeforeWrite,
-    #[serde(rename = "file.after_write")]
+    #[serde(rename = "file.after_write", alias = "file_after_write", alias = "file-after-write")]
     FileAfterWrite,
+    #[serde(rename = "stop", alias = "Stop")]
+    Stop,
+    #[serde(
+        rename = "subagent.stop",
+        alias = "subagent_stop",
+        alias = "subagent-stop",
+        alias = "SubagentStop"
+    )]
+    SubagentStop,
+    #[serde(
+        rename = "user.prompt_submit",
+        alias = "user_prompt_submit",
+        alias = "user-prompt-submit",
+        alias = "UserPromptSubmit"
+    )]
+    UserPromptSubmit,
+    #[serde(
+        rename = "pre.compact",
+        alias = "pre_compact",
+        alias = "pre-compact",
+        alias = "PreCompact"
+    )]
+    PreCompact,
+    #[serde(rename = "notification", alias = "Notification", alias = "notify")]
+    Notification,
 }
 
 impl ProjectHookEvent {
@@ -1357,6 +1437,27 @@ impl ProjectHookEvent {
             ProjectHookEvent::ToolAfter => "tool.after",
             ProjectHookEvent::FileBeforeWrite => "file.before_write",
             ProjectHookEvent::FileAfterWrite => "file.after_write",
+            ProjectHookEvent::Stop => "stop",
+            ProjectHookEvent::SubagentStop => "subagent.stop",
+            ProjectHookEvent::UserPromptSubmit => "user.prompt_submit",
+            ProjectHookEvent::PreCompact => "pre.compact",
+            ProjectHookEvent::Notification => "notification",
+        }
+    }
+
+    pub fn hook_event_name(&self) -> &'static str {
+        match self {
+            ProjectHookEvent::SessionStart => "SessionStart",
+            ProjectHookEvent::SessionEnd => "SessionEnd",
+            ProjectHookEvent::ToolBefore => "PreToolUse",
+            ProjectHookEvent::ToolAfter => "PostToolUse",
+            ProjectHookEvent::FileBeforeWrite => "FileBeforeWrite",
+            ProjectHookEvent::FileAfterWrite => "FileAfterWrite",
+            ProjectHookEvent::Stop => "Stop",
+            ProjectHookEvent::SubagentStop => "SubagentStop",
+            ProjectHookEvent::UserPromptSubmit => "UserPromptSubmit",
+            ProjectHookEvent::PreCompact => "PreCompact",
+            ProjectHookEvent::Notification => "Notification",
         }
     }
 
@@ -1368,7 +1469,25 @@ impl ProjectHookEvent {
             ProjectHookEvent::ToolAfter => "tool_after",
             ProjectHookEvent::FileBeforeWrite => "file_before_write",
             ProjectHookEvent::FileAfterWrite => "file_after_write",
+            ProjectHookEvent::Stop => "stop",
+            ProjectHookEvent::SubagentStop => "subagent_stop",
+            ProjectHookEvent::UserPromptSubmit => "user_prompt_submit",
+            ProjectHookEvent::PreCompact => "pre_compact",
+            ProjectHookEvent::Notification => "notification",
         }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProjectHookType {
+    Command,
+    Prompt,
+}
+
+impl Default for ProjectHookType {
+    fn default() -> Self {
+        Self::Command
     }
 }
 
@@ -1377,6 +1496,12 @@ pub struct ProjectHookConfig {
     pub event: ProjectHookEvent,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default, rename = "type")]
+    pub hook_type: ProjectHookType,
+    #[serde(default)]
+    pub matcher: Option<String>,
+    #[serde(default)]
+    pub prompt: Option<String>,
     #[serde(alias = "run", deserialize_with = "deserialize_command_vec")]
     pub command: Vec<String>,
     #[serde(default)]

@@ -27,6 +27,8 @@ use crate::config_types::Tui;
 use crate::config_types::UriBasedFileOpener;
 use crate::config_types::ConfirmGuardConfig;
 use crate::config_types::DEFAULT_OTEL_ENVIRONMENT;
+use crate::config_types::HooksSettings;
+use crate::config_types::HooksSettingsOverride;
 use crate::git_info::resolve_root_git_project_for_trust;
 use crate::model_family::ModelFamily;
 use crate::model_family::derive_default_model_family;
@@ -74,6 +76,7 @@ pub use sources::{
     set_custom_theme,
     set_github_actionlint_on_patch,
     set_github_check_on_push,
+    set_hooks_settings,
     set_mcp_server_enabled,
     set_planning_model,
     set_project_access_mode,
@@ -324,6 +327,13 @@ pub struct Config {
     pub auto_drive: AutoDriveSettings,
     /// Whether Auto Drive should inherit the chat model instead of a dedicated override.
     pub auto_drive_use_chat_model: bool,
+
+    /// Hooks settings (model/provider/enablement).
+    pub hooks_settings: HooksSettings,
+    /// Provider id used for hook prompt execution.
+    pub hooks_model_provider_id: String,
+    /// Provider info used for hook prompt execution.
+    pub hooks_model_provider: ModelProviderInfo,
 
     /// Path to the `codex-linux-sandbox` executable. This must be set if
     /// [`crate::exec::SandboxType::LinuxSeccomp`] is used. Note that this
@@ -594,6 +604,9 @@ pub struct ConfigToml {
     /// If true, Auto Drive inherits the chat model instead of a dedicated override.
     pub auto_drive_use_chat_model: Option<bool>,
 
+    /// Hooks settings (model/provider/enablement).
+    pub hooks: Option<HooksSettings>,
+
     #[serde(default)]
     pub auto_drive_observer_cadence: Option<u32>,
 
@@ -714,6 +727,8 @@ pub struct ProjectConfig {
     pub always_allow_commands: Option<Vec<AllowedCommand>>,
     #[serde(default)]
     pub hooks: Vec<ProjectHookConfig>,
+    #[serde(default)]
+    pub hooks_settings: Option<HooksSettingsOverride>,
     #[serde(default)]
     pub commands: Vec<ProjectCommandConfig>,
 }
@@ -1348,6 +1363,53 @@ impl Config {
             auto_drive.model_reasoning_effort,
         );
 
+        let mut hooks_settings = cfg.hooks.clone().unwrap_or_default();
+        if let Some(project_override) = project_override.and_then(|p| p.hooks_settings.as_ref()) {
+            if let Some(enabled) = project_override.enabled {
+                hooks_settings.enabled = enabled;
+            }
+            if let Some(model) = project_override.model.as_ref().map(str::trim).filter(|m| !m.is_empty()) {
+                hooks_settings.model = model.to_string();
+            }
+            if let Some(effort) = project_override.model_reasoning_effort {
+                hooks_settings.model_reasoning_effort = effort;
+            }
+            if let Some(provider) = project_override
+                .model_provider
+                .as_ref()
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+            {
+                hooks_settings.model_provider = Some(provider.to_string());
+            }
+        }
+
+        hooks_settings.model_reasoning_effort = clamp_reasoning_effort_for_model(
+            &hooks_settings.model,
+            hooks_settings.model_reasoning_effort,
+        );
+
+        let mut hooks_model_provider_id = hooks_settings
+            .model_provider
+            .clone()
+            .unwrap_or_else(|| model_provider_id.clone());
+        if hooks_settings.model.eq_ignore_ascii_case("glm-4.7") {
+            if !hooks_model_provider_id.eq_ignore_ascii_case("zai") {
+                hooks_model_provider_id = "zai".to_string();
+            }
+        } else if hooks_model_provider_id.eq_ignore_ascii_case("zai") {
+            hooks_model_provider_id = "openai".to_string();
+        }
+        let hooks_model_provider = model_providers
+            .get(&hooks_model_provider_id)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Hooks model provider `{hooks_model_provider_id}` not found"),
+                )
+            })?
+            .clone();
+
         let config = Self {
             model,
             model_explicit,
@@ -1419,6 +1481,9 @@ impl Config {
             tui: cfg.tui.clone().unwrap_or_default(),
             auto_drive,
             auto_drive_use_chat_model,
+            hooks_settings,
+            hooks_model_provider_id,
+            hooks_model_provider,
             code_linux_sandbox_exe,
             active_profile: active_profile_name,
 

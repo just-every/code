@@ -3,6 +3,7 @@ use crate::config_types::{
     AutoDriveContinueMode,
     AutoDriveSettings,
     CachedTerminalBackground,
+    HooksSettings,
     McpServerConfig,
     McpServerTransportConfig,
     ReasoningEffort,
@@ -910,6 +911,39 @@ pub fn set_auto_drive_settings(
         AutoDriveContinueMode::Manual => "manual",
     };
     doc["auto_drive"]["continue_mode"] = toml_edit::value(mode_str);
+
+    std::fs::create_dir_all(code_home)?;
+    let tmp_file = NamedTempFile::new_in(code_home)?;
+    std::fs::write(tmp_file.path(), doc.to_string())?;
+    tmp_file.persist(config_path)?;
+
+    Ok(())
+}
+
+/// Persist Hooks defaults under `[hooks]`.
+pub fn set_hooks_settings(code_home: &Path, settings: &HooksSettings) -> anyhow::Result<()> {
+    let config_path = code_home.join(CONFIG_TOML_FILE);
+    let read_path = resolve_code_path_for_read(code_home, Path::new(CONFIG_TOML_FILE));
+
+    let mut doc = match std::fs::read_to_string(&read_path) {
+        Ok(contents) => contents.parse::<DocumentMut>()?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentMut::new(),
+        Err(e) => return Err(e.into()),
+    };
+
+    doc["hooks"]["enabled"] = toml_edit::value(settings.enabled);
+    doc["hooks"]["model"] = toml_edit::value(settings.model.trim());
+    doc["hooks"]["model_reasoning_effort"] = toml_edit::value(
+        settings
+            .model_reasoning_effort
+            .to_string()
+            .to_ascii_lowercase(),
+    );
+    if let Some(provider) = settings.model_provider.as_ref().map(str::trim).filter(|p| !p.is_empty()) {
+        doc["hooks"]["model_provider"] = toml_edit::value(provider);
+    } else if let Some(hooks_tbl) = doc["hooks"].as_table_mut() {
+        hooks_tbl.remove("model_provider");
+    }
 
     std::fs::create_dir_all(code_home)?;
     let tmp_file = NamedTempFile::new_in(code_home)?;

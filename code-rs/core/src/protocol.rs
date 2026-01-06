@@ -174,6 +174,14 @@ pub enum Op {
         decision: ReviewDecision,
     },
 
+    /// Approve a hook action that was blocked.
+    HookApproval {
+        /// The id of the submission we are approving
+        id: String,
+        /// The user's decision in response to the request.
+        decision: ReviewDecision,
+    },
+
     /// Register a command pattern as approved for the remainder of the session.
     RegisterApprovedCommand {
         command: Vec<String>,

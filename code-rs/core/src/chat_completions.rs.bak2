@@ -737,27 +737,6 @@ async fn process_chat_sse<S>(
                 }
             }
 
-            // Handle reasoning_content (used by Z.AI/GLM-4.7)
-            if let Some(reasoning_content) = choice
-                .get("delta")
-                .and_then(|d| d.get("reasoning_content"))
-                .and_then(|c| c.as_str())
-            {
-                if !reasoning_content.is_empty() {
-                    reasoning_text.push_str(reasoning_content);
-                    let _ = tx_event
-                        .send(Ok(ResponseEvent::ReasoningContentDelta {
-                            delta: reasoning_content.to_string(),
-                            item_id: current_item_id.clone(),
-                            sequence_number: None,
-                            output_index: None,
-                            content_index: None,
-                        }))
-                        .await;
-                }
-            }
-
-
             // Some providers only include reasoning on the final message object.
             if let Some(message_reasoning) = choice.get("message").and_then(|m| m.get("reasoning"))
             {

@@ -484,6 +484,7 @@ pub(super) async fn submission_loop(
                 };
 
                 // Wrap provided auth (if any) in a minimal AuthManager for client usage.
+                let debug_logger_for_client = std::sync::Arc::clone(&debug_logger);
                 let client = ModelClient::new(
                     config.clone(),
                     auth_manager.clone(),
@@ -493,8 +494,38 @@ pub(super) async fn submission_loop(
                     model_reasoning_summary,
                     model_text_verbosity,
                     session_id,
-                    debug_logger,
+                    debug_logger_for_client,
                 );
+
+                let hooks_client = if config.hooks_settings.enabled {
+                    let hooks_model = config.hooks_settings.model.clone();
+                    let hooks_family = find_family_for_model(&hooks_model)
+                        .unwrap_or_else(|| derive_default_model_family(&hooks_model));
+                    let mut hooks_config = (*config).clone();
+                    hooks_config.model = hooks_model.clone();
+                    hooks_config.model_family = hooks_family.clone();
+                    hooks_config.model_reasoning_effort = config.hooks_settings.model_reasoning_effort;
+                    hooks_config.model_reasoning_summary = ReasoningSummaryConfig::None;
+                    hooks_config.model_provider_id = config.hooks_model_provider_id.clone();
+                    hooks_config.model_provider = config.hooks_model_provider.clone();
+                    let hooks_config = Arc::new(hooks_config);
+                    let hooks_otel = client
+                        .get_otel_event_manager()
+                        .map(|mgr| mgr.with_model(hooks_model.as_str(), hooks_family.slug.as_str()));
+                    Some(ModelClient::new(
+                        hooks_config,
+                        auth_manager.clone(),
+                        hooks_otel,
+                        config.hooks_model_provider.clone(),
+                        config.hooks_settings.model_reasoning_effort,
+                        ReasoningSummaryConfig::None,
+                        config.model_text_verbosity,
+                        session_id,
+                        std::sync::Arc::clone(&debug_logger),
+                    ))
+                } else {
+                    None
+                };
 
                 // abort any current running session and clone its state
                 let old_session = sess.take();
@@ -646,6 +677,10 @@ pub(super) async fn submission_loop(
                     confirm_guard: ConfirmGuardRuntime::from_config(&config.confirm_guard),
                     project_hooks: config.project_hooks.clone(),
                     project_commands: config.project_commands.clone(),
+                    hooks_settings: config.hooks_settings.clone(),
+                    hooks_model_provider_id: config.hooks_model_provider_id.clone(),
+                    hooks_model_provider: config.hooks_model_provider.clone(),
+                    hooks_client: hooks_client.clone(),
                     tool_output_max_bytes: config.tool_output_max_bytes,
                     hook_guard: AtomicBool::new(false),
                     github: Arc::new(RwLock::new(config.github.clone())),
@@ -5189,6 +5224,7 @@ fn to_exec_params(params: ShellToolCallParams, sess: &Session) -> ExecParams {
         cwd: sess.resolve_path(params.workdir.clone()),
         timeout_ms,
         env: create_env(&sess.shell_environment_policy),
+        stdin: None,
         with_escalated_permissions,
         justification: params.justification,
     }

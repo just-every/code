@@ -42,6 +42,7 @@ async fn run_cmd(cmd: &[&str], writable_roots: &[PathBuf], timeout_ms: u64) {
         cwd,
         timeout_ms: Some(timeout_ms),
         env: create_env_from_core_vars(),
+        stdin: None,
         with_escalated_permissions: None,
         justification: None,
     };
@@ -145,6 +146,7 @@ async fn assert_network_blocked(cmd: &[&str]) {
         // do not stall the suite.
         timeout_ms: Some(NETWORK_TIMEOUT_MS),
         env: create_env_from_core_vars(),
+        stdin: None,
         with_escalated_permissions: None,
         justification: None,
     };
