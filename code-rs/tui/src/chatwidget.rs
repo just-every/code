@@ -17795,7 +17795,7 @@ fi\n\
                     }
                     AutoCoordinatorEvent::CompactedHistory { conversation, show_notice } => {
                         app_event_tx.send(AppEvent::AutoCoordinatorCompactedHistory {
-                            conversation,
+                            conversation: conversation.to_vec(),
                             show_notice,
                         });
                     }
@@ -18008,7 +18008,7 @@ fi\n\
             return;
         };
         if handle
-            .send(AutoCoordinatorCommand::UpdateConversation(conversation))
+            .send(AutoCoordinatorCommand::UpdateConversation(conversation.into()))
             .is_err()
         {
             self.auto_stop(Some("Coordinator stopped unexpectedly.".to_string()));
@@ -18047,7 +18047,7 @@ fi\n\
             return;
         };
         if handle
-            .send(AutoCoordinatorCommand::UpdateConversation(conversation))
+            .send(AutoCoordinatorCommand::UpdateConversation(conversation.into()))
             .is_err()
         {
             self.auto_stop(Some("Coordinator stopped unexpectedly.".to_string()));
@@ -18084,7 +18084,7 @@ fi\n\
         };
         let command = AutoCoordinatorCommand::HandleUserPrompt {
             _prompt: prompt,
-            conversation,
+            conversation: conversation.into(),
         };
         match handle.send(command) {
             Ok(()) => {

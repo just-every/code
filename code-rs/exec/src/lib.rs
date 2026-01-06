@@ -1430,7 +1430,7 @@ async fn run_auto_drive_session(
                 );
             }
             AutoCoordinatorEvent::CompactedHistory { conversation, .. } => {
-                history.replace_all(conversation);
+                history.replace_all(conversation.to_vec());
             }
             AutoCoordinatorEvent::UserReply {
                 user_response,
@@ -1470,7 +1470,9 @@ async fn run_auto_drive_session(
                             final_last_message = Some(text);
                         }
                         let _ = handle
-                            .send(AutoCoordinatorCommand::UpdateConversation(history.raw_snapshot()));
+                            .send(AutoCoordinatorCommand::UpdateConversation(
+                                history.raw_snapshot().into(),
+                            ));
                     }
                 }
             }
@@ -1535,7 +1537,9 @@ async fn run_auto_drive_session(
                 }
 
                 if handle
-                    .send(AutoCoordinatorCommand::UpdateConversation(history.raw_snapshot()))
+                    .send(AutoCoordinatorCommand::UpdateConversation(
+                        history.raw_snapshot().into(),
+                    ))
                     .is_err()
                 {
                     break;
