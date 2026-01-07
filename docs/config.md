@@ -920,36 +920,149 @@ run = ["./scripts/bootstrap.sh"]
 timeout_ms = 60000
 
 [[projects."/Users/me/src/my-app".hooks]]
+name = "lint-changed"
 event = "tool.after"
 run = "npm run lint -- --changed"
 ```
 
-Supported hook events:
+Hook configuration fields:
 
-- `session.start`: after the session is configured (once per launch)
-- `session.end`: before shutdown completes
-- `tool.before`: immediately before each exec/tool command runs
-- `tool.after`: once an exec/tool command finishes (regardless of exit code)
-- `file.before_write`: right before an `apply_patch` is applied
-- `file.after_write`: after an `apply_patch` completes and diffs are emitted
+| Field | Type | Notes |
+| --- | --- | --- |
+| `event` | string | Required. Hook event name (see list below). |
+| `run` | string \| array<string> | Required. Command to execute. String form is parsed like a shell command. |
+| `name` | string | Optional label used in logs and env vars. |
+| `cwd` | string | Optional working directory for the hook (relative paths resolve from project cwd). |
+| `env` | map<string,string> | Optional extra environment variables. |
+| `timeout_ms` | number | Optional timeout in milliseconds (no timeout when omitted). |
+| `run_in_background` | bool | Run without a TUI exec cell; still awaited and sandboxed. |
 
-Hook commands run inside the same sandbox mode as the session and appear in the TUI as their own exec cells. Failures are surfaced as background events but do not block the main task. Each invocation receives environment variables such as `CODE_HOOK_EVENT`, `CODE_HOOK_NAME`, `CODE_HOOK_INDEX`, `CODE_HOOK_CALL_ID`, `CODE_HOOK_PAYLOAD` (JSON describing the context), `CODE_SESSION_CWD`, and—when applicable—`CODE_HOOK_SOURCE_CALL_ID`. Hooks may also set `cwd`, provide additional `env` entries, and specify `timeout_ms`.
+How hooks run:
+
+- Hooks run in the order defined in the config. `CODE_HOOK_INDEX` reflects that order.
+- Hooks run inside the same sandbox and approval mode as the session; hooks cannot request escalation.
+- A hook may return control JSON to influence the workflow (details below). A hook may also stop further hooks for that event by returning `{"continue": false}` or exiting with status `2`.
+- For `tool.after` and `file.after_write`, stdout/stderr in the payload are truncated to 2048 characters.
+
+Common environment variables (available in every hook):
+
+- `CODE_HOOK_EVENT`: canonical event name (e.g., `tool.after`).
+- `CODE_HOOK_TRIGGER`: event slug (e.g., `tool_after`).
+- `CODE_HOOK_CALL_ID`: generated id for the hook exec.
+- `CODE_HOOK_SUB_ID`: current session/turn id.
+- `CODE_HOOK_INDEX`: 1-based index for this hook within the event.
+- `CODE_HOOK_PAYLOAD`: JSON payload string describing the context.
+- `CODE_SESSION_CWD`: project/session cwd.
+- `CODE_HOOK_NAME`: the configured hook name (if provided).
+- `CODE_HOOK_SOURCE_CALL_ID`: exec call id that triggered the hook (tool/file hooks only).
+
+Common payload fields (inside `CODE_HOOK_PAYLOAD`):
+
+- `event`: canonical event name.
+- `session_id`: session UUID.
+- `transcript_path`: path to the session transcript or `null` when unavailable.
+- `cwd`: project/session cwd.
+- `permission_mode`: `allow` or `ask` (based on the approval policy).
+- `hook_event_name`: legacy-style event name (e.g., `PreToolUse`).
+
+### Hook events
+
+Each payload includes the common fields above plus the event-specific data below.
+
+| Event | When it fires | Payload additions |
+| --- | --- | --- |
+| `session.start` | After session config completes (once per launch). | `sandbox_policy`, `approval_policy`. |
+| `session.end` | Right before shutdown completes. | `sandbox_policy`, `approval_policy`. |
+| `user.prompt_submit` | When the user submits a prompt. | `user_prompt`. |
+| `tool.before` | Immediately before each exec/tool command. | `call_id`, `command`, `timeout_ms`, `cwd`. |
+| `tool.after` | After each exec/tool command (success or failure). | `call_id`, `command`, `timeout_ms`, `cwd`, `exit_code`, `duration_ms`, `timed_out`, `stdout`, `stderr`, `success`, plus `tool_result` (same fields nested). |
+| `file.before_write` | Right before an `apply_patch` is applied. | `call_id`, `command`, `timeout_ms`, `cwd`, `changes` (patch change list). |
+| `file.after_write` | After an `apply_patch` completes. | Same as `file.before_write`, plus `exit_code`, `duration_ms`, `timed_out`, `stdout`, `stderr`, `success`. |
+| `pre.compact` | Immediately before auto-compact runs. | `reason`. |
+| `post.compact` | Right after auto-compact finishes. | `reason`. |
+| `stop` | When a turn completes normally. | `reason` (e.g., `turn_complete`), `details` with `last_assistant_message`. |
+| `subagent.stop` | When a sub-agent finishes. | `reason` (e.g., `subagent_complete`), `details` with `agent_id`, `agent_name`, `status`. |
+| `notification` | Whenever a user notification is emitted. | `notification` (full `UserNotification` payload). |
 
 Example `tool.after` payload:
 
 ```json
 {
   "event": "tool.after",
+  "session_id": "3e8b...",
+  "hook_event_name": "PostToolUse",
+  "permission_mode": "allow",
   "call_id": "tool_12",
   "cwd": "/Users/me/src/my-app",
   "command": ["npm", "test"],
+  "timeout_ms": 120000,
   "exit_code": 1,
   "duration_ms": 1832,
-  "stdout": "…output truncated…",
-  "stderr": "…",
-  "timed_out": false
+  "timed_out": false,
+  "stdout": "...truncated...",
+  "stderr": "...truncated...",
+  "success": false,
+  "tool_result": {
+    "exit_code": 1,
+    "duration_ms": 1832,
+    "timed_out": false,
+    "stdout": "...truncated...",
+    "stderr": "...truncated...",
+    "success": false
+  }
 }
 ```
+
+### Hook output (control JSON)
+
+Hooks can print JSON to stdout or stderr to influence the flow. The parser accepts raw JSON or JSON wrapped in a fenced code block.
+
+Supported keys:
+
+- `continue`: `true`/`false` — stop running remaining hooks for this event when `false`.
+- `systemMessage`: string — appended as a system message (Chat API only).
+- `permissionDecision`: `allow` \| `ask` \| `deny` — gate `user.prompt_submit` or `tool.before`/`file.before_write`.
+- `hookSpecificOutput.permissionDecision`: same as above (preferred nesting for structured output).
+- `updatedInput`: modifies the incoming payload.
+  - For `user.prompt_submit`, it can be a string, `InputItem`, or list of `InputItem`s.
+  - For `tool.before`/`file.before_write`, it can be a string/array command or an object with `command`, `cwd`, `timeout_ms`, and `env`.
+
+Example: prompt gate (used by `hooks/ask_user_prompt.py`)
+
+```json
+{
+  "hookSpecificOutput": {"permissionDecision": "ask"},
+  "systemMessage": "Hook gate: approve this prompt to continue."
+}
+```
+
+Example: rewrite a tool command before execution
+
+```json
+{
+  "updatedInput": {
+    "command": ["npm", "run", "lint", "--", "--changed"],
+    "timeout_ms": 60000
+  }
+}
+```
+
+### Testing hooks locally
+
+This repo ships two example hooks under `hooks/` and a helper script:
+
+- `hooks/ask_user_prompt.py`: prompts for approval when the user prompt starts with `hook:`.
+- `hooks/check_shell.py`: requests confirmation for risky shell commands (`rm -rf`, `mkfs`, etc.).
+- `scripts/run-hooks-test.sh`: launches Code with a temporary config that enables those hooks.
+
+Test workflow:
+
+```bash
+./build-fast.sh
+scripts/run-hooks-test.sh
+```
+
+Then try a prompt like `hook: please summarize this repo` or run a shell command containing `rm -rf` to see the hook gate in action.
 
 ## Project Commands
 

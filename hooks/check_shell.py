@@ -1,16 +1,29 @@
 #!/usr/bin/env python3
 import json
+import os
 import sys
 
 def load_payload():
     try:
-        return json.load(sys.stdin)
+        payload = json.load(sys.stdin)
+        if payload:
+            return payload
     except Exception:
-        return {}
+        payload = None
+
+    env_payload = os.environ.get("CODE_HOOK_PAYLOAD")
+    if env_payload:
+        try:
+            return json.loads(env_payload)
+        except Exception:
+            return {}
+    return payload or {}
 
 def command_from_payload(payload):
-    tool_input = payload.get("tool_input") or {}
-    cmd = tool_input.get("command")
+    cmd = payload.get("command")
+    if cmd is None:
+        tool_input = payload.get("tool_input") or {}
+        cmd = tool_input.get("command")
     if isinstance(cmd, list):
         return " ".join(cmd)
     if isinstance(cmd, str):

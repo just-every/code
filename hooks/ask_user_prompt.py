@@ -1,12 +1,27 @@
 #!/usr/bin/env python3
 import json
+import os
 import sys
 
-def main():
+
+def load_payload():
     try:
         payload = json.load(sys.stdin)
+        if payload:
+            return payload
     except Exception:
-        payload = {}
+        pass
+
+    env_payload = os.environ.get("CODE_HOOK_PAYLOAD")
+    if env_payload:
+        try:
+            return json.loads(env_payload)
+        except Exception:
+            return {}
+    return {}
+
+def main():
+    payload = load_payload()
 
     prompt = (payload.get("user_prompt") or "").strip()
     lowered = prompt.lower()
