@@ -646,48 +646,6 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         });
     }
 
-    // Send images first, if any.
-    if !images.is_empty() {
-        let items: Vec<InputItem> = images
-            .into_iter()
-            .map(|path| InputItem::LocalImage { path })
-            .collect();
-        let initial_images_event_id = conversation
-            .submit(Op::UserInput {
-                items,
-                final_output_json_schema: None,
-            })
-            .await?;
-        info!("Sent images with event ID: {initial_images_event_id}");
-        loop {
-            let event = if let Some(deadline) = run_deadline {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                match tokio::time::timeout(remaining, conversation.next_event()).await {
-                    Ok(event) => event?,
-                    Err(_) => {
-                        eprintln!("Time budget exceeded (--max-seconds={})", max_seconds.unwrap_or_default());
-                        let _ = conversation.submit(Op::Interrupt).await;
-                        let _ = conversation.submit(Op::Shutdown).await;
-                        return Err(anyhow::anyhow!("Time budget exceeded"));
-                    }
-                }
-            } else {
-                conversation.next_event().await?
-            };
-
-            if event.id == initial_images_event_id
-                && matches!(
-                    event.msg,
-                    EventMsg::TaskComplete(TaskCompleteEvent {
-                        last_agent_message: _,
-                    })
-                )
-            {
-                break;
-            }
-        }
-    }
-
     // Send the prompt.
     let mut _review_guard: Option<code_core::review_coord::ReviewGuard> = None;
 
@@ -746,7 +704,9 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         info!("Sent /review with event ID: {event_id}");
         event_id
     } else {
-        let items: Vec<InputItem> = vec![InputItem::Text { text: prompt_to_send }];
+        let mut items: Vec<InputItem> = Vec::new();
+        items.push(InputItem::Text { text: prompt_to_send });
+        items.extend(images.into_iter().map(|path| InputItem::LocalImage { path }));
         // Fallback for older core protocol: send only user input items.
         let event_id = conversation
             .submit(Op::UserInput {
