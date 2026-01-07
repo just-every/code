@@ -1,13 +1,10 @@
-## @just-every/code v0.6.39
+## @just-every/code v0.6.40
 
-Latest release with transcript UX improvements, better auto-drive telemetry, and clearer TUI paths.
+Small fixes to keep TUI image workflows and Linux builds stable.
 
 ### Changes
-
-- TUI/Auto-drive: add navigation telemetry and forward aligned compacted history for new browser runs.
-- TUI2/Markdown: stream logical lines so transcripts reflow correctly on resize and copy/paste.
-- TUI: render view-image paths relative to the working directory for non-git projects.
-- TUI2/Transcript: add an auto-hiding scrollbar, anchor the copy pill at the viewport bottom, and cache rendering to cut redraws.
+- TUI/Image: initialize picker state for image cards so selection works reliably.
+- Core: gate cgroup helpers on Linux to avoid non-Linux builds invoking them.
 
 ### Install
 ```
@@ -15,4 +12,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.38...v0.6.39
+Compare: https://github.com/just-every/code/compare/v0.6.39...v0.6.40
