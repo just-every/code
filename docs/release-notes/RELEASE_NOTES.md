@@ -1,10 +1,13 @@
-## @just-every/code v0.6.38
+## @just-every/code v0.6.39
 
-Small docs update clarifying model provider requirements and proxy usage.
+Latest release with transcript UX improvements, better auto-drive telemetry, and clearer TUI paths.
 
 ### Changes
-- Docs/Config: clarify `--model` applies to the active provider and call out OpenAI-compatible requirements for custom providers.
-- Docs/Config: add a proxy example for routing OpenAI-style requests to other vendors.
+
+- TUI/Auto-drive: add navigation telemetry and forward aligned compacted history for new browser runs.
+- TUI2/Markdown: stream logical lines so transcripts reflow correctly on resize and copy/paste.
+- TUI: render view-image paths relative to the working directory for non-git projects.
+- TUI2/Transcript: add an auto-hiding scrollbar, anchor the copy pill at the viewport bottom, and cache rendering to cut redraws.
 
 ### Install
 ```
@@ -12,4 +15,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.37...v0.6.38
+Compare: https://github.com/just-every/code/compare/v0.6.38...v0.6.39

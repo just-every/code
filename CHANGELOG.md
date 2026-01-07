@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.6.39] - 2026-01-07
+
+- TUI/Auto-drive: add navigation telemetry and forward aligned compacted history for new browser runs. (94eb8d23, d6d52b7f, aaac24f7)
+- TUI2/Markdown: stream logical lines so transcripts reflow correctly on resize and copy/paste. (c92dbea7)
+- TUI: render view-image paths relative to the working directory for non-git projects. (4c3d2a5b)
+- TUI2/Transcript: add an auto-hiding scrollbar, anchor the copy pill at the viewport bottom, and cache rendering to cut redraws. (8f10d3bf, 56782130, 90f37e85)
+
 ## [0.6.38] - 2026-01-06
 
 - Docs/Config: clarify `--model` applies to the active provider and call out OpenAI-compatible requirements for custom providers. (fa6c482)
