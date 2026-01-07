@@ -733,10 +733,20 @@ impl Session {
             timed_out: _,
         } = output;
         // Because stdout and stderr could each be up to 100 KiB, we send
-        // truncated versions.
+        // truncated versions. Hook execs suppress output to avoid leaking
+        // implementation details in the UI.
         const MAX_STREAM_OUTPUT: usize = 5 * 1024; // 5KiB
-        let stdout = stdout.text.chars().take(MAX_STREAM_OUTPUT).collect();
-        let stderr = stderr.text.chars().take(MAX_STREAM_OUTPUT).collect();
+        let is_hook_exec = call_id.contains("_hook_");
+        let stdout = if is_hook_exec {
+            String::new()
+        } else {
+            stdout.text.chars().take(MAX_STREAM_OUTPUT).collect()
+        };
+        let stderr = if is_hook_exec {
+            String::new()
+        } else {
+            stderr.text.chars().take(MAX_STREAM_OUTPUT).collect()
+        };
         // Precompute formatted output if needed in future for logging/pretty UI.
 
         let msg = if is_apply_patch {
@@ -1311,10 +1321,15 @@ impl Session {
             justification: None,
         };
 
+        let display_label = if let Some(name) = &hook.name {
+            format!("Hook: {} ({})", event.hook_event_name(), name)
+        } else {
+            format!("Hook: {}", event.hook_event_name())
+        };
         let exec_ctx = ExecCommandContext {
             sub_id: sub_id.clone(),
             call_id: call_id.clone(),
-            command_for_display: exec_params.command.clone(),
+            command_for_display: vec![display_label],
             cwd: exec_params.cwd.clone(),
             apply_patch: None,
         };

@@ -1,8 +1,8 @@
 use super::*;
 use super::exec::build_notification_hook_payload;
+use serde_json::Value;
 use super::streaming::{
     AgentTask,
-    MAX_TOOL_OUTPUT_BYTES_FOR_MODEL,
     TRUNCATION_MARKER,
     TimelineReplayContext,
     debug_history,
@@ -362,6 +362,7 @@ pub(crate) struct Session {
     pub(super) confirm_guard: ConfirmGuardRuntime,
     pub(super) project_hooks: ProjectHooks,
     pub(super) project_commands: Vec<ProjectCommand>,
+    pub(super) tool_output_max_bytes: usize,
     pub(super) hook_guard: AtomicBool,
     pub(super) github: Arc<RwLock<crate::config_types::GithubConfig>>,
     pub(super) validation: Arc<RwLock<crate::config_types::ValidationConfig>>,
@@ -916,7 +917,7 @@ impl Session {
         }
 
         let (_, was_truncated, prefix_end, suffix_start) =
-            truncate_middle_bytes(&aggregated, MAX_TOOL_OUTPUT_BYTES_FOR_MODEL);
+            truncate_middle_bytes(&aggregated, self.tool_output_max_bytes);
         if !was_truncated {
             return;
         }
@@ -1024,6 +1025,13 @@ impl Session {
     /// Sends the given event to the client and swallows the send error, if
     /// any, logging it as an error.
     pub(super) fn make_turn_context(&self) -> Arc<TurnContext> {
+        self.make_turn_context_with_schema(None)
+    }
+
+    pub(super) fn make_turn_context_with_schema(
+        &self,
+        final_output_json_schema: Option<Value>,
+    ) -> Arc<TurnContext> {
         Arc::new(TurnContext {
             client: self.client.clone(),
             cwd: self.cwd.clone(),
@@ -1036,6 +1044,7 @@ impl Session {
             shell_environment_policy: self.shell_environment_policy.clone(),
             is_review_mode: false,
             text_format_override: self.next_turn_text_format.lock().unwrap().take(),
+            final_output_json_schema,
         })
     }
 
