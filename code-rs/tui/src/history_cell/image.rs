@@ -72,6 +72,29 @@ impl ImageOutputCell {
         Self::new(record)
     }
 
+    pub(crate) fn ensure_picker_initialized(
+        &self,
+        picker: Option<Picker>,
+        font_size: (u16, u16),
+    ) {
+        let mut slot = self.cached_picker.borrow_mut();
+        let needs_init = match slot.as_ref() {
+            None => true,
+            Some(existing) => {
+                if let Some(provided) = picker.as_ref() {
+                    existing.font_size() != provided.font_size()
+                        || existing.protocol_type() != provided.protocol_type()
+                } else {
+                    existing.font_size() != font_size
+                }
+            }
+        };
+        if needs_init {
+            *slot = Some(picker.unwrap_or_else(|| Picker::from_fontsize(font_size)));
+            self.cached_image_protocol.borrow_mut().take();
+        }
+    }
+
     pub(crate) fn record(&self) -> &ImageRecord {
         &self.record
     }

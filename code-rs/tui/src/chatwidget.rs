@@ -9251,6 +9251,17 @@ impl ChatWidget<'_> {
         layout_scroll::flash_scrollbar(self);
     }
 
+    fn ensure_image_cell_picker(&self, cell: &dyn HistoryCell) {
+        if let Some(image) = cell
+            .as_any()
+            .downcast_ref::<crate::history_cell::ImageOutputCell>()
+        {
+            let picker = self.terminal_info.picker.clone();
+            let font_size = self.terminal_info.font_size;
+            image.ensure_picker_initialized(picker, font_size);
+        }
+    }
+
     fn history_insert_with_key_global(
         &mut self,
         cell: Box<dyn HistoryCell>,
@@ -9278,6 +9289,7 @@ impl ChatWidget<'_> {
                 );
             }
         }
+        self.ensure_image_cell_picker(cell.as_ref());
         // Any ordered insert of a non-reasoning cell means reasoning is no longer the
         // bottom-most active block; drop the in-progress ellipsis on collapsed titles.
         let is_reasoning_cell = cell
@@ -10006,9 +10018,11 @@ impl ChatWidget<'_> {
             HistoryRecord::BackgroundEvent(state) => {
                 Some(Box::new(history_cell::BackgroundEventCell::new(state.clone())))
             }
-            HistoryRecord::Image(state) => Some(Box::new(
-                history_cell::ImageOutputCell::from_record(state.clone()),
-            )),
+            HistoryRecord::Image(state) => {
+                let cell = history_cell::ImageOutputCell::from_record(state.clone());
+                self.ensure_image_cell_picker(&cell);
+                Some(Box::new(cell))
+            }
             HistoryRecord::Context(state) => Some(Box::new(
                 history_cell::ContextCell::new(state.clone()),
             )),
@@ -10397,6 +10411,7 @@ impl ChatWidget<'_> {
             }
         }
 
+        self.ensure_image_cell_picker(cell.as_ref());
         self.history_cells[idx] = cell;
         self.invalidate_height_cache();
         self.request_redraw();
@@ -10445,6 +10460,7 @@ impl ChatWidget<'_> {
             (None, None) => {}
         }
 
+        self.ensure_image_cell_picker(cell.as_ref());
         self.history_cells[idx] = cell;
         if idx < self.history_cell_ids.len() {
             self.history_cell_ids[idx] = maybe_id;
