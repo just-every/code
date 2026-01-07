@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.38] - 2026-01-06
+
+- Docs/Config: clarify `--model` applies to the active provider and call out OpenAI-compatible requirements for custom providers. (fa6c482)
+- Docs/Config: add a proxy example for routing OpenAI-style requests to other vendors. (fa6c482)
+
 ## [0.6.37] - 2026-01-06
 
 - TUI/Image: render view image cards so attached visuals show inline. (658ddfb)
