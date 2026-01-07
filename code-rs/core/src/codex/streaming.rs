@@ -1880,6 +1880,19 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
                         )
                         .await;
 
+                    let payload = build_precompact_hook_payload(&sess, "auto");
+                    let mut tracker = TurnDiffTracker::new();
+                    let hook_result = sess
+                        .run_hooks_for_event(
+                            &mut tracker,
+                            ProjectHookEvent::PreCompact,
+                            &payload,
+                            None,
+                            attempt_req,
+                        )
+                        .await;
+                    sess.enqueue_hook_system_messages(hook_result.system_messages);
+
                     // Choose between local and remote compact based on auth mode,
                     // matching upstream codex-rs behavior
                     if compact::should_use_remote_compact_task(&sess).await {
@@ -2280,6 +2293,19 @@ async fn run_turn(
                                         .to_string(),
                                 )
                                 .await;
+
+                            let payload = build_precompact_hook_payload(&sess, "auto");
+                            let mut tracker = TurnDiffTracker::new();
+                            let hook_result = sess
+                                .run_hooks_for_event(
+                                    &mut tracker,
+                                    ProjectHookEvent::PreCompact,
+                                    &payload,
+                                    None,
+                                    attempt_req,
+                                )
+                                .await;
+                            sess.enqueue_hook_system_messages(hook_result.system_messages);
 
                             let previous_input_snapshot = input.clone();
                             let compacted_history = if compact::should_use_remote_compact_task(sess).await {

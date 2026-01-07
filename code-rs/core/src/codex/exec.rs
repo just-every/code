@@ -509,6 +509,7 @@ fn build_exec_hook_payload(
                         "success": out.exit_code == 0,
                     }),
                 );
+                base.insert("success".to_string(), json!(out.exit_code == 0));
                 base.insert("exit_code".to_string(), json!(out.exit_code));
                 base.insert("duration_ms".to_string(), json!(out.duration.as_millis()));
                 base.insert("timed_out".to_string(), json!(out.timed_out));
