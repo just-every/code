@@ -144,7 +144,21 @@ impl App<'_> {
 /// single `io::Result<()>`, preserving error kinds for WouldBlock handling.
 pub(super) fn flatten_draw_result(res: std::io::Result<Result<()>>) -> std::io::Result<()> {
     match res {
-        Ok(inner) => inner.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)),
+        Ok(inner) => match inner {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                // Preserve the original `io::ErrorKind` when the underlying
+                // draw failure is (or wraps) an `io::Error`. This keeps
+                // backpressure handling (WouldBlock/EAGAIN) working even though
+                // the draw path uses `color_eyre::Result`.
+                let kind = err
+                    .downcast_ref::<std::io::Error>()
+                    .or_else(|| err.root_cause().downcast_ref::<std::io::Error>())
+                    .map(|io| io.kind())
+                    .unwrap_or(std::io::ErrorKind::Other);
+                Err(std::io::Error::new(kind, err))
+            }
+        },
         Err(e) => Err(e),
     }
 }
