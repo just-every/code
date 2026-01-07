@@ -1204,7 +1204,6 @@ pub(crate) struct GhostState {
     queue: VecDeque<(u64, GhostSnapshotRequest)>,
     active: Option<(u64, GhostSnapshotRequest)>,
     next_id: u64,
-    pending_dispatches: VecDeque<PendingSnapshotDispatch>,
     queued_user_messages: VecDeque<UserMessage>,
 }
 
@@ -1698,7 +1697,6 @@ pub(crate) struct ChatWidget<'a> {
     ghost_snapshot_queue: VecDeque<(u64, GhostSnapshotRequest)>,
     active_ghost_snapshot: Option<(u64, GhostSnapshotRequest)>,
     next_ghost_snapshot_id: u64,
-    pending_snapshot_dispatches: VecDeque<PendingSnapshotDispatch>,
     queue_block_started_at: Option<Instant>,
 
     auto_drive_card_sequence: u64,
@@ -1918,19 +1916,6 @@ impl GhostSnapshotRequest {
 enum GhostSnapshotJobHandle {
     Scheduled(u64),
     Skipped,
-}
-
-#[derive(Clone)]
-enum PendingSnapshotDispatch {
-    Queued { job_id: u64, message: UserMessage },
-}
-
-impl PendingSnapshotDispatch {
-    fn job_id(&self) -> u64 {
-        match self {
-            PendingSnapshotDispatch::Queued { job_id, .. } => *job_id,
-        }
-    }
 }
 
 #[derive(Default)]
@@ -5299,9 +5284,6 @@ impl ChatWidget<'_> {
         seq: u64,
     ) {
         self.finalize_active_stream();
-        if self.interrupts.has_queued() {
-            self.flush_interrupt_queue();
-        }
         tracing::info!(
             "[order] ExecCommandBegin call_id={} seq={}",
             ev.call_id,
@@ -6501,7 +6483,6 @@ impl ChatWidget<'_> {
             ghost_snapshot_queue: VecDeque::new(),
             active_ghost_snapshot: None,
             next_ghost_snapshot_id: 0,
-            pending_snapshot_dispatches: VecDeque::new(),
             history_virtualization_sync_pending: Cell::new(false),
             auto_drive_card_sequence: 0,
             auto_drive_variant,
@@ -6873,7 +6854,6 @@ impl ChatWidget<'_> {
             ghost_snapshot_queue: VecDeque::new(),
             active_ghost_snapshot: None,
             next_ghost_snapshot_id: 0,
-            pending_snapshot_dispatches: VecDeque::new(),
             history_virtualization_sync_pending: Cell::new(false),
             auto_drive_card_sequence: 0,
             auto_drive_variant,
@@ -11316,15 +11296,12 @@ impl ChatWidget<'_> {
                 Some(message.display_text.clone())
             };
 
-            match self.capture_ghost_snapshot(prompt_summary) {
-                GhostSnapshotJobHandle::Scheduled(job_id) => {
-                    self.pending_snapshot_dispatches
-                        .push_back(PendingSnapshotDispatch::Queued { job_id, message });
-                }
-                GhostSnapshotJobHandle::Skipped => {
-                    self.dispatch_queued_user_message_now(message);
-                }
+            let should_capture_snapshot = self.active_ghost_snapshot.is_none()
+                && self.ghost_snapshot_queue.is_empty();
+            if should_capture_snapshot {
+                let _ = self.capture_ghost_snapshot(prompt_summary);
             }
+            self.dispatch_queued_user_message_now(message);
             return;
         }
 
@@ -11443,35 +11420,6 @@ impl ChatWidget<'_> {
         let elapsed = started_at.elapsed();
         let snapshot = self.finalize_ghost_snapshot(request, result, elapsed);
         snapshot
-    }
-
-    fn dispatch_pending_snapshot(&mut self, job_id: u64) {
-        let Some(position) = self
-            .pending_snapshot_dispatches
-            .iter()
-            .position(|pending| pending.job_id() == job_id)
-        else {
-            return;
-        };
-
-        let Some(pending) = self.pending_snapshot_dispatches.remove(position) else {
-            return;
-        };
-        self.process_snapshot_dispatch(pending);
-    }
-
-    fn flush_pending_snapshot_dispatches(&mut self) {
-        while let Some(pending) = self.pending_snapshot_dispatches.pop_front() {
-            self.process_snapshot_dispatch(pending);
-        }
-    }
-
-    fn process_snapshot_dispatch(&mut self, pending: PendingSnapshotDispatch) {
-        match pending {
-            PendingSnapshotDispatch::Queued { message, .. } => {
-                self.dispatch_queued_user_message_now(message);
-            }
-        }
     }
 
     fn dispatch_queued_batch(&mut self, batch: Vec<UserMessage>) {
@@ -11792,12 +11740,8 @@ impl ChatWidget<'_> {
             return;
         }
 
-        let snapshot = self.finalize_ghost_snapshot(request, result, elapsed);
+        let _ = self.finalize_ghost_snapshot(request, result, elapsed);
         self.request_redraw();
-        self.dispatch_pending_snapshot(job_id);
-        if snapshot.is_none() {
-            self.flush_pending_snapshot_dispatches();
-        }
         self.spawn_next_ghost_snapshot();
     }
 
@@ -11892,7 +11836,6 @@ impl ChatWidget<'_> {
             queue: self.ghost_snapshot_queue.clone(),
             active: self.active_ghost_snapshot.clone(),
             next_id: self.next_ghost_snapshot_id,
-            pending_dispatches: self.pending_snapshot_dispatches.clone(),
             queued_user_messages: self.queued_user_messages.clone(),
         }
     }
@@ -11908,7 +11851,6 @@ impl ChatWidget<'_> {
         self.ghost_snapshot_queue = state.queue;
         self.active_ghost_snapshot = state.active;
         self.next_ghost_snapshot_id = state.next_id;
-        self.pending_snapshot_dispatches = state.pending_dispatches;
         self.queued_user_messages = state.queued_user_messages;
         let blocked = self.is_task_running()
             || !self.active_task_ids.is_empty()
@@ -13755,9 +13697,6 @@ impl ChatWidget<'_> {
                     }
                 };
                 self.finalize_active_stream();
-                if self.interrupts.has_queued() {
-                    self.flush_interrupt_queue();
-                }
                 tracing::info!(
                     "[order] McpToolCallBegin call_id={} seq={}",
                     ev.call_id,
@@ -13765,6 +13704,9 @@ impl ChatWidget<'_> {
                 );
                 self.ensure_spinner_for_activity("mcp-begin");
                 tools::mcp_begin(self, ev, order_ok);
+                if self.interrupts.has_queued() {
+                    self.flush_interrupt_queue();
+                }
             }
             EventMsg::McpToolCallEnd(ev) => {
                 let ev2 = ev.clone();
@@ -24632,11 +24574,6 @@ Have we met every part of this goal and is there no further work to do?"#
         }
 
         if let Some(front) = self.queued_user_messages.front().cloned() {
-            if let Some(position) = self.pending_snapshot_dispatches.iter().position(|pending| {
-                matches!(pending, PendingSnapshotDispatch::Queued { message, .. } if message == &front)
-            }) {
-                self.pending_snapshot_dispatches.remove(position);
-            }
             self.dispatch_queued_user_message_now(front);
         }
 
