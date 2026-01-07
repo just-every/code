@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.40] - 2026-01-07
+
+- TUI/Image: initialize picker state for image cards so selection works reliably. (63e53af9)
+- Core: gate cgroup helpers on Linux to avoid non-Linux builds invoking them. (7369620a)
+
 ## [0.6.39] - 2026-01-07
 
 - TUI/Auto-drive: add navigation telemetry and forward aligned compacted history for new browser runs. (94eb8d23, d6d52b7f, aaac24f7)
