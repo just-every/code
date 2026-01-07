@@ -5299,6 +5299,9 @@ impl ChatWidget<'_> {
         seq: u64,
     ) {
         self.finalize_active_stream();
+        if self.interrupts.has_queued() {
+            self.flush_interrupt_queue();
+        }
         tracing::info!(
             "[order] ExecCommandBegin call_id={} seq={}",
             ev.call_id,
@@ -5313,7 +5316,9 @@ impl ChatWidget<'_> {
         {
             self.handle_exec_end_now(pending_end, &order2);
         }
-        self.flush_interrupt_queue();
+        if self.interrupts.has_queued() {
+            self.flush_interrupt_queue();
+        }
     }
 
     /// Handle exec command end immediately
@@ -13574,19 +13579,12 @@ impl ChatWidget<'_> {
                 );
             }
             EventMsg::ExecCommandBegin(ev) => {
-                let ev2 = ev.clone();
                 let seq = event.event_seq;
                 let om_begin = event
                     .order
                     .clone()
                     .expect("missing OrderMeta for ExecCommandBegin");
-                let om_begin_for_handler = om_begin.clone();
-                self.defer_or_handle(
-                    move |interrupts| interrupts.push_exec_begin(seq, ev, Some(om_begin)),
-                    move |this| {
-                        this.handle_exec_begin_ordered(ev2, om_begin_for_handler, seq);
-                    },
-                );
+                self.handle_exec_begin_ordered(ev, om_begin, seq);
             }
             EventMsg::ExecCommandOutputDelta(ev) => {
                 let call_id = ExecCallId(ev.call_id.clone());
@@ -13748,7 +13746,6 @@ impl ChatWidget<'_> {
                 );
             }
             EventMsg::McpToolCallBegin(ev) => {
-                let ev2 = ev.clone();
                 let seq = event.event_seq;
                 let order_ok = match event.order.as_ref() {
                     Some(om) => self.provider_order_key_from_order_meta(om),
@@ -13757,20 +13754,17 @@ impl ChatWidget<'_> {
                         self.next_internal_key()
                     }
                 };
-                self.defer_or_handle(
-                    move |interrupts| interrupts.push_mcp_begin(seq, ev, event.order.clone()),
-                    |this| {
-                        this.finalize_active_stream();
-                        this.flush_interrupt_queue();
-                        tracing::info!(
-                            "[order] McpToolCallBegin call_id={} seq={}",
-                            ev2.call_id,
-                            seq
-                        );
-                        this.ensure_spinner_for_activity("mcp-begin");
-                        tools::mcp_begin(this, ev2, order_ok);
-                    },
+                self.finalize_active_stream();
+                if self.interrupts.has_queued() {
+                    self.flush_interrupt_queue();
+                }
+                tracing::info!(
+                    "[order] McpToolCallBegin call_id={} seq={}",
+                    ev.call_id,
+                    seq
                 );
+                self.ensure_spinner_for_activity("mcp-begin");
+                tools::mcp_begin(self, ev, order_ok);
             }
             EventMsg::McpToolCallEnd(ev) => {
                 let ev2 = ev.clone();
