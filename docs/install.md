@@ -1,4 +1,4 @@
-## Install & build
+## Installing & building
 
 ### System requirements
 

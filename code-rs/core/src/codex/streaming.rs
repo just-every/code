@@ -786,6 +786,7 @@ pub(super) async fn submission_loop(
                     confirm_guard: ConfirmGuardRuntime::from_config(&config.confirm_guard),
                     project_hooks: config.project_hooks.clone(),
                     project_commands: config.project_commands.clone(),
+                    tool_output_max_bytes: config.tool_output_max_bytes,
                     hook_guard: AtomicBool::new(false),
                     github: Arc::new(RwLock::new(config.github.clone())),
                     validation: Arc::new(RwLock::new(config.validation.clone())),
@@ -951,7 +952,10 @@ pub(super) async fn submission_loop(
                     agent_manager_initialized = true;
                 }
             }
-            Op::UserInput { items } => {
+            Op::UserInput {
+                items,
+                final_output_json_schema,
+            } => {
                 let sess = match sess.as_ref() {
                     Some(sess) => sess,
                     None => {
@@ -975,7 +979,7 @@ pub(super) async fn submission_loop(
                 sess.abort();
 
                 // Spawn a new agent for this user input.
-                let turn_context = sess.make_turn_context();
+                let turn_context = sess.make_turn_context_with_schema(final_output_json_schema);
                 let agent = AgentTask::spawn(Arc::clone(&sess), turn_context, sub.id.clone(), items);
                 sess.set_task(agent);
             }
@@ -1439,6 +1443,7 @@ async fn spawn_review_thread(
         shell_environment_policy: parent_turn_context.shell_environment_policy.clone(),
         is_review_mode: true,
         text_format_override: None,
+        final_output_json_schema: None,
     });
 
     let review_prompt_text = format!(
@@ -2114,7 +2119,7 @@ async fn run_turn(
             text_format: tc.text_format_override.clone(),
             model_override: None,
             model_family_override: None,
-            output_schema: None,
+            output_schema: tc.final_output_json_schema.clone(),
             log_tag: Some("codex/turn".to_string()),
             session_id_override: None,
             model_descriptions: sess.model_descriptions.clone(),
@@ -4697,10 +4702,11 @@ async fn handle_wait(
                         st.background_execs.remove(&call_id);
                     }
                     let content = format_exec_output_with_limit(
-                        sess,
+                        sess.get_cwd(),
                         &ctx_inner.sub_id,
                         &ctx_inner.call_id,
                         &done,
+                        sess.tool_output_max_bytes,
                     );
                     suppress_guard.disarm();
                     return ResponseInputItem::FunctionCallOutput {
@@ -4857,7 +4863,13 @@ async fn handle_wait(
                     }
                 };
                 if let Some(done) = done {
-                    let content = format_exec_output_with_limit(sess, &ctx_inner.sub_id, &ctx_inner.call_id, &done);
+                    let content = format_exec_output_with_limit(
+                        sess.get_cwd(),
+                        &ctx_inner.sub_id,
+                        &ctx_inner.call_id,
+                        &done,
+                        sess.tool_output_max_bytes,
+                    );
                     suppress_guard.disarm();
                     ResponseInputItem::FunctionCallOutput {
                         call_id: ctx_inner.call_id.clone(),
@@ -8286,6 +8298,7 @@ async fn handle_container_exec_with_params(
     let backgrounded_task = backgrounded.clone();
     let suppress_event_flag_task = suppress_event_flag.clone();
     let display_label_task = display_label.clone();
+    let tool_output_max_bytes = sess.tool_output_max_bytes;
     let task_handle = tokio::spawn(async move {
         // Build stdout stream with tail capture. We cannot stamp via `Session` here,
         // but deltas will be delivered with neutral ordering which the UI tolerates.
@@ -8388,7 +8401,13 @@ async fn handle_container_exec_with_params(
                     };
                     let header = format!("Background shell completed ({header_label}), exit_code={}, duration={:?}.", out.exit_code, out.duration);
                     let full_body = format_exec_output_str(&out);
-                    let body = truncate_exec_output_for_storage(&sandbox_cwd, &sub_id_for_events, &call_id_for_events, &full_body);
+                    let body = truncate_exec_output_for_storage(
+                        &sandbox_cwd,
+                        &sub_id_for_events,
+                        &call_id_for_events,
+                        &full_body,
+                        tool_output_max_bytes,
+                    );
                     let dev_text = format!("{}\n\n{}", header, body);
                     let _ = tx
                         .send(Submission { id: uuid::Uuid::new_v4().to_string(), op: Op::AddPendingInputDeveloper { text: dev_text } })
@@ -8432,7 +8451,13 @@ async fn handle_container_exec_with_params(
         };
         if let Some(done) = done_opt {
             let is_success = done.exit_code == 0;
-            let mut content = format_exec_output_with_limit(sess, &sub_id, &call_id, &done);
+            let mut content = format_exec_output_with_limit(
+                sess.get_cwd(),
+                &sub_id,
+                &call_id,
+                &done,
+                sess.tool_output_max_bytes,
+            );
             if let Some(harness) = harness_summary_json.as_ref() {
                 if !harness.is_empty() {
                     content.push('\n');
@@ -8501,7 +8526,13 @@ async fn handle_sandbox_error(
             .as_ref()
             .map(|bytes| format!(" (memory.max={bytes} bytes)"))
             .unwrap_or_default();
-        let tail = format_exec_output_with_limit(sess, &sub_id, &call_id, output.as_ref());
+        let tail = format_exec_output_with_limit(
+            sess.get_cwd(),
+            &sub_id,
+            &call_id,
+            output.as_ref(),
+            sess.tool_output_max_bytes,
+        );
         let content = format!(
             "command exceeded memory limit{limit_note}. Try reducing parallelism (e.g. fewer jobs) and retry.\n\n{tail}"
         );
@@ -8654,7 +8685,13 @@ async fn handle_sandbox_error(
             let ExecToolCallOutput { exit_code, .. } = &retry_output;
 
             let is_success = *exit_code == 0;
-            let content = format_exec_output_with_limit(sess, &sub_id, &call_id, &retry_output);
+            let content = format_exec_output_with_limit(
+                sess.get_cwd(),
+                &sub_id,
+                &call_id,
+                &retry_output,
+                sess.tool_output_max_bytes,
+            );
 
             ResponseInputItem::FunctionCallOutput {
                 call_id: call_id.clone(),
@@ -8674,10 +8711,7 @@ async fn handle_sandbox_error(
     }
 }
 
-// Limit extremely large tool outputs before sending to the model to avoid
-// context overflows. Keep this conservative because multiple tool outputs
-// can appear in a single turn. The limit is in bytes (on the UTF‑8 string).
-pub(super) const MAX_TOOL_OUTPUT_BYTES_FOR_MODEL: usize = 32 * 1024; // 32 KiB
+/// Marker inserted when tool output is truncated.
 pub(super) const TRUNCATION_MARKER: &str = "…truncated…\n";
 
 pub(super) fn truncate_middle_bytes(s: &str, max_bytes: usize) -> (String, bool, usize, usize) {
@@ -8759,8 +8793,10 @@ fn truncate_exec_output_for_storage(
     sub_id: &str,
     call_id: &str,
     full: &str,
+    max_tool_output_bytes: usize,
 ) -> String {
-    let (maybe_truncated, was_truncated, _, _) = truncate_middle_bytes(full, MAX_TOOL_OUTPUT_BYTES_FOR_MODEL);
+    let (maybe_truncated, was_truncated, _, _) =
+        truncate_middle_bytes(full, max_tool_output_bytes);
     if !was_truncated {
         return maybe_truncated;
     }
@@ -8781,10 +8817,11 @@ fn truncate_exec_output_for_storage(
 /// Exec output serialized for the model. If the payload is too large,
 /// write the full output to a file and include a truncated preview here.
 fn format_exec_output_with_limit(
-    sess: &Session,
+    cwd: &Path,
     sub_id: &str,
     call_id: &str,
     exec_output: &ExecToolCallOutput,
+    max_tool_output_bytes: usize,
 ) -> String {
     let ExecToolCallOutput {
         exit_code,
@@ -8804,9 +8841,9 @@ fn format_exec_output_with_limit(
     // round to 1 decimal place
     let duration_seconds = ((duration.as_secs_f32()) * 10.0).round() / 10.0;
 
-    let cwd = sess.get_cwd().to_path_buf();
     let full = format_exec_output_str(exec_output);
-    let final_output = truncate_exec_output_for_storage(&cwd, sub_id, call_id, &full);
+    let final_output =
+        truncate_exec_output_for_storage(cwd, sub_id, call_id, &full, max_tool_output_bytes);
 
     let payload = ExecOutput {
         output: &final_output,
@@ -9421,16 +9458,44 @@ async fn handle_browser_open(sess: &Session, ctx: &ToolCallCtx, arguments: Strin
                                     },
                                 }
                             }
-                            Err(e) => ResponseInputItem::FunctionCallOutput {
-                                call_id: call_id_clone.clone(),
-                                output: FunctionCallOutputPayload {
-                                    content: format!(
-                                        "Failed to navigate browser to {}: {}",
-                                        url, e
-                                    ),
-                                    success: Some(false),
-                                },
-                            },
+                            Err(e) => {
+                                let error_string = e.to_string();
+                                let error_lower = error_string.to_ascii_lowercase();
+                                let url_lower = url.to_ascii_lowercase();
+                                let is_local = url_lower.starts_with("http://localhost")
+                                    || url_lower.starts_with("https://localhost")
+                                    || url_lower.starts_with("http://127.")
+                                    || url_lower.starts_with("https://127.")
+                                    || url_lower.starts_with("http://[::1]")
+                                    || url_lower.starts_with("https://[::1]")
+                                    || url_lower.starts_with("http://0.0.0.0")
+                                    || url_lower.starts_with("https://0.0.0.0");
+                                let mut content =
+                                    format!("Failed to navigate browser to {url}: {error_string}");
+                                if error_lower.contains("oneshot canceled")
+                                    || error_lower.contains("oneshot cancelled")
+                                {
+                                    content.push_str(
+                                        " The CDP navigation was cancelled before it completed.",
+                                    );
+                                    if is_local {
+                                        content.push_str(
+                                            " If this is a local server, make sure it is reachable from the browser process (binding to 0.0.0.0 or using the machine IP can help).",
+                                        );
+                                    } else {
+                                        content.push_str(
+                                            " Reopening the browser page and retrying can resolve transient target resets.",
+                                        );
+                                    }
+                                }
+                                ResponseInputItem::FunctionCallOutput {
+                                    call_id: call_id_clone.clone(),
+                                    output: FunctionCallOutputPayload {
+                                        content,
+                                        success: Some(false),
+                                    },
+                                }
+                            }
                         }
                     } else {
                         ResponseInputItem::FunctionCallOutput {
@@ -11486,4 +11551,63 @@ fn parse_legacy_status_snapshot(item: &ResponseItem) -> Option<EnvironmentContex
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{format_exec_output_with_limit, TRUNCATION_MARKER};
+    use crate::exec::{ExecToolCallOutput, StreamOutput};
+    use serde_json::Value;
+    use std::time::Duration;
+    use tempfile::TempDir;
+
+    fn make_exec_output(output: String) -> ExecToolCallOutput {
+        ExecToolCallOutput {
+            exit_code: 0,
+            stdout: StreamOutput::new(String::new()),
+            stderr: StreamOutput::new(String::new()),
+            aggregated_output: StreamOutput::new(output),
+            duration: Duration::from_secs(1),
+            timed_out: false,
+        }
+    }
+
+    #[test]
+    fn format_exec_output_truncates_with_small_limit() {
+        let dir = TempDir::new().expect("tempdir");
+        let output = "line\n".repeat(200);
+        let exec_output = make_exec_output(output);
+
+        let payload =
+            format_exec_output_with_limit(dir.path(), "sub", "call", &exec_output, 64);
+        let parsed: Value = serde_json::from_str(&payload).expect("parse payload");
+        let content = parsed
+            .get("output")
+            .and_then(Value::as_str)
+            .expect("output string");
+
+        assert!(content.contains(TRUNCATION_MARKER));
+    }
+
+    #[test]
+    fn format_exec_output_keeps_output_when_under_limit() {
+        let dir = TempDir::new().expect("tempdir");
+        let output = "line\n".repeat(10);
+        let exec_output = make_exec_output(output.clone());
+        let payload = format_exec_output_with_limit(
+            dir.path(),
+            "sub",
+            "call",
+            &exec_output,
+            output.len() + 32,
+        );
+        let parsed: Value = serde_json::from_str(&payload).expect("parse payload");
+        let content = parsed
+            .get("output")
+            .and_then(Value::as_str)
+            .expect("output string");
+
+        assert!(!content.contains(TRUNCATION_MARKER));
+        assert!(content.contains("line"));
+    }
 }

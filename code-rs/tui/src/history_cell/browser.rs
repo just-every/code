@@ -219,6 +219,13 @@ impl BrowserSessionCell {
     }
 
     pub(crate) fn add_console_message(&mut self, message: String) {
+        if self
+            .console_messages
+            .last()
+            .map_or(false, |last| last == &message)
+        {
+            return;
+        }
         self.console_messages.push(message);
         if self.console_messages.len() > MAX_CONSOLE {
             let overflow = self.console_messages.len() - MAX_CONSOLE;

@@ -1456,6 +1456,23 @@ impl Page {
         }
     }
 
+    pub fn target_id_debug(&self) -> String {
+        let target_id = self.cdp_page.target_id();
+        format!("{target_id:?}")
+    }
+
+    pub fn session_id_debug(&self) -> String {
+        let session_id = self.cdp_page.session_id();
+        format!("{session_id:?}")
+    }
+
+    pub fn opener_id_debug(&self) -> Option<String> {
+        self.cdp_page
+            .opener_id()
+            .as_ref()
+            .map(|opener_id| format!("{opener_id:?}"))
+    }
+
     pub async fn update_viewport(&self, _viewport: ViewportConfig) -> Result<()> {
         Ok(())
     }

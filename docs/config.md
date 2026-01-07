@@ -1,4 +1,4 @@
-# Config
+# Configuration
 
 <!-- markdownlint-disable MD012 MD013 MD028 MD033 -->
 
@@ -15,7 +15,7 @@ Every Code supports several mechanisms for setting config values:
     - Because quotes are interpreted by one's shell, `-c key="true"` will be correctly interpreted in TOML as `key = true` (a boolean) and not `key = "true"` (a string). If for some reason you needed the string `"true"`, you would need to use `-c key='"true"'` (note the two sets of quotes).
 - The `$CODE_HOME/config.toml` configuration file. `CODE_HOME` defaults to `~/.code`; Every Code (Code) also reads from `$CODEX_HOME`/`~/.codex` for backwards compatibility but only writes to `~/.code`. (Logs and other state use the same directory.)
 
-Both the `--config` flag and the `config.toml` file support the following options:
+- https://developers.openai.com/codex/config-reference
 
 ## model
 
@@ -27,7 +27,7 @@ model = "o3"  # overrides the default of "gpt-5.1-codex"
 
 ## model_providers
 
-This option lets you override and amend the default set of model providers bundled with Code. This value is a map where the key is the value to use with `model_provider` to select the corresponding provider.
+This option lets you override and amend the default set of model providers bundled with Code. This value is a map where the key is the value to use with `model_provider` to select the corresponding provider. Providers must expose an OpenAI-compatible HTTP API (Chat Completions or Responses); native Anthropic/Gemini APIs are not supported directly without a proxy.
 
 For example, if you wanted to add a provider that uses the OpenAI 4o model via the chat completions API, then you could add the following configuration:
 
@@ -68,6 +68,20 @@ Or a third-party provider (using a distinct environment variable for the API key
 name = "Mistral"
 base_url = "https://api.mistral.ai/v1"
 env_key = "MISTRAL_API_KEY"
+```
+
+Or a proxy that converts OpenAI-compatible requests to another vendor (e.g., Anthropic or Gemini):
+
+```toml
+model = "claude-opus-4.5"
+model_provider = "claude-proxy"
+
+[model_providers.claude-proxy]
+name = "Claude (proxy)"
+base_url = "http://127.0.0.1:8000/v1"
+env_key = "ANTHROPIC_API_KEY"
+wire_api = "responses"  # or "chat" if your proxy only supports chat-completions
+requires_openai_auth = false
 ```
 
 It is also possible to configure a provider to include extra HTTP headers with a request. These can be hardcoded values (`http_headers`) or values read from environment variables (`env_http_headers`):
@@ -855,6 +869,10 @@ In general, Code knows the context window for the most common OpenAI models, but
 ## model_max_output_tokens
 
 This is analogous to `model_context_window`, but for the maximum number of output tokens for the model.
+
+## tool_output_max_bytes
+
+Maximum number of bytes of tool output (including shell command output and file reads) to include in a model request. Defaults to 32 KiB. Increase this if you need to send larger outputs to the model (note the exec capture cap remains 32 MiB per stream).
 
 ## project_doc_max_bytes
 

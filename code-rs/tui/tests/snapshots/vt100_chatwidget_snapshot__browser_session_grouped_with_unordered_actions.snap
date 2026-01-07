@@ -25,7 +25,7 @@ expression: output
    |    MM:SS  Typed    pizza
    |    MM:SS  Pressed  Enter
    |
-   |   Console: ⚠️  Encountering captcha block
+   |   Console: Encountering captcha block
    |
    +- [Ctrl+B] View · [Esc] Stop
 

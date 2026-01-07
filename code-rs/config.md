@@ -22,7 +22,7 @@ model = "o3"  # overrides the default of "gpt-5.1"
 
 ## model_providers
 
-This option lets you override and amend the default set of model providers bundled with Codex. This value is a map where the key is the value to use with `model_provider` to select the corresponding provider.
+This option lets you override and amend the default set of model providers bundled with Codex. This value is a map where the key is the value to use with `model_provider` to select the corresponding provider. Providers must expose an OpenAI-compatible HTTP API (Chat Completions or Responses); native Anthropic/Gemini APIs are not supported directly without a proxy.
 
 For example, if you wanted to add a provider that uses the OpenAI 4o model via the chat completions API, then you could add the following configuration:
 
@@ -714,6 +714,10 @@ In general, Codex knows the context window for the most common OpenAI models, bu
 ## model_max_output_tokens
 
 This is analogous to `model_context_window`, but for the maximum number of output tokens for the model.
+
+## tool_output_max_bytes
+
+Maximum number of bytes of tool output (including shell command output and file reads) to include in a model request. Defaults to 32 KiB. Increase this if you need to send larger outputs to the model (note the exec capture cap remains 32 MiB per stream).
 
 ## project_doc_max_bytes
 

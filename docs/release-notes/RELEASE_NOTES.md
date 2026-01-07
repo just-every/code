@@ -1,10 +1,10 @@
-## @just-every/code v0.6.34
+## @just-every/code v0.6.40
 
-Auto-switch accounts on usage limits and surface clear notices so work continues without surprises.
+Small fixes to keep TUI image workflows and Linux builds stable.
 
 ### Changes
-- Auto-switch to another account when usage limits hit to keep runs moving.
-- Show notices when accounts auto-switch due to rate limits so users stay informed.
+- TUI/Image: initialize picker state for image cards so selection works reliably.
+- Core: gate cgroup helpers on Linux to avoid non-Linux builds invoking them.
 
 ### Install
 ```
@@ -12,4 +12,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.33...v0.6.34
+Compare: https://github.com/just-every/code/compare/v0.6.39...v0.6.40

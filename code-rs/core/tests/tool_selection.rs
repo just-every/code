@@ -80,6 +80,7 @@ async fn collect_tool_identifiers_for_model(model: &str) -> Vec<String> {
             items: vec![InputItem::Text {
                 text: "hello tools".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();

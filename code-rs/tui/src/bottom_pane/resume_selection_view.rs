@@ -228,7 +228,7 @@ impl BottomPaneView<'_> for ResumeSelectionView {
 
         // Footer hints
         // Draw a spacer line above footer (implicit by not drawing into that row)
-        let footer = Rect { x: inner.x.saturating_add(1), y: inner.y + inner.height - 1, width: inner.width.saturating_sub(1), height: 1 };
+        let footer = Rect { x: inner.x.saturating_add(1), y: inner.y + inner.height.saturating_sub(1), width: inner.width.saturating_sub(1), height: 1 };
         let footer_line = Line::from(vec![
             Span::styled("↑↓ PgUp PgDn", Style::default().fg(crate::colors::light_blue())),
             Span::raw(" Navigate  "),

@@ -65,6 +65,9 @@ pub enum Op {
     UserInput {
         /// User input items, see `InputItem`
         items: Vec<InputItem>,
+        /// Optional JSON Schema used to constrain the final assistant message for this turn.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        final_output_json_schema: Option<Value>,
     },
 
     /// Queue user input to be appended to the next model request without

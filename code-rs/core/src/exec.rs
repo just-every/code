@@ -564,24 +564,31 @@ async fn consume_truncated_output(
         combined_handle.await.map_err(CodexErr::from)?
     };
 
-    let mut oom_killed = false;
-    let mut cgroup_memory_max_bytes: Option<u64> = None;
-    #[cfg(target_os = "linux")]
-    {
-        if !timed_out {
-            if let Some(pid) = pid {
-                if matches!(exit_status.signal(), Some(SIGKILL_CODE))
-                    && crate::cgroup::exec_cgroup_oom_killed(pid).unwrap_or(false)
-                {
-                    oom_killed = true;
-                    cgroup_memory_max_bytes = crate::cgroup::exec_cgroup_memory_max_bytes(pid);
+    let (oom_killed, cgroup_memory_max_bytes) = {
+        #[cfg(target_os = "linux")]
+        {
+            let mut oom_killed = false;
+            let mut cgroup_memory_max_bytes: Option<u64> = None;
+            if !timed_out {
+                if let Some(pid) = pid {
+                    if matches!(exit_status.signal(), Some(SIGKILL_CODE))
+                        && crate::cgroup::exec_cgroup_oom_killed(pid).unwrap_or(false)
+                    {
+                        oom_killed = true;
+                        cgroup_memory_max_bytes = crate::cgroup::exec_cgroup_memory_max_bytes(pid);
+                    }
                 }
             }
+            if let Some(pid) = pid {
+                crate::cgroup::best_effort_cleanup_exec_cgroup(pid);
+            }
+            (oom_killed, cgroup_memory_max_bytes)
         }
-        if let Some(pid) = pid {
-            crate::cgroup::best_effort_cleanup_exec_cgroup(pid);
+        #[cfg(not(target_os = "linux"))]
+        {
+            (false, None)
         }
-    }
+    };
 
     Ok(RawExecToolCallOutput {
         exit_status,

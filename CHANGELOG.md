@@ -7,6 +7,41 @@
 
 - (none)
 
+## [0.6.40] - 2026-01-07
+
+- TUI/Image: initialize picker state for image cards so selection works reliably. (63e53af9)
+- Core: gate cgroup helpers on Linux to avoid non-Linux builds invoking them. (7369620a)
+
+## [0.6.39] - 2026-01-07
+
+- TUI/Auto-drive: add navigation telemetry and forward aligned compacted history for new browser runs. (94eb8d23, d6d52b7f, aaac24f7)
+- TUI2/Markdown: stream logical lines so transcripts reflow correctly on resize and copy/paste. (c92dbea7)
+- TUI: render view-image paths relative to the working directory for non-git projects. (4c3d2a5b)
+- TUI2/Transcript: add an auto-hiding scrollbar, anchor the copy pill at the viewport bottom, and cache rendering to cut redraws. (8f10d3bf, 56782130, 90f37e85)
+
+## [0.6.38] - 2026-01-06
+
+- Docs/Config: clarify `--model` applies to the active provider and call out OpenAI-compatible requirements for custom providers. (fa6c482)
+- Docs/Config: add a proxy example for routing OpenAI-style requests to other vendors. (fa6c482)
+
+## [0.6.37] - 2026-01-06
+
+- TUI/Image: render view image cards so attached visuals show inline. (658ddfb)
+- TUI/Browser: scope console logs to each browser card to avoid spillover. (e1d8f12)
+- TUI/Resume: prevent footer underflow in resume layouts. (deef15a)
+- TUI/Composer: guard composer height to keep the input stable. (041dff4)
+- Core/Config: allow tool output size override to honor config limits. (c3782ba)
+
+## [0.6.36] - 2026-01-05
+
+- TUI: prioritize task cancellation on Esc before agent input to make stopping runs reliable. (76e3dd8)
+- Tests: reduce linux sandbox and TUI timeout flakes for steadier CI runs. (9d5dbfc)
+
+## [0.6.35] - 2026-01-05
+
+- Core/Agent: keep packaged code executable available for read-only agents to avoid missing-binary failures. (d1557c5)
+- Core/Agent: fall back to local dev build when the running binary disappears to keep agent commands working. (d1557c5)
+
 ## [0.6.34] - 2026-01-05
 
 - Core/Auth: auto-switch to another account when usage limits hit to keep runs moving. (590f46be)

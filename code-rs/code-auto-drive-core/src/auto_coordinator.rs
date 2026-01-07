@@ -241,7 +241,7 @@ pub enum AutoCoordinatorEvent {
         replay_updates: u32,
     },
     CompactedHistory {
-        conversation: Vec<ResponseItem>,
+        conversation: Arc<[ResponseItem]>,
         show_notice: bool,
     },
     StopAck,
@@ -282,10 +282,10 @@ impl AutoCoordinatorHandle {
 
 #[derive(Debug)]
 pub enum AutoCoordinatorCommand {
-    UpdateConversation(Vec<ResponseItem>),
+    UpdateConversation(Arc<[ResponseItem]>),
     HandleUserPrompt {
         _prompt: String,
-        conversation: Vec<ResponseItem>,
+        conversation: Arc<[ResponseItem]>,
     },
     AckDecision { seq: u64 },
     Stop,
@@ -1188,10 +1188,11 @@ fn run_auto_loop(
         schema_features.include_goal_field = true;
     }
     let include_agents = schema_features.include_agents;
-    let mut pending_conversation = Some(filter_popular_commands(initial_conversation));
+    let mut pending_conversation =
+        Some(Arc::<[ResponseItem]>::from(filter_popular_commands(initial_conversation)));
     let mut decision_seq: u64 = 0;
     let mut pending_ack_seq: Option<u64> = None;
-    let mut queued_updates: VecDeque<Vec<ResponseItem>> = VecDeque::new();
+    let mut queued_updates: VecDeque<Arc<[ResponseItem]>> = VecDeque::new();
     if !derive_goal_from_history {
         if let Some(seed) = build_initial_planning_seed(&goal_text, include_agents) {
             let transcript_item = make_message("assistant", seed.response_json.clone());
@@ -1233,7 +1234,7 @@ fn run_auto_loop(
             break;
         }
 
-        let mut next_conversation: Option<Vec<ResponseItem>> = None;
+        let mut next_conversation: Option<Arc<[ResponseItem]>> = None;
 
         if let Some(conv) = pending_conversation.take() {
             if let Some(pending_seq) = pending_ack_seq {
@@ -1254,8 +1255,9 @@ fn run_auto_loop(
                 continue;
             }
 
+            let conv = conv.as_ref().to_vec();
             let mut conv = filter_popular_commands(conv);
-            match maybe_compact(
+            let compaction_result = maybe_compact(
                 &runtime,
                 client.as_ref(),
                 &event_tx,
@@ -1264,14 +1266,19 @@ fn run_auto_loop(
                 prev_compact_summary.as_deref(),
                 &active_model_slug,
                 &compact_prompt_text,
-            ) {
-                CompactionResult::Completed { summary_text } => {
-                    prev_compact_summary = summary_text;
-                }
-                CompactionResult::Skipped => {}
+            );
+            let conv = Arc::<[ResponseItem]>::from(conv);
+            if matches!(compaction_result, CompactionResult::Completed { .. }) {
+                event_tx.send(AutoCoordinatorEvent::CompactedHistory {
+                    conversation: Arc::clone(&conv),
+                    show_notice: true,
+                });
+            }
+            if let CompactionResult::Completed { summary_text } = compaction_result {
+                prev_compact_summary = summary_text;
             }
             let developer_intro = base_developer_intro.as_str();
-            let mut retry_conversation = Some(conv.clone());
+            let mut retry_conversation: Option<Vec<ResponseItem>> = None;
             let time_budget_message = time_budget.as_mut().and_then(|budget| budget.maybe_nudge());
             let time_budget_deadline = time_budget.as_ref().map(|budget| budget.deadline);
             let loop_warning = session_metrics.loop_detection_warning();
@@ -1285,7 +1292,7 @@ fn run_auto_loop(
                 time_budget_deadline,
                 loop_warning.as_deref(),
                 &schema,
-                conv,
+                Arc::clone(&conv),
                 auto_instructions.as_deref(),
                 &event_tx,
                 &cancel_token,
@@ -1428,9 +1435,9 @@ fn run_auto_loop(
                             if let Some(raw) = raw_output.as_ref() {
                                 // Assistant message should show the model's raw output so the UI sees the failed response.
                                 let assistant_msg = make_message("assistant", raw.clone());
-                                if let Some(conv) = retry_conversation.as_mut() {
-                                    conv.push(assistant_msg);
-                                }
+                                retry_conversation
+                                    .get_or_insert_with(|| conv.as_ref().to_vec())
+                                    .push(assistant_msg);
                                 already_shared_raw = true;
                             }
 
@@ -1459,7 +1466,9 @@ fn run_auto_loop(
                                 delta: message,
                                 summary_index: None,
                             });
-                            if let Some(conv) = retry_conversation.as_mut() {
+                            {
+                                let retry_vec =
+                                    retry_conversation.get_or_insert_with(|| conv.as_ref().to_vec());
                                 let mut developer_note = format!(
                                     "Previous coordinator response failed validation (attempt {attempt}/{MAX_DECISION_RECOVERY_ATTEMPTS}).\nError: {error}\nSchema: {schema_label}"
                                 );
@@ -1476,20 +1485,22 @@ fn run_auto_loop(
                                     developer_note.push_str("\n");
                                     developer_note.push_str(OVERLONG_MSG);
                                 }
-                                conv.push(make_message("developer", developer_note));
+                                retry_vec.push(make_message("developer", developer_note));
                             }
-                            if let Some(conv) = retry_conversation.as_ref() {
-                                // Keep the model and UI in sync with the full conversation, but avoid spamming a compaction notice.
-                                let _ = event_tx.send(AutoCoordinatorEvent::CompactedHistory {
-                                    conversation: conv.clone(),
-                                    show_notice: false,
-                                });
-                            }
+                            let retry_snapshot = retry_conversation
+                                .take()
+                                .map(Arc::<[ResponseItem]>::from)
+                                .unwrap_or_else(|| Arc::clone(&conv));
+                            // Keep the model and UI in sync with the full conversation, but avoid spamming a compaction notice.
+                            let _ = event_tx.send(AutoCoordinatorEvent::CompactedHistory {
+                                conversation: Arc::clone(&retry_snapshot),
+                                show_notice: false,
+                            });
                             // Show a user-facing action entry in the Auto Drive card (does not go to the model).
                             let _ = event_tx.send(AutoCoordinatorEvent::Action {
                                 message: "Retrying prompt generation after the previous response was too long to send to the CLI.".to_string(),
                             });
-                            pending_conversation = retry_conversation.take();
+                            pending_conversation = Some(retry_snapshot);
                             continue;
                         }
                         warn!(
@@ -1534,7 +1545,8 @@ fn run_auto_loop(
             }
             Ok(AutoCoordinatorCommand::HandleUserPrompt { _prompt, conversation }) => {
                 let developer_intro = base_developer_intro.as_str();
-                let mut updated_conversation = conversation.clone();
+                let base_conversation = conversation.as_ref().to_vec();
+                let conversation_snapshot = Arc::<[ResponseItem]>::from(base_conversation);
                 let schema = user_turn_schema();
                 let time_budget_message = time_budget.as_mut().and_then(|budget| budget.maybe_nudge());
                 let time_budget_deadline = time_budget.as_ref().map(|budget| budget.deadline);
@@ -1547,17 +1559,18 @@ fn run_auto_loop(
                     time_budget_message.as_deref(),
                     time_budget_deadline,
                     &schema,
-                    updated_conversation.clone(),
+                    Arc::clone(&conversation_snapshot),
                     auto_instructions.as_deref(),
                     &event_tx,
                     &cancel_token,
                     &active_model_slug,
                 ) {
                     Ok((user_response, cli_command)) => {
+                        let mut updated_conversation = conversation_snapshot.as_ref().to_vec();
                         if let Some(response_text) = user_response.clone() {
                             updated_conversation.push(make_message("assistant", response_text.clone()));
                         }
-                        pending_conversation = Some(updated_conversation);
+                        pending_conversation = Some(Arc::<[ResponseItem]>::from(updated_conversation));
                         event_tx.send(AutoCoordinatorEvent::UserReply {
                             user_response,
                             cli_command,
@@ -1591,7 +1604,8 @@ fn run_auto_loop(
             Ok(AutoCoordinatorCommand::UpdateConversation(conv)) => {
                 requests_completed = requests_completed.saturating_add(1);
                 consecutive_decision_failures = 0;
-                let filtered = filter_popular_commands(conv);
+                let conv = conv.as_ref().to_vec();
+                let filtered = Arc::<[ResponseItem]>::from(filter_popular_commands(conv));
                 if let Some(pending_seq) = pending_ack_seq {
                     tracing::debug!(target: "auto_drive::coordinator", pending_seq, "queueing update while awaiting ack");
                     session_metrics.record_replay();
@@ -1932,7 +1946,7 @@ fn request_coordinator_decision(
     time_budget_deadline: Option<Instant>,
     loop_warning: Option<&str>,
     schema: &Value,
-    conversation: Vec<ResponseItem>,
+    conversation: Arc<[ResponseItem]>,
     auto_instructions: Option<&str>,
     event_tx: &AutoCoordinatorEventSender,
     cancel_token: &CancellationToken,
@@ -1953,7 +1967,7 @@ fn request_coordinator_decision(
         time_budget_deadline,
         loop_warning,
         schema,
-        &conversation,
+        Arc::clone(&conversation),
         auto_instructions,
         event_tx,
         cancel_token,
@@ -1986,7 +2000,7 @@ fn request_decision(
     time_budget_deadline: Option<Instant>,
     loop_warning: Option<&str>,
     schema: &Value,
-    conversation: &[ResponseItem],
+    conversation: Arc<[ResponseItem]>,
     auto_instructions: Option<&str>,
     event_tx: &AutoCoordinatorEventSender,
     cancel_token: &CancellationToken,
@@ -2002,7 +2016,7 @@ fn request_decision(
         time_budget_deadline,
         loop_warning,
         schema,
-        conversation,
+        Arc::clone(&conversation),
         auto_instructions,
         event_tx,
         cancel_token,
@@ -2034,7 +2048,7 @@ fn request_decision(
                     time_budget_deadline,
                     loop_warning,
                     schema,
-                    conversation,
+                    Arc::clone(&conversation),
                     auto_instructions,
                     event_tx,
                     cancel_token,
@@ -2080,7 +2094,7 @@ fn request_user_turn_decision(
     time_budget_message: Option<&str>,
     time_budget_deadline: Option<Instant>,
     schema: &Value,
-    conversation: Vec<ResponseItem>,
+    conversation: Arc<[ResponseItem]>,
     auto_instructions: Option<&str>,
     event_tx: &AutoCoordinatorEventSender,
     cancel_token: &CancellationToken,
@@ -2097,7 +2111,7 @@ fn request_user_turn_decision(
         time_budget_deadline,
         None,
         schema,
-        &conversation,
+        Arc::clone(&conversation),
         auto_instructions,
         event_tx,
         cancel_token,
@@ -2119,7 +2133,7 @@ fn request_decision_with_model(
     time_budget_deadline: Option<Instant>,
     loop_warning: Option<&str>,
     schema: &Value,
-    conversation: &[ResponseItem],
+    conversation: Arc<[ResponseItem]>,
     auto_instructions: Option<&str>,
     event_tx: &AutoCoordinatorEventSender,
     cancel_token: &CancellationToken,
@@ -2130,7 +2144,7 @@ fn request_decision_with_model(
     let time_budget_message = time_budget_message.map(|text| text.to_string());
     let loop_warning = loop_warning.map(|text| text.to_string());
     let schema = schema.clone();
-    let conversation: Vec<ResponseItem> = conversation.to_vec();
+    let conversation = Arc::clone(&conversation);
     let auto_instructions = auto_instructions.map(|text| text.to_string());
     let coordinator_prompt = coordinator_prompt.map(|text| text.to_string());
     let tx = event_tx.clone();
@@ -2148,6 +2162,7 @@ fn request_decision_with_model(
                 let coordinator_prompt = coordinator_prompt.clone();
                 let time_budget_message = time_budget_message.clone();
                 let loop_warning = loop_warning.clone();
+                let conversation = Arc::clone(&conversation);
                 let prompt = build_user_turn_prompt(
                     &developer_intro,
                     &primary_goal,
@@ -2155,7 +2170,7 @@ fn request_decision_with_model(
                     time_budget_message.as_deref(),
                     loop_warning.as_deref(),
                     &schema,
-                    &conversation,
+                    conversation.as_ref(),
                     model_slug,
                     instructions.as_deref(),
                 );
@@ -2309,7 +2324,7 @@ fn build_user_turn_prompt(
     time_budget_message: Option<&str>,
     loop_warning: Option<&str>,
     schema: &Value,
-    conversation: &Vec<ResponseItem>,
+    conversation: &[ResponseItem],
     model_slug: &str,
     auto_instructions: Option<&str>,
 ) -> Prompt {
@@ -3262,10 +3277,6 @@ fn maybe_compact(
             let removed = original_len.saturating_sub(compacted.len());
             let plural = if removed == 1 { "" } else { "s" };
             *conversation = compacted;
-            event_tx.send(AutoCoordinatorEvent::CompactedHistory {
-                conversation: conversation.clone(),
-                show_notice: true,
-            });
             event_tx.send(AutoCoordinatorEvent::Thinking {
                 delta: format!(
                     "Finished compacting history ({removed} message{plural} -> {} total).",
@@ -3321,11 +3332,6 @@ fn maybe_compact(
         });
         return CompactionResult::Skipped;
     }
-
-    event_tx.send(AutoCoordinatorEvent::CompactedHistory {
-        conversation: conversation.clone(),
-        show_notice: true,
-    });
 
     let removed = slice.len();
     let total = conversation.len();

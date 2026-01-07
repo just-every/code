@@ -163,7 +163,7 @@ qwen --version
 code [options] [prompt]
 
 Options:
-  --model <name>        Override the model (gpt-5.1, claude-opus, etc.)
+  --model <name>        Override the model for the active provider (e.g. gpt-5.1)
   --read-only          Prevent file modifications
   --no-approval        Skip approval prompts (use with caution)
   --config <key=val>   Override config values
@@ -173,6 +173,8 @@ Options:
   --debug             Log API requests and responses to file
   --version           Show version number
 ```
+
+Note: `--model` only changes the model name sent to the active provider. To use a different provider, set `model_provider` in `config.toml`. Providers must expose an OpenAI-compatible API (Chat Completions or Responses).
 
 &ensp;
 ## Memory & project docs
@@ -265,7 +267,7 @@ model_reasoning_summary = "detailed"
 
 - `CODE_HOME`: Override config directory location
 - `OPENAI_API_KEY`: Use API key instead of ChatGPT auth
-- `OPENAI_BASE_URL`: Use alternative API endpoints
+- `OPENAI_BASE_URL`: Use OpenAI-compatible API endpoints (chat or responses)
 - `OPENAI_WIRE_API`: Force the built-in OpenAI provider to use `chat` or `responses` wiring
 
 &ensp;

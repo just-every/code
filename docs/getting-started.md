@@ -1,4 +1,4 @@
-## Getting started
+# Getting started with Codex CLI
 
 ### CLI usage
 
