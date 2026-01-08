@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.42] - 2026-01-08
+
+- TUI/Images: persist pasted or dropped images from temp locations into session storage so they stay available when sending. (00cbdfc)
+- TUI/Composer: keep image placeholders verbatim when building messages so inline markers align with attachments. (00cbdfc)
+
 ## [0.6.41] - 2026-01-08
 
 - TUI/History: show exec and MCP cards immediately and drop spacer after collapsed reasoning before exec. (3c68afba, fcb48a71)
