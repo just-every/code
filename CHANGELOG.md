@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.6.41] - 2026-01-08
+
+- TUI/History: show exec and MCP cards immediately and drop spacer after collapsed reasoning before exec. (3c68afba, fcb48a71)
+- Exec: send prompt and images in one turn to keep runs aligned. (f23e562f)
+- TUI/Queue: dispatch queued input immediately so interactions start without delay. (b00b6ce3)
+- TUI/Render: preserve WouldBlock kind in draw errors for accurate diagnostics. (5faf4411)
+
 ## [0.6.40] - 2026-01-07
 
 - TUI/Image: initialize picker state for image cards so selection works reliably. (63e53af9)
