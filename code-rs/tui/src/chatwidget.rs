@@ -5918,8 +5918,64 @@ impl ChatWidget<'_> {
     // Removed: pending insert sequencing is not used under strict ordering.
 
     pub(crate) fn register_pasted_image(&mut self, placeholder: String, path: std::path::PathBuf) {
-        self.pending_images.insert(placeholder, path);
+        let persisted = self.persist_user_image_if_needed(&path).unwrap_or(path);
+        self.pending_images.insert(placeholder, persisted);
         self.request_redraw();
+    }
+
+    fn persist_user_image_if_needed(&self, path: &std::path::Path) -> Option<PathBuf> {
+        if !path.exists() || !path.is_file() {
+            return None;
+        }
+
+        let temp_dir = std::env::temp_dir();
+        let path_lossy = path.to_string_lossy();
+        let looks_ephemeral = path.starts_with(&temp_dir)
+            || path_lossy.contains("/TemporaryItems/")
+            || path_lossy.contains("\\TemporaryItems\\");
+        if !looks_ephemeral {
+            return None;
+        }
+
+        let ext = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("png")
+            .to_string();
+
+        let mut dir = self
+            .config
+            .code_home
+            .join("working")
+            .join("_pasted_images");
+        if let Some(session_id) = self.session_id {
+            dir = dir.join(session_id.to_string());
+        }
+
+        if let Err(err) = std::fs::create_dir_all(&dir) {
+            tracing::warn!(
+                "failed to create pasted image dir {}: {}",
+                dir.display(),
+                err
+            );
+            return None;
+        }
+
+        let file_name = format!("dropped-{}.{}", Uuid::new_v4(), ext);
+        let dest = dir.join(file_name);
+
+        match std::fs::copy(path, &dest) {
+            Ok(_) => Some(dest),
+            Err(err) => {
+                tracing::warn!(
+                    "failed to persist dropped image {} -> {}: {}",
+                    path.display(),
+                    dest.display(),
+                    err
+                );
+                None
+            }
+        }
     }
 
     fn parse_message_with_images(&mut self, text: String) -> UserMessage {
@@ -5950,10 +6006,10 @@ impl ChatWidget<'_> {
             let placeholder = mat.as_str();
             if placeholder.starts_with("[image:") {
                 if let Some(path) = self.pending_images.remove(placeholder) {
-                    // Emit a small marker followed by the image so the LLM sees placement
-                    let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("image");
-                    let marker = format!("[image: {}]", filename);
-                    ordered_items.push(InputItem::Text { text: marker });
+                    // Emit the placeholder marker verbatim followed by the image so the LLM sees placement
+                    ordered_items.push(InputItem::Text {
+                        text: placeholder.to_string(),
+                    });
                     ordered_items.push(InputItem::LocalImage { path });
                 } else {
                     // Unknown placeholder: preserve as text
@@ -5998,11 +6054,14 @@ impl ChatWidget<'_> {
             if path.exists() {
                 // Add a marker then the image so the LLM has contextual placement info
                 let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("image");
+                let persisted_path = self
+                    .persist_user_image_if_needed(path)
+                    .unwrap_or_else(|| path.to_path_buf());
                 ordered_items.push(InputItem::Text {
                     text: format!("[image: {}]", filename),
                 });
                 ordered_items.push(InputItem::LocalImage {
-                    path: path.to_path_buf(),
+                    path: persisted_path,
                 });
             }
         }
@@ -9200,8 +9259,10 @@ impl ChatWidget<'_> {
                     // Add a placeholder to the compose field instead of submitting
                     let placeholder = format!("[image: {}]", filename);
 
+                    let persisted = self.persist_user_image_if_needed(&path).unwrap_or(path);
+
                     // Store the image path for later submission
-                    self.pending_images.insert(placeholder.clone(), path);
+                    self.pending_images.insert(placeholder.clone(), persisted);
 
                     // Add the placeholder text to the compose field
                     self.bottom_pane.handle_paste(placeholder);
