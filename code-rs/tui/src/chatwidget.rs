@@ -5918,9 +5918,35 @@ impl ChatWidget<'_> {
     // Removed: pending insert sequencing is not used under strict ordering.
 
     pub(crate) fn register_pasted_image(&mut self, placeholder: String, path: std::path::PathBuf) {
-        let persisted = self.persist_user_image_if_needed(&path).unwrap_or(path);
-        self.pending_images.insert(placeholder, persisted);
-        self.request_redraw();
+        let persisted = self
+            .persist_user_image_if_needed(&path)
+            .unwrap_or_else(|| path.clone());
+        if persisted.exists() && persisted.is_file() {
+            self.pending_images.insert(placeholder, persisted);
+            self.request_redraw();
+            return;
+        }
+
+        // Some terminals (notably on macOS) can drop a "promised" file path
+        // (e.g., from Preview) that doesn't actually exist on disk. Fall back
+        // to reading the image directly from the clipboard.
+        match crate::clipboard_paste::paste_image_to_temp_png() {
+            Ok((clipboard_path, _info)) => {
+                let clipboard_persisted = self
+                    .persist_user_image_if_needed(&clipboard_path)
+                    .unwrap_or(clipboard_path);
+                self.pending_images.insert(placeholder, clipboard_persisted);
+                self.push_background_tail("Used clipboard image (dropped file path was missing).");
+                self.request_redraw();
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "dropped/pasted image path missing ({}); clipboard fallback failed: {}",
+                    persisted.display(),
+                    err
+                );
+            }
+        }
     }
 
     fn persist_user_image_if_needed(&self, path: &std::path::Path) -> Option<PathBuf> {
@@ -6003,14 +6029,30 @@ impl ChatWidget<'_> {
                 }
             }
 
+
             let placeholder = mat.as_str();
             if placeholder.starts_with("[image:") {
                 if let Some(path) = self.pending_images.remove(placeholder) {
-                    // Emit the placeholder marker verbatim followed by the image so the LLM sees placement
-                    ordered_items.push(InputItem::Text {
-                        text: placeholder.to_string(),
-                    });
-                    ordered_items.push(InputItem::LocalImage { path });
+                    if path.exists() && path.is_file() {
+                        // Emit the placeholder marker verbatim followed by the image so the LLM sees placement
+                        ordered_items.push(InputItem::Text {
+                            text: placeholder.to_string(),
+                        });
+                        ordered_items.push(InputItem::LocalImage { path });
+                    } else {
+                        tracing::warn!(
+                            "pending image placeholder {} resolved to missing path {}",
+                            placeholder,
+                            path.display()
+                        );
+                        self.push_background_tail(format!(
+                            "Dropped image file went missing; not attaching ({})",
+                            path.display()
+                        ));
+                        ordered_items.push(InputItem::Text {
+                            text: placeholder.to_string(),
+                        });
+                    }
                 } else {
                     // Unknown placeholder: preserve as text
                     ordered_items.push(InputItem::Text {

@@ -23,7 +23,7 @@ use ratatui::prelude::Style;
 use ratatui::text::{Line, Text};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use ratatui_image::{Image, Resize};
-use ratatui_image::picker::Picker;
+use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::FilterType;
 use image::ImageReader;
 use std::cell::RefCell;
@@ -1134,14 +1134,23 @@ impl BrowserSessionCell {
             return;
         }
 
+
         let path = Path::new(path_str);
+        let rows_to_copy = (visible_bottom - visible_top) as u16;
+        if rows_to_copy == 0 {
+            return;
+        }
+
+        let dest_x = area.x + accent_width + left_pad;
+        let dest_y = area.y + (visible_top - viewport_top) as u16;
+        let placeholder_area = Rect {
+            x: dest_x,
+            y: dest_y,
+            width: screenshot_width,
+            height: rows_to_copy,
+        };
+
         if !path.exists() {
-            let placeholder_area = Rect {
-                x: area.x + accent_width + left_pad,
-                y: area.y,
-                width: screenshot_width,
-                height: layout.height_rows.min(area.height as usize) as u16,
-            };
             self.render_screenshot_placeholder(path, placeholder_area, buf);
             return;
         }
@@ -1151,28 +1160,44 @@ impl BrowserSessionCell {
             return;
         }
 
+        let picker = self.ensure_picker();
+        let supports_partial_render = matches!(picker.protocol_type(), ProtocolType::Halfblocks);
+        let is_partially_visible = visible_top != shot_top || visible_bottom != shot_bottom;
+        if is_partially_visible && !supports_partial_render {
+            self.render_screenshot_placeholder(path, placeholder_area, buf);
+            return;
+        }
+
+        if !is_partially_visible {
+            let protocol_target = Rect::new(0, 0, screenshot_width, full_height);
+            if self.ensure_protocol(path, protocol_target, &picker).is_err() {
+                self.render_screenshot_placeholder(path, placeholder_area, buf);
+                return;
+            }
+            let dest_target = Rect::new(dest_x, dest_y, screenshot_width, full_height);
+            if let Some((_, _, protocol)) = self.cached_image_protocol.borrow_mut().as_mut() {
+                let image = Image::new(protocol);
+                image.render(dest_target, buf);
+            } else {
+                self.render_screenshot_placeholder(path, placeholder_area, buf);
+            }
+            return;
+        }
+
+        if !supports_partial_render {
+            self.render_screenshot_placeholder(path, placeholder_area, buf);
+            return;
+        }
+
         let offscreen = match self.render_screenshot_buffer(path, screenshot_width, full_height) {
             Ok(buffer) => buffer,
             Err(_) => {
-                let placeholder_area = Rect {
-                    x: area.x + accent_width + left_pad,
-                    y: area.y,
-                    width: screenshot_width,
-                    height: layout.height_rows.min(area.height as usize) as u16,
-                };
                 self.render_screenshot_placeholder(path, placeholder_area, buf);
                 return;
             }
         };
 
         let src_start_row = (visible_top - shot_top) as u16;
-        let rows_to_copy = (visible_bottom - visible_top) as u16;
-        if rows_to_copy == 0 {
-            return;
-        }
-
-        let dest_x = area.x + accent_width + left_pad;
-        let dest_y = area.y + (visible_top - viewport_top) as u16;
         let area_bottom = area.y + area.height;
         let area_right = area.x + area.width;
 

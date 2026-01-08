@@ -22,7 +22,7 @@ use ::image::ImageReader;
 use ::image::image_dimensions;
 use ratatui::widgets::{Paragraph, Wrap};
 use ratatui_image::{Image, Resize};
-use ratatui_image::picker::Picker;
+use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::FilterType;
 use std::cell::RefCell;
 use std::path::Path;
@@ -525,6 +525,7 @@ impl ImageOutputCell {
             return;
         }
 
+
         let rows_to_copy = (visible_bottom - visible_top) as u16;
         if rows_to_copy == 0 {
             return;
@@ -532,9 +533,14 @@ impl ImageOutputCell {
 
         let dest_x = area.x + accent_width + left_pad;
         let dest_y = area.y + (visible_top - viewport_top) as u16;
+        let placeholder_area = Rect {
+            x: dest_x,
+            y: dest_y,
+            width: image_width,
+            height: rows_to_copy,
+        };
 
         if !path.exists() {
-            let placeholder_area = Rect { x: dest_x, y: dest_y, width: image_width, height: rows_to_copy };
             self.render_image_placeholder(path, placeholder_area, buf);
             return;
         }
@@ -544,10 +550,43 @@ impl ImageOutputCell {
             return;
         }
 
+        let picker = self.ensure_picker();
+        let supports_partial_render = matches!(picker.protocol_type(), ProtocolType::Halfblocks);
+        let is_partially_visible = visible_top != shot_top || visible_bottom != shot_bottom;
+        if is_partially_visible && !supports_partial_render {
+            // Graphical terminal protocols (kitty/sixel/iterm2) render with escape sequences that
+            // can't be safely truncated mid-image without risking cursor movement/overdraw.
+            // Prefer a placeholder over broken scroll/clipping.
+            self.render_image_placeholder(path, placeholder_area, buf);
+            return;
+        }
+
+        // For full-image rendering, draw directly into the final buffer so protocols that rely on
+        // escape sequences behave correctly.
+        if !is_partially_visible {
+            let protocol_target = Rect::new(0, 0, image_width, full_height);
+            if self.ensure_protocol(path, protocol_target, &picker).is_err() {
+                self.render_image_placeholder(path, placeholder_area, buf);
+                return;
+            }
+            let dest_target = Rect::new(dest_x, dest_y, image_width, full_height);
+            if let Some((_, _, protocol)) = self.cached_image_protocol.borrow_mut().as_mut() {
+                let image = Image::new(protocol);
+                image.render(dest_target, buf);
+            } else {
+                self.render_image_placeholder(path, placeholder_area, buf);
+            }
+            return;
+        }
+
+        if !supports_partial_render {
+            self.render_image_placeholder(path, placeholder_area, buf);
+            return;
+        }
+
         let offscreen = match self.render_image_buffer(path, image_width, full_height) {
             Ok(buffer) => buffer,
             Err(_) => {
-                let placeholder_area = Rect { x: dest_x, y: dest_y, width: image_width, height: rows_to_copy };
                 self.render_image_placeholder(path, placeholder_area, buf);
                 return;
             }
