@@ -1,10 +1,9 @@
-## @just-every/code v0.6.43
-
-TUI image handling is sturdier and respects terminal protocol limits to avoid rendering glitches.
+## @just-every/code v0.6.44
+Small rendering fix to keep TUI backgrounds drawing cleanly.
 
 ### Changes
-- TUI/Images: guard dropped images and clipped views so broken files fall back to placeholders.
-- TUI/Images: avoid partial rendering on graphic protocols to prevent cursor corruption while scrolling.
+- TUI/Render: reset skip flags when filling backgrounds so reused buffer cells redraw correctly.
+- TUI/Render: ensure background fill without characters also clears skip to prevent lingering artifacts.
 
 ### Install
 ```
@@ -12,4 +11,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.42...v0.6.43
+Compare: https://github.com/just-every/code/compare/v0.6.43...v0.6.44

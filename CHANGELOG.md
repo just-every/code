@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.44] - 2026-01-08
+
+- TUI/Render: reset skip flags when filling backgrounds so reused buffer cells redraw correctly. (035abd0d)
+- TUI/Render: ensure background fill without characters also clears skip to prevent lingering artifacts. (035abd0d)
+
 ## [0.6.43] - 2026-01-08
 
 - TUI/Images: guard dropped images and clipped views so broken files fall back to placeholders. (b76b2455)
