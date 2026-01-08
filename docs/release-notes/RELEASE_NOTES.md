@@ -1,10 +1,10 @@
-## @just-every/code v0.6.42
+## @just-every/code v0.6.43
 
-Focused polish for image handling in the TUI.
+TUI image handling is sturdier and respects terminal protocol limits to avoid rendering glitches.
 
 ### Changes
-- TUI/Images: persist pasted or dropped images from temp locations into session storage so they stay available when sending.
-- TUI/Composer: keep image placeholders verbatim when building messages so inline markers align with attachments.
+- TUI/Images: guard dropped images and clipped views so broken files fall back to placeholders.
+- TUI/Images: avoid partial rendering on graphic protocols to prevent cursor corruption while scrolling.
 
 ### Install
 ```
@@ -12,4 +12,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.41...v0.6.42
+Compare: https://github.com/just-every/code/compare/v0.6.42...v0.6.43

@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.43] - 2026-01-08
+
+- TUI/Images: guard dropped images and clipped views so broken files fall back to placeholders. (b76b2455)
+- TUI/Images: avoid partial rendering on graphic protocols to prevent cursor corruption while scrolling. (b76b2455)
+
 ## [0.6.42] - 2026-01-08
 
 - TUI/Images: persist pasted or dropped images from temp locations into session storage so they stay available when sending. (00cbdfc)
