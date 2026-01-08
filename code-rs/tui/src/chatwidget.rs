@@ -37784,6 +37784,19 @@ impl WidgetRef for &ChatWidget<'_> {
                             .map(|rc| rc.is_collapsed())
                             .unwrap_or(false);
                         if this_collapsed {
+                            if let Some(j) = next_visible_idx {
+                                if let Some(next_cell) = cells[j].cell {
+                                    if matches!(
+                                        next_cell.kind(),
+                                        history_cell::HistoryCellType::Exec { .. }
+                                    ) {
+                                        should_add_spacing = false;
+                                    }
+                                }
+                            }
+                        }
+
+                        if this_collapsed {
                             let prev_collapsed = prev_visible_idx
                                 .and_then(|j| cells[j]
                                     .cell
