@@ -1,12 +1,10 @@
-## @just-every/code v0.6.41
+## @just-every/code v0.6.42
 
-Bugfix release tightening TUI execution rendering and exec request handling.
+Focused polish for image handling in the TUI.
 
 ### Changes
-- TUI/History: show exec and MCP cards immediately and drop spacer after collapsed reasoning before exec.
-- Exec: send prompt and images in one turn to keep runs aligned.
-- TUI/Queue: dispatch queued input immediately so interactions start without delay.
-- TUI/Render: preserve WouldBlock kind in draw errors for accurate diagnostics.
+- TUI/Images: persist pasted or dropped images from temp locations into session storage so they stay available when sending.
+- TUI/Composer: keep image placeholders verbatim when building messages so inline markers align with attachments.
 
 ### Install
 ```
@@ -14,4 +12,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.40...v0.6.41
+Compare: https://github.com/just-every/code/compare/v0.6.41...v0.6.42
