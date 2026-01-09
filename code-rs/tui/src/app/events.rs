@@ -263,6 +263,11 @@ impl App<'_> {
                             if self.timing_enabled { self.timing.on_redraw_end(t0); }
                         }
                         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            // A draw can fail after partially writing to the terminal. In that case,
+                            // the terminal contents may no longer match ratatui's back buffer, and
+                            // subsequent diff-based draws may not fully repair stale tail lines.
+                            // Force a clear on the next successful frame to resynchronize.
+                            self.clear_on_first_frame = true;
                             // Non‑blocking draw hit backpressure; try again shortly.
                             if used_nonblocking {
                                 tracing::debug!("nonblocking redraw hit WouldBlock; rescheduling");
