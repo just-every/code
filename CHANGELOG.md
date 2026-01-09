@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.45] - 2026-01-09
+
+- TUI/Render: clear after WouldBlock redraws to resync the terminal and remove stale tail lines. (a354fdf8)
+- TUI/Render: improve redraw stability under terminal backpressure so frames recover cleanly. (a354fdf8)
+
 ## [0.6.44] - 2026-01-08
 
 - TUI/Render: reset skip flags when filling backgrounds so reused buffer cells redraw correctly. (035abd0d)
