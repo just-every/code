@@ -268,6 +268,12 @@ impl App<'_> {
                             // subsequent diff-based draws may not fully repair stale tail lines.
                             // Force a clear on the next successful frame to resynchronize.
                             self.clear_on_first_frame = true;
+
+                            // Also force the next successful draw to repaint the entire screen by
+                            // invalidating ratatui's notion of the "current" buffer. This avoids
+                            // cases where a partially-applied frame leaves stale glyphs visible but
+                            // the back buffer thinks the terminal is already up to date.
+                            terminal.swap_buffers();
                             // Non‑blocking draw hit backpressure; try again shortly.
                             if used_nonblocking {
                                 tracing::debug!("nonblocking redraw hit WouldBlock; rescheduling");
