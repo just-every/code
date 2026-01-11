@@ -317,8 +317,12 @@ impl App<'_> {
                     self.commit_anim_running.store(false, Ordering::Release);
                 }
                 AppEvent::CommitTick => {
-                    if self.pending_redraw.load(Ordering::Relaxed) { continue; }
-                    // Advance streaming animation: commit at most one queued line
+                    // Advance streaming animation: commit at most one queued line.
+                    //
+                    // Do not skip commit ticks when a redraw is already pending.
+                    // Commit ticks are the *driver* for streaming output: skipping
+                    // them can leave the UI appearing frozen even though input is
+                    // still responsive.
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.on_commit_tick();
                     }
