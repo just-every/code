@@ -4,6 +4,8 @@ use crate::tool_apply_patch::ApplyPatchToolType;
 /// The `instructions` field in the payload sent to a model should always start
 /// with this content.
 const BASE_INSTRUCTIONS: &str = include_str!("../prompt.md");
+const BASE_INSTRUCTIONS_WITH_APPLY_PATCH: &str =
+    include_str!("../prompt_with_apply_patch_instructions.md");
 const GPT_5_CODEX_INSTRUCTIONS: &str = include_str!("../gpt_5_codex_prompt.md");
 const GPT_5_1_INSTRUCTIONS: &str = include_str!("../gpt_5_1_prompt.md");
 const GPT_5_2_INSTRUCTIONS: &str = include_str!("../gpt_5_2_prompt.md");
@@ -102,6 +104,7 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             slug, "o3",
             supports_reasoning_summaries: true,
             needs_special_apply_patch_instructions: true,
+            base_instructions: BASE_INSTRUCTIONS_WITH_APPLY_PATCH.to_string(),
             context_window: Some(CONTEXT_WINDOW_200K),
             max_output_tokens: Some(100_000),
         )
@@ -110,6 +113,7 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             slug, "o4-mini",
             supports_reasoning_summaries: true,
             needs_special_apply_patch_instructions: true,
+            base_instructions: BASE_INSTRUCTIONS_WITH_APPLY_PATCH.to_string(),
             context_window: Some(CONTEXT_WINDOW_200K),
             max_output_tokens: Some(100_000),
         )
@@ -119,6 +123,7 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             supports_reasoning_summaries: true,
             uses_local_shell_tool: true,
             needs_special_apply_patch_instructions: true,
+            base_instructions: BASE_INSTRUCTIONS_WITH_APPLY_PATCH.to_string(),
             context_window: Some(CONTEXT_WINDOW_200K),
             max_output_tokens: Some(100_000),
         )
@@ -126,6 +131,7 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
         model_family!(
             slug, "gpt-4.1",
             needs_special_apply_patch_instructions: true,
+            base_instructions: BASE_INSTRUCTIONS_WITH_APPLY_PATCH.to_string(),
             context_window: Some(CONTEXT_WINDOW_1M),
             max_output_tokens: Some(32_768),
         )
@@ -136,10 +142,12 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             max_output_tokens: Some(32_000))
     } else if slug.starts_with("gpt-4o") {
         model_family!(slug, "gpt-4o", needs_special_apply_patch_instructions: true,
+            base_instructions: BASE_INSTRUCTIONS_WITH_APPLY_PATCH.to_string(),
             context_window: Some(CONTEXT_WINDOW_128K),
             max_output_tokens: Some(16_384))
     } else if slug.starts_with("gpt-3.5") {
         model_family!(slug, "gpt-3.5", needs_special_apply_patch_instructions: true,
+            base_instructions: BASE_INSTRUCTIONS_WITH_APPLY_PATCH.to_string(),
             context_window: Some(CONTEXT_WINDOW_16K),
             max_output_tokens: Some(4_096))
     } else if slug.starts_with("test-gpt-5") {
@@ -248,6 +256,7 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             slug, "gpt-5",
             supports_reasoning_summaries: true,
             needs_special_apply_patch_instructions: true,
+            base_instructions: BASE_INSTRUCTIONS_WITH_APPLY_PATCH.to_string(),
             context_window: Some(CONTEXT_WINDOW_272K),
             max_output_tokens: Some(MAX_OUTPUT_DEFAULT),
         )

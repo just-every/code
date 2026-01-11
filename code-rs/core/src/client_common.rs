@@ -8,7 +8,6 @@ use crate::model_family::ModelFamily;
 use crate::openai_tools::OpenAiTool;
 use crate::protocol::RateLimitSnapshotEvent;
 use crate::protocol::TokenUsage;
-use code_apply_patch::APPLY_PATCH_TOOL_INSTRUCTIONS;
 use code_protocol::models::ContentItem;
 use code_protocol::models::ResponseItem;
 use futures::Stream;
@@ -120,28 +119,11 @@ impl Default for Prompt {
 impl Prompt {
     pub(crate) fn get_full_instructions<'a>(&'a self, model: &'a ModelFamily) -> Cow<'a, str> {
         let effective_model = self.model_family_override.as_ref().unwrap_or(model);
-        let base = self
-            .base_instructions_override
-            .as_deref()
-            .unwrap_or(effective_model.base_instructions.deref());
-        let _sections: Vec<&str> = vec![base];
-        // When there are no custom instructions, add apply_patch_tool_instructions if:
-        // - the model needs special instructions (4.1)
-        // AND
-        // - there is no apply_patch tool present
-        let is_apply_patch_tool_present = self.tools.iter().any(|tool| match tool {
-            OpenAiTool::Function(f) => f.name == "apply_patch",
-            OpenAiTool::Freeform(f) => f.name == "apply_patch",
-            _ => false,
-        });
-        if self.base_instructions_override.is_none()
-            && effective_model.needs_special_apply_patch_instructions
-            && !is_apply_patch_tool_present
-        {
-            Cow::Owned(format!("{base}\n{APPLY_PATCH_TOOL_INSTRUCTIONS}"))
-        } else {
-            Cow::Borrowed(base)
-        }
+        Cow::Borrowed(
+            self.base_instructions_override
+                .as_deref()
+                .unwrap_or(effective_model.base_instructions.deref()),
+        )
     }
 
     pub fn set_log_tag<S: Into<String>>(&mut self, tag: S) {
