@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.46] - 2026-01-11
+
+- TUI/Stream: preserve commit ticks while debouncing to keep command ordering intact. (365bf7a)
+- TUI/Render: resync buffers after WouldBlock errors so redraws recover cleanly. (7ef6a6c)
+
 ## [0.6.45] - 2026-01-09
 
 - TUI/Render: clear after WouldBlock redraws to resync the terminal and remove stale tail lines. (a354fdf8)
