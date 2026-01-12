@@ -121,6 +121,12 @@ coverage/
 # personal files
 personal/
 
+# local convenience scripts
+run.sh
+build-and-run.sh
+install-alias.sh
+ccstatusline/
+
 # os
 .DS_Store
 Thumbs.db
