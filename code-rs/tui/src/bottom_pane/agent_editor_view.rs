@@ -52,9 +52,9 @@ pub(crate) struct AgentEditorView {
     name_error: Option<String>,
 }
 
-const FIELD_TOGGLE: usize = 0;
-const FIELD_NAME: usize = 1;
-const FIELD_COMMAND: usize = 2;
+const FIELD_NAME: usize = 0;
+const FIELD_COMMAND: usize = 1;
+const FIELD_TOGGLE: usize = 2;
 const FIELD_READ_ONLY: usize = 3;
 const FIELD_WRITE: usize = 4;
 const FIELD_DESCRIPTION: usize = 5;
