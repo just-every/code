@@ -7711,6 +7711,22 @@ impl ChatWidget<'_> {
         if let Some(range) = spacing_range {
             self.history_render.append_spacing_range(range);
         }
+        if next.height >= 2
+            && next
+                .cell
+                .and_then(|cell| {
+                    cell.as_any()
+                        .downcast_ref::<crate::history_cell::AssistantMarkdownCell>()
+                })
+                .is_some()
+        {
+            let cell_end = self.history_render.last_total_height();
+            let cell_start = cell_end.saturating_sub(next.height);
+            self.history_render
+                .append_spacing_range((cell_start, cell_start.saturating_add(1)));
+            self.history_render
+                .append_spacing_range((cell_end.saturating_sub(1), cell_end));
+        }
         true
     }
 
