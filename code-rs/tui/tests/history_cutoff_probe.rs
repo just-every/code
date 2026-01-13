@@ -26,6 +26,7 @@ const PLAIN_SENTINEL: &str = "SENTINEL-PLAIN";
 const STREAM_SENTINEL: &str = "SENTINEL-STREAM";
 const EXEC_SENTINEL: &str = "SENTINEL-EXEC";
 const BROWSER_SENTINEL: &str = "SENTINEL-BROWSER";
+const COLLAPSED_EXEC_SENTINEL: &str = "SENTINEL-COLLAPSED-EXEC";
 
 fn seed_plain_transcript(harness: &mut ChatWidgetHarness) {
     for idx in 0..8 {
@@ -75,6 +76,135 @@ fn seed_reasoning_transcript(harness: &mut ChatWidgetHarness, suffix: &str) {
     harness.push_assistant_markdown(format!(
         "Final answer summarising anti-cutoff behaviour. Sentinel => {suffix}"
     ));
+}
+
+fn seed_reasoning_stream_only(harness: &mut ChatWidgetHarness) {
+    harness.push_user_prompt("Share your reasoning.");
+
+    let reasoning_chunks = [
+        "Evaluating viewport overscan heuristics.",
+        "Tracking spacer toggles near viewport multiples.",
+        "Checking collapsed spacing adjustments.",
+    ];
+
+    for (idx, chunk) in reasoning_chunks.iter().enumerate() {
+        harness.handle_event(Event {
+            id: "reasoning-stream".into(),
+            event_seq: (idx + 1) as u64,
+            msg: EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+                delta: format!("{chunk}\n"),
+            }),
+            order: Some(OrderMeta {
+                request_ordinal: 1,
+                output_index: Some(0),
+                sequence_number: Some(idx as u64),
+            }),
+        });
+    }
+
+    let final_reasoning = reasoning_chunks.join("\n");
+    harness.handle_event(Event {
+        id: "reasoning-stream".into(),
+        event_seq: (reasoning_chunks.len() + 1) as u64,
+        msg: EventMsg::AgentReasoning(AgentReasoningEvent {
+            text: final_reasoning,
+        }),
+        order: Some(OrderMeta {
+            request_ordinal: 1,
+            output_index: Some(0),
+            sequence_number: Some((reasoning_chunks.len() + 1) as u64),
+        }),
+    });
+}
+
+#[test]
+fn collapsed_reasoning_before_exec_keeps_last_line() {
+    let mut harness = ChatWidgetHarness::new();
+
+    seed_plain_transcript(&mut harness);
+    seed_reasoning_stream_only(&mut harness);
+    harness.flush_into_widget();
+
+    // Hide reasoning so it collapses into a compact title cell.
+    harness.send_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+
+    let mut seq = 0_u64;
+    let order = |seq: &mut u64| OrderMeta {
+        request_ordinal: 42,
+        output_index: Some(0),
+        sequence_number: Some(*seq),
+    };
+    let call_id = "exec-cutoff-collapsed".to_string();
+    let cwd = PathBuf::from("/workspace");
+
+    harness.handle_event(Event {
+        id: "exec-begin-cutoff-collapsed".into(),
+        event_seq: 0,
+        msg: EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
+            call_id: call_id.clone(),
+            command: vec!["bash".into(), "-lc".into(), "printf".into()],
+            cwd: cwd.clone(),
+            parsed_cmd: Vec::new(),
+        }),
+        order: Some(order(&mut seq)),
+    });
+
+    harness.handle_event(Event {
+        id: "exec-stdout-cutoff-collapsed".into(),
+        event_seq: 1,
+        msg: EventMsg::ExecCommandOutputDelta(ExecCommandOutputDeltaEvent {
+            call_id: call_id.clone(),
+            stream: ExecOutputStream::Stdout,
+            chunk: ByteBuf::from(
+                format!("line 1\nline 2\nline 3\n").into_bytes(),
+            ),
+        }),
+        order: Some(order(&mut seq)),
+    });
+
+    harness.handle_event(Event {
+        id: "exec-end-cutoff-collapsed".into(),
+        event_seq: 2,
+        msg: EventMsg::ExecCommandEnd(ExecCommandEndEvent {
+            call_id,
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+            duration: Duration::from_millis(120),
+        }),
+        order: Some(order(&mut seq)),
+    });
+
+    harness.handle_event(Event {
+        id: "tail-answer".into(),
+        event_seq: 3,
+        msg: EventMsg::AgentMessage(AgentMessageEvent {
+            message: format!(
+                "Final tail marker to validate scroll-to-bottom. {COLLAPSED_EXEC_SENTINEL}"
+            ),
+        }),
+        order: Some(OrderMeta {
+            request_ordinal: 43,
+            output_index: Some(0),
+            sequence_number: Some(0),
+        }),
+    });
+    harness.flush_into_widget();
+
+    let output = render_chat_widget_to_vt100(&mut harness, 80, 10);
+    let metrics = layout_metrics(&harness);
+    let viewport_h = harness.history_viewport_height();
+    assert!(
+        output.contains(COLLAPSED_EXEC_SENTINEL),
+        "collapsed reasoning -> exec transcript should keep the final sentinel visible (viewport_h={viewport_h}, scroll_offset={}, max_scroll={}):\n{}",
+        metrics.scroll_offset,
+        metrics.last_max_scroll,
+        output
+    );
+    assert_eq!(
+        metrics.scroll_offset, 0,
+        "transcript should stay pinned to bottom"
+    );
 }
 
 #[derive(Clone, Copy, Debug)]
