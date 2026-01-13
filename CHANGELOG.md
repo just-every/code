@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.6.47] - 2026-01-13
+
+- Core/Websocket: reuse connections and add append support to cut reconnect churn. (d75626a, e726a82)
+- MCP: hot reload servers with static callbacks for smoother development. (3e91a95c, d5562983)
+- CLI: add --url with OAuth-friendly defaults and prompt Windows users on unsafe commands. (145974c4, ddae70bd)
+- TUI: keep scrollback tails visible and show in-flight coalesced tool calls. (7c1e7747, 602ddfee, 273ba32d, 12779c7c)
+- Exec/Auto: honor reasoning effort and dedupe reasoning output during auto runs. (bc81e7c2, 00fbc71a)
+
 ## [0.6.46] - 2026-01-11
 
 - TUI/Stream: preserve commit ticks while debouncing to keep command ordering intact. (365bf7a)
