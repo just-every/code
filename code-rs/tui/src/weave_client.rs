@@ -8,6 +8,7 @@ pub(crate) struct WeaveSession {
 pub(crate) enum WeaveMessageKind {
     User,
     Reply,
+    Room,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -604,6 +605,17 @@ mod platform {
             self.send_payload(dst, payload, message_id).await
         }
 
+        pub(crate) async fn send_room_message_with_metadata(
+            &self,
+            dst: String,
+            text: String,
+            metadata: Option<&super::WeaveMessageMetadata>,
+            message_id: Option<String>,
+        ) -> Result<(), String> {
+            let payload = message_payload(text, &self.agent_name, Some("room"), metadata);
+            self.send_payload(dst, payload, message_id).await
+        }
+
         pub(crate) async fn send_reply_with_metadata(
             &self,
             dst: String,
@@ -840,10 +852,10 @@ mod platform {
         let Some(kind) = codex.get("kind").and_then(Value::as_str) else {
             return super::WeaveMessageKind::User;
         };
-        if kind == "reply" {
-            super::WeaveMessageKind::Reply
-        } else {
-            super::WeaveMessageKind::User
+        match kind {
+            "reply" => super::WeaveMessageKind::Reply,
+            "room" => super::WeaveMessageKind::Room,
+            _ => super::WeaveMessageKind::User,
         }
     }
 
@@ -936,6 +948,16 @@ mod platform {
 
     impl WeaveAgentSender {
         pub(crate) async fn send_message_with_metadata(
+            &self,
+            _dst: String,
+            _text: String,
+            _metadata: Option<&super::WeaveMessageMetadata>,
+            _message_id: Option<String>,
+        ) -> Result<(), String> {
+            Err("Weave sessions are only supported on Unix platforms.".to_string())
+        }
+
+        pub(crate) async fn send_room_message_with_metadata(
             &self,
             _dst: String,
             _text: String,

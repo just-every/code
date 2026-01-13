@@ -45,11 +45,26 @@ use crate::resume::discovery::ResumeCandidate;
 use crate::weave_client::{WeaveAgent, WeaveAgentConnection, WeaveIncomingMessage, WeaveSession};
 use crate::weave_history::WeaveLogEntry;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WeaveInboxScope {
+    CurrentSession,
+    AllSessions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum WeaveInboxItemKind {
+    Room,
+    Dm,
+}
+
 #[derive(Debug, Clone)]
-pub(crate) struct WeaveInboxThread {
-    pub peer_id: String,
-    pub peer_label: String,
+pub(crate) struct WeaveInboxItem {
+    pub kind: WeaveInboxItemKind,
+    pub session_id: String,
+    pub session_label: String,
     pub thread_key: String,
+    pub peer_id: Option<String>,
+    pub label: String,
     pub unread: usize,
     pub preview: Option<String>,
 }
@@ -247,14 +262,13 @@ pub(crate) enum AppEvent {
     // --- Weave ---
 
     /// Load and open the Weave inbox (DM thread picker) for the current session.
-    RequestWeaveInboxMenu,
+    RequestWeaveInboxMenu { scope: WeaveInboxScope },
     /// Open the Weave menu with a freshly fetched session list.
     OpenWeaveSessionMenu { sessions: Vec<WeaveSession> },
     /// Open the Weave inbox (DM thread picker) with the provided thread list.
     OpenWeaveInboxMenu {
-        session_id: String,
-        session_label: String,
-        threads: Vec<WeaveInboxThread>,
+        scope: WeaveInboxScope,
+        items: Vec<WeaveInboxItem>,
     },
     /// Open a prompt to rename this agent.
     OpenWeaveAgentNamePrompt,
@@ -298,13 +312,25 @@ pub(crate) enum AppEvent {
     WeaveAgentsListed { session_id: String, agents: Vec<WeaveAgent> },
     /// Incoming direct message from Weave.
     WeaveMessageReceived { message: WeaveIncomingMessage },
-    /// Load and show backfilled history for a Weave DM thread.
-    OpenWeaveDmThread { peer_id: String, peer_label: String },
+    /// Open a Weave thread (room or DM) by key, optionally switching sessions first.
+    OpenWeaveThreadByKey {
+        session_id: String,
+        session_label: String,
+        thread_key: String,
+        label: String,
+        peer_id: Option<String>,
+    },
     /// Apply backfilled history for a Weave DM thread.
     WeaveDmThreadBackfill {
         thread_key: String,
         peer_id: String,
         peer_label: String,
+        entries: Vec<WeaveLogEntry>,
+    },
+    /// Apply backfilled history for the Weave room thread (session-wide chat).
+    WeaveRoomThreadBackfill {
+        thread_key: String,
+        room_label: String,
         entries: Vec<WeaveLogEntry>,
     },
     /// Update delivery status for an outbound Weave message.

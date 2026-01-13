@@ -4,6 +4,8 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 
+pub(crate) const ROOM_LOG_FILENAME: &str = "room.jsonl";
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct WeaveDmThread {
     pub session_id: String,
@@ -45,6 +47,28 @@ impl WeaveDmThread {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum WeaveThreadKey {
+    Room { session_id: String },
+    Dm(WeaveDmThread),
+}
+
+impl WeaveThreadKey {
+    pub(crate) fn session_id(&self) -> &str {
+        match self {
+            Self::Room { session_id } => session_id,
+            Self::Dm(thread) => &thread.session_id,
+        }
+    }
+
+    pub(crate) fn key(&self) -> String {
+        match self {
+            Self::Room { session_id } => room_thread_key(session_id),
+            Self::Dm(thread) => thread.key(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct WeaveLogRecipient {
     pub id: String,
@@ -68,6 +92,56 @@ pub(crate) fn parse_dm_log_filename(session_id: &str, filename: &str) -> Option<
     let rest = rest.strip_suffix(".jsonl")?;
     let (a, b) = rest.rsplit_once('_')?;
     Some(WeaveDmThread::new(session_id.to_string(), a.to_string(), b.to_string()))
+}
+
+pub(crate) fn room_thread_key(session_id: &str) -> String {
+    format!("room:{}", session_id.trim())
+}
+
+pub(crate) fn room_log_path(code_home: &Path, session_id: &str) -> PathBuf {
+    code_home
+        .join("weave")
+        .join("logs")
+        .join(session_id.trim())
+        .join(ROOM_LOG_FILENAME)
+}
+
+pub(crate) fn parse_thread_key(key: &str) -> Option<WeaveThreadKey> {
+    let key = key.trim();
+    if key.is_empty() {
+        return None;
+    }
+
+    let mut parts = key.split(':');
+    let kind = parts.next()?;
+    match kind {
+        "room" => {
+            let session_id = parts.next()?.trim();
+            if session_id.is_empty() {
+                return None;
+            }
+            Some(WeaveThreadKey::Room {
+                session_id: session_id.to_string(),
+            })
+        }
+        "dm" => {
+            let session_id = parts.next()?.trim();
+            let a = parts.next()?.trim();
+            let b = parts.next()?.trim();
+            if session_id.is_empty() || a.is_empty() || b.is_empty() {
+                return None;
+            }
+            if parts.next().is_some() {
+                return None;
+            }
+            Some(WeaveThreadKey::Dm(WeaveDmThread::new(
+                session_id.to_string(),
+                a.to_string(),
+                b.to_string(),
+            )))
+        }
+        _ => None,
+    }
 }
 
 pub(crate) fn unread_count(entries: &[WeaveLogEntry], self_id: &str, last_read_ts_ms: u64) -> usize {
@@ -146,6 +220,27 @@ mod tests {
         let parsed = parse_dm_log_filename("sess", &filename).expect("parse");
 
         assert_eq!(parsed, thread);
+    }
+
+    #[test]
+    fn parse_thread_key_understands_room_and_dm() {
+        let room = parse_thread_key("room:sess").expect("room");
+        assert_eq!(
+            room,
+            WeaveThreadKey::Room {
+                session_id: "sess".to_string()
+            }
+        );
+
+        let dm = parse_thread_key("dm:sess:a:b").expect("dm");
+        assert_eq!(dm.session_id(), "sess");
+        assert_eq!(dm.key(), "dm:sess:a:b");
+    }
+
+    #[test]
+    fn room_log_path_is_stable() {
+        let path = room_log_path(Path::new("/tmp/code-home"), "sess");
+        assert!(path.to_string_lossy().ends_with("/weave/logs/sess/room.jsonl"));
     }
 
     #[test]

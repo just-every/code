@@ -1810,18 +1810,14 @@ impl App<'_> {
                         widget.open_weave_session_menu(sessions);
                     }
                 }
-                AppEvent::RequestWeaveInboxMenu => {
+                AppEvent::RequestWeaveInboxMenu { scope } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.request_weave_inbox_menu();
+                        widget.request_weave_inbox_menu(scope);
                     }
                 }
-                AppEvent::OpenWeaveInboxMenu {
-                    session_id,
-                    session_label,
-                    threads,
-                } => {
+                AppEvent::OpenWeaveInboxMenu { scope, items } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.open_weave_inbox_menu(session_id, session_label, threads);
+                        widget.open_weave_inbox_menu(scope, items);
                     }
                 }
                 AppEvent::OpenWeaveAgentNamePrompt => {
@@ -1924,9 +1920,21 @@ impl App<'_> {
                         widget.on_weave_message_received(message);
                     }
                 }
-                AppEvent::OpenWeaveDmThread { peer_id, peer_label } => {
+                AppEvent::OpenWeaveThreadByKey {
+                    session_id,
+                    session_label,
+                    thread_key,
+                    label,
+                    peer_id,
+                } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.request_weave_dm_thread_backfill(peer_id, peer_label);
+                        widget.open_weave_thread_by_key(
+                            session_id,
+                            session_label,
+                            thread_key,
+                            label,
+                            peer_id,
+                        );
                     }
                 }
                 AppEvent::WeaveDmThreadBackfill {
@@ -1942,6 +1950,15 @@ impl App<'_> {
                             peer_label,
                             entries,
                         );
+                    }
+                }
+                AppEvent::WeaveRoomThreadBackfill {
+                    thread_key,
+                    room_label,
+                    entries,
+                } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.apply_weave_room_thread_backfill(thread_key, room_label, entries);
                     }
                 }
                 AppEvent::WeaveOutboundStatus { message_id, status } => {

@@ -138,11 +138,18 @@ qwen --version
 # Open the Weave menu (sessions, name/profile, colors)
 /weave
 
-# Open the inbox (DM threads + unread counts)
+# Open the inbox (room + DM threads + unread counts)
 /weave inbox
+
+# Open the inbox across all sessions
+/weave inbox all
 
 # DM another agent in the current session
 #bob Hello from Alice
+
+# Room chat (broadcast to everyone in the session)
+#room Hello everyone
+#all Hello everyone
 
 # Auto-reply / autorun (per profile)
 /weave auto reply
