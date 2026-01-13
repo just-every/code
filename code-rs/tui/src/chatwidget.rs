@@ -21011,7 +21011,7 @@ Have we met every part of this goal and is there no further work to do?"#
             let build_editor = || {
                 AgentEditorView::new(
                     name.clone(),
-                    true,
+                    builtin,
                     if ro.is_empty() { None } else { Some(ro.clone()) },
                     if wr.is_empty() { None } else { Some(wr.clone()) },
                     None,
@@ -23484,7 +23484,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 };
                 agent_rows.push(AgentOverviewRow {
                     name: cfg.name.clone(),
-                    enabled: cfg.enabled,
+                    enabled: cfg.enabled && installed,
                     installed,
                     description: Self::agent_description_for(
                         &cfg.name,
@@ -23509,7 +23509,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 };
                 agent_rows.push(AgentOverviewRow {
                     name: cfg.name.clone(),
-                    enabled: cfg.enabled,
+                    enabled: cfg.enabled && installed,
                     installed,
                     description: Self::agent_description_for(
                         &cfg.name,
@@ -23530,7 +23530,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 };
                 agent_rows.push(AgentOverviewRow {
                     name: name.clone(),
-                    enabled: true,
+                    enabled: installed,
                     installed,
                     description: Self::agent_description_for(name, Some(&cmd), None),
                 });
@@ -29519,6 +29519,42 @@ use code_core::protocol::OrderMeta;
             .any(|msg| msg.contains("Worktree path: \n") || msg.contains("Worktree path: \r\n"));
         assert!(!blank_path_message, "should not emit auto-review message with blank worktree path");
         assert!(chat.processed_auto_review_agents.contains("agent-blank"));
+    }
+
+    #[test]
+    fn missing_agent_clis_start_disabled_in_overview() {
+        let orig_path = std::env::var_os("PATH");
+        unsafe {
+            std::env::set_var("PATH", "");
+        }
+
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        let (rows, _commands) = chat.collect_agents_overview_rows();
+        let qwen = rows
+            .iter()
+            .find(|row| row.name == "qwen-3-coder")
+            .expect("qwen row present");
+        assert!(!qwen.installed);
+        assert!(!qwen.enabled);
+
+        let code = rows
+            .iter()
+            .find(|row| row.name == "code-gpt-5.2")
+            .expect("code row present");
+        assert!(code.installed);
+        assert!(code.enabled);
+
+        if let Some(path) = orig_path {
+            unsafe {
+                std::env::set_var("PATH", path);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("PATH");
+            }
+        }
     }
 
     #[test]

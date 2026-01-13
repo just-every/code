@@ -1,3 +1,4 @@
+use crate::agent_defaults::agent_model_spec;
 use crate::agent_defaults::enabled_agent_model_specs;
 use crate::config_types::AgentConfig;
 use crate::config_types::SubagentCommandConfig;
@@ -7,11 +8,68 @@ use crate::config_types::SubagentCommandConfig;
 // the user documentation in `docs/slash-commands.md` so the list stays in sync
 // with the UI and behavior.
 
+fn command_exists(cmd: &str) -> bool {
+    if cmd.contains(std::path::MAIN_SEPARATOR) || cmd.contains('/') || cmd.contains('\\') {
+        return std::fs::metadata(cmd).map(|m| m.is_file()).unwrap_or(false);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        which::which(cmd).map(|p| p.is_file()).unwrap_or(false)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let Some(path_os) = std::env::var_os("PATH") else {
+            return false;
+        };
+        for dir in std::env::split_paths(&path_os) {
+            if dir.as_os_str().is_empty() {
+                continue;
+            }
+            let candidate = dir.join(cmd);
+            if let Ok(meta) = std::fs::metadata(&candidate) {
+                if meta.is_file() && (meta.permissions().mode() & 0o111 != 0) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
 /// Get the list of enabled agent names from the configuration
 pub fn get_enabled_agents(agents: &[AgentConfig]) -> Vec<String> {
+    fn command_for_check(command: &str) -> &str {
+        command.split_whitespace().next().unwrap_or(command)
+    }
+
+    fn agent_is_runnable(agent: &AgentConfig) -> bool {
+        let spec = agent_model_spec(&agent.name).or_else(|| agent_model_spec(&agent.command));
+        if let Some(spec) = spec {
+            if matches!(spec.family, "code" | "codex" | "cloud") {
+                return true;
+            }
+        }
+
+        let cmd = agent.command.trim();
+        let cmd = if cmd.is_empty() { agent.name.trim() } else { cmd };
+        let cmd = command_for_check(cmd);
+        if !cmd.is_empty() && command_exists(cmd) {
+            return true;
+        }
+
+        if let Some(spec) = spec {
+            return command_exists(spec.cli);
+        }
+
+        false
+    }
+
     agents
         .iter()
-        .filter(|agent| agent.enabled)
+        .filter(|agent| agent.enabled && agent_is_runnable(agent))
         .map(|agent| agent.name.clone())
         .collect()
 }
@@ -20,6 +78,9 @@ pub fn get_enabled_agents(agents: &[AgentConfig]) -> Vec<String> {
 fn get_default_models() -> Vec<String> {
     enabled_agent_model_specs()
         .into_iter()
+        .filter(|spec| {
+            matches!(spec.family, "code" | "codex" | "cloud") || command_exists(spec.cli)
+        })
         .map(|spec| spec.slug.to_string())
         .collect()
 }
@@ -232,6 +293,30 @@ pub fn handle_slash_command(input: &str, agents: Option<&[AgentConfig]>) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_models_skip_missing_agent_clis() {
+        let orig_path = std::env::var_os("PATH");
+        unsafe {
+            std::env::set_var("PATH", "");
+        }
+
+        let defaults = get_default_models();
+        assert!(defaults.iter().any(|v| v == "code-gpt-5.2"));
+        assert!(!defaults.iter().any(|v| v == "qwen-3-coder"));
+        assert!(!defaults.iter().any(|v| v == "gemini-3-flash"));
+        assert!(!defaults.iter().any(|v| v == "claude-sonnet-4.5"));
+
+        if let Some(path) = orig_path {
+            unsafe {
+                std::env::set_var("PATH", path);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("PATH");
+            }
+        }
+    }
 
     #[test]
     fn test_slash_command_parsing() {
