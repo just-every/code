@@ -1815,6 +1815,11 @@ impl App<'_> {
                         widget.open_weave_agent_name_prompt();
                     }
                 }
+                AppEvent::OpenWeaveProfilePrompt => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.open_weave_profile_prompt();
+                    }
+                }
                 AppEvent::OpenWeaveAgentColorMenu => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.open_weave_agent_color_menu();
@@ -1833,6 +1838,11 @@ impl App<'_> {
                 AppEvent::SetWeaveAgentName { name } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.set_weave_agent_name(name);
+                    }
+                }
+                AppEvent::SetWeaveProfile { profile } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.set_weave_profile(profile);
                     }
                 }
                 AppEvent::SetWeaveAgentColor { accent } => {
@@ -1873,6 +1883,11 @@ impl App<'_> {
                 AppEvent::WeaveMessageReceived { message } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.on_weave_message_received(message);
+                    }
+                }
+                AppEvent::WeaveOutboundStatus { message_id, status } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.update_weave_outbound_status(message_id, status);
                     }
                 }
                 AppEvent::WeaveError { message } => {

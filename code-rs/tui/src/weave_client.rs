@@ -598,9 +598,10 @@ mod platform {
             dst: String,
             text: String,
             metadata: Option<&super::WeaveMessageMetadata>,
+            message_id: Option<String>,
         ) -> Result<(), String> {
             let payload = message_payload(text, &self.agent_name, None, metadata);
-            self.send_payload(dst, payload).await
+            self.send_payload(dst, payload, message_id).await
         }
 
         pub(crate) async fn update_agent_name(&self, name: String) -> Result<(), String> {
@@ -622,13 +623,25 @@ mod platform {
             Ok(())
         }
 
-        async fn send_payload(&self, dst: String, payload: Value) -> Result<(), String> {
+        async fn send_payload(
+            &self,
+            dst: String,
+            payload: Value,
+            message_id: Option<String>,
+        ) -> Result<(), String> {
             let mut request = new_envelope_with_src(
                 "message.send",
                 self.agent_id.clone(),
                 Some(self.session_id.clone()),
                 Some(payload),
             );
+            if let Some(message_id) = message_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                request.id = message_id.to_string();
+            }
             request.dst = Some(dst);
             let response = self.send_request(request).await?;
             if let Some(message) = response_error(&response) {
@@ -916,6 +929,7 @@ mod platform {
             _dst: String,
             _text: String,
             _metadata: Option<&super::WeaveMessageMetadata>,
+            _message_id: Option<String>,
         ) -> Result<(), String> {
             Err("Weave sessions are only supported on Unix platforms.".to_string())
         }
