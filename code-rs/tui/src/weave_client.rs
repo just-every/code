@@ -604,6 +604,17 @@ mod platform {
             self.send_payload(dst, payload, message_id).await
         }
 
+        pub(crate) async fn send_reply_with_metadata(
+            &self,
+            dst: String,
+            text: String,
+            metadata: Option<&super::WeaveMessageMetadata>,
+            message_id: Option<String>,
+        ) -> Result<(), String> {
+            let payload = message_payload(text, &self.agent_name, Some("reply"), metadata);
+            self.send_payload(dst, payload, message_id).await
+        }
+
         pub(crate) async fn update_agent_name(&self, name: String) -> Result<(), String> {
             let trimmed = name.trim();
             if trimmed.is_empty() {
@@ -925,6 +936,16 @@ mod platform {
 
     impl WeaveAgentSender {
         pub(crate) async fn send_message_with_metadata(
+            &self,
+            _dst: String,
+            _text: String,
+            _metadata: Option<&super::WeaveMessageMetadata>,
+            _message_id: Option<String>,
+        ) -> Result<(), String> {
+            Err("Weave sessions are only supported on Unix platforms.".to_string())
+        }
+
+        pub(crate) async fn send_reply_with_metadata(
             &self,
             _dst: String,
             _text: String,

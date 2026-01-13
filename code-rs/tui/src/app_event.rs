@@ -34,6 +34,7 @@ use code_cloud_tasks_client::{ApplyOutcome, CloudTaskError, CreatedTask, TaskSum
 
 use crate::app::ChatWidgetArgs;
 use crate::chrome_launch::ChromeLaunchOption;
+use crate::chatwidget::WeaveAutoMode;
 use crate::slash_command::SlashCommand;
 use code_protocol::models::ResponseItem;
 use std::fmt;
@@ -241,6 +242,12 @@ pub(crate) enum AppEvent {
     OpenWeaveAgentNamePrompt,
     /// Open a prompt to switch which Weave profile/persona is active.
     OpenWeaveProfilePrompt,
+    /// Open a prompt to create or rename a Weave profile.
+    OpenWeaveProfileNamePrompt,
+    /// Open a menu to configure Weave auto-reply/autorun mode.
+    OpenWeaveAutoModeMenu,
+    /// Open a prompt to edit persona memory for the active profile.
+    OpenWeavePersonaMemoryPrompt,
     /// Open a menu to pick this agent's accent color for Weave messages.
     OpenWeaveAgentColorMenu,
     /// Open a prompt to create a new session.
@@ -253,6 +260,10 @@ pub(crate) enum AppEvent {
     ///
     /// When `profile` is None, Code uses the terminal-scoped default (e.g. iTerm session id).
     SetWeaveProfile { profile: Option<String> },
+    /// Set the Weave auto mode for this profile (off/reply/work).
+    SetWeaveAutoMode { mode: WeaveAutoMode },
+    /// Set the persona memory blob for this profile (may be empty to clear).
+    SetWeavePersonaMemory { memory: String },
     /// Set an explicit accent color for this agent (or clear to use auto).
     SetWeaveAgentColor { accent: Option<u8> },
     /// Join/leave a session selection from the Weave menu.

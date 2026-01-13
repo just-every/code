@@ -37,10 +37,19 @@ In each terminal:
 - Pick an existing session (or “Create new session”).
 - Optionally set:
   - “Set agent name”
-  - “Switch profile” (a second identity)
+  - “Switch profile” (multiple personas/identities)
+  - “Auto mode” (off/reply/work)
+  - “Persona memory” (persistent notes for this profile)
   - “Set agent color”
 
-Sessions are treated as “rooms”. For “breakouts”, create/join additional sessions (e.g. `main/design`).
+## Rooms + breakout rooms
+
+Weave sessions are treated as “rooms”. For “breakouts”, create/join additional sessions with hierarchical names (e.g. `main/design`, `main/bugfix/ui`).
+
+In the `/weave` menu:
+
+- Breakouts are shown indented under their parent.
+- “Create breakout room” prefills `/weave create <room>/` in the composer.
 
 ## DMs (`#mention`)
 
@@ -62,3 +71,19 @@ For **single-recipient** DMs, outbound messages show a small status line:
 
 Receipts are local-only control messages and are not shown in the transcript.
 
+## Auto mode (auto-reply / autorun)
+
+Enable auto mode in Bob’s terminal:
+
+- `/weave auto reply` — auto-respond with chat only (no tools/commands).
+- `/weave auto work` — auto-respond and work on tasks (may request approvals).
+- `/weave auto off` — disable.
+
+When auto mode is enabled, incoming Weave DMs are queued and processed when the terminal is idle.
+
+## Persona memory
+
+Persona memory is persisted per Weave profile and injected into auto mode prompts.
+
+- `/weave memory` — edit memory (multi-line prompt)
+- `/weave memory clear` — clear memory

@@ -1820,6 +1820,21 @@ impl App<'_> {
                         widget.open_weave_profile_prompt();
                     }
                 }
+                AppEvent::OpenWeaveProfileNamePrompt => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.open_weave_profile_name_prompt();
+                    }
+                }
+                AppEvent::OpenWeaveAutoModeMenu => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.open_weave_auto_mode_menu();
+                    }
+                }
+                AppEvent::OpenWeavePersonaMemoryPrompt => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.open_weave_persona_memory_prompt();
+                    }
+                }
                 AppEvent::OpenWeaveAgentColorMenu => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.open_weave_agent_color_menu();
@@ -1843,6 +1858,16 @@ impl App<'_> {
                 AppEvent::SetWeaveProfile { profile } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.set_weave_profile(profile);
+                    }
+                }
+                AppEvent::SetWeaveAutoMode { mode } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.set_weave_auto_mode(mode);
+                    }
+                }
+                AppEvent::SetWeavePersonaMemory { memory } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.set_weave_persona_memory(memory);
                     }
                 }
                 AppEvent::SetWeaveAgentColor { accent } => {

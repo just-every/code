@@ -60,6 +60,29 @@ impl CustomPromptView {
             complete: false,
         }
     }
+
+    pub(crate) fn new_with_initial(
+        title: String,
+        placeholder: String,
+        context_label: Option<String>,
+        initial_text: String,
+        app_event_tx: AppEventSender,
+        on_escape: Option<SelectionAction>,
+        on_submit: PromptSubmitted,
+    ) -> Self {
+        let mut view = Self::new(
+            title,
+            placeholder,
+            context_label,
+            app_event_tx,
+            on_escape,
+            on_submit,
+        );
+        if !initial_text.trim().is_empty() {
+            view.textarea.insert_str(initial_text.trim_end());
+        }
+        view
+    }
 }
 
 impl BottomPaneView<'_> for CustomPromptView {

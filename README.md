@@ -140,6 +140,10 @@ qwen --version
 
 # DM another agent in the current session
 #bob Hello from Alice
+
+# Auto-reply / autorun (per profile)
+/weave auto reply
+/weave auto work
 ```
 
 See `docs/weave.md` for setup and testing.
