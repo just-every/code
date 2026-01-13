@@ -129,10 +129,14 @@ fn collapsed_reasoning_before_exec_keeps_last_line() {
     harness.send_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
 
     let mut seq = 0_u64;
-    let order = |seq: &mut u64| OrderMeta {
-        request_ordinal: 42,
-        output_index: Some(0),
-        sequence_number: Some(*seq),
+    let order = |seq: &mut u64| {
+        let order = OrderMeta {
+            request_ordinal: 42,
+            output_index: Some(0),
+            sequence_number: Some(*seq),
+        };
+        *seq += 1;
+        order
     };
     let call_id = "exec-cutoff-collapsed".to_string();
     let cwd = PathBuf::from("/workspace");
@@ -359,10 +363,14 @@ fn exec_history_small_viewport_keeps_last_line() {
     harness.push_user_prompt("Run an exec command with verbose output.");
 
     let mut seq = 0_u64;
-    let order = |seq: &mut u64| OrderMeta {
-        request_ordinal: 3,
-        output_index: Some(0),
-        sequence_number: Some(*seq),
+    let order = |seq: &mut u64| {
+        let order = OrderMeta {
+            request_ordinal: 3,
+            output_index: Some(0),
+            sequence_number: Some(*seq),
+        };
+        *seq += 1;
+        order
     };
     let call_id = "exec-cutoff".to_string();
     let cwd = PathBuf::from("/workspace");

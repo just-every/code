@@ -37956,7 +37956,18 @@ impl WidgetRef for &ChatWidget<'_> {
                         p.record_render((idx, content_width), label.as_str(), ns);
                     }
                 }
+                let cell_start = acc;
                 acc = acc.saturating_add(line_count);
+                let cell_end = acc;
+
+                if cell
+                    .as_any()
+                    .is::<crate::history_cell::AssistantMarkdownCell>()
+                    && line_count >= 2
+                {
+                    spacing_ranges.push((cell_start, cell_start.saturating_add(1)));
+                    spacing_ranges.push((cell_end.saturating_sub(1), cell_end));
+                }
 
                 let mut should_add_spacing = idx < cells.len().saturating_sub(1) && line_count > 0;
                 if should_add_spacing {
@@ -38126,9 +38137,14 @@ impl WidgetRef for &ChatWidget<'_> {
                 scroll_from_top = scroll_from_top.saturating_sub(overscan_extra);
             }
 
-            // NOTE: when pinned to the bottom, we intentionally do not try to skip
-            // potential trailing padding rows inside cells. Doing so is brittle and
-            // can hide the last visible content line in very small viewports.
+            if clamped_scroll_offset == 0 && content_area.height == 1 {
+                scroll_from_top = self
+                    .history_render
+                    .adjust_scroll_to_content(scroll_from_top);
+            }
+
+            // NOTE: when pinned to the bottom, avoid guessing at cell-internal padding.
+            // Only skip known spacer intervals recorded by the history render cache.
 
             tracing::debug!(
                 target: "code_tui::scrollback",
