@@ -13,6 +13,7 @@ use super::chat_composer_history::ChatComposerHistory;
 use super::command_popup::CommandItem;
 use super::command_popup::CommandPopup;
 use super::file_search_popup::FileSearchPopup;
+use super::mention_popup::MentionPopup;
 use super::paste_burst::PasteBurst;
 use crate::slash_command::{built_in_slash_commands, SlashCommand};
 use code_protocol::custom_prompts::CustomPrompt;
@@ -160,6 +161,10 @@ pub(crate) struct ChatComposer {
     footer_notice: Option<(String, std::time::Instant)>,
     // Persistent hint for specific modes (e.g., standard terminal mode)
     standard_terminal_hint: Option<String>,
+    // Weave collaboration status displayed in the footer (optional).
+    weave_status: Option<String>,
+    // Cached Weave agent names available for #mention completion.
+    weave_mention_candidates: Vec<String>,
     // Auto Review status displayed in the footer
     auto_review_status: Option<AutoReviewFooterStatus>,
     // Agent hint label to display alongside Auto Review footer state
@@ -191,6 +196,7 @@ enum ActivePopup {
     None,
     Command(CommandPopup),
     File(FileSearchPopup),
+    Mention(MentionPopup),
 }
 
 enum FilePopupOrigin {
@@ -232,6 +238,8 @@ impl ChatComposer {
             custom_prompts: Vec::new(),
             footer_notice: None,
             standard_terminal_hint: None,
+            weave_status: None,
+            weave_mention_candidates: Vec::new(),
             auto_review_status: None,
             agent_hint_label: AgentHintLabel::Agents,
             access_mode_label: None,
@@ -569,6 +577,7 @@ impl ChatComposer {
         let hint_height = match (&self.active_popup, self.embedded_mode) {
             (ActivePopup::Command(c), _) => c.calculate_required_height(),
             (ActivePopup::File(c), _) => c.calculate_required_height(),
+            (ActivePopup::Mention(c), _) => c.calculate_required_height(),
             (ActivePopup::None, true) => 0,
             (ActivePopup::None, false) => 1,
         };
@@ -590,6 +599,7 @@ impl ChatComposer {
         let hint_height = match (&self.active_popup, self.embedded_mode) {
             (ActivePopup::Command(popup), _) => popup.calculate_required_height(),
             (ActivePopup::File(popup), _) => popup.calculate_required_height(),
+            (ActivePopup::Mention(popup), _) => popup.calculate_required_height(),
             (ActivePopup::None, true) => 0,
             (ActivePopup::None, false) => 1,
         };
@@ -839,6 +849,11 @@ impl ChatComposer {
 
     /// Integrate results from an asynchronous file search.
     pub(crate) fn on_file_search_result(&mut self, query: String, matches: Vec<FileMatch>) {
+        // Avoid stealing focus from other popups (e.g., slash or weave mention).
+        if matches!(self.active_popup, ActivePopup::Command(_) | ActivePopup::Mention(_)) {
+            return;
+        }
+
         // Handle one-off Tab-triggered case first: only open if matches exist.
         if self.pending_tab_file_query.as_ref() == Some(&query) {
             // If the user kept typing while the search was in-flight, resync to the
@@ -928,6 +943,26 @@ impl ChatComposer {
         self.standard_terminal_hint.as_deref()
     }
 
+    pub(crate) fn set_weave_status(&mut self, status: Option<String>) {
+        self.weave_status = status
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+    }
+
+    pub(crate) fn set_weave_mention_candidates(&mut self, candidates: Vec<String>) {
+        self.weave_mention_candidates = candidates
+            .into_iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect();
+        self.weave_mention_candidates.sort();
+        self.weave_mention_candidates.dedup();
+
+        if let ActivePopup::Mention(popup) = &mut self.active_popup {
+            popup.set_candidates(self.weave_mention_candidates.clone());
+        }
+    }
+
     pub fn set_text_content(&mut self, text: String) {
         self.textarea.set_text(&text);
         *self.textarea_state.borrow_mut() = TextAreaState::default();
@@ -939,8 +974,7 @@ impl ChatComposer {
     pub(crate) fn insert_str(&mut self, text: &str) {
         self.textarea.insert_str(text);
         self.typed_anything = true; // Mark that user has interacted via programmatic insertion
-        self.sync_command_popup();
-        self.sync_file_search_popup();
+        self.resync_popups();
     }
 
     pub(crate) fn text(&self) -> &str {
@@ -1049,6 +1083,7 @@ impl ChatComposer {
         let result = match &mut self.active_popup {
             ActivePopup::Command(_) => self.handle_key_event_with_slash_popup(key_event),
             ActivePopup::File(_) => self.handle_key_event_with_file_popup(key_event),
+            ActivePopup::Mention(_) => self.handle_key_event_with_mention_popup(key_event),
             ActivePopup::None => self.handle_key_event_without_popup(key_event),
         };
 
@@ -1297,6 +1332,53 @@ impl ChatComposer {
         }
     }
 
+    fn handle_key_event_with_mention_popup(&mut self, key_event: KeyEvent) -> (InputResult, bool) {
+        let ActivePopup::Mention(popup) = &mut self.active_popup else {
+            unreachable!();
+        };
+
+        match key_event {
+            KeyEvent { code: KeyCode::Up, modifiers, .. } => {
+                if modifiers.contains(KeyModifiers::SHIFT) {
+                    return self.handle_key_event_without_popup(key_event);
+                }
+                if popup.match_count() <= 1 {
+                    return self.handle_key_event_without_popup(key_event);
+                }
+                popup.move_up();
+                (InputResult::None, true)
+            }
+            KeyEvent { code: KeyCode::Down, modifiers, .. } => {
+                if modifiers.contains(KeyModifiers::SHIFT) {
+                    return self.handle_key_event_without_popup(key_event);
+                }
+                if popup.match_count() <= 1 {
+                    return self.handle_key_event_without_popup(key_event);
+                }
+                popup.move_down();
+                (InputResult::None, true)
+            }
+            KeyEvent { code: KeyCode::Esc, .. } => {
+                self.active_popup = ActivePopup::None;
+                (InputResult::None, true)
+            }
+            KeyEvent { code: KeyCode::Tab, .. }
+            | KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => {
+                if let Some(sel) = popup.selected_mention() {
+                    self.insert_selected_mention(&sel);
+                    self.active_popup = ActivePopup::None;
+                    return (InputResult::None, true);
+                }
+                (InputResult::None, false)
+            }
+            input => self.handle_input_basic(input),
+        }
+    }
+
     /// Extract the `@token` that the cursor is currently positioned on, if any.
     ///
     /// The returned string **does not** include the leading `@`.
@@ -1397,6 +1479,34 @@ impl ChatComposer {
             return right_at.or(left_at);
         }
         left_at.or(right_at)
+    }
+
+    fn current_hash_token(textarea: &TextArea) -> Option<String> {
+        let cursor_offset = textarea.cursor();
+        let text = textarea.text();
+        let safe_cursor = Self::clamp_to_char_boundary(text, cursor_offset);
+
+        let before_cursor = &text[..safe_cursor];
+        let after_cursor = &text[safe_cursor..];
+
+        let start_idx = before_cursor
+            .char_indices()
+            .rfind(|(_, c)| c.is_whitespace())
+            .map(|(idx, c)| idx + c.len_utf8())
+            .unwrap_or(0);
+        let end_rel_idx = after_cursor
+            .char_indices()
+            .find(|(_, c)| c.is_whitespace())
+            .map(|(idx, _)| idx)
+            .unwrap_or(after_cursor.len());
+        let end_idx = safe_cursor + end_rel_idx;
+
+        if start_idx >= end_idx {
+            return None;
+        }
+
+        let token = text[start_idx..end_idx].trim();
+        token.strip_prefix('#').map(ToString::to_string)
     }
 
     /// Extract the completion token under the cursor for auto file search.
@@ -1545,6 +1655,41 @@ impl ChatComposer {
         self.textarea.set_text(&new_text);
         let new_cursor = start_idx.saturating_add(inserted.len()).saturating_add(1);
         self.textarea.set_cursor(new_cursor);
+    }
+
+    fn insert_selected_mention(&mut self, mention: &str) {
+        let cursor_offset = self.textarea.cursor();
+        let text = self.textarea.text();
+        let safe_cursor = Self::clamp_to_char_boundary(text, cursor_offset);
+
+        let before_cursor = &text[..safe_cursor];
+        let after_cursor = &text[safe_cursor..];
+
+        let start_idx = before_cursor
+            .char_indices()
+            .rfind(|(_, c)| c.is_whitespace())
+            .map(|(idx, c)| idx + c.len_utf8())
+            .unwrap_or(0);
+
+        let end_rel_idx = after_cursor
+            .char_indices()
+            .find(|(_, c)| c.is_whitespace())
+            .map(|(idx, _)| idx)
+            .unwrap_or(after_cursor.len());
+        let end_idx = safe_cursor + end_rel_idx;
+
+        let inserted = format!("#{mention}");
+        let mut new_text =
+            String::with_capacity(text.len() - (end_idx - start_idx) + inserted.len() + 1);
+        new_text.push_str(&text[..start_idx]);
+        new_text.push_str(&inserted);
+        new_text.push(' ');
+        new_text.push_str(&text[end_idx..]);
+
+        self.textarea.set_text(&new_text);
+        let new_cursor = start_idx.saturating_add(inserted.len()).saturating_add(1);
+        self.textarea.set_cursor(new_cursor);
+        self.typed_anything = true;
     }
 
     /// Handle key event when no popup is visible.
@@ -1931,6 +2076,43 @@ impl ChatComposer {
         }
     }
 
+    fn sync_mention_popup(&mut self) {
+        // Avoid showing weave mention suggestions while the user is typing a slash command.
+        let first_line = self.textarea.text().lines().next().unwrap_or("");
+        if first_line.starts_with('/') {
+            if matches!(self.active_popup, ActivePopup::Mention(_)) {
+                self.active_popup = ActivePopup::None;
+            }
+            return;
+        }
+
+        let Some(query) = Self::current_hash_token(&self.textarea) else {
+            if matches!(self.active_popup, ActivePopup::Mention(_)) {
+                self.active_popup = ActivePopup::None;
+            }
+            return;
+        };
+
+        if self.weave_mention_candidates.is_empty() {
+            if matches!(self.active_popup, ActivePopup::Mention(_)) {
+                self.active_popup = ActivePopup::None;
+            }
+            return;
+        }
+
+        match &mut self.active_popup {
+            ActivePopup::Mention(popup) => {
+                popup.set_candidates(self.weave_mention_candidates.clone());
+                popup.on_query_change(query);
+            }
+            _ => {
+                let mut popup = MentionPopup::new(self.weave_mention_candidates.clone());
+                popup.on_query_change(query);
+                self.active_popup = ActivePopup::Mention(popup);
+            }
+        }
+    }
+
     /// Synchronize `self.file_search_popup` with the current text in the textarea.
     /// Note this is only called when self.active_popup is NOT Command.
     fn sync_file_search_popup(&mut self) {
@@ -2014,9 +2196,17 @@ impl ChatComposer {
         self.sync_command_popup();
         if matches!(self.active_popup, ActivePopup::Command(_)) {
             self.dismissed_file_popup_token = None;
-        } else {
-            self.sync_file_search_popup();
+            return;
         }
+        self.sync_mention_popup();
+        if matches!(self.active_popup, ActivePopup::Mention(_)) {
+            self.dismissed_file_popup_token = None;
+            self.file_popup_origin = None;
+            self.current_file_query = None;
+            return;
+        }
+
+        self.sync_file_search_popup();
     }
 
     pub(crate) fn set_has_focus(&mut self, has_focus: bool) {
@@ -2247,6 +2437,7 @@ impl ChatComposer {
         match (&self.active_popup, self.embedded_mode) {
             (ActivePopup::Command(popup), _) => popup.calculate_required_height(),
             (ActivePopup::File(popup), _) => popup.calculate_required_height(),
+            (ActivePopup::Mention(popup), _) => popup.calculate_required_height(),
             (ActivePopup::None, true) => 0,
             (ActivePopup::None, false) => 1,
         }
@@ -2262,6 +2453,9 @@ impl ChatComposer {
                 popup.render_ref(area, buf);
             }
             ActivePopup::File(popup) => {
+                popup.render_ref(area, buf);
+            }
+            ActivePopup::Mention(popup) => {
                 popup.render_ref(area, buf);
             }
             ActivePopup::None => {
@@ -2461,6 +2655,26 @@ impl ChatComposer {
                     right_sections.push((4, guide_spans, true));
                 }
 
+                // Weave status (priority 5)
+                let weave_spans: Vec<Span<'static>> = self
+                    .weave_status
+                    .as_ref()
+                    .map(|status| {
+                        vec![
+                            Span::from("Weave").style(
+                                Style::default()
+                                    .fg(crate::colors::info())
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::from(" ").style(label_style),
+                            Span::from(status.clone()).style(label_style),
+                        ]
+                    })
+                    .unwrap_or_default();
+                if !weave_spans.is_empty() {
+                    right_sections.push((5, weave_spans, true));
+                }
+
                 // Tokens placeholder (actual spans chosen later)
                 right_sections.push((1, Vec::new(), include_tokens));
 
@@ -2487,6 +2701,8 @@ impl ChatComposer {
                 let mut include_auto_review_status = left_sections.iter().any(|(p, _, inc)| *p == 3 && *inc);
                 let mut include_auto_review_agent_hint =
                     right_sections.iter().any(|(p, _, inc)| *p == 3 && *inc);
+                let mut include_weave_status =
+                    right_sections.iter().any(|(p, _, inc)| *p == 5 && *inc);
                 let mut include_left_misc = true;
                 let mut include_ctrl_c = ctrl_c_present;
                 let mut include_guide = guide_present;
@@ -2559,6 +2775,7 @@ impl ChatComposer {
                     include_tokens: bool,
                     use_compact_tokens: bool,
                     include_auto_review_agent_hint: bool,
+                    include_weave_status: bool,
                     include_guide: bool,
                     include_right_other: bool,
                 | -> (Vec<Span<'static>>, usize) {
@@ -2570,6 +2787,7 @@ impl ChatComposer {
                             1 => include_tokens && *included,
                             3 => include_auto_review_agent_hint && *included,
                             4 => include_guide && *included,
+                            5 => include_weave_status && *included,
                             7 => include_right_other && *included,
                             _ => *included,
                         };
@@ -2618,6 +2836,7 @@ impl ChatComposer {
                         include_tokens,
                         token_use_compact,
                         include_auto_review_agent_hint,
+                        include_weave_status,
                         include_guide,
                         include_right_other,
                     );
@@ -2656,7 +2875,7 @@ impl ChatComposer {
                     }
 
                     // Removal order: 7 (right other) -> 6 (left misc) -> 5 (Ctrl+A hint)
-                    // -> 4 (guide) -> 3 (auto review status) -> 2 (Ctrl+C) -> 1 (tokens)
+                    // -> 4 (guide) -> 3 (auto review status) -> 2 (weave) -> 1 (Ctrl+C) -> 0 (tokens)
                     match removal_stage {
                         0 => {
                             include_right_other = false;
@@ -2675,9 +2894,12 @@ impl ChatComposer {
                             include_auto_review_agent_hint = false;
                         }
                         5 => {
-                            include_ctrl_c = false;
+                            include_weave_status = false;
                         }
                         6 => {
+                            include_ctrl_c = false;
+                        }
+                        7 => {
                             include_tokens = false;
                         }
                         _ => {

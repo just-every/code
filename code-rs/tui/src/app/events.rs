@@ -1815,6 +1815,11 @@ impl App<'_> {
                         widget.open_weave_agent_name_prompt();
                     }
                 }
+                AppEvent::OpenWeaveAgentColorMenu => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.open_weave_agent_color_menu();
+                    }
+                }
                 AppEvent::OpenWeaveSessionCreatePrompt => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.open_weave_session_create_prompt();
@@ -1828,6 +1833,11 @@ impl App<'_> {
                 AppEvent::SetWeaveAgentName { name } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.set_weave_agent_name(name);
+                    }
+                }
+                AppEvent::SetWeaveAgentColor { accent } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.set_weave_agent_color(accent);
                     }
                 }
                 AppEvent::SetWeaveSessionSelection { session } => {

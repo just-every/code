@@ -239,12 +239,16 @@ pub(crate) enum AppEvent {
     OpenWeaveSessionMenu { sessions: Vec<WeaveSession> },
     /// Open a prompt to rename this agent.
     OpenWeaveAgentNamePrompt,
+    /// Open a menu to pick this agent's accent color for Weave messages.
+    OpenWeaveAgentColorMenu,
     /// Open a prompt to create a new session.
     OpenWeaveSessionCreatePrompt,
     /// Open the session close menu with a freshly fetched session list.
     OpenWeaveSessionCloseMenu { sessions: Vec<WeaveSession> },
     /// Set (and optionally broadcast) this agent's Weave display name.
     SetWeaveAgentName { name: String },
+    /// Set an explicit accent color for this agent (or clear to use auto).
+    SetWeaveAgentColor { accent: Option<u8> },
     /// Join/leave a session selection from the Weave menu.
     SetWeaveSessionSelection { session: Option<WeaveSession> },
     /// Create a session and then refresh the menu.

@@ -29,7 +29,7 @@ mod tool_factory;
 mod upgrade;
 mod wait_status;
 mod web_search;
-mod weave;
+pub(crate) mod weave;
 
 pub(crate) use assistant::{
     assistant_markdown_lines,

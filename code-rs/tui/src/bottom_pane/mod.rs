@@ -34,6 +34,7 @@ mod custom_prompt_view;
 pub(crate) mod prompt_args;
 mod command_popup;
 mod file_search_popup;
+mod mention_popup;
 mod paste_burst;
 mod popup_consts;
 pub(crate) mod agent_editor_view;
@@ -607,6 +608,16 @@ impl BottomPane<'_> {
 
     pub(crate) fn standard_terminal_hint(&self) -> Option<&str> {
         self.composer.standard_terminal_hint()
+    }
+
+    pub(crate) fn set_weave_status(&mut self, status: Option<String>) {
+        self.composer.set_weave_status(status);
+        self.request_redraw();
+    }
+
+    pub(crate) fn set_weave_mention_candidates(&mut self, candidates: Vec<String>) {
+        self.composer.set_weave_mention_candidates(candidates);
+        self.request_redraw();
     }
 
     pub(crate) fn set_auto_review_status(&mut self, status: Option<AutoReviewFooterStatus>) {

@@ -33,10 +33,16 @@ Notes
    - `cd /path/to/your/code/repo`
    - `./build-fast.sh run`
 
+   Optional (recommended): set a stable Weave profile name per terminal before starting Code:
+   - `export CODE_WEAVE_PROFILE=alice` (in one terminal)
+   - `export CODE_WEAVE_PROFILE=bob` (in the other terminal)
+   - Use a different value per Code instance; sharing a profile makes both terminals act as the same agent.
+
 3. In each Code instance, connect to the same Weave session:
 
    - Type `/weave` to open the Weave menu.
    - Pick **Set agent name** (use a single token like `alice` / `bob`).
+     - If the name is already taken in the session, Code auto-suffixes it (e.g. `alice-2`) and shows a notice.
    - In the first terminal, pick **Create new session**.
    - In the second terminal, pick the session from the list to join it.
 
@@ -47,15 +53,17 @@ Notes
    - `#bob Please take a look at this.`
 
    Notes:
-   - Mentions must be **standalone, whitespace-separated tokens** (use `#bob`, not `#bob,`).
-   - Mention matching is **case-sensitive**.
+   - Mentions must be **standalone, whitespace-separated tokens** (e.g. `#bob`).
+   - Mention matching is **case-insensitive** and ignores trailing punctuation (e.g. `#BoB,` works).
    - Names with spaces are not mentionable; use single-token names.
+   - While typing `#...`, Code shows an autocomplete popup. Use `↑/↓` to select and `Tab`/`Enter` to insert.
 
 5. Confirm it worked:
 
    - The sender sees an outbound message with the `"weave"` header and a `⇄` gutter marker.
    - The recipient sees an inbound message with the same `"weave"` header.
-   - Agent names are colored consistently (based on agent id; restarting Code changes colors).
+   - The bottom-right footer shows `Weave: <agent> • <session> (connected)`.
+   - Agent names are colored consistently (based on agent id). You can also override via **Set agent color** in the `/weave` menu.
 
 ## `/weave` command reference
 
@@ -75,4 +83,5 @@ Notes
   - Confirm `WEAVE_HOME` (if set) matches between coordinator and Code.
 - **My `#mention` went to the model instead of Weave**
   - You are not connected to a session, or the mention didn’t match a known agent.
-  - Use `/weave` to confirm you’re connected, then try `/weave refresh`, and re-send with an exact `#name` token.
+  - Use `/weave` to confirm you’re connected, then try `/weave refresh` so autocomplete has the latest agent list.
+  - Mentions must be whitespace-separated tokens (e.g. `#bob` / `#bob,`), not embedded in other text.

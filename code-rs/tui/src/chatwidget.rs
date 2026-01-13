@@ -1084,6 +1084,56 @@ async fn write_cached_connection(port: Option<u16>, ws: Option<String>) -> std::
     Ok(())
 }
 
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+struct WeavePrefs {
+    #[serde(default)]
+    profiles: HashMap<String, WeaveProfile>,
+    // Legacy (v0) fields; retained for backwards compatibility during migration.
+    agent_id: Option<String>,
+    agent_name: Option<String>,
+    agent_accent: Option<u8>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+struct WeaveProfile {
+    agent_id: Option<String>,
+    agent_name: Option<String>,
+    agent_accent: Option<u8>,
+}
+
+fn read_weave_prefs(code_home: &Path) -> WeavePrefs {
+    let path = resolve_code_path_for_read(code_home, Path::new("weave.json"));
+    let Ok(bytes) = std::fs::read(path) else {
+        return WeavePrefs::default();
+    };
+    serde_json::from_slice(&bytes).unwrap_or_default()
+}
+
+async fn write_weave_prefs(code_home: &Path, prefs: &WeavePrefs) -> std::io::Result<()> {
+    let path = code_home.join("weave.json");
+    if let Some(dir) = path.parent() {
+        let _ = tokio::fs::create_dir_all(dir).await;
+    }
+    // Best-effort merge to avoid clobbering other running Code instances.
+    let mut merged = prefs.clone();
+    if let Ok(existing_bytes) = tokio::fs::read(&path).await {
+        if let Ok(existing) = serde_json::from_slice::<WeavePrefs>(&existing_bytes) {
+            for (key, profile) in existing.profiles {
+                merged.profiles.entry(key).or_insert(profile);
+            }
+        }
+    }
+    // Drop legacy fields once we start writing profiles to avoid sharing identities
+    // across terminal instances.
+    merged.agent_id = None;
+    merged.agent_name = None;
+    merged.agent_accent = None;
+
+    let data = serde_json::to_vec_pretty(&merged).unwrap_or_else(|_| b"{}".to_vec());
+    tokio::fs::write(path, data).await?;
+    Ok(())
+}
+
 struct RunningCommand {
     command: Vec<String>,
     parsed: Vec<ParsedCommand>,
@@ -1546,6 +1596,8 @@ pub(crate) struct ChatWidget<'a> {
     // Weave collaboration state (optional).
     weave_agent_id: String,
     weave_agent_name: String,
+    weave_agent_accent: Option<u8>,
+    weave_profile_key: Option<String>,
     selected_weave_session_id: Option<String>,
     selected_weave_session_name: Option<String>,
     weave_agent_connection: Option<crate::weave_client::WeaveAgentConnection>,
@@ -6363,6 +6415,138 @@ impl ChatWidget<'_> {
         format!("code-{short}")
     }
 
+    fn resolve_weave_profile_key() -> Option<String> {
+        fn read_env(key: &str) -> Option<String> {
+            std::env::var(key)
+                .ok()
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+        }
+
+        if let Some(profile) = read_env("CODE_WEAVE_PROFILE") {
+            return Some(format!("profile:{profile}"));
+        }
+        if let Some(iterm_session) = read_env("ITERM_SESSION_ID") {
+            return Some(format!("iterm:{iterm_session}"));
+        }
+        if let Some(term_session) = read_env("TERM_SESSION_ID") {
+            return Some(format!("term:{term_session}"));
+        }
+        None
+    }
+
+    fn load_weave_identity(code_home: &Path, profile_key: Option<&str>) -> (String, String, Option<u8>) {
+        let prefs = read_weave_prefs(code_home);
+        let mut profile = profile_key
+            .and_then(|key| prefs.profiles.get(key))
+            .cloned()
+            .unwrap_or_default();
+
+        // Backwards compatibility: if we have legacy (v0) values and no profile entry,
+        // seed the current profile and drop the legacy fields on write.
+        if profile_key.is_some()
+            && profile.agent_id.is_none()
+            && profile.agent_name.is_none()
+            && profile.agent_accent.is_none()
+        {
+            profile.agent_id = prefs.agent_id.clone();
+            profile.agent_name = prefs.agent_name.clone();
+            profile.agent_accent = prefs.agent_accent;
+        }
+
+        let agent_id = profile
+            .agent_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+
+        let agent_name = profile
+            .agent_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| Self::default_weave_agent_name(&agent_id));
+
+        let accent = profile.agent_accent;
+
+        if let Some(profile_key) = profile_key {
+            let existing = prefs.profiles.get(profile_key);
+            let needs_persist = existing
+                .and_then(|p| {
+                    let id = p.agent_id.as_deref().map(str::trim).filter(|v| !v.is_empty());
+                    let name = p
+                        .agent_name
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty());
+                    let accent = p.agent_accent;
+                    Some((id, name, accent))
+                })
+                != Some((Some(agent_id.as_str()), Some(agent_name.as_str()), accent));
+
+            if needs_persist {
+                let mut update = WeavePrefs::default();
+                update.profiles.insert(
+                    profile_key.to_string(),
+                    WeaveProfile {
+                        agent_id: Some(agent_id.clone()),
+                        agent_name: Some(agent_name.clone()),
+                        agent_accent: accent,
+                    },
+                );
+                let code_home = code_home.to_path_buf();
+                tokio::spawn(async move {
+                    if let Err(err) = write_weave_prefs(&code_home, &update).await {
+                        tracing::warn!("failed to persist weave prefs: {err}");
+                    }
+                });
+            }
+        }
+
+        (agent_id, agent_name, accent)
+    }
+
+    fn persist_weave_identity(&self) {
+        let Some(profile_key) = self.weave_profile_key.as_deref() else {
+            return;
+        };
+
+        let mut prefs = WeavePrefs::default();
+        prefs.profiles.insert(
+            profile_key.to_string(),
+            WeaveProfile {
+                agent_id: Some(self.weave_agent_id.clone()),
+                agent_name: Some(self.weave_agent_name.clone()),
+                agent_accent: self.weave_agent_accent,
+            },
+        );
+        let code_home = self.config.code_home.clone();
+        tokio::spawn(async move {
+            if let Err(err) = write_weave_prefs(&code_home, &prefs).await {
+                tracing::warn!("failed to persist weave prefs: {err}");
+            }
+        });
+    }
+
+    fn refresh_weave_footer_status(&mut self) {
+        let status = if let Some(label) = self.selected_weave_session_name.clone() {
+            let conn = if self.weave_agent_connection.is_some() {
+                "connected"
+            } else {
+                "connecting…"
+            };
+            format!("{} • {} ({conn})", self.weave_agent_name, label)
+        } else {
+            format!("{} • not connected", self.weave_agent_name)
+        };
+        self.bottom_pane.set_weave_status(Some(status));
+    }
+
     pub(crate) fn new(
         mut config: Config,
         app_event_tx: AppEventSender,
@@ -6401,8 +6585,17 @@ impl ChatWidget<'_> {
 
         let auto_drive_variant = AutoDriveVariant::from_env();
         let test_mode = is_test_mode();
-        let weave_agent_id = Uuid::new_v4().to_string();
-        let weave_agent_name = Self::default_weave_agent_name(&weave_agent_id);
+        let weave_profile_key = Self::resolve_weave_profile_key();
+        let (weave_agent_id, weave_agent_name, weave_agent_accent) =
+            Self::load_weave_identity(&config.code_home, weave_profile_key.as_deref());
+        if let Some(accent) = weave_agent_accent {
+            crate::history_cell::weave::set_weave_agent_accent_override(
+                weave_agent_id.clone(),
+                accent,
+            );
+        } else {
+            crate::history_cell::weave::clear_weave_agent_accent_override(&weave_agent_id);
+        }
 
         let bottom_pane = BottomPane::new(BottomPaneParams {
             app_event_tx: app_event_tx.clone(),
@@ -6459,6 +6652,8 @@ impl ChatWidget<'_> {
             current_turn_origin: None,
             weave_agent_id,
             weave_agent_name,
+            weave_agent_accent,
+            weave_profile_key,
             selected_weave_session_id: None,
             selected_weave_session_name: None,
             weave_agent_connection: None,
@@ -6673,6 +6868,7 @@ impl ChatWidget<'_> {
         // appears below it. Also insert the Popular commands immediately so users
         // don't wait for MCP initialization to finish.
         let mut w = new_widget;
+        w.refresh_weave_footer_status();
         let auto_defaults = w.config.auto_drive.clone();
         w.auto_state.review_enabled = auto_defaults.review_enabled;
         w.auto_state.subagents_enabled = auto_defaults.agents_enabled;
@@ -6736,8 +6932,17 @@ impl ChatWidget<'_> {
         let (code_op_tx, mut code_op_rx) = unbounded_channel::<Op>();
 
         let auto_drive_variant = AutoDriveVariant::from_env();
-        let weave_agent_id = Uuid::new_v4().to_string();
-        let weave_agent_name = Self::default_weave_agent_name(&weave_agent_id);
+        let weave_profile_key = Self::resolve_weave_profile_key();
+        let (weave_agent_id, weave_agent_name, weave_agent_accent) =
+            Self::load_weave_identity(&config.code_home, weave_profile_key.as_deref());
+        if let Some(accent) = weave_agent_accent {
+            crate::history_cell::weave::set_weave_agent_accent_override(
+                weave_agent_id.clone(),
+                accent,
+            );
+        } else {
+            crate::history_cell::weave::clear_weave_agent_accent_override(&weave_agent_id);
+        }
 
         // Forward events from existing conversation
         let app_event_tx_clone = app_event_tx.clone();
@@ -6821,6 +7026,8 @@ impl ChatWidget<'_> {
             current_turn_origin: None,
             weave_agent_id,
             weave_agent_name,
+            weave_agent_accent,
+            weave_profile_key,
             selected_weave_session_id: None,
             selected_weave_session_name: None,
             weave_agent_connection: None,
@@ -36108,6 +36315,18 @@ impl ChatWidget<'_> {
                 tx.send(AppEvent::OpenWeaveAgentNamePrompt);
             })],
         });
+        let color_label = self
+            .weave_agent_accent
+            .map(|idx| format!("{idx}"))
+            .unwrap_or_else(|| "auto".to_string());
+        items.push(SelectionItem {
+            name: "Set agent color".to_string(),
+            description: Some(format!("Current: {}", color_label)),
+            is_current: false,
+            actions: vec![Box::new(|tx: &crate::app_event_sender::AppEventSender| {
+                tx.send(AppEvent::OpenWeaveAgentColorMenu);
+            })],
+        });
         items.push(SelectionItem {
             name: "Create new session".to_string(),
             description: Some("Create and join a new Weave session.".to_string()),
@@ -36137,15 +36356,6 @@ impl ChatWidget<'_> {
                 });
             })],
         });
-
-        if !sessions.is_empty() {
-            items.push(SelectionItem {
-                name: String::new(),
-                description: None,
-                is_current: false,
-                actions: Vec::new(),
-            });
-        }
 
         let selected_id = self.selected_weave_session_id.as_deref();
         for session in sessions {
@@ -36230,6 +36440,56 @@ impl ChatWidget<'_> {
         self.bottom_pane.show_custom_prompt(view);
     }
 
+    pub(crate) fn open_weave_agent_color_menu(&mut self) {
+        let current = self.weave_agent_accent;
+
+        let mut items: Vec<SelectionItem> = Vec::new();
+        let is_auto = current.is_none();
+        items.push(SelectionItem {
+            name: if is_auto {
+                "✓ Auto".to_string()
+            } else {
+                "Auto".to_string()
+            },
+            description: Some("Choose a stable color based on agent id.".to_string()),
+            is_current: is_auto,
+            actions: vec![Box::new(|tx: &crate::app_event_sender::AppEventSender| {
+                tx.send(AppEvent::SetWeaveAgentColor { accent: None });
+            })],
+        });
+
+        for accent in 0..8 {
+            let is_current = current == Some(accent);
+            let label = if is_current {
+                format!("✓ Accent {accent}")
+            } else {
+                format!("Accent {accent}")
+            };
+            let selected = Some(accent);
+            items.push(SelectionItem {
+                name: label,
+                description: None,
+                is_current,
+                actions: vec![Box::new(move |tx: &crate::app_event_sender::AppEventSender| {
+                    tx.send(AppEvent::SetWeaveAgentColor { accent: selected });
+                })],
+            });
+        }
+
+        let subtitle = format!("agent: {}", self.weave_agent_name);
+        let view = ListSelectionView::new(
+            " Weave agent color ".to_string(),
+            Some(subtitle),
+            Some("Enter select · Esc cancel".to_string()),
+            items,
+            self.app_event_tx.clone(),
+            10,
+        );
+
+        self.bottom_pane
+            .show_list_selection("Weave agent color".to_string(), None, None, view);
+    }
+
     pub(crate) fn open_weave_session_create_prompt(&mut self) {
         let submit_tx = self.app_event_tx.clone();
         let on_submit: Box<dyn Fn(String) + Send + Sync> = Box::new(move |text: String| {
@@ -36246,12 +36506,80 @@ impl ChatWidget<'_> {
         self.bottom_pane.show_custom_prompt(view);
     }
 
+    fn choose_unique_weave_agent_name(&self, requested: &str, agents: &[WeaveAgent]) -> String {
+        let requested = requested.trim();
+        if requested.is_empty() {
+            return String::new();
+        }
+
+        let mut taken: HashSet<String> = HashSet::new();
+        for agent in agents {
+            if agent.id == self.weave_agent_id {
+                continue;
+            }
+            taken.insert(agent.mention_text().to_ascii_lowercase());
+        }
+
+        let requested_key = requested.to_ascii_lowercase();
+        if !taken.contains(&requested_key) {
+            return requested.to_string();
+        }
+
+        for suffix in 2..=99 {
+            let candidate = format!("{requested}-{suffix}");
+            if !taken.contains(&candidate.to_ascii_lowercase()) {
+                return candidate;
+            }
+        }
+
+        let short = self
+            .weave_agent_id
+            .split('-')
+            .next()
+            .unwrap_or(self.weave_agent_id.as_str());
+        let candidate = format!("{requested}-{short}");
+        if !taken.contains(&candidate.to_ascii_lowercase()) {
+            return candidate;
+        }
+
+        format!("{requested}-{}", self.weave_agent_id)
+    }
+
     pub(crate) fn set_weave_agent_name(&mut self, name: String) {
         let trimmed = name.trim();
-        if trimmed.is_empty() || self.weave_agent_name == trimmed {
+        if trimmed.is_empty() {
             return;
         }
-        self.weave_agent_name = trimmed.to_string();
+        if trimmed.chars().any(char::is_whitespace) {
+            self.history_push_plain_state(crate::history_cell::new_error_event(
+                "Weave names must be a single token (no spaces).".to_string(),
+            ));
+            self.request_redraw();
+            return;
+        }
+
+        let requested = trimmed.to_string();
+        let resolved = self
+            .weave_agents
+            .as_deref()
+            .map(|agents| self.choose_unique_weave_agent_name(&requested, agents))
+            .unwrap_or_else(|| requested.clone());
+
+        if self.weave_agent_name == resolved {
+            return;
+        }
+        self.weave_agent_name = resolved.clone();
+        self.persist_weave_identity();
+        self.refresh_weave_footer_status();
+        if resolved == requested {
+            self.bottom_pane
+                .flash_footer_notice(format!("Weave name set to {}", self.weave_agent_name));
+        } else {
+            self.bottom_pane.flash_footer_notice(format!(
+                "Weave name '{}' is taken; using '{}'.",
+                requested, resolved
+            ));
+        }
 
         if let Some(connection) = self.weave_agent_connection.as_mut() {
             connection.set_agent_name(self.weave_agent_name.clone());
@@ -36266,6 +36594,31 @@ impl ChatWidget<'_> {
                 }
             });
         }
+    }
+
+    pub(crate) fn set_weave_agent_color(&mut self, accent: Option<u8>) {
+        let accent = accent.map(|accent| accent % 8);
+        if self.weave_agent_accent == accent {
+            return;
+        }
+
+        self.weave_agent_accent = accent;
+        if let Some(accent) = accent {
+            crate::history_cell::weave::set_weave_agent_accent_override(
+                self.weave_agent_id.clone(),
+                accent,
+            );
+        } else {
+            crate::history_cell::weave::clear_weave_agent_accent_override(&self.weave_agent_id);
+        }
+        self.persist_weave_identity();
+
+        let label = accent
+            .map(|accent| format!("Accent {accent}"))
+            .unwrap_or_else(|| "auto".to_string());
+        self.bottom_pane
+            .flash_footer_notice(format!("Weave color set to {label}"));
+        self.request_redraw();
     }
 
     pub(crate) fn set_weave_session_selection(&mut self, session: Option<WeaveSession>) {
@@ -36288,11 +36641,14 @@ impl ChatWidget<'_> {
 
         if let Some(session_id) = self.selected_weave_session_id.clone() {
             self.weave_agents = Some(Vec::new());
+            self.bottom_pane.set_weave_mention_candidates(Vec::new());
             self.connect_weave_agent(session_id);
         } else {
             self.weave_agents = None;
+            self.bottom_pane.set_weave_mention_candidates(Vec::new());
         }
 
+        self.refresh_weave_footer_status();
         self.request_redraw();
     }
 
@@ -36426,6 +36782,7 @@ impl ChatWidget<'_> {
         }
         self.weave_agent_connection = Some(connection);
         self.request_weave_agent_list();
+        self.refresh_weave_footer_status();
     }
 
     pub(crate) fn on_weave_agent_disconnected(&mut self, session_id: &str) {
@@ -36440,6 +36797,7 @@ impl ChatWidget<'_> {
         self.history_push_plain_state(crate::history_cell::new_error_event(format!(
             "Weave session closed: {label}"
         )));
+        self.refresh_weave_footer_status();
         self.request_redraw();
     }
 
@@ -36447,22 +36805,60 @@ impl ChatWidget<'_> {
         if self.selected_weave_session_id.as_deref() != Some(session_id.as_str()) {
             return;
         }
+        let mut candidates: Vec<String> = agents
+            .iter()
+            .filter(|agent| agent.id != self.weave_agent_id)
+            .map(WeaveAgent::mention_text)
+            .collect();
+        candidates.sort();
+        candidates.dedup();
+
+        self.bottom_pane.set_weave_mention_candidates(candidates);
         self.weave_agents = Some(agents);
+        if let Some(agents) = self.weave_agents.as_deref() {
+            let requested = self.weave_agent_name.clone();
+            let resolved = self.choose_unique_weave_agent_name(&requested, agents);
+            if resolved != requested {
+                self.weave_agent_name = resolved.clone();
+                self.persist_weave_identity();
+                self.refresh_weave_footer_status();
+                self.bottom_pane.flash_footer_notice(format!(
+                    "Weave name '{}' is taken; using '{}'.",
+                    requested, resolved
+                ));
+
+                if let Some(connection) = self.weave_agent_connection.as_mut() {
+                    connection.set_agent_name(resolved.clone());
+                    let sender = connection.sender();
+                    let name = resolved;
+                    let tx = self.app_event_tx.clone();
+                    tokio::spawn(async move {
+                        if let Err(err) = sender.update_agent_name(name).await {
+                            tx.send(AppEvent::WeaveError {
+                                message: format!("Failed to update Weave agent name: {err}"),
+                            });
+                        }
+                    });
+                }
+            }
+        }
         self.request_redraw();
     }
 
     fn strip_weave_mentions(text: &str, recipients: &[WeaveAgent]) -> String {
-        let mut mention_keys: HashSet<String> =
-            recipients.iter().map(WeaveAgent::mention_text).collect();
+        let mut mention_keys: HashSet<String> = recipients
+            .iter()
+            .map(|agent| agent.mention_text().to_ascii_lowercase())
+            .collect();
         // Defensive: also allow stripping by id when names might be ambiguous.
         for agent in recipients {
-            mention_keys.insert(agent.id.clone());
+            mention_keys.insert(agent.id.to_ascii_lowercase());
         }
 
         let mut out: Vec<&str> = Vec::new();
         for token in text.split_whitespace() {
-            if let Some(label) = token.strip_prefix('#') {
-                if mention_keys.contains(label) {
+            if let Some(label) = weave::parse_weave_mention_label(token) {
+                if mention_keys.contains(&label.to_ascii_lowercase()) {
                     continue;
                 }
             }

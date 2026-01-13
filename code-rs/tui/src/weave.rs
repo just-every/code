@@ -10,7 +10,7 @@ pub(crate) fn find_weave_mentions(
     let mut mention_lookup: HashMap<String, WeaveAgent> = HashMap::new();
     for agent in agents {
         mention_lookup
-            .entry(agent.mention_text())
+            .entry(agent.mention_text().to_ascii_lowercase())
             .or_insert_with(|| agent.clone());
     }
 
@@ -53,13 +53,10 @@ struct WeaveTokenContext<'a> {
 
 fn process_weave_token(ctx: &mut WeaveTokenContext<'_>, start: usize, end: usize) {
     let token = &ctx.text[start..end];
-    let Some(mention) = token.strip_prefix('#') else {
+    let Some(mention) = parse_weave_mention_label(token) else {
         return;
     };
-    if mention.is_empty() {
-        return;
-    }
-    let Some(agent) = ctx.mention_lookup.get(mention) else {
+    let Some(agent) = ctx.mention_lookup.get(&mention.to_ascii_lowercase()) else {
         return;
     };
     if ctx.self_agent_id == Some(agent.id.as_str()) {
@@ -68,6 +65,24 @@ fn process_weave_token(ctx: &mut WeaveTokenContext<'_>, start: usize, end: usize
     if ctx.seen_ids.insert(agent.id.clone()) {
         ctx.recipients.push(agent.clone());
     }
+}
+
+pub(crate) fn parse_weave_mention_label(token: &str) -> Option<&str> {
+    let Some(rest) = token.strip_prefix('#') else {
+        return None;
+    };
+    let mut end = 0;
+    for (idx, ch) in rest.char_indices() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+            end = idx + ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    if end == 0 {
+        return None;
+    }
+    Some(&rest[..end])
 }
 
 #[cfg(test)]
@@ -124,5 +139,18 @@ mod tests {
 
         assert_eq!(recipients.len(), 1);
         assert_eq!(recipients[0].id, "agent-123");
+    }
+
+    #[test]
+    fn find_weave_mentions_is_case_insensitive_and_strips_trailing_punctuation() {
+        let agents = vec![WeaveAgent {
+            id: "bob-id".to_string(),
+            name: Some("bob".to_string()),
+        }];
+
+        let recipients = find_weave_mentions("hi #BoB, how are you?", &agents, None);
+
+        assert_eq!(recipients.len(), 1);
+        assert_eq!(recipients[0].id, "bob-id");
     }
 }
