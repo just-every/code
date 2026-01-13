@@ -208,7 +208,8 @@ mod tests {
 
     #[test]
     fn builtin_agent_shows_enabled_status() {
-        let app_event_tx = AppEventSender::new(|_| {});
+        let (app_event_tx_raw, _app_event_rx) = std::sync::mpsc::channel();
+        let app_event_tx = AppEventSender::new(app_event_tx_raw);
         let mut view = AgentsOverviewView::new(
             vec![("code".to_string(), true, true, "coder".to_string())],
             Vec::new(),
