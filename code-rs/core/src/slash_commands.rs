@@ -359,8 +359,8 @@ mod tests {
         // Create test agent configurations
         let agents = vec![
             AgentConfig {
-                name: "claude-sonnet-4.5".to_string(),
-                command: "claude".to_string(),
+                name: "code-gpt-5.2".to_string(),
+                command: "code".to_string(),
                 args: vec![],
                 read_only: false,
                 enabled: true,
@@ -388,7 +388,7 @@ mod tests {
         let result = handle_slash_command("/plan test task", Some(&agents));
         assert!(result.is_some());
         let prompt = result.unwrap();
-        assert!(prompt.contains("claude-sonnet-4.5"));
+        assert!(prompt.contains("code-gpt-5.2"));
         assert!(!prompt.contains("test-gemini"));
     }
 }
