@@ -63,6 +63,18 @@ Autocomplete: type `#` to see mention candidates; use the normal selection/accep
 
 If `#bob ...` is treated like a normal prompt, Weave likely hasn’t loaded the agent list yet; wait a moment or run `/weave refresh`.
 
+## Inbox + local message history
+
+`/weave inbox` shows DM threads for the **current** session with unread counts.
+
+- Select a thread to backfill recent messages from disk (and mark it read).
+- The most recently opened thread is also backfilled automatically on connect (per profile).
+
+Local logs are shared across terminals on this machine:
+
+- Default: `~/.code/weave/logs/<session-id>/dm_<a>_<b>.jsonl`
+- If you set `CODE_HOME`, logs live under `$CODE_HOME/weave/logs/...`
+
 ## Delivery receipts
 
 For **single-recipient** DMs, outbound messages show a small status line:

@@ -61,6 +61,7 @@ use code_core::split_command_and_args;
 use serde_json::Value as JsonValue;
 use crate::weave;
 use crate::weave_client;
+use crate::weave_history;
 use crate::weave_client::{WeaveAgent, WeaveAgentConnection, WeaveIncomingMessage, WeaveSession};
 
 
@@ -1105,6 +1106,16 @@ struct WeaveProfile {
     memory: String,
     #[serde(default)]
     journal: Vec<String>,
+    #[serde(default)]
+    threads: HashMap<String, WeaveThreadPrefs>,
+    #[serde(default)]
+    last_thread_key: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+struct WeaveThreadPrefs {
+    #[serde(default)]
+    last_read_ts_ms: u64,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1145,6 +1156,8 @@ struct WeaveProfileState {
     auto_mode: WeaveAutoMode,
     memory: String,
     journal: VecDeque<String>,
+    threads: HashMap<String, WeaveThreadPrefs>,
+    last_thread_key: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -1195,8 +1208,29 @@ async fn write_weave_prefs(code_home: &Path, prefs: &WeavePrefs) -> std::io::Res
     let mut merged = prefs.clone();
     if let Ok(existing_bytes) = tokio::fs::read(&path).await {
         if let Ok(existing) = serde_json::from_slice::<WeavePrefs>(&existing_bytes) {
-            for (key, profile) in existing.profiles {
-                merged.profiles.entry(key).or_insert(profile);
+            for (key, existing_profile) in existing.profiles {
+                match merged.profiles.get_mut(&key) {
+                    Some(profile) => {
+                        for (thread_key, existing_thread) in existing_profile.threads {
+                            match profile.threads.get_mut(&thread_key) {
+                                Some(thread) => {
+                                    thread.last_read_ts_ms =
+                                        thread.last_read_ts_ms.max(existing_thread.last_read_ts_ms);
+                                }
+                                None => {
+                                    profile.threads.insert(thread_key, existing_thread);
+                                }
+                            }
+                        }
+
+                        if profile.last_thread_key.is_none() {
+                            profile.last_thread_key = existing_profile.last_thread_key;
+                        }
+                    }
+                    None => {
+                        merged.profiles.insert(key, existing_profile);
+                    }
+                }
             }
         }
     }
@@ -1677,6 +1711,12 @@ pub(crate) struct ChatWidget<'a> {
     weave_auto_mode: WeaveAutoMode,
     weave_persona_memory: String,
     weave_persona_journal: VecDeque<String>,
+    weave_thread_prefs: HashMap<String, WeaveThreadPrefs>,
+    weave_last_thread_key: Option<String>,
+    weave_active_thread_key: Option<String>,
+    weave_active_thread_label: Option<String>,
+    weave_thread_view_history_ids: Vec<HistoryId>,
+    weave_seen_message_ids: HashSet<String>,
     weave_profile_key: Option<String>,
     selected_weave_session_id: Option<String>,
     selected_weave_session_name: Option<String>,
@@ -6559,6 +6599,13 @@ impl ChatWidget<'_> {
         let accent = profile.agent_accent;
         let auto_mode = profile.auto_mode;
         let memory = profile.memory.trim_end().to_string();
+        let threads = profile.threads.clone();
+        let last_thread_key = profile
+            .last_thread_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string);
         let mut journal: Vec<String> = profile
             .journal
             .into_iter()
@@ -6603,6 +6650,8 @@ impl ChatWidget<'_> {
                         auto_mode,
                         memory: memory.clone(),
                         journal: journal.clone(),
+                        threads: threads.clone(),
+                        last_thread_key: last_thread_key.clone(),
                     },
                 );
                 let code_home = code_home.to_path_buf();
@@ -6621,6 +6670,8 @@ impl ChatWidget<'_> {
             auto_mode,
             memory,
             journal: journal_deque,
+            threads,
+            last_thread_key,
         }
     }
 
@@ -6639,6 +6690,8 @@ impl ChatWidget<'_> {
                 auto_mode: self.weave_auto_mode,
                 memory: self.weave_persona_memory.clone(),
                 journal: self.weave_persona_journal.iter().cloned().collect(),
+                threads: self.weave_thread_prefs.clone(),
+                last_thread_key: self.weave_last_thread_key.clone(),
             },
         );
         let code_home = self.config.code_home.clone();
@@ -6677,6 +6730,13 @@ impl ChatWidget<'_> {
                 WeaveAutoMode::Work => "work",
             };
             status_parts.push(format!("auto:{label}"));
+        }
+
+        if let Some(label) = self.weave_active_thread_label.as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            status_parts.push(format!("dm:{label}"));
         }
 
         let status = status_parts.join(" • ");
@@ -6729,6 +6789,8 @@ impl ChatWidget<'_> {
             auto_mode: weave_auto_mode,
             memory: weave_persona_memory,
             journal: weave_persona_journal,
+            threads: weave_thread_prefs,
+            last_thread_key: weave_last_thread_key,
         } = Self::load_weave_profile_state(&config.code_home, weave_profile_key.as_deref());
         if let Some(accent) = weave_agent_accent {
             crate::history_cell::weave::set_weave_agent_accent_override(
@@ -6798,6 +6860,12 @@ impl ChatWidget<'_> {
             weave_auto_mode,
             weave_persona_memory,
             weave_persona_journal,
+            weave_thread_prefs,
+            weave_last_thread_key,
+            weave_active_thread_key: None,
+            weave_active_thread_label: None,
+            weave_thread_view_history_ids: Vec::new(),
+            weave_seen_message_ids: HashSet::new(),
             weave_profile_key,
             selected_weave_session_id: None,
             selected_weave_session_name: None,
@@ -7089,6 +7157,8 @@ impl ChatWidget<'_> {
             auto_mode: weave_auto_mode,
             memory: weave_persona_memory,
             journal: weave_persona_journal,
+            threads: weave_thread_prefs,
+            last_thread_key: weave_last_thread_key,
         } = Self::load_weave_profile_state(&config.code_home, weave_profile_key.as_deref());
         if let Some(accent) = weave_agent_accent {
             crate::history_cell::weave::set_weave_agent_accent_override(
@@ -7185,6 +7255,12 @@ impl ChatWidget<'_> {
             weave_auto_mode,
             weave_persona_memory,
             weave_persona_journal,
+            weave_thread_prefs,
+            weave_last_thread_key,
+            weave_active_thread_key: None,
+            weave_active_thread_label: None,
+            weave_thread_view_history_ids: Vec::new(),
+            weave_seen_message_ids: HashSet::new(),
             weave_profile_key,
             selected_weave_session_id: None,
             selected_weave_session_name: None,
@@ -36452,6 +36528,9 @@ impl ChatWidget<'_> {
             "refresh" => {
                 self.request_weave_agent_list();
             }
+            "inbox" => {
+                self.app_event_tx.send(AppEvent::RequestWeaveInboxMenu);
+            }
             "help" => {
                 let kind = crate::history::state::PlainMessageKind::Notice;
                 let role = crate::history_cell::plain_role_for_kind(kind);
@@ -36470,6 +36549,7 @@ impl ChatWidget<'_> {
                         "/weave leave".to_string(),
                         "/weave close <session id>".to_string(),
                         "/weave refresh".to_string(),
+                        "/weave inbox".to_string(),
                     ],
                 );
                 state.header = Some(crate::history::state::MessageHeader {
@@ -36522,6 +36602,421 @@ impl ChatWidget<'_> {
         });
     }
 
+    pub(crate) fn request_weave_inbox_menu(&self) {
+        let Some(session_id) = self.selected_weave_session_id.clone() else {
+            self.app_event_tx.send(AppEvent::WeaveError {
+                message: "Not connected to Weave. Run `/weave` to join a session first.".to_string(),
+            });
+            return;
+        };
+
+        let session_label = self
+            .selected_weave_session_name
+            .clone()
+            .unwrap_or_else(|| session_id.clone());
+        let code_home = self.config.code_home.clone();
+        let self_id = self.weave_agent_id.clone();
+        let thread_prefs = self.weave_thread_prefs.clone();
+        let tx = self.app_event_tx.clone();
+
+        tokio::spawn(async move {
+            fn best_label(entries: &[weave_history::WeaveLogEntry], peer_id: &str) -> Option<String> {
+                for entry in entries.iter().rev() {
+                    if entry.sender_id == peer_id {
+                        let trimmed = entry.sender_label.trim();
+                        if !trimmed.is_empty() {
+                            return Some(trimmed.to_string());
+                        }
+                    }
+                    if let Some(recipient) = entry.recipients.iter().find(|r| r.id == peer_id) {
+                        let trimmed = recipient.label.trim();
+                        if !trimmed.is_empty() {
+                            return Some(trimmed.to_string());
+                        }
+                    }
+                }
+                None
+            }
+
+            let mut threads: Vec<crate::app_event::WeaveInboxThread> = Vec::new();
+            let dir = code_home.join("weave").join("logs").join(&session_id);
+            let mut entries = match tokio::fs::read_dir(&dir).await {
+                Ok(entries) => entries,
+                Err(_) => {
+                    tx.send(AppEvent::OpenWeaveInboxMenu {
+                        session_id,
+                        session_label,
+                        threads,
+                    });
+                    return;
+                }
+            };
+
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let path = entry.path();
+                let Some(filename) = path.file_name().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                let Some(thread) = weave_history::parse_dm_log_filename(&session_id, filename) else {
+                    continue;
+                };
+
+                let peer_id = if thread.a == self_id {
+                    thread.b.clone()
+                } else if thread.b == self_id {
+                    thread.a.clone()
+                } else {
+                    continue;
+                };
+
+                let thread_key = thread.key();
+                let last_read_ts_ms = thread_prefs
+                    .get(thread_key.as_str())
+                    .map(|prefs| prefs.last_read_ts_ms)
+                    .unwrap_or(0);
+
+                let log_entries = weave_history::read_log_tail(&path, 0).await;
+                if log_entries.is_empty() {
+                    continue;
+                }
+
+                let unread = weave_history::unread_count(&log_entries, &self_id, last_read_ts_ms);
+                let last = log_entries.iter().max_by_key(|log| log.ts_ms);
+                let preview = last
+                    .and_then(|log| log.text.trim().lines().next())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToString::to_string);
+
+                let peer_label = best_label(&log_entries, &peer_id).unwrap_or_else(|| peer_id.clone());
+
+                threads.push(crate::app_event::WeaveInboxThread {
+                    peer_id,
+                    peer_label,
+                    thread_key,
+                    unread,
+                    preview,
+                });
+            }
+
+            threads.sort_by(|a, b| {
+                b.unread
+                    .cmp(&a.unread)
+                    .then_with(|| a.peer_label.cmp(&b.peer_label))
+            });
+
+            tx.send(AppEvent::OpenWeaveInboxMenu {
+                session_id,
+                session_label,
+                threads,
+            });
+        });
+    }
+
+    pub(crate) fn open_weave_inbox_menu(
+        &mut self,
+        session_id: String,
+        session_label: String,
+        threads: Vec<crate::app_event::WeaveInboxThread>,
+    ) {
+        if self.selected_weave_session_id.as_deref() != Some(session_id.as_str()) {
+            return;
+        }
+
+        let subtitle = format!("agent: {} • session: {}", self.weave_agent_name, session_label);
+        let current_thread = self.weave_active_thread_key.clone();
+
+        let mut items: Vec<SelectionItem> = Vec::new();
+        items.push(SelectionItem {
+            name: "Refresh inbox".to_string(),
+            description: None,
+            is_current: false,
+            actions: vec![Box::new(|tx: &crate::app_event_sender::AppEventSender| {
+                tx.send(AppEvent::RequestWeaveInboxMenu);
+            })],
+        });
+
+        for thread in threads {
+            let is_current = current_thread.as_deref() == Some(thread.thread_key.as_str());
+            let unread_suffix = if thread.unread > 0 {
+                format!(" ({})", thread.unread)
+            } else {
+                String::new()
+            };
+            let label = if is_current {
+                format!("✓ {}{}", thread.peer_label, unread_suffix)
+            } else {
+                format!("{}{}", thread.peer_label, unread_suffix)
+            };
+            let peer_id = thread.peer_id.clone();
+            let peer_label = thread.peer_label.clone();
+            items.push(SelectionItem {
+                name: label,
+                description: thread.preview.clone(),
+                is_current,
+                actions: vec![Box::new(move |tx: &crate::app_event_sender::AppEventSender| {
+                    tx.send(AppEvent::OpenWeaveDmThread {
+                        peer_id: peer_id.clone(),
+                        peer_label: peer_label.clone(),
+                    });
+                })],
+            });
+        }
+
+        let view = ListSelectionView::new(
+            " Weave inbox ".to_string(),
+            Some(subtitle),
+            Some("Enter select · Esc cancel".to_string()),
+            items,
+            self.app_event_tx.clone(),
+            12,
+        );
+
+        self.bottom_pane
+            .show_list_selection("Weave inbox".to_string(), None, None, view);
+    }
+
+    fn weave_epoch_ms() -> u64 {
+        use std::time::SystemTime;
+        use std::time::UNIX_EPOCH;
+
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
+    }
+
+    fn clear_weave_thread_view(&mut self) {
+        if self.weave_thread_view_history_ids.is_empty() {
+            return;
+        }
+
+        let mut indices: Vec<usize> = self
+            .weave_thread_view_history_ids
+            .iter()
+            .filter_map(|id| self.cell_index_for_history_id(*id))
+            .collect();
+        indices.sort_unstable();
+        indices.dedup();
+        for idx in indices.into_iter().rev() {
+            self.history_remove_at(idx);
+        }
+        self.weave_thread_view_history_ids.clear();
+    }
+
+    fn append_weave_dm_log_entry(
+        &self,
+        session_id: String,
+        message_id: String,
+        sender_id: String,
+        sender_label: String,
+        recipient_id: String,
+        recipient_label: String,
+        text: String,
+    ) {
+        if session_id.trim().is_empty() {
+            return;
+        }
+        let message_id = message_id.trim().to_string();
+        if message_id.is_empty() {
+            return;
+        }
+
+        let thread =
+            weave_history::WeaveDmThread::new(session_id.clone(), sender_id.clone(), recipient_id.clone());
+        let path = thread.log_path(&self.config.code_home);
+        let entry = weave_history::WeaveLogEntry {
+            v: 1,
+            ts_ms: Self::weave_epoch_ms(),
+            session_id,
+            message_id,
+            sender_id,
+            sender_label,
+            recipients: vec![weave_history::WeaveLogRecipient {
+                id: recipient_id,
+                label: recipient_label,
+            }],
+            text,
+        };
+
+        tokio::spawn(async move {
+            if let Err(err) = weave_history::append_log_line(&path, &entry).await {
+                tracing::debug!("Failed to write weave dm log: {err}");
+            }
+        });
+    }
+
+    pub(crate) fn request_weave_dm_thread_backfill(&mut self, peer_id: String, peer_label: String) {
+        self.request_weave_dm_thread_backfill_internal(peer_id, peer_label, true);
+    }
+
+    fn request_weave_dm_thread_backfill_internal(
+        &mut self,
+        peer_id: String,
+        peer_label: String,
+        prefill_composer: bool,
+    ) {
+        let Some(session_id) = self.selected_weave_session_id.clone() else {
+            self.history_push_plain_state(crate::history_cell::new_error_event(
+                "Not connected to Weave. Run `/weave` to join a session first.".to_string(),
+            ));
+            self.request_redraw();
+            return;
+        };
+
+        let thread = weave_history::WeaveDmThread::new(
+            session_id.clone(),
+            self.weave_agent_id.clone(),
+            peer_id.clone(),
+        );
+        let thread_key = thread.key();
+
+        self.weave_active_thread_key = Some(thread_key.clone());
+        self.weave_active_thread_label = Some(peer_label.clone());
+        self.weave_last_thread_key = Some(thread_key.clone());
+        self.weave_thread_prefs
+            .entry(thread_key.clone())
+            .or_default()
+            .last_read_ts_ms = Self::weave_epoch_ms();
+        self.persist_weave_identity();
+        self.refresh_weave_footer_status();
+
+        if prefill_composer && self.bottom_pane.composer_text().trim().is_empty() {
+            let mention = self
+                .weave_agents
+                .as_deref()
+                .and_then(|agents| {
+                    agents
+                        .iter()
+                        .find(|agent| agent.id == peer_id)
+                        .map(WeaveAgent::mention_text)
+                })
+                .unwrap_or_else(|| peer_id.clone());
+            self.insert_str(&format!("#{mention} "));
+        }
+
+        let code_home = self.config.code_home.clone();
+        let path = thread.log_path(&code_home);
+        let tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let entries = weave_history::read_log_tail(&path, 60).await;
+            tx.send(AppEvent::WeaveDmThreadBackfill {
+                thread_key,
+                peer_id,
+                peer_label,
+                entries,
+            });
+        });
+    }
+
+    fn maybe_backfill_weave_last_thread(&mut self) {
+        let Some(session_id) = self.selected_weave_session_id.clone() else {
+            return;
+        };
+        let Some(thread_key) = self.weave_last_thread_key.as_deref() else {
+            return;
+        };
+
+        let mut parts = thread_key.split(':');
+        let Some(kind) = parts.next() else {
+            return;
+        };
+        if kind != "dm" {
+            return;
+        }
+        let Some(thread_session_id) = parts.next() else {
+            return;
+        };
+        if thread_session_id != session_id {
+            return;
+        }
+        let Some(a) = parts.next() else {
+            return;
+        };
+        let Some(b) = parts.next() else {
+            return;
+        };
+
+        let self_id = self.weave_agent_id.as_str();
+        let peer_id = if a == self_id {
+            b
+        } else if b == self_id {
+            a
+        } else {
+            return;
+        };
+
+        self.request_weave_dm_thread_backfill_internal(
+            peer_id.to_string(),
+            peer_id.to_string(),
+            false,
+        );
+    }
+
+    pub(crate) fn apply_weave_dm_thread_backfill(
+        &mut self,
+        thread_key: String,
+        _peer_id: String,
+        peer_label: String,
+        mut entries: Vec<weave_history::WeaveLogEntry>,
+    ) {
+        if self.weave_active_thread_key.as_deref() != Some(thread_key.as_str()) {
+            return;
+        }
+
+        self.clear_weave_thread_view();
+
+        entries.sort_by(|a, b| a.ts_ms.cmp(&b.ts_ms).then_with(|| a.message_id.cmp(&b.message_id)));
+
+        let mut inserted = 0usize;
+        for entry in entries {
+            if !self.weave_seen_message_ids.insert(entry.message_id.clone()) {
+                continue;
+            }
+            if self.weave_seen_message_ids.len() > 5000 {
+                self.weave_seen_message_ids.clear();
+            }
+
+            let state = if entry.sender_id == self.weave_agent_id {
+                let recipients = entry
+                    .recipients
+                    .iter()
+                    .map(|r| (r.id.clone(), r.label.clone()))
+                    .collect::<Vec<_>>();
+                crate::history_cell::new_weave_outbound(
+                    self.weave_agent_id.clone(),
+                    self.weave_agent_name.clone(),
+                    recipients,
+                    entry.text.clone(),
+                )
+            } else {
+                crate::history_cell::new_weave_inbound(
+                    entry.sender_id.clone(),
+                    entry.sender_label.clone(),
+                    self.weave_agent_id.clone(),
+                    self.weave_agent_name.clone(),
+                    entry.text.clone(),
+                )
+            };
+
+            let key = self.next_internal_key();
+            let idx = self.history_insert_plain_state_with_key(state, key, "weave");
+            if let Some(history_id) = self.history_cell_ids.get(idx).copied().flatten() {
+                self.weave_thread_view_history_ids.push(history_id);
+            }
+            inserted = inserted.saturating_add(1);
+        }
+
+        self.bottom_pane.flash_footer_notice(format!(
+            "Weave DM loaded: {} ({} messages).",
+            peer_label,
+            inserted
+        ));
+        self.weave_active_thread_label = Some(peer_label);
+        self.refresh_weave_footer_status();
+        self.request_redraw();
+    }
+
     pub(crate) fn open_weave_session_menu(&mut self, sessions: Vec<WeaveSession>) {
         let current_session = self.selected_weave_session_name.clone();
         let connected = self.weave_agent_connection.is_some();
@@ -36558,6 +37053,14 @@ impl ChatWidget<'_> {
             is_current: false,
             actions: vec![Box::new(|tx: &crate::app_event_sender::AppEventSender| {
                 tx.send(AppEvent::OpenWeaveAutoModeMenu);
+            })],
+        });
+        items.push(SelectionItem {
+            name: "Inbox".to_string(),
+            description: Some("Pick a DM thread (with unread counts)".to_string()),
+            is_current: false,
+            actions: vec![Box::new(|tx: &crate::app_event_sender::AppEventSender| {
+                tx.send(AppEvent::RequestWeaveInboxMenu);
             })],
         });
         let memory_len = self.weave_persona_memory.trim().chars().count();
@@ -36994,6 +37497,8 @@ impl ChatWidget<'_> {
             auto_mode,
             memory,
             journal,
+            threads,
+            last_thread_key,
         } = Self::load_weave_profile_state(&self.config.code_home, next_key.as_deref());
         self.weave_agent_id = agent_id;
         self.weave_agent_name = agent_name;
@@ -37001,6 +37506,12 @@ impl ChatWidget<'_> {
         self.weave_auto_mode = auto_mode;
         self.weave_persona_memory = memory;
         self.weave_persona_journal = journal;
+        self.weave_thread_prefs = threads;
+        self.weave_last_thread_key = last_thread_key;
+        self.weave_active_thread_key = None;
+        self.weave_active_thread_label = None;
+        self.clear_weave_thread_view();
+        self.weave_seen_message_ids.clear();
         self.weave_autorun_queue.clear();
         self.weave_autorun_inflight = None;
 
@@ -37327,6 +37838,9 @@ impl ChatWidget<'_> {
             connection.shutdown();
         }
         self.weave_agents = None;
+        self.weave_active_thread_key = None;
+        self.weave_active_thread_label = None;
+        self.clear_weave_thread_view();
         self.weave_autorun_queue.clear();
         self.weave_autorun_inflight = None;
     }
@@ -37420,6 +37934,7 @@ impl ChatWidget<'_> {
         self.request_weave_agent_list();
         self.start_weave_agent_list_poll();
         self.refresh_weave_footer_status();
+        self.maybe_backfill_weave_last_thread();
     }
 
     pub(crate) fn on_weave_agent_disconnected(&mut self, session_id: &str) {
@@ -37888,6 +38403,23 @@ impl ChatWidget<'_> {
         }
         self.request_redraw();
 
+        if let Some(session_id) = self.selected_weave_session_id.clone() {
+            self.weave_seen_message_ids.insert(message_id.clone());
+            if self.weave_seen_message_ids.len() > 5000 {
+                self.weave_seen_message_ids.clear();
+            }
+
+            self.append_weave_dm_log_entry(
+                session_id,
+                message_id.clone(),
+                self.weave_agent_id.clone(),
+                self.weave_agent_name.clone(),
+                recipient.id.clone(),
+                recipient.display_name(),
+                reply_text.clone(),
+            );
+        }
+
         let tx = self.app_event_tx.clone();
         let dst = recipient.id;
         let text = reply_text;
@@ -38042,12 +38574,48 @@ impl ChatWidget<'_> {
         }
         self.request_redraw();
 
+        let message_text = stripped.to_string();
+        if let Some(message_id) = message_id.clone()
+            && let Some(session_id) = self.selected_weave_session_id.clone()
+            && let Some(recipient) = recipients.first()
+        {
+            let thread = weave_history::WeaveDmThread::new(
+                session_id.clone(),
+                self.weave_agent_id.clone(),
+                recipient.id.clone(),
+            );
+            let thread_key = thread.key();
+            self.weave_active_thread_key = Some(thread_key.clone());
+            self.weave_active_thread_label = Some(recipient.display_name());
+            self.weave_last_thread_key = Some(thread_key.clone());
+            self.weave_thread_prefs
+                .entry(thread_key)
+                .or_default()
+                .last_read_ts_ms = Self::weave_epoch_ms();
+            self.persist_weave_identity();
+            self.refresh_weave_footer_status();
+
+            self.weave_seen_message_ids.insert(message_id.clone());
+            if self.weave_seen_message_ids.len() > 5000 {
+                self.weave_seen_message_ids.clear();
+            }
+
+            self.append_weave_dm_log_entry(
+                session_id,
+                message_id.clone(),
+                self.weave_agent_id.clone(),
+                self.weave_agent_name.clone(),
+                recipient.id.clone(),
+                recipient.display_name(),
+                message_text.clone(),
+            );
+        }
+
         let sender = self
             .weave_agent_connection
             .as_ref()
             .expect("checked above")
             .sender();
-        let message_text = stripped.to_string();
         let tx = self.app_event_tx.clone();
         tokio::spawn(async move {
             if let Some(message_id) = message_id {
@@ -38118,14 +38686,46 @@ impl ChatWidget<'_> {
         let message_id_for_autorun = message_id.clone();
         let conversation_id_for_autorun = conversation_id.clone();
         let conversation_owner_for_autorun = conversation_owner.clone();
-        self.history_push_plain_state(crate::history_cell::new_weave_inbound(
-            src.clone(),
-            display_src,
-            self.weave_agent_id.clone(),
-            self.weave_agent_name.clone(),
-            text,
-        ));
-        self.request_redraw();
+
+        let is_new_message = self.weave_seen_message_ids.insert(message_id.clone());
+        if self.weave_seen_message_ids.len() > 5000 {
+            self.weave_seen_message_ids.clear();
+        }
+
+        if is_new_message {
+            self.history_push_plain_state(crate::history_cell::new_weave_inbound(
+                src.clone(),
+                display_src.clone(),
+                self.weave_agent_id.clone(),
+                self.weave_agent_name.clone(),
+                text.clone(),
+            ));
+            self.request_redraw();
+
+            self.append_weave_dm_log_entry(
+                session_id.clone(),
+                message_id.clone(),
+                src.clone(),
+                display_src,
+                self.weave_agent_id.clone(),
+                self.weave_agent_name.clone(),
+                text,
+            );
+
+            let thread = weave_history::WeaveDmThread::new(
+                session_id.clone(),
+                self.weave_agent_id.clone(),
+                src.clone(),
+            );
+            let thread_key = thread.key();
+            if self.weave_active_thread_key.as_deref() == Some(thread_key.as_str()) {
+                self.weave_thread_prefs
+                    .entry(thread_key)
+                    .or_default()
+                    .last_read_ts_ms = Self::weave_epoch_ms();
+                self.persist_weave_identity();
+            }
+        }
 
         let Some(connection) = self.weave_agent_connection.as_ref() else {
             return;
@@ -38142,7 +38742,9 @@ impl ChatWidget<'_> {
             let _ = sender.send_message_with_metadata(dst, seen, None, None).await;
         });
 
-        if kind == crate::weave_client::WeaveMessageKind::User && self.weave_auto_mode != WeaveAutoMode::Off
+        if is_new_message
+            && kind == crate::weave_client::WeaveMessageKind::User
+            && self.weave_auto_mode != WeaveAutoMode::Off
         {
             self.weave_autorun_queue.push_back(WeaveAutoRunRequest {
                 src_id: src_id_for_autorun,

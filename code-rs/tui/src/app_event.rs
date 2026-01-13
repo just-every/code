@@ -43,6 +43,16 @@ use std::sync::mpsc::Sender as StdSender;
 use crate::cloud_tasks_service::CloudEnvironment;
 use crate::resume::discovery::ResumeCandidate;
 use crate::weave_client::{WeaveAgent, WeaveAgentConnection, WeaveIncomingMessage, WeaveSession};
+use crate::weave_history::WeaveLogEntry;
+
+#[derive(Debug, Clone)]
+pub(crate) struct WeaveInboxThread {
+    pub peer_id: String,
+    pub peer_label: String,
+    pub thread_key: String,
+    pub unread: usize,
+    pub preview: Option<String>,
+}
 
 /// Wrapper to allow including non-Debug types in Debug enums without leaking internals.
 pub(crate) struct Redacted<T>(pub T);
@@ -236,8 +246,16 @@ pub(crate) enum AppEvent {
 
     // --- Weave ---
 
+    /// Load and open the Weave inbox (DM thread picker) for the current session.
+    RequestWeaveInboxMenu,
     /// Open the Weave menu with a freshly fetched session list.
     OpenWeaveSessionMenu { sessions: Vec<WeaveSession> },
+    /// Open the Weave inbox (DM thread picker) with the provided thread list.
+    OpenWeaveInboxMenu {
+        session_id: String,
+        session_label: String,
+        threads: Vec<WeaveInboxThread>,
+    },
     /// Open a prompt to rename this agent.
     OpenWeaveAgentNamePrompt,
     /// Open a prompt to switch which Weave profile/persona is active.
@@ -280,6 +298,15 @@ pub(crate) enum AppEvent {
     WeaveAgentsListed { session_id: String, agents: Vec<WeaveAgent> },
     /// Incoming direct message from Weave.
     WeaveMessageReceived { message: WeaveIncomingMessage },
+    /// Load and show backfilled history for a Weave DM thread.
+    OpenWeaveDmThread { peer_id: String, peer_label: String },
+    /// Apply backfilled history for a Weave DM thread.
+    WeaveDmThreadBackfill {
+        thread_key: String,
+        peer_id: String,
+        peer_label: String,
+        entries: Vec<WeaveLogEntry>,
+    },
     /// Update delivery status for an outbound Weave message.
     WeaveOutboundStatus { message_id: String, status: String },
     /// Surface a user-visible Weave error in the transcript.

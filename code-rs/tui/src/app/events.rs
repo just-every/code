@@ -1810,6 +1810,20 @@ impl App<'_> {
                         widget.open_weave_session_menu(sessions);
                     }
                 }
+                AppEvent::RequestWeaveInboxMenu => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.request_weave_inbox_menu();
+                    }
+                }
+                AppEvent::OpenWeaveInboxMenu {
+                    session_id,
+                    session_label,
+                    threads,
+                } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.open_weave_inbox_menu(session_id, session_label, threads);
+                    }
+                }
                 AppEvent::OpenWeaveAgentNamePrompt => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.open_weave_agent_name_prompt();
@@ -1908,6 +1922,26 @@ impl App<'_> {
                 AppEvent::WeaveMessageReceived { message } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.on_weave_message_received(message);
+                    }
+                }
+                AppEvent::OpenWeaveDmThread { peer_id, peer_label } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.request_weave_dm_thread_backfill(peer_id, peer_label);
+                    }
+                }
+                AppEvent::WeaveDmThreadBackfill {
+                    thread_key,
+                    peer_id,
+                    peer_label,
+                    entries,
+                } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.apply_weave_dm_thread_backfill(
+                            thread_key,
+                            peer_id,
+                            peer_label,
+                            entries,
+                        );
                     }
                 }
                 AppEvent::WeaveOutboundStatus { message_id, status } => {

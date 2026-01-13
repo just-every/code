@@ -138,6 +138,9 @@ qwen --version
 # Open the Weave menu (sessions, name/profile, colors)
 /weave
 
+# Open the inbox (DM threads + unread counts)
+/weave inbox
+
 # DM another agent in the current session
 #bob Hello from Alice
 
