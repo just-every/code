@@ -36,6 +36,10 @@ pub enum WireApi {
     /// The Responses API exposed by OpenAI at `/v1/responses`.
     Responses,
 
+    /// Experimental: Responses API over WebSocket transport.
+    #[serde(rename = "responses_websocket")]
+    ResponsesWebsocket,
+
     /// Regular Chat Completions compatible with `/v1/chat/completions`.
     #[default]
     Chat,
@@ -54,6 +58,11 @@ pub struct ModelProviderInfo {
     /// Optional instructions to help the user get a valid value for the
     /// variable and set it.
     pub env_key_instructions: Option<String>,
+
+    /// Value to use with `Authorization: Bearer <token>` header. Use of this
+    /// config is discouraged in favor of `env_key` for security reasons, but
+    /// this may be necessary when using this programmatically.
+    pub experimental_bearer_token: Option<String>,
 
     /// Which wire protocol this provider expects.
     #[serde(default)]
@@ -232,7 +241,7 @@ impl ModelProviderInfo {
         client: &'a reqwest::Client,
         auth: &Option<CodexAuth>,
     ) -> crate::error::Result<reqwest::RequestBuilder> {
-        if self.wire_api != WireApi::Responses {
+        if !matches!(self.wire_api, WireApi::Responses | WireApi::ResponsesWebsocket) {
             return Err(CodexErr::UnsupportedOperation(
                 "Compaction endpoint requires Responses API providers".to_string(),
             ));
@@ -256,6 +265,15 @@ impl ModelProviderInfo {
         &self,
         auth: &Option<CodexAuth>,
     ) -> crate::error::Result<Option<CodexAuth>> {
+        if let Some(token) = self
+            .experimental_bearer_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+        {
+            return Ok(Some(CodexAuth::from_api_key(token)));
+        }
+
         match self.api_key() {
             Ok(Some(key)) => Ok(Some(CodexAuth::from_api_key(&key))),
             Ok(None) => Ok(auth.clone()),
@@ -306,13 +324,15 @@ impl ModelProviderInfo {
             .unwrap_or(default_base_url.to_string());
 
         match self.wire_api {
-            WireApi::Responses => format!("{base_url}/responses{query_string}"),
+            WireApi::Responses | WireApi::ResponsesWebsocket => {
+                format!("{base_url}/responses{query_string}")
+            }
             WireApi::Chat => format!("{base_url}/chat/completions{query_string}"),
         }
     }
 
     pub(crate) fn get_compact_url(&self, auth: &Option<CodexAuth>) -> Option<String> {
-        if self.wire_api != WireApi::Responses {
+        if !matches!(self.wire_api, WireApi::Responses | WireApi::ResponsesWebsocket) {
             return None;
         }
         let full = self.get_full_url(auth);
@@ -324,7 +344,7 @@ impl ModelProviderInfo {
     }
 
     pub(crate) fn is_azure_responses_endpoint(&self) -> bool {
-        if self.wire_api != WireApi::Responses {
+        if !matches!(self.wire_api, WireApi::Responses | WireApi::ResponsesWebsocket) {
             return false;
         }
 
@@ -339,7 +359,7 @@ impl ModelProviderInfo {
     }
 
     pub(crate) fn is_backend_responses_endpoint(&self) -> bool {
-        if self.wire_api != WireApi::Responses {
+        if !matches!(self.wire_api, WireApi::Responses | WireApi::ResponsesWebsocket) {
             return false;
         }
 
@@ -353,7 +373,7 @@ impl ModelProviderInfo {
     }
 
     pub(crate) fn is_public_openai_responses_endpoint(&self) -> bool {
-        if self.wire_api != WireApi::Responses {
+        if !matches!(self.wire_api, WireApi::Responses | WireApi::ResponsesWebsocket) {
             return false;
         }
         if self.is_backend_responses_endpoint() || self.is_azure_responses_endpoint() {
@@ -453,6 +473,7 @@ fn wire_api_override_from_env(env_key: &str) -> Option<WireApi> {
         Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
             "chat" => Some(WireApi::Chat),
             "responses" => Some(WireApi::Responses),
+            "responses_websocket" => Some(WireApi::ResponsesWebsocket),
             other if !other.is_empty() => {
                 tracing::warn!(
                     "Ignoring unknown {env_key} value '{other}'; falling back to default wire API"
@@ -487,6 +508,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                     .filter(|v| !v.trim().is_empty()),
                 env_key: None,
                 env_key_instructions: None,
+                experimental_bearer_token: None,
                 wire_api: wire_api_override_from_env("OPENAI_WIRE_API")
                     .unwrap_or(WireApi::Responses),
                 query_params: None,
@@ -553,6 +575,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str) -> ModelProviderInfo {
         base_url: Some(base_url.into()),
         env_key: None,
         env_key_instructions: None,
+        experimental_bearer_token: None,
         wire_api: WireApi::Chat,
         query_params: None,
         http_headers: None,
@@ -593,6 +616,7 @@ base_url = "http://localhost:11434/v1"
             base_url: Some("http://localhost:11434/v1".into()),
             env_key: None,
             env_key_instructions: None,
+            experimental_bearer_token: None,
             wire_api: WireApi::Chat,
             query_params: None,
             http_headers: None,
@@ -621,6 +645,7 @@ query_params = { api-version = "2025-04-01-preview" }
             base_url: Some("https://xxxxx.openai.azure.com/openai".into()),
             env_key: Some("AZURE_OPENAI_API_KEY".into()),
             env_key_instructions: None,
+            experimental_bearer_token: None,
             wire_api: WireApi::Chat,
             query_params: Some(maplit::hashmap! {
                 "api-version".to_string() => "2025-04-01-preview".to_string(),
@@ -652,6 +677,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
             base_url: Some("https://example.com".into()),
             env_key: Some("API_KEY".into()),
             env_key_instructions: None,
+            experimental_bearer_token: None,
             wire_api: WireApi::Chat,
             query_params: None,
             http_headers: Some(maplit::hashmap! {
@@ -679,6 +705,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
                 base_url: Some(base_url.into()),
                 env_key: None,
                 env_key_instructions: None,
+                experimental_bearer_token: None,
                 wire_api: WireApi::Responses,
                 query_params: None,
                 http_headers: None,
@@ -712,6 +739,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
             base_url: Some("https://example.com".into()),
             env_key: None,
             env_key_instructions: None,
+            experimental_bearer_token: None,
             wire_api: WireApi::Responses,
             query_params: None,
             http_headers: None,

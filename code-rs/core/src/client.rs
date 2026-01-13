@@ -26,11 +26,14 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_util::io::ReaderStream;
+use tokio_stream::wrappers::ReceiverStream;
 use tracing::debug;
 use tracing::trace;
 use tracing::warn;
 use uuid::Uuid;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 const AUTH_REQUIRED_MESSAGE: &str = "Authentication required. Run `code login` to continue.";
 
@@ -432,6 +435,7 @@ impl ModelClient {
             .or(prompt.log_tag.as_deref());
         match self.provider.wire_api {
             WireApi::Responses => self.stream_responses(prompt, log_tag).await,
+            WireApi::ResponsesWebsocket => self.stream_responses_websocket(prompt, log_tag).await,
             WireApi::Chat => {
                 let effective_family = prompt
                     .model_family_override
@@ -479,6 +483,335 @@ impl ModelClient {
                 });
 
                 Ok(ResponseStream { rx_event: rx })
+            }
+        }
+    }
+
+    async fn stream_responses_websocket(
+        &self,
+        prompt: &Prompt,
+        log_tag: Option<&str>,
+    ) -> Result<ResponseStream> {
+        let auth_manager = self.auth_manager.clone();
+        let auth_mode = auth_manager
+            .as_ref()
+            .and_then(|m| m.auth())
+            .as_ref()
+            .map(|a| a.mode);
+
+        // Use non-stored turns on all paths for stability.
+        let store = false;
+
+        let request_model = prompt
+            .model_override
+            .as_deref()
+            .unwrap_or(self.config.model.as_str());
+        let effective_effort = clamp_reasoning_effort_for_model(request_model, self.effort);
+        let request_family = prompt
+            .model_family_override
+            .clone()
+            .or_else(|| find_family_for_model(request_model))
+            .unwrap_or_else(|| self.config.model_family.clone());
+
+        let full_instructions = prompt.get_full_instructions(&request_family);
+        let mut tools_json = create_tools_json_for_responses_api(&prompt.tools)?;
+        if matches!(effective_effort, ReasoningEffortConfig::Minimal) {
+            tools_json.retain(|tool| {
+                tool.get("type")
+                    .and_then(|value| value.as_str())
+                    .map(|tool_type| tool_type != "web_search")
+                    .unwrap_or(true)
+            });
+        }
+
+        let input_with_instructions = prompt.get_formatted_input();
+
+        let want_format = prompt.text_format.clone().or_else(|| {
+            prompt.output_schema.as_ref().map(|schema| crate::client_common::TextFormat {
+                r#type: "json_schema".to_string(),
+                name: Some("code_output_schema".to_string()),
+                strict: Some(true),
+                schema: Some(schema.clone()),
+            })
+        });
+
+        let effective_verbosity = clamp_text_verbosity_for_model(request_model, self.verbosity);
+        let verbosity = match &request_family.family {
+            family if family == "gpt-5" || family == "gpt-5.1" => Some(effective_verbosity),
+            _ => None,
+        };
+
+        let text_template = match (auth_mode, want_format, verbosity) {
+            (Some(AuthMode::ChatGPT), None, _) => None,
+            (_, Some(fmt), _) => Some(crate::client_common::Text {
+                verbosity: effective_verbosity.into(),
+                format: Some(fmt),
+            }),
+            (_, None, Some(_)) => Some(crate::client_common::Text {
+                verbosity: effective_verbosity.into(),
+                format: None,
+            }),
+            (_, None, None) => None,
+        };
+
+        let model_slug = request_model;
+        let session_id = prompt.session_id_override.unwrap_or(self.session_id);
+        let session_id_str = session_id.to_string();
+        let mut attempt = 0;
+        let max_retries = self.provider.request_max_retries();
+        let mut request_id = String::new();
+
+        loop {
+            attempt += 1;
+
+            let reasoning = self.current_reasoning_param(&request_family, effective_effort);
+            let include: Vec<String> = if !store && reasoning.is_some() {
+                vec!["reasoning.encrypted_content".to_string()]
+            } else {
+                Vec::new()
+            };
+
+            let payload = ResponsesApiRequest {
+                model: model_slug,
+                instructions: &full_instructions,
+                input: &input_with_instructions,
+                tools: &tools_json,
+                tool_choice: "auto",
+                parallel_tool_calls: request_family.supports_parallel_tool_calls,
+                reasoning,
+                text: text_template.clone(),
+                store: self.provider.is_azure_responses_endpoint(),
+                stream: true,
+                include,
+                prompt_cache_key: Some(session_id_str.clone()),
+            };
+
+            let mut payload_json = serde_json::to_value(&payload)?;
+            if let Some(model_value) = payload_json.get_mut("model") {
+                *model_value = serde_json::Value::String(model_slug.to_string());
+            }
+            if self.provider.is_azure_responses_endpoint() {
+                attach_item_ids(&mut payload_json, &input_with_instructions);
+            }
+            if let Some(openrouter_cfg) = self.provider.openrouter_config() {
+                if let Some(obj) = payload_json.as_object_mut() {
+                    if let Some(provider) = &openrouter_cfg.provider {
+                        obj.insert("provider".to_string(), serde_json::to_value(provider)?);
+                    }
+                    if let Some(route) = &openrouter_cfg.route {
+                        obj.insert("route".to_string(), route.clone());
+                    }
+                    for (key, value) in &openrouter_cfg.extra {
+                        obj.entry(key.clone()).or_insert(value.clone());
+                    }
+                }
+            }
+
+            let auth = auth_manager.as_ref().and_then(|m| m.auth());
+            let endpoint = self.provider.get_full_url(&auth);
+
+            let url = reqwest::Url::parse(&endpoint).map_err(|err| {
+                CodexErr::Stream(
+                    format!("[ws] invalid URL: {err}"),
+                    None,
+                    Some(request_id.clone()),
+                )
+            })?;
+            let mut req_builder = self
+                .provider
+                .create_request_builder_for_url(&self.client, &auth, reqwest::Method::GET, url)
+                .await?;
+
+            let has_beta_header = req_builder
+                .try_clone()
+                .and_then(|builder| builder.build().ok())
+                .map_or(false, |req| req.headers().contains_key("OpenAI-Beta"));
+
+            if !has_beta_header {
+                let beta_value = if self.provider.is_public_openai_responses_endpoint() {
+                    RESPONSES_BETA_HEADER_V1
+                } else {
+                    RESPONSES_BETA_HEADER_EXPERIMENTAL
+                };
+                req_builder = req_builder.header("OpenAI-Beta", beta_value);
+            }
+
+            req_builder = attach_openai_subagent_header(req_builder);
+            req_builder = attach_codex_beta_features_header(req_builder, &self.config);
+            req_builder = req_builder
+                .header("conversation_id", session_id_str.clone())
+                .header("session_id", session_id_str.clone());
+
+            if let Some(auth) = auth.as_ref()
+                && auth.mode == AuthMode::ChatGPT
+                && let Some(account_id) = auth.get_account_id()
+            {
+                req_builder = req_builder.header("chatgpt-account-id", account_id);
+            }
+
+            let header_snapshot = req_builder
+                .try_clone()
+                .and_then(|builder| builder.build().ok())
+                .map(|req| header_map_to_json(req.headers()));
+
+            if request_id.is_empty() {
+                if let Ok(logger) = self.debug_logger.lock() {
+                    request_id = logger
+                        .start_request_log(&endpoint, &payload_json, header_snapshot.as_ref(), log_tag)
+                        .unwrap_or_default();
+                }
+            }
+
+            let ws_headers = req_builder
+                .try_clone()
+                .and_then(|builder| builder.build().ok())
+                .map(|req| req.headers().clone())
+                .unwrap_or_else(HeaderMap::new);
+
+            let mut ws_request = endpoint
+                .clone()
+                .into_client_request()
+                .map_err(|err| {
+                    CodexErr::Stream(
+                        format!("[ws] failed to build request: {err}"),
+                        None,
+                        Some(request_id.clone()),
+                    )
+                })?;
+            ws_request.headers_mut().extend(ws_headers);
+
+            // Wrap the normal /responses request payload in the WebSocket envelope.
+            let mut ws_payload = serde_json::Map::new();
+            ws_payload.insert(
+                "type".to_string(),
+                serde_json::Value::String("response.create".to_string()),
+            );
+            if let Some(obj) = payload_json.as_object() {
+                for (k, v) in obj {
+                    ws_payload.insert(k.clone(), v.clone());
+                }
+            }
+            let ws_payload_text = serde_json::to_string(&serde_json::Value::Object(ws_payload))?;
+
+            let connect = tokio_tungstenite::connect_async(ws_request).await;
+            match connect {
+                Ok((mut ws_stream, response)) => {
+                    let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent>>(1600);
+
+                    if let Some(snapshot) = parse_rate_limit_snapshot(response.headers()) {
+                        debug!(
+                            "rate limit headers:\n{}",
+                            format_rate_limit_headers(response.headers())
+                        );
+                        if tx_event
+                            .send(Ok(ResponseEvent::RateLimits(snapshot)))
+                            .await
+                            .is_err()
+                        {
+                            debug!("receiver dropped rate limit snapshot event");
+                        }
+                    }
+
+                    let models_etag = response
+                        .headers()
+                        .get("X-Models-Etag")
+                        .and_then(|value| value.to_str().ok())
+                        .map(ToString::to_string);
+                    if let Some(etag) = models_etag {
+                        if tx_event
+                            .send(Ok(ResponseEvent::ModelsEtag(etag)))
+                            .await
+                            .is_err()
+                        {
+                            debug!("receiver dropped models etag event");
+                        }
+                    }
+
+                    ws_stream
+                        .send(Message::Text(ws_payload_text))
+                        .await
+                        .map_err(|err| {
+                            CodexErr::Stream(
+                                format!("[ws] failed to send websocket request: {err}"),
+                                None,
+                                Some(request_id.clone()),
+                            )
+                        })?;
+
+                    let (tx_bytes, rx_bytes) = mpsc::channel::<Result<Bytes>>(1600);
+                    let request_id_for_ws = request_id.clone();
+                    tokio::spawn(async move {
+                        loop {
+                            let Some(next) = ws_stream.next().await else {
+                                break;
+                            };
+                            match next {
+                                Ok(Message::Text(text)) => {
+                                    let chunk = format!("data: {text}\n\n");
+                                    if tx_bytes.send(Ok(Bytes::from(chunk))).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Ok(Message::Ping(payload)) => {
+                                    if ws_stream.send(Message::Pong(payload)).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Ok(Message::Pong(_)) => {}
+                                Ok(Message::Close(_)) => break,
+                                Ok(Message::Binary(_)) => {
+                                    let _ = tx_bytes
+                                        .send(Err(CodexErr::Stream(
+                                            "[ws] unexpected binary websocket event".to_string(),
+                                            None,
+                                            Some(request_id_for_ws.clone()),
+                                        )))
+                                        .await;
+                                    break;
+                                }
+                                Ok(_) => {}
+                                Err(err) => {
+                                    let _ = tx_bytes
+                                        .send(Err(CodexErr::Stream(
+                                            format!("[ws] websocket error: {err}"),
+                                            None,
+                                            Some(request_id_for_ws.clone()),
+                                        )))
+                                        .await;
+                                    break;
+                                }
+                            }
+                        }
+                    });
+
+                    let stream = ReceiverStream::new(rx_bytes);
+                    let debug_logger = Arc::clone(&self.debug_logger);
+                    let request_id_clone = request_id.clone();
+                    let otel_event_manager = self.otel_event_manager.clone();
+                    tokio::spawn(process_sse(
+                        stream,
+                        tx_event,
+                        self.provider.stream_idle_timeout(),
+                        debug_logger,
+                        request_id_clone,
+                        otel_event_manager,
+                        Arc::new(RwLock::new(StreamCheckpoint::default())),
+                    ));
+
+                    return Ok(ResponseStream { rx_event });
+                }
+                Err(err) => {
+                    let err = CodexErr::Stream(
+                        format!("[ws] failed to connect: {err}"),
+                        None,
+                        Some(request_id.clone()),
+                    );
+                    if (attempt as u64) < max_retries {
+                        tokio::time::sleep(backoff(attempt as u64)).await;
+                        continue;
+                    }
+                    return Err(err);
+                }
             }
         }
     }
@@ -2151,6 +2484,7 @@ mod tests {
             base_url: Some("https://api.openai.com/v1".to_string()),
             env_key: None,
             env_key_instructions: None,
+            experimental_bearer_token: None,
             wire_api: WireApi::Responses,
             query_params: None,
             http_headers: None,
@@ -2198,6 +2532,7 @@ mod tests {
             base_url: Some("https://chatgpt.com/backend-api/codex".to_string()),
             env_key: None,
             env_key_instructions: None,
+            experimental_bearer_token: None,
             wire_api: WireApi::Responses,
             query_params: None,
             http_headers: None,
@@ -2247,6 +2582,7 @@ mod tests {
             base_url: Some("https://api.openai.com/v1".to_string()),
             env_key: None,
             env_key_instructions: None,
+            experimental_bearer_token: None,
             wire_api: WireApi::Responses,
             query_params: None,
             http_headers: Some(headers),
@@ -2393,6 +2729,7 @@ mod tests {
             base_url: Some("https://test.com".to_string()),
             env_key: Some("TEST_API_KEY".to_string()),
             env_key_instructions: None,
+            experimental_bearer_token: None,
             wire_api: WireApi::Responses,
             query_params: None,
             http_headers: None,
@@ -2458,6 +2795,7 @@ mod tests {
             base_url: Some("https://test.com".to_string()),
             env_key: Some("TEST_API_KEY".to_string()),
             env_key_instructions: None,
+            experimental_bearer_token: None,
             wire_api: WireApi::Responses,
             query_params: None,
             http_headers: None,
@@ -2496,6 +2834,7 @@ mod tests {
             base_url: Some("https://test.com".to_string()),
             env_key: Some("TEST_API_KEY".to_string()),
             env_key_instructions: None,
+            experimental_bearer_token: None,
             wire_api: WireApi::Responses,
             query_params: None,
             http_headers: None,
@@ -2602,6 +2941,7 @@ mod tests {
                 base_url: Some("https://test.com".to_string()),
                 env_key: Some("TEST_API_KEY".to_string()),
                 env_key_instructions: None,
+                experimental_bearer_token: None,
                 wire_api: WireApi::Responses,
                 query_params: None,
                 http_headers: None,
@@ -2841,6 +3181,7 @@ mod tests {
             base_url: Some("https://test.com".to_string()),
             env_key: Some("TEST_API_KEY".to_string()),
             env_key_instructions: None,
+            experimental_bearer_token: None,
             wire_api: WireApi::Responses,
             query_params: None,
             http_headers: None,
