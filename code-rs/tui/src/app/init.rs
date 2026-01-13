@@ -101,7 +101,8 @@ impl App<'_> {
         let post_frame_redraw = Arc::new(AtomicBool::new(false));
         let frame_timer = Arc::new(FrameTimer::new());
 
-        let enhanced_keys_supported = supports_keyboard_enhancement().unwrap_or(false);
+        let enhanced_keys_supported = supports_keyboard_enhancement().unwrap_or(false)
+            && crate::tui::should_enable_keyboard_enhancement();
 
         // Spawn a dedicated thread for reading the crossterm event loop and
         // re-publishing the events as AppEvents, as appropriate.
