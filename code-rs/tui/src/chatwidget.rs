@@ -6444,16 +6444,16 @@ impl ChatWidget<'_> {
             .cloned()
             .unwrap_or_default();
 
-        // Backwards compatibility: if we have legacy (v0) values and no profile entry,
-        // seed the current profile and drop the legacy fields on write.
-        if profile_key.is_some()
-            && profile.agent_id.is_none()
-            && profile.agent_name.is_none()
-            && profile.agent_accent.is_none()
-        {
-            profile.agent_id = prefs.agent_id.clone();
-            profile.agent_name = prefs.agent_name.clone();
-            profile.agent_accent = prefs.agent_accent;
+        // Backwards compatibility: for profiles, we may reuse the legacy display name and
+        // accent, but never reuse the legacy agent id (it would cause different terminals
+        // to share an identity).
+        if profile_key.is_some() {
+            if profile.agent_name.is_none() {
+                profile.agent_name = prefs.agent_name.clone();
+            }
+            if profile.agent_accent.is_none() {
+                profile.agent_accent = prefs.agent_accent;
+            }
         }
 
         let agent_id = profile
