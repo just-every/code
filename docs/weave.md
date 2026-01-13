@@ -39,6 +39,7 @@ In each terminal:
   - “Set agent name”
   - “Switch profile” (multiple personas/identities)
   - “Auto mode” (off/reply/work)
+  - “Persona builder” (presets + editor)
   - “Persona memory” (persistent notes for this profile)
   - “Set agent color”
 
@@ -114,5 +115,6 @@ When a peer is in auto mode and responding, you may see a small activity indicat
 
 Persona memory is persisted per Weave profile and injected into auto mode prompts.
 
+- `/weave persona` — pick a preset and/or edit persona memory
 - `/weave memory` — edit memory (multi-line prompt)
 - `/weave memory clear` — clear memory

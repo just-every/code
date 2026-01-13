@@ -278,6 +278,8 @@ pub(crate) enum AppEvent {
     OpenWeaveProfileNamePrompt,
     /// Open a menu to configure Weave auto-reply/autorun mode.
     OpenWeaveAutoModeMenu,
+    /// Open a menu of persona presets and an editor for persona memory.
+    OpenWeavePersonaBuilderMenu,
     /// Open a prompt to edit persona memory for the active profile.
     OpenWeavePersonaMemoryPrompt,
     /// Open a menu to pick this agent's accent color for Weave messages.

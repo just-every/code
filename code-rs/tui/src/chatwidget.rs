@@ -1223,6 +1223,85 @@ struct WeaveOutboundDelivery {
     seen: bool,
 }
 
+struct WeavePersonaPreset {
+    name: &'static str,
+    description: &'static str,
+    memory: &'static str,
+}
+
+const WEAVE_PERSONA_PRESETS: &[WeavePersonaPreset] = &[
+    WeavePersonaPreset {
+        name: "Character sheet",
+        description: "Fill in a template (name, role, style).",
+        memory: r#"Identity
+- Name:
+- Pronouns (optional):
+
+Background
+- Role:
+- Strengths:
+- Weaknesses:
+
+Personality
+- Traits:
+- Communication style:
+
+Defaults
+- Be concise and helpful.
+- Ask clarifying questions when needed.
+- Speak and act as this persona in Weave replies.
+"#,
+    },
+    WeavePersonaPreset {
+        name: "Senior engineer",
+        description: "Practical, technical, minimal diffs.",
+        memory: r#"You are a senior software engineer.
+
+Style:
+- Practical, technical, kind.
+- Prefer minimal diffs and clear reasoning.
+
+Defaults:
+- Ask 1–2 clarifying questions if needed.
+- If asked to implement, propose a short plan then execute.
+- Prefer safe changes and run relevant checks before claiming done.
+"#,
+    },
+    WeavePersonaPreset {
+        name: "Product manager",
+        description: "Clarify goals, users, and tradeoffs.",
+        memory: r#"You are a product manager.
+
+Defaults:
+- Clarify goals, users, and success metrics.
+- Call out tradeoffs and edge cases.
+- Suggest a crisp next step with a checklist.
+"#,
+    },
+    WeavePersonaPreset {
+        name: "SRE",
+        description: "Reliability, observability, runbooks.",
+        memory: r#"You are an SRE (site reliability engineer).
+
+Defaults:
+- Focus on reliability, observability, and failure modes.
+- Prefer concrete runbooks and quick mitigation steps.
+- Keep responses short and actionable.
+"#,
+    },
+    WeavePersonaPreset {
+        name: "UX designer",
+        description: "Flows, copy, accessibility, polish.",
+        memory: r#"You are a UX designer.
+
+Defaults:
+- Ask about user goals and primary flows.
+- Suggest UI copy improvements and accessibility checks.
+- Prefer simple, polished interactions.
+"#,
+    },
+];
+
 const WEAVE_CONTROL_PREFIX: &str = "\u{001F}weave:";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -13630,6 +13709,10 @@ impl ChatWidget<'_> {
                     self.stop_spinner();
                     return;
                 }
+                if self.should_suppress_weave_autorun_llm_output() {
+                    tracing::debug!("Suppressing AgentMessage for weave autorun");
+                    return;
+                }
 
                 // Allow a fresh lingering-exec sweep even if the per-turn guard
                 // was tripped before any commands started.
@@ -13744,6 +13827,10 @@ impl ChatWidget<'_> {
                     self.stop_spinner();
                     return;
                 }
+                if self.should_suppress_weave_autorun_llm_output() {
+                    tracing::debug!("Suppressing AgentMessageDelta for weave autorun");
+                    return;
+                }
 
                 self.ensure_lingering_execs_cleared();
 
@@ -13790,6 +13877,10 @@ impl ChatWidget<'_> {
                 if self.stream_state.drop_streaming {
                     tracing::debug!("Ignoring AgentReasoning after interrupt");
                     self.stop_spinner();
+                    return;
+                }
+                if self.should_suppress_weave_autorun_llm_output() {
+                    tracing::debug!("Suppressing AgentReasoning for weave autorun");
                     return;
                 }
                 tracing::debug!(
@@ -13849,6 +13940,10 @@ impl ChatWidget<'_> {
                     self.stop_spinner();
                     return;
                 }
+                if self.should_suppress_weave_autorun_llm_output() {
+                    tracing::debug!("Suppressing AgentReasoningDelta for weave autorun");
+                    return;
+                }
                 if self.strict_stream_ids_enabled() && id.trim().is_empty() {
                     self.warn_missing_stream_id("assistant reasoning delta");
                     return;
@@ -13890,6 +13985,10 @@ impl ChatWidget<'_> {
                 self.bottom_pane.update_status_text("thinking".to_string());
             }
             EventMsg::AgentReasoningSectionBreak(AgentReasoningSectionBreakEvent {}) => {
+                if self.should_suppress_weave_autorun_llm_output() {
+                    tracing::debug!("Suppressing AgentReasoningSectionBreak for weave autorun");
+                    return;
+                }
                 // Insert section break in reasoning stream
                 let sink = AppEventHistorySink(self.app_event_tx.clone());
                 self.stream.insert_reasoning_section_break(&sink);
@@ -14041,6 +14140,10 @@ impl ChatWidget<'_> {
                 if self.stream_state.drop_streaming {
                     tracing::debug!("Ignoring RawContent delta after interrupt");
                     self.stop_spinner();
+                    return;
+                }
+                if self.should_suppress_weave_autorun_llm_output() {
+                    tracing::debug!("Suppressing AgentReasoningRawContentDelta for weave autorun");
                     return;
                 }
                 if self.strict_stream_ids_enabled() && id.trim().is_empty() {
@@ -36631,6 +36734,9 @@ impl ChatWidget<'_> {
                     }
                 }
             }
+            "persona" | "personas" => {
+                self.app_event_tx.send(AppEvent::OpenWeavePersonaBuilderMenu);
+            }
             "memory" => {
                 if rest.is_empty() {
                     self.app_event_tx
@@ -36694,6 +36800,7 @@ impl ChatWidget<'_> {
                         "/weave profile <name>".to_string(),
                         "/weave name <name>".to_string(),
                         "/weave auto off|reply|work".to_string(),
+                        "/weave persona".to_string(),
                         "/weave memory".to_string(),
                         "/weave memory clear".to_string(),
                         "/weave create <session name>".to_string(),
@@ -37658,6 +37765,14 @@ impl ChatWidget<'_> {
         });
         let memory_len = self.weave_persona_memory.trim().chars().count();
         items.push(SelectionItem {
+            name: "Persona builder".to_string(),
+            description: Some("Presets + editor".to_string()),
+            is_current: false,
+            actions: vec![Box::new(|tx: &crate::app_event_sender::AppEventSender| {
+                tx.send(AppEvent::OpenWeavePersonaBuilderMenu);
+            })],
+        });
+        items.push(SelectionItem {
             name: "Persona memory".to_string(),
             description: Some(format!("{memory_len} chars")),
             is_current: false,
@@ -37679,11 +37794,11 @@ impl ChatWidget<'_> {
         }
         let color_label = self
             .weave_agent_accent
-            .map(|idx| format!("{idx}"))
-            .unwrap_or_else(|| "auto".to_string());
+            .map(Self::weave_accent_display_name)
+            .unwrap_or("auto");
         items.push(SelectionItem {
             name: "Set agent color".to_string(),
-            description: Some(format!("Current: {}", color_label)),
+            description: Some(format!("Current: {color_label}")),
             is_current: false,
             actions: vec![Box::new(|tx: &crate::app_event_sender::AppEventSender| {
                 tx.send(AppEvent::OpenWeaveAgentColorMenu);
@@ -38036,6 +38151,75 @@ impl ChatWidget<'_> {
         }
     }
 
+    pub(crate) fn open_weave_persona_builder_menu(&mut self) {
+        let memory_len = self.weave_persona_memory.trim().chars().count();
+        let profile_label = self.current_weave_profile_label();
+
+        let mut items: Vec<SelectionItem> = Vec::new();
+
+        items.push(SelectionItem {
+            name: "Edit memory…".to_string(),
+            description: Some("Freeform persona memory used for Weave auto mode.".to_string()),
+            is_current: false,
+            actions: vec![Box::new(|tx: &crate::app_event_sender::AppEventSender| {
+                tx.send(AppEvent::OpenWeavePersonaMemoryPrompt);
+            })],
+        });
+
+        items.push(SelectionItem {
+            name: "Start from scratch".to_string(),
+            description: Some("Clear memory then edit.".to_string()),
+            is_current: false,
+            actions: vec![Box::new(|tx: &crate::app_event_sender::AppEventSender| {
+                tx.send(AppEvent::SetWeavePersonaMemory {
+                    memory: String::new(),
+                });
+                tx.send(AppEvent::OpenWeavePersonaMemoryPrompt);
+            })],
+        });
+
+        for preset in WEAVE_PERSONA_PRESETS {
+            let memory = preset.memory.to_string();
+            items.push(SelectionItem {
+                name: preset.name.to_string(),
+                description: Some(preset.description.to_string()),
+                is_current: false,
+                actions: vec![Box::new(move |tx: &crate::app_event_sender::AppEventSender| {
+                    tx.send(AppEvent::SetWeavePersonaMemory {
+                        memory: memory.clone(),
+                    });
+                    tx.send(AppEvent::OpenWeavePersonaMemoryPrompt);
+                })],
+            });
+        }
+
+        if memory_len > 0 {
+            items.push(SelectionItem {
+                name: "Clear memory".to_string(),
+                description: None,
+                is_current: false,
+                actions: vec![Box::new(|tx: &crate::app_event_sender::AppEventSender| {
+                    tx.send(AppEvent::SetWeavePersonaMemory {
+                        memory: String::new(),
+                    });
+                })],
+            });
+        }
+
+        let subtitle = format!("Profile: {profile_label} • {memory_len} chars");
+        let view = ListSelectionView::new(
+            " Weave persona builder ".to_string(),
+            Some(subtitle),
+            Some("Enter select · Esc cancel".to_string()),
+            items,
+            self.app_event_tx.clone(),
+            12,
+        );
+
+        self.bottom_pane
+            .show_list_selection("Weave persona builder".to_string(), None, None, view);
+    }
+
     pub(crate) fn open_weave_persona_memory_prompt(&mut self) {
         let current_len = self.weave_persona_memory.trim().chars().count();
         let submit_tx = self.app_event_tx.clone();
@@ -38142,6 +38326,19 @@ impl ChatWidget<'_> {
         self.request_redraw();
     }
 
+    fn weave_accent_display_name(accent: u8) -> &'static str {
+        match accent % 8 {
+            0 => "Primary",
+            1 => "Secondary",
+            2 => "Info",
+            3 => "Success",
+            4 => "Warning",
+            5 => "Keyword",
+            6 => "String",
+            _ => "Function",
+        }
+    }
+
     pub(crate) fn open_weave_agent_color_menu(&mut self) {
         let current = self.weave_agent_accent;
 
@@ -38162,10 +38359,11 @@ impl ChatWidget<'_> {
 
         for accent in 0..8 {
             let is_current = current == Some(accent);
+            let name = Self::weave_accent_display_name(accent);
             let label = if is_current {
-                format!("✓ Accent {accent}")
+                format!("✓ {name}")
             } else {
-                format!("Accent {accent}")
+                name.to_string()
             };
             let selected = Some(accent);
             items.push(SelectionItem {
@@ -38316,8 +38514,8 @@ impl ChatWidget<'_> {
         self.persist_weave_identity();
 
         let label = accent
-            .map(|accent| format!("Accent {accent}"))
-            .unwrap_or_else(|| "auto".to_string());
+            .map(Self::weave_accent_display_name)
+            .unwrap_or("auto");
         self.bottom_pane
             .flash_footer_notice(format!("Weave color set to {label}"));
         self.request_redraw();
@@ -38797,6 +38995,19 @@ impl ChatWidget<'_> {
             WeaveAutoMode::Reply => "reply",
             WeaveAutoMode::Work => "work",
         }
+    }
+
+    fn should_suppress_weave_autorun_llm_output(&self) -> bool {
+        if !matches!(self.current_turn_origin, Some(TurnOrigin::Developer)) {
+            return false;
+        }
+        let Some(inflight) = self.weave_autorun_inflight.as_ref() else {
+            return false;
+        };
+        let Some(task_id) = inflight.task_id.as_deref() else {
+            return false;
+        };
+        self.active_task_ids.contains(task_id)
     }
 
     fn broadcast_weave_presence_to_agents(&mut self, agent_ids: Vec<String>) {

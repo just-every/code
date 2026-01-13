@@ -154,6 +154,9 @@ qwen --version
 # Auto-reply / autorun (per profile)
 /weave auto reply
 /weave auto work
+
+# Persona presets + editor (per profile)
+/weave persona
 ```
 
 See `docs/weave.md` for setup and testing.

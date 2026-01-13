@@ -1840,6 +1840,11 @@ impl App<'_> {
                         widget.open_weave_auto_mode_menu();
                     }
                 }
+                AppEvent::OpenWeavePersonaBuilderMenu => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.open_weave_persona_builder_menu();
+                    }
+                }
                 AppEvent::OpenWeavePersonaMemoryPrompt => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.open_weave_persona_memory_prompt();
