@@ -35,6 +35,7 @@ use code_cloud_tasks_client::{ApplyOutcome, CloudTaskError, CreatedTask, TaskSum
 use crate::app::ChatWidgetArgs;
 use crate::chrome_launch::ChromeLaunchOption;
 use crate::chatwidget::WeaveAutoMode;
+use crate::chatwidget::WeaveAutoTrigger;
 use crate::slash_command::SlashCommand;
 use code_protocol::models::ResponseItem;
 use std::fmt;
@@ -278,6 +279,8 @@ pub(crate) enum AppEvent {
     OpenWeaveProfileNamePrompt,
     /// Open a menu to configure Weave auto-reply/autorun mode.
     OpenWeaveAutoModeMenu,
+    /// Open a menu to configure which incoming messages trigger Weave auto mode.
+    OpenWeaveAutoTriggerMenu,
     /// Open a menu of persona presets and an editor for persona memory.
     OpenWeavePersonaBuilderMenu,
     /// Open a prompt to edit persona memory for the active profile.
@@ -296,6 +299,8 @@ pub(crate) enum AppEvent {
     SetWeaveProfile { profile: Option<String> },
     /// Set the Weave auto mode for this profile (off/reply/work).
     SetWeaveAutoMode { mode: WeaveAutoMode },
+    /// Set which incoming messages trigger Weave auto mode.
+    SetWeaveAutoTrigger { trigger: WeaveAutoTrigger },
     /// Set the persona memory blob for this profile (may be empty to clear).
     SetWeavePersonaMemory { memory: String },
     /// Set an explicit accent color for this agent (or clear to use auto).

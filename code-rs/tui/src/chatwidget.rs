@@ -1103,6 +1103,8 @@ struct WeaveProfile {
     #[serde(default)]
     auto_mode: WeaveAutoMode,
     #[serde(default)]
+    auto_trigger: WeaveAutoTrigger,
+    #[serde(default)]
     memory: String,
     #[serde(default)]
     journal: Vec<String>,
@@ -1132,6 +1134,23 @@ impl Default for WeaveAutoMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WeaveAutoTrigger {
+    /// Trigger auto mode only for "user" messages (default; avoids bot loops).
+    UserOnly,
+    /// Trigger auto mode for direct messages, including replies.
+    Direct,
+    /// Trigger auto mode for all messages, including room broadcasts.
+    All,
+}
+
+impl Default for WeaveAutoTrigger {
+    fn default() -> Self {
+        Self::UserOnly
+    }
+}
+
 #[derive(Clone, Debug)]
 struct WeaveAutoRunRequest {
     src_id: String,
@@ -1154,6 +1173,7 @@ struct WeaveProfileState {
     agent_name: String,
     agent_accent: Option<u8>,
     auto_mode: WeaveAutoMode,
+    auto_trigger: WeaveAutoTrigger,
     memory: String,
     journal: VecDeque<String>,
     threads: HashMap<String, WeaveThreadPrefs>,
@@ -1863,6 +1883,7 @@ pub(crate) struct ChatWidget<'a> {
     weave_agent_name: String,
     weave_agent_accent: Option<u8>,
     weave_auto_mode: WeaveAutoMode,
+    weave_auto_trigger: WeaveAutoTrigger,
     weave_persona_memory: String,
     weave_persona_journal: VecDeque<String>,
     weave_thread_prefs: HashMap<String, WeaveThreadPrefs>,
@@ -6755,6 +6776,7 @@ impl ChatWidget<'_> {
 
         let accent = profile.agent_accent;
         let auto_mode = profile.auto_mode;
+        let auto_trigger = profile.auto_trigger;
         let memory = profile.memory.trim_end().to_string();
         let threads = profile.threads.clone();
         let last_thread_key = profile
@@ -6785,13 +6807,22 @@ impl ChatWidget<'_> {
                         .map(str::trim)
                         .filter(|v| !v.is_empty());
                     let accent = p.agent_accent;
-                    Some((id, name, accent, p.auto_mode, p.memory.trim_end(), p.journal.len()))
+                    Some((
+                        id,
+                        name,
+                        accent,
+                        p.auto_mode,
+                        p.auto_trigger,
+                        p.memory.trim_end(),
+                        p.journal.len(),
+                    ))
                 })
                 != Some((
                     Some(agent_id.as_str()),
                     Some(agent_name.as_str()),
                     accent,
                     auto_mode,
+                    auto_trigger,
                     memory.as_str(),
                     journal.len(),
                 ));
@@ -6805,6 +6836,7 @@ impl ChatWidget<'_> {
                         agent_name: Some(agent_name.clone()),
                         agent_accent: accent,
                         auto_mode,
+                        auto_trigger,
                         memory: memory.clone(),
                         journal: journal.clone(),
                         threads: threads.clone(),
@@ -6825,6 +6857,7 @@ impl ChatWidget<'_> {
             agent_name,
             agent_accent: accent,
             auto_mode,
+            auto_trigger,
             memory,
             journal: journal_deque,
             threads,
@@ -6845,6 +6878,7 @@ impl ChatWidget<'_> {
                 agent_name: Some(self.weave_agent_name.clone()),
                 agent_accent: self.weave_agent_accent,
                 auto_mode: self.weave_auto_mode,
+                auto_trigger: self.weave_auto_trigger,
                 memory: self.weave_persona_memory.clone(),
                 journal: self.weave_persona_journal.iter().cloned().collect(),
                 threads: self.weave_thread_prefs.clone(),
@@ -7004,6 +7038,7 @@ impl ChatWidget<'_> {
             agent_name: weave_agent_name,
             agent_accent: weave_agent_accent,
             auto_mode: weave_auto_mode,
+            auto_trigger: weave_auto_trigger,
             memory: weave_persona_memory,
             journal: weave_persona_journal,
             threads: weave_thread_prefs,
@@ -7075,6 +7110,7 @@ impl ChatWidget<'_> {
             weave_agent_name,
             weave_agent_accent,
             weave_auto_mode,
+            weave_auto_trigger,
             weave_persona_memory,
             weave_persona_journal,
             weave_thread_prefs,
@@ -7375,6 +7411,7 @@ impl ChatWidget<'_> {
             agent_name: weave_agent_name,
             agent_accent: weave_agent_accent,
             auto_mode: weave_auto_mode,
+            auto_trigger: weave_auto_trigger,
             memory: weave_persona_memory,
             journal: weave_persona_journal,
             threads: weave_thread_prefs,
@@ -7473,6 +7510,7 @@ impl ChatWidget<'_> {
             weave_agent_name,
             weave_agent_accent,
             weave_auto_mode,
+            weave_auto_trigger,
             weave_persona_memory,
             weave_persona_journal,
             weave_thread_prefs,
@@ -36718,21 +36756,55 @@ impl ChatWidget<'_> {
                 if rest.is_empty() {
                     self.app_event_tx.send(AppEvent::OpenWeaveAutoModeMenu);
                 } else {
-                    let mode = match rest.to_ascii_lowercase().as_str() {
-                        "off" => Some(WeaveAutoMode::Off),
-                        "reply" | "on" => Some(WeaveAutoMode::Reply),
-                        "work" => Some(WeaveAutoMode::Work),
-                        _ => None,
-                    };
-                    if let Some(mode) = mode {
-                        self.set_weave_auto_mode(mode);
+                    let mut auto_parts = rest.splitn(2, |c: char| c.is_whitespace());
+                    let auto_token = auto_parts.next().unwrap_or("").trim();
+                    let auto_rest = auto_parts.next().unwrap_or("").trim();
+
+                    if matches!(
+                        auto_token.to_ascii_lowercase().as_str(),
+                        "trigger" | "triggers"
+                    ) {
+                        if auto_rest.is_empty() {
+                            self.app_event_tx.send(AppEvent::OpenWeaveAutoTriggerMenu);
+                        } else {
+                            let trigger = match auto_rest.to_ascii_lowercase().as_str() {
+                                "user" | "user-only" | "user_only" => Some(WeaveAutoTrigger::UserOnly),
+                                "direct" | "dm" | "dms" | "direct-messages" | "direct_messages" => {
+                                    Some(WeaveAutoTrigger::Direct)
+                                }
+                                "all" | "room" | "rooms" => Some(WeaveAutoTrigger::All),
+                                _ => None,
+                            };
+                            if let Some(trigger) = trigger {
+                                self.set_weave_auto_trigger(trigger);
+                            } else {
+                                self.history_push_plain_state(crate::history_cell::new_error_event(
+                                    "Unknown /weave auto triggers. Use: user | direct | all."
+                                        .to_string(),
+                                ));
+                                self.request_redraw();
+                            }
+                        }
                     } else {
-                        self.history_push_plain_state(crate::history_cell::new_error_event(
-                            "Unknown /weave auto mode. Use: off | reply | work.".to_string(),
-                        ));
-                        self.request_redraw();
+                        let mode = match auto_token.to_ascii_lowercase().as_str() {
+                            "off" => Some(WeaveAutoMode::Off),
+                            "reply" | "on" => Some(WeaveAutoMode::Reply),
+                            "work" => Some(WeaveAutoMode::Work),
+                            _ => None,
+                        };
+                        if let Some(mode) = mode {
+                            self.set_weave_auto_mode(mode);
+                        } else {
+                            self.history_push_plain_state(crate::history_cell::new_error_event(
+                                "Unknown /weave auto mode. Use: off | reply | work.".to_string(),
+                            ));
+                            self.request_redraw();
+                        }
                     }
                 }
+            }
+            "triggers" => {
+                self.app_event_tx.send(AppEvent::OpenWeaveAutoTriggerMenu);
             }
             "persona" | "personas" => {
                 self.app_event_tx.send(AppEvent::OpenWeavePersonaBuilderMenu);
@@ -36800,6 +36872,7 @@ impl ChatWidget<'_> {
                         "/weave profile <name>".to_string(),
                         "/weave name <name>".to_string(),
                         "/weave auto off|reply|work".to_string(),
+                        "/weave auto triggers user|direct|all".to_string(),
                         "/weave persona".to_string(),
                         "/weave memory".to_string(),
                         "/weave memory clear".to_string(),
@@ -37743,6 +37816,15 @@ impl ChatWidget<'_> {
                 tx.send(AppEvent::OpenWeaveAutoModeMenu);
             })],
         });
+        let trigger_label = self.current_weave_auto_trigger_label();
+        items.push(SelectionItem {
+            name: "Auto triggers".to_string(),
+            description: Some(format!("Current: {}", trigger_label)),
+            is_current: false,
+            actions: vec![Box::new(|tx: &crate::app_event_sender::AppEventSender| {
+                tx.send(AppEvent::OpenWeaveAutoTriggerMenu);
+            })],
+        });
         items.push(SelectionItem {
             name: "Inbox".to_string(),
             description: Some("Pick a room or DM thread (this session)".to_string()),
@@ -38069,6 +38151,14 @@ impl ChatWidget<'_> {
         }
     }
 
+    fn current_weave_auto_trigger_label(&self) -> &'static str {
+        match self.weave_auto_trigger {
+            WeaveAutoTrigger::UserOnly => "user only",
+            WeaveAutoTrigger::Direct => "direct (user+reply)",
+            WeaveAutoTrigger::All => "all (including room)",
+        }
+    }
+
     pub(crate) fn open_weave_auto_mode_menu(&mut self) {
         let current = self.current_weave_auto_mode_label();
         let mut items: Vec<SelectionItem> = Vec::new();
@@ -38144,6 +38234,75 @@ impl ChatWidget<'_> {
         let label = self.current_weave_auto_mode_label();
         self.bottom_pane
             .flash_footer_notice(format!("Weave auto mode set to {label}"));
+        self.request_redraw();
+
+        if self.weave_auto_mode != WeaveAutoMode::Off {
+            self.maybe_dispatch_weave_autorun();
+        }
+    }
+
+    pub(crate) fn open_weave_auto_trigger_menu(&mut self) {
+        let current = self.current_weave_auto_trigger_label();
+        let mut items: Vec<SelectionItem> = Vec::new();
+
+        for (trigger, label, description) in [
+            (
+                WeaveAutoTrigger::UserOnly,
+                "User only",
+                "Trigger auto mode only for user messages (default; avoids bot loops).",
+            ),
+            (
+                WeaveAutoTrigger::Direct,
+                "Direct (user + reply)",
+                "Also trigger on reply messages (can create loops if multiple agents are in auto).",
+            ),
+            (
+                WeaveAutoTrigger::All,
+                "All (including room)",
+                "Also trigger on room messages (experimental; can be noisy).",
+            ),
+        ] {
+            let is_current = self.weave_auto_trigger == trigger;
+            let name = if is_current {
+                format!("✓ {label}")
+            } else {
+                label.to_string()
+            };
+            items.push(SelectionItem {
+                name,
+                description: Some(description.to_string()),
+                is_current,
+                actions: vec![Box::new(move |tx: &crate::app_event_sender::AppEventSender| {
+                    tx.send(AppEvent::SetWeaveAutoTrigger { trigger });
+                })],
+            });
+        }
+
+        let subtitle = format!("Current: {current}");
+        let view = ListSelectionView::new(
+            " Weave auto triggers ".to_string(),
+            Some(subtitle),
+            Some("Enter select · Esc cancel".to_string()),
+            items,
+            self.app_event_tx.clone(),
+            10,
+        );
+
+        self.bottom_pane
+            .show_list_selection("Weave auto triggers".to_string(), None, None, view);
+    }
+
+    pub(crate) fn set_weave_auto_trigger(&mut self, trigger: WeaveAutoTrigger) {
+        if self.weave_auto_trigger == trigger {
+            return;
+        }
+
+        self.weave_auto_trigger = trigger;
+        self.persist_weave_identity();
+        self.bottom_pane.flash_footer_notice(format!(
+            "Weave auto triggers set to {}",
+            self.current_weave_auto_trigger_label()
+        ));
         self.request_redraw();
 
         if self.weave_auto_mode != WeaveAutoMode::Off {
@@ -38280,6 +38439,7 @@ impl ChatWidget<'_> {
             agent_name,
             agent_accent,
             auto_mode,
+            auto_trigger,
             memory,
             journal,
             threads,
@@ -38289,6 +38449,7 @@ impl ChatWidget<'_> {
         self.weave_agent_name = agent_name;
         self.weave_agent_accent = agent_accent;
         self.weave_auto_mode = auto_mode;
+        self.weave_auto_trigger = auto_trigger;
         self.weave_persona_memory = memory;
         self.weave_persona_journal = journal;
         self.weave_thread_prefs = threads;
@@ -39494,12 +39655,7 @@ impl ChatWidget<'_> {
             tokio::spawn(async move {
                 for agent in recipients {
                     if let Err(err) = sender
-                        .send_room_message_with_metadata(
-                            agent.id,
-                            message_text.clone(),
-                            None,
-                            Some(message_id.clone()),
-                        )
+                        .send_room_message_with_metadata(agent.id, message_text.clone(), None, None)
                         .await
                     {
                         tx.send(AppEvent::WeaveError {
@@ -39772,24 +39928,27 @@ impl ChatWidget<'_> {
         let Some(connection) = self.weave_agent_connection.as_ref() else {
             return;
         };
-        if kind == crate::weave_client::WeaveMessageKind::Room {
-            return;
+        if kind != crate::weave_client::WeaveMessageKind::Room {
+            let sender = connection.sender();
+            let dst = src.clone();
+            let delivered = format!("{WEAVE_CONTROL_PREFIX}delivered {message_id}");
+            let seen = format!("{WEAVE_CONTROL_PREFIX}seen {message_id}");
+            tokio::spawn(async move {
+                let _ = sender
+                    .send_message_with_metadata(dst.clone(), delivered, None, None)
+                    .await;
+                tokio::time::sleep(Duration::from_millis(650)).await;
+                let _ = sender.send_message_with_metadata(dst, seen, None, None).await;
+            });
         }
-        let sender = connection.sender();
-        let dst = src.clone();
-        let delivered = format!("{WEAVE_CONTROL_PREFIX}delivered {message_id}");
-        let seen = format!("{WEAVE_CONTROL_PREFIX}seen {message_id}");
-        tokio::spawn(async move {
-            let _ = sender
-                .send_message_with_metadata(dst.clone(), delivered, None, None)
-                .await;
-            tokio::time::sleep(Duration::from_millis(650)).await;
-            let _ = sender.send_message_with_metadata(dst, seen, None, None).await;
-        });
 
-        if is_new_message
-            && kind == crate::weave_client::WeaveMessageKind::User
-            && self.weave_auto_mode != WeaveAutoMode::Off
+        let should_autorun = match self.weave_auto_trigger {
+            WeaveAutoTrigger::UserOnly => kind == crate::weave_client::WeaveMessageKind::User,
+            WeaveAutoTrigger::Direct => kind != crate::weave_client::WeaveMessageKind::Room,
+            WeaveAutoTrigger::All => true,
+        };
+
+        if is_new_message && should_autorun && self.weave_auto_mode != WeaveAutoMode::Off
         {
             self.weave_autorun_queue.push_back(WeaveAutoRunRequest {
                 src_id: src_id_for_autorun,

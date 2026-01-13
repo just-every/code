@@ -155,6 +155,9 @@ qwen --version
 /weave auto reply
 /weave auto work
 
+# Control what triggers auto mode (default is user-only)
+/weave auto triggers user|direct|all
+
 # Persona presets + editor (per profile)
 /weave persona
 ```

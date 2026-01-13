@@ -107,6 +107,14 @@ Enable auto mode in Bob’s terminal:
 - `/weave auto work` — auto-respond and work on tasks (may request approvals).
 - `/weave auto off` — disable.
 
+By default, auto mode triggers only on “user” DMs (not on reply messages), which avoids accidental bot loops.
+
+To change what triggers auto mode:
+
+- `/weave auto triggers user` — user messages only (default)
+- `/weave auto triggers direct` — user + reply messages
+- `/weave auto triggers all` — user + reply + room messages (experimental)
+
 When auto mode is enabled, incoming Weave DMs are queued and processed when the terminal is idle.
 
 When a peer is in auto mode and responding, you may see a small activity indicator in your status line (e.g. `bob:replying…`) for the active DM thread.
