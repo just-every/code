@@ -525,18 +525,21 @@ mod tests {
         ];
         for test_case in test_cases {
             let model_family = find_family_for_model(test_case.slug).expect("known model slug");
-            let expected = if test_case.expects_apply_patch_instructions {
-                format!(
-                    "{}\n{}",
-                    model_family.clone().base_instructions,
-                    APPLY_PATCH_TOOL_INSTRUCTIONS
-                )
-            } else {
-                model_family.clone().base_instructions
-            };
-
             let full = prompt.get_full_instructions(&model_family);
-            assert_eq!(full, expected);
+            assert_eq!(full, model_family.base_instructions);
+            if test_case.expects_apply_patch_instructions {
+                assert!(
+                    full.contains(APPLY_PATCH_TOOL_INSTRUCTIONS),
+                    "expected apply_patch instructions for {}",
+                    test_case.slug
+                );
+            } else {
+                assert!(
+                    !full.contains(APPLY_PATCH_TOOL_INSTRUCTIONS),
+                    "did not expect apply_patch instructions for {}",
+                    test_case.slug
+                );
+            }
         }
     }
 
