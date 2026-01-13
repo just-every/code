@@ -29488,6 +29488,40 @@ use code_core::protocol::OrderMeta;
     }
 
     #[test]
+    fn terminal_auto_review_without_worktree_state_does_not_surface_blank_path() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.config.tui.auto_review_enabled = true;
+        chat.background_review = None;
+
+        let agent = code_core::protocol::AgentInfo {
+            id: "agent-blank".to_string(),
+            name: "Auto Review".to_string(),
+            status: "failed".to_string(),
+            batch_id: None,
+            model: Some("code-review".to_string()),
+            last_progress: None,
+            result: None,
+            error: Some("fatal: not a git repository".to_string()),
+            elapsed_ms: None,
+            token_count: None,
+            last_activity_at: None,
+            seconds_since_last_activity: None,
+            source_kind: Some(AgentSourceKind::AutoReview),
+        };
+
+        chat.observe_auto_review_status(&[agent]);
+
+        let blank_path_message = chat
+            .pending_dispatched_user_messages
+            .iter()
+            .any(|msg| msg.contains("Worktree path: \n") || msg.contains("Worktree path: \r\n"));
+        assert!(!blank_path_message, "should not emit auto-review message with blank worktree path");
+        assert!(chat.processed_auto_review_agents.contains("agent-blank"));
+    }
+
+    #[test]
     fn skipped_auto_review_with_findings_defers_to_next_turn() {
         let _rt = enter_test_runtime_guard();
         let mut harness = ChatWidgetHarness::new();
@@ -33641,14 +33675,30 @@ impl ChatWidget<'_> {
                     state.snapshot.clone(),
                 )
             } else {
-                let branch = agent.batch_id.clone().unwrap_or_default();
-                let worktree_path = resolve_auto_review_worktree_path(&self.config.cwd, &branch)
-                    .unwrap_or_default();
+                let Some(branch) = agent
+                    .batch_id
+                    .clone()
+                    .filter(|value| !value.trim().is_empty())
+                else {
+                    // We sometimes observe the same terminal auto-review agent multiple
+                    // times (especially after cancellation/resend). If the background
+                    // review state is already cleared and we cannot resolve the worktree,
+                    // do not surface a misleading blank-path error.
+                    self.processed_auto_review_agents.insert(agent.id.clone());
+                    continue;
+                };
+                let Some(worktree_path) =
+                    resolve_auto_review_worktree_path(&self.config.cwd, &branch)
+                else {
+                    self.processed_auto_review_agents.insert(agent.id.clone());
+                    continue;
+                };
                 (worktree_path, branch, None)
             };
 
             let (has_findings, findings, summary) = Self::parse_agent_review_result(agent.result.as_deref());
 
+            self.processed_auto_review_agents.insert(agent.id.clone());
             self.on_background_review_finished(
                 worktree_path,
                 branch,
@@ -33659,7 +33709,6 @@ impl ChatWidget<'_> {
                 Some(agent.id.clone()),
                 snapshot,
             );
-            self.processed_auto_review_agents.insert(agent.id.clone());
         }
     }
 
