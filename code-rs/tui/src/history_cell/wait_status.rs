@@ -104,6 +104,7 @@ fn color_for_tone(tone: TextTone, theme: &Theme) -> ratatui::style::Color {
         TextTone::Warning => theme.warning,
         TextTone::Error => theme.error,
         TextTone::Info => theme.info,
+        TextTone::Accent(index) => super::text::color_for_tone(TextTone::Accent(index), theme),
     }
 }
 

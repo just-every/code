@@ -70,7 +70,23 @@ pub(crate) fn color_for_tone(tone: TextTone, theme: &Theme) -> Color {
         TextTone::Warning => theme.warning,
         TextTone::Error => theme.error,
         TextTone::Info => theme.info,
+        TextTone::Accent(index) => accent_color(index, theme),
     }
+}
+
+fn accent_color(index: u8, theme: &Theme) -> Color {
+    let palette = [
+        theme.primary,
+        theme.secondary,
+        theme.info,
+        theme.success,
+        theme.warning,
+        theme.keyword,
+        theme.string,
+        theme.function,
+    ];
+    let idx = (index as usize) % palette.len();
+    palette[idx]
 }
 
 fn message_line_from_ratatui_line(line: Line<'static>, theme: &Theme) -> MessageLine {

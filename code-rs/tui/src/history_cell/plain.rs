@@ -275,6 +275,9 @@ impl HistoryCell for PlainHistoryCell {
             if label == "auto review" {
                 return Some("•");
             }
+            if label == "weave" {
+                return Some("⇄");
+            }
         }
         super::gutter_symbol_for_kind(self.kind())
     }

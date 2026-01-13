@@ -198,5 +198,6 @@ fn color_for_tone(tone: TextTone) -> Color {
         TextTone::Warning => crate::colors::warning(),
         TextTone::Error => crate::colors::error(),
         TextTone::Info => crate::colors::info(),
+        TextTone::Accent(index) => super::text::color_for_tone(TextTone::Accent(index), &crate::theme::current_theme()),
     }
 }

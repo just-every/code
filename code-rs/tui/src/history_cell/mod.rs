@@ -29,6 +29,7 @@ mod tool_factory;
 mod upgrade;
 mod wait_status;
 mod web_search;
+mod weave;
 
 pub(crate) use assistant::{
     assistant_markdown_lines,
@@ -146,6 +147,7 @@ pub(crate) use wait_status::{new_completed_wait_tool_call, WaitStatusCell};
 pub(crate) use auto_drive::{AutoDriveActionKind, AutoDriveCardCell, AutoDriveStatus};
 pub(crate) use browser::BrowserSessionCell;
 pub(crate) use web_search::{WebSearchSessionCell, WebSearchStatus};
+pub(crate) use weave::{new_weave_inbound, new_weave_outbound};
 pub(crate) use agent::{AgentDetail, AgentRunCell, AgentStatusKind, AgentStatusPreview, StepProgress};
 pub(crate) use crate::history::state::ExploreEntryStatus;
 pub(crate) use crate::insert_history::word_wrap_lines;

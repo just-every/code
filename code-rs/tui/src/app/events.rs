@@ -1114,6 +1114,11 @@ impl App<'_> {
                                 widget.insert_str("@");
                             }
                         }
+                        SlashCommand::Weave => {
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                widget.handle_weave_command(command_args);
+                            }
+                        }
                         SlashCommand::Cmd => {
                             if let AppState::Chat { widget } = &mut self.app_state {
                                 widget.handle_project_command(command_args);
@@ -1799,6 +1804,72 @@ impl App<'_> {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.add_diff_output(text);
                     }
+                }
+                AppEvent::OpenWeaveSessionMenu { sessions } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.open_weave_session_menu(sessions);
+                    }
+                }
+                AppEvent::OpenWeaveAgentNamePrompt => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.open_weave_agent_name_prompt();
+                    }
+                }
+                AppEvent::OpenWeaveSessionCreatePrompt => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.open_weave_session_create_prompt();
+                    }
+                }
+                AppEvent::OpenWeaveSessionCloseMenu { sessions } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.open_weave_session_close_menu(sessions);
+                    }
+                }
+                AppEvent::SetWeaveAgentName { name } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.set_weave_agent_name(name);
+                    }
+                }
+                AppEvent::SetWeaveSessionSelection { session } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.set_weave_session_selection(session);
+                    }
+                }
+                AppEvent::CreateWeaveSession { name } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.create_weave_session(name);
+                    }
+                }
+                AppEvent::CloseWeaveSession { session_id } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.close_weave_session(session_id);
+                    }
+                }
+                AppEvent::WeaveAgentConnected { session_id, connection } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.on_weave_agent_connected(session_id, connection);
+                    }
+                }
+                AppEvent::WeaveAgentDisconnected { session_id } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.on_weave_agent_disconnected(&session_id);
+                    }
+                }
+                AppEvent::WeaveAgentsListed { session_id, agents } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.apply_weave_agent_list(session_id, agents);
+                    }
+                }
+                AppEvent::WeaveMessageReceived { message } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.on_weave_message_received(message);
+                    }
+                }
+                AppEvent::WeaveError { message } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.history_push_plain_state(crate::history_cell::new_error_event(message));
+                    }
+                    self.schedule_redraw();
                 }
                 AppEvent::UpdateTheme(new_theme) => {
                     // Switch the theme immediately

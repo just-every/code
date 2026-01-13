@@ -89,6 +89,8 @@ mod model_migration;
 mod session_log;
 mod shimmer;
 mod slash_command;
+mod weave;
+mod weave_client;
 mod rate_limits_view;
 pub mod resume;
 mod streaming;

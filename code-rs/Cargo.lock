@@ -1542,6 +1542,7 @@ dependencies = [
  "color-eyre",
  "crossterm",
  "diffy",
+ "dirs",
  "filetime",
  "fs2",
  "futures",

@@ -421,6 +421,7 @@ pub enum TextTone {
     Warning,
     Error,
     Info,
+    Accent(u8),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

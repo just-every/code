@@ -41,6 +41,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::Sender as StdSender;
 use crate::cloud_tasks_service::CloudEnvironment;
 use crate::resume::discovery::ResumeCandidate;
+use crate::weave_client::{WeaveAgent, WeaveAgentConnection, WeaveIncomingMessage, WeaveSession};
 
 /// Wrapper to allow including non-Debug types in Debug enums without leaking internals.
 pub(crate) struct Redacted<T>(pub T);
@@ -231,6 +232,35 @@ pub(crate) enum AppEvent {
     /// Dispatch a recognized slash command from the UI (composer) to the app
     /// layer so it can be handled centrally. Includes the full command text.
     DispatchCommand(SlashCommand, String),
+
+    // --- Weave ---
+
+    /// Open the Weave menu with a freshly fetched session list.
+    OpenWeaveSessionMenu { sessions: Vec<WeaveSession> },
+    /// Open a prompt to rename this agent.
+    OpenWeaveAgentNamePrompt,
+    /// Open a prompt to create a new session.
+    OpenWeaveSessionCreatePrompt,
+    /// Open the session close menu with a freshly fetched session list.
+    OpenWeaveSessionCloseMenu { sessions: Vec<WeaveSession> },
+    /// Set (and optionally broadcast) this agent's Weave display name.
+    SetWeaveAgentName { name: String },
+    /// Join/leave a session selection from the Weave menu.
+    SetWeaveSessionSelection { session: Option<WeaveSession> },
+    /// Create a session and then refresh the menu.
+    CreateWeaveSession { name: Option<String> },
+    /// Close a session and then refresh the menu.
+    CloseWeaveSession { session_id: String },
+    /// Weave agent successfully connected to the selected session.
+    WeaveAgentConnected { session_id: String, connection: WeaveAgentConnection },
+    /// Weave agent connection ended (socket closed or dropped).
+    WeaveAgentDisconnected { session_id: String },
+    /// Apply a fresh agent list for the selected session.
+    WeaveAgentsListed { session_id: String, agents: Vec<WeaveAgent> },
+    /// Incoming direct message from Weave.
+    WeaveMessageReceived { message: WeaveIncomingMessage },
+    /// Surface a user-visible Weave error in the transcript.
+    WeaveError { message: String },
 
     /// Restore workspace state according to the chosen undo scope.
     PerformUndoRestore {

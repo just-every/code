@@ -60,6 +60,7 @@ pub enum SlashCommand {
     Cloud,
     Diff,
     Mention,
+    Weave,
     Cmd,
     Status,
     Limits,
@@ -115,6 +116,7 @@ impl SlashCommand {
             SlashCommand::Quit => "exit Code",
             SlashCommand::Diff => "show git diff (including untracked files)",
             SlashCommand::Mention => "mention a file",
+            SlashCommand::Weave => "manage Weave sessions and agent identity",
             SlashCommand::Cmd => "run a project command",
             SlashCommand::Status => "show current session configuration and token usage",
             SlashCommand::Limits => "adjust session limits",
@@ -329,6 +331,17 @@ mod tests {
         match process_slash_command_message(msg) {
             ProcessedCommand::RegularCommand(SlashCommand::Auto, command_text) => {
                 assert!(command_text.contains("inspect the failing build"));
+            }
+            other => panic!("expected RegularCommand, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn weave_command_is_regular_command() {
+        match process_slash_command_message("/weave") {
+            ProcessedCommand::RegularCommand(cmd, command_text) => {
+                assert_eq!(cmd.command(), "weave");
+                assert_eq!(command_text, "/weave");
             }
             other => panic!("expected RegularCommand, got {:?}", other),
         }
