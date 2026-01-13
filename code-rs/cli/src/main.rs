@@ -416,6 +416,25 @@ async fn cli_main(code_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()>
     interactive.finalize_defaults();
     interactive.demo_developer_message = demo_developer_message.clone();
 
+    // The TUI already runs housekeeping. For headless `exec` sessions, kick off
+    // housekeeping early so stale worktrees/branches don't accumulate.
+    let housekeeping_handle = match &subcommand {
+        Some(Subcommand::Exec(_)) | Some(Subcommand::Auto(_)) => {
+            match code_core::config::find_code_home() {
+                Ok(code_home) => Some(std::thread::spawn(move || {
+                    if let Err(err) = code_core::run_housekeeping_if_due(&code_home) {
+                        tracing::warn!("code home housekeeping failed: {err}");
+                    }
+                })),
+                Err(err) => {
+                    tracing::warn!("failed to resolve code home for housekeeping: {err}");
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+
     match subcommand {
         None => {
             prepend_config_flags(
@@ -610,6 +629,10 @@ async fn cli_main(code_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()>
             );
             run_llm(llm_cli).await?;
         }
+    }
+
+    if let Some(handle) = housekeeping_handle {
+        let _ = handle.join();
     }
 
     Ok(())

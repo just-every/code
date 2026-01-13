@@ -306,6 +306,9 @@ fn cleanup_worktrees(
                 continue;
             }
 
+            let branch_name = branch_entry.file_name().to_string_lossy().to_string();
+            let repo_root = detect_repo_root(&branch_path);
+
             let canonical = canonicalize_or_original(&branch_path);
             if active.contains(&canonical) || active.contains(&branch_path) {
                 stats.skipped_active += 1;
@@ -352,6 +355,13 @@ fn cleanup_worktrees(
                 Ok(()) => {
                     git_worktree::remove_branch_metadata(&branch_path);
                     purge_session_registry(&working_root.join("_session"), &branch_path);
+
+                    if let Some(repo_root) = repo_root.as_deref() {
+                        if should_prune_worktree_branch(&branch_name) {
+                            run_git_branch_delete_if_merged(repo_root, &branch_name);
+                        }
+                    }
+
                     stats.removed_worktrees += 1;
                     stats.removed_files += dir_stats.files;
                     stats.reclaimed_bytes += dir_stats.bytes;
@@ -372,6 +382,42 @@ fn cleanup_worktrees(
     }
 
     Ok(Some(stats))
+}
+
+fn should_prune_worktree_branch(branch_name: &str) -> bool {
+    if branch_name == "main" || branch_name == "master" {
+        return false;
+    }
+
+    branch_name.starts_with("code-") || branch_name == "auto-review"
+}
+
+fn run_git_branch_delete_if_merged(repo_root: &Path, branch_name: &str) {
+    if !repo_root.exists() {
+        return;
+    }
+
+    let output = std::process::Command::new("git")
+        .current_dir(repo_root)
+        .args(["branch", "-d", branch_name])
+        .output();
+
+    match output {
+        Ok(result) => {
+            if !result.status.success() {
+                let stderr = String::from_utf8_lossy(&result.stderr);
+                debug!(
+                    "git branch -d reported error for {:?} in {:?}: {}",
+                    branch_name,
+                    repo_root,
+                    stderr.trim()
+                );
+            }
+        }
+        Err(err) => {
+            debug!("git branch -d failed for {:?} in {:?}: {err}", branch_name, repo_root);
+        }
+    }
 }
 
 fn run_git_worktree_remove(worktree_path: &Path) {
@@ -755,6 +801,7 @@ fn matches_ignore_case(value: &str, options: &[&str]) -> bool {
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::Path;
     use tempfile::TempDir;
     use time::macros::datetime;
 
@@ -835,6 +882,73 @@ mod tests {
         assert_eq!(outcome.worktrees_removed, 0);
         assert_eq!(outcome.worktrees_skipped_active, 1);
         assert!(worktree_path.exists());
+    }
+
+    #[test]
+    fn prunes_merged_code_branches_after_worktree_removal() {
+        let temp = TempDir::new().unwrap();
+        let code_home = temp.path();
+
+        let repo_dir = temp.path().join("repo");
+        fs::create_dir_all(&repo_dir).unwrap();
+
+        run_git(&repo_dir, ["init"]).unwrap();
+        fs::write(repo_dir.join("README.md"), b"hello").unwrap();
+        run_git(&repo_dir, ["add", "."]).unwrap();
+        run_git(
+            &repo_dir,
+            [
+                "-c",
+                "user.name=code",
+                "-c",
+                "user.email=code@example.com",
+                "commit",
+                "-m",
+                "init",
+            ],
+        )
+        .unwrap();
+
+        let worktree_path = code_home.join("working/repo/branches/code-branch-test");
+        fs::create_dir_all(worktree_path.parent().unwrap()).unwrap();
+        run_git(&repo_dir, ["worktree", "add", "-b", "code-branch-test", worktree_path.to_str().unwrap()])
+            .unwrap();
+
+        assert!(branch_exists(&repo_dir, "code-branch-test"));
+
+        let config = HousekeepingConfig {
+            session_retention_days: None,
+            worktree_retention_days: Some(0),
+            min_interval_hours: 1,
+            disabled: false,
+        };
+
+        let now = datetime!(2025-10-10 12:00:00 UTC);
+        let outcome = perform_housekeeping(code_home, now, &config).unwrap();
+
+        assert_eq!(outcome.worktrees_removed, 1);
+        assert!(!worktree_path.exists());
+        assert!(!branch_exists(&repo_dir, "code-branch-test"));
+    }
+
+    fn run_git(repo_root: &Path, args: impl IntoIterator<Item = impl AsRef<std::ffi::OsStr>>) -> io::Result<()> {
+        let output = std::process::Command::new("git")
+            .current_dir(repo_root)
+            .args(args)
+            .output()?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(io::Error::other(String::from_utf8_lossy(&output.stderr).trim().to_string()))
+        }
+    }
+
+    fn branch_exists(repo_root: &Path, branch_name: &str) -> bool {
+        let output = std::process::Command::new("git")
+            .current_dir(repo_root)
+            .args(["show-ref", "--verify", "--quiet", &format!("refs/heads/{branch_name}")])
+            .status();
+        output.map(|status| status.success()).unwrap_or(false)
     }
 
     #[cfg(target_os = "linux")]
