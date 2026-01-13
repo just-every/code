@@ -133,6 +133,17 @@ qwen --version
 /code "Show dark mode when I feel cranky"
 ```
 
+### Weave (local messaging)
+```bash
+# Open the Weave menu (sessions, name/profile, colors)
+/weave
+
+# DM another agent in the current session
+#bob Hello from Alice
+```
+
+See `docs/weave.md` for setup and testing.
+
 ### Auto Drive
 ```bash
 # Hand off a multi-step task; Auto Drive will coordinate agents and approvals

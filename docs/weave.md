@@ -1,87 +1,64 @@
-# Weave collaboration
+# Weave (local multi-terminal messaging)
 
-Weave lets multiple Code instances (separate terminals) coordinate by joining a shared session and sending agent-to-agent messages over a local Weave coordinator.
+This branch adds a simple Weave client to the TUI so multiple `code` instances can DM each other (and share the same session as a “room”) on your local machine.
 
-## Requirements
+## Prereqs
 
-- **macOS/Linux only** (uses a Unix domain socket).
-- A **Weave coordinator** running locally.
-  - Default socket: `~/.weave/coord.sock`
-  - Override: set `WEAVE_HOME=/path/to/dir` (both the coordinator and Code must use the same value).
+- `weave-service` installed and running.
+- `WEAVE_HOME` (optional). Defaults to `~/.weave`.
 
-Notes
+Quick sanity check:
 
-- When copying commands from docs/chat, do **not** include the surrounding Markdown backticks (`). In your shell, backticks mean “command substitution” and will break the commands.
-- Avoid `sudo` for Weave; it can create sockets owned by `root` and prevent Code from connecting.
+```bash
+ls -l ~/.weave/coord.sock
+```
 
-## Quickstart (local test)
+## Run (two terminals)
 
-1. Start the Weave coordinator (separate terminal):
+Terminal A:
 
-   - macOS: `weave-service start`
-   - Stop later with: `weave-service stop`
+```bash
+cd ~/dev/code
+./build-fast.sh run
+```
 
-   If `weave-service` is not installed, you can install it via:
-   - `npm install -g @rosem_soo/weave`
+Terminal B (same):
 
-   Verify the socket exists:
-   - `ls ~/.weave/coord.sock`
+```bash
+cd ~/dev/code
+./build-fast.sh run
+```
 
-2. Start **two** Code instances (two terminals):
+## Connect
 
-   In each terminal:
-   - `cd /path/to/your/code/repo`
-   - `./build-fast.sh run`
+In each terminal:
 
-   Optional (recommended): set a stable Weave profile name per terminal before starting Code:
-   - `export CODE_WEAVE_PROFILE=alice` (in one terminal)
-   - `export CODE_WEAVE_PROFILE=bob` (in the other terminal)
-   - Use a different value per Code instance; sharing a profile makes both terminals act as the same agent.
+- Type `/weave` to open the Weave menu.
+- Pick an existing session (or “Create new session”).
+- Optionally set:
+  - “Set agent name”
+  - “Switch profile” (a second identity)
+  - “Set agent color”
 
-3. In each Code instance, connect to the same Weave session:
+Sessions are treated as “rooms”. For “breakouts”, create/join additional sessions (e.g. `main/design`).
 
-   - Type `/weave` to open the Weave menu.
-   - Pick **Set agent name** (use a single token like `alice` / `bob`).
-     - If the name is already taken in the session, Code auto-suffixes it (e.g. `alice-2`) and shows a notice.
-   - In the first terminal, pick **Create new session**.
-   - In the second terminal, pick the session from the list to join it.
+## DMs (`#mention`)
 
-4. Send a Weave message using `#mentions`:
+Once both terminals are in the same session:
 
-   From `alice`, type a normal message containing a mention token:
+- In Alice’s terminal, type `#bob Good morning`.
+- Bob’s terminal should show an inbound chat message from Alice.
+- Type `#alice ...` in Bob to reply.
 
-   - `#bob Please take a look at this.`
+Autocomplete: type `#` to see mention candidates; use the normal selection/accept keys to insert.
 
-   Notes:
-   - Mentions must be **standalone, whitespace-separated tokens** (e.g. `#bob`).
-   - Mention matching is **case-insensitive** and ignores trailing punctuation (e.g. `#BoB,` works).
-   - Names with spaces are not mentionable; use single-token names.
-   - While typing `#...`, Code shows an autocomplete popup. Use `↑/↓` to select and `Tab`/`Enter` to insert.
+If `#bob ...` is treated like a normal prompt, Weave likely hasn’t loaded the agent list yet; wait a moment or run `/weave refresh`.
 
-5. Confirm it worked:
+## Delivery receipts
 
-   - The sender sees an outbound message with the `"weave"` header and a `⇄` gutter marker.
-   - The recipient sees an inbound message with the same `"weave"` header.
-   - The bottom-right footer shows `Weave: <agent> • <session> (connected)`.
-   - Agent names are colored consistently (based on agent id). You can also override via **Set agent color** in the `/weave` menu.
+For **single-recipient** DMs, outbound messages show a small status line:
 
-## `/weave` command reference
+- `Sending…` → `Sent` → `Delivered` → `Seen`
 
-- `/weave` (or `/weave menu`): open Weave session menu.
-- `/weave name <name>`: set your agent name.
-- `/weave create <session name>`: create + join a new session.
-- `/weave join <session id>`: join an existing session.
-- `/weave leave`: disconnect from the current session.
-- `/weave close <session id>`: close a session.
-- `/weave refresh`: refresh the agent list for mention routing.
-- `/weave help`: show quick help.
+Receipts are local-only control messages and are not shown in the transcript.
 
-## Troubleshooting
-
-- **“Weave coordinator socket not found …/coord.sock”**
-  - Start the coordinator and re-run `/weave`.
-  - Confirm `WEAVE_HOME` (if set) matches between coordinator and Code.
-- **My `#mention` went to the model instead of Weave**
-  - You are not connected to a session, or the mention didn’t match a known agent.
-  - Use `/weave` to confirm you’re connected, then try `/weave refresh` so autocomplete has the latest agent list.
-  - Mentions must be whitespace-separated tokens (e.g. `#bob` / `#bob,`), not embedded in other text.
