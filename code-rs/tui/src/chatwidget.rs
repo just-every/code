@@ -38126,50 +38126,9 @@ impl WidgetRef for &ChatWidget<'_> {
                 scroll_from_top = scroll_from_top.saturating_sub(overscan_extra);
             }
 
-            if clamped_scroll_offset == 0 && content_area.height == 1 {
-                let history_len = self.history_cells.len();
-                let last_kind = if request_count == 0 {
-                    None
-                } else if request_count - 1 < history_len {
-                    Some(self.history_cells[request_count - 1].kind())
-                } else {
-                    let mut extra_idx = (request_count - 1).saturating_sub(history_len);
-                    if let Some(ref cell) = self.active_exec_cell {
-                        if extra_idx == 0 {
-                            Some(cell.kind())
-                        } else {
-                            extra_idx = extra_idx.saturating_sub(1);
-                            if let Some(ref cell) = streaming_cell {
-                                if extra_idx == 0 {
-                                    Some(cell.kind())
-                                } else {
-                                    extra_idx = extra_idx.saturating_sub(1);
-                                    queued_preview_cells
-                                        .get(extra_idx)
-                                        .map(|cell| cell.kind())
-                                }
-                            } else {
-                                queued_preview_cells.get(extra_idx).map(|cell| cell.kind())
-                            }
-                        }
-                    } else if let Some(ref cell) = streaming_cell {
-                        if extra_idx == 0 {
-                            Some(cell.kind())
-                        } else {
-                            extra_idx = extra_idx.saturating_sub(1);
-                            queued_preview_cells.get(extra_idx).map(|cell| cell.kind())
-                        }
-                    } else {
-                        queued_preview_cells.get(extra_idx).map(|cell| cell.kind())
-                    }
-                };
-
-                if matches!(last_kind, Some(history_cell::HistoryCellType::Assistant)) {
-                    // Assistant cells have bottom padding; when the history viewport is only
-                    // one row tall (e.g., large composer), avoid landing on a blank padding row.
-                    scroll_from_top = scroll_from_top.saturating_sub(1);
-                }
-            }
+            // NOTE: when pinned to the bottom, we intentionally do not try to skip
+            // potential trailing padding rows inside cells. Doing so is brittle and
+            // can hide the last visible content line in very small viewports.
 
             tracing::debug!(
                 target: "code_tui::scrollback",
