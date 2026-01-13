@@ -80,6 +80,11 @@ Notes
 
 - `/mention`: mention a file (opens the file search for quick insertion).
 
+## Collaboration (Weave)
+
+- `/weave`: manage and join Weave sessions for multi-terminal agent messaging.
+  See [Weave collaboration](weave.md) for setup and mention routing details.
+
 ## Performance & Agents
 
 - `/perf (on|off|show|reset)`: performance tracing controls.

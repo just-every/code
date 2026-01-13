@@ -12,6 +12,7 @@ Use these docs to install, configure, and operate Every Code (Code).
 - [Executing commands](exec.md)
 - [Execution policy](execpolicy.md)
 - [Slash commands](slash-commands.md)
+- [Weave collaboration](weave.md)
 - [Auto Drive](auto-drive.md)
 - [Agents & Subagents](agents.md)
 - [Settings overlay](settings.md)
