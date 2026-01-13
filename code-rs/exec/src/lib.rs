@@ -78,6 +78,16 @@ use code_auto_drive_core::AutoResolvePhase;
 use code_auto_drive_core::AutoResolveState;
 use code_core::{entry_to_rollout_path, AutoDriveMode, AutoDrivePidFile, SessionCatalog, SessionQuery};
 use code_core::protocol::SandboxPolicy;
+
+fn build_auto_drive_exec_config(config: &Config) -> Config {
+	    let mut auto_config = config.clone();
+	    auto_config.model = config.auto_drive.model.trim().to_string();
+	    if auto_config.model.is_empty() {
+	        auto_config.model = MODEL_SLUG.to_string();
+	    }
+	    auto_config.model_reasoning_effort = config.auto_drive.model_reasoning_effort;
+	    auto_config
+}
 use code_core::git_info::current_branch_name;
 use code_core::timeboxed_exec_guidance::{
     AUTO_EXEC_TIMEBOXED_CLI_GUIDANCE,
@@ -507,7 +517,12 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
             .new_conversation(config.clone())
             .await?
     };
-    event_processor.print_config_summary(&config, &summary_prompt);
+    if auto_drive_goal.is_some() {
+        let summary_config = build_auto_drive_exec_config(&config);
+        event_processor.print_config_summary(&summary_config, &summary_prompt);
+    } else {
+        event_processor.print_config_summary(&config, &summary_prompt);
+    }
     info!("Codex initialized with event: {session_configured:?}");
 
     if let Some(goal) = auto_drive_goal {
@@ -1327,12 +1342,7 @@ async fn run_auto_drive_session(
     let mut auto_drive_pid_guard =
         AutoDrivePidFile::write(&config.code_home, Some(goal.as_str()), AutoDriveMode::Exec);
 
-    let mut auto_config = config.clone();
-    auto_config.model = config.auto_drive.model.trim().to_string();
-    if auto_config.model.is_empty() {
-        auto_config.model = MODEL_SLUG.to_string();
-    }
-    auto_config.model_reasoning_effort = config.auto_drive.model_reasoning_effort;
+	    let auto_config = build_auto_drive_exec_config(&config);
 
     let (auto_tx, mut auto_rx) = tokio::sync::mpsc::unbounded_channel();
     let sender = AutoCoordinatorEventSender::new(move |event| {
@@ -2885,6 +2895,23 @@ mod tests {
         )
         .unwrap()
     }
+
+	    #[test]
+	    fn auto_drive_exec_config_uses_auto_drive_reasoning_effort() {
+	        let temp = TempDir::new().unwrap();
+	        let mut config = test_config(temp.path());
+	        config.model_reasoning_effort = code_core::config_types::ReasoningEffort::Low;
+	        config.auto_drive.model = "gpt-5.2".to_string();
+	        config.auto_drive.model_reasoning_effort =
+	            code_core::config_types::ReasoningEffort::XHigh;
+
+	        let auto_config = build_auto_drive_exec_config(&config);
+	        assert_eq!(auto_config.model, "gpt-5.2");
+	        assert_eq!(
+	            auto_config.model_reasoning_effort,
+	            code_core::config_types::ReasoningEffort::XHigh
+	        );
+	    }
 
     fn write_rollout(
         code_home: &Path,
