@@ -37887,19 +37887,6 @@ impl WidgetRef for &ChatWidget<'_> {
                             .map(|rc| rc.is_collapsed())
                             .unwrap_or(false);
                         if this_collapsed {
-                            if let Some(j) = next_visible_idx {
-                                if let Some(next_cell) = cells[j].cell {
-                                    if matches!(
-                                        next_cell.kind(),
-                                        history_cell::HistoryCellType::Exec { .. }
-                                    ) {
-                                        should_add_spacing = false;
-                                    }
-                                }
-                            }
-                        }
-
-                        if this_collapsed {
                             let prev_collapsed = prev_visible_idx
                                 .and_then(|j| cells[j]
                                     .cell
@@ -38052,6 +38039,51 @@ impl WidgetRef for &ChatWidget<'_> {
 
             if overscan_extra > 0 && clamped_scroll_offset == 0 {
                 scroll_from_top = scroll_from_top.saturating_sub(overscan_extra);
+            }
+
+            if clamped_scroll_offset == 0 && content_area.height == 1 {
+                let history_len = self.history_cells.len();
+                let last_kind = if request_count == 0 {
+                    None
+                } else if request_count - 1 < history_len {
+                    Some(self.history_cells[request_count - 1].kind())
+                } else {
+                    let mut extra_idx = (request_count - 1).saturating_sub(history_len);
+                    if let Some(ref cell) = self.active_exec_cell {
+                        if extra_idx == 0 {
+                            Some(cell.kind())
+                        } else {
+                            extra_idx = extra_idx.saturating_sub(1);
+                            if let Some(ref cell) = streaming_cell {
+                                if extra_idx == 0 {
+                                    Some(cell.kind())
+                                } else {
+                                    extra_idx = extra_idx.saturating_sub(1);
+                                    queued_preview_cells
+                                        .get(extra_idx)
+                                        .map(|cell| cell.kind())
+                                }
+                            } else {
+                                queued_preview_cells.get(extra_idx).map(|cell| cell.kind())
+                            }
+                        }
+                    } else if let Some(ref cell) = streaming_cell {
+                        if extra_idx == 0 {
+                            Some(cell.kind())
+                        } else {
+                            extra_idx = extra_idx.saturating_sub(1);
+                            queued_preview_cells.get(extra_idx).map(|cell| cell.kind())
+                        }
+                    } else {
+                        queued_preview_cells.get(extra_idx).map(|cell| cell.kind())
+                    }
+                };
+
+                if matches!(last_kind, Some(history_cell::HistoryCellType::Assistant)) {
+                    // Assistant cells have bottom padding; when the history viewport is only
+                    // one row tall (e.g., large composer), avoid landing on a blank padding row.
+                    scroll_from_top = scroll_from_top.saturating_sub(1);
+                }
             }
 
             tracing::debug!(
