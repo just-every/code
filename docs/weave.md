@@ -9,6 +9,11 @@ Weave lets multiple Code instances (separate terminals) coordinate by joining a 
   - Default socket: `~/.weave/coord.sock`
   - Override: set `WEAVE_HOME=/path/to/dir` (both the coordinator and Code must use the same value).
 
+Notes
+
+- When copying commands from docs/chat, do **not** include the surrounding Markdown backticks (`). In your shell, backticks mean “command substitution” and will break the commands.
+- Avoid `sudo` for Weave; it can create sockets owned by `root` and prevent Code from connecting.
+
 ## Quickstart (local test)
 
 1. Start the Weave coordinator (separate terminal):
