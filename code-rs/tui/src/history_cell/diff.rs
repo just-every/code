@@ -113,6 +113,8 @@ pub(crate) fn diff_record_from_string(title: String, diff: &str) -> DiffRecord {
             (DiffLineKind::Addition, rest.to_string())
         } else if let Some(rest) = line.strip_prefix('-') {
             (DiffLineKind::Removal, rest.to_string())
+        } else if let Some(rest) = line.strip_prefix(' ') {
+            (DiffLineKind::Context, rest.to_string())
         } else {
             (DiffLineKind::Context, line)
         };
@@ -158,5 +160,22 @@ mod tests {
         assert_eq!(lines[1].content, "new");
         assert!(!lines[0].content.contains('\u{001B}'));
         assert!(!lines[1].content.contains('\u{001B}'));
+    }
+
+    #[test]
+    fn diff_record_strips_context_prefix_space() {
+        let diff = concat!(
+            "@@ -1,3 +1,3 @@\n",
+            " unchanged\n",
+            "-old\n",
+            "+new\n",
+        );
+        let record = diff_record_from_string(String::new(), diff);
+        assert_eq!(record.hunks.len(), 1);
+        let lines = &record.hunks[0].lines;
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].content, "unchanged");
+        assert_eq!(lines[1].content, "old");
+        assert_eq!(lines[2].content, "new");
     }
 }

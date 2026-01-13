@@ -141,6 +141,16 @@ fn should_stop_handler<E: std::fmt::Display>(
             false
         }
         Err(err) => {
+            let message = err.to_string();
+            let message_lower = message.to_ascii_lowercase();
+            // Chromiumoxide surfaces "oneshot canceled" when a request future is dropped
+            // (e.g., due to our own timeouts). These are expected and should not
+            // be treated as connection failures.
+            if message_lower.contains("oneshot canceled") || message_lower.contains("oneshot cancelled") {
+                *consecutive_errors = 0;
+                debug!("{label} event handler error ignored: {message}");
+                return false;
+            }
             *consecutive_errors = consecutive_errors.saturating_add(1);
             let count = *consecutive_errors;
             if count <= HANDLER_ERROR_LIMIT {
@@ -161,6 +171,7 @@ async fn discover_ws_via_host_port(host: &str, port: u16) -> Result<String> {
 
     let client_start = tokio::time::Instant::now();
     let client = Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(5)) // Allow Chrome time to bring up /json/version on fresh launch
         .build()
         .map_err(|e| BrowserError::CdpError(format!("Failed to build HTTP client: {}", e)))?;
@@ -248,6 +259,7 @@ async fn scan_for_chrome_debug_port() -> Option<u16> {
         let test_future = async move {
             let url = format!("http://127.0.0.1:{}/json/version", port);
             let client = Client::builder()
+                .no_proxy()
                 .timeout(Duration::from_millis(200)) // Shorter timeout for parallel tests
                 .build()
                 .ok()?;
@@ -2503,6 +2515,16 @@ pub struct BrowserStatus {
 #[cfg(test)]
 mod tests {
     use super::should_restart_handler;
+    use super::should_stop_handler;
+
+    #[derive(Debug)]
+    struct TestError(&'static str);
+
+    impl std::fmt::Display for TestError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
 
     #[test]
     fn handler_restarts_after_repeated_errors() {
@@ -2511,4 +2533,19 @@ mod tests {
         assert!(!should_restart_handler(2));
         assert!(should_restart_handler(3));
     }
+
+    #[test]
+    fn handler_ignores_oneshot_cancellations() {
+        let mut consecutive_errors = 0u32;
+        for _ in 0..10 {
+            let should_stop = should_stop_handler(
+                "[test]",
+                Err(TestError("oneshot canceled")),
+                &mut consecutive_errors,
+            );
+            assert!(!should_stop);
+            assert_eq!(consecutive_errors, 0);
+        }
+    }
+
 }
