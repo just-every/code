@@ -30,6 +30,7 @@ use owo_colors::OwoColorize;
 use owo_colors::Style;
 use shlex::try_join;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -63,6 +64,7 @@ pub(crate) struct EventProcessorWithHumanOutput {
     show_raw_agent_reasoning: bool,
     answer_started: bool,
     reasoning_started: bool,
+    reasoning_streams_started: HashSet<String>,
     raw_reasoning_started: bool,
     last_message_path: Option<PathBuf>,
     last_turn_diff: Option<String>,
@@ -98,6 +100,7 @@ impl EventProcessorWithHumanOutput {
                 show_raw_agent_reasoning: config.show_raw_agent_reasoning,
                 answer_started: false,
                 reasoning_started: false,
+                reasoning_streams_started: HashSet::new(),
                 raw_reasoning_started: false,
                 last_message_path,
                 last_turn_diff: None,
@@ -118,6 +121,7 @@ impl EventProcessorWithHumanOutput {
                 show_raw_agent_reasoning: config.show_raw_agent_reasoning,
                 answer_started: false,
                 reasoning_started: false,
+                reasoning_streams_started: HashSet::new(),
                 raw_reasoning_started: false,
                 last_message_path,
                 last_turn_diff: None,
@@ -189,7 +193,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
     }
 
     fn process_event(&mut self, event: Event) -> CodexStatus {
-        let Event { id: _, msg, .. } = event;
+        let Event { id, msg, .. } = event;
         match msg {
             EventMsg::Error(ErrorEvent { message }) => {
                 let prefix = "ERROR:".style(self.red);
@@ -210,6 +214,8 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::TaskStarted => {
                 // Reset per-turn diff cache so we only print new diffs once.
                 self.last_turn_diff = None;
+                self.reasoning_started = false;
+                self.reasoning_streams_started.clear();
             }
             EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
                 if let Some(output_file) = self.last_message_path.as_deref() {
@@ -250,6 +256,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     );
                     self.reasoning_started = true;
                 }
+                self.reasoning_streams_started.insert(id.clone());
                 print!("{delta}");
                 #[expect(clippy::expect_used)]
                 std::io::stdout().flush().expect("could not flush stdout");
@@ -547,7 +554,12 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             }
             EventMsg::AgentReasoning(agent_reasoning_event) => {
                 if self.show_agent_reasoning {
-                    if !self.reasoning_started {
+                    if self.reasoning_streams_started.remove(&id) {
+                        println!();
+                        if self.reasoning_streams_started.is_empty() {
+                            self.reasoning_started = false;
+                        }
+                    } else if !self.reasoning_started {
                         ts_println!(
                             self,
                             "{}\n{}",
@@ -556,7 +568,12 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                         );
                     } else {
                         println!();
-                        self.reasoning_started = false;
+                        ts_println!(
+                            self,
+                            "{}\n{}",
+                            "codex".style(self.italic).style(self.magenta),
+                            agent_reasoning_event.text,
+                        );
                     }
                 }
             }
@@ -757,5 +774,80 @@ fn format_mcp_invocation(invocation: &McpInvocation) -> String {
         format!("{fq_tool_name}()")
     } else {
         format!("{fq_tool_name}({args_str})")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use code_core::protocol::AgentReasoningEvent;
+
+    #[test]
+    fn reasoning_streams_do_not_reset_mid_stream() {
+        let mut proc = EventProcessorWithHumanOutput {
+            call_id_to_command: HashMap::new(),
+            call_id_to_patch: HashMap::new(),
+            bold: Style::new(),
+            italic: Style::new(),
+            dimmed: Style::new(),
+            magenta: Style::new(),
+            red: Style::new(),
+            green: Style::new(),
+            cyan: Style::new(),
+            show_agent_reasoning: true,
+            show_raw_agent_reasoning: false,
+            answer_started: false,
+            reasoning_started: false,
+            reasoning_streams_started: HashSet::new(),
+            raw_reasoning_started: false,
+            last_message_path: None,
+            last_turn_diff: None,
+            stop_on_task_complete: false,
+        };
+
+        // Two separate reasoning streams interleave deltas before either one finalizes.
+        proc.process_event(Event {
+            id: "stream-a".to_string(),
+            event_seq: 0,
+            msg: EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+                delta: "A".to_string(),
+            }),
+            order: None,
+        });
+        proc.process_event(Event {
+            id: "stream-b".to_string(),
+            event_seq: 1,
+            msg: EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+                delta: "B".to_string(),
+            }),
+            order: None,
+        });
+        assert!(proc.reasoning_started);
+        assert_eq!(proc.reasoning_streams_started.len(), 2);
+
+        // Finalizing one stream should not reset the global reasoning state while
+        // another stream is still active.
+        proc.process_event(Event {
+            id: "stream-a".to_string(),
+            event_seq: 2,
+            msg: EventMsg::AgentReasoning(AgentReasoningEvent {
+                text: "A".to_string(),
+            }),
+            order: None,
+        });
+        assert!(proc.reasoning_started);
+        assert_eq!(proc.reasoning_streams_started.len(), 1);
+        assert!(proc.reasoning_streams_started.contains("stream-b"));
+
+        proc.process_event(Event {
+            id: "stream-b".to_string(),
+            event_seq: 3,
+            msg: EventMsg::AgentReasoning(AgentReasoningEvent {
+                text: "B".to_string(),
+            }),
+            order: None,
+        });
+        assert!(!proc.reasoning_started);
+        assert!(proc.reasoning_streams_started.is_empty());
     }
 }
