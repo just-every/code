@@ -115,6 +115,8 @@ To change what triggers auto mode:
 - `/weave auto triggers direct` — user + reply messages
 - `/weave auto triggers all` — user + reply + room messages (experimental)
 
+For “ping-pong” between two auto agents, set both sides to `direct` (or `all`) and enable auto mode on both. Use `/weave auto off` if you accidentally create an infinite loop.
+
 When auto mode is enabled, incoming Weave DMs are queued and processed when the terminal is idle.
 
 When a peer is in auto mode and responding, you may see a small activity indicator in your status line (e.g. `bob:replying…`) for the active DM thread.
