@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.48] - 2026-01-14
+
+- Browser: stabilize /browser command handling and diff rendering for reliable runs. (bfd15335)
+- Browser: honor proxy discovery when finding CDP targets so automation works behind proxies. (bfd15335)
+
 ## [0.6.47] - 2026-01-13
 
 - Core/Websocket: reuse connections and add append support to cut reconnect churn. (d75626a, e726a82)

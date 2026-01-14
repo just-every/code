@@ -1,13 +1,10 @@
-## @just-every/code v0.6.47
+## @just-every/code v0.6.48
 
-Stability and UX improvements across websockets, MCP, CLI, TUI scrollback, and auto exec.
+Stabilizes browser-driven flows and keeps automation working when proxy discovery is required.
 
 ### Changes
-- Core/Websocket: reuse connections and add append support to cut reconnect churn.
-- MCP: hot reload servers with static callbacks for smoother development.
-- CLI: add --url with OAuth-friendly defaults and prompt Windows users on unsafe commands.
-- TUI: keep scrollback tails visible and show in-flight coalesced tool calls.
-- Exec/Auto: honor reasoning effort and dedupe reasoning output during auto runs.
+- Browser: stabilize /browser command handling and diff rendering for reliable runs.
+- Browser: honor proxy discovery when finding CDP targets so automation works behind proxies.
 
 ### Install
 ```
@@ -15,4 +12,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.46...v0.6.47
+Compare: https://github.com/just-every/code/compare/v0.6.47...v0.6.48
