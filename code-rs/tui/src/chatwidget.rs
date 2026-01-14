@@ -6897,15 +6897,19 @@ impl ChatWidget<'_> {
         let mut status_parts: Vec<String> = Vec::new();
         status_parts.push(self.weave_agent_name.clone());
 
+        if let Some(key) = self.weave_profile_key.as_deref()
+            && let Some(profile) = key.strip_prefix("profile:")
+        {
+            status_parts.push(format!("profile:{profile}"));
+        }
+
         if let Some(label) = self.selected_weave_session_name.clone() {
             let conn = if self.weave_agent_connection.is_some() {
-                "✓"
+                "connected"
             } else {
-                "…"
+                "connecting…"
             };
-            status_parts.push(format!("sess:{label} {conn}"));
-        } else {
-            status_parts.push("not connected".to_string());
+            status_parts.push(format!("{label} ({conn})"));
         }
 
         if let Some(agents) = self.weave_agents.as_deref() {
@@ -6913,8 +6917,14 @@ impl ChatWidget<'_> {
             names.sort_by(|a, b| a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase()));
             names.dedup();
             if !names.is_empty() {
-                // Keep footer compact so it doesn't get pruned on smaller terminals.
-                status_parts.push(format!("online:{}", names.len()));
+                let count = names.len();
+                let preview = names.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+                let preview = if count > 3 {
+                    format!("{preview}, …")
+                } else {
+                    preview
+                };
+                status_parts.push(format!("online:{count} ({preview})"));
             }
         }
 
@@ -6978,8 +6988,12 @@ impl ChatWidget<'_> {
             }
         }
 
+        // Only show Weave footer when the user has selected a session (connected or connecting).
+        // This keeps the default footer compact when Weave is not in use.
         let status = status_parts.join(" • ");
-        self.bottom_pane.set_weave_status(Some(status));
+        let show_status = self.selected_weave_session_name.is_some();
+        self.bottom_pane
+            .set_weave_status(show_status.then_some(status));
     }
 
     pub(crate) fn new(

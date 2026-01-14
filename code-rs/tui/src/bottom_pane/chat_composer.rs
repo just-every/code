@@ -2439,7 +2439,11 @@ impl ChatComposer {
             (ActivePopup::File(popup), _) => popup.calculate_required_height(),
             (ActivePopup::Mention(popup), _) => popup.calculate_required_height(),
             (ActivePopup::None, true) => 0,
-            (ActivePopup::None, false) => 1,
+            (ActivePopup::None, false) => {
+                // If Weave is active, reserve an extra footer line so Weave status never gets
+                // pruned due to width constraints.
+                if self.weave_status.is_some() { 2 } else { 1 }
+            }
         }
     }
 
@@ -2463,6 +2467,25 @@ impl ChatComposer {
                     return;
                 }
 
+                let (main_area, weave_area) = if self.weave_status.is_some() && area.height >= 2 {
+                    (
+                        Rect {
+                            x: area.x,
+                            y: area.y,
+                            width: area.width,
+                            height: area.height.saturating_sub(1),
+                        },
+                        Some(Rect {
+                            x: area.x,
+                            y: area.y + area.height.saturating_sub(1),
+                            width: area.width,
+                            height: 1,
+                        }),
+                    )
+                } else {
+                    (area, None)
+                };
+
                 let key_hint_style = Style::default().fg(crate::colors::function());
                 let label_style = Style::default().fg(crate::colors::text_dim());
 
@@ -2484,7 +2507,7 @@ impl ChatComposer {
                     let token_spans: Vec<Span<'static>> = self.token_usage_spans(label_style);
                     let left_len: usize = left_spans.iter().map(|s| s.content.chars().count()).sum();
                     let right_len: usize = token_spans.iter().map(|s| s.content.chars().count()).sum();
-                    let total_width = area.width as usize;
+                    let total_width = main_area.width as usize;
                     let trailing_pad = 1usize;
                     let spacer = if total_width > left_len + right_len + trailing_pad {
                         " ".repeat(total_width - left_len - right_len - trailing_pad)
@@ -2503,7 +2526,11 @@ impl ChatComposer {
                                 .fg(crate::colors::text_dim())
                                 .add_modifier(Modifier::DIM),
                         )
-                        .render_ref(area, buf);
+                        .render_ref(main_area, buf);
+
+                    if let Some(weave_area) = weave_area {
+                        self.render_weave_footer_line(weave_area, buf);
+                    }
                     return;
                 }
 
@@ -2686,7 +2713,7 @@ impl ChatComposer {
                 // Base right sections (auto-drive hints) were already inserted with priority 7 above.
 
                 // Assemble with pruning according to priority rules.
-                let total_width = area.width as usize;
+                let total_width = main_area.width as usize;
                 let trailing_pad = 1usize;
                 let separator = Span::from("  •  ").style(label_style);
                 let separator_len = separator.content.chars().count();
@@ -2986,9 +3013,35 @@ impl ChatComposer {
                             .fg(crate::colors::text_dim())
                             .add_modifier(Modifier::DIM),
                     )
-                    .render_ref(area, buf);
+                    .render_ref(main_area, buf);
+
+                if let Some(weave_area) = weave_area {
+                    self.render_weave_footer_line(weave_area, buf);
+                }
             }
         }
+    }
+
+    fn render_weave_footer_line(&self, area: Rect, buf: &mut Buffer) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let Some(status) = self.weave_status.as_ref() else {
+            return;
+        };
+
+        let label_style = Style::default().fg(crate::colors::text_dim());
+        let weave_label_style = Style::default()
+            .fg(crate::colors::info())
+            .add_modifier(Modifier::BOLD);
+
+        Line::from(vec![
+            Span::from("Weave").style(weave_label_style),
+            Span::from(" ").style(label_style),
+            Span::from(status.clone()).style(label_style),
+        ])
+        .style(label_style.add_modifier(Modifier::DIM))
+        .render_ref(area, buf);
     }
 }
 
@@ -3266,5 +3319,37 @@ mod tests {
         let esc_idx = line.find("Esc stop").unwrap_or(line.len());
 
         assert!(auto_idx < esc_idx, "Auto Review status should be left-most");
+    }
+
+    #[test]
+    fn weave_status_reserves_second_footer_line() {
+        let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+        let app_tx = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(true, app_tx, true, false);
+
+        assert_eq!(composer.footer_height(), 1);
+
+        composer.set_weave_status(Some(
+            "alice • session (connected) • online:3 (alice, bob, …)".to_string(),
+        ));
+        assert_eq!(composer.footer_height(), 2);
+
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 32,
+            height: 2,
+        };
+        let mut buf = Buffer::empty(area);
+        composer.render_footer(area, &mut buf);
+
+        let bottom_y = area.y + 1;
+        let bottom_line: String = (0..area.width)
+            .map(|x| buf[(area.x + x, bottom_y)].symbol().to_string())
+            .collect();
+        assert!(
+            bottom_line.contains("Weave"),
+            "expected second line to contain Weave status, got: {bottom_line:?}"
+        );
     }
 }
