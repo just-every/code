@@ -541,6 +541,26 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 openrouter: None,
             },
         ),
+        (
+            "zai",
+            P {
+                name: "Z.AI".into(),
+                base_url: Some("https://api.z.ai/api/coding/paas/v4".to_string()),
+                env_key: Some("Z_AI_API_KEY".to_string()),
+                env_key_instructions: Some(
+                    "Set Z_AI_API_KEY to your Z.AI API key.".to_string(),
+                ),
+                wire_api: WireApi::Chat,
+                query_params: None,
+                http_headers: None,
+                env_http_headers: None,
+                request_max_retries: None,
+                stream_max_retries: None,
+                stream_idle_timeout_ms: None,
+                requires_openai_auth: false,
+                openrouter: None,
+            },
+        ),
         (BUILT_IN_OSS_MODEL_PROVIDER_ID, create_oss_provider()),
     ]
     .into_iter()

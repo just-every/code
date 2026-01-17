@@ -140,6 +140,12 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             context_window: Some(CONTEXT_WINDOW_1M),
             max_output_tokens: Some(32_768),
         )
+    } else if slug.starts_with("glm-4.7") {
+        model_family!(
+            slug, "glm-4.7",
+            context_window: Some(CONTEXT_WINDOW_200K),
+            max_output_tokens: Some(128_000),
+        )
     } else if slug.starts_with("gpt-oss") || slug.starts_with("openai/gpt-oss") {
         model_family!(slug, "gpt-oss", apply_patch_tool_type: Some(ApplyPatchToolType::Function),
             uses_local_shell_tool: true,

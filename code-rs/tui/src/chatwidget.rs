@@ -21975,6 +21975,32 @@ Have we met every part of this goal and is there no further work to do?"#
             .unwrap_or(requested)
     }
 
+    fn update_provider_for_model(&mut self, model: &str) -> bool {
+        const ZAI_PROVIDER_ID: &str = "zai";
+        const GLM_4_7_MODEL: &str = "glm-4.7";
+
+        if model.eq_ignore_ascii_case(GLM_4_7_MODEL) {
+            if !self.config.model_provider_id.eq_ignore_ascii_case(ZAI_PROVIDER_ID) {
+                if let Some(provider) = self.config.model_providers.get(ZAI_PROVIDER_ID) {
+                    self.config.model_provider_id = ZAI_PROVIDER_ID.to_string();
+                    self.config.model_provider = provider.clone();
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        if self.config.model_provider_id.eq_ignore_ascii_case(ZAI_PROVIDER_ID) {
+            if let Some(provider) = self.config.model_providers.get("openai") {
+                self.config.model_provider_id = "openai".to_string();
+                self.config.model_provider = provider.clone();
+                return true;
+            }
+        }
+
+        false
+    }
+
     fn apply_model_selection_inner(
         &mut self,
         model: String,
@@ -21998,6 +22024,10 @@ Have we met every part of this goal and is there no further work to do?"#
             let family = find_family_for_model(&self.config.model)
                 .unwrap_or_else(|| derive_default_model_family(&self.config.model));
             self.config.model_family = family;
+            updated = true;
+        }
+
+        if self.update_provider_for_model(trimmed) {
             updated = true;
         }
 

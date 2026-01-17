@@ -397,6 +397,7 @@ pub(crate) fn pretty_provider_name(id: &str) -> String {
         "read-website-fast" => "readweb",
         "sequential-thinking" => "think",
         "discord-bot" => "discord",
+        "zai" => "z.ai",
         _ => id,
     }
     .to_string()
