@@ -9099,7 +9099,8 @@ async fn handle_browser_open(sess: &Session, ctx: &ToolCallCtx, arguments: Strin
                                     || url_lower.starts_with("https://0.0.0.0");
                                 let mut content =
                                     format!("Failed to navigate browser to {url}: {error_string}");
-                                if error_lower.contains("oneshot canceled")
+                                if error_lower.contains("oneshot error")
+                                    || error_lower.contains("oneshot canceled")
                                     || error_lower.contains("oneshot cancelled")
                                 {
                                     content.push_str(
@@ -9678,13 +9679,21 @@ async fn handle_browser_javascript(sess: &Session, ctx: &ToolCallCtx, arguments:
                                     },
                                 }
                             }
-                            Err(e) => ResponseInputItem::FunctionCallOutput {
-                                call_id: call_id_clone.clone(),
-                                output: FunctionCallOutputPayload {
-                                    content: format!("Failed to execute JavaScript: {}", e),
-                                    success: Some(false),
-                                },
-                            },
+                            Err(e) => {
+                                let error_string = e.to_string();
+                                let mut content =
+                                    format!("Failed to execute JavaScript: {error_string}");
+                                if error_string.to_ascii_lowercase().contains("oneshot") {
+                                    content.push_str(" (CDP request was cancelled or the page session was reset; reconnecting the browser and retrying usually helps.)");
+                                }
+                                ResponseInputItem::FunctionCallOutput {
+                                    call_id: call_id_clone.clone(),
+                                    output: FunctionCallOutputPayload {
+                                        content,
+                                        success: Some(false),
+                                    },
+                                }
+                            }
                         }
                     }
                     Err(e) => ResponseInputItem::FunctionCallOutput {

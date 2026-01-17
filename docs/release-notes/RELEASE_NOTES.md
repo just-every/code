@@ -1,11 +1,10 @@
-## @just-every/code v0.6.46
+## @just-every/code v0.6.48
 
-Stability-focused patch release improving TUI streaming order and redraw recovery.
+Stabilizes browser-driven flows and keeps automation working when proxy discovery is required.
 
 ### Changes
-
-- TUI/Stream: preserve commit ticks while debouncing to keep command ordering intact.
-- TUI/Render: resync buffers after WouldBlock errors so redraws recover cleanly.
+- Browser: stabilize /browser command handling and diff rendering for reliable runs.
+- Browser: honor proxy discovery when finding CDP targets so automation works behind proxies.
 
 ### Install
 ```
@@ -13,4 +12,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.45...v0.6.46
+Compare: https://github.com/just-every/code/compare/v0.6.47...v0.6.48
