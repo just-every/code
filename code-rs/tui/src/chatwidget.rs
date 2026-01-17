@@ -1301,21 +1301,33 @@ fn detect_auto_review_phase(progress: Option<&str>) -> AutoReviewPhase {
 const SKIP_REVIEW_PROGRESS_SENTINEL: &str = "Another review is already running; skipping this /review.";
 const AUTO_REVIEW_SHARED_WORKTREE: &str = "auto-review";
 const AUTO_REVIEW_FALLBACK_PREFIX: &str = "auto-review-";
+const AUTO_REVIEW_BASELINE_FILENAME: &str = "auto-review-baseline";
 const AUTO_REVIEW_FALLBACK_MAX: usize = 3;
 const AUTO_REVIEW_FALLBACK_MAX_AGE_SECS: u64 = 12 * 60 * 60; // 12h
 const AUTO_REVIEW_STALE_SECS: u64 = 5 * 60;
 
-fn auto_review_branches_dir(git_root: &Path) -> Result<PathBuf, String> {
+fn auto_review_repo_dir(git_root: &Path) -> Result<PathBuf, String> {
     let repo_name = git_root
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("repo");
-    let mut code_home = code_core::config::find_code_home()
+    let code_home = code_core::config::find_code_home()
         .map_err(|e| format!("failed to locate code home: {e}"))?;
-    code_home = code_home.join("working").join(repo_name).join("branches");
-    std::fs::create_dir_all(&code_home)
+    let repo_dir = code_home.join("working").join(repo_name);
+    std::fs::create_dir_all(&repo_dir)
+        .map_err(|e| format!("failed to create auto review repo dir: {e}"))?;
+    Ok(repo_dir)
+}
+
+fn auto_review_branches_dir(git_root: &Path) -> Result<PathBuf, String> {
+    let branches_dir = auto_review_repo_dir(git_root)?.join("branches");
+    std::fs::create_dir_all(&branches_dir)
         .map_err(|e| format!("failed to create branches dir: {e}"))?;
-    Ok(code_home)
+    Ok(branches_dir)
+}
+
+fn auto_review_baseline_path_for_repo(git_root: &Path) -> Result<PathBuf, String> {
+    Ok(auto_review_repo_dir(git_root)?.join(AUTO_REVIEW_BASELINE_FILENAME))
 }
 
 fn resolve_auto_review_worktree_path(git_root: &Path, branch: &str) -> Option<PathBuf> {
@@ -6626,6 +6638,7 @@ impl ChatWidget<'_> {
             resume_placeholder_visible: false,
             resume_picker_loading: false,
         };
+        new_widget.load_auto_review_baseline_marker();
         new_widget.spawn_conversation_runtime(config.clone(), auth_manager.clone(), code_op_rx);
         if let Ok(Some(active_id)) = auth_accounts::get_active_account_id(&config.code_home) {
             if let Ok(records) = account_usage::list_rate_limit_snapshots(&config.code_home) {
@@ -6997,6 +7010,7 @@ impl ChatWidget<'_> {
             resume_placeholder_visible: false,
             resume_picker_loading: false,
         };
+        w.load_auto_review_baseline_marker();
         if let Ok(Some(active_id)) = auth_accounts::get_active_account_id(&config.code_home) {
             if let Ok(records) = account_usage::list_rate_limit_snapshots(&config.code_home) {
                 if let Some(record) = records.into_iter().find(|r| r.account_id == active_id) {
@@ -33432,6 +33446,66 @@ impl ChatWidget<'_> {
         self.request_redraw();
     }
 
+    fn auto_review_git_root(&self) -> Option<PathBuf> {
+        self.run_git_command(["rev-parse", "--show-toplevel"], |stdout| {
+            let root = stdout.lines().next().unwrap_or("").trim();
+            if root.is_empty() {
+                Err("auto review git root unavailable".to_string())
+            } else {
+                Ok(root.to_string())
+            }
+        })
+        .ok()
+        .map(PathBuf::from)
+    }
+
+    fn auto_review_baseline_path(&self) -> Option<PathBuf> {
+        let git_root = self.auto_review_git_root()?;
+        match auto_review_baseline_path_for_repo(&git_root) {
+            Ok(path) => Some(path),
+            Err(err) => {
+                tracing::warn!("failed to resolve auto review baseline path: {err}");
+                None
+            }
+        }
+    }
+
+    fn load_auto_review_baseline_marker(&mut self) {
+        if self.auto_review_reviewed_marker.is_some() {
+            return;
+        }
+        let Some(path) = self.auto_review_baseline_path() else {
+            return;
+        };
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let commit_id = contents.lines().next().unwrap_or("").trim();
+        if commit_id.is_empty() {
+            return;
+        }
+        self.auto_review_reviewed_marker = Some(GhostCommit::new(commit_id.to_string(), None));
+    }
+
+    fn persist_auto_review_baseline_marker(&self, commit_id: &str) {
+        let commit_id = commit_id.trim();
+        if commit_id.is_empty() {
+            return;
+        }
+        let Some(path) = self.auto_review_baseline_path() else {
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            if let Err(err) = std::fs::create_dir_all(parent) {
+                tracing::warn!("failed to create auto review baseline dir: {err}");
+                return;
+            }
+        }
+        if let Err(err) = std::fs::write(&path, format!("{commit_id}\n")) {
+            tracing::warn!("failed to persist auto review baseline: {err}");
+        }
+    }
+
     fn maybe_trigger_auto_review(&mut self) {
         if !self.config.tui.auto_review_enabled {
             return;
@@ -34146,6 +34220,7 @@ impl ChatWidget<'_> {
         if !errored {
             if let Some(id) = snapshot.as_ref() {
                 self.auto_review_reviewed_marker = Some(GhostCommit::new(id.clone(), None));
+                self.persist_auto_review_baseline_marker(id);
             }
         }
 
