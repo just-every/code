@@ -68,6 +68,7 @@ mod cgroup;
 pub mod agent_defaults;
 mod agent_tool;
 pub use agent_tool::AGENT_MANAGER;
+pub use agent_tool::AgentStatusUpdatePayload;
 mod dry_run_guard;
 mod image_comparison;
 pub mod git_worktree;

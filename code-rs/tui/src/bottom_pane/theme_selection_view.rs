@@ -358,16 +358,9 @@ impl ThemeSelectionView {
                         return;
                     }
                 };
-                // Use the same auth preference as the active Codex session.
-                // When logged in with ChatGPT, prefer ChatGPT auth; otherwise fall back to API key.
-                let preferred_auth = if cfg.using_chatgpt_auth {
-                    code_protocol::mcp_protocol::AuthMode::ChatGPT
-                } else {
-                    code_protocol::mcp_protocol::AuthMode::ApiKey
-                };
                 let auth_mgr = code_core::AuthManager::shared_with_mode_and_originator(
                     cfg.code_home.clone(),
-                    preferred_auth,
+                    cfg.preferred_auth_mode(),
                     cfg.responses_originator_header.clone(),
                 );
                 let client = code_core::ModelClient::new(
@@ -693,7 +686,7 @@ impl ThemeSelectionView {
                 };
                 let auth_mgr = code_core::AuthManager::shared_with_mode_and_originator(
                     cfg.code_home.clone(),
-                    code_protocol::mcp_protocol::AuthMode::ApiKey,
+                    cfg.preferred_auth_mode(),
                     cfg.responses_originator_header.clone(),
                 );
                 let client = code_core::ModelClient::new(

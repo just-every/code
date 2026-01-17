@@ -122,21 +122,14 @@ fn run_refresh(
                     Some(account),
                 )
             }
-            None => {
-                let auth_mode = if config.using_chatgpt_auth {
-                    code_protocol::mcp_protocol::AuthMode::ChatGPT
-                } else {
-                    code_protocol::mcp_protocol::AuthMode::ApiKey
-                };
-                (
-                    AuthManager::shared_with_mode_and_originator(
-                        config.code_home.clone(),
-                        auth_mode,
-                        config.responses_originator_header.clone(),
-                    ),
-                    None,
-                )
-            }
+            None => (
+                AuthManager::shared_with_mode_and_originator(
+                    config.code_home.clone(),
+                    config.preferred_auth_mode(),
+                    config.responses_originator_header.clone(),
+                ),
+                None,
+            ),
         };
 
         let client = build_model_client(&config, auth_mgr, debug_enabled)?;

@@ -33,7 +33,6 @@ use code_core::default_client::get_code_user_agent_default;
 use code_core::model_family::{derive_default_model_family, find_family_for_model};
 use code_core::protocol::Submission;
 use code_core::protocol::Op;
-use code_app_server_protocol::AuthMode;
 use mcp_types::CallToolRequestParams;
 use mcp_types::CallToolResult;
 use mcp_types::ClientRequest as McpClientRequest;
@@ -76,7 +75,7 @@ impl MessageProcessor {
         let outgoing = Arc::new(outgoing);
         let auth_manager = AuthManager::shared_with_mode_and_originator(
             config.code_home.clone(),
-            AuthMode::ApiKey,
+            config.preferred_auth_mode(),
             config.responses_originator_header.clone(),
         );
         let conversation_manager = Arc::new(ConversationManager::new(
