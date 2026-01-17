@@ -34,7 +34,9 @@ use async_channel::Receiver;
 use async_channel::Sender;
 use codex_protocol::ThreadId;
 use codex_protocol::approvals::ExecPolicyAmendment;
+use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::items::TurnItem;
+use codex_protocol::items::UserMessageItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::HasLegacyEvent;
@@ -119,6 +121,7 @@ use crate::protocol::ReviewDecision;
 use crate::protocol::SandboxPolicy;
 use crate::protocol::SessionConfiguredEvent;
 use crate::protocol::SkillErrorInfo;
+use crate::protocol::SkillInterface as ProtocolSkillInterface;
 use crate::protocol::SkillMetadata as ProtocolSkillMetadata;
 use crate::protocol::StreamErrorEvent;
 use crate::protocol::Submission;
@@ -251,17 +254,22 @@ impl Codex {
 
         let exec_policy = ExecPolicyManager::load(&config.features, &config.config_layer_stack)
             .await
-            .map_err(|err| CodexErr::Fatal(format!("failed to load execpolicy: {err}")))?;
+            .map_err(|err| CodexErr::Fatal(format!("failed to load rules: {err}")))?;
 
         let config = Arc::new(config);
-        if config.features.enabled(Feature::RemoteModels)
-            && let Err(err) = models_manager
-                .refresh_available_models_with_cache(&config)
-                .await
-        {
-            error!("failed to refresh available models: {err:?}");
-        }
-        let model = models_manager.get_model(&config.model, &config).await;
+        let _ = models_manager
+            .list_models(
+                &config,
+                crate::models_manager::manager::RefreshStrategy::OnlineIfUncached,
+            )
+            .await;
+        let model = models_manager
+            .get_default_model(
+                &config.model,
+                &config,
+                crate::models_manager::manager::RefreshStrategy::OnlineIfUncached,
+            )
+            .await;
         let session_configuration = SessionConfiguration {
             provider: config.model_provider.clone(),
             model: model.clone(),
@@ -358,7 +366,7 @@ impl Codex {
 ///
 /// A session has at most 1 running task at a time, and can be interrupted by user input.
 pub(crate) struct Session {
-    conversation_id: ThreadId,
+    pub(crate) conversation_id: ThreadId,
     tx_event: Sender<Event>,
     agent_status: watch::Sender<AgentStatus>,
     state: Mutex<SessionState>,
@@ -532,6 +540,7 @@ impl Session {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &per_turn_config.features,
+            web_search_mode: per_turn_config.web_search_mode,
         });
 
         TurnContext {
@@ -579,6 +588,8 @@ impl Session {
             ));
         }
 
+        let forked_from_id = initial_history.forked_from_id();
+
         let (conversation_id, rollout_params) = match &initial_history {
             InitialHistory::New | InitialHistory::Forked(_) => {
                 let conversation_id = ThreadId::default();
@@ -586,6 +597,7 @@ impl Session {
                     conversation_id,
                     RolloutRecorderParams::new(
                         conversation_id,
+                        forked_from_id,
                         session_configuration.user_instructions.clone(),
                         session_source,
                     ),
@@ -682,7 +694,7 @@ impl Session {
         // Create the mutable state for the Session.
         if config.features.enabled(Feature::ShellSnapshot) {
             default_shell.shell_snapshot =
-                ShellSnapshot::try_new(&config.codex_home, &default_shell)
+                ShellSnapshot::try_new(&config.codex_home, conversation_id, &default_shell)
                     .await
                     .map(Arc::new);
         }
@@ -724,6 +736,7 @@ impl Session {
             id: INITIAL_SUBMIT_ID.to_owned(),
             msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
                 session_id: conversation_id,
+                forked_from_id,
                 model: session_configuration.model.clone(),
                 model_provider_id: config.model_provider_id.clone(),
                 approval_policy: session_configuration.approval_policy.value(),
@@ -755,7 +768,7 @@ impl Session {
             .write()
             .await
             .initialize(
-                config.mcp_servers.clone(),
+                &config.mcp_servers,
                 config.mcp_oauth_credentials_store_mode,
                 auth_statuses.clone(),
                 tx_event.clone(),
@@ -965,7 +978,7 @@ impl Session {
         let model_info = self
             .services
             .models_manager
-            .construct_model_info(session_configuration.model.as_str(), &per_turn_config)
+            .get_model_info(session_configuration.model.as_str(), &per_turn_config)
             .await;
         let mut turn_context: TurnContext = Self::make_turn_context(
             Some(Arc::clone(&self.services.auth_manager)),
@@ -986,6 +999,14 @@ impl Session {
     pub(crate) async fn new_default_turn(&self) -> Arc<TurnContext> {
         self.new_default_turn_with_sub_id(self.next_internal_sub_id())
             .await
+    }
+
+    async fn get_config(&self) -> std::sync::Arc<Config> {
+        let state = self.state.lock().await;
+        state
+            .session_configuration
+            .original_config_do_not_use
+            .clone()
     }
 
     pub(crate) async fn new_default_turn_with_sub_id(&self, sub_id: String) -> Arc<TurnContext> {
@@ -1509,6 +1530,22 @@ impl Session {
         }
     }
 
+    pub(crate) async fn record_user_prompt_and_emit_turn_item(
+        &self,
+        turn_context: &TurnContext,
+        input: &[UserInput],
+        response_item: ResponseItem,
+    ) {
+        // Persist the user message to history, but emit the turn item from `UserInput` so
+        // UI-only `text_elements` are preserved. `ResponseItem::Message` does not carry
+        // those spans, and `record_response_item_and_emit_turn_item` would drop them.
+        self.record_conversation_items(turn_context, std::slice::from_ref(&response_item))
+            .await;
+        let turn_item = TurnItem::UserMessage(UserMessageItem::new(input));
+        self.emit_turn_item_started(turn_context, &turn_item).await;
+        self.emit_turn_item_completed(turn_context, turn_item).await;
+    }
+
     pub(crate) async fn notify_background_event(
         &self,
         turn_context: &TurnContext,
@@ -1739,7 +1776,7 @@ impl Session {
         let mut refreshed_manager = McpConnectionManager::default();
         refreshed_manager
             .initialize(
-                mcp_servers,
+                &mcp_servers,
                 store_mode,
                 auth_statuses,
                 self.get_tx_event(),
@@ -2049,10 +2086,13 @@ mod handlers {
             codex_protocol::approvals::ElicitationAction::Decline => ElicitationAction::Decline,
             codex_protocol::approvals::ElicitationAction::Cancel => ElicitationAction::Cancel,
         };
-        let response = ElicitationResponse {
-            action,
-            content: None,
+        // When accepting, send an empty object as content to satisfy MCP servers
+        // that expect non-null content on Accept. For Decline/Cancel, content is None.
+        let content = match action {
+            ElicitationAction::Accept => Some(serde_json::json!({})),
+            ElicitationAction::Decline | ElicitationAction::Cancel => None,
         };
+        let response = ElicitationResponse { action, content };
         if let Err(err) = sess
             .resolve_elicitation(server_name, request_id, response)
             .await
@@ -2233,6 +2273,7 @@ mod handlers {
             Arc::clone(&turn_context),
             vec![UserInput::Text {
                 text: turn_context.compact_prompt().to_string(),
+                text_elements: Vec::new(),
             }],
             CompactTask,
         )
@@ -2370,20 +2411,25 @@ async fn spawn_review_thread(
     sub_id: String,
     resolved: crate::review_prompts::ResolvedReviewRequest,
 ) {
-    let model = config.review_model.clone();
+    let model = config
+        .review_model
+        .clone()
+        .unwrap_or_else(|| parent_turn_context.client.get_model());
     let review_model_info = sess
         .services
         .models_manager
-        .construct_model_info(&model, &config)
+        .get_model_info(&model, &config)
         .await;
     // For reviews, disable web_search and view_image regardless of global settings.
     let mut review_features = sess.features.clone();
     review_features
         .disable(crate::features::Feature::WebSearchRequest)
         .disable(crate::features::Feature::WebSearchCached);
+    let review_web_search_mode = WebSearchMode::Disabled;
     let tools_config = ToolsConfig::new(&ToolsConfigParams {
         model_info: &review_model_info,
         features: &review_features,
+        web_search_mode: Some(review_web_search_mode),
     });
 
     let base_instructions = REVIEW_PROMPT.to_string();
@@ -2394,14 +2440,14 @@ async fn spawn_review_thread(
 
     // Build per‑turn client with the requested model/family.
     let mut per_turn_config = (*config).clone();
-    per_turn_config.model_reasoning_effort = Some(ReasoningEffortConfig::Low);
-    per_turn_config.model_reasoning_summary = ReasoningSummaryConfig::Detailed;
+    per_turn_config.model = Some(model.clone());
     per_turn_config.features = review_features.clone();
+    per_turn_config.web_search_mode = Some(review_web_search_mode);
 
-    let otel_manager = parent_turn_context.client.get_otel_manager().with_model(
-        config.review_model.as_str(),
-        review_model_info.slug.as_str(),
-    );
+    let otel_manager = parent_turn_context
+        .client
+        .get_otel_manager()
+        .with_model(model.as_str(), review_model_info.slug.as_str());
 
     let per_turn_config = Arc::new(per_turn_config);
     let client = ModelClient::new(
@@ -2438,6 +2484,7 @@ async fn spawn_review_thread(
     // Seed the child task with the review prompt as the initial user message.
     let input: Vec<UserInput> = vec![UserInput::Text {
         text: review_prompt,
+        text_elements: Vec::new(),
     }];
     let tc = Arc::new(review_turn_context);
     sess.spawn_task(tc.clone(), input, ReviewTask::new()).await;
@@ -2458,6 +2505,17 @@ fn skills_to_info(skills: &[SkillMetadata]) -> Vec<ProtocolSkillMetadata> {
             name: skill.name.clone(),
             description: skill.description.clone(),
             short_description: skill.short_description.clone(),
+            interface: skill
+                .interface
+                .clone()
+                .map(|interface| ProtocolSkillInterface {
+                    display_name: interface.display_name,
+                    short_description: interface.short_description,
+                    icon_small: interface.icon_small,
+                    icon_large: interface.icon_large,
+                    brand_color: interface.brand_color,
+                    default_prompt: interface.default_prompt,
+                }),
             path: skill.path.clone(),
             scope: skill.scope,
         })
@@ -2474,17 +2532,17 @@ fn errors_to_info(errors: &[SkillError]) -> Vec<SkillErrorInfo> {
         .collect()
 }
 
-/// Takes a user message as input and runs a loop where, at each turn, the model
+/// Takes a user message as input and runs a loop where, at each sampling request, the model
 /// replies with either:
 ///
 /// - requested function calls
 /// - an assistant message
 ///
 /// While it is possible for the model to return multiple of these items in a
-/// single turn, in practice, we generally one item per turn:
+/// single sampling request, in practice, we generally one item per sampling request:
 ///
 /// - If the model requests a function call, we execute it and send the output
-///   back to the model in the next turn.
+///   back to the model in the next sampling request.
 /// - If the model sends only an assistant message, we record it in the
 ///   conversation history and consider the turn complete.
 ///
@@ -2526,9 +2584,9 @@ pub(crate) async fn run_turn(
             .await;
     }
 
-    let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
+    let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input.clone());
     let response_item: ResponseItem = initial_input_for_turn.clone().into();
-    sess.record_response_item_and_emit_turn_item(turn_context.as_ref(), response_item)
+    sess.record_user_prompt_and_emit_turn_item(turn_context.as_ref(), &input, response_item)
         .await;
 
     if !skill_items.is_empty() {
@@ -2543,6 +2601,8 @@ pub(crate) async fn run_turn(
     // many turns, from the perspective of the user, it is a single turn.
     let turn_diff_tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
 
+    let mut client_session = turn_context.client.new_session();
+
     loop {
         // Note that pending_input would be something like a message the user
         // submitted through the UI while the model was running. Though the UI
@@ -2555,13 +2615,13 @@ pub(crate) async fn run_turn(
             .collect::<Vec<ResponseItem>>();
 
         // Construct the input that we will send to the model.
-        let turn_input: Vec<ResponseItem> = {
+        let sampling_request_input: Vec<ResponseItem> = {
             sess.record_conversation_items(&turn_context, &pending_input)
                 .await;
             sess.clone_history().await.for_prompt()
         };
 
-        let turn_input_messages = turn_input
+        let sampling_request_input_messages = sampling_request_input
             .iter()
             .filter_map(|item| match parse_turn_item(item) {
                 Some(TurnItem::UserMessage(user_message)) => Some(user_message),
@@ -2569,20 +2629,21 @@ pub(crate) async fn run_turn(
             })
             .map(|user_message| user_message.message())
             .collect::<Vec<String>>();
-        match run_model_turn(
+        match run_sampling_request(
             Arc::clone(&sess),
             Arc::clone(&turn_context),
             Arc::clone(&turn_diff_tracker),
-            turn_input,
+            &mut client_session,
+            sampling_request_input,
             cancellation_token.child_token(),
         )
         .await
         {
-            Ok(turn_output) => {
-                let TurnRunResult {
+            Ok(sampling_request_output) => {
+                let SamplingRequestResult {
                     needs_follow_up,
-                    last_agent_message: turn_last_agent_message,
-                } = turn_output;
+                    last_agent_message: sampling_request_last_agent_message,
+                } = sampling_request_output;
                 let total_usage_tokens = sess.get_total_token_usage().await;
                 let token_limit_reached = total_usage_tokens >= auto_compact_limit;
 
@@ -2593,13 +2654,13 @@ pub(crate) async fn run_turn(
                 }
 
                 if !needs_follow_up {
-                    last_agent_message = turn_last_agent_message;
+                    last_agent_message = sampling_request_last_agent_message;
                     sess.notifier()
                         .notify(&UserNotification::AgentTurnComplete {
                             thread_id: sess.conversation_id.to_string(),
                             turn_id: turn_context.sub_id.clone(),
                             cwd: turn_context.cwd.display().to_string(),
-                            input_messages: turn_input_messages,
+                            input_messages: sampling_request_input_messages,
                             last_assistant_message: last_agent_message.clone(),
                         });
                     break;
@@ -2613,9 +2674,18 @@ pub(crate) async fn run_turn(
             Err(CodexErr::InvalidImageRequest()) => {
                 let mut state = sess.state.lock().await;
                 error_or_panic(
-                    "Invalid image detected, replacing it in the last turn to prevent poisoning",
+                    "Invalid image detected; sanitizing tool output to prevent poisoning",
                 );
-                state.history.replace_last_turn_images("Invalid image");
+                if state.history.replace_last_turn_images("Invalid image") {
+                    continue;
+                }
+                let event = EventMsg::Error(ErrorEvent {
+                    message: "Invalid image in your last message. Please remove it and try again."
+                        .to_string(),
+                    codex_error_info: Some(CodexErrorInfo::BadRequest),
+                });
+                sess.send_event(&turn_context, event).await;
+                break;
             }
             Err(e) => {
                 info!("Turn error: {e:#}");
@@ -2646,13 +2716,14 @@ async fn run_auto_compact(sess: &Arc<Session>, turn_context: &Arc<TurnContext>) 
         cwd = %turn_context.cwd.display()
     )
 )]
-async fn run_model_turn(
+async fn run_sampling_request(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
     turn_diff_tracker: SharedTurnDiffTracker,
+    client_session: &mut ModelClientSession,
     input: Vec<ResponseItem>,
     cancellation_token: CancellationToken,
-) -> CodexResult<TurnRunResult> {
+) -> CodexResult<SamplingRequestResult> {
     let mcp_tools = sess
         .services
         .mcp_connection_manager
@@ -2684,15 +2755,13 @@ async fn run_model_turn(
         output_schema: turn_context.final_output_json_schema.clone(),
     };
 
-    let mut client_session = turn_context.client.new_session();
-
     let mut retries = 0;
     loop {
-        let err = match try_run_turn(
+        let err = match try_run_sampling_request(
             Arc::clone(&router),
             Arc::clone(&sess),
             Arc::clone(&turn_context),
-            &mut client_session,
+            client_session,
             Arc::clone(&turn_diff_tracker),
             &prompt,
             cancellation_token.child_token(),
@@ -2728,7 +2797,9 @@ async fn run_model_turn(
                 }
                 _ => backoff(retries),
             };
-            warn!("stream disconnected - retrying turn ({retries}/{max_retries} in {delay:?})...",);
+            warn!(
+                "stream disconnected - retrying sampling request ({retries}/{max_retries} in {delay:?})...",
+            );
 
             // Surface retry information to any UI/front‑end so the
             // user understands what is happening instead of staring
@@ -2748,7 +2819,7 @@ async fn run_model_turn(
 }
 
 #[derive(Debug)]
-struct TurnRunResult {
+struct SamplingRequestResult {
     needs_follow_up: bool,
     last_agent_message: Option<String>,
 }
@@ -2780,7 +2851,7 @@ async fn drain_in_flight(
         model = %turn_context.client.get_model()
     )
 )]
-async fn try_run_turn(
+async fn try_run_sampling_request(
     router: Arc<ToolRouter>,
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
@@ -2788,7 +2859,7 @@ async fn try_run_turn(
     turn_diff_tracker: SharedTurnDiffTracker,
     prompt: &Prompt,
     cancellation_token: CancellationToken,
-) -> CodexResult<TurnRunResult> {
+) -> CodexResult<SamplingRequestResult> {
     let rollout_item = RolloutItem::TurnContext(TurnContextItem {
         cwd: turn_context.cwd.clone(),
         approval_policy: turn_context.approval_policy,
@@ -2832,7 +2903,7 @@ async fn try_run_turn(
     let mut active_item: Option<TurnItem> = None;
     let mut should_emit_turn_diff = false;
     let receiving_span = trace_span!("receiving_stream");
-    let outcome: CodexResult<TurnRunResult> = loop {
+    let outcome: CodexResult<SamplingRequestResult> = loop {
         let handle_responses = trace_span!(
             parent: &receiving_span,
             "handle_responses",
@@ -2902,9 +2973,10 @@ async fn try_run_turn(
             }
             ResponseEvent::ModelsEtag(etag) => {
                 // Update internal state with latest models etag
+                let config = sess.get_config().await;
                 sess.services
                     .models_manager
-                    .refresh_if_new_etag(etag, sess.features.enabled(Feature::RemoteModels))
+                    .refresh_if_new_etag(etag, &config)
                     .await;
             }
             ResponseEvent::Completed {
@@ -2916,9 +2988,8 @@ async fn try_run_turn(
                 should_emit_turn_diff = true;
 
                 needs_follow_up |= sess.has_pending_input().await;
-                error!("needs_follow_up: {needs_follow_up}");
 
-                break Ok(TurnRunResult {
+                break Ok(SamplingRequestResult {
                     needs_follow_up,
                     last_agent_message,
                 });
@@ -3920,6 +3991,7 @@ mod tests {
         let (sess, tc, rx) = make_session_and_context_with_rx().await;
         let input = vec![UserInput::Text {
             text: "hello".to_string(),
+            text_elements: Vec::new(),
         }];
         sess.spawn_task(
             Arc::clone(&tc),
@@ -3949,6 +4021,7 @@ mod tests {
         let (sess, tc, rx) = make_session_and_context_with_rx().await;
         let input = vec![UserInput::Text {
             text: "hello".to_string(),
+            text_elements: Vec::new(),
         }];
         sess.spawn_task(
             Arc::clone(&tc),
@@ -3975,6 +4048,7 @@ mod tests {
         let (sess, tc, rx) = make_session_and_context_with_rx().await;
         let input = vec![UserInput::Text {
             text: "start review".to_string(),
+            text_elements: Vec::new(),
         }];
         sess.spawn_task(Arc::clone(&tc), input, ReviewTask::new())
             .await;
