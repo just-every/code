@@ -8,6 +8,7 @@ use code_protocol::openai_models::ApplyPatchToolType as ProtocolApplyPatchToolTy
 use code_protocol::openai_models::ModelInfo;
 use code_protocol::openai_models::ModelsResponse;
 use code_protocol::openai_models::ReasoningEffort as ProtocolReasoningEffort;
+use code_protocol::openai_models::TruncationMode as ProtocolTruncationMode;
 use reqwest::header;
 use reqwest::Method;
 use reqwest::Url;
@@ -352,6 +353,8 @@ pub fn apply_model_info_overrides(info: &ModelInfo, mut family: ModelFamily) -> 
         family.set_auto_compact_token_limit(Some(limit));
     }
 
+    family.set_truncation_policy(map_truncation_policy(&info.truncation_policy));
+
     family.supports_reasoning_summaries = info.supports_reasoning_summaries;
     family.supports_parallel_tool_calls = info.supports_parallel_tool_calls;
     if let Some(effort) = info.default_reasoning_level {
@@ -377,6 +380,16 @@ fn map_reasoning_effort(effort: ProtocolReasoningEffort) -> crate::config_types:
         ProtocolReasoningEffort::Medium => LocalEffort::Medium,
         ProtocolReasoningEffort::High => LocalEffort::High,
         ProtocolReasoningEffort::XHigh => LocalEffort::XHigh,
+    }
+}
+
+fn map_truncation_policy(
+    policy: &code_protocol::openai_models::TruncationPolicyConfig,
+) -> code_protocol::protocol::TruncationPolicy {
+    let limit = usize::try_from(policy.limit).unwrap_or(usize::MAX);
+    match policy.mode {
+        ProtocolTruncationMode::Bytes => code_protocol::protocol::TruncationPolicy::Bytes(limit),
+        ProtocolTruncationMode::Tokens => code_protocol::protocol::TruncationPolicy::Tokens(limit),
     }
 }
 

@@ -1,5 +1,6 @@
 use crate::config_types::ReasoningEffort;
 use crate::tool_apply_patch::ApplyPatchToolType;
+use code_protocol::protocol::TruncationPolicy;
 
 /// The `instructions` field in the payload sent to a model should always start
 /// with this content.
@@ -21,7 +22,7 @@ const CONTEXT_WINDOW_1M: u64 = 1_047_576;
 const MAX_OUTPUT_DEFAULT: u64 = 128_000;
 
 /// A model family is a group of models that share certain characteristics.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelFamily {
     /// The full model slug used to derive this model family, e.g.
     /// "gpt-4.1-2025-04-14".
@@ -39,6 +40,9 @@ pub struct ModelFamily {
 
     /// Maximum number of output tokens that can be generated for the model.
     pub max_output_tokens: Option<u64>,
+
+    /// Truncation policy to apply when recording tool outputs in the model context.
+    pub truncation_policy: TruncationPolicy,
 
     /// Token threshold where we should automatically compact history.
     auto_compact_token_limit: Option<i64>,
@@ -80,6 +84,7 @@ macro_rules! model_family {
             needs_special_apply_patch_instructions: false,
             context_window: Some(CONTEXT_WINDOW_272K),
             max_output_tokens: Some(MAX_OUTPUT_DEFAULT),
+            truncation_policy: TruncationPolicy::Bytes(10_000),
             auto_compact_token_limit: None,
             supports_reasoning_summaries: false,
             default_reasoning_effort: None,
@@ -158,6 +163,7 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
             supports_parallel_tool_calls: true,
             default_reasoning_effort: Some(ReasoningEffort::Medium),
+            truncation_policy: TruncationPolicy::Tokens(10_000),
         )
     } else if slug.starts_with("exp-codex") || slug.starts_with("codex-1p") {
         // Same defaults as gpt-5.2-codex.
@@ -167,6 +173,7 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             base_instructions: GPT_5_2_CODEX_INSTRUCTIONS.to_string(),
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
             supports_parallel_tool_calls: true,
+            truncation_policy: TruncationPolicy::Tokens(10_000),
         )
     } else if slug.starts_with("exp-") {
         model_family!(
@@ -175,6 +182,7 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
             supports_parallel_tool_calls: true,
             default_reasoning_effort: Some(ReasoningEffort::Medium),
+            truncation_policy: TruncationPolicy::Bytes(10_000),
         )
     } else if slug.starts_with("gpt-5.1-codex-max") {
         model_family!(
@@ -184,6 +192,7 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
             context_window: Some(CONTEXT_WINDOW_272K),
             max_output_tokens: Some(MAX_OUTPUT_DEFAULT),
+            truncation_policy: TruncationPolicy::Tokens(10_000),
         )
     } else if slug.starts_with("codex-")
         || slug.starts_with("gpt-5-codex")
@@ -196,6 +205,7 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
             context_window: Some(CONTEXT_WINDOW_272K),
             max_output_tokens: Some(MAX_OUTPUT_DEFAULT),
+            truncation_policy: TruncationPolicy::Tokens(10_000),
         )
     } else if slug.starts_with("gpt-5.2-codex") {
         // Same defaults as gpt-5.1-codex-max.
@@ -207,6 +217,7 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             supports_parallel_tool_calls: true,
             context_window: Some(CONTEXT_WINDOW_272K),
             max_output_tokens: Some(MAX_OUTPUT_DEFAULT),
+            truncation_policy: TruncationPolicy::Tokens(10_000),
         )
     } else if slug.starts_with("bengalfox") {
         model_family!(
@@ -217,6 +228,7 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             supports_parallel_tool_calls: true,
             context_window: Some(CONTEXT_WINDOW_272K),
             max_output_tokens: Some(MAX_OUTPUT_DEFAULT),
+            truncation_policy: TruncationPolicy::Tokens(10_000),
         )
     } else if slug.starts_with("gpt-5.2") {
         model_family!(
@@ -228,6 +240,7 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             supports_parallel_tool_calls: true,
             context_window: Some(CONTEXT_WINDOW_272K),
             max_output_tokens: Some(MAX_OUTPUT_DEFAULT),
+            truncation_policy: TruncationPolicy::Bytes(10_000),
         )
     } else if slug.starts_with("boomslang") {
         model_family!(
@@ -239,6 +252,7 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             supports_parallel_tool_calls: true,
             context_window: Some(CONTEXT_WINDOW_272K),
             max_output_tokens: Some(MAX_OUTPUT_DEFAULT),
+            truncation_policy: TruncationPolicy::Bytes(10_000),
         )
     } else if slug.starts_with("gpt-5.1") {
         model_family!(
@@ -250,6 +264,7 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             supports_parallel_tool_calls: true,
             context_window: Some(CONTEXT_WINDOW_272K),
             max_output_tokens: Some(MAX_OUTPUT_DEFAULT),
+            truncation_policy: TruncationPolicy::Bytes(10_000),
         )
     } else if slug.starts_with("gpt-5") {
         model_family!(
@@ -259,6 +274,7 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             base_instructions: BASE_INSTRUCTIONS_WITH_APPLY_PATCH.to_string(),
             context_window: Some(CONTEXT_WINDOW_272K),
             max_output_tokens: Some(MAX_OUTPUT_DEFAULT),
+            truncation_policy: TruncationPolicy::Bytes(10_000),
         )
     } else {
         None
@@ -272,6 +288,7 @@ pub fn derive_default_model_family(model: &str) -> ModelFamily {
         needs_special_apply_patch_instructions: false,
         context_window: None,
         max_output_tokens: None,
+        truncation_policy: TruncationPolicy::Bytes(10_000),
         auto_compact_token_limit: None,
         supports_reasoning_summaries: false,
         default_reasoning_effort: None,
@@ -291,6 +308,17 @@ impl ModelFamily {
 
     pub fn set_auto_compact_token_limit(&mut self, limit: Option<i64>) {
         self.auto_compact_token_limit = limit;
+    }
+
+    pub fn tool_output_max_bytes(&self) -> usize {
+        match self.truncation_policy {
+            TruncationPolicy::Bytes(limit) => limit,
+            TruncationPolicy::Tokens(limit) => limit.saturating_mul(4),
+        }
+    }
+
+    pub fn set_truncation_policy(&mut self, policy: TruncationPolicy) {
+        self.truncation_policy = policy;
     }
 
     const fn default_auto_compact_limit(context_window: u64) -> i64 {

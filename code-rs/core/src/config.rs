@@ -109,9 +109,6 @@ pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5.2-codex";
 /// files are *silently truncated* to this size so we do not take up too much of
 /// the context window.
 pub(crate) const PROJECT_DOC_MAX_BYTES: usize = 32 * 1024; // 32 KiB
-/// Maximum number of bytes of tool output included in a model request.
-pub(crate) const DEFAULT_TOOL_OUTPUT_MAX_BYTES: usize = 32 * 1024; // 32 KiB
-
 pub(crate) const CONFIG_TOML_FILE: &str = "config.toml";
 
 const DEFAULT_RESPONSES_ORIGINATOR_HEADER: &str = "code_cli_rs";
@@ -1081,6 +1078,7 @@ impl Config {
 
         let model_family =
             find_family_for_model(&model).unwrap_or_else(|| derive_default_model_family(&model));
+        let default_tool_output_max_bytes = model_family.tool_output_max_bytes();
 
         // Chat model reasoning effort (used when other flows follow the chat model).
         let preferred_model_reasoning_effort = config_profile
@@ -1373,7 +1371,7 @@ impl Config {
             project_doc_max_bytes: cfg.project_doc_max_bytes.unwrap_or(PROJECT_DOC_MAX_BYTES),
             tool_output_max_bytes: cfg
                 .tool_output_max_bytes
-                .unwrap_or(DEFAULT_TOOL_OUTPUT_MAX_BYTES),
+                .unwrap_or(default_tool_output_max_bytes),
             project_doc_fallback_filenames: cfg
                 .project_doc_fallback_filenames
                 .unwrap_or_default()
@@ -1664,7 +1662,10 @@ persistence = "none"
             ConfigOverrides::default(),
             code_home.path().to_path_buf(),
         )?;
-        assert_eq!(default_config.tool_output_max_bytes, DEFAULT_TOOL_OUTPUT_MAX_BYTES);
+        assert_eq!(
+            default_config.tool_output_max_bytes,
+            default_config.model_family.tool_output_max_bytes()
+        );
 
         let cfg = toml::from_str::<ConfigToml>("tool_output_max_bytes = 65536")
             .expect("TOML should deserialize");

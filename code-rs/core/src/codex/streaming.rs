@@ -279,6 +279,8 @@ pub(super) async fn submission_loop(
                     .unwrap_or(false);
 
                 let old_model_family = updated_config.model_family.clone();
+                let old_tool_output_max_bytes = updated_config.tool_output_max_bytes;
+                let old_default_tool_output_max_bytes = old_model_family.tool_output_max_bytes();
 
                 updated_config.model = model.clone();
                 updated_config.model_explicit = model_explicit;
@@ -299,6 +301,9 @@ pub(super) async fn submission_loop(
 
                 updated_config.model_family = find_family_for_model(&updated_config.model)
                     .unwrap_or_else(|| derive_default_model_family(&updated_config.model));
+
+                let new_default_tool_output_max_bytes =
+                    updated_config.model_family.tool_output_max_bytes();
 
                 let old_context_window = old_model_family.context_window;
                 let new_context_window = updated_config.model_family.context_window;
@@ -322,6 +327,10 @@ pub(super) async fn submission_loop(
                     old_auto_compact,
                     new_auto_compact,
                 );
+
+                if old_tool_output_max_bytes == old_default_tool_output_max_bytes {
+                    updated_config.tool_output_max_bytes = new_default_tool_output_max_bytes;
+                }
 
                 let skills_outcome =
                     updated_config.skills_enabled.then(|| load_skills(&updated_config));

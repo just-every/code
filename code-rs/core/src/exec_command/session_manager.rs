@@ -23,6 +23,8 @@ use crate::exec_command::exec_command_session::ExecCommandSession;
 use crate::exec_command::session_id::SessionId;
 use code_protocol::models::FunctionCallOutputPayload;
 
+const EXEC_COMMAND_OUTPUT_MAX_BYTES: u64 = 1024 * 1024;
+
 #[derive(Debug, Default)]
 pub struct SessionManager {
     next_session_id: AtomicU32,
@@ -271,7 +273,10 @@ impl SessionManager {
 
         // Collect output until either timeout expires or process exits.
         // Enforce the byte cap incrementally so runaway commands cannot exhaust memory.
-        let cap_bytes_u64 = params.max_output_tokens.saturating_mul(4);
+        let cap_bytes_u64 = params
+            .max_output_tokens
+            .saturating_mul(4)
+            .min(EXEC_COMMAND_OUTPUT_MAX_BYTES);
         let cap_bytes: usize = cap_bytes_u64.min(usize::MAX as u64) as usize;
         let mut collector = TruncatingCollector::new(cap_bytes);
 
@@ -367,7 +372,9 @@ impl SessionManager {
             return Err("failed to write to stdin".to_string());
         }
 
-        let cap_bytes_u64 = max_output_tokens.saturating_mul(4);
+        let cap_bytes_u64 = max_output_tokens
+            .saturating_mul(4)
+            .min(EXEC_COMMAND_OUTPUT_MAX_BYTES);
         let cap_bytes: usize = cap_bytes_u64.min(usize::MAX as u64) as usize;
 
         // Collect output up to yield_time_ms, truncating to max_output_tokens bytes.
