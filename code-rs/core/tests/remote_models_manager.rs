@@ -30,7 +30,7 @@ fn remote_model(slug: &str, display: &str, priority: i32) -> ModelInfo {
         "supported_in_api": true,
         "priority": priority,
         "upgrade": null,
-        "base_instructions": null,
+        "base_instructions": "",
         "supports_reasoning_summaries": false,
         "support_verbosity": false,
         "default_verbosity": null,

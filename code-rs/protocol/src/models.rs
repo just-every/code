@@ -56,6 +56,8 @@ pub enum ContentItem {
     OutputText { text: String },
 }
 
+pub const VIEW_IMAGE_TOOL_NAME: &str = "view_image";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseItem {
@@ -75,6 +77,7 @@ pub enum ResponseItem {
     },
     /// Produced by the /responses/compact endpoint. Carries an encrypted summary
     /// of the prior conversation that must be forwarded verbatim on the next turn.
+    #[serde(alias = "compaction")]
     CompactionSummary {
         encrypted_content: String,
     },

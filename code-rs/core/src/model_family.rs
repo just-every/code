@@ -289,6 +289,10 @@ impl ModelFamily {
             .or(self.context_window.map(Self::default_auto_compact_limit))
     }
 
+    pub fn set_auto_compact_token_limit(&mut self, limit: Option<i64>) {
+        self.auto_compact_token_limit = limit;
+    }
+
     const fn default_auto_compact_limit(context_window: u64) -> i64 {
         // Match upstream behaviour: 90% of the context window.
         ((context_window as i64) * 9) / 10

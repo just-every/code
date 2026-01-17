@@ -1,8 +1,11 @@
+use crate::spawn::CODEX_SANDBOX_ENV_VAR;
 use reqwest::header::HeaderValue;
 use std::sync::LazyLock;
 use std::sync::Mutex;
+use std::sync::RwLock;
 
 pub const DEFAULT_ORIGINATOR: &str = "code_cli_rs";
+pub const CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR: &str = "CODEX_INTERNAL_ORIGINATOR_OVERRIDE";
 
 /// Optional suffix for the Codex User-Agent string.
 ///
@@ -12,12 +15,85 @@ pub const DEFAULT_ORIGINATOR: &str = "code_cli_rs";
 /// passing an explicit originator.
 pub static USER_AGENT_SUFFIX: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
 
-pub fn get_code_user_agent(originator: Option<&str>) -> String {
+#[derive(Debug, Clone)]
+pub struct Originator {
+    pub value: String,
+    pub header_value: HeaderValue,
+}
+
+static ORIGINATOR: LazyLock<RwLock<Option<Originator>>> = LazyLock::new(|| RwLock::new(None));
+
+#[derive(Debug)]
+pub enum SetOriginatorError {
+    InvalidHeaderValue,
+    AlreadyInitialized,
+}
+
+fn get_originator_value(provided: Option<String>) -> Originator {
+    let value = std::env::var(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR)
+        .ok()
+        .or(provided)
+        .unwrap_or(DEFAULT_ORIGINATOR.to_string());
+
+    match HeaderValue::from_str(&value) {
+        Ok(header_value) => Originator {
+            value,
+            header_value,
+        },
+        Err(e) => {
+            tracing::error!("Unable to turn originator override {value} into header value: {e}");
+            Originator {
+                value: DEFAULT_ORIGINATOR.to_string(),
+                header_value: HeaderValue::from_static(DEFAULT_ORIGINATOR),
+            }
+        }
+    }
+}
+
+pub fn set_default_originator(value: String) -> Result<(), SetOriginatorError> {
+    if HeaderValue::from_str(&value).is_err() {
+        return Err(SetOriginatorError::InvalidHeaderValue);
+    }
+    let originator = get_originator_value(Some(value));
+    let Ok(mut guard) = ORIGINATOR.write() else {
+        return Err(SetOriginatorError::AlreadyInitialized);
+    };
+    if guard.is_some() {
+        return Err(SetOriginatorError::AlreadyInitialized);
+    }
+    *guard = Some(originator);
+    Ok(())
+}
+
+pub fn originator() -> Originator {
+    if let Ok(guard) = ORIGINATOR.read()
+        && let Some(originator) = guard.as_ref()
+    {
+        return originator.clone();
+    }
+
+    if std::env::var(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR).is_ok() {
+        let originator = get_originator_value(None);
+        if let Ok(mut guard) = ORIGINATOR.write() {
+            match guard.as_ref() {
+                Some(originator) => return originator.clone(),
+                None => *guard = Some(originator.clone()),
+            }
+        }
+        return originator;
+    }
+
+    get_originator_value(None)
+}
+
+pub fn get_code_user_agent(originator_override: Option<&str>) -> String {
     let build_version = code_version::version();
     let os_info = os_info::get();
+    let originator_value = originator_override
+        .map(str::to_string)
+        .unwrap_or_else(|| originator().value);
     let prefix = format!(
-        "{}/{build_version} ({} {}; {}) {}",
-        originator.unwrap_or(DEFAULT_ORIGINATOR),
+        "{originator_value}/{build_version} ({} {}; {}) {}",
         os_info.os_type(),
         os_info.version(),
         os_info.architecture().unwrap_or("unknown"),
@@ -68,20 +144,25 @@ pub fn create_client(originator: &str) -> reqwest::Client {
     use reqwest::header::HeaderValue;
 
     let mut headers = HeaderMap::new();
-    let originator_value = HeaderValue::from_str(originator)
+    let originator = get_originator_value(Some(originator.to_string()));
+    let originator_value = HeaderValue::from_str(&originator.value)
         .unwrap_or_else(|_| HeaderValue::from_static(DEFAULT_ORIGINATOR));
     headers.insert("originator", originator_value);
-    let ua = get_code_user_agent(Some(originator));
+    let ua = get_code_user_agent(Some(originator.value.as_str()));
 
-    match reqwest::Client::builder()
+    let mut builder = reqwest::Client::builder()
         // Set UA via dedicated helper to avoid header validation pitfalls
         .user_agent(ua)
-        .default_headers(headers)
-        .build()
-    {
-        Ok(client) => client,
-        Err(_) => reqwest::Client::new(),
+        .default_headers(headers);
+    if is_sandboxed() {
+        builder = builder.no_proxy();
     }
+
+    builder.build().unwrap_or_else(|_| reqwest::Client::new())
+}
+
+fn is_sandboxed() -> bool {
+    std::env::var(CODEX_SANDBOX_ENV_VAR).as_deref() == Ok("seatbelt")
 }
 
 #[cfg(test)]

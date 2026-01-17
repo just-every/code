@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -54,6 +55,7 @@ pub struct ModelUpgrade {
     pub migration_config_key: String,
     pub model_link: Option<String>,
     pub upgrade_copy: Option<String>,
+    pub migration_markdown: Option<String>,
 }
 
 /// Metadata describing a Codex-supported model.
@@ -73,7 +75,7 @@ pub struct ModelPreset {
     pub supported_reasoning_efforts: Vec<ReasoningEffortPreset>,
     /// Whether this is the default model for new users.
     pub is_default: bool,
-    /// recommended upgrade model
+    /// Recommended upgrade model.
     pub upgrade: Option<ModelUpgrade>,
     /// Whether this preset should appear in the picker UI.
     pub show_in_picker: bool,
@@ -155,28 +157,70 @@ impl TruncationPolicyConfig {
     }
 }
 
+/// Semantic version triple encoded as an array in JSON (e.g. [0, 62, 0]).
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, TS, JsonSchema)]
+pub struct ClientVersion(pub i32, pub i32, pub i32);
+
+const fn default_effective_context_window_percent() -> i64 {
+    95
+}
+
 /// Model metadata returned by the Codex backend `/models` endpoint.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
 pub struct ModelInfo {
     pub slug: String,
     pub display_name: String,
     pub description: Option<String>,
-    pub default_reasoning_level: ReasoningEffort,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_reasoning_level: Option<ReasoningEffort>,
     pub supported_reasoning_levels: Vec<ReasoningEffortPreset>,
     pub shell_type: ConfigShellToolType,
     pub visibility: ModelVisibility,
     pub supported_in_api: bool,
     pub priority: i32,
-    pub upgrade: Option<String>,
-    pub base_instructions: Option<String>,
+    pub upgrade: Option<ModelInfoUpgrade>,
+    pub base_instructions: String,
     pub supports_reasoning_summaries: bool,
     pub support_verbosity: bool,
     pub default_verbosity: Option<Verbosity>,
     pub apply_patch_tool_type: Option<ApplyPatchToolType>,
     pub truncation_policy: TruncationPolicyConfig,
     pub supports_parallel_tool_calls: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<i64>,
+    /// Token threshold for automatic compaction. When omitted, core derives it
+    /// from `context_window` (90%).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_compact_token_limit: Option<i64>,
+    /// Percentage of the context window considered usable for inputs, after
+    /// reserving headroom for system prompts, tool overhead, and model output.
+    #[serde(default = "default_effective_context_window_percent")]
+    pub effective_context_window_percent: i64,
     pub experimental_supported_tools: Vec<String>,
+}
+
+impl ModelInfo {
+    pub fn auto_compact_token_limit(&self) -> Option<i64> {
+        self.auto_compact_token_limit.or_else(|| {
+            self.context_window
+                .map(|context_window| (context_window * 9) / 10)
+        })
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
+pub struct ModelInfoUpgrade {
+    pub model: String,
+    pub migration_markdown: String,
+}
+
+impl From<&ModelUpgrade> for ModelInfoUpgrade {
+    fn from(upgrade: &ModelUpgrade) -> Self {
+        ModelInfoUpgrade {
+            model: upgrade.id.clone(),
+            migration_markdown: upgrade.migration_markdown.clone().unwrap_or_default(),
+        }
+    }
 }
 
 /// Response wrapper for `/models`.
@@ -193,21 +237,64 @@ impl From<ModelInfo> for ModelPreset {
             model: info.slug.clone(),
             display_name: info.display_name,
             description: info.description.unwrap_or_default(),
-            default_reasoning_effort: info.default_reasoning_level,
+            default_reasoning_effort: info
+                .default_reasoning_level
+                .unwrap_or(ReasoningEffort::None),
             supported_reasoning_efforts: info.supported_reasoning_levels.clone(),
             is_default: false, // default is the highest priority available model
-            upgrade: info.upgrade.as_ref().map(|upgrade_slug| ModelUpgrade {
-                id: upgrade_slug.clone(),
+            upgrade: info.upgrade.as_ref().map(|upgrade| ModelUpgrade {
+                id: upgrade.model.clone(),
                 reasoning_effort_mapping: reasoning_effort_mapping_from_presets(
                     &info.supported_reasoning_levels,
                 ),
                 migration_config_key: info.slug.clone(),
                 model_link: None,
                 upgrade_copy: None,
+                migration_markdown: Some(upgrade.migration_markdown.clone()),
             }),
             show_in_picker: info.visibility == ModelVisibility::List,
             supported_in_api: info.supported_in_api,
         }
+    }
+}
+
+impl ModelPreset {
+    /// Filter models based on authentication mode.
+    ///
+    /// In ChatGPT mode, all models are visible. Otherwise, only API-supported models are shown.
+    pub fn filter_by_auth(models: Vec<ModelPreset>, chatgpt_mode: bool) -> Vec<ModelPreset> {
+        models
+            .into_iter()
+            .filter(|model| chatgpt_mode || model.supported_in_api)
+            .collect()
+    }
+
+    /// Merge remote presets with existing presets, preferring remote when slugs match.
+    ///
+    /// Remote presets take precedence. Existing presets not in remote are appended with `is_default` set to false.
+    pub fn merge(
+        remote_presets: Vec<ModelPreset>,
+        existing_presets: Vec<ModelPreset>,
+    ) -> Vec<ModelPreset> {
+        if remote_presets.is_empty() {
+            return existing_presets;
+        }
+
+        let remote_slugs: HashSet<&str> = remote_presets
+            .iter()
+            .map(|preset| preset.model.as_str())
+            .collect();
+
+        let mut merged_presets = remote_presets.clone();
+        for mut preset in existing_presets {
+            if remote_slugs.contains(preset.model.as_str()) {
+                continue;
+            }
+            preset.is_default = false;
+            merged_presets.push(preset);
+        }
+
+        merged_presets
     }
 }
 
@@ -240,10 +327,14 @@ fn effort_rank(effort: ReasoningEffort) -> i32 {
 }
 
 fn nearest_effort(target: ReasoningEffort, supported: &[ReasoningEffort]) -> ReasoningEffort {
-    let target_rank = effort_rank(target);
-    supported
-        .iter()
-        .copied()
-        .min_by_key(|candidate| (effort_rank(*candidate) - target_rank).abs())
-        .unwrap_or(target)
+    let mut best = supported[0];
+    let mut best_distance = i32::MAX;
+    for &effort in supported {
+        let distance = (effort_rank(effort) - effort_rank(target)).abs();
+        if distance < best_distance {
+            best = effort;
+            best_distance = distance;
+        }
+    }
+    best
 }
