@@ -32,6 +32,13 @@ body:
       description: |
         For MacOS and Linux: copy the output of `uname -mprs`
         For Windows: copy the output of `"$([Environment]::OSVersion | ForEach-Object VersionString) $(if ([Environment]::Is64BitOperatingSystem) { "x64" } else { "x86" })"` in the PowerShell console
+  - type: input
+    id: terminal
+    attributes:
+      label: What terminal emulator and version are you using (if applicable)?
+      description: Also note any multiplexer in use (screen / tmux / zellij)
+      description: |
+        E.g, VSCode, Terminal.app, iTerm2, Ghostty, Windows Terminal (WSL / PowerShell)
   - type: textarea
     id: steps
     attributes:
