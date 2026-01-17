@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.6.49] - 2026-01-17
+
+- CLI/Fork: /fork now clones the current session and surfaces the source session id in /status. (e893e83e, c26fe645)
+- Auth: add device code login for headless environments to simplify setup. (13159006)
+- TUI/Auto-review: persist review baselines across sessions to avoid repeated prompts. (8aba6b6f)
+- Core: align tool output caps with model policy to prevent unexpected truncation. (63dcaeda)
+- API: allow listing threads ordered by created_at or updated_at for predictable pagination. (f1653dd4)
+
 ## [0.6.48] - 2026-01-14
 
 - Browser: stabilize /browser command handling and diff rendering for reliable runs. (bfd15335)
