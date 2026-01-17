@@ -130,6 +130,33 @@ fn should_restart_handler(consecutive_errors: u32) -> bool {
     consecutive_errors >= HANDLER_ERROR_LIMIT
 }
 
+fn should_ignore_handler_error(message_lower: &str) -> bool {
+    // Chromiumoxide uses oneshot channels internally for CDP request/response.
+    // When we cancel or time out an in-flight request (dropping its future), the
+    // CDP runtime may surface this as an error string containing "oneshot".
+    // These should not be treated as connection failures.
+    if message_lower.contains("oneshot") {
+        return true;
+    }
+
+    // These can happen for individual targets/tabs while the overall CDP
+    // connection is still healthy (e.g. tabs closing, navigations, reloads).
+    const TRANSIENT_SUBSTRINGS: &[&str] = &[
+        "no such session",
+        "session closed",
+        "invalid session",
+        "target closed",
+        "target crashed",
+        "context destroyed",
+        "execution context was destroyed",
+        "cannot find context",
+    ];
+
+    TRANSIENT_SUBSTRINGS
+        .iter()
+        .any(|needle| message_lower.contains(needle))
+}
+
 fn should_stop_handler<E: std::fmt::Display>(
     label: &'static str,
     result: std::result::Result<(), E>,
@@ -143,10 +170,7 @@ fn should_stop_handler<E: std::fmt::Display>(
         Err(err) => {
             let message = err.to_string();
             let message_lower = message.to_ascii_lowercase();
-            // Chromiumoxide surfaces "oneshot canceled" when a request future is dropped
-            // (e.g., due to our own timeouts). These are expected and should not
-            // be treated as connection failures.
-            if message_lower.contains("oneshot canceled") || message_lower.contains("oneshot cancelled") {
+            if should_ignore_handler_error(&message_lower) {
                 *consecutive_errors = 0;
                 debug!("{label} event handler error ignored: {message}");
                 return false;
@@ -1849,6 +1873,7 @@ impl BrowserManager {
                     "transport",
                     "timeout",
                     "timed out",
+                    "oneshot error",
                     "oneshot canceled",
                     "oneshot cancelled",
                     "resource temporarily unavailable",
@@ -2552,6 +2577,16 @@ mod tests {
             let should_stop = should_stop_handler(
                 "[test]",
                 Err(TestError("oneshot canceled")),
+                &mut consecutive_errors,
+            );
+            assert!(!should_stop);
+            assert_eq!(consecutive_errors, 0);
+        }
+
+        for _ in 0..10 {
+            let should_stop = should_stop_handler(
+                "[test]",
+                Err(TestError("oneshot error")),
                 &mut consecutive_errors,
             );
             assert!(!should_stop);

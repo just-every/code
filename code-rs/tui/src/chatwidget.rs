@@ -504,68 +504,61 @@ impl MergeRepoState {
         let repo_status = Self::format_status_for_context(&self.repo_status);
         let fast_forward_label = if self.fast_forward_possible { "yes" } else { "no" };
         let mut preface = format!(
-            "[developer] Automation skipped because: {}. Finish the merge manually with the steps below.\n\nContext:\n- Worktree path (current cwd): {} — branch {} @ {}, status {}\n- Repo root path: {} — target {} checkout, status {}\n- Fast-forward possible: {}\n",
-            reason_text,
-            self.worktree_path.display(),
-            self.worktree_branch,
-            self.worktree_sha,
-            worktree_status,
-            self.git_root.display(),
-            default_branch_line,
-            repo_status,
-            fast_forward_label,
+            "[developer] Automation skipped because: {reason_text}. Finish the merge manually with the steps below.\n\nContext:\n- Worktree path: {worktree_path} — branch {worktree_branch} @ {worktree_sha}, status {worktree_status}\n- Repo root path (current cwd): {git_root} — target {default_branch_line} checkout, status {repo_status}\n- Fast-forward possible: {fast_forward_label}\n",
+            reason_text = reason_text,
+            worktree_path = self.worktree_path.display(),
+            worktree_branch = self.worktree_branch.as_str(),
+            worktree_sha = self.worktree_sha.as_str(),
+            worktree_status = worktree_status,
+            git_root = self.git_root.display(),
+            default_branch_line = default_branch_line,
+            repo_status = repo_status,
+            fast_forward_label = fast_forward_label,
         );
         preface.push_str(
-            "\nNOTE: Each command runs in its own shell. Use `cd <path> && <command>` (or `git -C <path> ...`) whenever you need to operate in a different directory.\n",
+            "\nNOTE: Each command runs in its own shell. `/merge` switches the working directory to the repo root; use `git -C <path> ...` or `cd <path> && ...` whenever you need to operate in a different directory.\n",
         );
         preface.push_str(&format!(
-            "\n1. Worktree prep (already in {} on {}):\n   - Review `git status`.\n   - Stage and commit every change that belongs in the merge. Use descriptive messages; no network commands and no resets.\n",
-            self.worktree_path.display(),
-            self.worktree_branch,
+            "\n1. Worktree prep (worktree {worktree_path} on {worktree_branch}):\n   - Review `git status`.\n   - Stage and commit every change that belongs in the merge. Use descriptive messages; no network commands and no resets.\n",
+            worktree_path = self.worktree_path.display(),
+            worktree_branch = self.worktree_branch.as_str(),
         ));
         preface.push_str(&format!(
-            "   - When running commands here, prefix them with `cd {} && ...` (or use `git -C {}`) so they actually execute inside the worktree.\n",
-            self.worktree_path.display(),
-            self.worktree_path.display(),
+            "   - Run worktree commands as `git -C {worktree_path}` (or `cd {worktree_path} && ...`) so they execute inside the worktree.\n",
+            worktree_path = self.worktree_path.display(),
         ));
         if let Some(ref default_branch) = self.default_branch {
             preface.push_str(&format!(
-                "2. Default-branch checkout prep:\n   - cd {}\n   - If HEAD is not {}, run `git checkout {}`.\n   - If this checkout is dirty, stash with a clear message before continuing.\n",
-                self.git_root.display(),
-                default_branch,
-                default_branch,
+                "2. Default-branch checkout prep (repo root {git_root}):\n   - If HEAD is not {default_branch}, run `git checkout {default_branch}`.\n   - If this checkout is dirty, stash with a clear message before continuing.\n",
+                git_root = self.git_root.display(),
+                default_branch = default_branch,
             ));
         } else {
             preface.push_str(&format!(
-                "2. Default-branch checkout prep:\n   - cd {}\n   - Determine the correct default branch for this repo (metadata missing) and check it out.\n   - If this checkout is dirty, stash with a clear message before continuing.\n",
-                self.git_root.display(),
+                "2. Default-branch checkout prep (repo root {git_root}):\n   - Determine the correct default branch for this repo (metadata missing) and check it out.\n   - If this checkout is dirty, stash with a clear message before continuing.\n",
+                git_root = self.git_root.display(),
             ));
         }
-        preface.push_str(&format!(
-            "   - Run these commands as `cd {} && ...` (or `git -C {}`) so they execute inside the repo root.\n",
-            self.git_root.display(),
-            self.git_root.display(),
-        ));
         let default_branch_for_copy = self
             .default_branch
             .as_deref()
             .unwrap_or("the default branch you selected");
         preface.push_str(&format!(
-            "3. Merge locally (still in {} on {}):\n   - Run `git merge --no-ff {}`.\n   - Resolve conflicts line by line; keep intent from both branches.\n   - No network commands, no `git reset --hard`, no `git checkout -- .`, no `git clean`, and no `-X ours/theirs`.\n   - WARNING: Do not delete files, rewrite them in full, or checkout/prefer commits from one branch over another. Instead use apply_patch to surgically resolve conflicts, even if they are large in scale. Work on each conflict, line by line, so both branches' changes survive.\n   - If you stashed in step 2, apply/pop it now and commit if needed.\n",
-            self.git_root.display(),
-            default_branch_for_copy,
-            self.worktree_branch,
+            "3. Merge locally (repo root {git_root} on {default_branch_for_copy}):\n   - Run `git merge --no-ff {worktree_branch}`.\n   - Resolve conflicts line by line; keep intent from both branches.\n   - No network commands, no `git reset --hard`, no `git checkout -- .`, no `git clean`, and no `-X ours/theirs`.\n   - WARNING: Do not delete files, rewrite them in full, or checkout/prefer commits from one branch over another. Instead use apply_patch to surgically resolve conflicts, even if they are large in scale. Work on each conflict, line by line, so both branches' changes survive.\n   - If you stashed in step 2, apply/pop it now and commit if needed.\n",
+            git_root = self.git_root.display(),
+            default_branch_for_copy = default_branch_for_copy,
+            worktree_branch = self.worktree_branch.as_str(),
         ));
         preface.push_str(&format!(
-            "4. Verify in {}:\n   - `git status` is clean.\n   - `git merge-base --is-ancestor {} HEAD` succeeds.\n   - No MERGE_HEAD/rebase/cherry-pick artifacts remain.\n",
-            self.git_root.display(),
-            self.worktree_branch,
+            "4. Verify in {git_root}:\n   - `git status` is clean.\n   - `git merge-base --is-ancestor {worktree_branch} HEAD` succeeds.\n   - No MERGE_HEAD/rebase/cherry-pick artifacts remain.\n",
+            git_root = self.git_root.display(),
+            worktree_branch = self.worktree_branch.as_str(),
         ));
         preface.push_str(&format!(
-            "5. Cleanup:\n   - `git worktree remove {}` (only after verification).\n   - `git branch -D {}` in {} if the branch still exists.\n",
-            self.worktree_path.display(),
-            self.worktree_branch,
-            self.git_root.display(),
+            "5. Cleanup:\n   - `git worktree remove {worktree_path}` (only after verification).\n   - `git branch -D {worktree_branch}` in {git_root} if the branch still exists.\n",
+            worktree_path = self.worktree_path.display(),
+            worktree_branch = self.worktree_branch.as_str(),
+            git_root = self.git_root.display(),
         ));
         preface.push_str(
             "6. Report back with a concise command log and any conflicts you resolved.\n\nAbsolute rules: no network operations, no resets, no dropping local history, no blanket \"ours/theirs\" strategies.\n",
@@ -36162,15 +36155,17 @@ impl ChatWidget<'_> {
                     reasons.push("manual follow-up requested".to_string());
                 }
                 let reason_text = reasons.join(", ");
+                if state.git_root != state.worktree_path {
+                    let _ = tx.send(AppEvent::SwitchCwd(state.git_root.clone(), None));
+                }
                 send_background(
                     tx,
                     ticket,
-                    format!("`/merge` — handing off to agent ({})", reason_text),
+                    format!("`/merge` — handing off to agent ({reason_text})"),
                 );
-                let visible = format!(
-                    "Finalize branch '{}' via /merge (agent merge required)",
-                    state.worktree_branch
-                );
+                let worktree_branch = state.worktree_branch.as_str();
+                let visible =
+                    format!("Finalize branch '{worktree_branch}' via /merge (agent merge required)");
                 let preface = state.agent_preface(&reason_text);
                 let _ = tx.send(AppEvent::SubmitTextWithPreface { visible, preface });
             }
