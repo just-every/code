@@ -6238,13 +6238,7 @@ impl ChatWidget<'_> {
 
     fn interrupt_running_task(&mut self) {
         let bottom_running = self.bottom_pane.is_task_running();
-        let exec_related_running = !self.exec.running_commands.is_empty()
-            || !self.tools_state.running_custom_tools.is_empty()
-            || !self.tools_state.web_search_sessions.is_empty()
-            || !self.tools_state.running_wait_tools.is_empty()
-            || !self.tools_state.running_kill_tools.is_empty();
-
-        if !(bottom_running || exec_related_running) {
+        if !self.is_task_running() {
             return;
         }
 
@@ -24463,12 +24457,7 @@ Have we met every part of this goal and is there no further work to do?"#
             CancellationEvent::Handled => return CancellationEvent::Handled,
             CancellationEvent::Ignored => {}
         }
-        let exec_related_running = !self.exec.running_commands.is_empty()
-            || !self.tools_state.running_custom_tools.is_empty()
-            || !self.tools_state.web_search_sessions.is_empty()
-            || !self.tools_state.running_wait_tools.is_empty()
-            || !self.tools_state.running_kill_tools.is_empty();
-        if self.bottom_pane.is_task_running() || exec_related_running {
+        if self.is_task_running() {
             self.interrupt_running_task();
             CancellationEvent::Ignored
         } else if self.bottom_pane.ctrl_c_quit_hint_visible() {
