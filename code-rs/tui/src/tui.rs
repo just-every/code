@@ -345,9 +345,16 @@ pub fn stdout_ready_for_writes() -> bool {
 }
 
 fn should_enable_alternate_scroll_mode() -> bool {
-    // macOS Terminal hijacks scrolling when 1007h is set without also enabling
-    // mouse reporting, so skip the escape in that environment.
-    !matches!(env::var("TERM_PROGRAM"), Ok(value) if value.eq_ignore_ascii_case("Apple_Terminal"))
+    // Hard overrides first.
+    if env::var("CODE_DISABLE_ALT_SCROLL").map(|v| v == "1").unwrap_or(false) {
+        return false;
+    }
+    if env::var("CODE_ENABLE_ALT_SCROLL").map(|v| v == "1").unwrap_or(false) {
+        return true;
+    }
+
+    // Default off to preserve native terminal scrollback + selection behavior.
+    false
 }
 
 /// Clear the current screen (normal buffer) with the theme background and reset cursor.
@@ -428,7 +435,7 @@ pub(crate) fn should_enable_keyboard_enhancement() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::should_enable_keyboard_enhancement;
+    use super::{should_enable_alternate_scroll_mode, should_enable_keyboard_enhancement};
 
     #[test]
     fn keyboard_enhancement_respects_env_overrides() {
@@ -456,6 +463,31 @@ mod tests {
         restore_env("WT_SESSION", prev_wt_session);
         restore_env("CODE_ENABLE_KBD_ENHANCEMENT", prev_enable);
         restore_env("CODE_DISABLE_KBD_ENHANCEMENT", prev_disable);
+    }
+
+    #[test]
+    fn alternate_scroll_mode_respects_env_overrides() {
+        let prev_enable = std::env::var("CODE_ENABLE_ALT_SCROLL").ok();
+        let prev_disable = std::env::var("CODE_DISABLE_ALT_SCROLL").ok();
+
+        unsafe {
+            std::env::remove_var("CODE_ENABLE_ALT_SCROLL");
+            std::env::remove_var("CODE_DISABLE_ALT_SCROLL");
+        }
+        assert!(!should_enable_alternate_scroll_mode());
+
+        unsafe {
+            std::env::set_var("CODE_ENABLE_ALT_SCROLL", "1");
+        }
+        assert!(should_enable_alternate_scroll_mode());
+
+        unsafe {
+            std::env::set_var("CODE_DISABLE_ALT_SCROLL", "1");
+        }
+        assert!(!should_enable_alternate_scroll_mode());
+
+        restore_env("CODE_ENABLE_ALT_SCROLL", prev_enable);
+        restore_env("CODE_DISABLE_ALT_SCROLL", prev_disable);
     }
 
     fn restore_env(key: &str, value: Option<String>) {

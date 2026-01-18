@@ -322,8 +322,18 @@ fn extract_frontmatter(contents: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::symlink;
     use tempfile::TempDir;
+
+    /// Cross-platform directory symlink helper.
+    #[cfg(unix)]
+    fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(src, dst)
+    }
+
+    #[cfg(windows)]
+    fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_dir(src, dst)
+    }
 
     fn write_skill(dir: &Path, name: &str, description: &str) -> PathBuf {
         let skill_dir = dir.join(name);
@@ -348,7 +358,7 @@ mod tests {
         write_skill(shared.path(), "shared-skill", "A shared skill");
 
         // Symlink the shared directory into skills root
-        symlink(shared.path(), skills_root.join("shared")).unwrap();
+        symlink_dir(shared.path(), &skills_root.join("shared")).unwrap();
 
         let mut outcome = SkillLoadOutcome::default();
         discover_skills_under_root(&skills_root, SkillScope::User, &mut outcome);
@@ -368,7 +378,7 @@ mod tests {
         write_skill(shared.path(), "shared-skill", "A shared skill");
 
         // Symlink the shared directory into skills root
-        symlink(shared.path(), skills_root.join("shared")).unwrap();
+        symlink_dir(shared.path(), &skills_root.join("shared")).unwrap();
 
         let mut outcome = SkillLoadOutcome::default();
         discover_skills_under_root(&skills_root, SkillScope::System, &mut outcome);
@@ -384,7 +394,7 @@ mod tests {
         fs::create_dir_all(&cycle_dir).unwrap();
 
         // Create a circular symlink
-        symlink(&cycle_dir, cycle_dir.join("loop")).unwrap();
+        symlink_dir(&cycle_dir, &cycle_dir.join("loop")).unwrap();
 
         // Also add a real skill to verify we still find it
         write_skill(&cycle_dir, "real-skill", "A real skill");
