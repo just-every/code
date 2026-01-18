@@ -219,7 +219,8 @@ use crate::history::compat::{
 };
 
 pub(crate) const DOUBLE_ESC_HINT: &str = "undo timeline";
-const AUTO_ESC_EXIT_HINT: &str = "Press Esc again to exit Auto Drive";
+const AUTO_ESC_EXIT_HINT: &str = "Press Esc to exit Auto Drive";
+const AUTO_ESC_EXIT_HINT_DOUBLE: &str = "Press Esc again to exit Auto Drive";
 const AUTO_COMPLETION_CELEBRATION_DURATION: Duration = Duration::from_secs(5);
 const HISTORY_ANIMATION_FRAME_INTERVAL: Duration = Duration::from_millis(120);
 const AUTO_BOOTSTRAP_GOAL_PLACEHOLDER: &str = "Deriving goal from recent conversation";
@@ -3730,7 +3731,7 @@ impl ChatWidget<'_> {
         } else if self
             .bottom_pane
             .standard_terminal_hint()
-            .is_some_and(|hint| hint == AUTO_ESC_EXIT_HINT)
+            .is_some_and(|hint| hint == AUTO_ESC_EXIT_HINT || hint == AUTO_ESC_EXIT_HINT_DOUBLE)
         {
             self.bottom_pane.set_standard_terminal_hint(None);
         }
@@ -18653,7 +18654,7 @@ Have we met every part of this goal and is there no further work to do?"#
                     self.bottom_pane
                         .update_status_text("Auto Drive paused".to_string());
                     self.bottom_pane.set_standard_terminal_hint(Some(
-                        "Press Esc again to exit Auto Drive".to_string(),
+                        AUTO_ESC_EXIT_HINT.to_string(),
                     ));
                     let message = format!(
                         "Auto Drive will retry automatically in {human_delay} (attempt {attempt}). Last error: {reason}"
@@ -19740,6 +19741,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 .clone()
                 .filter(|value| !value.trim().is_empty())
         };
+        let has_cli_prompt = cli_prompt.is_some();
 
         let bootstrap_pending = self.auto_pending_goal_request;
         let continue_cta_active = self.auto_should_show_continue_cta();
@@ -19758,7 +19760,6 @@ Have we met every part of this goal and is there no further work to do?"#
         };
 
         let button = if self.auto_state.awaiting_coordinator_submit() {
-            let has_cli_prompt = cli_prompt.is_some();
             let base_label = if bootstrap_pending {
                 "Complete Current Task"
             } else if has_cli_prompt {
@@ -19786,6 +19787,12 @@ Have we met every part of this goal and is there no further work to do?"#
                 Some("Edit the prompt, then press Enter to continue.".to_string())
             } else if bootstrap_pending {
                 None
+            } else if has_cli_prompt {
+                if countdown_active {
+                    Some("Enter to send now • Esc to edit".to_string())
+                } else {
+                    Some("Enter to send • Esc to edit".to_string())
+                }
             } else if continue_cta_active {
                 if countdown_active {
                     Some("Enter to continue now • Esc to stop".to_string())
@@ -19793,16 +19800,15 @@ Have we met every part of this goal and is there no further work to do?"#
                     Some("Enter to continue • Esc to stop".to_string())
                 }
             } else if countdown_active {
-                Some("Enter to send now • Esc to edit".to_string())
+                Some("Enter to send now • Esc to stop".to_string())
             } else {
-                Some("Enter to send • Esc to edit".to_string())
+                Some("Enter to send • Esc to stop".to_string())
             }
         } else {
             None
         };
 
         let ctrl_switch_hint = if self.auto_state.awaiting_coordinator_submit() {
-            let has_cli_prompt = cli_prompt.is_some();
             if self.auto_state.is_paused_manual() {
                 "Esc to cancel".to_string()
             } else if bootstrap_pending {
@@ -19812,7 +19818,7 @@ Have we met every part of this goal and is there no further work to do?"#
             } else if continue_cta_active {
                 "Esc to stop".to_string()
             } else {
-                "Esc to edit".to_string()
+                "Esc to stop".to_string()
             }
         } else if self.auto_state.is_waiting_for_response() {
             String::new()
@@ -30077,6 +30083,19 @@ use code_core::protocol::OrderMeta;
         let chat = harness.chat();
 
         chat.auto_state.on_begin_review(false);
+
+        let route = chat.describe_esc_context();
+        assert_eq!(route.intent, EscIntent::AutoStopActive);
+        assert!(!route.allows_double_esc);
+    }
+
+    #[test]
+    fn esc_router_stops_auto_drive_while_waiting_for_response() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.auto_state.set_phase(AutoRunPhase::Active);
+        chat.auto_state.set_coordinator_waiting(true);
 
         let route = chat.describe_esc_context();
         assert_eq!(route.intent, EscIntent::AutoStopActive);

@@ -639,7 +639,7 @@ impl AutoDriveController {
             AutoControllerEffect::CancelCoordinator,
             AutoControllerEffect::SetTaskRunning { running: false },
             AutoControllerEffect::UpdateTerminalHint {
-                hint: Some("Press Esc again to exit Auto Drive".to_string()),
+                hint: Some("Press Esc to exit Auto Drive".to_string()),
             },
             AutoControllerEffect::TransientPause {
                 attempt: pending_attempt,

@@ -1,7 +1,7 @@
 use crossterm::event::KeyEvent;
 use std::time::{Duration, Instant};
 
-use super::{ChatWidget, AUTO_ESC_EXIT_HINT, DOUBLE_ESC_HINT};
+use super::{ChatWidget, AUTO_ESC_EXIT_HINT, AUTO_ESC_EXIT_HINT_DOUBLE, DOUBLE_ESC_HINT};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EscIntent {
@@ -60,8 +60,13 @@ impl ChatWidget<'_> {
     }
 
     pub(super) fn show_auto_drive_exit_hint(&mut self) {
+        let hint = if self.auto_state.is_paused_manual() {
+            AUTO_ESC_EXIT_HINT_DOUBLE
+        } else {
+            AUTO_ESC_EXIT_HINT
+        };
         self.bottom_pane
-            .set_standard_terminal_hint(Some(AUTO_ESC_EXIT_HINT.to_string()));
+            .set_standard_terminal_hint(Some(hint.to_string()));
     }
 
     fn auto_stop_via_escape(&mut self, message: Option<String>) {
@@ -115,16 +120,16 @@ impl ChatWidget<'_> {
         }
 
         if self.auto_state.is_active() {
-            let awaiting_continue_cta = self.auto_should_show_continue_cta();
+            let prompt_visible = self.auto_state.awaiting_coordinator_submit()
+                && !self.auto_state.is_paused_manual()
+                && self
+                    .auto_state
+                    .current_cli_prompt
+                    .as_ref()
+                    .map(|prompt| !prompt.trim().is_empty())
+                    .unwrap_or(false);
 
-            if awaiting_continue_cta {
-                return EscRoute::new(EscIntent::AutoStopDuringApproval, true, false);
-            }
-
-            if self.auto_state.countdown_active()
-                || (self.auto_state.awaiting_coordinator_submit()
-                    && !self.auto_state.is_paused_manual())
-            {
+            if prompt_visible {
                 return EscRoute::new(EscIntent::AutoPauseForEdit, true, false);
             }
 
@@ -237,16 +242,17 @@ impl ChatWidget<'_> {
                 let had_running = self.is_task_running();
                 let auto_was_active = self.auto_state.is_active();
                 let _ = self.on_ctrl_c();
-                if had_running {
-                    if auto_was_active {
-                        self.bottom_pane.update_status_text(
-                            "Command cancelled. Esc stops Auto Drive.".to_string(),
-                        );
-                        self.auto_stop_via_escape(Some("Auto Drive stopped by user.".to_string()));
+                if auto_was_active {
+                    let status = if had_running {
+                        "Command cancelled. Esc stops Auto Drive."
                     } else {
-                        self.bottom_pane
-                            .update_status_text("Command cancelled.".to_string());
-                    }
+                        "Auto Drive stopped by user."
+                    };
+                    self.bottom_pane.update_status_text(status.to_string());
+                    self.auto_stop_via_escape(Some("Auto Drive stopped by user.".to_string()));
+                } else if had_running {
+                    self.bottom_pane
+                        .update_status_text("Command cancelled.".to_string());
                 }
                 true
             }
