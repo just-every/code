@@ -299,6 +299,7 @@ cd code
 npm install
 
 # Build (use fast build for development)
+# Requires the Rust toolchain (cargo) installed on your machine
 ./build-fast.sh
 
 # Run locally
