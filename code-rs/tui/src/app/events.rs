@@ -444,18 +444,20 @@ impl App<'_> {
                             kind: KeyEventKind::Press,
                             ..
                         } => {
-                            // Toggle mouse capture to allow text selection
-                            use crossterm::event::DisableMouseCapture;
-                            use crossterm::event::EnableMouseCapture;
-                            use crossterm::execute;
-                            use std::io::stdout;
+                            // Toggle mouse capture to allow text selection.
+                            //
+                            // In full UI (alt screen), mouse capture ensures scroll events are
+                            // delivered to the app so the chat scrolls instead of the terminal.
+                            // In standard terminal mode, we intentionally leave mouse capture
+                            // disabled so the terminal's normal scrollback works.
+                            if self.alt_screen_active {
+                                use crossterm::event::DisableMouseCapture;
+                                use crossterm::event::EnableMouseCapture;
+                                use crossterm::execute;
+                                use std::io::stdout;
 
-                            // Static variable to track mouse capture state
-                            static mut MOUSE_CAPTURE_ENABLED: bool = true;
-
-                            unsafe {
-                                MOUSE_CAPTURE_ENABLED = !MOUSE_CAPTURE_ENABLED;
-                                if MOUSE_CAPTURE_ENABLED {
+                                self.mouse_capture_enabled = !self.mouse_capture_enabled;
+                                if self.mouse_capture_enabled {
                                     let _ = execute!(stdout(), EnableMouseCapture);
                                 } else {
                                     let _ = execute!(stdout(), DisableMouseCapture);

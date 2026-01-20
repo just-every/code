@@ -330,6 +330,7 @@ impl App<'_> {
             timing: super::state::TimingStats::default(),
             buffer_diff_profiler: super::state::BufferDiffProfiler::new_from_env(),
             alt_screen_active: start_in_alt,
+            mouse_capture_enabled: true,
             terminal_runs: HashMap::new(),
             terminal_title_override: None,
             login_flow: None,

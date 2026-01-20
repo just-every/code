@@ -11,6 +11,7 @@ use crossterm::event::DisableBracketedPaste;
 use crossterm::event::DisableMouseCapture;
 use crossterm::event::DisableFocusChange;
 use crossterm::event::EnableBracketedPaste;
+use crossterm::event::EnableMouseCapture;
 use crossterm::event::EnableFocusChange;
 use crossterm::event::KeyboardEnhancementFlags;
 use crossterm::event::PopKeyboardEnhancementFlags;
@@ -106,6 +107,10 @@ pub fn init(config: &Config) -> Result<(Tui, TerminalInfo)> {
     let terminal_info = query_terminal_info();
 
     enable_raw_mode()?;
+    // Capture mouse wheel scrolls so the full UI can scroll the chat/history
+    // instead of letting the terminal emulator scrollback take over.
+    // Users can toggle this off (Ctrl+M) for text selection.
+    let _ = execute!(stdout(), EnableMouseCapture);
     // Enable keyboard enhancement flags only when supported *and* the current
     // terminal environment is known to handle them reliably. Some Windows
     // terminal stacks (including WSL/ConPTY-derived PTYs) can report support

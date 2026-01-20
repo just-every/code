@@ -272,6 +272,12 @@ pub(crate) struct App<'a> {
     /// True when TUI is currently rendering in the terminal's alternate screen.
     pub(super) alt_screen_active: bool,
 
+    /// When true, mouse wheel scroll events are captured by the app (full UI) and
+    /// used to scroll the chat/history instead of the terminal emulator scrollback.
+    ///
+    /// This is only meaningful while `alt_screen_active` is true.
+    pub(super) mouse_capture_enabled: bool,
+
     pub(super) terminal_runs: HashMap<u64, TerminalRunState>,
 
     pub(super) terminal_title_override: Option<String>,
