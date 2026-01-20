@@ -178,6 +178,7 @@ pub(crate) enum AppEvent {
     AutoCoordinatorDecision {
         seq: u64,
         status: AutoCoordinatorStatus,
+        input_required: bool,
         status_title: Option<String>,
         status_sent_to_user: Option<String>,
         goal: Option<String>,

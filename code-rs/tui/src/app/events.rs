@@ -899,6 +899,7 @@ impl App<'_> {
                 AppEvent::AutoCoordinatorDecision {
                     seq,
                     status,
+                    input_required,
                     status_title,
                     status_sent_to_user,
                     goal,
@@ -911,6 +912,7 @@ impl App<'_> {
                         widget.auto_handle_decision(
                             seq,
                             status,
+                            input_required,
                             status_title,
                             status_sent_to_user,
                             goal,

@@ -214,6 +214,7 @@ pub enum AutoCoordinatorEvent {
     Decision {
         seq: u64,
         status: AutoCoordinatorStatus,
+        input_required: bool,
         status_title: Option<String>,
         status_sent_to_user: Option<String>,
         goal: Option<String>,
@@ -295,6 +296,7 @@ pub enum AutoCoordinatorCommand {
 struct PendingDecision {
     seq: u64,
     status: AutoCoordinatorStatus,
+    input_required: bool,
     status_title: Option<String>,
     status_sent_to_user: Option<String>,
     goal: Option<String>,
@@ -309,6 +311,7 @@ impl PendingDecision {
         AutoCoordinatorEvent::Decision {
             seq: self.seq,
             status: self.status,
+            input_required: self.input_required,
             status_title: self.status_title,
             status_sent_to_user: self.status_sent_to_user,
             goal: self.goal,
@@ -470,6 +473,10 @@ mod tests {
         assert!(
             props.contains_key("prompt_sent_to_cli"),
             "prompt_sent_to_cli property missing"
+        );
+        assert!(
+            props.contains_key("input_required"),
+            "input_required property missing"
         );
         assert!(props.contains_key("agents"), "agents property missing");
         assert!(!props.contains_key("code_review"));
@@ -890,6 +897,8 @@ mod tests {
 struct CoordinatorDecisionNew {
     finish_status: String,
     #[serde(default)]
+    input_required: bool,
+    #[serde(default)]
     status_title: Option<String>,
     #[serde(default)]
     status_sent_to_user: Option<String>,
@@ -978,6 +987,7 @@ struct CoordinatorDecisionLegacy {
 
 struct ParsedCoordinatorDecision {
     status: AutoCoordinatorStatus,
+    input_required: bool,
     status_title: Option<String>,
     status_sent_to_user: Option<String>,
     cli: Option<CliAction>,
@@ -1209,6 +1219,7 @@ fn run_auto_loop(
             let event = AutoCoordinatorEvent::Decision {
                 seq: decision_seq,
                 status: AutoCoordinatorStatus::Continue,
+                input_required: false,
                 status_title: Some(seed.status_title.clone()),
                 status_sent_to_user: Some(seed.status_sent_to_user.clone()),
                 goal: Some(goal_text.clone()),
@@ -1305,6 +1316,7 @@ fn run_auto_loop(
             ) {
                 Ok(ParsedCoordinatorDecision {
                     status,
+                    input_required,
                     status_title,
                     status_sent_to_user,
                     goal,
@@ -1340,6 +1352,7 @@ fn run_auto_loop(
                         let event = AutoCoordinatorEvent::Decision {
                             seq: current_seq,
                             status: AutoCoordinatorStatus::Failed,
+                            input_required: false,
                             status_title: Some("Turn limit reached".to_string()),
                             status_sent_to_user: Some(format!(
                                 "Stopped after {coordinator_turns_seen} coordinator turns (cap={coordinator_turn_cap}) to prevent a runaway session."
@@ -1373,6 +1386,7 @@ fn run_auto_loop(
                         let event = AutoCoordinatorEvent::Decision {
                             seq: current_seq,
                             status,
+                            input_required,
                             status_title: status_title.clone(),
                             status_sent_to_user: status_sent_to_user.clone(),
                             goal: goal.clone(),
@@ -1397,6 +1411,7 @@ fn run_auto_loop(
                     let decision_event = PendingDecision {
                         seq: current_seq,
                         status,
+                        input_required,
                         status_title,
                         status_sent_to_user,
                         goal: goal.clone(),
@@ -1520,6 +1535,7 @@ fn run_auto_loop(
                     let event = AutoCoordinatorEvent::Decision {
                         seq: current_seq,
                         status: AutoCoordinatorStatus::Failed,
+                        input_required: false,
                         status_title: Some("Coordinator error".to_string()),
                         status_sent_to_user: Some(format!("Encountered an error: {error}")),
                         goal: None,
@@ -1856,6 +1872,14 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
         }),
     );
     required.push(Value::String("status_sent_to_user".to_string()));
+
+    properties.insert(
+        "input_required".to_string(),
+        json!({
+            "type": "boolean",
+            "description": "Set true only when the CLI must pause for mandatory user input (credentials, permissions, missing info). When true, Auto Drive will wait indefinitely for the user response instead of auto-continuing."
+        }),
+    );
 
     // NOTE: We intentionally omit `maxLength` here. Some providers truncate
     // responses to satisfy schema length caps, which would hide overlong
@@ -2899,6 +2923,7 @@ fn convert_decision_new(
 ) -> Result<ParsedCoordinatorDecision> {
     let CoordinatorDecisionNew {
         finish_status: _,
+        input_required,
         status_title,
         status_sent_to_user,
         progress,
@@ -2988,6 +3013,7 @@ fn convert_decision_new(
 
     Ok(ParsedCoordinatorDecision {
         status,
+        input_required,
         status_title,
         status_sent_to_user,
         cli,
@@ -3037,6 +3063,7 @@ fn convert_decision_legacy(
 
     Ok(ParsedCoordinatorDecision {
         status,
+        input_required: false,
         status_title,
         status_sent_to_user,
         cli,

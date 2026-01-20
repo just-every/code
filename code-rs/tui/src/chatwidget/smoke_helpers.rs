@@ -613,6 +613,7 @@ impl ChatWidgetHarness {
             chat.auto_state.set_waiting_for_response(false);
             chat.auto_state.set_coordinator_waiting(false);
             chat.auto_state.on_complete_review();
+            chat.auto_state.input_required = false;
             chat.auto_state.current_cli_prompt = Some(cli_prompt.into());
             chat.auto_state.current_display_line = Some(headline.into());
             chat.auto_state.current_display_is_summary = summary.is_some();
@@ -653,7 +654,10 @@ impl ChatWidgetHarness {
             let countdown = chat.auto_state.countdown_seconds();
             chat.auto_state.countdown_id = chat.auto_state.countdown_id.wrapping_add(1);
             chat.auto_state.seconds_remaining = countdown.unwrap_or(0);
-            if chat.auto_state.awaiting_coordinator_submit() && !chat.auto_state.is_paused_manual() {
+            if chat.auto_state.awaiting_coordinator_submit()
+                && !chat.auto_state.is_paused_manual()
+                && !chat.auto_state.input_required
+            {
                 if let Some(seconds) = countdown {
                     chat.auto_spawn_countdown(
                         chat.auto_state.countdown_id,
@@ -682,6 +686,16 @@ impl ChatWidgetHarness {
             let runtime = &*TEST_RUNTIME;
             let _guard = runtime.enter();
             chat.auto_handle_countdown(countdown_id, seconds_left);
+        }
+        self.flush_into_widget();
+    }
+
+    pub fn auto_drive_set_input_required(&mut self, input_required: bool) {
+        {
+            let chat = self.chat();
+            chat.auto_state.input_required = input_required;
+            chat.auto_rebuild_live_ring();
+            chat.request_redraw();
         }
         self.flush_into_widget();
     }

@@ -1449,6 +1449,7 @@ async fn run_auto_drive_session(
             AutoCoordinatorEvent::Decision {
                 seq,
                 status,
+                input_required: _,
                 status_title,
                 status_sent_to_user,
                 goal: maybe_goal,

@@ -939,6 +939,28 @@ fn auto_drive_manual_mode_waits() {
 }
 
 #[test]
+fn auto_drive_input_required_waits() {
+    let mut harness = ChatWidgetHarness::new();
+
+    harness.auto_drive_activate(
+        "Input required for auth",
+        true,
+        true,
+        AutoContinueModeFixture::TenSeconds,
+    );
+    harness.auto_drive_set_awaiting_submission(
+        "request credentials",
+        "Auto Drive needs credentials to continue",
+        Some("Waiting for required user input.".to_string()),
+    );
+    harness.auto_drive_set_input_required(true);
+
+    let frame = normalize_output(render_chat_widget_to_vt100(&mut harness, 80, 18));
+
+    insta::assert_snapshot!("auto_drive_input_required_waits", frame);
+}
+
+#[test]
 fn auto_drive_review_resume_returns_to_running() {
     let mut harness = ChatWidgetHarness::new();
 
