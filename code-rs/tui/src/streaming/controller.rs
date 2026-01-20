@@ -3,6 +3,7 @@
 use code_core::config::Config;
 use ratatui::text::Line;
 use ratatui::style::Modifier;
+use std::time::Instant;
 
 use super::HeaderEmitter;
 use super::StreamKind;
@@ -57,6 +58,125 @@ pub(crate) struct StreamController {
     current_stream_id: Option<String>,
     finishing_after_drain: bool,
     thinking_placeholder_shown: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use code_core::config::{Config, ConfigOverrides, ConfigToml};
+    use std::cell::{Cell, RefCell};
+    use std::time::{Duration, Instant};
+
+    #[derive(Default)]
+    struct TestSink {
+        inserts: RefCell<Vec<String>>,
+        start_count: Cell<usize>,
+        stop_count: Cell<usize>,
+    }
+
+    impl TestSink {
+        fn contains_text(&self, needle: &str) -> bool {
+            self.inserts
+                .borrow()
+                .iter()
+                .any(|s| s.contains(needle))
+        }
+    }
+
+    impl HistorySink for TestSink {
+        fn insert_history(&self, lines: Vec<Line<'static>>) {
+            self.insert_history_with_kind(None, StreamKind::Answer, lines);
+        }
+
+        fn insert_history_with_kind(
+            &self,
+            _id: Option<String>,
+            _kind: StreamKind,
+            lines: Vec<Line<'static>>,
+        ) {
+            let mut out = String::new();
+            for (idx, line) in lines.iter().enumerate() {
+                if idx > 0 {
+                    out.push('\n');
+                }
+                for span in &line.spans {
+                    out.push_str(span.content.as_ref());
+                }
+            }
+            self.inserts.borrow_mut().push(out);
+        }
+
+        fn insert_final_answer(
+            &self,
+            _id: Option<String>,
+            lines: Vec<Line<'static>>,
+            _full_markdown_source: String,
+        ) {
+            self.insert_history(lines);
+        }
+
+        fn start_commit_animation(&self) {
+            self.start_count
+                .set(self.start_count.get().saturating_add(1));
+        }
+
+        fn stop_commit_animation(&self) {
+            self.stop_count
+                .set(self.stop_count.get().saturating_add(1));
+        }
+    }
+
+    fn test_config() -> Config {
+        Config::load_from_base_config_with_overrides(
+            ConfigToml::default(),
+            ConfigOverrides::default(),
+            std::env::temp_dir(),
+        )
+        .expect("config")
+    }
+
+    #[test]
+    fn timeout_soft_commit_emits_initial_output() {
+        let mut cfg = test_config();
+        cfg.tui.stream.soft_commit_timeout_ms = Some(0);
+
+        let mut controller = StreamController::new(cfg);
+        let sink = TestSink::default();
+
+        controller.begin_with_id(StreamKind::Answer, Some("a".to_string()), &sink);
+        controller.push_and_maybe_commit("Hello", &sink);
+
+        // With timeout commits enabled, streaming should be driven by commit ticks even when
+        // no newline has been received yet.
+        assert!(sink.start_count.get() > 0);
+
+        controller.on_commit_tick(&sink);
+        assert!(sink.contains_text("Hello"));
+    }
+
+    #[test]
+    fn commit_animation_keeps_running_while_buffered_and_timeout_enabled() {
+        let mut cfg = test_config();
+        cfg.tui.stream.soft_commit_timeout_ms = Some(60_000);
+
+        let mut controller = StreamController::new(cfg);
+        let sink = TestSink::default();
+
+        controller.begin_with_id(StreamKind::Answer, Some("a".to_string()), &sink);
+        controller.push_and_maybe_commit("Hello", &sink);
+        assert!(sink.start_count.get() > 0);
+
+        // First tick is not overdue; the controller should not stop the animation while the
+        // collector is still holding uncommitted content.
+        controller.on_commit_tick(&sink);
+        assert_eq!(sink.stop_count.get(), 0);
+
+        // Force overdue and ensure we can soft-commit and eventually stop.
+        controller.state_mut(StreamKind::Answer).last_commit_instant =
+            Some(Instant::now() - Duration::from_secs(120));
+        controller.on_commit_tick(&sink);
+        assert!(sink.contains_text("Hello"));
+    }
 }
 
 impl StreamController {
@@ -284,9 +404,18 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
         tracing::debug!("push_and_maybe_commit for {:?}, delta.len={} contains_nl={}", kind, delta.len(), delta.contains('\n'));
         let cfg = self.config.clone();
 
+        let timeout_ms = self
+            .config
+            .tui
+            .stream
+            .soft_commit_timeout_ms
+            .or(if self.config.tui.stream.responsive { Some(400) } else { None });
+        let has_timeout_soft_commit = timeout_ms.is_some();
+
         // Check header flag before borrowing state (used only to avoid double headers)
         let _just_emitted_header = self.header.consume_header_flag();
         
+        let mut should_start_commit_animation = false;
         // Mutate collector and counters in a short scope to avoid long mutable borrows.
         {
             let state = self.state_mut(kind);
@@ -295,6 +424,27 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
             }
             state.collector.push_delta(delta);
             state.tail_chars_since_commit = state.tail_chars_since_commit.saturating_add(delta.len());
+
+            // Timeout-based soft commits are driven by commit ticks. Historically we only started
+            // commit animation after we had already committed at least one line, which meant the
+            // timeout path never fired for the *first* chunk of output (no newline, short line).
+            //
+            // Anchor the timeout window on the first delta and keep commit ticks running so the
+            // UI can surface output without requiring user interaction (like toggling screen mode).
+            if has_timeout_soft_commit
+                && !delta.is_empty()
+                && !delta.contains('\n')
+                && state.collector.has_buffered_content()
+            {
+                if state.last_commit_instant.is_none() {
+                    state.last_commit_instant = Some(Instant::now());
+                }
+                should_start_commit_animation = true;
+            }
+        }
+
+        if should_start_commit_animation {
+            sink.start_commit_animation();
         }
         if delta.contains('\n') {
             let mut newly_completed = self.state_mut(kind).collector.commit_complete_lines(&cfg);
@@ -630,8 +780,13 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
             return false;
         };
         // Timeout-based soft commit: if no newline arrived and nothing is queued, force a soft commit.
-        let timeout_ms = self.config.tui.stream.soft_commit_timeout_ms
+        let timeout_ms = self
+            .config
+            .tui
+            .stream
+            .soft_commit_timeout_ms
             .or(if self.config.tui.stream.responsive { Some(400) } else { None });
+        let has_timeout_soft_commit = timeout_ms.is_some();
         if let Some(ms) = timeout_ms {
             let queue_empty = self.state(kind).is_idle();
             let overdue = self
@@ -709,8 +864,14 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
         }
 
         let is_idle = self.state(kind).is_idle();
+        let has_buffered = self.state(kind).collector.has_buffered_content();
         if is_idle {
-            sink.stop_commit_animation();
+            // When timeout-based soft commit is enabled, keep commit ticks running while the
+            // collector has buffered content (even if no full lines are enqueued yet). Otherwise,
+            // we'd stop the animation on the first tick and the timeout path would never fire.
+            if !(has_timeout_soft_commit && has_buffered) {
+                sink.stop_commit_animation();
+            }
             if self.finishing_after_drain {
                 // Reset and notify
                 self.state_mut(kind).clear();
