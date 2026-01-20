@@ -43,6 +43,7 @@ pub(crate) struct AutoActiveViewModel {
     pub show_composer: bool,
     pub editing_prompt: bool,
     pub awaiting_submission: bool,
+    pub input_required: bool,
     pub waiting_for_response: bool,
     pub coordinator_waiting: bool,
     pub waiting_for_review: bool,
@@ -311,7 +312,11 @@ impl AutoCoordinatorView {
         let mut style = self.style.frame.clone();
         if self.style.variant == AutoDriveVariant::Beacon {
             if let Some(accent) = style.accent.as_mut() {
-                accent.style = if model.awaiting_submission {
+                accent.style = if model.input_required {
+                    Style::default()
+                        .fg(colors::warning())
+                        .add_modifier(Modifier::BOLD)
+                } else if model.awaiting_submission {
                     Style::default()
                         .fg(colors::warning())
                         .add_modifier(Modifier::BOLD)
@@ -346,6 +351,8 @@ impl AutoCoordinatorView {
     fn status_label(model: &AutoActiveViewModel) -> &'static str {
         if model.waiting_for_review {
             "Awaiting review"
+        } else if model.input_required {
+            "Input required"
         } else if model.awaiting_submission {
             "Waiting"
         } else if model.coordinator_waiting {
@@ -383,6 +390,10 @@ impl AutoCoordinatorView {
             if !trimmed.is_empty() {
                 return trimmed.to_string();
             }
+        }
+
+        if model.input_required {
+            return "Input required".to_string();
         }
 
         if model.awaiting_submission {

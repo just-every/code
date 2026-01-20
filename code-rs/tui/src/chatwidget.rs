@@ -17731,6 +17731,7 @@ fi\n\
             cli_context: None,
             show_composer: true,
             awaiting_submission: false,
+            input_required: false,
             waiting_for_response: false,
             coordinator_waiting: false,
             waiting_for_review: false,
@@ -17821,6 +17822,7 @@ fi\n\
                     AutoCoordinatorEvent::Decision {
                         seq,
                         status,
+                        input_required,
                         status_title,
                         status_sent_to_user,
                         goal,
@@ -17832,6 +17834,7 @@ fi\n\
                         app_event_tx.send(AppEvent::AutoCoordinatorDecision {
                             seq,
                             status,
+                            input_required,
                             status_title,
                             status_sent_to_user,
                             goal,
@@ -18240,6 +18243,7 @@ fi\n\
         &mut self,
         seq: u64,
         status: AutoCoordinatorStatus,
+        input_required: bool,
         status_title: Option<String>,
         status_sent_to_user: Option<String>,
         goal: Option<String>,
@@ -18266,6 +18270,8 @@ fi\n\
 
         let status_title = Self::normalize_status_field(status_title);
         let status_sent_to_user = Self::normalize_status_field(status_sent_to_user);
+
+        self.auto_state.input_required = input_required && matches!(status, AutoCoordinatorStatus::Continue);
 
         self.auto_state.turns_completed = self.auto_state.turns_completed.saturating_add(1);
 
@@ -18390,7 +18396,7 @@ fi\n\
                         ));
                     }
                 } else {
-                    self.schedule_auto_cli_prompt(seq, prompt_text);
+                    self.schedule_auto_cli_prompt(seq, prompt_text, input_required);
                 }
             }
             AutoCoordinatorStatus::Success => {
@@ -18432,7 +18438,7 @@ Have we met every part of this goal and is there no further work to do?"#
                     "Auto Drive Diagnostics: Validating progress".to_string(),
                     AutoDriveActionKind::Info,
                 );
-                self.schedule_auto_cli_prompt(seq, prompt_text);
+                self.schedule_auto_cli_prompt(seq, prompt_text, false);
                 self.auto_submit_prompt();
                 return;
             }
@@ -18536,8 +18542,18 @@ Have we met every part of this goal and is there no further work to do?"#
         self.request_redraw();
     }
 
-    fn schedule_auto_cli_prompt(&mut self, decision_seq: u64, prompt_text: String) {
-        self.schedule_auto_cli_prompt_with_override(decision_seq, prompt_text, None);
+    fn schedule_auto_cli_prompt(
+        &mut self,
+        decision_seq: u64,
+        prompt_text: String,
+        input_required: bool,
+    ) {
+        self.schedule_auto_cli_prompt_with_override(
+            decision_seq,
+            prompt_text,
+            None,
+            input_required,
+        );
     }
 
     fn schedule_auto_cli_prompt_with_override(
@@ -18545,11 +18561,12 @@ Have we met every part of this goal and is there no further work to do?"#
         decision_seq: u64,
         prompt_text: String,
         countdown_override: Option<u8>,
+        input_required: bool,
     ) {
         self.auto_state.suppress_next_cli_display = false;
         let effects = self
             .auto_state
-            .schedule_cli_prompt(decision_seq, prompt_text, countdown_override);
+            .schedule_cli_prompt(decision_seq, prompt_text, countdown_override, input_required);
         self.auto_apply_controller_effects(effects);
     }
 
@@ -19173,7 +19190,7 @@ Have we met every part of this goal and is there no further work to do?"#
         } else {
             None
         };
-        self.schedule_auto_cli_prompt_with_override(0, String::new(), override_seconds);
+        self.schedule_auto_cli_prompt_with_override(0, String::new(), override_seconds, false);
         true
     }
 
@@ -19597,8 +19614,9 @@ Have we met every part of this goal and is there no further work to do?"#
                     status_lines,
                     cli_prompt: None,
                     cli_context: None,
-                    show_composer: true,
+            show_composer: true,
             awaiting_submission: false,
+            input_required: false,
             waiting_for_response: false,
             coordinator_waiting: false,
             waiting_for_review: false,
@@ -19647,8 +19665,11 @@ Have we met every part of this goal and is there no further work to do?"#
 
         self.bottom_pane.clear_live_ring();
 
+        let input_required = self.auto_state.input_required;
         let status_text = if self.auto_state.awaiting_review() {
             "waiting for code review...".to_string()
+        } else if input_required {
+            "Input required".to_string()
         } else if let Some(line) = self
             .auto_state
             .current_display_line
@@ -19746,7 +19767,7 @@ Have we met every part of this goal and is there no further work to do?"#
 
         let countdown_limit = self.auto_state.countdown_seconds();
         let countdown_active = self.auto_state.countdown_active();
-        let countdown = if self.auto_state.awaiting_coordinator_submit() {
+        let countdown = if self.auto_state.awaiting_coordinator_submit() && !input_required {
             match countdown_limit {
                 Some(limit) if limit > 0 => Some(CountdownState {
                     remaining: self.auto_state.seconds_remaining.min(limit),
@@ -19757,7 +19778,7 @@ Have we met every part of this goal and is there no further work to do?"#
             None
         };
 
-        let button = if self.auto_state.awaiting_coordinator_submit() {
+        let button = if self.auto_state.awaiting_coordinator_submit() && !input_required {
             let has_cli_prompt = cli_prompt.is_some();
             let base_label = if bootstrap_pending {
                 "Complete Current Task"
@@ -19782,7 +19803,9 @@ Have we met every part of this goal and is there no further work to do?"#
         };
 
         let manual_hint = if self.auto_state.awaiting_coordinator_submit() {
-            if self.auto_state.is_paused_manual() {
+            if input_required {
+                Some("Type your response and press Enter.".to_string())
+            } else if self.auto_state.is_paused_manual() {
                 Some("Edit the prompt, then press Enter to continue.".to_string())
             } else if bootstrap_pending {
                 None
@@ -19803,7 +19826,9 @@ Have we met every part of this goal and is there no further work to do?"#
 
         let ctrl_switch_hint = if self.auto_state.awaiting_coordinator_submit() {
             let has_cli_prompt = cli_prompt.is_some();
-            if self.auto_state.is_paused_manual() {
+            if input_required {
+                "Esc to stop".to_string()
+            } else if self.auto_state.is_paused_manual() {
                 "Esc to cancel".to_string()
             } else if bootstrap_pending {
                 "Esc enter new goal".to_string()
@@ -19820,14 +19845,16 @@ Have we met every part of this goal and is there no further work to do?"#
             String::new()
         };
 
-        let show_composer =
-            !self.auto_state.awaiting_coordinator_submit() || self.auto_state.is_paused_manual();
+        let show_composer = input_required
+            || !self.auto_state.awaiting_coordinator_submit()
+            || self.auto_state.is_paused_manual();
 
         let model = AutoCoordinatorViewModel::Active(AutoActiveViewModel {
             goal: self.auto_state.goal.clone(),
             status_lines,
             cli_prompt,
             awaiting_submission: self.auto_state.awaiting_coordinator_submit(),
+            input_required,
             waiting_for_response: self.auto_state.is_waiting_for_response(),
             coordinator_waiting: self.auto_state.is_coordinator_waiting(),
             waiting_for_review: self.auto_state.awaiting_review(),
@@ -19865,6 +19892,7 @@ Have we met every part of this goal and is there no further work to do?"#
         self.auto_state.is_active()
             && self.auto_state.awaiting_coordinator_submit()
             && !self.auto_state.is_paused_manual()
+            && !self.auto_state.input_required
             && self.config.auto_drive.coordinator_routing
             && self.auto_state.continue_mode != AutoContinueMode::Manual
     }
@@ -30403,7 +30431,7 @@ use code_core::protocol::OrderMeta;
             chat.auto_state.continue_mode = AutoContinueMode::Immediate;
             chat.auto_state.goal = Some("Ship feature".to_string());
             chat.auto_state.set_phase(AutoRunPhase::Active);
-            chat.schedule_auto_cli_prompt(0, "echo ready".to_string());
+            chat.schedule_auto_cli_prompt(0, "echo ready".to_string(), false);
         });
 
         let (button_label, countdown_override, ctrl_switch_hint, manual_hint_present) =
@@ -30566,6 +30594,7 @@ use code_core::protocol::OrderMeta;
             chat.auto_handle_decision(
                 1,
                 AutoCoordinatorStatus::Continue,
+                false,
                 None,
                 None,
                 Some("Finish migrations".to_string()),
@@ -30602,6 +30631,7 @@ use code_core::protocol::OrderMeta;
             chat.auto_handle_decision(
                 2,
                 AutoCoordinatorStatus::Continue,
+                false,
                 None,
                 None,
                 Some("Document release tasks".to_string()),
@@ -30689,6 +30719,7 @@ use code_core::protocol::OrderMeta;
             chat.auto_handle_decision(
                 3,
                 AutoCoordinatorStatus::Continue,
+                false,
                 Some("Drafting fix".to_string()),
                 Some("Past work".to_string()),
                 None,
@@ -31401,6 +31432,7 @@ use code_core::protocol::OrderMeta;
         chat.auto_handle_decision(
             4,
             AutoCoordinatorStatus::Continue,
+            false,
             Some("Running unit tests".to_string()),
             Some("Finished setup".to_string()),
             Some("Refine goal".to_string()),
