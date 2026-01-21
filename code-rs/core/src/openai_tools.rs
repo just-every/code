@@ -393,6 +393,89 @@ fn create_image_view_tool() -> OpenAiTool {
     })
 }
 
+fn create_request_user_input_tool() -> OpenAiTool {
+    let mut option_props = BTreeMap::new();
+    option_props.insert(
+        "label".to_string(),
+        JsonSchema::String {
+            description: Some("User-facing label (1-5 words).".to_string()),
+            allowed_values: None,
+        },
+    );
+    option_props.insert(
+        "description".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "One short sentence explaining impact/tradeoff if selected.".to_string(),
+            ),
+            allowed_values: None,
+        },
+    );
+
+    let options_schema = JsonSchema::Array {
+        description: Some(
+            "Optional 2-3 mutually exclusive choices. Put the recommended option first and suffix its label with \"(Recommended)\". Only include \"Other\" option if we want to include a free form option. If the question is free form in nature, please do not have any option.".to_string(),
+        ),
+        items: Box::new(JsonSchema::Object {
+            properties: option_props,
+            required: Some(vec!["label".to_string(), "description".to_string()]),
+            additional_properties: Some(false.into()),
+        }),
+    };
+
+    let mut question_props = BTreeMap::new();
+    question_props.insert(
+        "id".to_string(),
+        JsonSchema::String {
+            description: Some("Stable identifier for mapping answers (snake_case).".to_string()),
+            allowed_values: None,
+        },
+    );
+    question_props.insert(
+        "header".to_string(),
+        JsonSchema::String {
+            description: Some("Short header label shown in the UI (12 or fewer chars).".to_string()),
+            allowed_values: None,
+        },
+    );
+    question_props.insert(
+        "question".to_string(),
+        JsonSchema::String {
+            description: Some("Single-sentence prompt shown to the user.".to_string()),
+            allowed_values: None,
+        },
+    );
+    question_props.insert("options".to_string(), options_schema);
+
+    let questions_schema = JsonSchema::Array {
+        description: Some("Questions to show the user. Prefer 1 and do not exceed 3".to_string()),
+        items: Box::new(JsonSchema::Object {
+            properties: question_props,
+            required: Some(vec![
+                "id".to_string(),
+                "header".to_string(),
+                "question".to_string(),
+            ]),
+            additional_properties: Some(false.into()),
+        }),
+    };
+
+    let mut properties = BTreeMap::new();
+    properties.insert("questions".to_string(), questions_schema);
+
+    OpenAiTool::Function(ResponsesApiTool {
+        name: "request_user_input".to_string(),
+        description: "Request user input for one to three short questions and wait for the response."
+            .to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["questions".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
 fn create_shell_tool_for_sandbox(sandbox_policy: &SandboxPolicy) -> OpenAiTool {
     let mut properties = BTreeMap::new();
     properties.insert(
@@ -740,6 +823,8 @@ pub fn get_openai_tools(
     if config.plan_tool {
         tools.push(PLAN_TOOL.clone());
     }
+
+    tools.push(create_request_user_input_tool());
 
     tools.push(create_browser_tool(browser_enabled));
 

@@ -132,6 +132,7 @@ pub(super) struct State {
     pub(super) approved_commands: HashSet<ApprovedCommandPattern>,
     pub(super) current_task: Option<AgentTask>,
     pub(super) pending_approvals: HashMap<String, oneshot::Sender<ReviewDecision>>,
+    pub(super) pending_tool_user_input: VecDeque<oneshot::Sender<Vec<InputItem>>>,
     pub(super) pending_input: Vec<ResponseInputItem>,
     pub(super) pending_user_input: Vec<QueuedUserInput>,
     pub(super) history: ConversationHistory,
@@ -1119,6 +1120,28 @@ impl Session {
         }
     }
 
+    pub async fn request_tool_user_input(&self) -> Option<Vec<InputItem>> {
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut state = self.state.lock().unwrap();
+            state.pending_tool_user_input.push_back(tx);
+        }
+        rx.await.ok()
+    }
+
+    pub fn notify_tool_user_input(&self, items: Vec<InputItem>) -> Option<Vec<InputItem>> {
+        let pending = {
+            let mut state = self.state.lock().unwrap();
+            state.pending_tool_user_input.pop_front()
+        };
+        if let Some(tx) = pending {
+            let _ = tx.send(items);
+            None
+        } else {
+            Some(items)
+        }
+    }
+
     pub fn add_approved_command(&self, pattern: ApprovedCommandPattern) {
         let mut state = self.state.lock().unwrap();
         state.approved_commands.insert(pattern);
@@ -1832,6 +1855,7 @@ impl Session {
 
         let mut state = self.state.lock().unwrap();
         state.pending_approvals.clear();
+        state.pending_tool_user_input.clear();
         // Do not clear `pending_input` here. When a user submits a new message
         // immediately after an interrupt, it may have been routed to
         // `pending_input` by an earlier code path. Clearing it would drop the

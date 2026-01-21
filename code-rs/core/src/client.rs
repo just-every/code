@@ -617,6 +617,12 @@ impl ModelClient {
                     Some(request_id.clone()),
                 )
             })?;
+
+            let ws_endpoint = match url.scheme() {
+                "http" => endpoint.replacen("http://", "ws://", 1),
+                "https" => endpoint.replacen("https://", "wss://", 1),
+                _ => endpoint.clone(),
+            };
             let mut req_builder = self
                 .provider
                 .create_request_builder_for_url(&self.client, &auth, reqwest::Method::GET, url)
@@ -668,8 +674,7 @@ impl ModelClient {
                 .map(|req| req.headers().clone())
                 .unwrap_or_else(HeaderMap::new);
 
-            let mut ws_request = endpoint
-                .clone()
+            let mut ws_request = ws_endpoint
                 .into_client_request()
                 .map_err(|err| {
                     CodexErr::Stream(

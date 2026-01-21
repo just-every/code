@@ -804,6 +804,14 @@ pub(super) async fn submission_loop(
                     }
                 };
 
+                let items = match sess.notify_tool_user_input(items) {
+                    Some(items) => items,
+                    None => {
+                        // Consumed as input for a pending `request_user_input` tool call.
+                        continue;
+                    }
+                };
+
                 // Clean up old status items when new user input arrives
                 // This prevents token buildup from old screenshots/status messages
                 sess.cleanup_old_status_items().await;
@@ -823,6 +831,14 @@ pub(super) async fn submission_loop(
                     Some(sess) => sess,
                     None => {
                         send_no_session_event(sub.id).await;
+                        continue;
+                    }
+                };
+
+                let items = match sess.notify_tool_user_input(items) {
+                    Some(items) => items,
+                    None => {
+                        // Consumed as input for a pending `request_user_input` tool call.
                         continue;
                     }
                 };
@@ -2982,6 +2998,7 @@ async fn handle_function_call(
                 .await
         }
         "update_plan" => handle_update_plan(sess, &ctx, arguments).await,
+        "request_user_input" => handle_request_user_input(sess, &ctx, arguments).await,
         // agent tool
         "agent" => handle_agent_tool(sess, &ctx, arguments).await,
         // unified browser tool
@@ -3010,6 +3027,139 @@ async fn handle_function_call(
                 }
             }
         }
+    }
+}
+
+async fn handle_request_user_input(
+    sess: &Session,
+    ctx: &ToolCallCtx,
+    arguments: String,
+) -> ResponseInputItem {
+    use code_protocol::request_user_input::RequestUserInputAnswer;
+    use code_protocol::request_user_input::RequestUserInputArgs;
+    use code_protocol::request_user_input::RequestUserInputResponse;
+
+    let args: RequestUserInputArgs = match serde_json::from_str(&arguments) {
+        Ok(args) => args,
+        Err(err) => {
+            return ResponseInputItem::FunctionCallOutput {
+                call_id: ctx.call_id.clone(),
+                output: FunctionCallOutputPayload {
+                    content: format!("invalid request_user_input arguments: {err}"),
+                    success: Some(false),
+                },
+            };
+        }
+    };
+
+    if args.questions.is_empty() {
+        return ResponseInputItem::FunctionCallOutput {
+            call_id: ctx.call_id.clone(),
+            output: FunctionCallOutputPayload {
+                content: "request_user_input requires at least one question".to_string(),
+                success: Some(false),
+            },
+        };
+    }
+
+    let mut prompt = String::from("The model requested user input:\n");
+    for (idx, q) in args.questions.iter().enumerate() {
+        prompt.push_str(&format!(
+            "\n{}. {} ({})\n{}\n",
+            idx + 1,
+            q.header,
+            q.id,
+            q.question
+        ));
+        if let Some(options) = &q.options {
+            prompt.push_str("Options:\n");
+            for option in options {
+                prompt.push_str(&format!("- {}: {}\n", option.label, option.description));
+            }
+        }
+    }
+    if args.questions.len() == 1 {
+        prompt.push_str("\nReply with your answer.");
+    } else {
+        prompt.push_str("\nReply with one line per question (in order). Extra lines are attached to the final question.");
+    }
+
+    sess.send_ordered_from_ctx(
+        ctx,
+        EventMsg::AgentMessage(AgentMessageEvent {
+            message: prompt,
+        }),
+    )
+    .await;
+
+    let user_items = sess.request_tool_user_input().await;
+    let Some(user_items) = user_items else {
+        return ResponseInputItem::FunctionCallOutput {
+            call_id: ctx.call_id.clone(),
+            output: FunctionCallOutputPayload {
+                content: "request_user_input was cancelled before receiving a response".to_string(),
+                success: Some(false),
+            },
+        };
+    };
+
+    let user_text = user_items
+        .iter()
+        .filter_map(|item| match item {
+            InputItem::Text { text } => Some(text.trim().to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string();
+
+    let response: RequestUserInputResponse = serde_json::from_str(&user_text).unwrap_or_else(|_| {
+        let mut answers = std::collections::HashMap::new();
+        let mut lines: Vec<String> = user_text
+            .lines()
+            .map(|line| line.trim_end().to_string())
+            .collect();
+
+        if args.questions.len() == 1 {
+            lines = vec![user_text.clone()];
+        } else if lines.len() > args.questions.len() {
+            let tail = lines.split_off(args.questions.len() - 1);
+            lines.push(tail.join("\n"));
+        }
+
+        for (idx, q) in args.questions.iter().enumerate() {
+            let value = lines.get(idx).cloned().unwrap_or_default();
+            answers.insert(
+                q.id.clone(),
+                RequestUserInputAnswer {
+                    answers: vec![value],
+                },
+            );
+        }
+
+        RequestUserInputResponse { answers }
+    });
+
+    let content = match serde_json::to_string(&response) {
+        Ok(content) => content,
+        Err(err) => {
+            return ResponseInputItem::FunctionCallOutput {
+                call_id: ctx.call_id.clone(),
+                output: FunctionCallOutputPayload {
+                    content: format!("failed to serialize request_user_input response: {err}"),
+                    success: Some(false),
+                },
+            };
+        }
+    };
+
+    ResponseInputItem::FunctionCallOutput {
+        call_id: ctx.call_id.clone(),
+        output: FunctionCallOutputPayload {
+            content,
+            success: Some(true),
+        },
     }
 }
 
