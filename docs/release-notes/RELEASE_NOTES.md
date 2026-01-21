@@ -1,10 +1,12 @@
-## @just-every/code v0.6.48
-
-Stabilizes browser-driven flows and keeps automation working when proxy discovery is required.
+## @just-every/code v0.6.49
+A release focused on smoother session forking, better headless auth, and more predictable tool behavior.
 
 ### Changes
-- Browser: stabilize /browser command handling and diff rendering for reliable runs.
-- Browser: honor proxy discovery when finding CDP targets so automation works behind proxies.
+- CLI/Fork: /fork now clones the current session and surfaces the source session id in /status.
+- Auth: add device code login for headless environments to simplify setup.
+- TUI/Auto-review: persist review baselines across sessions to avoid repeated prompts.
+- Core: align tool output caps with model policy to prevent unexpected truncation.
+- API: allow listing threads ordered by created_at or updated_at for predictable pagination.
 
 ### Install
 ```
@@ -12,4 +14,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.47...v0.6.48
+Compare: https://github.com/just-every/code/compare/v0.6.48...v0.6.49
