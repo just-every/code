@@ -57,9 +57,9 @@ pub fn create_fake_rollout(
         cwd: PathBuf::from("/"),
         originator: "codex".to_string(),
         cli_version: "0.0.0".to_string(),
-        instructions: None,
         source: SessionSource::Cli,
         model_provider: model_provider.map(str::to_string),
+        base_instructions: None,
     };
     let payload = serde_json::to_value(SessionMetaLine {
         meta,
@@ -135,9 +135,9 @@ pub fn create_fake_rollout_with_text_elements(
         cwd: PathBuf::from("/"),
         originator: "codex".to_string(),
         cli_version: "0.0.0".to_string(),
-        instructions: None,
         source: SessionSource::Cli,
         model_provider: model_provider.map(str::to_string),
+        base_instructions: None,
     };
     let payload = serde_json::to_value(SessionMetaLine {
         meta,
