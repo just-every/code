@@ -41,6 +41,11 @@ impl SessionMetrics {
         self.push_prompt_observation(usage.non_cached_input());
     }
 
+    pub fn record_turn_without_usage(&mut self, estimated_prompt_tokens: u64) {
+        self.turn_count = self.turn_count.saturating_add(1);
+        self.push_prompt_observation(estimated_prompt_tokens);
+    }
+
     pub fn sync_absolute(&mut self, total: TokenUsage, last: TokenUsage, turn_count: u32) {
         self.running_total = total;
         self.last_turn = last.clone();
@@ -61,6 +66,10 @@ impl SessionMetrics {
 
     pub fn turn_count(&self) -> u32 {
         self.turn_count
+    }
+
+    pub fn has_recorded_usage(&self) -> bool {
+        !self.running_total.is_zero() || !self.last_turn.is_zero()
     }
 
     pub fn blended_total(&self) -> u64 {
@@ -197,6 +206,18 @@ mod tests {
         assert_eq!(metrics.estimated_next_prompt_tokens(), 2_500);
         assert_eq!(metrics.duplicate_items(), 0);
         assert_eq!(metrics.replay_updates(), 0);
+    }
+
+    #[test]
+    fn record_turn_without_usage_does_not_mark_usage() {
+        let mut metrics = SessionMetrics::default();
+        assert!(!metrics.has_recorded_usage());
+
+        metrics.record_turn_without_usage(2_000);
+        assert!(!metrics.has_recorded_usage());
+
+        metrics.record_turn(&usage(1_000, 500));
+        assert!(metrics.has_recorded_usage());
     }
 
     #[test]

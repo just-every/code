@@ -877,8 +877,8 @@ mod tests {
     #[test]
     fn compaction_fallback_stops_once_tokens_recorded() {
         assert!(!should_compact(
-            "gpt-5.1",
-            1,
+            "unknown-model",
+            0,
             0,
             MESSAGE_LIMIT_FALLBACK,
             true,
@@ -1319,6 +1319,13 @@ fn run_auto_loop(
                     coordinator_turns_seen = coordinator_turns_seen.saturating_add(1);
                     if let Some(usage) = token_usage.as_ref() {
                         session_metrics.record_turn(usage);
+                        emit_auto_drive_metrics(&event_tx, &session_metrics);
+                    } else {
+                        let estimated_prompt_tokens: u64 = conv
+                            .iter()
+                            .map(|item| estimate_item_tokens(item) as u64)
+                            .sum();
+                        session_metrics.record_turn_without_usage(estimated_prompt_tokens);
                         emit_auto_drive_metrics(&event_tx, &session_metrics);
                     }
                     active_model_slug = model_slug;
@@ -3255,14 +3262,14 @@ fn maybe_compact(
         .sum();
     let estimated_next = metrics.estimated_next_prompt_tokens();
     let message_count = conversation.len();
-    let has_recorded_turns = metrics.turn_count() > 0;
+    let has_recorded_usage = metrics.has_recorded_usage();
 
     if !should_compact(
         model_slug,
         transcript_tokens,
         estimated_next,
         message_count,
-        has_recorded_turns,
+        has_recorded_usage,
     ) {
         return CompactionResult::Skipped;
     }
@@ -3368,12 +3375,13 @@ fn maybe_compact(
 /// * `session_total` - Total tokens used in the session so far
 /// * `estimated_next` - Estimated tokens for the next turn
 /// * `message_count` - Number of messages in the current conversation (fallback heuristic)
+/// * `has_recorded_usage` - Whether we have real token usage from the backend
 pub fn should_compact(
     model_slug: &str,
     transcript_tokens: u64,
     estimated_next: u64,
     message_count: usize,
-    has_recorded_turns: bool,
+    has_recorded_usage: bool,
 ) -> bool {
     // Get model family to look up model info
     let family = find_family_for_model(model_slug)
@@ -3400,7 +3408,7 @@ pub fn should_compact(
         }
     }
 
-    if has_recorded_turns {
+    if has_recorded_usage {
         return false;
     }
 
