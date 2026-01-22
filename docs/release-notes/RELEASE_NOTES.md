@@ -1,12 +1,13 @@
-## @just-every/code v0.6.49
-A release focused on smoother session forking, better headless auth, and more predictable tool behavior.
+## @just-every/code v0.6.50
+
+This release upgrades model defaults, improves request-user-input UX, and tightens config and sandbox handling.
 
 ### Changes
-- CLI/Fork: /fork now clones the current session and surfaces the source session id in /status.
-- Auth: add device code login for headless environments to simplify setup.
-- TUI/Auto-review: persist review baselines across sessions to avoid repeated prompts.
-- Core: align tool output caps with model policy to prevent unexpected truncation.
-- API: allow listing threads ordered by created_at or updated_at for predictable pagination.
+- Core/Models: default to gpt-5.2-codex with personality templating and request-user-input support.
+- Core/Config: add layered config.toml support for app-server reads and merges.
+- TUI: add request-user-input overlay with interactive picker and reliable pending/answer routing.
+- Core/Runtime: preserve interrupted turns to prevent repeats and avoid touching thread mtime on resume.
+- Sandbox/Paths: harden tilde expansion and Windows sandbox audit paths for safer writable roots.
 
 ### Install
 ```
@@ -14,4 +15,7 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.48...v0.6.49
+### Thanks
+Thanks to @zerone0x and @sgraika127 for contributions!
+
+Compare: https://github.com/just-every/code/compare/v0.6.49...v0.6.50
