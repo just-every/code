@@ -438,7 +438,7 @@ impl ChatWidgetHarness {
 
     pub(crate) fn layout_metrics(&self) -> LayoutMetrics {
         LayoutMetrics {
-            scroll_offset: self.chat.layout.scroll_offset,
+            scroll_offset: self.chat.layout.scroll_offset.get(),
             last_viewport_height: self.chat.layout.last_history_viewport_height.get(),
             last_max_scroll: self.chat.layout.last_max_scroll.get(),
         }
@@ -730,11 +730,11 @@ impl ChatWidgetHarness {
     }
 
     pub(crate) fn force_scroll_offset(&mut self, offset: u16) {
-        self.chat.layout.scroll_offset = offset;
+        self.chat.layout.scroll_offset.set(offset);
     }
 
     pub(crate) fn scroll_offset(&self) -> u16 {
-        self.chat.layout.scroll_offset
+        self.chat.layout.scroll_offset.get()
     }
 
     pub(crate) fn poll_until<F>(&mut self, mut predicate: F, timeout: Duration) -> Vec<AppEvent>

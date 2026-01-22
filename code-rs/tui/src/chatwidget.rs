@@ -5178,7 +5178,7 @@ impl ChatWidget<'_> {
         }
         let total_height = self.history_render.last_total_height();
         let max_scroll = total_height.saturating_sub(viewport_rows);
-        let clamped_offset = self.layout.scroll_offset.min(max_scroll);
+        let clamped_offset = self.layout.scroll_offset.get().min(max_scroll);
         let scroll_pos = max_scroll.saturating_sub(clamped_offset);
         let history_len = self.history_cells.len();
         let history_total = {
@@ -6568,7 +6568,7 @@ impl ChatWidget<'_> {
                 crate::height_manager::HeightManagerConfig::default(),
             )),
             layout: LayoutState {
-                scroll_offset: 0,
+                scroll_offset: Cell::new(0),
                 last_max_scroll: std::cell::Cell::new(0),
                 last_history_viewport_height: std::cell::Cell::new(0),
                 vertical_scrollbar_state: std::cell::RefCell::new(ScrollbarState::default()),
@@ -6941,7 +6941,7 @@ impl ChatWidget<'_> {
                 crate::height_manager::HeightManagerConfig::default(),
             )),
             layout: LayoutState {
-                scroll_offset: 0,
+                scroll_offset: Cell::new(0),
                 last_max_scroll: std::cell::Cell::new(0),
                 last_history_viewport_height: std::cell::Cell::new(0),
                 vertical_scrollbar_state: std::cell::RefCell::new(ScrollbarState::default()),
@@ -8113,12 +8113,12 @@ impl ChatWidget<'_> {
                 self.app_event_tx.send(AppEvent::RequestRedraw);
             }
             InputResult::ScrollUp => {
-                let before = self.layout.scroll_offset;
+                let before = self.layout.scroll_offset.get();
                 // Only allow Up to navigate command history when the top view
                 // cannot be scrolled at all (no scrollback available).
                 if self.layout.last_max_scroll.get() == 0 {
                     if self.bottom_pane.try_history_up() {
-                        self.perf_track_scroll_delta(before, self.layout.scroll_offset);
+                        self.perf_track_scroll_delta(before, self.layout.scroll_offset.get());
                         return;
                     }
                 }
@@ -8127,13 +8127,14 @@ impl ChatWidget<'_> {
                 let new_offset = self
                     .layout
                     .scroll_offset
+                    .get()
                     .saturating_add(3)
                     .min(self.layout.last_max_scroll.get());
-                self.layout.scroll_offset = new_offset;
+                self.layout.scroll_offset.set(new_offset);
                 self.flash_scrollbar();
                 self.sync_history_virtualization();
                 // Enable compact mode so history can use the spacer line
-                if self.layout.scroll_offset > 0 {
+                if self.layout.scroll_offset.get() > 0 {
                     self.bottom_pane.set_compact_compose(true);
                     self.height_manager
                         .borrow_mut()
@@ -8146,21 +8147,21 @@ impl ChatWidget<'_> {
                     .borrow_mut()
                     .record_event(HeightEvent::UserScroll);
                 self.maybe_show_history_nav_hint_on_first_scroll();
-                self.perf_track_scroll_delta(before, self.layout.scroll_offset);
+                self.perf_track_scroll_delta(before, self.layout.scroll_offset.get());
             }
             InputResult::ScrollDown => {
-                let before = self.layout.scroll_offset;
+                let before = self.layout.scroll_offset.get();
                 // Only allow Down to navigate command history when the top view
                 // cannot be scrolled at all (no scrollback available).
                 if self.layout.last_max_scroll.get() == 0 && self.bottom_pane.history_is_browsing()
                 {
                     if self.bottom_pane.try_history_down() {
-                        self.perf_track_scroll_delta(before, self.layout.scroll_offset);
+                        self.perf_track_scroll_delta(before, self.layout.scroll_offset.get());
                         return;
                     }
                 }
                 // Scroll down in chat history (decrease offset, towards bottom)
-                if self.layout.scroll_offset == 0 {
+                if self.layout.scroll_offset.get() == 0 {
                     // Already at bottom: ensure spacer above input is enabled.
                     self.bottom_pane.set_compact_compose(false);
                     self.sync_history_virtualization();
@@ -8172,30 +8173,32 @@ impl ChatWidget<'_> {
                     self.height_manager
                         .borrow_mut()
                         .record_event(HeightEvent::ComposerModeChange);
-                    self.perf_track_scroll_delta(before, self.layout.scroll_offset);
-                } else if self.layout.scroll_offset >= 3 {
+                    self.perf_track_scroll_delta(before, self.layout.scroll_offset.get());
+                } else if self.layout.scroll_offset.get() >= 3 {
                     // Move towards bottom but do NOT toggle spacer yet; wait until
                     // the user confirms by pressing Down again at bottom.
-                    self.layout.scroll_offset = self.layout.scroll_offset.saturating_sub(3);
+                    self.layout
+                        .scroll_offset
+                        .set(self.layout.scroll_offset.get().saturating_sub(3));
                     self.sync_history_virtualization();
                     self.app_event_tx.send(AppEvent::RequestRedraw);
                     self.height_manager
                         .borrow_mut()
                         .record_event(HeightEvent::UserScroll);
                     self.maybe_show_history_nav_hint_on_first_scroll();
-                    self.perf_track_scroll_delta(before, self.layout.scroll_offset);
-                } else if self.layout.scroll_offset > 0 {
+                    self.perf_track_scroll_delta(before, self.layout.scroll_offset.get());
+                } else if self.layout.scroll_offset.get() > 0 {
                     // Land exactly at bottom without toggling spacer yet; require
                     // a subsequent Down to re-enable the spacer so the input
                     // doesn't move when scrolling into the line above it.
-                    self.layout.scroll_offset = 0;
+                    self.layout.scroll_offset.set(0);
                     self.sync_history_virtualization();
                     self.app_event_tx.send(AppEvent::RequestRedraw);
                     self.height_manager
                         .borrow_mut()
                         .record_event(HeightEvent::UserScroll);
                     self.maybe_show_history_nav_hint_on_first_scroll();
-                    self.perf_track_scroll_delta(before, self.layout.scroll_offset);
+                    self.perf_track_scroll_delta(before, self.layout.scroll_offset.get());
                 }
                 self.flash_scrollbar();
             }
@@ -11028,7 +11031,7 @@ impl ChatWidget<'_> {
     }
 
     fn submit_user_message(&mut self, user_message: UserMessage) {
-        if self.layout.scroll_offset > 0 {
+        if self.layout.scroll_offset.get() > 0 {
             layout_scroll::to_bottom(self);
         }
         // Surface a local diagnostic note and anchor it to the NEXT turn,
@@ -17347,7 +17350,7 @@ impl ChatWidget<'_> {
         self.agents_terminal.clamp_selected_index();
 
         if saw_new_agent && self.agents_terminal.active {
-            self.layout.scroll_offset = 0;
+            self.layout.scroll_offset.set(0);
         }
     }
 
@@ -17360,7 +17363,7 @@ impl ChatWidget<'_> {
         self.agents_terminal.focus_sidebar();
         self.agents_terminal.clear_stop_prompt();
         self.bottom_pane.set_input_focus(false);
-        self.agents_terminal.saved_scroll_offset = self.layout.scroll_offset;
+        self.agents_terminal.saved_scroll_offset = self.layout.scroll_offset.get();
         if self.agents_terminal.order.is_empty() {
             for agent in &self.active_agents {
                 if !self
@@ -17431,14 +17434,19 @@ impl ChatWidget<'_> {
         self.agents_terminal.active = false;
         self.agents_terminal.clear_stop_prompt();
         self.agents_terminal.focus_sidebar();
-        self.layout.scroll_offset = self.agents_terminal.saved_scroll_offset;
+        self.layout.scroll_offset
+            .set(self.agents_terminal.saved_scroll_offset);
         self.bottom_pane.set_input_focus(true);
         self.request_redraw();
     }
 
     fn record_current_agent_scroll(&mut self) {
         if let Some(entry) = self.agents_terminal.current_sidebar_entry() {
-            let capped = self.layout.scroll_offset.min(self.layout.last_max_scroll.get());
+            let capped = self
+                .layout
+                .scroll_offset
+                .get()
+                .min(self.layout.last_max_scroll.get());
             self
                 .agents_terminal
                 .scroll_offsets
@@ -17455,9 +17463,9 @@ impl ChatWidget<'_> {
                 .agents_terminal
                 .scroll_offsets
                 .insert(key, u16::MAX);
-            self.layout.scroll_offset = u16::MAX;
+            self.layout.scroll_offset.set(u16::MAX);
         } else {
-            self.layout.scroll_offset = 0;
+            self.layout.scroll_offset.set(0);
         }
     }
 
@@ -17470,7 +17478,7 @@ impl ChatWidget<'_> {
             .last_render_scroll
             .get()
             .min(self.layout.last_max_scroll.get());
-        self.layout.scroll_offset = applied;
+        self.layout.scroll_offset.set(applied);
         if let Some(entry) = self.agents_terminal.current_sidebar_entry() {
             self
                 .agents_terminal
@@ -23215,7 +23223,7 @@ Have we met every part of this goal and is there no further work to do?"#
         self.agents_terminal.reset();
         if self.agents_terminal.active {
             // Reset scroll offset when a new batch starts to avoid stale positions
-            self.layout.scroll_offset = 0;
+            self.layout.scroll_offset.set(0);
         }
 
         // Initialize sparkline with some data so it shows immediately
@@ -30248,7 +30256,7 @@ use code_core::protocol::OrderMeta;
         chat.resume_expected_next_request = None;
         chat.resume_provider_baseline = None;
         chat.synthetic_system_req = None;
-        chat.layout.scroll_offset = 0;
+        chat.layout.scroll_offset.set(0);
         chat.layout.last_max_scroll.set(0);
         chat.layout.last_history_viewport_height.set(0);
         #[cfg(any(test, feature = "test-helpers"))]
@@ -32292,7 +32300,7 @@ use code_core::protocol::OrderMeta;
         insert_plain_cell(chat, &["new-1", "new-2"]);
 
         let viewport_height = 6;
-        chat.layout.scroll_offset = 2;
+        chat.layout.scroll_offset.set(2);
 
         let mut terminal = Terminal::new(TestBackend::new(40, viewport_height)).expect("terminal");
         terminal
@@ -32388,7 +32396,7 @@ use code_core::protocol::OrderMeta;
         insert_plain_cell(chat, &["new-1", "new-2"]);
 
         let viewport_height = 6;
-        chat.layout.scroll_offset = 2;
+        chat.layout.scroll_offset.set(2);
 
         {
             let mut terminal =
@@ -32429,7 +32437,7 @@ use code_core::protocol::OrderMeta;
 
         let max_scroll = chat.layout.last_max_scroll.get();
         assert!(max_scroll > 0, "expected overflow to produce a positive max scroll");
-        chat.layout.scroll_offset = max_scroll;
+        chat.layout.scroll_offset.set(max_scroll);
 
         let mut terminal = Terminal::new(TestBackend::new(40, 6)).expect("terminal");
         terminal
@@ -32437,7 +32445,7 @@ use code_core::protocol::OrderMeta;
             .expect("draw history at top boundary");
 
         let max_scroll = chat.layout.last_max_scroll.get();
-        let scroll_from_top = max_scroll.saturating_sub(chat.layout.scroll_offset);
+        let scroll_from_top = max_scroll.saturating_sub(chat.layout.scroll_offset.get());
         let effective = chat.history_render.adjust_scroll_to_content(scroll_from_top);
         let prefix = chat.history_render.prefix_sums.borrow();
         let mut start_idx = match prefix.binary_search(&effective) {
@@ -38461,7 +38469,7 @@ impl WidgetRef for &ChatWidget<'_> {
         }
 
         let composer_rows = self.layout.last_bottom_reserved_rows.get();
-        let ensure_footer_space = self.layout.scroll_offset == 0
+        let ensure_footer_space = self.layout.scroll_offset.get() == 0
             && composer_rows > 0
             && base_total_height >= viewport_rows
             && request_count > 0;
@@ -38502,8 +38510,11 @@ impl WidgetRef for &ChatWidget<'_> {
         }
         let overscan_extra = total_height.saturating_sub(base_total_height);
         // Calculate scroll position and vertical alignment
-        // Stabilize viewport when input area height changes while scrolled up.
+        // Preserve a stable viewport anchor when history grows while the user is scrolled up.
         let prev_viewport_h = self.layout.last_history_viewport_height.get();
+        let prev_max_scroll = self.layout.last_max_scroll.get();
+        let prev_scroll_offset = self.layout.scroll_offset.get().min(prev_max_scroll);
+        let prev_scroll_from_top = prev_max_scroll.saturating_sub(prev_scroll_offset);
         if prev_viewport_h == 0 {
             // Initialize on first render
             self.layout
@@ -38522,9 +38533,18 @@ impl WidgetRef for &ChatWidget<'_> {
             // scroll_offset is measured from the bottom (0 = bottom/newest)
             // Convert to distance from the top for rendering math.
             let max_scroll = total_height.saturating_sub(content_area.height);
-            // Update cache and clamp for display only
+            if self.layout.scroll_offset.get() > 0 && max_scroll != prev_max_scroll {
+                // If the user has scrolled up and the history height changes (e.g. new output
+                // arrives while streaming), keep the same content anchored at the top of the
+                // viewport by adjusting our bottom-anchored scroll offset.
+                self.layout
+                    .scroll_offset
+                    .set(max_scroll.saturating_sub(prev_scroll_from_top));
+            }
+
+            // Update cache and clamp for display only.
             self.layout.last_max_scroll.set(max_scroll);
-            let clamped_scroll_offset = self.layout.scroll_offset.min(max_scroll);
+            let clamped_scroll_offset = self.layout.scroll_offset.get().min(max_scroll);
             let mut scroll_from_top = max_scroll.saturating_sub(clamped_scroll_offset);
 
             if overscan_extra > 0 && clamped_scroll_offset == 0 {
@@ -38551,21 +38571,6 @@ impl WidgetRef for &ChatWidget<'_> {
                 initial_scroll_from_top = scroll_from_top,
                 "scrollback pre-adjust scroll position",
             );
-
-            // Viewport stabilization: when user is scrolled up (offset > 0) and the
-            // history viewport height changes due to the input area growing/shrinking,
-            // adjust the scroll_from_top to keep the top line steady on screen.
-            if clamped_scroll_offset > 0 {
-                let prev_h = prev_viewport_h as i32;
-                let curr_h = content_area.height as i32;
-                let delta_h = prev_h - curr_h; // positive if viewport shrank
-                if delta_h != 0 {
-                    // Adjust in the opposite direction to keep the same top anchor
-                    let sft = scroll_from_top as i32 - delta_h;
-                    let sft = sft.clamp(0, max_scroll as i32) as u16;
-                    scroll_from_top = sft;
-                }
-            }
 
             // If our scroll origin landed on a spacer row between cells, nudge it up so
             // the viewport starts with real content instead of an empty separator.
@@ -40281,7 +40286,7 @@ struct StreamState {
 #[derive(Default)]
 struct LayoutState {
     // Scroll offset from bottom (0 = bottom)
-    scroll_offset: u16,
+    scroll_offset: Cell<u16>,
     // Cached max scroll from last render
     last_max_scroll: std::cell::Cell<u16>,
     // Track last viewport height of the history content area

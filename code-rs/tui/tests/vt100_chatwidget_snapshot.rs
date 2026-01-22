@@ -1162,6 +1162,51 @@ fn scroll_spacing_remains_when_scrolled_up() {
 }
 
 #[test]
+fn scroll_position_stable_when_history_grows_scrolled_up() {
+    let mut harness = ChatWidgetHarness::new();
+
+    for idx in 0..6 {
+        harness.push_user_prompt(format!("User prompt #{idx}: scroll stability"));
+        harness.push_assistant_markdown(format!(
+            "Assistant response #{idx} with enough text to wrap and keep the history tall across renders.\n\nSecond paragraph for idx {idx}."
+        ));
+    }
+
+    let _ = render_chat_widget_to_vt100(&mut harness, 80, 24);
+    let metrics = harness_layout_metrics(&harness);
+    assert!(
+        metrics.last_max_scroll > 0,
+        "scenario must overflow the history viewport to exercise scrolling"
+    );
+
+    let offset = metrics.last_max_scroll.min(5).max(1);
+    harness_force_scroll_offset(&mut harness, offset);
+    let _ = render_chat_widget_to_vt100(&mut harness, 80, 24);
+    let before = harness_layout_metrics(&harness);
+    let before_from_top =
+        before
+            .last_max_scroll
+            .saturating_sub(before.scroll_offset.min(before.last_max_scroll));
+
+    // Simulate additional output arriving while the user has scrolled up.
+    harness.push_assistant_markdown(
+        "New assistant output appended after the user scrolled up.\n\nThis should not move the viewport.",
+    );
+    let _ = render_chat_widget_to_vt100(&mut harness, 80, 24);
+    let after = harness_layout_metrics(&harness);
+    let after_from_top =
+        after
+            .last_max_scroll
+            .saturating_sub(after.scroll_offset.min(after.last_max_scroll));
+
+    assert_eq!(
+        before_from_top,
+        after_from_top,
+        "scroll jumped while history grew; user viewport should stay anchored"
+    );
+}
+
+#[test]
 fn multiline_final_history_line_visible_at_bottom() {
     init_tracing_once();
     let mut harness = ChatWidgetHarness::new();
