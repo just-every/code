@@ -1103,6 +1103,7 @@ mod tests {
             &[
                 "local_shell",
                 "update_plan",
+                "request_user_input",
                 "browser",
                 "agent",
                 "wait",
@@ -1136,6 +1137,7 @@ mod tests {
             &[
                 "local_shell",
                 "update_plan",
+                "request_user_input",
                 "browser",
                 "agent",
                 "wait",
@@ -1168,6 +1170,7 @@ mod tests {
             &[
                 "shell",
                 "update_plan",
+                "request_user_input",
                 "browser",
                 "agent",
                 "wait",
@@ -1237,6 +1240,7 @@ mod tests {
             &tools,
             &[
                 "shell",
+                "request_user_input",
                 "browser",
                 "agent",
                 "wait",
@@ -1249,7 +1253,7 @@ mod tests {
         );
 
         assert_eq!(
-            tools[8],
+            tools[9],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "test_server/do_something_cool".to_string(),
                 parameters: JsonSchema::Object {
@@ -1360,6 +1364,7 @@ mod tests {
             &[
                 "shell",
                 "image_view",
+                "request_user_input",
                 "browser",
                 "agent",
                 "wait",
@@ -1372,7 +1377,7 @@ mod tests {
         );
 
         assert_eq!(
-            tools[9],
+            tools[10],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "test_server/do_something_cool".to_string(),
                 parameters: JsonSchema::Object {
@@ -1485,6 +1490,7 @@ mod tests {
             &[
                 "shell",
                 "image_view",
+                "request_user_input",
                 "browser",
                 "agent",
                 "wait",
@@ -1497,7 +1503,7 @@ mod tests {
         );
 
         assert_eq!(
-            tools[9],
+            tools[10],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "dash/search".to_string(),
                 parameters: JsonSchema::Object {
@@ -1559,6 +1565,7 @@ mod tests {
             &tools,
             &[
                 "shell",
+                "request_user_input",
                 "browser",
                 "agent",
                 "wait",
@@ -1634,6 +1641,7 @@ mod tests {
             &tools,
             &[
                 "shell",
+                "request_user_input",
                 "browser",
                 "agent",
                 "wait",
@@ -1645,7 +1653,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            tools[8],
+            tools[9],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "dash/tags".to_string(),
                 parameters: JsonSchema::Object {
@@ -1707,6 +1715,7 @@ mod tests {
             &tools,
             &[
                 "shell",
+                "request_user_input",
                 "browser",
                 "agent",
                 "wait",
@@ -1718,7 +1727,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            tools[8],
+            tools[9],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "dash/value".to_string(),
                 parameters: JsonSchema::Object {
