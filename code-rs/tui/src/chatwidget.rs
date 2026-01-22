@@ -1466,6 +1466,8 @@ pub(crate) enum TurnOrigin {
 #[derive(Clone, Debug)]
 struct PendingRequestUserInput {
     turn_id: String,
+    call_id: String,
+    anchor_key: OrderKey,
     questions: Vec<code_protocol::request_user_input::RequestUserInputQuestion>,
 }
 
@@ -10899,9 +10901,15 @@ impl ChatWidget<'_> {
         use code_protocol::request_user_input::RequestUserInputAnswer;
         use code_protocol::request_user_input::RequestUserInputResponse;
 
+        tracing::info!(
+            "[request_user_input] answer turn_id={} call_id={}",
+            pending.turn_id,
+            pending.call_id
+        );
+
         let display_text = raw.trim();
         if !display_text.is_empty() {
-            let key = self.near_time_key_current_req(None);
+            let key = Self::order_key_successor(pending.anchor_key);
             let state = history_cell::new_user_prompt(display_text.to_string());
             let _ =
                 self.history_insert_plain_state_with_key(state, key, "request_user_input_answer");
@@ -13727,6 +13735,8 @@ impl ChatWidget<'_> {
 
                 self.pending_request_user_input = Some(PendingRequestUserInput {
                     turn_id: ev.turn_id.clone(),
+                    call_id: ev.call_id.clone(),
+                    anchor_key: key,
                     questions: ev.questions.clone(),
                 });
                 self.bottom_pane
