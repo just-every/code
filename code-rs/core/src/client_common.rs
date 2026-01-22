@@ -256,6 +256,10 @@ impl Prompt {
 pub enum ResponseEvent {
     Created,
     OutputItemDone { item: ResponseItem, sequence_number: Option<u64>, output_index: Option<u32> },
+    /// Indicates that the server will include reasoning content on this stream.
+    ///
+    /// Some providers expose this as a handshake header on websocket streams.
+    ServerReasoningIncluded(bool),
     Completed {
         response_id: String,
         token_usage: Option<TokenUsage>,

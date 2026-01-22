@@ -732,6 +732,16 @@ impl ModelClient {
                         }
                     }
 
+                    if response.headers().contains_key("x-reasoning-included") {
+                        if tx_event
+                            .send(Ok(ResponseEvent::ServerReasoningIncluded(true)))
+                            .await
+                            .is_err()
+                        {
+                            debug!("receiver dropped server reasoning included event");
+                        }
+                    }
+
                     ws_stream
                         .send(Message::Text(ws_payload_text))
                         .await

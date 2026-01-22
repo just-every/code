@@ -2540,6 +2540,7 @@ async fn try_run_turn(
 
         match event {
             ResponseEvent::Created => {}
+            ResponseEvent::ServerReasoningIncluded(_included) => {}
             ResponseEvent::OutputItemDone { item, sequence_number, output_index } => {
                 let response =
                     handle_response_item(sess, turn_diff_tracker, sub_id, item.clone(), sequence_number, output_index, attempt_req).await?;
