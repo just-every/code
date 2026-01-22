@@ -26,6 +26,7 @@ use crate::config_types::TextVerbosity;
 use crate::config_types::Tui;
 use crate::config_types::UriBasedFileOpener;
 use crate::config_types::ConfirmGuardConfig;
+use crate::config_types::Personality;
 use crate::config_types::DEFAULT_OTEL_ENVIRONMENT;
 use crate::git_info::resolve_root_git_project_for_trust;
 use crate::model_family::ModelFamily;
@@ -239,6 +240,9 @@ pub struct Config {
 
     /// Base instructions override.
     pub base_instructions: Option<String>,
+
+    /// Optional personality used to template gpt-5.2-codex base instructions.
+    pub model_personality: Option<Personality>,
 
     /// Optional override for the compaction prompt text.
     pub compact_prompt_override: Option<String>,
@@ -609,6 +613,7 @@ pub struct ConfigToml {
     pub preferred_model_reasoning_effort: Option<ReasoningEffort>,
     pub model_reasoning_summary: Option<ReasoningSummary>,
     pub model_text_verbosity: Option<TextVerbosity>,
+    pub model_personality: Option<Personality>,
 
     /// Override to force-enable reasoning summaries for the configured model.
     pub model_supports_reasoning_summaries: Option<bool>,
@@ -1076,6 +1081,10 @@ impl Config {
             .or(cfg.model)
             .unwrap_or_else(|| default_model_slug.to_string());
 
+        let model_personality = config_profile
+            .model_personality
+            .or(cfg.model_personality);
+
         let model_family =
             find_family_for_model(&model).unwrap_or_else(|| derive_default_model_family(&model));
         let default_tool_output_max_bytes = model_family.tool_output_max_bytes();
@@ -1363,6 +1372,7 @@ impl Config {
             user_instructions,
             demo_developer_message: None,
             base_instructions,
+            model_personality,
             compact_prompt_override,
             mcp_servers: cfg.mcp_servers,
             experimental_client_tools: cfg.experimental_client_tools.clone(),

@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use crate::config_types::ReasoningEffort;
 use crate::config_types::ReasoningSummary;
 use crate::config_types::TextVerbosity;
+use crate::config_types::Personality;
 use crate::protocol::AskForApproval;
 
 /// Collection of common configuration options that a user can define as a unit
@@ -35,6 +36,7 @@ pub struct ConfigProfile {
     pub auto_review_resolve_use_chat_model: Option<bool>,
     pub model_reasoning_summary: Option<ReasoningSummary>,
     pub model_text_verbosity: Option<TextVerbosity>,
+    pub model_personality: Option<Personality>,
     pub chatgpt_base_url: Option<String>,
     pub experimental_instructions_file: Option<PathBuf>,
     pub compact_prompt_override: Option<String>,

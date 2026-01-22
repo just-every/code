@@ -1307,6 +1307,14 @@ pub enum TextVerbosity {
     High,
 }
 
+#[derive(Debug, Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum Personality {
+    Friendly,
+    #[default]
+    Pragmatic,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum CommandField {

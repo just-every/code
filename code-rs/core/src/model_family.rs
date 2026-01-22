@@ -1,3 +1,4 @@
+use crate::config_types::Personality;
 use crate::config_types::ReasoningEffort;
 use crate::tool_apply_patch::ApplyPatchToolType;
 use code_protocol::protocol::TruncationPolicy;
@@ -12,6 +13,12 @@ const GPT_5_1_INSTRUCTIONS: &str = include_str!("../gpt_5_1_prompt.md");
 const GPT_5_2_INSTRUCTIONS: &str = include_str!("../gpt_5_2_prompt.md");
 const GPT_5_1_CODEX_MAX_INSTRUCTIONS: &str = include_str!("../gpt-5.1-codex-max_prompt.md");
 const GPT_5_2_CODEX_INSTRUCTIONS: &str = include_str!("../gpt-5.2-codex_prompt.md");
+
+const GPT_5_2_CODEX_INSTRUCTIONS_TEMPLATE: &str = include_str!(
+    "../templates/model_instructions/gpt-5.2-codex_instructions_template.md",
+);
+const PERSONALITY_FRIENDLY: &str = include_str!("../templates/personalities/friendly.md");
+const PERSONALITY_PRAGMATIC: &str = include_str!("../templates/personalities/pragmatic.md");
 
 const CONTEXT_WINDOW_272K: u64 = 272_000;
 const CONTEXT_WINDOW_200K: u64 = 200_000;
@@ -71,6 +78,24 @@ pub struct ModelFamily {
 
     // Instructions to use for querying the model
     pub base_instructions: String,
+}
+
+pub(crate) fn base_instructions_override_for_personality(
+    model: &str,
+    personality: Option<Personality>,
+) -> Option<String> {
+    if !model.contains("gpt-5.2-codex") {
+        return None;
+    }
+    let personality = personality?;
+    let personality_message = match personality {
+        Personality::Friendly => PERSONALITY_FRIENDLY,
+        Personality::Pragmatic => PERSONALITY_PRAGMATIC,
+    };
+    Some(
+        GPT_5_2_CODEX_INSTRUCTIONS_TEMPLATE
+            .replace("{{ personality_message }}", personality_message),
+    )
 }
 
 macro_rules! model_family {

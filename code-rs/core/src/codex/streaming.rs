@@ -247,7 +247,7 @@ pub(super) async fn submission_loop(
                 model_reasoning_summary,
                 model_text_verbosity,
                 user_instructions: provided_user_instructions,
-                base_instructions,
+                base_instructions: provided_base_instructions,
                 approval_policy,
                 sandbox_policy,
                 disable_response_storage,
@@ -292,6 +292,12 @@ pub(super) async fn submission_loop(
                 updated_config.model_reasoning_summary = model_reasoning_summary;
                 updated_config.model_text_verbosity = model_text_verbosity;
                 updated_config.user_instructions = provided_user_instructions.clone();
+                let base_instructions = provided_base_instructions.or_else(|| {
+                    crate::model_family::base_instructions_override_for_personality(
+                        &model,
+                        updated_config.model_personality,
+                    )
+                });
                 updated_config.base_instructions = base_instructions.clone();
                 updated_config.approval_policy = approval_policy;
                 updated_config.sandbox_policy = sandbox_policy.clone();
