@@ -202,6 +202,13 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::BackgroundEvent(BackgroundEventEvent { message }) => {
                 ts_println!(self, "{}", message.style(self.dimmed));
             }
+            EventMsg::RequestUserInput(ev) => {
+                let question_count = ev.questions.len();
+                ts_println!(
+                    self,
+                    "Model requested user input ({question_count} question(s)); interactive prompts are not supported in this runner.",
+                );
+            }
             EventMsg::EnvironmentContextFull(_)
             | EventMsg::EnvironmentContextDelta(_)
             | EventMsg::BrowserSnapshot(_)

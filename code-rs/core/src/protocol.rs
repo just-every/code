@@ -46,6 +46,8 @@ pub use code_protocol::skills::Skill;
 pub use code_protocol::protocol::ENVIRONMENT_CONTEXT_OPEN_TAG;
 pub use code_protocol::protocol::ExitedReviewModeEvent;
 pub use code_protocol::protocol::ReviewSnapshotInfo;
+pub use code_protocol::request_user_input::RequestUserInputEvent;
+pub use code_protocol::request_user_input::RequestUserInputResponse;
 
 /// Submission Queue Entry - requests from user
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -193,6 +195,15 @@ pub enum Op {
         id: String,
         /// The user's decision in response to the request.
         decision: ReviewDecision,
+    },
+
+    /// Resolve a request_user_input tool call.
+    #[serde(rename = "user_input_answer", alias = "request_user_input_response")]
+    UserInputAnswer {
+        /// Turn id for the in-flight request.
+        id: String,
+        /// User-provided answers.
+        response: RequestUserInputResponse,
     },
 
     /// Update a specific validation tool toggle for the session.
@@ -786,6 +797,8 @@ pub enum EventMsg {
     ExecCommandEnd(ExecCommandEndEvent),
 
     ExecApprovalRequest(ExecApprovalRequestEvent),
+
+    RequestUserInput(RequestUserInputEvent),
 
     ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent),
 

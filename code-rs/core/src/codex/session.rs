@@ -132,7 +132,7 @@ pub(super) struct State {
     pub(super) approved_commands: HashSet<ApprovedCommandPattern>,
     pub(super) current_task: Option<AgentTask>,
     pub(super) pending_approvals: HashMap<String, oneshot::Sender<ReviewDecision>>,
-    pub(super) pending_tool_user_input: VecDeque<oneshot::Sender<Vec<InputItem>>>,
+    pub(super) pending_request_user_input: HashMap<String, oneshot::Sender<crate::protocol::RequestUserInputResponse>>,
     pub(super) pending_input: Vec<ResponseInputItem>,
     pub(super) pending_user_input: Vec<QueuedUserInput>,
     pub(super) history: ConversationHistory,
@@ -1120,25 +1120,32 @@ impl Session {
         }
     }
 
-    pub async fn request_tool_user_input(&self) -> Option<Vec<InputItem>> {
+    pub fn register_pending_user_input(
+        &self,
+        turn_id: String,
+    ) -> std::result::Result<oneshot::Receiver<crate::protocol::RequestUserInputResponse>, String> {
         let (tx, rx) = oneshot::channel();
-        {
-            let mut state = self.state.lock().unwrap();
-            state.pending_tool_user_input.push_back(tx);
+        let mut state = self.state.lock().unwrap();
+        if state.pending_request_user_input.contains_key(&turn_id) {
+            return Err(format!("request_user_input already pending for turn_id={turn_id}"));
         }
-        rx.await.ok()
+        state.pending_request_user_input.insert(turn_id, tx);
+        Ok(rx)
     }
 
-    pub fn notify_tool_user_input(&self, items: Vec<InputItem>) -> Option<Vec<InputItem>> {
+    pub fn notify_user_input_response(
+        &self,
+        turn_id: &str,
+        response: crate::protocol::RequestUserInputResponse,
+    ) {
         let pending = {
             let mut state = self.state.lock().unwrap();
-            state.pending_tool_user_input.pop_front()
+            state.pending_request_user_input.remove(turn_id)
         };
         if let Some(tx) = pending {
-            let _ = tx.send(items);
-            None
+            let _ = tx.send(response);
         } else {
-            Some(items)
+            tracing::warn!("no pending request_user_input found for turn_id={turn_id}");
         }
     }
 
@@ -1855,7 +1862,7 @@ impl Session {
 
         let mut state = self.state.lock().unwrap();
         state.pending_approvals.clear();
-        state.pending_tool_user_input.clear();
+        state.pending_request_user_input.clear();
         // Do not clear `pending_input` here. When a user submits a new message
         // immediately after an interrupt, it may have been routed to
         // `pending_input` by an earlier code path. Clearing it would drop the

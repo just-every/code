@@ -232,6 +232,26 @@ async fn run_code_tool_session_inner(
                         .await;
                         continue;
                     }
+                    EventMsg::RequestUserInput(ev) => {
+                        let question_count = ev.questions.len();
+                        let result = CallToolResult {
+                            content: vec![ContentBlock::TextContent(TextContent {
+                                r#type: "text".to_string(),
+                                text: format!(
+                                    "Codex requested user input ({question_count} question(s)) but interactive prompts are not supported in this MCP tool session."
+                                ),
+                                annotations: None,
+                            })],
+                            is_error: Some(true),
+                            structured_content: None,
+                        };
+                        outgoing.send_response(request_id.clone(), result).await;
+                        running_requests_id_to_code_uuid
+                            .lock()
+                            .await
+                            .remove(&request_id);
+                        break;
+                    }
                     EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
                         let text = match last_agent_message {
                             Some(msg) => msg.clone(),

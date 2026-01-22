@@ -21,8 +21,10 @@ use crate::models::ResponseItem;
 use crate::num_format::format_with_separators;
 use crate::parse_command::ParsedCommand;
 use crate::plan_tool::UpdatePlanArgs;
+use crate::request_user_input::RequestUserInputResponse;
 use mcp_types::CallToolResult;
 use mcp_types::Tool as McpTool;
+pub use crate::request_user_input::RequestUserInputEvent;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -165,6 +167,15 @@ pub enum Op {
         id: String,
         /// The user's decision in response to the request.
         decision: ReviewDecision,
+    },
+
+    /// Resolve a request_user_input tool call.
+    #[serde(rename = "user_input_answer", alias = "request_user_input_response")]
+    UserInputAnswer {
+        /// Turn id for the in-flight request.
+        id: String,
+        /// User-provided answers.
+        response: RequestUserInputResponse,
     },
 
     /// Append an entry to the persistent cross-session message history.
@@ -572,6 +583,8 @@ pub enum EventMsg {
     ViewImageToolCall(ViewImageToolCallEvent),
 
     ExecApprovalRequest(ExecApprovalRequestEvent),
+
+    RequestUserInput(RequestUserInputEvent),
 
     ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent),
 

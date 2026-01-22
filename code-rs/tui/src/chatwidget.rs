@@ -1463,6 +1463,12 @@ pub(crate) enum TurnOrigin {
     Developer,
 }
 
+#[derive(Clone, Debug)]
+struct PendingRequestUserInput {
+    turn_id: String,
+    questions: Vec<code_protocol::request_user_input::RequestUserInputQuestion>,
+}
+
 #[derive(Clone)]
 struct RenderRequestSeed {
     history_id: HistoryId,
@@ -1545,6 +1551,7 @@ pub(crate) struct ChatWidget<'a> {
     // Cache of the last developer/system note we injected (hidden messages)
     last_developer_message: Option<String>,
     pending_turn_origin: Option<TurnOrigin>,
+    pending_request_user_input: Option<PendingRequestUserInput>,
     current_turn_origin: Option<TurnOrigin>,
     // Tracks whether lingering running exec/tool cells have been cleared for the
     // current turn. Reset on TaskStarted; set after the first assistant message
@@ -6439,6 +6446,7 @@ impl ChatWidget<'_> {
             last_user_message: None,
             last_developer_message: None,
             pending_turn_origin: None,
+            pending_request_user_input: None,
             current_turn_origin: None,
             cleared_lingering_execs_this_turn: true,
             exec: ExecState {
@@ -6794,6 +6802,7 @@ impl ChatWidget<'_> {
             last_user_message: None,
             last_developer_message: None,
             pending_turn_origin: None,
+            pending_request_user_input: None,
             current_turn_origin: None,
             cleared_lingering_execs_this_turn: true,
             exec: ExecState {
@@ -8065,6 +8074,10 @@ impl ChatWidget<'_> {
 
         match input_result {
             InputResult::Submitted(text) => {
+                if let Some(pending) = self.pending_request_user_input.take() {
+                    self.submit_request_user_input_answer(pending, text);
+                    return;
+                }
                 self.pending_turn_origin = Some(TurnOrigin::User);
                 let cleaned = Self::strip_context_sections(&text);
                 self.last_user_message = (!cleaned.trim().is_empty()).then_some(cleaned);
@@ -10882,6 +10895,63 @@ impl ChatWidget<'_> {
         }
     }
 
+    fn submit_request_user_input_answer(&mut self, pending: PendingRequestUserInput, raw: String) {
+        use code_protocol::request_user_input::RequestUserInputAnswer;
+        use code_protocol::request_user_input::RequestUserInputResponse;
+
+        let display_text = raw.trim();
+        if !display_text.is_empty() {
+            let key = self.near_time_key_current_req(None);
+            let state = history_cell::new_user_prompt(display_text.to_string());
+            let _ =
+                self.history_insert_plain_state_with_key(state, key, "request_user_input_answer");
+            self.restore_reasoning_in_progress_if_streaming();
+        }
+
+        let response = serde_json::from_str::<RequestUserInputResponse>(&raw).unwrap_or_else(|_| {
+            let question_count = pending.questions.len();
+            let mut lines: Vec<String> = raw
+                .lines()
+                .map(|line| line.trim_end().to_string())
+                .collect();
+
+            if question_count <= 1 {
+                lines = vec![raw.trim().to_string()];
+            } else if lines.len() > question_count {
+                let tail = lines.split_off(question_count - 1);
+                lines.push(tail.join("\n"));
+            }
+
+            while lines.len() < question_count {
+                lines.push(String::new());
+            }
+
+            let mut answers = std::collections::HashMap::new();
+            for (idx, question) in pending.questions.iter().enumerate() {
+                let value = lines.get(idx).cloned().unwrap_or_default();
+                answers.insert(
+                    question.id.clone(),
+                    RequestUserInputAnswer {
+                        answers: vec![value],
+                    },
+                );
+            }
+            RequestUserInputResponse { answers }
+        });
+
+        if let Err(e) = self.code_op_tx.send(Op::UserInputAnswer {
+            id: pending.turn_id,
+            response,
+        }) {
+            tracing::error!("failed to send Op::UserInputAnswer: {e}");
+        }
+
+        self.clear_composer();
+        self.bottom_pane
+            .update_status_text("waiting for model".to_string());
+        self.request_redraw();
+    }
+
     fn submit_user_message(&mut self, user_message: UserMessage) {
         if self.layout.scroll_offset > 0 {
             layout_scroll::to_bottom(self);
@@ -13309,6 +13379,7 @@ impl ChatWidget<'_> {
                 // This begins the new turn; clear the pending prompt anchor count
                 // so subsequent background events use standard placement.
                 self.pending_user_prompts_for_next_turn = 0;
+                self.pending_request_user_input = None;
                 // Reset stream headers for new turn
                 self.stream.reset_headers_for_new_turn();
                 self.stream_state.current_kind = None;
@@ -13348,6 +13419,7 @@ impl ChatWidget<'_> {
             }
             EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
                 self.clear_reconnecting();
+                self.pending_request_user_input = None;
                 let had_running_execs = !self.exec.running_commands.is_empty();
                 // Finalize any active streams
                 let finalizing_streams = self.stream.is_write_cycle_active();
@@ -13625,6 +13697,43 @@ impl ChatWidget<'_> {
                         this.request_redraw();
                     },
                 );
+            }
+            EventMsg::RequestUserInput(ev) => {
+                let key = self.near_time_key_current_req(event.order.as_ref());
+                let mut lines: Vec<String> = Vec::new();
+                lines.push("Model requested user input".to_string());
+
+                for question in &ev.questions {
+                    let header = &question.header;
+                    let id = &question.id;
+                    let question_text = &question.question;
+                    lines.push(format!("\n{header} ({id})\n{question_text}"));
+                    if let Some(options) = &question.options {
+                        lines.push("Options:".to_string());
+                        for option in options {
+                            let label = &option.label;
+                            let description = &option.description;
+                            lines.push(format!("- {label}: {description}"));
+                        }
+                    }
+                }
+                lines.push("\nReply in the composer to continue.".to_string());
+
+                let role = history_cell::plain_role_for_kind(PlainMessageKind::Notice);
+                let state =
+                    history_cell::plain_message_state_from_paragraphs(PlainMessageKind::Notice, role, lines);
+                let _ = self.history_insert_plain_state_with_key(state, key, "request_user_input");
+                self.restore_reasoning_in_progress_if_streaming();
+
+                self.pending_request_user_input = Some(PendingRequestUserInput {
+                    turn_id: ev.turn_id.clone(),
+                    questions: ev.questions.clone(),
+                });
+                self.bottom_pane
+                    .update_status_text("waiting for user input".to_string());
+                self.bottom_pane.set_task_running(true);
+                self.bottom_pane.ensure_input_focus();
+                self.request_redraw();
             }
             EventMsg::ApplyPatchApprovalRequest(ev) => {
                 let id2 = id.clone();
@@ -14729,7 +14838,9 @@ impl ChatWidget<'_> {
             }
             // Newer protocol variants we currently ignore in the TUI
             EventMsg::UserMessage(_) => {}
-            EventMsg::TurnAborted(_) => {}
+            EventMsg::TurnAborted(_) => {
+                self.pending_request_user_input = None;
+            }
             EventMsg::ConversationPath(_) => {}
             EventMsg::EnteredReviewMode(review_request) => {
                 if self.auto_resolve_enabled() {
