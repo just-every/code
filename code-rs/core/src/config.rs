@@ -383,6 +383,9 @@ pub struct Config {
     /// Whether we're using ChatGPT authentication (affects feature availability)
     pub using_chatgpt_auth: bool,
 
+    /// Preferred auth method (when both ChatGPT tokens and API key are present).
+    pub preferred_auth_method: Option<AuthMode>,
+
     /// When true, automatically switch to another connected account when the
     /// current account hits a rate/usage limit.
     pub auto_switch_accounts_on_rate_limit: bool,
@@ -1440,6 +1443,7 @@ impl Config {
             debug: debug.unwrap_or(false),
             // Already computed before moving code_home
             using_chatgpt_auth,
+            preferred_auth_method: cfg.preferred_auth_method,
             auto_switch_accounts_on_rate_limit,
             api_key_fallback_on_all_accounts_limited,
             github: cfg.github.unwrap_or_default(),
@@ -1486,6 +1490,17 @@ impl Config {
             Ok(Some(auth)) => auth.mode == AuthMode::ChatGPT,
             _ => false,
         }
+    }
+
+    /// Preferred auth mode for this configuration.
+    pub fn preferred_auth_mode(&self) -> AuthMode {
+        self.preferred_auth_method.unwrap_or_else(|| {
+            if self.using_chatgpt_auth {
+                AuthMode::ChatGPT
+            } else {
+                AuthMode::ApiKey
+            }
+        })
     }
     
     fn load_instructions(code_dir: Option<&Path>) -> Option<String> {

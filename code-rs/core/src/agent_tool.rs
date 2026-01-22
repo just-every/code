@@ -306,6 +306,13 @@ impl AgentManager {
         self.start_watchdog();
     }
 
+    /// Emit a status update payload to any active listener (used by tests and integrations).
+    pub fn emit_status_update(&self, payload: AgentStatusUpdatePayload) {
+        if let Some(ref sender) = self.event_sender {
+            let _ = sender.send(payload);
+        }
+    }
+
     fn start_watchdog(&mut self) {
         if self.watchdog_handle.is_some() {
             return;

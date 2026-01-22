@@ -40,7 +40,7 @@ pub async fn run_main(opts: ProtoCli) -> anyhow::Result<()> {
     // Use conversation_manager API to start a conversation
     let auth_manager = AuthManager::shared_with_mode_and_originator(
         config.code_home.clone(),
-        code_login::AuthMode::ApiKey,
+        config.preferred_auth_mode(),
         config.responses_originator_header.clone(),
     );
     let conversation_manager = ConversationManager::new(auth_manager.clone(), SessionSource::Cli);

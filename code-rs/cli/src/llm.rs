@@ -10,7 +10,6 @@ use code_core::agent_defaults::model_guide_markdown_with_custom;
 use code_core::AuthManager;
 use code_core::Prompt;
 use code_core::TextFormat;
-use code_app_server_protocol::AuthMode;
 use code_protocol::models::{ContentItem, ResponseItem};
 use futures::StreamExt;
 
@@ -134,7 +133,7 @@ async fn run_llm_request(
     // Auth + provider
     let auth_mgr = AuthManager::shared_with_mode_and_originator(
         config.code_home.clone(),
-        AuthMode::ApiKey,
+        config.preferred_auth_mode(),
         config.responses_originator_header.clone(),
     );
     let provider: ModelProviderInfo = config.model_provider.clone();

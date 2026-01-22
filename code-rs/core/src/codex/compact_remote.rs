@@ -4,6 +4,7 @@ use super::compact::{
     is_context_overflow_error,
     prune_orphan_tool_outputs,
     response_input_from_core_items,
+    run_postcompact_hook,
     sanitize_items_for_compact,
     send_compaction_checkpoint_warning,
 };
@@ -30,7 +31,7 @@ pub(super) async fn run_inline_remote_auto_compact_task(
     extra_input: Vec<InputItem>,
 ) -> Vec<ResponseItem> {
     let sub_id = sess.next_internal_sub_id();
-    match run_remote_compact_task_inner(&sess, &turn_context, &sub_id, extra_input).await {
+    match run_remote_compact_task_inner(&sess, &turn_context, &sub_id, extra_input, "auto").await {
         Ok(history) => history,
         Err(err) => {
             let event = sess.make_event(
@@ -50,8 +51,9 @@ pub(super) async fn run_remote_compact_task(
     turn_context: Arc<TurnContext>,
     sub_id: String,
     extra_input: Vec<InputItem>,
+    reason: &str,
 ) -> CodexResult<()> {
-    match run_remote_compact_task_inner(&sess, &turn_context, &sub_id, extra_input).await {
+    match run_remote_compact_task_inner(&sess, &turn_context, &sub_id, extra_input, reason).await {
         Ok(_history) => {
             // Mirror local compaction behaviour: clear the running task when the
             // compaction finished successfully so the UI can unblock.
@@ -76,6 +78,7 @@ async fn run_remote_compact_task_inner(
     turn_context: &Arc<TurnContext>,
     sub_id: &str,
     extra_input: Vec<InputItem>,
+    reason: &str,
 ) -> CodexResult<Vec<ResponseItem>> {
     let mut turn_items = sess.turn_input_with_history({
         if extra_input.is_empty() {
@@ -166,6 +169,8 @@ async fn run_remote_compact_task_inner(
         let mut state = sess.state.lock().unwrap();
         state.token_usage_info = None;
     }
+
+    run_postcompact_hook(sess, reason).await;
 
     send_compaction_checkpoint_warning(sess, sub_id).await;
 
