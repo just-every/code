@@ -36,6 +36,7 @@ use crate::app::ChatWidgetArgs;
 use crate::chrome_launch::ChromeLaunchOption;
 use crate::slash_command::SlashCommand;
 use code_protocol::models::ResponseItem;
+use code_protocol::request_user_input::RequestUserInputResponse;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender as StdSender;
@@ -174,6 +175,12 @@ pub(crate) enum AppEvent {
     /// Forward an `Op` to the Agent. Using an `AppEvent` for this avoids
     /// bubbling channels through layers of widgets.
     CodexOp(code_core::protocol::Op),
+
+    /// Submit a response for a pending `request_user_input` tool call.
+    RequestUserInputAnswer {
+        turn_id: String,
+        response: RequestUserInputResponse,
+    },
 
     AutoCoordinatorDecision {
         seq: u64,

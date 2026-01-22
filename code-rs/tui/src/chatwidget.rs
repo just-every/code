@@ -10960,6 +10960,73 @@ impl ChatWidget<'_> {
         self.request_redraw();
     }
 
+    pub(crate) fn on_request_user_input_answer(
+        &mut self,
+        turn_id: String,
+        response: code_protocol::request_user_input::RequestUserInputResponse,
+    ) {
+        let Some(pending) = self.pending_request_user_input.take() else {
+            tracing::warn!(
+                "[request_user_input] received UI answer but no request is pending (turn_id={turn_id})"
+            );
+            return;
+        };
+
+        if pending.turn_id != turn_id {
+            tracing::warn!(
+                "[request_user_input] received UI answer for unexpected turn_id (expected={}, got={turn_id})",
+                pending.turn_id,
+            );
+        }
+
+        self.bottom_pane.close_request_user_input_view();
+
+        let display_text = {
+            let mut lines = Vec::new();
+            for question in &pending.questions {
+                let answer: &[String] = response
+                    .answers
+                    .get(&question.id)
+                    .map(|a| a.answers.as_slice())
+                    .unwrap_or(&[]);
+                let value = answer.first().map(String::as_str).unwrap_or("");
+                let value = if value.trim().is_empty() { "(skipped)" } else { value };
+
+                if pending.questions.len() == 1 {
+                    lines.push(value.to_string());
+                } else {
+                    let header = question.header.trim();
+                    if header.is_empty() {
+                        lines.push(value.to_string());
+                    } else {
+                        lines.push(format!("{header}: {value}"));
+                    }
+                }
+            }
+            lines.join("\n")
+        };
+
+        if !display_text.trim().is_empty() {
+            let key = Self::order_key_successor(pending.anchor_key);
+            let state = history_cell::new_user_prompt(display_text);
+            let _ =
+                self.history_insert_plain_state_with_key(state, key, "request_user_input_answer");
+            self.restore_reasoning_in_progress_if_streaming();
+        }
+
+        if let Err(e) = self.code_op_tx.send(Op::UserInputAnswer {
+            id: pending.turn_id,
+            response,
+        }) {
+            tracing::error!("failed to send Op::UserInputAnswer: {e}");
+        }
+
+        self.clear_composer();
+        self.bottom_pane
+            .update_status_text("waiting for model".to_string());
+        self.request_redraw();
+    }
+
     fn submit_user_message(&mut self, user_message: UserMessage) {
         if self.layout.scroll_offset > 0 {
             layout_scroll::to_bottom(self);
@@ -13725,7 +13792,14 @@ impl ChatWidget<'_> {
                         }
                     }
                 }
-                lines.push("\nReply in the composer to continue.".to_string());
+                let auto_answer = self.auto_state.is_active() && !self.auto_state.is_paused_manual();
+                if auto_answer {
+                    lines.push("\nAuto Drive is active; continuing automatically.".to_string());
+                } else {
+                    lines.push(
+                        "\nUse the picker below to continue (Esc to type in the composer).".to_string(),
+                    );
+                }
 
                 let role = history_cell::plain_role_for_kind(PlainMessageKind::Notice);
                 let state =
@@ -13733,16 +13807,120 @@ impl ChatWidget<'_> {
                 let _ = self.history_insert_plain_state_with_key(state, key, "request_user_input");
                 self.restore_reasoning_in_progress_if_streaming();
 
-                self.pending_request_user_input = Some(PendingRequestUserInput {
-                    turn_id: ev.turn_id.clone(),
-                    call_id: ev.call_id.clone(),
-                    anchor_key: key,
-                    questions: ev.questions.clone(),
-                });
-                self.bottom_pane
-                    .update_status_text("waiting for user input".to_string());
-                self.bottom_pane.set_task_running(true);
-                self.bottom_pane.ensure_input_focus();
+                if auto_answer {
+                    use code_protocol::request_user_input::RequestUserInputAnswer;
+                    use code_protocol::request_user_input::RequestUserInputResponse;
+
+                    fn choose_option_label(
+                        question: &code_protocol::request_user_input::RequestUserInputQuestion,
+                    ) -> Option<String> {
+                        let options = question.options.as_ref()?;
+                        if options.is_empty() {
+                            return None;
+                        }
+
+                        let recommended = options.iter().position(|opt| {
+                            opt.label.contains("(Recommended)")
+                                || opt.label.contains("Recommended")
+                                || opt.label.contains("recommended")
+                        });
+                        let idx = recommended.unwrap_or(0);
+                        options.get(idx).map(|opt| opt.label.clone())
+                    }
+
+                    fn choose_freeform_value(
+                        question: &code_protocol::request_user_input::RequestUserInputQuestion,
+                    ) -> String {
+                        let key = format!("{} {}", question.id, question.header).to_ascii_lowercase();
+                        if key.contains("confirm") || key.contains("proceed") {
+                            "yes".to_string()
+                        } else if key.contains("name") {
+                            "Auto Drive".to_string()
+                        } else {
+                            "auto".to_string()
+                        }
+                    }
+
+                    let mut answers = std::collections::HashMap::new();
+                    for question in &ev.questions {
+                        let answer_value = if let Some(label) = choose_option_label(question) {
+                            vec![label]
+                        } else {
+                            vec![choose_freeform_value(question)]
+                        };
+                        answers.insert(
+                            question.id.clone(),
+                            RequestUserInputAnswer {
+                                answers: answer_value,
+                            },
+                        );
+                    }
+                    let response = RequestUserInputResponse { answers };
+
+                    let summary = {
+                        let mut parts = Vec::new();
+                        for question in &ev.questions {
+                            let label = response
+                                .answers
+                                .get(&question.id)
+                                .and_then(|a| a.answers.first())
+                                .map(String::as_str)
+                                .unwrap_or("(skipped)");
+                            if ev.questions.len() == 1 {
+                                parts.push(label.to_string());
+                            } else {
+                                let header = question.header.trim();
+                                if header.is_empty() {
+                                    parts.push(label.to_string());
+                                } else {
+                                    parts.push(format!("{header}: {label}"));
+                                }
+                            }
+                        }
+                        parts.join("\n")
+                    };
+
+                    if !summary.trim().is_empty() {
+                        let key = Self::order_key_successor(key);
+                        let role = history_cell::plain_role_for_kind(PlainMessageKind::Notice);
+                        let state = history_cell::plain_message_state_from_paragraphs(
+                            PlainMessageKind::Notice,
+                            role,
+                            vec![format!("Auto Drive answered user input:\n{summary}")],
+                        );
+                        let _ = self
+                            .history_insert_plain_state_with_key(state, key, "request_user_input_auto_answer");
+                        self.restore_reasoning_in_progress_if_streaming();
+                    }
+
+                    if let Err(e) = self.code_op_tx.send(Op::UserInputAnswer {
+                        id: ev.turn_id.clone(),
+                        response,
+                    }) {
+                        tracing::error!("failed to send Op::UserInputAnswer: {e}");
+                    }
+
+                    self.bottom_pane
+                        .update_status_text("waiting for model".to_string());
+                    self.bottom_pane.set_task_running(true);
+                } else {
+                    self.pending_request_user_input = Some(PendingRequestUserInput {
+                        turn_id: ev.turn_id.clone(),
+                        call_id: ev.call_id.clone(),
+                        anchor_key: key,
+                        questions: ev.questions.clone(),
+                    });
+                    self.bottom_pane
+                        .update_status_text("waiting for user input".to_string());
+                    self.bottom_pane.set_task_running(true);
+                    self.bottom_pane.ensure_input_focus();
+                    self.bottom_pane
+                        .show_request_user_input(crate::bottom_pane::RequestUserInputView::new(
+                            ev.turn_id.clone(),
+                            ev.questions.clone(),
+                            self.app_event_tx.clone(),
+                        ));
+                }
                 self.request_redraw();
             }
             EventMsg::ApplyPatchApprovalRequest(ev) => {

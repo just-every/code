@@ -35,6 +35,11 @@ use code_tui::test_helpers::{
 };
 use code_core::codex::compact::COMPACTION_CHECKPOINT_MESSAGE;
 use code_protocol::protocol::CompactionCheckpointWarningEvent;
+use code_protocol::request_user_input::{
+    RequestUserInputEvent,
+    RequestUserInputQuestion,
+    RequestUserInputQuestionOption,
+};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 use regex_lite::{Captures, Regex};
 use serde_json::json;
@@ -1429,6 +1434,118 @@ fn tool_activity_showcase() {
 
     let output = normalize_output(render_chat_widget_to_vt100(&mut harness, 80, 40));
     insta::assert_snapshot!("tool_activity_showcase", output);
+}
+
+#[test]
+fn request_user_input_picker_allows_selection_and_typing() {
+    let mut harness = ChatWidgetHarness::new();
+
+    let mut event_seq = 0u64;
+    let mut order_seq = 0u64;
+    push_ordered_event(
+        &mut harness,
+        &mut event_seq,
+        &mut order_seq,
+        EventMsg::RequestUserInput(RequestUserInputEvent {
+            call_id: "call-1".into(),
+            turn_id: "turn-1".into(),
+            questions: vec![
+                RequestUserInputQuestion {
+                    id: "color".into(),
+                    header: "Pick One".into(),
+                    question: "Select a color:".into(),
+                    options: Some(vec![
+                        RequestUserInputQuestionOption {
+                            label: "Blue (Recommended)".into(),
+                            description: "Exercises the option picker UI.".into(),
+                        },
+                        RequestUserInputQuestionOption {
+                            label: "Green".into(),
+                            description: "Same flow, different choice.".into(),
+                        },
+                    ]),
+                },
+                RequestUserInputQuestion {
+                    id: "display_name".into(),
+                    header: "Name".into(),
+                    question: "Type a short display name (freeform):".into(),
+                    options: None,
+                },
+            ],
+        }),
+    );
+
+    let frame = normalize_output(render_chat_widget_to_vt100(&mut harness, 90, 26));
+    assert!(frame.contains("User input"), "request_user_input modal not visible");
+    assert!(
+        frame.contains("(x) Blue (Recommended)"),
+        "options list did not render"
+    );
+
+    harness.send_key(make_key(KeyCode::Down, KeyModifiers::NONE));
+    let frame = normalize_output(render_chat_widget_to_vt100(&mut harness, 90, 26));
+    assert!(
+        frame.contains("(x) Green"),
+        "Down key did not move selection"
+    );
+
+    harness.send_key(make_key(KeyCode::Enter, KeyModifiers::NONE));
+    harness.send_key(make_key(KeyCode::Char('A'), KeyModifiers::NONE));
+    harness.send_key(make_key(KeyCode::Char('l'), KeyModifiers::NONE));
+    harness.send_key(make_key(KeyCode::Char('i'), KeyModifiers::NONE));
+    let frame = normalize_output(render_chat_widget_to_vt100(&mut harness, 90, 26));
+    assert!(
+        frame.contains("Ali"),
+        "freeform question did not capture typed input"
+    );
+}
+
+#[test]
+fn request_user_input_auto_drive_auto_answers_without_modal() {
+    let mut harness = ChatWidgetHarness::new();
+    harness.auto_drive_activate(
+        "Auto Drive user input",
+        true,
+        true,
+        AutoContinueModeFixture::TenSeconds,
+    );
+
+    let mut event_seq = 0u64;
+    let mut order_seq = 0u64;
+    push_ordered_event(
+        &mut harness,
+        &mut event_seq,
+        &mut order_seq,
+        EventMsg::RequestUserInput(RequestUserInputEvent {
+            call_id: "call-2".into(),
+            turn_id: "turn-1".into(),
+            questions: vec![RequestUserInputQuestion {
+                id: "confirm".into(),
+                header: "Confirm".into(),
+                question: "Proceed?".into(),
+                options: Some(vec![
+                    RequestUserInputQuestionOption {
+                        label: "Yes (Recommended)".into(),
+                        description: "Return the collected answers.".into(),
+                    },
+                    RequestUserInputQuestionOption {
+                        label: "No".into(),
+                        description: "Lets you see the cancel path.".into(),
+                    },
+                ]),
+            }],
+        }),
+    );
+
+    let frame = normalize_output(render_chat_widget_to_vt100(&mut harness, 90, 24));
+    assert!(
+        frame.contains("Auto Drive answered user input"),
+        "Auto Drive did not auto-resolve request_user_input"
+    );
+    assert!(
+        !frame.contains("User input"),
+        "request_user_input modal should not appear in Auto Drive"
+    );
 }
 
 #[test]

@@ -896,6 +896,11 @@ impl App<'_> {
                     AppState::Chat { widget } => widget.submit_op(op),
                     AppState::Onboarding { .. } => {}
                 },
+                AppEvent::RequestUserInputAnswer { turn_id, response } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.on_request_user_input_answer(turn_id, response);
+                    }
+                }
                 AppEvent::AutoCoordinatorDecision {
                     seq,
                     status,
