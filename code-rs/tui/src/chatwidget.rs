@@ -4485,8 +4485,7 @@ impl ChatWidget<'_> {
         }
         self.request_redraw();
     }
-    /// If the user is at or near the bottom, keep following new messages.
-    /// We treat "near" as within 3 rows, matching our scroll step.
+    /// If the user is at the bottom, keep following new messages.
     fn autoscroll_if_near_bottom(&mut self) {
         layout_scroll::autoscroll_if_near_bottom(self);
     }

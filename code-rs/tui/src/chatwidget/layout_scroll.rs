@@ -5,7 +5,7 @@ use crate::height_manager::HeightEvent;
 use ratatui::layout::Rect;
 
 pub(super) fn autoscroll_if_near_bottom(chat: &mut ChatWidget<'_>) {
-    if chat.layout.scroll_offset.get() <= 3 {
+    if chat.layout.scroll_offset.get() == 0 {
         let before = chat.layout.scroll_offset.get();
         chat.layout.scroll_offset.set(0);
         chat.bottom_pane.set_compact_compose(false);
