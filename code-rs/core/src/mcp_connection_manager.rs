@@ -30,6 +30,7 @@ use tracing::warn;
 
 use crate::config_types::McpServerConfig;
 use crate::config_types::McpServerTransportConfig;
+use crate::protocol::{McpServerFailure, McpServerFailurePhase};
 
 /// Delimiter used to separate the server name from the tool name in a fully
 /// qualified tool name.
@@ -81,9 +82,8 @@ fn append_sha1_suffix(base: &str, raw: &str) -> String {
 /// Default timeout for initializing MCP server & initially listing tools.
 const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Map that holds a startup error for every MCP server that could **not** be
-/// spawned successfully.
-pub type ClientStartErrors = HashMap<String, anyhow::Error>;
+/// Map that holds startup or tool-list errors for MCP servers.
+pub type ClientStartErrors = HashMap<String, McpServerFailure>;
 
 fn qualify_tools(tools: Vec<ToolInfo>) -> HashMap<String, ToolInfo> {
     let mut used_names = HashSet::new();
@@ -211,6 +211,8 @@ pub struct McpConnectionManager {
 
     /// Fully qualified tool name -> tool instance.
     tools: HashMap<String, ToolInfo>,
+    server_names: Vec<String>,
+    failures: HashMap<String, McpServerFailure>,
 }
 
 impl McpConnectionManager {
@@ -220,8 +222,8 @@ impl McpConnectionManager {
     ///   are human-readable server identifiers and *values* are the spawn
     ///   instructions.
     ///
-    /// Servers that fail to start are reported in `ClientStartErrors`: the
-    /// user should be informed about these errors.
+    /// Servers that fail to start or list tools are reported in `ClientStartErrors`:
+    /// the user should be informed about these errors.
     pub async fn new(
         mcp_servers: HashMap<String, McpServerConfig>,
         excluded_tools: HashSet<(String, String)>,
@@ -238,10 +240,13 @@ impl McpConnectionManager {
         for (server_name, cfg) in mcp_servers {
             // Validate server name before spawning
             if !is_valid_mcp_server_name(&server_name) {
-                let error = anyhow::anyhow!(
+                let message = format!(
                     "invalid server name '{server_name}': must match pattern ^[a-zA-Z0-9_-]+$"
                 );
-                errors.insert(server_name, error);
+                errors.insert(
+                    server_name,
+                    McpServerFailure { phase: McpServerFailurePhase::Start, message },
+                );
                 continue;
             }
 
@@ -339,7 +344,14 @@ impl McpConnectionManager {
                     );
                 }
                 Err(e) => {
-                    errors.insert(server_name, e);
+                    let message = format!("server '{server_name}': {e:#}");
+                    errors.insert(
+                        server_name,
+                        McpServerFailure {
+                            phase: McpServerFailurePhase::Start,
+                            message,
+                        },
+                    );
                 }
             }
         }
@@ -348,9 +360,15 @@ impl McpConnectionManager {
 
         let tools = qualify_tools(all_tools);
 
+        let mut server_names: Vec<String> = clients.keys().cloned().collect();
+        server_names.sort();
+        let failures = errors.clone();
+
         Ok((Self {
             clients: RwLock::new(clients),
             tools,
+            server_names,
+            failures,
         }, errors))
     }
 
@@ -361,6 +379,31 @@ impl McpConnectionManager {
             .iter()
             .map(|(name, tool)| (name.clone(), tool.tool.clone()))
             .collect()
+    }
+
+    pub fn list_tools_by_server(&self) -> HashMap<String, Vec<String>> {
+        let mut tools_by_server: HashMap<String, Vec<String>> = HashMap::new();
+        for tool in self.tools.values() {
+            tools_by_server
+                .entry(tool.server_name.clone())
+                .or_default()
+                .push(tool.tool_name.clone());
+        }
+
+        for server_name in &self.server_names {
+            tools_by_server.entry(server_name.clone()).or_default();
+        }
+
+        for tools in tools_by_server.values_mut() {
+            tools.sort();
+            tools.dedup();
+        }
+
+        tools_by_server
+    }
+
+    pub fn list_server_failures(&self) -> HashMap<String, McpServerFailure> {
+        self.failures.clone()
     }
 
     /// Invoke the tool indicated by the (server, tool) pair.
@@ -460,7 +503,13 @@ async fn list_all_tools(
                 warn!(
                     "Failed to list tools for MCP server '{server_name}': {err:#?}"
                 );
-                errors.insert(server_name, err.into());
+                errors.insert(
+                    server_name,
+                    McpServerFailure {
+                        phase: McpServerFailurePhase::ListTools,
+                        message: format!("{err:#}"),
+                    },
+                );
             }
         }
     }
@@ -613,7 +662,7 @@ mod tests {
         let err = errors
             .get("context7-mcp")
             .expect("missing executable should be reported under server name");
-        let msg = format!("{err:#}");
+        let msg = err.message.as_str();
 
         assert!(msg.contains("context7-mcp"), "error should mention the server name");
         assert!(

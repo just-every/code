@@ -18,6 +18,7 @@ use super::session::{
 use crate::auth;
 use crate::auth_accounts;
 use crate::account_switching::RateLimitSwitchState;
+use crate::protocol::McpListToolsResponseEvent;
 use code_app_server_protocol::AuthMode as AppAuthMode;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -566,9 +567,16 @@ pub(super) async fn submission_loop(
 
                 // Surface individual client start-up failures to the user.
                 if !failed_clients.is_empty() {
-                    for (server_name, err) in failed_clients {
-                        let message =
-                            format!("MCP client for `{server_name}` failed to start: {err:#}");
+                    for (server_name, failure) in failed_clients {
+                        let detail = failure.message;
+                        let message = match failure.phase {
+                            crate::protocol::McpServerFailurePhase::Start => {
+                                format!("MCP server `{server_name}` failed to start: {detail}")
+                            }
+                            crate::protocol::McpServerFailurePhase::ListTools => format!(
+                                "MCP server `{server_name}` failed to list tools: {detail}"
+                            ),
+                        };
                         error!("{message}");
                         mcp_connection_errors.push(message);
                     }
@@ -997,7 +1005,34 @@ pub(super) async fn submission_loop(
                     }
                 });
             }
-            // Upstream protocol no longer includes ListMcpTools; skip handling here.
+            Op::ListMcpTools => {
+                let sess = match sess.as_ref() {
+                    Some(sess) => Arc::clone(sess),
+                    None => {
+                        send_no_session_event(sub.id).await;
+                        continue;
+                    }
+                };
+
+                let tools = sess.mcp_connection_manager.list_all_tools();
+                let server_tools = sess.mcp_connection_manager.list_tools_by_server();
+                let server_failures = sess.mcp_connection_manager.list_server_failures();
+
+                let event = Event {
+                    id: sub.id.clone(),
+                    event_seq: 0,
+                    msg: EventMsg::McpListToolsResponse(McpListToolsResponseEvent {
+                        tools,
+                        server_tools: Some(server_tools),
+                        server_failures: Some(server_failures),
+                    }),
+                    order: None,
+                };
+
+                if let Err(e) = tx_event.send(event).await {
+                    warn!("failed to send McpListToolsResponse event: {e}");
+                }
+            }
             Op::ListCustomPrompts => {
                 let sess = match sess.as_ref() {
                     Some(sess) => Arc::clone(sess),

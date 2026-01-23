@@ -169,6 +169,8 @@ use code_core::protocol::ExecOutputStream;
 use code_core::protocol::EnvironmentContextDeltaEvent;
 use code_core::protocol::EnvironmentContextFullEvent;
 use code_core::protocol::InputItem;
+use code_core::protocol::McpServerFailure;
+use code_core::protocol::McpServerFailurePhase;
 use code_core::protocol::SessionConfiguredEvent;
 // MCP tool call handlers moved into chatwidget::tools
 use code_core::protocol::Op;
@@ -1507,6 +1509,8 @@ pub(crate) struct ChatWidget<'a> {
     context_last_sequence: Option<u64>,
     context_browser_sequence: Option<u64>,
     config: Config,
+    mcp_tools_by_server: HashMap<String, Vec<String>>,
+    mcp_server_failures: HashMap<String, McpServerFailure>,
 
     /// Optional remote-merged presets list delivered asynchronously.
     /// When absent, the TUI falls back to built-in presets.
@@ -6414,6 +6418,8 @@ impl ChatWidget<'_> {
             active_exec_cell: None,
             history_cells,
             config: config.clone(),
+            mcp_tools_by_server: HashMap::new(),
+            mcp_server_failures: HashMap::new(),
             remote_model_presets: None,
             allow_remote_default_at_startup: !config.model_explicit,
             chat_model_selected_explicitly: false,
@@ -6773,6 +6779,8 @@ impl ChatWidget<'_> {
             active_exec_cell: None,
             history_cells,
             config: config.clone(),
+            mcp_tools_by_server: HashMap::new(),
+            mcp_server_failures: HashMap::new(),
             remote_model_presets: None,
             allow_remote_default_at_startup: !config.model_explicit,
             chat_model_selected_explicitly: false,
@@ -13125,6 +13133,11 @@ impl ChatWidget<'_> {
                 // Ask core for custom prompts so the slash menu can show them.
                 self.submit_op(Op::ListCustomPrompts);
                 self.submit_op(Op::ListSkills);
+                self.mcp_tools_by_server.clear();
+                self.mcp_server_failures.clear();
+                if !self.config.mcp_servers.is_empty() {
+                    self.submit_op(Op::ListMcpTools);
+                }
 
                 if self.resume_placeholder_visible && event.history_entry_count == 0 {
                     self.replace_resume_placeholder_with_notice(RESUME_NO_HISTORY_NOTICE);
@@ -14748,6 +14761,11 @@ impl ChatWidget<'_> {
                 let len = ev.custom_prompts.len();
                 debug!("received {len} custom prompts");
                 self.bottom_pane.set_custom_prompts(ev.custom_prompts);
+            }
+            EventMsg::McpListToolsResponse(ev) => {
+                self.mcp_tools_by_server = ev.server_tools.unwrap_or_default();
+                self.mcp_server_failures = ev.server_failures.unwrap_or_default();
+                self.refresh_mcp_settings_overlay();
             }
             EventMsg::ListSkillsResponse(ev) => {
                 let len = ev.skills.len();
@@ -23688,17 +23706,19 @@ Have we met every part of this goal and is there no further work to do?"#
 
         let mut rows: McpServerRows = Vec::new();
         for (name, cfg) in enabled.into_iter() {
+            let summary = self.format_mcp_server_summary(&name, &cfg, true);
             rows.push(McpServerRow {
                 name,
                 enabled: true,
-                summary: Self::format_mcp_summary(&cfg),
+                summary,
             });
         }
         for (name, cfg) in disabled.into_iter() {
+            let summary = self.format_mcp_server_summary(&name, &cfg, false);
             rows.push(McpServerRow {
                 name,
                 enabled: false,
-                summary: Self::format_mcp_summary(&cfg),
+                summary,
             });
         }
         rows.sort_by(|a, b| a.name.cmp(&b.name));
@@ -24193,6 +24213,18 @@ Have we met every part of this goal and is there no further work to do?"#
     fn settings_summary_skills(&self) -> Option<String> {
         let count = self.bottom_pane.skills().len();
         Some(format!("Skills loaded: {count}"))
+    }
+
+    fn refresh_mcp_settings_overlay(&mut self) {
+        let content = self.build_mcp_settings_content();
+        let Some(content) = content else {
+            return;
+        };
+        let Some(overlay) = self.settings.overlay.as_mut() else {
+            return;
+        };
+        overlay.set_mcp_content(content);
+        self.request_redraw();
     }
 
     fn refresh_settings_overview_rows(&mut self) {
@@ -27768,10 +27800,77 @@ Have we met every part of this goal and is there no further work to do?"#
         }
     }
 
+    fn format_mcp_server_summary(
+        &self,
+        name: &str,
+        cfg: &code_core::config_types::McpServerConfig,
+        enabled: bool,
+    ) -> String {
+        let transport = Self::format_mcp_summary(cfg);
+        let status = self.format_mcp_tool_status(name, enabled);
+        if status.is_empty() {
+            transport
+        } else {
+            format!("{transport} · {status}")
+        }
+    }
+
+    fn format_mcp_tool_status(&self, name: &str, enabled: bool) -> String {
+        if !enabled {
+            return "Tools: disabled".to_string();
+        }
+
+        if let Some(failure) = self.mcp_server_failures.get(name) {
+            return self.format_mcp_failure(failure);
+        }
+
+        if let Some(tools) = self.mcp_tools_by_server.get(name) {
+            let list = Self::format_mcp_tool_list(tools);
+            return format!("Tools: {list}");
+        }
+
+        "Tools: pending".to_string()
+    }
+
+    fn format_mcp_tool_list(tools: &[String]) -> String {
+        const MAX_TOOLS: usize = 6;
+        const MAX_CHARS: usize = 120;
+
+        if tools.is_empty() {
+            return "none".to_string();
+        }
+
+        let mut display = tools
+            .iter()
+            .take(MAX_TOOLS)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        if tools.len() > MAX_TOOLS {
+            let remaining = tools.len().saturating_sub(MAX_TOOLS);
+            display.push_str(&format!(", +{remaining} more"));
+        }
+        Self::truncate_with_ellipsis(&display, MAX_CHARS)
+    }
+
+    fn format_mcp_failure(&self, failure: &McpServerFailure) -> String {
+        const MAX_CHARS: usize = 160;
+
+        let normalized = failure.message.replace('\n', " ");
+        let message = Self::truncate_with_ellipsis(&normalized, MAX_CHARS);
+        match failure.phase {
+            McpServerFailurePhase::Start => format!("Failed to start: {message}"),
+            McpServerFailurePhase::ListTools => format!("Failed to list tools: {message}"),
+        }
+    }
+
     /// Handle `/mcp` command: manage MCP servers (status/on/off/add).
     pub(crate) fn handle_mcp_command(&mut self, command_text: String) {
         let trimmed = command_text.trim();
         if trimmed.is_empty() {
+            if !self.config.mcp_servers.is_empty() {
+                self.submit_op(Op::ListMcpTools);
+            }
             self.show_settings_overlay(Some(SettingsSection::Mcp));
             return;
         }
@@ -27780,42 +27879,51 @@ Have we met every part of this goal and is there no further work to do?"#
         let sub = parts.next().unwrap_or("");
 
         match sub {
-            "status" => match find_code_home() {
-                Ok(home) => match code_core::config::list_mcp_servers(&home) {
-                    Ok((enabled, disabled)) => {
-                        let mut lines = String::new();
-                        if enabled.is_empty() && disabled.is_empty() {
-                            lines.push_str("No MCP servers configured. Use /mcp add … to add one.");
-                        } else {
-                            lines.push_str(&format!("Enabled ({}):\n", enabled.len()));
-                            for (name, cfg) in enabled {
-                                lines.push_str(&format!(
-                                    "• {} — {}\n",
-                                    name,
-                                    Self::format_mcp_summary(&cfg)
-                                ));
+            "status" => {
+                if !self.config.mcp_servers.is_empty() {
+                    self.submit_op(Op::ListMcpTools);
+                }
+                match find_code_home() {
+                    Ok(home) => match code_core::config::list_mcp_servers(&home) {
+                        Ok((enabled, disabled)) => {
+                            let mut lines = String::new();
+                            if enabled.is_empty() && disabled.is_empty() {
+                                lines.push_str(
+                                    "No MCP servers configured. Use /mcp add … to add one.",
+                                );
+                            } else {
+                                let enabled_count = enabled.len();
+                                lines.push_str(&format!("Enabled ({enabled_count}):\n"));
+                                for (name, cfg) in enabled {
+                                    lines.push_str(&format!(
+                                        "• {} — {}\n",
+                                        name,
+                                        self.format_mcp_server_summary(&name, &cfg, true)
+                                    ));
+                                }
+                                let disabled_count = disabled.len();
+                                lines.push_str(&format!("\nDisabled ({disabled_count}):\n"));
+                                for (name, cfg) in disabled {
+                                    lines.push_str(&format!(
+                                        "• {} — {}\n",
+                                        name,
+                                        self.format_mcp_server_summary(&name, &cfg, false)
+                                    ));
+                                }
                             }
-                            lines.push_str(&format!("\nDisabled ({}):\n", disabled.len()));
-                            for (name, cfg) in disabled {
-                                lines.push_str(&format!(
-                                    "• {} — {}\n",
-                                    name,
-                                    Self::format_mcp_summary(&cfg)
-                                ));
-                            }
+                            self.push_background_tail(lines);
                         }
-                        self.push_background_tail(lines);
-                    }
+                        Err(e) => {
+                            let msg = format!("Failed to read MCP config: {e}");
+                            self.history_push_plain_state(history_cell::new_error_event(msg));
+                        }
+                    },
                     Err(e) => {
-                        let msg = format!("Failed to read MCP config: {}", e);
+                        let msg = format!("Failed to locate CODEX_HOME: {e}");
                         self.history_push_plain_state(history_cell::new_error_event(msg));
                     }
-                },
-                Err(e) => {
-                    let msg = format!("Failed to locate CODEX_HOME: {}", e);
-                    self.history_push_plain_state(history_cell::new_error_event(msg));
                 }
-            },
+            }
             "on" | "off" => {
                 let name = parts.next().unwrap_or("");
                 if name.is_empty() {
@@ -29396,6 +29504,7 @@ impl Drop for AutoReviewStubGuard {
     };
 use code_core::parse_command::ParsedCommand;
 use code_core::protocol::OrderMeta;
+    use code_core::config_types::{McpServerConfig, McpServerTransportConfig};
     use code_core::protocol::{
         AskForApproval,
         AgentMessageEvent,
@@ -29404,6 +29513,8 @@ use code_core::protocol::OrderMeta;
         Event,
         EventMsg,
         ExecCommandBeginEvent,
+        McpServerFailure,
+        McpServerFailurePhase,
         TaskCompleteEvent,
     };
     use code_core::protocol::AgentInfo as CoreAgentInfo;
@@ -29445,6 +29556,55 @@ use code_core::protocol::OrderMeta;
         let summary_text = summary.unwrap();
         assert!(summary_text.contains("needs work"));
         assert!(summary_text.contains("bug"));
+    }
+
+    #[test]
+    fn mcp_summary_includes_tools_and_failures() {
+        let mut harness = ChatWidgetHarness::new();
+        harness.with_chat(|chat| {
+            chat.mcp_tools_by_server.insert(
+                "alpha".to_string(),
+                vec!["fetch".to_string(), "search".to_string()],
+            );
+            chat.mcp_server_failures.insert(
+                "beta".to_string(),
+                McpServerFailure {
+                    phase: McpServerFailurePhase::ListTools,
+                    message: "timeout".to_string(),
+                },
+            );
+
+            let ok_cfg = McpServerConfig {
+                transport: McpServerTransportConfig::Stdio {
+                    command: "alpha-bin".to_string(),
+                    args: Vec::new(),
+                    env: None,
+                },
+                startup_timeout_sec: None,
+                tool_timeout_sec: None,
+            };
+            let fail_cfg = McpServerConfig {
+                transport: McpServerTransportConfig::Stdio {
+                    command: "beta-bin".to_string(),
+                    args: Vec::new(),
+                    env: None,
+                },
+                startup_timeout_sec: None,
+                tool_timeout_sec: None,
+            };
+
+            let ok_summary = chat.format_mcp_server_summary("alpha", &ok_cfg, true);
+            let fail_summary = chat.format_mcp_server_summary("beta", &fail_cfg, true);
+
+            assert!(
+                ok_summary.contains("Tools: fetch, search"),
+                "expected tool list in summary, got: {ok_summary}"
+            );
+            assert!(
+                fail_summary.contains("Failed to list tools: timeout"),
+                "expected failure message in summary, got: {fail_summary}"
+            );
+        });
     }
 
     #[test]

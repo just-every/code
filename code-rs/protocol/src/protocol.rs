@@ -1421,11 +1421,28 @@ pub struct GetHistoryEntryResponseEvent {
     pub entry: Option<HistoryEntry>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum McpServerFailurePhase {
+    Start,
+    ListTools,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct McpServerFailure {
+    pub phase: McpServerFailurePhase,
+    pub message: String,
+}
+
 /// Response payload for `Op::ListMcpTools`.
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
 pub struct McpListToolsResponseEvent {
     /// Fully qualified tool name -> tool definition.
     pub tools: std::collections::HashMap<String, McpTool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_tools: Option<std::collections::HashMap<String, Vec<String>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_failures: Option<std::collections::HashMap<String, McpServerFailure>>,
 }
 
 /// Response payload for `Op::ListCustomPrompts`.
