@@ -294,7 +294,7 @@ async fn run_code_tool_session_inner(
                     | EventMsg::AgentReasoningSectionBreak(_)
                     | EventMsg::McpToolCallBegin(_)
                     | EventMsg::McpToolCallEnd(_)
-                    // | EventMsg::McpListToolsResponse(_)
+                    | EventMsg::McpListToolsResponse(_)
                     | EventMsg::ExecCommandBegin(_)
                     | EventMsg::ExecCommandOutputDelta(_)
                     | EventMsg::ExecCommandEnd(_)
