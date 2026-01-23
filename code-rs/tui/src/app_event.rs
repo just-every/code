@@ -169,6 +169,9 @@ pub(crate) enum AppEvent {
     /// Text pasted from the terminal clipboard.
     Paste(String),
 
+    /// Open the external editor with the current composer text.
+    OpenExternalEditor { initial: String },
+
     /// Request to exit the application gracefully.
     ExitRequest,
 

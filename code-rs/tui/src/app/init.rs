@@ -106,8 +106,9 @@ impl App<'_> {
 
         // Spawn a dedicated thread for reading the crossterm event loop and
         // re-publishing the events as AppEvents, as appropriate.
-        // Create the input thread stop flag up front so we can store it on `Self`.
+        // Create the input thread flags up front so we can store them on `Self`.
         let input_running = Arc::new(AtomicBool::new(true));
+        let input_suspended = Arc::new(AtomicBool::new(false));
         #[cfg(unix)]
         let mut sigterm_guard = None;
         #[cfg(unix)]
@@ -115,6 +116,7 @@ impl App<'_> {
         {
             let app_event_tx = app_event_tx.clone();
             let input_running_thread = input_running.clone();
+            let input_suspended_thread = input_suspended.clone();
             let drop_release_events = enhanced_keys_supported;
             if let Err(err) = std::thread::Builder::new()
                 .name("tui-input-loop".to_string())
@@ -123,6 +125,10 @@ impl App<'_> {
                 let mut last_key_time = Instant::now();
                 loop {
                     if !input_running_thread.load(Ordering::Relaxed) { break; }
+                    if input_suspended_thread.load(Ordering::Relaxed) {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
                     // This timeout is necessary to avoid holding the event lock
                     // that crossterm::event::read() acquires. In particular,
                     // reading the cursor position (crossterm::cursor::position())
@@ -315,6 +321,7 @@ impl App<'_> {
             stdout_backpressure_skips: 0,
             frame_timer,
             input_running,
+            input_suspended,
             enhanced_keys_supported,
             non_enhanced_pressed_keys: HashSet::new(),
             _debug: debug,

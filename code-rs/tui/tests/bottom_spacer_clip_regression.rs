@@ -189,7 +189,7 @@ fn assert_viewport_invariants(output: &str, expected_rows: u16) {
         lines.len()
     );
     assert!(
-        output.contains("Ctrl+G guide"),
+        output.contains("Ctrl+G editor"),
         "composer footer is expected to remain visible"
     );
     if let Some(last_line) = lines.last() {

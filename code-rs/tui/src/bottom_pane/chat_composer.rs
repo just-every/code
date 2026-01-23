@@ -934,6 +934,8 @@ impl ChatComposer {
         if !text.is_empty() {
             self.typed_anything = true;
         }
+        self.sync_command_popup();
+        self.sync_file_search_popup();
     }
 
     pub(crate) fn insert_str(&mut self, text: &str) {
@@ -2447,18 +2449,18 @@ impl ChatComposer {
                 let mut include_tokens = !token_spans_full.is_empty() || !token_spans_compact.is_empty();
                 let mut token_use_compact = false;
 
-                // Guide hint (priority 4) — only when not auto-drive and not showing quit hint
-                let guide_spans: Vec<Span<'static>> = if !self.auto_drive_active && !self.ctrl_c_quit_hint {
+                // Editor hint (priority 4) — only when not auto-drive and not showing quit hint
+                let editor_spans: Vec<Span<'static>> = if !self.auto_drive_active && !self.ctrl_c_quit_hint {
                     vec![
                         Span::from("Ctrl+G").style(key_hint_style),
-                        Span::from(" guide").style(label_style),
+                        Span::from(" editor").style(label_style),
                     ]
                 } else {
                     Vec::new()
                 };
-                let guide_present = !guide_spans.is_empty();
-                if guide_present {
-                    right_sections.push((4, guide_spans, true));
+                let editor_present = !editor_spans.is_empty();
+                if editor_present {
+                    right_sections.push((4, editor_spans, true));
                 }
 
                 // Tokens placeholder (actual spans chosen later)
@@ -2489,7 +2491,7 @@ impl ChatComposer {
                     right_sections.iter().any(|(p, _, inc)| *p == 3 && *inc);
                 let mut include_left_misc = true;
                 let mut include_ctrl_c = ctrl_c_present;
-                let mut include_guide = guide_present;
+                let mut include_editor = editor_present;
                 let mut include_right_other = true; // covers priority 7 sections
 
                 // helper closures to rebuild assembled spans based on current flags
@@ -2559,7 +2561,7 @@ impl ChatComposer {
                     include_tokens: bool,
                     use_compact_tokens: bool,
                     include_auto_review_agent_hint: bool,
-                    include_guide: bool,
+                    include_editor: bool,
                     include_right_other: bool,
                 | -> (Vec<Span<'static>>, usize) {
                     let mut assembled: Vec<Span<'static>> = Vec::new();
@@ -2569,7 +2571,7 @@ impl ChatComposer {
                         let include = match *priority {
                             1 => include_tokens && *included,
                             3 => include_auto_review_agent_hint && *included,
-                            4 => include_guide && *included,
+                            4 => include_editor && *included,
                             7 => include_right_other && *included,
                             _ => *included,
                         };
@@ -2618,7 +2620,7 @@ impl ChatComposer {
                         include_tokens,
                         token_use_compact,
                         include_auto_review_agent_hint,
-                        include_guide,
+                        include_editor,
                         include_right_other,
                     );
 
@@ -2656,7 +2658,7 @@ impl ChatComposer {
                     }
 
                     // Removal order: 7 (right other) -> 6 (left misc) -> 5 (Ctrl+A hint)
-                    // -> 4 (guide) -> 3 (auto review status) -> 2 (Ctrl+C) -> 1 (tokens)
+                    // -> 4 (editor) -> 3 (auto review status) -> 2 (Ctrl+C) -> 1 (tokens)
                     match removal_stage {
                         0 => {
                             include_right_other = false;
@@ -2668,7 +2670,7 @@ impl ChatComposer {
                             include_auto_review_agent_hint = false;
                         }
                         3 => {
-                            include_guide = false;
+                            include_editor = false;
                         }
                         4 => {
                             include_auto_review_status = false;

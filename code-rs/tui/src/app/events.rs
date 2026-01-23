@@ -21,6 +21,7 @@ use crate::bottom_pane::SettingsSection;
 use crate::chatwidget::ChatWidget;
 use crate::cloud_tasks_service;
 use crate::exec_command::strip_bash_lc_and_escape;
+use crate::external_editor;
 use crate::get_git_diff::get_git_diff;
 use crate::history_cell;
 use crate::slash_command::SlashCommand;
@@ -574,6 +575,37 @@ impl App<'_> {
                 }
                 AppEvent::Paste(text) => {
                     self.dispatch_paste_event(text);
+                }
+                AppEvent::OpenExternalEditor { initial } => {
+                    let was_alt_screen = self.alt_screen_active;
+                    self.input_suspended.store(true, Ordering::Release);
+                    let editor_result = match tui::restore() {
+                        Ok(()) => external_editor::run_editor(&initial),
+                        Err(err) => Err(external_editor::ExternalEditorError::LaunchFailed(format!(
+                            "Failed to reset terminal: {err}",
+                        ))),
+                    };
+                    let (new_terminal, new_terminal_info) = tui::init(&self.config)?;
+                    *terminal = new_terminal;
+                    self.terminal_info = new_terminal_info;
+                    terminal.clear()?;
+                    if was_alt_screen {
+                        self.alt_screen_active = true;
+                    } else {
+                        let _ = tui::leave_alt_screen_only();
+                        self.alt_screen_active = false;
+                    }
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.set_standard_terminal_mode(!self.alt_screen_active);
+                    }
+                    self.input_suspended.store(false, Ordering::Release);
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        match editor_result {
+                            Ok(text) => widget.set_composer_text(text),
+                            Err(err) => widget.debug_notice(err.to_string()),
+                        }
+                    }
+                    self.app_event_tx.send(AppEvent::RequestRedraw);
                 }
                 AppEvent::RegisterPastedImage { placeholder, path } => {
                     if let AppState::Chat { widget } = &mut self.app_state {

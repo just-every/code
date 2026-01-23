@@ -5933,6 +5933,16 @@ impl ChatWidget<'_> {
         self.bottom_pane.insert_str(s);
     }
 
+    pub(crate) fn set_composer_text(&mut self, text: String) {
+        if self.auto_state.should_show_goal_entry()
+            && matches!(self.auto_goal_escape_state, AutoGoalEscState::Inactive)
+            && !text.trim().is_empty()
+        {
+            self.auto_goal_escape_state = AutoGoalEscState::NeedsEnableEditing;
+        }
+        self.bottom_pane.set_composer_text(text);
+    }
+
     // Removed: pending insert sequencing is not used under strict ordering.
 
     pub(crate) fn register_pasted_image(&mut self, placeholder: String, path: std::path::PathBuf) {
@@ -8025,6 +8035,21 @@ impl ChatWidget<'_> {
                     return;
                 }
             }
+        }
+
+        if let KeyEvent {
+            code: crossterm::event::KeyCode::Char('g'),
+            modifiers: crossterm::event::KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press | KeyEventKind::Repeat,
+            ..
+        } = key_event
+        {
+            if !self.bottom_pane.has_active_modal_view() {
+                let initial = self.bottom_pane.composer_text();
+                self.app_event_tx
+                    .send(AppEvent::OpenExternalEditor { initial });
+            }
+            return;
         }
 
         // Fast-path PageUp/PageDown to scroll the transcript by a viewport at a time.
@@ -21833,7 +21858,8 @@ Have we met every part of this goal and is there no further work to do?"#
         ));
 
         // Global
-        lines.push(kv("Ctrl+G", "Guide overlay"));
+        lines.push(kv("F1", "Help overlay"));
+        lines.push(kv("Ctrl+G", "Open external editor"));
         lines.push(kv("Ctrl+R", "Toggle reasoning"));
         lines.push(kv("Ctrl+T", "Toggle screen"));
         lines.push(kv("Ctrl+D", "Diff viewer"));
@@ -29470,6 +29496,7 @@ impl Drop for AutoReviewStubGuard {
             CAPTURE_AUTO_TURN_COMMIT_STUB,
             GIT_DIFF_NAME_ONLY_BETWEEN_STUB,
         };
+        use crate::app_event::AppEvent;
         use crate::bottom_pane::AutoCoordinatorViewModel;
     use crate::chatwidget::message::UserMessage;
     use crate::chatwidget::smoke_helpers::{enter_test_runtime_guard, ChatWidgetHarness};
@@ -31245,6 +31272,20 @@ use code_core::protocol::OrderMeta;
             AutoGoalEscState::NeedsEnableEditing
         ));
         assert_eq!(chat.bottom_pane.composer_text(), "x");
+    }
+
+    #[test]
+    fn ctrl_g_dispatches_external_editor_event() {
+        let mut harness = ChatWidgetHarness::new();
+        let key_event = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL);
+        harness.chat().handle_key_event(key_event);
+        let events = harness.drain_events();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, AppEvent::OpenExternalEditor { .. })),
+            "expected external editor request on Ctrl+G",
+        );
     }
 
     #[test]

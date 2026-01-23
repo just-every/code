@@ -64,6 +64,7 @@ mod colors;
 pub mod card_theme;
 mod diff_render;
 mod exec_command;
+mod external_editor;
 mod file_search;
 pub mod gradient_background;
 mod get_git_diff;

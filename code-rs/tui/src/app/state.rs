@@ -220,6 +220,8 @@ pub(crate) struct App<'a> {
     pub(super) frame_timer: Arc<FrameTimer>,
     /// Controls the input reader thread spawned at startup.
     pub(super) input_running: Arc<AtomicBool>,
+    /// Temporarily pause input reader while external editor owns the terminal.
+    pub(super) input_suspended: Arc<AtomicBool>,
 
     pub(super) enhanced_keys_supported: bool,
     /// Tracks keys seen as pressed when keyboard enhancements are unavailable

@@ -517,6 +517,11 @@ impl BottomPane<'_> {
         self.request_redraw();
     }
 
+    pub(crate) fn set_composer_text(&mut self, text: String) {
+        self.composer.set_text_content(text);
+        self.request_redraw();
+    }
+
     /// Clear the composer text and reset transient composer state.
     pub(crate) fn clear_composer(&mut self) {
         self.composer.clear_text();
