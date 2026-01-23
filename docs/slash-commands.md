@@ -17,6 +17,7 @@ Notes
 - `/chrome`: connect to your Chrome browser.
 - `/new`: start a new chat during a conversation.
 - `/resume`: resume a past session for this folder.
+- `/rename <name>`: rename the current session (shown in the resume list).
 - `/quit`: exit Code.
 - `/logout`: log out of Code.
 - `/login`: manage Code sign-ins (select, add, or disconnect accounts).

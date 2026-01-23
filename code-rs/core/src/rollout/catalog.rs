@@ -69,6 +69,10 @@ pub struct SessionIndexEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_user_snippet: Option<String>,
 
+    /// Optional user-assigned nickname for the session
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nickname: Option<String>,
+
     /// Device/machine where this session originated (for synced sessions)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sync_origin_device: Option<String>,
@@ -256,6 +260,16 @@ impl SessionCatalog {
         self.save()
     }
 
+    /// Update the nickname for a session entry.
+    pub fn set_nickname(&mut self, session_id: Uuid, nickname: Option<String>) -> io::Result<bool> {
+        let Some(entry) = self.entries.get_mut(&session_id) else {
+            return Ok(false);
+        };
+        entry.nickname = nickname;
+        self.save()?;
+        Ok(true)
+    }
+
     /// Remove an entry's session_id from secondary indexes.
     fn remove_from_indexes(&mut self, session_id: &Uuid, entry: &SessionIndexEntry) {
         // Remove from cwd index
@@ -310,9 +324,12 @@ impl SessionCatalog {
         }
 
         // Upsert discovered entries.
-        for (session_id, entry) in discovered_entries {
+        for (session_id, mut entry) in discovered_entries {
             if let Some(existing) = self.entries.get(&session_id).cloned() {
                 if should_replace(&existing, &entry) {
+                    if entry.nickname.is_none() {
+                        entry.nickname = existing.nickname.clone();
+                    }
                     self.remove_from_indexes(&session_id, &existing);
                     self.index_entry(entry);
                     result.updated += 1;
@@ -535,6 +552,7 @@ async fn parse_rollout_file(
         message_count,
         user_message_count,
         last_user_snippet,
+        nickname: None,
         sync_origin_device: None,
         sync_version: 0,
         archived: false,
@@ -628,6 +646,7 @@ mod tests {
             message_count: 5,
             user_message_count: 2,
             last_user_snippet: None,
+            nickname: None,
             sync_origin_device: None,
             sync_version: 0,
             archived: false,
@@ -663,6 +682,7 @@ mod tests {
             message_count: 5,
             user_message_count: 1,
             last_user_snippet: Some("test message".to_string()),
+            nickname: None,
             sync_origin_device: None,
             sync_version: 0,
             archived: false,
@@ -676,6 +696,45 @@ mod tests {
         // Load catalog and verify
         let loaded = SessionCatalog::load(code_home)?;
         assert_eq!(loaded.get(&entry.session_id), Some(&entry));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_catalog_set_nickname() -> io::Result<()> {
+        let temp = TempDir::new()?;
+        let code_home = temp.path();
+
+        let session_id = Uuid::new_v4();
+        let entry = SessionIndexEntry {
+            session_id,
+            rollout_path: PathBuf::from("sessions/test-nickname.jsonl"),
+            snapshot_path: None,
+            created_at: "2025-01-01T10:00:00.000Z".to_string(),
+            last_event_at: "2025-01-01T10:05:00.000Z".to_string(),
+            cwd_real: PathBuf::from("/test"),
+            cwd_display: "/test".to_string(),
+            git_project_root: None,
+            git_branch: None,
+            model_provider: None,
+            session_source: SessionSource::Cli,
+            message_count: 5,
+            user_message_count: 1,
+            last_user_snippet: None,
+            nickname: None,
+            sync_origin_device: None,
+            sync_version: 0,
+            archived: false,
+            deleted: false,
+        };
+
+        let mut catalog = SessionCatalog::load(code_home)?;
+        catalog.upsert(entry.clone())?;
+        assert!(catalog.set_nickname(session_id, Some("Launch checklist".to_string()))?);
+
+        let loaded = SessionCatalog::load(code_home)?;
+        let retrieved = loaded.get(&session_id).expect("session entry");
+        assert_eq!(retrieved.nickname.as_deref(), Some("Launch checklist"));
 
         Ok(())
     }
@@ -703,6 +762,7 @@ mod tests {
             message_count: 5,
             user_message_count: 1,
             last_user_snippet: None,
+            nickname: None,
             sync_origin_device: None,
             sync_version: 0,
             archived: false,
@@ -753,6 +813,7 @@ mod tests {
             message_count: 5,
             user_message_count: 2,
             last_user_snippet: Some("first message".to_string()),
+            nickname: None,
             sync_origin_device: None,
             sync_version: 0,
             archived: false,
@@ -802,6 +863,7 @@ mod tests {
             message_count: 5,
             user_message_count: 1,
             last_user_snippet: None,
+            nickname: None,
             sync_origin_device: None,
             sync_version: 0,
             archived: false,
@@ -845,6 +907,7 @@ mod tests {
             message_count: 5,
             user_message_count: 2,
             last_user_snippet: None,
+            nickname: None,
             sync_origin_device: None,
             sync_version: 0,
             archived: false,
@@ -905,6 +968,7 @@ mod tests {
             message_count: 5,
             user_message_count: 2,
             last_user_snippet: None,
+            nickname: None,
             sync_origin_device: None,
             sync_version: 0,
             archived: false,
@@ -982,6 +1046,7 @@ mod tests {
             message_count: 5,
             user_message_count: 2,
             last_user_snippet: None,
+            nickname: None,
             sync_origin_device: None,
             sync_version: 0,
             archived: false,

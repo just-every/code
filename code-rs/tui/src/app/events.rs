@@ -13,6 +13,7 @@ use code_cloud_tasks_client::{CloudTaskError, TaskId};
 use code_core::config::add_project_allowed_command;
 use code_core::config_types::Notifications;
 use code_core::protocol::{Event, Op, SandboxPolicy};
+use code_core::SessionCatalog;
 use code_login::{AuthManager, AuthMode, ServerOptions};
 use portable_pty::PtySize;
 
@@ -1081,6 +1082,65 @@ impl App<'_> {
                                 widget.show_resume_picker();
                             }
                         }
+                        SlashCommand::Rename => {
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                let trimmed = command_args.trim();
+                                if trimmed.is_empty() {
+                                    widget.debug_notice(
+                                        "Usage: /rename <name> (or /rename - to clear)".to_string(),
+                                    );
+                                } else if let Some(session_id) = widget.session_id() {
+                                    let nickname =
+                                        if trimmed == "-" || trimmed.eq_ignore_ascii_case("clear") {
+                                            None
+                                        } else {
+                                            Some(trimmed.to_string())
+                                        };
+                                    let code_home = self.config.code_home.clone();
+                                    let tx = self.app_event_tx.clone();
+                                    let nickname_label = nickname.clone();
+                                    if let Err(err) = std::thread::Builder::new()
+                                        .name("session-rename".to_string())
+                                        .spawn(move || {
+                                            let message = match tokio::runtime::Builder::new_current_thread()
+                                                .enable_all()
+                                                .build()
+                                            {
+                                                Ok(rt) => {
+                                                    let catalog = SessionCatalog::new(code_home);
+                                                    match rt.block_on(
+                                                        catalog.set_nickname(session_id, nickname),
+                                                    ) {
+                                                        Ok(true) => match nickname_label {
+                                                            Some(name) => {
+                                                                format!("Session renamed to \"{name}\".")
+                                                            }
+                                                            None => "Session nickname cleared.".to_string(),
+                                                        },
+                                                        Ok(false) => {
+                                                            "Session not found in catalog.".to_string()
+                                                        }
+                                                        Err(err) => {
+                                                            format!("Failed to rename session: {err}")
+                                                        }
+                                                    }
+                                                }
+                                                Err(err) => {
+                                                    format!("Failed to start rename task: {err}")
+                                                }
+                                            };
+                                            tx.send(AppEvent::SessionRenameCompleted { message });
+                                        })
+                                    {
+                                        widget.debug_notice(format!(
+                                            "Failed to spawn rename task: {err}",
+                                        ));
+                                    }
+                                } else {
+                                    widget.debug_notice("Session not ready yet.".to_string());
+                                }
+                            }
+                        }
                         SlashCommand::New => {
                             if let AppState::Chat { widget } = &mut self.app_state {
                                 widget.abort_active_turn_for_new_chat();
@@ -1343,6 +1403,11 @@ impl App<'_> {
                 AppEvent::ResumePickerLoadFailed { message } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.handle_resume_picker_load_failed(message);
+                    }
+                }
+                AppEvent::SessionRenameCompleted { message } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.debug_notice(message);
                     }
                 }
                 AppEvent::ResumeFrom(path) => {

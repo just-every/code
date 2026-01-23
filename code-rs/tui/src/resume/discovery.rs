@@ -8,6 +8,7 @@ use tokio::runtime::{Builder, Handle};
 #[derive(Clone, Debug)]
 pub struct ResumeCandidate {
     pub path: PathBuf,
+    pub nickname: Option<String>,
     pub subtitle: Option<String>,
     pub created_ts: Option<String>,
     pub modified_ts: Option<String>,
@@ -100,6 +101,7 @@ fn entry_to_candidate(code_home: &Path, entry: SessionIndexEntry) -> ResumeCandi
 
     ResumeCandidate {
         path,
+        nickname: entry.nickname.clone(),
         subtitle: entry.last_user_snippet.clone(),
         created_ts: Some(entry.created_at.clone()),
         modified_ts: Some(entry.last_event_at.clone()),

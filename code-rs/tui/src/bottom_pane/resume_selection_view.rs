@@ -217,7 +217,7 @@ impl BottomPaneView<'_> for ResumeSelectionView {
             Constraint::Min(10),    // Last User Message
         ];
 
-        let header = Row::new(vec!["Modified", "Created", "User Msgs", "Branch", "Last User Message"]).height(1)
+        let header = Row::new(vec!["Modified", "Created", "User Msgs", "Branch", "Session"]).height(1)
             .style(Style::default().fg(crate::colors::text_bright()));
 
         let table = Table::new(rows_iter, widths)

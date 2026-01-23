@@ -263,6 +263,9 @@ pub(crate) enum AppEvent {
     /// Resume picker failed to load
     ResumePickerLoadFailed { message: String },
 
+    /// Session nickname update finished
+    SessionRenameCompleted { message: String },
+
     /// Signal that agents are about to start (triggered when /plan, /solve, /code commands are entered)
     PrepareAgents,
 

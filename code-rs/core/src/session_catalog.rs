@@ -9,6 +9,7 @@ use code_protocol::protocol::SessionSource;
 use once_cell::sync::OnceCell;
 use tokio::task;
 use tokio::sync::Mutex as AsyncMutex;
+use uuid::Uuid;
 
 use crate::rollout::catalog::{self as rollout_catalog, SessionIndexEntry};
 
@@ -124,6 +125,19 @@ impl SessionCatalog {
     /// Convert a catalog entry to an absolute rollout path.
     pub fn entry_rollout_path(&self, entry: &SessionIndexEntry) -> PathBuf {
         entry_to_rollout_path(&self.code_home, entry)
+    }
+
+    /// Set or clear a nickname for the given session.
+    pub async fn set_nickname(&self, session_id: Uuid, nickname: Option<String>) -> Result<bool> {
+        let mut catalog = self.load_inner().await?;
+        let updated = catalog
+            .set_nickname(session_id, nickname)
+            .context("failed to update session nickname")?;
+        if updated {
+            let mut guard = self.cache.lock().await;
+            *guard = Some(catalog);
+        }
+        Ok(updated)
     }
 
     async fn load_inner(&self) -> Result<rollout_catalog::SessionCatalog> {

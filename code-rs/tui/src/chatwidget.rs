@@ -4162,9 +4162,22 @@ impl ChatWidget<'_> {
             .map(|c| {
                 let modified = human_ago(&c.modified_ts.unwrap_or_default());
                 let created = human_ago(&c.created_ts.unwrap_or_default());
-                let user_msgs = format!("{}", c.user_message_count);
+                let user_message_count = c.user_message_count;
+                let user_msgs = format!("{user_message_count}");
                 let branch = c.branch.unwrap_or_else(|| "-".to_string());
-                let mut summary = c.snippet.unwrap_or_else(|| c.subtitle.unwrap_or_default());
+                let nickname = c
+                    .nickname
+                    .and_then(|name| {
+                        let trimmed = name.trim();
+                        (!trimmed.is_empty()).then(|| trimmed.to_string())
+                    });
+                let snippet = c.snippet.or(c.subtitle);
+                let mut summary = match (nickname, snippet) {
+                    (Some(name), Some(snippet)) => format!("{name} - {snippet}"),
+                    (Some(name), None) => name,
+                    (None, Some(snippet)) => snippet,
+                    (None, None) => String::new(),
+                };
                 const SNIPPET_MAX: usize = 64;
                 if summary.chars().count() > SNIPPET_MAX {
                     summary = summary.chars().take(SNIPPET_MAX).collect::<String>() + "…";
