@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.6.50] - 2026-01-22
+
+- Core/Models: default to gpt-5.2-codex with personality templating and request-user-input support. (7aad17a5, 95bcf62e)
+- Core/Config: add layered config.toml support for app-server reads and merges. (2ca9a565)
+- TUI: add request-user-input overlay with interactive picker and reliable pending/answer routing. (5f55ed66, c7123257, 35f18684, b972185d)
+- Core/Runtime: preserve interrupted turns to prevent repeats and avoid touching thread mtime on resume. (b236f1c9, b0049ab6)
+- Sandbox/Paths: harden tilde expansion and Windows sandbox audit paths for safer writable roots. (8179312f, c73a11d5, f2de9201)
+
 ## [0.6.49] - 2026-01-17
 
 - CLI/Fork: /fork now clones the current session and surfaces the source session id in /status. (e893e83e, c26fe645)
