@@ -194,7 +194,7 @@ fn assert_viewport_invariants(output: &str, expected_rows: u16) {
     );
     if let Some(last_line) = lines.last() {
         assert!(
-            last_line.trim().is_empty() || last_line.contains("guide"),
+            last_line.trim().is_empty() || last_line.contains("editor"),
             "last visible line looks truncated: {last_line:?}"
         );
     }
