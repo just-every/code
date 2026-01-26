@@ -1,12 +1,10 @@
-## @just-every/code v0.6.51
+## @just-every/code v0.6.52
 
-This release improves session labeling and smooths TUI streaming behavior.
+This release tightens browser navigation waits to keep runs responsive.
 
 ### Changes
-- Core/TUI: add session nicknames to label runs.
-- TUI/Editor: open external editor with Ctrl+G.
-- TUI/Scroll: keep viewport stable and prevent scroll jumps during streaming.
-- MCP/Exec: show per-server tool status and handle list-tools responses.
+- Browser: bound DOMContentLoaded waits to avoid hangs during navigation.
+- Browser: bound load waits with readyState polling fallback.
 
 ### Install
 ```
@@ -14,4 +12,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.50...v0.6.51
+Compare: https://github.com/just-every/code/compare/v0.6.51...v0.6.52
