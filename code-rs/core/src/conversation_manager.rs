@@ -180,7 +180,7 @@ impl ConversationManager {
             crate::rollout::recorder::RolloutRecorderParams::new(
                 convo_id,
                 instructions,
-                self.session_source,
+                self.session_source.clone(),
             ),
         )
         .await

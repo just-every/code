@@ -1554,6 +1554,7 @@ fn request_user_input_picker_allows_selection_and_typing() {
                     id: "color".into(),
                     header: "Pick One".into(),
                     question: "Select a color:".into(),
+                    is_other: false,
                     options: Some(vec![
                         RequestUserInputQuestionOption {
                             label: "Blue (Recommended)".into(),
@@ -1569,6 +1570,7 @@ fn request_user_input_picker_allows_selection_and_typing() {
                     id: "display_name".into(),
                     header: "Name".into(),
                     question: "Type a short display name (freeform):".into(),
+                    is_other: false,
                     options: None,
                 },
             ],
@@ -1623,6 +1625,7 @@ fn request_user_input_auto_drive_auto_answers_without_modal() {
                 id: "confirm".into(),
                 header: "Confirm".into(),
                 question: "Proceed?".into(),
+                is_other: false,
                 options: Some(vec![
                     RequestUserInputQuestionOption {
                         label: "Yes (Recommended)".into(),

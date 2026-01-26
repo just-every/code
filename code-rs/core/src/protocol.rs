@@ -27,6 +27,7 @@ use crate::model_provider_info::ModelProviderInfo;
 use crate::client_common::TextFormat;
 use crate::parse_command::ParsedCommand;
 use crate::plan_tool::UpdatePlanArgs;
+use code_protocol::dynamic_tools::DynamicToolResponse;
 
 // Re-export review types from the shared protocol crate so callers can use
 // `code_core::protocol::ReviewFinding` and friends.
@@ -207,6 +208,14 @@ pub enum Op {
         id: String,
         /// User-provided answers.
         response: RequestUserInputResponse,
+    },
+
+    /// Resolve a dynamic tool call request.
+    DynamicToolResponse {
+        /// Call id for the in-flight request.
+        id: String,
+        /// Tool output payload.
+        response: DynamicToolResponse,
     },
 
     /// Update a specific validation tool toggle for the session.

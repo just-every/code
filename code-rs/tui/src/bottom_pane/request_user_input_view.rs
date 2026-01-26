@@ -94,12 +94,47 @@ impl RequestUserInputView {
             .unwrap_or(0)
     }
 
+    fn current_is_other(&self) -> bool {
+        self.current_question().is_some_and(|q| q.is_other)
+    }
+
+    fn current_other_index(&self) -> Option<usize> {
+        let options_len = self.current_options_len();
+        if options_len > 0 && self.current_is_other() {
+            Some(options_len)
+        } else {
+            None
+        }
+    }
+
+    fn current_total_options_len(&self) -> usize {
+        let options_len = self.current_options_len();
+        if options_len > 0 && self.current_is_other() {
+            options_len + 1
+        } else {
+            options_len
+        }
+    }
+
     fn current_has_options(&self) -> bool {
         self.current_options_len() > 0
     }
 
+    fn current_accepts_freeform(&self) -> bool {
+        if self.current_options_len() == 0 {
+            return true;
+        }
+        let Some(other_idx) = self.current_other_index() else {
+            return false;
+        };
+        let selected_idx = self
+            .current_answer()
+            .and_then(|answer| answer.option_state.selected_idx);
+        selected_idx == Some(other_idx)
+    }
+
     fn move_selection(&mut self, up: bool) {
-        let options_len = self.current_options_len();
+        let options_len = self.current_total_options_len();
         if options_len == 0 {
             return;
         }
@@ -155,7 +190,11 @@ impl RequestUserInputView {
 
             if let Some(options) = options {
                 let selected_idx = answer_state.option_state.selected_idx;
-                if let Some(label) = selected_idx
+                let other_idx = (question.is_other && !options.is_empty()).then_some(options.len());
+                if other_idx.is_some_and(|idx| selected_idx == Some(idx)) {
+                    let value = answer_state.freeform.trim_end();
+                    answer_list.push(value.to_string());
+                } else if let Some(label) = selected_idx
                     .and_then(|i| options.get(i))
                     .map(|opt| opt.label.clone())
                 {
@@ -231,12 +270,12 @@ impl BottomPaneView<'_> for RequestUserInputView {
                 }
             }
             KeyCode::Backspace => {
-                if !self.current_has_options() {
+                if self.current_accepts_freeform() {
                     self.pop_freeform_char();
                 }
             }
             KeyCode::Char(ch) => {
-                if !self.current_has_options()
+                if self.current_accepts_freeform()
                     && !key_event
                         .modifiers
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -261,7 +300,7 @@ impl BottomPaneView<'_> for RequestUserInputView {
     }
 
     fn handle_paste(&mut self, text: String) -> super::bottom_pane_view::ConditionalUpdate {
-        if self.current_has_options() {
+        if !self.current_accepts_freeform() {
             return super::bottom_pane_view::ConditionalUpdate::NoRedraw;
         }
         if text.is_empty() {
@@ -286,8 +325,14 @@ impl BottomPaneView<'_> for RequestUserInputView {
             .clamp(1, 3);
 
         let options_len = question
-            .and_then(|q| q.options.as_ref())
-            .map(std::vec::Vec::len)
+            .map(|q| {
+                let base_len = q.options.as_ref().map_or(0, std::vec::Vec::len);
+                if base_len > 0 && q.is_other {
+                    base_len + 1
+                } else {
+                    base_len
+                }
+            })
             .unwrap_or(0);
 
         let options_lines = if options_len > 0 {
@@ -359,6 +404,7 @@ impl BottomPaneView<'_> for RequestUserInputView {
             .height
             .saturating_sub((y - inner.y).saturating_add(footer_height));
         let has_options = options.is_some_and(|opts| !opts.is_empty());
+        let accepts_freeform = self.current_accepts_freeform();
         let desired_prompt_height = if prompt.trim().is_empty() {
             0u16
         } else {
@@ -405,7 +451,7 @@ impl BottomPaneView<'_> for RequestUserInputView {
                     .map(|answer| answer.option_state)
                     .unwrap_or_default();
                 let selected = state.selected_idx;
-                let rows = options
+                let mut rows = options
                     .iter()
                     .enumerate()
                     .map(|(idx, opt)| {
@@ -423,6 +469,27 @@ impl BottomPaneView<'_> for RequestUserInputView {
                         }
                     })
                     .collect::<Vec<_>>();
+                if self.current_is_other() {
+                    let other_idx = options.len();
+                    let is_selected = selected.is_some_and(|sel| sel == other_idx);
+                    let other_value = self
+                        .current_answer()
+                        .map(|answer| answer.freeform.trim_end())
+                        .unwrap_or("");
+                    let other_label = if is_selected && !other_value.is_empty() {
+                        format!("Other: {other_value}")
+                    } else {
+                        "Other".to_string()
+                    };
+                    let prefix = if is_selected { "(x)" } else { "( )" };
+                    rows.push(GenericDisplayRow {
+                        name: format!("{prefix} {other_label}"),
+                        description: Some("Provide a custom answer".to_string()),
+                        match_indices: None,
+                        is_current: false,
+                        name_color: None,
+                    });
+                }
                 render_rows(content_rect, buf, &rows, &state, rows.len().max(1), false);
             } else {
                 let text = self
@@ -445,9 +512,15 @@ impl BottomPaneView<'_> for RequestUserInputView {
         let is_last = question_count > 0 && self.current_idx + 1 >= question_count;
         let enter_label = if is_last { "submit" } else { "next" };
         let footer = if has_options {
-            format!(
-                "↑/↓ select | Enter {enter_label} | Esc type in composer | PgUp/PgDn prev/next"
-            )
+            if accepts_freeform {
+                format!(
+                    "↑/↓ select | Type other answer | Enter {enter_label} | Esc type in composer | PgUp/PgDn prev/next"
+                )
+            } else {
+                format!(
+                    "↑/↓ select | Enter {enter_label} | Esc type in composer | PgUp/PgDn prev/next"
+                )
+            }
         } else {
             format!(
                 "Type answer | Enter {enter_label} | Esc type in composer | PgUp/PgDn prev/next"

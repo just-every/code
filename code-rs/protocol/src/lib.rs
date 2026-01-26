@@ -1,5 +1,6 @@
 pub mod config_types;
 pub mod custom_prompts;
+pub mod dynamic_tools;
 pub mod skills;
 pub mod mcp_protocol;
 pub mod message_history;
@@ -10,4 +11,5 @@ pub mod parse_command;
 pub mod plan_tool;
 pub mod protocol;
 pub mod request_user_input;
+pub mod user_input;
 pub use mcp_protocol::ConversationId;

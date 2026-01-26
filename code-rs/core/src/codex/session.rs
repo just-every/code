@@ -1,5 +1,6 @@
 use super::*;
 use serde_json::Value;
+use code_protocol::dynamic_tools::DynamicToolResponse;
 use super::streaming::{
     AgentTask,
     TRUNCATION_MARKER,
@@ -1149,6 +1150,10 @@ impl Session {
         }
     }
 
+    pub fn notify_dynamic_tool_response(&self, call_id: &str, _response: DynamicToolResponse) {
+        tracing::warn!("dropping dynamic tool response for call_id={call_id}");
+    }
+
     pub fn add_approved_command(&self, pattern: ApprovedCommandPattern) {
         let mut state = self.state.lock().unwrap();
         state.approved_commands.insert(pattern);
@@ -1446,7 +1451,13 @@ impl Session {
     pub(crate) fn build_initial_context(&self, turn_context: &TurnContext) -> Vec<ResponseItem> {
         let mut items = Vec::new();
         if let Some(user_instructions) = turn_context.user_instructions.as_deref() {
-            items.push(UserInstructions::new(user_instructions.to_string()).into());
+            items.push(
+                UserInstructions {
+                    text: user_instructions.to_string(),
+                    directory: turn_context.cwd.to_string_lossy().into_owned(),
+                }
+                .into(),
+            );
         }
 
         let env_context = EnvironmentContext::new(

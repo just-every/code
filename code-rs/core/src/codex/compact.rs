@@ -972,7 +972,8 @@ mod tests {
                 id: None,
                 role: "user".to_string(),
                 content: vec![ContentItem::InputText {
-                    text: "<user_instructions>do things</user_instructions>".to_string(),
+                    text: "# AGENTS.md instructions for /tmp\n\n<INSTRUCTIONS>\ndo things\n</INSTRUCTIONS>"
+                        .to_string(),
                 }],
             },
             ResponseItem::Message {
@@ -1070,13 +1071,14 @@ mod tests {
     #[test]
     fn build_emergency_compacted_history_creates_minimal_history() {
         let initial_context = vec![
-            ResponseItem::Message {
-                id: None,
-                role: "user".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: "<user_instructions>test</user_instructions>".to_string(),
-                }],
-            },
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "# AGENTS.md instructions for /tmp\n\n<INSTRUCTIONS>\ntest\n</INSTRUCTIONS>"
+                            .to_string(),
+                    }],
+                },
             ResponseItem::Message {
                 id: None,
                 role: "user".to_string(),

@@ -885,6 +885,16 @@ pub(super) async fn submission_loop(
                 };
                 sess.notify_user_input_response(&id, response);
             }
+            Op::DynamicToolResponse { id, response } => {
+                let sess = match sess.as_ref() {
+                    Some(sess) => sess,
+                    None => {
+                        send_no_session_event(sub.id).await;
+                        continue;
+                    }
+                };
+                sess.notify_dynamic_tool_response(&id, response);
+            }
             Op::RegisterApprovedCommand {
                 command,
                 match_kind,

@@ -8,6 +8,7 @@ use crate::model_family::ModelFamily;
 use crate::openai_tools::OpenAiTool;
 use crate::protocol::RateLimitSnapshotEvent;
 use crate::protocol::TokenUsage;
+use crate::user_instructions::UserInstructions;
 use code_protocol::models::ContentItem;
 use code_protocol::models::ResponseItem;
 use futures::Stream;
@@ -33,9 +34,6 @@ static DEFAULT_DEVELOPER_PROMPT: Lazy<String> = Lazy::new(|| {
 const ENVIRONMENT_CONTEXT_START: &str = "<environment_context>\n\n";
 const ENVIRONMENT_CONTEXT_END: &str = "\n\n</environment_context>";
 
-/// wraps user instructions message in a tag for the model to parse more easily.
-const USER_INSTRUCTIONS_START: &str = "<user_instructions>\n\n";
-const USER_INSTRUCTIONS_END: &str = "\n\n</user_instructions>";
 /// Review thread system prompt. Edit `core/src/review_prompt.md` to customize.
 #[allow(dead_code)]
 pub const REVIEW_PROMPT: &str = include_str!("../review_prompt.md");
@@ -138,10 +136,21 @@ impl Prompt {
         }
     }
 
-    fn get_formatted_user_instructions(&self) -> Option<String> {
-        self.user_instructions
+    fn get_formatted_user_instructions(&self) -> Option<ResponseItem> {
+        let instructions = self.user_instructions.as_ref()?;
+        let directory = self
+            .environment_context
             .as_ref()
-            .map(|ui| format!("{USER_INSTRUCTIONS_START}{ui}{USER_INSTRUCTIONS_END}"))
+            .and_then(|ctx| ctx.cwd.as_ref())
+            .map(|cwd| cwd.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Some(
+            UserInstructions {
+                directory,
+                text: instructions.clone(),
+            }
+            .into(),
+        )
     }
 
     fn get_formatted_environment_context(&self) -> Option<String> {
@@ -193,17 +202,10 @@ impl Prompt {
             if let Some(ui) = self.get_formatted_user_instructions() {
                 let has_user_instructions = self.input.iter().any(|item| {
                     matches!(item, ResponseItem::Message { role, content, .. }
-                        if role == "user"
-                            && content.iter().any(|c| matches!(c,
-                                ContentItem::InputText { text } if text.contains(USER_INSTRUCTIONS_START)
-                            )))
+                        if role == "user" && UserInstructions::is_user_instructions(content))
                 });
                 if !has_user_instructions {
-                    input_with_instructions.push(ResponseItem::Message {
-                        id: None,
-                        role: "user".to_string(),
-                        content: vec![ContentItem::InputText { text: ui }],
-                    });
+                    input_with_instructions.push(ui);
                 }
             }
         }
@@ -242,13 +244,11 @@ impl Prompt {
     /// Creates a formatted user instructions message from a string
     #[allow(dead_code)]
     pub(crate) fn format_user_instructions_message(ui: &str) -> ResponseItem {
-        ResponseItem::Message {
-            id: None,
-            role: "user".to_string(),
-            content: vec![ContentItem::InputText {
-                text: format!("{USER_INSTRUCTIONS_START}{ui}{USER_INSTRUCTIONS_END}"),
-            }],
+        UserInstructions {
+            directory: String::new(),
+            text: ui.to_string(),
         }
+        .into()
     }
 }
 

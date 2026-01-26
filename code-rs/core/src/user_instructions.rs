@@ -3,40 +3,140 @@ use serde::Serialize;
 
 use code_protocol::models::ContentItem;
 use code_protocol::models::ResponseItem;
-use code_protocol::protocol::USER_INSTRUCTIONS_CLOSE_TAG;
-use code_protocol::protocol::USER_INSTRUCTIONS_OPEN_TAG;
 
-/// Wraps user instructions in a tag so the model can classify them easily.
+pub const USER_INSTRUCTIONS_OPEN_TAG_LEGACY: &str = "<user_instructions>";
+pub const USER_INSTRUCTIONS_PREFIX: &str = "# AGENTS.md instructions for ";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename = "user_instructions", rename_all = "snake_case")]
 pub(crate) struct UserInstructions {
-    text: String,
+    pub directory: String,
+    pub text: String,
 }
 
 impl UserInstructions {
-    pub fn new<T: Into<String>>(text: T) -> Self {
-        Self { text: text.into() }
-    }
-
-    /// Serializes the user instructions to an XML-like tagged block that starts
-    /// with <user_instructions> so clients can classify it.
-    pub fn serialize_to_xml(self) -> String {
-        format!(
-            "{USER_INSTRUCTIONS_OPEN_TAG}\n\n{}\n\n{USER_INSTRUCTIONS_CLOSE_TAG}",
-            self.text
-        )
+    pub fn is_user_instructions(message: &[ContentItem]) -> bool {
+        if let [ContentItem::InputText { text }] = message {
+            text.starts_with(USER_INSTRUCTIONS_PREFIX)
+                || text.starts_with(USER_INSTRUCTIONS_OPEN_TAG_LEGACY)
+        } else {
+            false
+        }
     }
 }
 
 impl From<UserInstructions> for ResponseItem {
     fn from(ui: UserInstructions) -> Self {
+        let directory = ui.directory;
+        let contents = ui.text;
         ResponseItem::Message {
             id: None,
             role: "user".to_string(),
             content: vec![ContentItem::InputText {
-                text: ui.serialize_to_xml(),
+                text: format!(
+                    "{USER_INSTRUCTIONS_PREFIX}{directory}\n\n<INSTRUCTIONS>\n{contents}\n</INSTRUCTIONS>",
+                ),
             }],
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename = "skill_instructions", rename_all = "snake_case")]
+pub(crate) struct SkillInstructions {
+    pub name: String,
+    pub path: String,
+    pub contents: String,
+}
+
+impl From<SkillInstructions> for ResponseItem {
+    fn from(si: SkillInstructions) -> Self {
+        let name = si.name;
+        let path = si.path;
+        let contents = si.contents;
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: format!(
+                    "<skill>\n<name>{name}</name>\n<path>{path}</path>\n{contents}\n</skill>",
+                ),
+            }],
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn test_user_instructions() {
+        let user_instructions = UserInstructions {
+            directory: "test_directory".to_string(),
+            text: "test_text".to_string(),
+        };
+        let response_item: ResponseItem = user_instructions.into();
+
+        let ResponseItem::Message { role, content, .. } = response_item else {
+            panic!("expected ResponseItem::Message");
+        };
+
+        assert_eq!(role, "user");
+
+        let [ContentItem::InputText { text }] = content.as_slice() else {
+            panic!("expected one InputText content item");
+        };
+
+        assert_eq!(
+            text,
+            "# AGENTS.md instructions for test_directory\n\n<INSTRUCTIONS>\ntest_text\n</INSTRUCTIONS>",
+        );
+    }
+
+    #[test]
+    fn test_is_user_instructions() {
+        assert!(UserInstructions::is_user_instructions(
+            &[ContentItem::InputText {
+                text: "# AGENTS.md instructions for test_directory\n\n<INSTRUCTIONS>\ntest_text\n</INSTRUCTIONS>".to_string(),
+            }]
+        ));
+        assert!(UserInstructions::is_user_instructions(&[
+            ContentItem::InputText {
+                text: "<user_instructions>test_text</user_instructions>".to_string(),
+            }
+        ]));
+        assert!(!UserInstructions::is_user_instructions(&[
+            ContentItem::InputText {
+                text: "test_text".to_string(),
+            }
+        ]));
+    }
+
+    #[test]
+    fn test_skill_instructions() {
+        let skill_instructions = SkillInstructions {
+            name: "demo-skill".to_string(),
+            path: "skills/demo/SKILL.md".to_string(),
+            contents: "body".to_string(),
+        };
+        let response_item: ResponseItem = skill_instructions.into();
+
+        let ResponseItem::Message { role, content, .. } = response_item else {
+            panic!("expected ResponseItem::Message");
+        };
+
+        assert_eq!(role, "user");
+
+        let [ContentItem::InputText { text }] = content.as_slice() else {
+            panic!("expected one InputText content item");
+        };
+
+        assert_eq!(
+            text,
+            "<skill>\n<name>demo-skill</name>\n<path>skills/demo/SKILL.md</path>\nbody\n</skill>",
+        );
+    }
+
 }
