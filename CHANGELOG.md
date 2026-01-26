@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.6.51] - 2026-01-26
+
+- Core/TUI: add session nicknames to label runs. (30d5e045)
+- TUI/Editor: open external editor with Ctrl+G. (d3a315c9)
+- TUI/Scroll: keep viewport stable and prevent scroll jumps during streaming. (f198c33f, d07f6f63)
+- MCP/Exec: show per-server tool status and handle list-tools responses. (b26e4d6f, d042f7ce)
+
 ## [0.6.50] - 2026-01-22
 
 - Core/Models: default to gpt-5.2-codex with personality templating and request-user-input support. (7aad17a5, 95bcf62e)
