@@ -1,6 +1,7 @@
 use super::*;
 use serde_json::Value;
 use code_protocol::dynamic_tools::DynamicToolResponse;
+use code_protocol::dynamic_tools::DynamicToolSpec;
 use super::streaming::{
     AgentTask,
     TRUNCATION_MARKER,
@@ -134,6 +135,7 @@ pub(super) struct State {
     pub(super) current_task: Option<AgentTask>,
     pub(super) pending_approvals: HashMap<String, oneshot::Sender<ReviewDecision>>,
     pub(super) pending_request_user_input: HashMap<String, oneshot::Sender<crate::protocol::RequestUserInputResponse>>,
+    pub(super) pending_dynamic_tools: HashMap<String, oneshot::Sender<DynamicToolResponse>>,
     pub(super) pending_input: Vec<ResponseInputItem>,
     pub(super) pending_user_input: Vec<QueuedUserInput>,
     pub(super) history: ConversationHistory,
@@ -328,6 +330,7 @@ pub(crate) struct Session {
     pub(super) _writable_roots: Vec<PathBuf>,
     pub(super) disable_response_storage: bool,
     pub(super) tools_config: ToolsConfig,
+    pub(super) dynamic_tools: Vec<DynamicToolSpec>,
 
     /// Manager for external MCP servers/tools.
     pub(super) mcp_connection_manager: McpConnectionManager,
@@ -419,6 +422,10 @@ impl Session {
 
     pub(crate) fn get_approval_policy(&self) -> AskForApproval {
         self.approval_policy
+    }
+
+    pub(crate) fn is_dynamic_tool(&self, name: &str) -> bool {
+        self.dynamic_tools.iter().any(|tool| tool.name == name)
     }
 
     fn next_background_sequence(&self, sub_id: &str) -> u64 {
@@ -1150,8 +1157,29 @@ impl Session {
         }
     }
 
-    pub fn notify_dynamic_tool_response(&self, call_id: &str, _response: DynamicToolResponse) {
-        tracing::warn!("dropping dynamic tool response for call_id={call_id}");
+    pub fn register_pending_dynamic_tool(
+        &self,
+        call_id: String,
+    ) -> std::result::Result<oneshot::Receiver<DynamicToolResponse>, String> {
+        let (tx, rx) = oneshot::channel();
+        let mut state = self.state.lock().unwrap();
+        if state.pending_dynamic_tools.contains_key(&call_id) {
+            return Err(format!("dynamic tool already pending for call_id={call_id}"));
+        }
+        state.pending_dynamic_tools.insert(call_id, tx);
+        Ok(rx)
+    }
+
+    pub fn notify_dynamic_tool_response(&self, call_id: &str, response: DynamicToolResponse) {
+        let pending = {
+            let mut state = self.state.lock().unwrap();
+            state.pending_dynamic_tools.remove(call_id)
+        };
+        if let Some(tx) = pending {
+            let _ = tx.send(response);
+        } else {
+            tracing::warn!("no pending dynamic tool found for call_id={call_id}");
+        }
     }
 
     pub fn add_approved_command(&self, pattern: ApprovedCommandPattern) {
@@ -1874,6 +1902,7 @@ impl Session {
         let mut state = self.state.lock().unwrap();
         state.pending_approvals.clear();
         state.pending_request_user_input.clear();
+        state.pending_dynamic_tools.clear();
         // Do not clear `pending_input` here. When a user submits a new message
         // immediately after an interrupt, it may have been routed to
         // `pending_input` by an earlier code path. Clearing it would drop the

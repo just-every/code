@@ -4,6 +4,7 @@ use agent_client_protocol as acp;
 use code_core::config_types::ClientTools;
 use code_core::protocol::AskForApproval;
 use code_protocol::config_types::SandboxMode;
+use code_protocol::dynamic_tools::DynamicToolSpec;
 use code_utils_json_to_toml::json_to_toml;
 use mcp_types::Tool;
 use mcp_types::ToolInputSchema;
@@ -57,6 +58,10 @@ pub struct CodexToolCallParam {
     /// Whether to include the plan tool in the conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub include_plan_tool: Option<bool>,
+
+    /// Dynamic tool specifications injected by the client.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
 }
 
 /// Custom enum mirroring [`AskForApproval`], but has an extra dependency on
@@ -248,6 +253,7 @@ impl CodexToolCallParam {
             config: cli_overrides,
             base_instructions,
             include_plan_tool,
+            dynamic_tools,
         } = self;
 
         // Build the `ConfigOverrides` recognized by codex-core.
@@ -270,6 +276,7 @@ impl CodexToolCallParam {
             tools_web_search_request: None,
             mcp_servers: None,
             experimental_client_tools: None,
+            dynamic_tools,
             compact_prompt_override: None,
             compact_prompt_override_file: None,
         };

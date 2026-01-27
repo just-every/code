@@ -6,6 +6,7 @@ use crate::config_types::ReasoningEffort;
 use crate::config_types::ReasoningSummary;
 use crate::config_types::SandboxMode;
 use crate::config_types::Verbosity;
+use crate::dynamic_tools::DynamicToolSpec;
 use crate::protocol::AskForApproval;
 use crate::protocol::EventMsg;
 use crate::protocol::FileChange;
@@ -297,6 +298,10 @@ pub struct NewConversationParams {
     /// Whether to include the apply patch tool in the conversation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub include_apply_patch_tool: Option<bool>,
+
+    /// Dynamic tool specifications injected by the client.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, TS)]
@@ -669,6 +674,7 @@ pub enum InputItem {
 
 pub const APPLY_PATCH_APPROVAL_METHOD: &str = "applyPatchApproval";
 pub const EXEC_COMMAND_APPROVAL_METHOD: &str = "execCommandApproval";
+pub const DYNAMIC_TOOL_CALL_METHOD: &str = "dynamicToolCall";
 
 /// Request initiated from the server and sent to the client.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, TS)]
@@ -685,6 +691,12 @@ pub enum ServerRequest {
         #[serde(rename = "id")]
         request_id: RequestId,
         params: ExecCommandApprovalParams,
+    },
+    /// Request to execute a dynamic tool.
+    DynamicToolCall {
+        #[serde(rename = "id")]
+        request_id: RequestId,
+        params: DynamicToolCallParams,
     },
 }
 
@@ -719,6 +731,21 @@ pub struct ExecCommandApprovalParams {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, TS)]
 pub struct ExecCommandApprovalResponse {
     pub decision: ReviewDecision,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, TS)]
+pub struct DynamicToolCallParams {
+    pub conversation_id: ConversationId,
+    pub turn_id: String,
+    pub call_id: String,
+    pub tool: String,
+    pub arguments: serde_json::Value,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, TS)]
+pub struct DynamicToolCallResponse {
+    pub output: String,
+    pub success: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, TS)]
@@ -859,6 +886,7 @@ mod tests {
                 base_instructions: None,
                 include_plan_tool: None,
                 include_apply_patch_tool: None,
+                dynamic_tools: None,
             },
         };
         assert_eq!(

@@ -27,7 +27,9 @@ use crate::model_provider_info::ModelProviderInfo;
 use crate::client_common::TextFormat;
 use crate::parse_command::ParsedCommand;
 use crate::plan_tool::UpdatePlanArgs;
+use code_protocol::dynamic_tools::DynamicToolCallRequest;
 use code_protocol::dynamic_tools::DynamicToolResponse;
+use code_protocol::dynamic_tools::DynamicToolSpec;
 
 // Re-export review types from the shared protocol crate so callers can use
 // `code_core::protocol::ReviewFinding` and friends.
@@ -139,6 +141,10 @@ pub enum Op {
         #[serde(skip_serializing_if = "Option::is_none")]
         #[serde(default)]
         demo_developer_message: Option<String>,
+
+        /// Dynamic tools to include for this session.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        dynamic_tools: Vec<DynamicToolSpec>,
     },
 
     /// Abort current task.
@@ -815,6 +821,8 @@ pub enum EventMsg {
     ExecApprovalRequest(ExecApprovalRequestEvent),
 
     RequestUserInput(RequestUserInputEvent),
+
+    DynamicToolCallRequest(DynamicToolCallRequest),
 
     ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent),
 

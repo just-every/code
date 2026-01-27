@@ -1630,6 +1630,7 @@ fn configure_session_op_from_config(config: &Config) -> Op {
         cwd: config.cwd.clone(),
         resume_path: None,
         demo_developer_message: config.demo_developer_message.clone(),
+        dynamic_tools: config.dynamic_tools.clone(),
     }
 }
 

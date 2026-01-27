@@ -18,6 +18,7 @@ use code_core::protocol::InputItem;
 use code_core::protocol::Op;
 use code_core::protocol::Submission;
 use code_core::protocol::TaskCompleteEvent;
+use code_protocol::dynamic_tools::DynamicToolResponse;
 use mcp_types::CallToolResult;
 use mcp_types::ContentBlock;
 use mcp_types::RequestId;
@@ -251,6 +252,23 @@ async fn run_code_tool_session_inner(
                             .await
                             .remove(&request_id);
                         break;
+                    }
+                    EventMsg::DynamicToolCallRequest(ev) => {
+                        let response = DynamicToolResponse {
+                            call_id: ev.call_id.clone(),
+                            output: "dynamic tools are not supported in MCP tool sessions"
+                                .to_string(),
+                            success: false,
+                        };
+                        if let Err(err) = codex
+                            .submit(Op::DynamicToolResponse {
+                                id: ev.call_id,
+                                response,
+                            })
+                            .await
+                        {
+                            tracing::error!("failed to submit DynamicToolResponse: {err}");
+                        }
                     }
                     EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
                         let text = match last_agent_message {

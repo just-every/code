@@ -47,6 +47,8 @@ pub fn generate_ts(out_dir: &Path, prettier: Option<&Path>) -> Result<()> {
     code_app_server_protocol::ApplyPatchApprovalResponse::export_all_to(out_dir)?;
     code_app_server_protocol::ExecCommandApprovalParams::export_all_to(out_dir)?;
     code_app_server_protocol::ExecCommandApprovalResponse::export_all_to(out_dir)?;
+    code_app_server_protocol::DynamicToolCallParams::export_all_to(out_dir)?;
+    code_app_server_protocol::DynamicToolCallResponse::export_all_to(out_dir)?;
     code_app_server_protocol::ServerNotification::export_all_to(out_dir)?;
     code_app_server_protocol::ClientNotification::export_all_to(out_dir)?;
 

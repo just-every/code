@@ -209,6 +209,14 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     "Model requested user input ({question_count} question(s)); interactive prompts are not supported in this runner.",
                 );
             }
+            EventMsg::DynamicToolCallRequest(ev) => {
+                let tool = &ev.tool;
+                let call_id = &ev.call_id;
+                ts_println!(
+                    self,
+                    "Dynamic tool call requested for {tool} (call_id: {call_id}); dynamic tools are not supported in this runner.",
+                );
+            }
             EventMsg::EnvironmentContextFull(_)
             | EventMsg::EnvironmentContextDelta(_)
             | EventMsg::BrowserSnapshot(_)

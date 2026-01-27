@@ -42,6 +42,7 @@ use crate::config_types::ReasoningSummary;
 use crate::project_features::{load_project_commands, ProjectCommand, ProjectHooks};
 use code_app_server_protocol::AuthMode;
 use code_protocol::config_types::SandboxMode;
+use code_protocol::dynamic_tools::DynamicToolSpec;
 use std::time::Instant;
 use serde::Deserialize;
 use serde::de::{self, Unexpected};
@@ -290,6 +291,9 @@ pub struct Config {
 
     /// Optional ACP client tool identifiers supplied by the host IDE.
     pub experimental_client_tools: Option<ClientTools>,
+
+    /// Dynamic tool specifications injected by the client.
+    pub dynamic_tools: Vec<DynamicToolSpec>,
 
     /// Configuration for available agent models
     pub agents: Vec<AgentConfig>,
@@ -552,6 +556,10 @@ pub struct ConfigToml {
     /// Optional ACP client tool identifiers supplied by the host IDE.
     #[serde(default)]
     pub experimental_client_tools: Option<ClientTools>,
+
+    /// Dynamic tool specifications injected by the client.
+    #[serde(default)]
+    pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
 
     /// Configuration for available agent models
     #[serde(default)]
@@ -844,6 +852,7 @@ pub struct ConfigOverrides {
     pub tools_web_search_request: Option<bool>,
     pub mcp_servers: Option<HashMap<String, McpServerConfig>>,
     pub experimental_client_tools: Option<ClientTools>,
+    pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
     pub compact_prompt_override: Option<String>,
     pub compact_prompt_override_file: Option<PathBuf>,
 }
@@ -881,6 +890,7 @@ impl Config {
             tools_web_search_request: override_tools_web_search_request,
             mcp_servers,
             experimental_client_tools,
+            dynamic_tools,
             compact_prompt_override,
             compact_prompt_override_file,
         } = overrides;
@@ -891,6 +901,10 @@ impl Config {
 
         if let Some(client_tools) = experimental_client_tools {
             cfg.experimental_client_tools = Some(client_tools);
+        }
+
+        if let Some(dynamic_tools) = dynamic_tools {
+            cfg.dynamic_tools = Some(dynamic_tools);
         }
 
         let (active_profile_name, config_profile) =
@@ -1376,6 +1390,7 @@ impl Config {
             compact_prompt_override,
             mcp_servers: cfg.mcp_servers,
             experimental_client_tools: cfg.experimental_client_tools.clone(),
+            dynamic_tools: cfg.dynamic_tools.unwrap_or_default(),
             agents,
             model_providers,
             project_doc_max_bytes: cfg.project_doc_max_bytes.unwrap_or(PROJECT_DOC_MAX_BYTES),

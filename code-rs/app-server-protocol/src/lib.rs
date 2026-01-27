@@ -19,6 +19,8 @@ pub use code_protocol::mcp_protocol::{
     ConversationId,
     ExecCommandApprovalParams,
     ExecCommandApprovalResponse,
+    DynamicToolCallParams,
+    DynamicToolCallResponse,
     GetAuthStatusParams,
     GetAuthStatusResponse,
     GetUserAgentResponse,
@@ -59,6 +61,7 @@ pub use code_protocol::mcp_protocol::{
     UserSavedConfig,
     APPLY_PATCH_APPROVAL_METHOD,
     EXEC_COMMAND_APPROVAL_METHOD,
+    DYNAMIC_TOOL_CALL_METHOD,
 };
 pub use mcp_types::{
     JSONRPCError,

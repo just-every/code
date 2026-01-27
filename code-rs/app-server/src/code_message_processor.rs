@@ -31,6 +31,7 @@ use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::OutgoingNotification;
 use crate::fuzzy_file_search::run_fuzzy_file_search;
 use code_protocol::protocol::TurnAbortReason;
+use code_protocol::dynamic_tools::DynamicToolResponse as CoreDynamicToolResponse;
 use code_core::protocol::InputItem as CoreInputItem;
 use code_core::protocol::Op;
 use code_core::protocol as core_protocol;
@@ -41,7 +42,10 @@ use code_protocol::mcp_protocol::ApplyPatchApprovalParams;
 use code_protocol::mcp_protocol::ApplyPatchApprovalResponse;
 use code_protocol::mcp_protocol::ClientRequest;
 use code_protocol::mcp_protocol::ConversationId;
+use code_protocol::mcp_protocol::DynamicToolCallParams;
+use code_protocol::mcp_protocol::DynamicToolCallResponse;
 use code_protocol::mcp_protocol::EXEC_COMMAND_APPROVAL_METHOD;
+use code_protocol::mcp_protocol::DYNAMIC_TOOL_CALL_METHOD;
 use code_protocol::mcp_protocol::ExecCommandApprovalParams;
 use code_protocol::mcp_protocol::ExecCommandApprovalResponse;
 use code_protocol::mcp_protocol::InputItem as WireInputItem;
@@ -623,6 +627,24 @@ async fn apply_bespoke_event_handling(
                 on_exec_approval_response(approval_id, rx, conversation).await;
             });
         }
+        EventMsg::DynamicToolCallRequest(request) => {
+            let call_id = request.call_id;
+            let params = DynamicToolCallParams {
+                conversation_id,
+                turn_id: request.turn_id,
+                call_id: call_id.clone(),
+                tool: request.tool,
+                arguments: request.arguments,
+            };
+            let value = serde_json::to_value(&params).unwrap_or_default();
+            let rx = outgoing
+                .send_request(DYNAMIC_TOOL_CALL_METHOD, Some(value))
+                .await;
+
+            tokio::spawn(async move {
+                on_dynamic_tool_call_response(call_id, rx, conversation).await;
+            });
+        }
         // No special handling needed for interrupts; responses are sent immediately.
 
         _ => {}
@@ -642,6 +664,7 @@ fn derive_config_from_params(
         config: cli_overrides,
         base_instructions,
         include_plan_tool,
+        dynamic_tools,
         ..
     } = params;
     let overrides = ConfigOverrides {
@@ -663,6 +686,7 @@ fn derive_config_from_params(
         tools_web_search_request: None,
         mcp_servers: None,
         experimental_client_tools: None,
+        dynamic_tools,
         compact_prompt_override: None,
         compact_prompt_override_file: None,
     };
@@ -715,6 +739,58 @@ async fn on_patch_approval_response(
         .await
     {
         error!("failed to submit PatchApproval: {err}");
+    }
+}
+
+async fn on_dynamic_tool_call_response(
+    call_id: String,
+    receiver: tokio::sync::oneshot::Receiver<mcp_types::Result>,
+    conversation: Arc<CodexConversation>,
+) {
+    let response = receiver.await;
+    let value = match response {
+        Ok(value) => value,
+        Err(err) => {
+            error!("request failed: {err:?}");
+            let fallback = CoreDynamicToolResponse {
+                call_id: call_id.clone(),
+                output: "dynamic tool request failed".to_string(),
+                success: false,
+            };
+            if let Err(err) = conversation
+                .submit(Op::DynamicToolResponse {
+                    id: call_id.clone(),
+                    response: fallback,
+                })
+                .await
+            {
+                error!("failed to submit DynamicToolResponse: {err}");
+            }
+            return;
+        }
+    };
+
+    let response = serde_json::from_value::<DynamicToolCallResponse>(value).unwrap_or_else(|err| {
+        error!("failed to deserialize DynamicToolCallResponse: {err}");
+        DynamicToolCallResponse {
+            output: "dynamic tool response was invalid".to_string(),
+            success: false,
+        }
+    });
+
+    let response = CoreDynamicToolResponse {
+        call_id: call_id.clone(),
+        output: response.output,
+        success: response.success,
+    };
+    if let Err(err) = conversation
+        .submit(Op::DynamicToolResponse {
+            id: call_id,
+            response,
+        })
+        .await
+    {
+        error!("failed to submit DynamicToolResponse: {err}");
     }
 }
 

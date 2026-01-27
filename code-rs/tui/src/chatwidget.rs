@@ -55,6 +55,7 @@ use code_core::auth_accounts::{self, StoredAccount};
 use code_login::AuthManager;
 use code_login::AuthMode;
 use code_protocol::mcp_protocol::AuthMode as McpAuthMode;
+use code_protocol::dynamic_tools::DynamicToolResponse;
 use code_protocol::protocol::SessionSource;
 use code_protocol::num_format::format_with_separators;
 use code_core::split_command_and_args;
@@ -13976,6 +13977,42 @@ impl ChatWidget<'_> {
                 }
                 self.request_redraw();
             }
+            EventMsg::DynamicToolCallRequest(ev) => {
+                let key = self.near_time_key_current_req(event.order.as_ref());
+                let tool = &ev.tool;
+                let call_id = &ev.call_id;
+                let lines = vec![
+                    format!("Dynamic tool call requested: {tool}"),
+                    format!("call_id: {call_id}"),
+                    "Dynamic tools are not supported in this UI; returning a failure response."
+                        .to_string(),
+                ];
+                let role = history_cell::plain_role_for_kind(PlainMessageKind::Notice);
+                let state = history_cell::plain_message_state_from_paragraphs(
+                    PlainMessageKind::Notice,
+                    role,
+                    lines,
+                );
+                let _ = self.history_insert_plain_state_with_key(state, key, "dynamic_tool_call");
+                self.restore_reasoning_in_progress_if_streaming();
+
+                let response = DynamicToolResponse {
+                    call_id: ev.call_id.clone(),
+                    output: "dynamic tools are not supported in this UI".to_string(),
+                    success: false,
+                };
+                if let Err(e) = self.code_op_tx.send(Op::DynamicToolResponse {
+                    id: ev.call_id.clone(),
+                    response,
+                }) {
+                    tracing::error!("failed to send Op::DynamicToolResponse: {e}");
+                }
+
+                self.bottom_pane
+                    .update_status_text("waiting for model".to_string());
+                self.bottom_pane.set_task_running(true);
+                self.request_redraw();
+            }
             EventMsg::ApplyPatchApprovalRequest(ev) => {
                 let id2 = id.clone();
                 let ev2 = ev.clone();
@@ -22401,6 +22438,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 cwd: self.config.cwd.clone(),
                 resume_path: None,
                 demo_developer_message: self.config.demo_developer_message.clone(),
+                dynamic_tools: Vec::new(),
             };
             self.submit_op(op);
 
@@ -23031,6 +23069,7 @@ Have we met every part of this goal and is there no further work to do?"#
             cwd: self.config.cwd.clone(),
             resume_path: None,
             demo_developer_message: self.config.demo_developer_message.clone(),
+            dynamic_tools: Vec::new(),
         };
         self.submit_op(op);
     }
@@ -23057,6 +23096,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 cwd: self.config.cwd.clone(),
                 resume_path: None,
                 demo_developer_message: self.config.demo_developer_message.clone(),
+                dynamic_tools: Vec::new(),
             };
             self.submit_op(op);
         }
@@ -23263,6 +23303,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 cwd: self.config.cwd.clone(),
                 resume_path: None,
                 demo_developer_message: self.config.demo_developer_message.clone(),
+                dynamic_tools: Vec::new(),
             };
             let _ = self.code_op_tx.send(op);
         } else {
@@ -23407,6 +23448,7 @@ Have we met every part of this goal and is there no further work to do?"#
             cwd: self.config.cwd.clone(),
             resume_path: None,
             demo_developer_message: self.config.demo_developer_message.clone(),
+            dynamic_tools: Vec::new(),
         };
 
         self.submit_op(op);
@@ -23448,6 +23490,7 @@ Have we met every part of this goal and is there no further work to do?"#
             cwd: self.config.cwd.clone(),
             resume_path: None,
             demo_developer_message: self.config.demo_developer_message.clone(),
+            dynamic_tools: Vec::new(),
         };
 
         self.submit_op(op);
@@ -24637,6 +24680,7 @@ Have we met every part of this goal and is there no further work to do?"#
             cwd: self.config.cwd.clone(),
             resume_path: None,
             demo_developer_message: self.config.demo_developer_message.clone(),
+            dynamic_tools: Vec::new(),
         };
         self.submit_op(op);
 
@@ -36687,6 +36731,7 @@ impl ChatWidget<'_> {
             cwd: self.config.cwd.clone(),
             resume_path: None,
             demo_developer_message: self.config.demo_developer_message.clone(),
+            dynamic_tools: Vec::new(),
         };
         self.submit_op(op);
 

@@ -11,6 +11,7 @@ use crate::model_family::ModelFamily;
 use crate::plan_tool::PLAN_TOOL;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
+use code_protocol::dynamic_tools::DynamicToolSpec;
 use crate::tool_apply_patch::{
     create_apply_patch_freeform_tool, create_apply_patch_json_tool, ApplyPatchToolType,
 };
@@ -676,6 +677,25 @@ pub(crate) fn mcp_tool_to_openai_tool(
     })
 }
 
+fn dynamic_tool_to_openai_tool(
+    tool: &DynamicToolSpec,
+) -> Result<ResponsesApiTool, serde_json::Error> {
+    let input_schema = parse_tool_input_schema(&tool.input_schema)?;
+
+    Ok(ResponsesApiTool {
+        name: tool.name.clone(),
+        description: tool.description.clone(),
+        strict: false,
+        parameters: input_schema,
+    })
+}
+
+fn parse_tool_input_schema(input_schema: &JsonValue) -> Result<JsonSchema, serde_json::Error> {
+    let mut input_schema = input_schema.clone();
+    sanitize_json_schema(&mut input_schema);
+    serde_json::from_value::<JsonSchema>(input_schema)
+}
+
 /// Sanitize a JSON Schema (as serde_json::Value) so it can fit our limited
 /// JsonSchema enum. This function:
 /// - Ensures every schema object has a "type". If missing, infers it from
@@ -795,6 +815,7 @@ pub fn get_openai_tools(
     mcp_tools: Option<HashMap<String, mcp_types::Tool>>,
     browser_enabled: bool,
     _agents_active: bool,
+    dynamic_tools: &[DynamicToolSpec],
 ) -> Vec<OpenAiTool> {
     let mut tools: Vec<OpenAiTool> = Vec::new();
 
@@ -871,6 +892,20 @@ pub fn get_openai_tools(
                 Ok(converted_tool) => tools.push(OpenAiTool::Function(converted_tool)),
                 Err(e) => {
                     tracing::error!("Failed to convert {name:?} MCP tool to OpenAI tool: {e:?}");
+                }
+            }
+        }
+    }
+
+    if !dynamic_tools.is_empty() {
+        for tool in dynamic_tools {
+            match dynamic_tool_to_openai_tool(tool) {
+                Ok(converted_tool) => tools.push(OpenAiTool::Function(converted_tool)),
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to convert dynamic tool {:?} to OpenAI tool: {e:?}",
+                        tool.name
+                    );
                 }
             }
         }
@@ -1106,7 +1141,7 @@ mod tests {
             false,
         );
         apply_default_agent_models(&mut config);
-        let tools = get_openai_tools(&config, Some(HashMap::new()), false, false);
+        let tools = get_openai_tools(&config, Some(HashMap::new()), false, false, &[]);
 
         assert_eq_tool_names(
             &tools,
@@ -1140,7 +1175,7 @@ mod tests {
             false,
         );
         apply_default_agent_models(&mut config);
-        let tools = get_openai_tools(&config, Some(HashMap::new()), false, true);
+        let tools = get_openai_tools(&config, Some(HashMap::new()), false, true, &[]);
 
         assert_eq_tool_names(
             &tools,
@@ -1173,7 +1208,7 @@ mod tests {
             false,
         );
         apply_default_agent_models(&mut config);
-        let tools = get_openai_tools(&config, Some(HashMap::new()), false, false);
+        let tools = get_openai_tools(&config, Some(HashMap::new()), false, false, &[]);
 
         assert_eq_tool_names(
             &tools,
@@ -1244,6 +1279,7 @@ mod tests {
             )])),
             false,
             true,
+            &[],
         );
 
         assert_eq_tool_names(
@@ -1367,6 +1403,7 @@ mod tests {
             )])),
             false,
             true,
+            &[],
         );
 
         assert_eq_tool_names(
@@ -1493,6 +1530,7 @@ mod tests {
             )])),
             false,
             true,
+            &[],
         );
 
         assert_eq_tool_names(
@@ -1569,6 +1607,7 @@ mod tests {
             )])),
             false,
             true,
+            &[],
         );
 
         assert_eq_tool_names(
@@ -1645,6 +1684,7 @@ mod tests {
             )])),
             false,
             true,
+            &[],
         );
 
         assert_eq_tool_names(
@@ -1719,6 +1759,7 @@ mod tests {
             )])),
             false,
             true,
+            &[],
         );
 
         assert_eq_tool_names(

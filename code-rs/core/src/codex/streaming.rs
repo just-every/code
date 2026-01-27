@@ -256,6 +256,7 @@ pub(super) async fn submission_loop(
                 cwd,
                 resume_path,
                 demo_developer_message,
+                dynamic_tools,
             } => {
                 debug!(
                     "Configuring session: model={model}; provider={provider:?}; resume={resume_path:?}"
@@ -305,6 +306,7 @@ pub(super) async fn submission_loop(
                 updated_config.disable_response_storage = disable_response_storage;
                 updated_config.notify = notify.clone();
                 updated_config.cwd = cwd.clone();
+                updated_config.dynamic_tools = dynamic_tools.clone();
 
                 updated_config.model_family = find_family_for_model(&updated_config.model)
                     .unwrap_or_else(|| derive_default_model_family(&updated_config.model));
@@ -633,6 +635,7 @@ pub(super) async fn submission_loop(
                     client,
                     remote_models_manager,
                     tools_config,
+                    dynamic_tools,
                     tx_event: tx_event.clone(),
                     user_instructions: effective_user_instructions.clone(),
                     base_instructions,
@@ -1965,6 +1968,7 @@ async fn run_turn(
             Some(sess.mcp_connection_manager.list_all_tools()),
             browser_enabled,
             agents_active,
+            sess.dynamic_tools.as_slice(),
         );
 
         // Start a new scratchpad for this HTTP attempt
@@ -3056,6 +3060,9 @@ async fn handle_function_call(
         "kill" => handle_kill(sess, &ctx, arguments).await,
         "code_bridge" | "code_bridge_subscription" => handle_code_bridge(sess, &ctx, arguments).await,
         _ => {
+            if sess.is_dynamic_tool(&name) {
+                return handle_dynamic_tool_call(sess, &ctx, name, arguments).await;
+            }
             match sess.mcp_connection_manager.parse_tool_name(&name) {
                 Some((server, tool_name)) => {
                     // Tool timeouts are derived from per-server config; no per-call override here.
@@ -3161,6 +3168,76 @@ async fn handle_request_user_input(
         output: FunctionCallOutputPayload {
             content,
             success: Some(true),
+        },
+    }
+}
+
+async fn handle_dynamic_tool_call(
+    sess: &Session,
+    ctx: &ToolCallCtx,
+    tool_name: String,
+    arguments: String,
+) -> ResponseInputItem {
+    let args = if arguments.trim().is_empty() {
+        serde_json::Value::Object(serde_json::Map::new())
+    } else {
+        match serde_json::from_str::<serde_json::Value>(&arguments) {
+            Ok(args) => args,
+            Err(err) => {
+                return ResponseInputItem::FunctionCallOutput {
+                    call_id: ctx.call_id.clone(),
+                    output: FunctionCallOutputPayload {
+                        content: format!("invalid dynamic tool arguments: {err}"),
+                        success: Some(false),
+                    },
+                };
+            }
+        }
+    };
+
+    let rx_response = match sess.register_pending_dynamic_tool(ctx.call_id.clone()) {
+        Ok(rx) => rx,
+        Err(err) => {
+            return ResponseInputItem::FunctionCallOutput {
+                call_id: ctx.call_id.clone(),
+                output: FunctionCallOutputPayload {
+                    content: err,
+                    success: Some(false),
+                },
+            };
+        }
+    };
+
+    sess.send_ordered_from_ctx(
+        ctx,
+        EventMsg::DynamicToolCallRequest(code_protocol::dynamic_tools::DynamicToolCallRequest {
+            call_id: ctx.call_id.clone(),
+            turn_id: ctx.sub_id.clone(),
+            tool: tool_name,
+            arguments: args,
+        }),
+    )
+    .await;
+
+    let response = match rx_response.await {
+        Ok(response) => response,
+        Err(_) => {
+            return ResponseInputItem::FunctionCallOutput {
+                call_id: ctx.call_id.clone(),
+                output: FunctionCallOutputPayload {
+                    content: "dynamic tool call was cancelled before receiving a response"
+                        .to_string(),
+                    success: Some(false),
+                },
+            };
+        }
+    };
+
+    ResponseInputItem::FunctionCallOutput {
+        call_id: ctx.call_id.clone(),
+        output: FunctionCallOutputPayload {
+            content: response.output,
+            success: Some(response.success),
         },
     }
 }
