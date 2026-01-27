@@ -133,7 +133,7 @@ async fn query_includes_exec_sessions() {
     let results = catalog.query(&query).await.unwrap();
 
     assert_eq!(results.len(), 2);
-    let sources: Vec<_> = results.iter().map(|e| e.session_source).collect();
+    let sources: Vec<_> = results.iter().map(|e| e.session_source.clone()).collect();
     assert!(sources.contains(&SessionSource::Cli));
     assert!(sources.contains(&SessionSource::Exec));
 }
