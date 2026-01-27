@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.6.53] - 2026-01-27
+
+- Core/Tools: add dynamic tool injection and wire the dynamic tool pipeline. (d594693d, 8a81f9f8)
+- MCP/Auth: allow MCP server scopes config as OAuth fallback. (bdc4742b)
+- App Server: add thread read, archived listing, and unarchive support. (80240b3b, 733cb684, 62266b13)
+- TUI: add /personality selector and /permissions flow. (031bafd1, 038b78c9)
+- Core/Collab: reduce high CPU usage during collaboration runs. (375a5ef0)
+
 ## [0.6.52] - 2026-01-26
 
 - Browser: bound DOMContentLoaded waits to avoid hangs during navigation. (1e1da83d)

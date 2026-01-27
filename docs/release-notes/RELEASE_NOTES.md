@@ -1,10 +1,12 @@
-## @just-every/code v0.6.52
-
-This release tightens browser navigation waits to keep runs responsive.
+## @just-every/code v0.6.53
+This release expands dynamic tools and improves TUI and server workflows.
 
 ### Changes
-- Browser: bound DOMContentLoaded waits to avoid hangs during navigation.
-- Browser: bound load waits with readyState polling fallback.
+- Core/Tools: add dynamic tool injection and wire the dynamic tool pipeline.
+- MCP/Auth: allow MCP server scopes config as OAuth fallback.
+- App Server: add thread read, archived listing, and unarchive support.
+- TUI: add /personality selector and /permissions flow.
+- Core/Collab: reduce high CPU usage during collaboration runs.
 
 ### Install
 ```
@@ -12,4 +14,7 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.51...v0.6.52
+### Thanks
+Thanks to @eugeneoden, @owenlin0, and @iudizm for contributions!
+
+Compare: https://github.com/just-every/code/compare/v0.6.52...v0.6.53
