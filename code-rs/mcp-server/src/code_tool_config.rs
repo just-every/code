@@ -390,6 +390,27 @@ mod tests {
                 "description": "Working directory for the session. If relative, it is resolved against the server process's current working directory.",
                 "type": "string"
               },
+              "dynamic-tools": {
+                "description": "Dynamic tool specifications injected by the client.",
+                "items": {
+                  "properties": {
+                    "description": {
+                      "type": "string"
+                    },
+                    "inputSchema": true,
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "description",
+                    "inputSchema",
+                    "name"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
               "include-plan-tool": {
                 "description": "Whether to include the plan tool in the conversation.",
                 "type": "boolean"
