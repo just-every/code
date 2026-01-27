@@ -535,6 +535,20 @@ impl App<'_> {
             let fg = crate::colors::text();
             let bg = crate::colors::background();
             let _ = crate::tui::enter_alt_screen_only(fg, bg);
+
+            // When entering full UI, capture mouse wheel scroll so it scrolls the
+            // in-app chat/history instead of the terminal scrollback.
+            if self.mouse_capture_enabled {
+                let _ = crossterm::execute!(
+                    std::io::stdout(),
+                    crossterm::event::EnableMouseCapture
+                );
+            } else {
+                let _ = crossterm::execute!(
+                    std::io::stdout(),
+                    crossterm::event::DisableMouseCapture
+                );
+            }
             self.clear_on_first_frame = true;
             self.alt_screen_active = true;
             // Persist preference
