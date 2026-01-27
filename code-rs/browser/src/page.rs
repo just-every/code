@@ -62,6 +62,53 @@ pub struct Page {
     preflight_cache: Arc<Mutex<Option<(Instant, bool)>>>,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ReadyStateTarget {
+    InteractiveOrComplete,
+    Complete,
+}
+
+async fn wait_ready_state(
+    cdp_page: &CdpPage,
+    target: ReadyStateTarget,
+    timeout: Duration,
+    interval: Duration,
+) {
+    let script = "document.readyState";
+    let start = Instant::now();
+    loop {
+        let state = cdp_page
+            .evaluate(script)
+            .await
+            .ok()
+            .and_then(|r| r.value().and_then(|v| v.as_str().map(|s| s.to_string())));
+        let done = match target {
+            ReadyStateTarget::InteractiveOrComplete => {
+                matches!(state.as_deref(), Some("interactive") | Some("complete"))
+            }
+            ReadyStateTarget::Complete => matches!(state.as_deref(), Some("complete")),
+        };
+        if done || start.elapsed() >= timeout {
+            break;
+        }
+        tokio::time::sleep(interval).await;
+    }
+}
+
+async fn url_looks_loaded(cdp_page: &CdpPage, timeout: Duration) -> bool {
+    let result = tokio::time::timeout(timeout, cdp_page.url()).await;
+    match result {
+        Ok(Ok(Some(url))) => {
+            let url = url.trim();
+            if url.is_empty() || url == "about:blank" {
+                return false;
+            }
+            url.starts_with("http://") || url.starts_with("https://")
+        }
+        _ => false,
+    }
+}
+
 impl Page {
     pub fn new(cdp_page: CdpPage, config: BrowserConfig) -> Self {
         // Initialize cursor position (Updated)
@@ -1107,23 +1154,57 @@ impl Page {
                 "domcontentloaded" => {
                     if fallback_navigated {
                         // Poll document.readyState instead of wait_for_navigation()
-                        let script = "document.readyState";
-                        let start = std::time::Instant::now();
-                        loop {
-                            let state = self.cdp_page.evaluate(script).await.ok().and_then(|r| {
-                                r.value().and_then(|v| v.as_str().map(|s| s.to_string()))
-                            });
-                            if matches!(state.as_deref(), Some("interactive") | Some("complete")) {
-                                break;
-                            }
-                            if start.elapsed() > std::time::Duration::from_secs(3) {
-                                break;
-                            }
-                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                        }
+                        wait_ready_state(
+                            &self.cdp_page,
+                            ReadyStateTarget::InteractiveOrComplete,
+                            Duration::from_secs(3),
+                            Duration::from_millis(100),
+                        )
+                        .await;
                     } else {
                         // Wait for DOMContentLoaded event
-                        self.cdp_page.wait_for_navigation().await?;
+                        let wait_timeout = Duration::from_secs(4);
+                        match tokio::time::timeout(
+                            wait_timeout,
+                            self.cdp_page.wait_for_navigation(),
+                        )
+                        .await
+                        {
+                            Ok(Ok(_)) => {}
+                            Ok(Err(e)) => {
+                                warn!(
+                                    "DOMContentLoaded wait failed after {:?}: {}",
+                                    wait_timeout, e
+                                );
+                                wait_ready_state(
+                                    &self.cdp_page,
+                                    ReadyStateTarget::InteractiveOrComplete,
+                                    Duration::from_secs(3),
+                                    Duration::from_millis(100),
+                                )
+                                .await;
+                                if !url_looks_loaded(&self.cdp_page, Duration::from_millis(400)).await
+                                {
+                                    return Err(BrowserError::CdpError(e.to_string()));
+                                }
+                            }
+                            Err(_) => {
+                                warn!("DOMContentLoaded wait timed out after {:?}", wait_timeout);
+                                wait_ready_state(
+                                    &self.cdp_page,
+                                    ReadyStateTarget::InteractiveOrComplete,
+                                    Duration::from_secs(3),
+                                    Duration::from_millis(100),
+                                )
+                                .await;
+                                if !url_looks_loaded(&self.cdp_page, Duration::from_millis(400)).await
+                                {
+                                    return Err(BrowserError::CdpError(format!(
+                                        "DOMContentLoaded wait timed out after {wait_timeout:?}"
+                                    )));
+                                }
+                            }
+                        }
                     }
                 }
                 "networkidle" | "networkidle0" => {
@@ -1137,25 +1218,56 @@ impl Page {
                 "load" => {
                     if fallback_navigated {
                         // Poll for complete state
-                        let script = "document.readyState";
-                        let start = std::time::Instant::now();
-                        loop {
-                            let state = self.cdp_page.evaluate(script).await.ok().and_then(|r| {
-                                r.value().and_then(|v| v.as_str().map(|s| s.to_string()))
-                            });
-                            if matches!(state.as_deref(), Some("complete")) {
-                                break;
-                            }
-                            if start.elapsed() > std::time::Duration::from_secs(4) {
-                                break;
-                            }
-                            tokio::time::sleep(tokio::time::Duration::from_millis(120)).await;
-                        }
+                        wait_ready_state(
+                            &self.cdp_page,
+                            ReadyStateTarget::Complete,
+                            Duration::from_secs(4),
+                            Duration::from_millis(120),
+                        )
+                        .await;
                         // Small cushion after load
                         tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
                     } else {
                         // Wait for load event
-                        self.cdp_page.wait_for_navigation().await?;
+                        let wait_timeout = Duration::from_secs(5);
+                        match tokio::time::timeout(
+                            wait_timeout,
+                            self.cdp_page.wait_for_navigation(),
+                        )
+                        .await
+                        {
+                            Ok(Ok(_)) => {}
+                            Ok(Err(e)) => {
+                                warn!("Load wait failed after {:?}: {}", wait_timeout, e);
+                                wait_ready_state(
+                                    &self.cdp_page,
+                                    ReadyStateTarget::Complete,
+                                    Duration::from_secs(4),
+                                    Duration::from_millis(120),
+                                )
+                                .await;
+                                if !url_looks_loaded(&self.cdp_page, Duration::from_millis(400)).await
+                                {
+                                    return Err(BrowserError::CdpError(e.to_string()));
+                                }
+                            }
+                            Err(_) => {
+                                warn!("Load wait timed out after {:?}", wait_timeout);
+                                wait_ready_state(
+                                    &self.cdp_page,
+                                    ReadyStateTarget::Complete,
+                                    Duration::from_secs(4),
+                                    Duration::from_millis(120),
+                                )
+                                .await;
+                                if !url_looks_loaded(&self.cdp_page, Duration::from_millis(400)).await
+                                {
+                                    return Err(BrowserError::CdpError(format!(
+                                        "Load wait timed out after {wait_timeout:?}"
+                                    )));
+                                }
+                            }
+                        }
                         // Add extra delay to ensure page is fully loaded
                         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                     }

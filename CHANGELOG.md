@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.52] - 2026-01-26
+
+- Browser: bound DOMContentLoaded waits to avoid hangs during navigation. (1e1da83d)
+- Browser: bound load waits with readyState polling fallback. (1e1da83d)
+
 ## [0.6.51] - 2026-01-26
 
 - Core/TUI: add session nicknames to label runs. (30d5e045)
