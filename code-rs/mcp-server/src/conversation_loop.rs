@@ -112,6 +112,7 @@ pub async fn run_conversation_loop(
                     | EventMsg::AgentStatusUpdate(_)
                     | EventMsg::ShutdownComplete
                     | EventMsg::CustomToolCallBegin(_)
+                    | EventMsg::CustomToolCallUpdate(_)
                     | EventMsg::CustomToolCallEnd(_) => {
                         // For now, we do not do anything extra for these
                         // events. Note that

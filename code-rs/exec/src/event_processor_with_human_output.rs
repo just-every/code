@@ -638,6 +638,9 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     }
                 }
             }
+            EventMsg::CustomToolCallUpdate(_) => {
+                // Currently ignored in exec output.
+            }
             EventMsg::CustomToolCallEnd(event) => {
                 let status = if event.result.is_ok() {
                     "success".style(self.green)

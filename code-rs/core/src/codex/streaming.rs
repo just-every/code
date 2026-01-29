@@ -4878,6 +4878,7 @@ async fn handle_gh_run_wait(
     use std::path::Path;
     use std::time::Duration;
     use chrono::{DateTime, Utc};
+    use crate::protocol::CustomToolCallUpdateEvent;
 
     #[derive(Deserialize, Clone)]
     struct Params {
@@ -4992,14 +4993,14 @@ async fn handle_gh_run_wait(
 
     let cwd = sess.cwd.clone();
 
-    #[derive(Clone, Default)]
+    #[derive(Clone, Default, PartialEq, Eq)]
     struct JobFailure {
         name: String,
         conclusion: String,
         step: Option<String>,
     }
 
-    #[derive(Clone, Default)]
+    #[derive(Clone, Default, PartialEq, Eq)]
     struct JobSummary {
         total: usize,
         completed: usize,
@@ -5013,6 +5014,12 @@ async fn handle_gh_run_wait(
         running_names: Vec<String>,
         queued_names: Vec<String>,
         failed_jobs: Vec<JobFailure>,
+    }
+
+    #[derive(Clone, PartialEq, Eq)]
+    struct UpdateSnapshot {
+        jobs: JobSummary,
+        url: Option<String>,
     }
 
     impl JobSummary {
@@ -5459,6 +5466,7 @@ async fn handle_gh_run_wait(
             let interval = parsed.interval_seconds.unwrap_or(8).max(1);
             let (initial_wait_epoch, _) = sess.wait_interrupt_snapshot();
             let mut last_view = prepared_view.clone();
+            let mut last_update: Option<UpdateSnapshot> = None;
 
             loop {
                 let view = if let Some(cached) = last_view.take() {
@@ -5545,6 +5553,30 @@ async fn handle_gh_run_wait(
                             success,
                         },
                     };
+                }
+
+                let update_url = html_url.clone().or_else(|| prepared_url.clone());
+                if job_summary.total > 0 || update_url.is_some() {
+                    let snapshot = UpdateSnapshot {
+                        jobs: job_summary.clone(),
+                        url: update_url.clone(),
+                    };
+                    if last_update.as_ref() != Some(&snapshot) {
+                        last_update = Some(snapshot.clone());
+                        let mut update_params = serde_json::Map::new();
+                        update_params.insert("jobs".to_string(), snapshot.jobs.to_json());
+                        if let Some(url) = snapshot.url.clone() {
+                            update_params.insert("url".to_string(), Value::String(url));
+                        }
+                        let update_msg = EventMsg::CustomToolCallUpdate(CustomToolCallUpdateEvent {
+                            call_id: call_id.clone(),
+                            tool_name: "gh_run_wait".to_string(),
+                            parameters: Some(Value::Object(update_params)),
+                        });
+                        let order = sess.background_order_for_ctx(ctx, sess.current_request_ordinal());
+                        let event = sess.make_event_with_order(&ctx.sub_id, update_msg, order, ctx.seq_hint);
+                        sess.send_event(event).await;
+                    }
                 }
 
                 let time_budget_message = {

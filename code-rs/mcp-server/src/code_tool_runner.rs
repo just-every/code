@@ -340,6 +340,7 @@ async fn run_code_tool_session_inner(
                     | EventMsg::EnteredReviewMode(_)
                     | EventMsg::ExitedReviewMode(_)
                     | EventMsg::CustomToolCallBegin(_)
+                    | EventMsg::CustomToolCallUpdate(_)
                     | EventMsg::CustomToolCallEnd(_)
                     | EventMsg::ViewImageToolCall(_) => {
                         // For now, we do not do anything extra for these

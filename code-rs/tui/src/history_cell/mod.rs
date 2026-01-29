@@ -128,6 +128,7 @@ pub(crate) use registry::{cell_from_record, lines_from_record, record_from_cell}
 pub(crate) use stream::{new_streaming_content, stream_lines_from_state, StreamingContentCell};
 pub(crate) use tool::{RunningToolCallCell, ToolCallCell};
 pub(crate) use tool_factory::{
+    arguments_from_json,
     new_completed_custom_tool_call,
     new_completed_mcp_tool_call,
     new_completed_web_fetch_tool_call,
