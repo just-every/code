@@ -3336,7 +3336,28 @@ fn maybe_compact(
         });
     }
 
-    if apply_compaction(conversation, bounds, prev_summary, checkpoint.message).is_none() {
+    let summary_message = checkpoint.message;
+    let mut applied = apply_compaction(
+        conversation,
+        bounds,
+        prev_summary,
+        summary_message.clone(),
+    )
+    .is_some();
+    if !applied {
+        if let Some(retry_bounds) = compute_slice_bounds(conversation)
+            .filter(|retry_bounds| *retry_bounds != bounds)
+        {
+            applied = apply_compaction(
+                conversation,
+                retry_bounds,
+                prev_summary,
+                summary_message,
+            )
+            .is_some();
+        }
+    }
+    if !applied {
         warn!("[Auto coordinator] apply_compaction returned None; bounds={bounds:?}");
         event_tx.send(AutoCoordinatorEvent::Thinking {
             delta: "Failed to compact history because the conversation changed while applying the summary. Continuing without compaction.".to_string(),

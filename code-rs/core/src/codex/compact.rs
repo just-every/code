@@ -42,6 +42,7 @@ const COMPACT_TOOL_ARGS_MAX_BYTES: usize = 4 * 1024;
 const COMPACT_TOOL_OUTPUT_MAX_BYTES: usize = 4 * 1024;
 const COMPACT_IMAGE_URL_MAX_BYTES: usize = 512;
 const MAX_COMPACTION_SNIPPETS: usize = 12;
+const COMPACT_STREAM_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Determine whether to use remote compaction (ChatGPT-based) or local compaction.
 ///
@@ -799,26 +800,38 @@ async fn drain_to_completed(
     prompt: &Prompt,
 ) -> CodexResult<()> {
     let mut stream = turn_context.client.clone().stream(prompt).await?;
-    loop {
-        let maybe_event = stream.next().await;
-        let Some(event) = maybe_event else {
-            return Err(CodexErr::Stream(
-                "stream closed before response.completed".into(),
-                None,
-                None,
-            ));
-        };
-        match event {
-            Ok(ResponseEvent::OutputItemDone { item, .. }) => {
-                let mut state = sess.state.lock().unwrap();
-                state.history.record_items(std::slice::from_ref(&item));
+    let result = tokio::time::timeout(COMPACT_STREAM_TIMEOUT, async {
+        loop {
+            let maybe_event = stream.next().await;
+            let Some(event) = maybe_event else {
+                return Err(CodexErr::Stream(
+                    "stream closed before response.completed".into(),
+                    None,
+                    None,
+                ));
+            };
+            match event {
+                Ok(ResponseEvent::OutputItemDone { item, .. }) => {
+                    let mut state = sess.state.lock().unwrap();
+                    state.history.record_items(std::slice::from_ref(&item));
+                }
+                Ok(ResponseEvent::Completed { .. }) => {
+                    return Ok(());
+                }
+                Ok(_) => continue,
+                Err(e) => return Err(e),
             }
-            Ok(ResponseEvent::Completed { .. }) => {
-                return Ok(());
-            }
-            Ok(_) => continue,
-            Err(e) => return Err(e),
         }
+    })
+    .await;
+
+    match result {
+        Ok(res) => res,
+        Err(_) => Err(CodexErr::Stream(
+            "compaction stream timed out".into(),
+            None,
+            None,
+        )),
     }
 }
 
