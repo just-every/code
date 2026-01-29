@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.54] - 2026-01-29
+
+- TUI/GH: live-update gh_run_wait progress with richer summaries. (76d56c63, 999fd1d2)
+- Core/Compact: harden auto-compact flow for safer recovery. (654d0bba)
+
 ## [0.6.53] - 2026-01-27
 
 - Core/Tools: add dynamic tool injection and wire the dynamic tool pipeline. (d594693d, 8a81f9f8)
