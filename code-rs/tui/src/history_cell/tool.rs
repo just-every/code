@@ -10,6 +10,7 @@ use crate::history::state::{
     ToolStatus as HistoryToolStatus,
 };
 use crate::text_formatting::format_json_compact;
+use serde_json::Value;
 use std::time::{Duration, Instant, SystemTime};
 
 pub(crate) struct ToolCallCell {
@@ -189,6 +190,49 @@ impl RunningToolCallCell {
             .filter(|text| !text.is_empty())
     }
 
+    fn tool_argument_json(&self, name: &str) -> Option<Value> {
+        self.state
+            .arguments
+            .iter()
+            .find(|arg| arg.name == name)
+            .and_then(|arg| match &arg.value {
+                ArgumentValue::Json(json) => Some(json.clone()),
+                _ => None,
+            })
+    }
+
+    fn progress_bar(completed: usize, total: usize, width: usize) -> String {
+        if total == 0 {
+            return "[----------------]".to_string();
+        }
+        let clamped_width = width.max(1);
+        let filled = (completed.saturating_mul(clamped_width)).saturating_add(total - 1) / total;
+        let mut bar = String::with_capacity(clamped_width + 2);
+        bar.push('[');
+        for idx in 0..clamped_width {
+            if idx < filled {
+                bar.push('=');
+            } else {
+                bar.push('-');
+            }
+        }
+        bar.push(']');
+        bar
+    }
+
+    fn format_job_list(names: &[String], max_items: usize) -> String {
+        if names.is_empty() {
+            return String::new();
+        }
+        let shown = names.iter().take(max_items).cloned().collect::<Vec<_>>();
+        let mut text = shown.join(", ");
+        if names.len() > max_items {
+            let remaining = names.len() - max_items;
+            text.push_str(&format!(" +{remaining} more"));
+        }
+        text
+    }
+
     fn render_gh_run_wait(&self, elapsed: Duration) -> Vec<Line<'static>> {
         let mut lines: Vec<Line<'static>> = Vec::new();
         lines.push(Line::styled(
@@ -200,6 +244,13 @@ impl RunningToolCallCell {
 
         let dim = Style::default().fg(crate::colors::text_dim());
         let text = Style::default().fg(crate::colors::text());
+        if let Some(url) = self.tool_argument_text("url") {
+            lines.push(Line::from(vec![
+                Span::styled("│ ", dim),
+                Span::styled("url ", dim),
+                Span::styled(url, text),
+            ]));
+        }
         if let Some(branch) = self.tool_argument_text("branch") {
             lines.push(Line::from(vec![
                 Span::styled("│ ", dim),
@@ -220,6 +271,75 @@ impl RunningToolCallCell {
                 Span::styled("workflow ", dim),
                 Span::styled(workflow, text),
             ]));
+        }
+
+        if let Some(jobs) = self.tool_argument_json("jobs") {
+            let total = jobs.get("total").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let completed = jobs
+                .get("completed")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let in_progress = jobs
+                .get("in_progress")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let queued = jobs.get("queued").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let progress = Self::progress_bar(completed, total, 16);
+            if total > 0 {
+                let percent = (completed.saturating_mul(100)) / total.max(1);
+                lines.push(Line::from(vec![
+                    Span::styled("│ ", dim),
+                    Span::styled("progress ", dim),
+                    Span::styled(
+                        format!("{progress} {completed}/{total} ({percent}%)"),
+                        text,
+                    ),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::styled("│ ", dim),
+                    Span::styled("jobs ", dim),
+                    Span::styled(
+                        format!("{completed} completed • {in_progress} running • {queued} queued"),
+                        text,
+                    ),
+                ]));
+            }
+            let running_names = jobs
+                .get("running")
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let queued_names = jobs
+                .get("queued_names")
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if !running_names.is_empty() {
+                let list = Self::format_job_list(&running_names, 4);
+                lines.push(Line::from(vec![
+                    Span::styled("│ ", dim),
+                    Span::styled("running ", dim),
+                    Span::styled(list, text),
+                ]));
+            }
+            if !queued_names.is_empty() {
+                let list = Self::format_job_list(&queued_names, 4);
+                lines.push(Line::from(vec![
+                    Span::styled("│ ", dim),
+                    Span::styled("queued ", dim),
+                    Span::styled(list, text),
+                ]));
+            }
         }
 
         let elapsed_str = Self::compact_duration(elapsed);

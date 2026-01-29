@@ -142,6 +142,23 @@ fn arguments_from_json_excluding(
     }
 }
 
+fn sanitize_gh_run_wait_invocation_args(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut filtered = map.clone();
+            filtered.remove("jobs");
+            filtered.remove("url");
+            let sanitized = serde_json::to_string(&serde_json::Value::Object(filtered)).ok()?;
+            if sanitized == "{}" {
+                Some(String::new())
+            } else {
+                Some(sanitized)
+            }
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn new_running_browser_tool_call(
     tool_name: String,
     args: Option<String>,
@@ -307,10 +324,25 @@ pub(crate) fn new_completed_custom_tool_call(
         HistoryToolStatus::Failed
     };
     let status_title = if success { "Complete" } else { "Error" };
-    let invocation_str = if let Some(args) = args.clone() {
-        format!("{}({})", tool_name, args)
+    let mut parsed_json = None;
+    let invocation_str = if let Some(args_str) = args.as_deref() {
+        let parsed = serde_json::from_str::<serde_json::Value>(args_str).ok();
+        let invocation_args = if tool_name == "gh_run_wait" {
+            parsed
+                .as_ref()
+                .and_then(sanitize_gh_run_wait_invocation_args)
+                .unwrap_or_else(|| args_str.to_string())
+        } else {
+            args_str.to_string()
+        };
+        parsed_json = parsed;
+        if invocation_args.is_empty() {
+            format!("{tool_name}()")
+        } else {
+            format!("{tool_name}({invocation_args})")
+        }
     } else {
-        format!("{}()", tool_name)
+        format!("{tool_name}()")
     };
 
     let mut arguments = vec![ToolArgument {
@@ -319,19 +351,18 @@ pub(crate) fn new_completed_custom_tool_call(
     }];
 
     if let Some(args_str) = args {
-        match serde_json::from_str::<serde_json::Value>(&args_str) {
-            Ok(json) => {
-                let mut parsed = arguments_from_json(&json);
-                arguments.append(&mut parsed);
-            }
-            Err(_) => {
-                if !args_str.is_empty() {
-                    arguments.push(ToolArgument {
-                        name: "args".to_string(),
-                        value: ArgumentValue::Text(args_str),
-                    });
-                }
-            }
+        if let Some(json) = parsed_json {
+            let mut parsed = if tool_name == "gh_run_wait" {
+                arguments_from_json_excluding(&json, &["jobs", "url"])
+            } else {
+                arguments_from_json(&json)
+            };
+            arguments.append(&mut parsed);
+        } else if !args_str.is_empty() {
+            arguments.push(ToolArgument {
+                name: "args".to_string(),
+                value: ArgumentValue::Text(args_str),
+            });
         }
     }
 

@@ -4876,6 +4876,8 @@ async fn handle_gh_run_wait(
     use serde::Deserialize;
     use serde_json::Value;
     use std::path::Path;
+    use std::time::Duration;
+    use chrono::{DateTime, Utc};
 
     #[derive(Deserialize, Clone)]
     struct Params {
@@ -4974,7 +4976,7 @@ async fn handle_gh_run_wait(
         "main".to_string()
     }
 
-    let mut params_for_event = serde_json::from_str::<Value>(&arguments).ok();
+    let params_for_event = serde_json::from_str::<Value>(&arguments).ok();
     let parsed: Params = match serde_json::from_str(&arguments) {
         Ok(p) => p,
         Err(e) => {
@@ -4990,136 +4992,460 @@ async fn handle_gh_run_wait(
 
     let cwd = sess.cwd.clone();
 
+    #[derive(Clone, Default)]
+    struct JobFailure {
+        name: String,
+        conclusion: String,
+        step: Option<String>,
+    }
+
+    #[derive(Clone, Default)]
+    struct JobSummary {
+        total: usize,
+        completed: usize,
+        in_progress: usize,
+        queued: usize,
+        success: usize,
+        failure: usize,
+        cancelled: usize,
+        skipped: usize,
+        neutral: usize,
+        running_names: Vec<String>,
+        queued_names: Vec<String>,
+        failed_jobs: Vec<JobFailure>,
+    }
+
+    impl JobSummary {
+        fn to_json(&self) -> Value {
+            serde_json::json!({
+                "total": self.total,
+                "completed": self.completed,
+                "in_progress": self.in_progress,
+                "queued": self.queued,
+                "success": self.success,
+                "failure": self.failure,
+                "cancelled": self.cancelled,
+                "skipped": self.skipped,
+                "neutral": self.neutral,
+                "running": self.running_names,
+                "queued_names": self.queued_names,
+            })
+        }
+    }
+
+    fn parse_jobs(view: &Value) -> JobSummary {
+        let mut summary = JobSummary::default();
+        let jobs = view
+            .get("jobs")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        summary.total = jobs.len();
+
+        for job in jobs {
+            let name = job
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("(unnamed)")
+                .to_string();
+            let status = job.get("status").and_then(|v| v.as_str()).unwrap_or("");
+            let conclusion = job
+                .get("conclusion")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            match status {
+                "completed" => summary.completed += 1,
+                "in_progress" => {
+                    summary.in_progress += 1;
+                    summary.running_names.push(name.clone());
+                }
+                "queued" => {
+                    summary.queued += 1;
+                    summary.queued_names.push(name.clone());
+                }
+                _ => {}
+            }
+
+            if status == "completed" {
+                match conclusion {
+                    "success" => summary.success += 1,
+                    "cancelled" => summary.cancelled += 1,
+                    "skipped" => summary.skipped += 1,
+                    "neutral" => summary.neutral += 1,
+                    "" => {}
+                    _ => {
+                        summary.failure += 1;
+                        let failed_step = job
+                            .get("steps")
+                            .and_then(|v| v.as_array())
+                            .and_then(|steps| {
+                                steps.iter().find_map(|step| {
+                                    let status = step
+                                        .get("status")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+                                    let conclusion = step
+                                        .get("conclusion")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+                                    let is_failure_step =
+                                        status == "completed"
+                                            && !matches!(
+                                                conclusion,
+                                                "" | "success" | "skipped" | "neutral"
+                                            );
+                                    if is_failure_step {
+                                        step.get("name")
+                                            .and_then(|v| v.as_str())
+                                            .map(|s| s.to_string())
+                                    } else {
+                                        None
+                                    }
+                                })
+                            });
+                        summary.failed_jobs.push(JobFailure {
+                            name,
+                            conclusion: conclusion.to_string(),
+                            step: failed_step,
+                        });
+                    }
+                }
+            }
+        }
+
+        summary
+    }
+
+    fn format_duration(duration: Duration) -> String {
+        let total = duration.as_secs();
+        let hours = total / 3600;
+        let minutes = (total % 3600) / 60;
+        let seconds = total % 60;
+        if hours > 0 {
+            format!("{hours}h{minutes:02}m{seconds:02}s")
+        } else if minutes > 0 {
+            format!("{minutes}m{seconds:02}s")
+        } else {
+            format!("{seconds}s")
+        }
+    }
+
+    fn parse_timestamp(value: Option<&str>) -> Option<DateTime<Utc>> {
+        value
+            .and_then(|val| DateTime::parse_from_rfc3339(val).ok())
+            .map(|dt| dt.with_timezone(&Utc))
+    }
+
+    fn run_duration_from_view(view: &Value) -> Option<String> {
+        let started_at = view.get("startedAt").and_then(|v| v.as_str());
+        let created_at = view.get("createdAt").and_then(|v| v.as_str());
+        let updated_at = view.get("updatedAt").and_then(|v| v.as_str());
+        let start = parse_timestamp(started_at).or_else(|| parse_timestamp(created_at));
+        let end = parse_timestamp(updated_at);
+        if let (Some(start), Some(end)) = (start, end) {
+            let duration = end.signed_duration_since(start);
+            if duration.num_seconds() >= 0 {
+                return Some(format_duration(Duration::from_secs(duration.num_seconds() as u64)));
+            }
+        }
+        None
+    }
+
+    fn run_summary_text(
+        run_id: &str,
+        branch: &str,
+        status: &str,
+        conclusion: &str,
+        workflow: Option<String>,
+        title: Option<String>,
+        url: Option<String>,
+        job_summary: &JobSummary,
+        duration: Option<String>,
+    ) -> String {
+        let outcome = if conclusion.is_empty() {
+            status.to_string()
+        } else {
+            conclusion.to_string()
+        };
+        let mut lines = Vec::new();
+        lines.push(format!("GitHub Actions run {outcome}"));
+        if let Some(workflow) = workflow {
+            if !workflow.is_empty() {
+                lines.push(format!("Workflow: {workflow}"));
+            }
+        }
+        if let Some(title) = title {
+            if !title.is_empty() {
+                lines.push(format!("Title: {title}"));
+            }
+        }
+        lines.push(format!("Run: {run_id}"));
+        lines.push(format!("Branch: {branch}"));
+        if let Some(url) = url {
+            if !url.is_empty() {
+                lines.push(format!("URL: {url}"));
+            }
+        }
+        if let Some(duration) = duration {
+            lines.push(format!("Duration: {duration}"));
+        }
+
+        if job_summary.total == 0 {
+            lines.push("Jobs: none reported".to_string());
+        } else {
+            let total = job_summary.total;
+            let success = job_summary.success;
+            let failure = job_summary.failure;
+            let cancelled = job_summary.cancelled;
+            let skipped = job_summary.skipped;
+            let neutral = job_summary.neutral;
+            let mut parts = Vec::new();
+            parts.push(format!("{total} total"));
+            if success > 0 {
+                parts.push(format!("{success} success"));
+            }
+            if failure > 0 {
+                parts.push(format!("{failure} failed"));
+            }
+            if cancelled > 0 {
+                parts.push(format!("{cancelled} cancelled"));
+            }
+            if skipped > 0 {
+                parts.push(format!("{skipped} skipped"));
+            }
+            if neutral > 0 {
+                parts.push(format!("{neutral} neutral"));
+            }
+            lines.push(format!("Jobs: {}", parts.join(" • ")));
+        }
+
+        if !job_summary.failed_jobs.is_empty() {
+            lines.push("Failures:".to_string());
+            for failed in &job_summary.failed_jobs {
+                let mut line = format!(
+                    "- {name} ({conclusion})",
+                    name = failed.name,
+                    conclusion = failed.conclusion
+                );
+                if let Some(step) = &failed.step {
+                    if !step.is_empty() {
+                        line.push_str(&format!(" — step: {step}"));
+                    }
+                }
+                lines.push(line);
+            }
+        }
+
+        lines.join("\n")
+    }
+
+    let mut resolved_params = params_for_event
+        .clone()
+        .and_then(|value| match value {
+            Value::Object(map) => Some(map),
+            other => {
+                let mut map = serde_json::Map::new();
+                map.insert("args".to_string(), other);
+                Some(map)
+            }
+        })
+        .unwrap_or_else(serde_json::Map::new);
+
+    let mut resolution_error: Option<String> = None;
+    let mut prepared_run_id: Option<String> = None;
+    let mut prepared_workflow: Option<String> = None;
+    let mut prepared_branch: Option<String> = None;
+    let mut prepared_repo: Option<String> = None;
+    let mut prepared_view: Option<Value> = None;
+    let mut prepared_job_summary: Option<JobSummary> = None;
+    let mut prepared_url: Option<String> = None;
+    let mut prepared_title: Option<String> = None;
+
+    let repo = parsed
+        .repo
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    let branch = match parsed
+        .branch
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        Some(value) => value.to_string(),
+        None => detect_branch(&cwd).await,
+    };
+
+    let mut resolved_run_id = match parsed.run_id {
+        Some(Value::String(value)) if !value.trim().is_empty() => Some(value),
+        Some(Value::Number(num)) => num.as_u64().map(|v| v.to_string()),
+        _ => None,
+    };
+    let mut resolved_workflow = parsed
+        .workflow
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+
+    if resolved_run_id.is_none() {
+        let json = if let Some(workflow) = resolved_workflow.as_ref() {
+            match run_gh(
+                &[
+                    "run",
+                    "list",
+                    "--workflow",
+                    workflow,
+                    "--branch",
+                    &branch,
+                    "--limit",
+                    "1",
+                    "--json",
+                    "databaseId,displayTitle,workflowName,headBranch,status,conclusion",
+                ],
+                repo.as_deref(),
+            )
+            .await
+            {
+                Ok(out) => out,
+                Err(err) => {
+                    resolution_error = Some(err);
+                    String::new()
+                }
+            }
+        } else {
+            match run_gh(
+                &[
+                    "run",
+                    "list",
+                    "--branch",
+                    &branch,
+                    "--limit",
+                    "1",
+                    "--json",
+                    "databaseId,displayTitle,workflowName,headBranch,status,conclusion",
+                ],
+                repo.as_deref(),
+            )
+            .await
+            {
+                Ok(out) => out,
+                Err(err) => {
+                    resolution_error = Some(err);
+                    String::new()
+                }
+            }
+        };
+
+        if resolution_error.is_none() {
+            let runs: Vec<Value> = serde_json::from_str(&json).unwrap_or_default();
+            let run = runs.into_iter().next();
+            resolved_run_id = run
+                .as_ref()
+                .and_then(|item| item.get("databaseId").cloned())
+                .and_then(|val| match val {
+                    Value::Number(num) => num.as_u64().map(|v| v.to_string()),
+                    Value::String(s) => Some(s),
+                    _ => None,
+                });
+            if resolved_workflow.is_none() {
+                resolved_workflow = run
+                    .as_ref()
+                    .and_then(|item| item.get("workflowName"))
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.to_string());
+            }
+        }
+    }
+
+    if resolution_error.is_none() {
+        if resolved_run_id.as_ref().map(|s| s.trim().is_empty()).unwrap_or(true) {
+            let detail = if let Some(workflow) = resolved_workflow.as_ref() {
+                format!("workflow '{workflow}' on {branch}")
+            } else {
+                format!("branch {branch}")
+            };
+            resolution_error = Some(format!("No runs found for {detail}"));
+        }
+    }
+
+    if resolution_error.is_none() {
+        if let Some(run_id) = resolved_run_id.as_ref() {
+            let json = match run_gh(
+                &[
+                    "run",
+                    "view",
+                    run_id,
+                    "--json",
+                    "status,conclusion,jobs,url,displayTitle,workflowName,createdAt,startedAt,updatedAt",
+                ],
+                repo.as_deref(),
+            )
+            .await
+            {
+                Ok(out) => out,
+                Err(err) => {
+                    resolution_error = Some(err);
+                    String::new()
+                }
+            };
+            if resolution_error.is_none() {
+                let view: Value = serde_json::from_str(&json).unwrap_or(Value::Null);
+                let job_summary = parse_jobs(&view);
+                prepared_job_summary = Some(job_summary.clone());
+                prepared_url = view
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                prepared_title = view
+                    .get("displayTitle")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                prepared_view = Some(view);
+            }
+        }
+    }
+
+    if resolution_error.is_none() {
+        if let Some(run_id) = resolved_run_id.clone() {
+            prepared_run_id = Some(run_id.clone());
+            resolved_params.insert("run_id".to_string(), Value::String(run_id));
+        }
+        prepared_branch = Some(branch.clone());
+        resolved_params.insert("branch".to_string(), Value::String(branch.clone()));
+        if let Some(workflow) = resolved_workflow.clone() {
+            prepared_workflow = Some(workflow.clone());
+            resolved_params.insert("workflow".to_string(), Value::String(workflow));
+        }
+        if let Some(url) = prepared_url.clone() {
+            resolved_params.insert("url".to_string(), Value::String(url));
+        }
+        if let Some(jobs) = prepared_job_summary.clone() {
+            resolved_params.insert("jobs".to_string(), jobs.to_json());
+        }
+        prepared_repo = repo.clone();
+    }
+
     execute_custom_tool(
         sess,
         ctx,
         "gh_run_wait".to_string(),
-        params_for_event.take(),
+        Some(Value::Object(resolved_params)),
         move || async move {
             let call_id = ctx.call_id.clone();
-            let run_id = match parsed.run_id {
-                Some(Value::String(value)) if !value.trim().is_empty() => Some(value),
-                Some(Value::Number(num)) => num.as_u64().map(|v| v.to_string()),
-                _ => None,
-            };
-            let repo = parsed
-                .repo
-                .as_ref()
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string());
-
-            let mut resolved_run_id = run_id;
-            let mut resolved_workflow = parsed
-                .workflow
-                .as_ref()
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string());
-            let branch = match parsed
-                .branch
-                .as_ref()
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-            {
-                Some(value) => value.to_string(),
-                None => detect_branch(&cwd).await,
-            };
-
-            if resolved_run_id.is_none() {
-                let (json, branch_label) = if let Some(workflow) = resolved_workflow.as_ref() {
-                    let json = match run_gh(&[
-                        "run",
-                        "list",
-                        "--workflow",
-                        workflow,
-                        "--branch",
-                        &branch,
-                        "--limit",
-                        "1",
-                        "--json",
-                        "databaseId,displayTitle,workflowName,headBranch,status,conclusion",
-                    ],
-                    repo.as_deref(),
-                    )
-                    .await
-                    {
-                        Ok(out) => out,
-                        Err(err) => {
-                            return ResponseInputItem::FunctionCallOutput {
-                                call_id,
-                                output: FunctionCallOutputPayload {
-                                    content: err,
-                                    success: Some(false),
-                                },
-                            };
-                        }
-                    };
-                    (json, branch.clone())
-                } else {
-                    let json = match run_gh(&[
-                        "run",
-                        "list",
-                        "--branch",
-                        &branch,
-                        "--limit",
-                        "1",
-                        "--json",
-                        "databaseId,displayTitle,workflowName,headBranch,status,conclusion",
-                    ],
-                    repo.as_deref(),
-                    )
-                    .await
-                    {
-                        Ok(out) => out,
-                        Err(err) => {
-                            return ResponseInputItem::FunctionCallOutput {
-                                call_id,
-                                output: FunctionCallOutputPayload {
-                                    content: err,
-                                    success: Some(false),
-                                },
-                            };
-                        }
-                    };
-                    (json, branch.clone())
+            if let Some(error) = resolution_error {
+                return ResponseInputItem::FunctionCallOutput {
+                    call_id,
+                    output: FunctionCallOutputPayload {
+                        content: error,
+                        success: Some(false),
+                    },
                 };
-
-                let runs: Vec<Value> = serde_json::from_str(&json).unwrap_or_default();
-                let run = runs.into_iter().next();
-                let run_id = run
-                    .as_ref()
-                    .and_then(|item| item.get("databaseId").cloned())
-                    .and_then(|val| match val {
-                        Value::Number(num) => num.as_u64().map(|v| v.to_string()),
-                        Value::String(s) => Some(s),
-                        _ => None,
-                    });
-                if resolved_workflow.is_none() {
-                    resolved_workflow = run
-                        .as_ref()
-                        .and_then(|item| item.get("workflowName"))
-                        .and_then(|value| value.as_str())
-                        .map(|value| value.to_string());
-                }
-                if run_id.is_none() {
-                    let detail = if let Some(workflow) = resolved_workflow.as_ref() {
-                        format!("workflow '{workflow}' on {branch_label}")
-                    } else {
-                        format!("branch {branch_label}")
-                    };
-                    return ResponseInputItem::FunctionCallOutput {
-                        call_id,
-                        output: FunctionCallOutputPayload {
-                            content: format!("No runs found for {detail}"),
-                            success: Some(false),
-                        },
-                    };
-                }
-                resolved_run_id = run_id;
             }
 
-            let run_id = resolved_run_id.unwrap_or_default();
+            let run_id = prepared_run_id.clone().unwrap_or_default();
             if run_id.is_empty() {
                 return ResponseInputItem::FunctionCallOutput {
                     call_id,
@@ -5132,32 +5458,38 @@ async fn handle_gh_run_wait(
 
             let interval = parsed.interval_seconds.unwrap_or(8).max(1);
             let (initial_wait_epoch, _) = sess.wait_interrupt_snapshot();
+            let mut last_view = prepared_view.clone();
 
             loop {
-                let json = match run_gh(&[
-                    "run",
-                    "view",
-                    &run_id,
-                    "--json",
-                    "status,conclusion,jobs,url,displayTitle,workflowName",
-                ],
-                repo.as_deref(),
-                )
-                .await
-                {
-                    Ok(out) => out,
-                    Err(err) => {
-                        return ResponseInputItem::FunctionCallOutput {
-                            call_id,
-                            output: FunctionCallOutputPayload {
-                                content: err,
-                                success: Some(false),
-                            },
-                        };
-                    }
+                let view = if let Some(cached) = last_view.take() {
+                    cached
+                } else {
+                    let json = match run_gh(
+                        &[
+                            "run",
+                            "view",
+                            &run_id,
+                            "--json",
+                            "status,conclusion,jobs,url,displayTitle,workflowName,createdAt,startedAt,updatedAt",
+                        ],
+                        prepared_repo.as_deref(),
+                    )
+                    .await
+                    {
+                        Ok(out) => out,
+                        Err(err) => {
+                            return ResponseInputItem::FunctionCallOutput {
+                                call_id,
+                                output: FunctionCallOutputPayload {
+                                    content: err,
+                                    success: Some(false),
+                                },
+                            };
+                        }
+                    };
+                    serde_json::from_str::<Value>(&json).unwrap_or(Value::Null)
                 };
 
-                let view: Value = serde_json::from_str(&json).unwrap_or(Value::Null);
                 let status = view
                     .get("status")
                     .and_then(|v| v.as_str())
@@ -5171,50 +5503,36 @@ async fn handle_gh_run_wait(
                 let display_title = view
                     .get("displayTitle")
                     .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
+                    .map(|s| s.to_string())
+                    .or_else(|| prepared_title.clone());
                 let workflow_name = view
                     .get("workflowName")
                     .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
+                    .map(|s| s.to_string())
+                    .or_else(|| prepared_workflow.clone());
                 let html_url = view
                     .get("url")
                     .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-
-                let jobs = view
-                    .get("jobs")
-                    .and_then(|v| v.as_array())
-                    .cloned()
-                    .unwrap_or_default();
-                let total_jobs = jobs.len();
-                let mut completed_jobs = 0usize;
-                let mut active_jobs = 0usize;
-                for job in &jobs {
-                    let job_status = job.get("status").and_then(|v| v.as_str()).unwrap_or("");
-                    if job_status == "completed" {
-                        completed_jobs += 1;
-                    } else {
-                        active_jobs += 1;
-                    }
-                }
-                let jobs_complete = total_jobs > 0 && completed_jobs == total_jobs;
+                    .map(|s| s.to_string())
+                    .or_else(|| prepared_url.clone());
+                let job_summary = parse_jobs(&view);
+                let total_jobs = job_summary.total;
+                let active_jobs = job_summary.in_progress + job_summary.queued;
+                let jobs_complete = total_jobs > 0 && job_summary.completed == total_jobs;
                 let run_complete = status == "completed" || (jobs_complete && active_jobs == 0);
 
                 if run_complete {
-                    let summary = serde_json::json!({
-                        "run_id": run_id,
-                        "status": status,
-                        "conclusion": if conclusion.is_empty() { None::<String> } else { Some(conclusion.clone()) },
-                        "workflow": workflow_name.or_else(|| resolved_workflow.clone()),
-                        "title": display_title,
-                        "url": html_url,
-                        "branch": branch,
-                        "jobs": {
-                            "total": total_jobs,
-                            "completed": completed_jobs,
-                            "active": active_jobs,
-                        }
-                    });
+                    let summary = run_summary_text(
+                        &run_id,
+                        prepared_branch.as_deref().unwrap_or(""),
+                        &status,
+                        &conclusion,
+                        workflow_name,
+                        display_title,
+                        html_url,
+                        &job_summary,
+                        run_duration_from_view(&view),
+                    );
                     let success = if conclusion.is_empty() {
                         None
                     } else {
@@ -5223,7 +5541,7 @@ async fn handle_gh_run_wait(
                     return ResponseInputItem::FunctionCallOutput {
                         call_id,
                         output: FunctionCallOutputPayload {
-                            content: summary.to_string(),
+                            content: summary,
                             success,
                         },
                     };
