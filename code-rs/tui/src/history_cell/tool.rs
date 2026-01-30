@@ -284,14 +284,29 @@ impl RunningToolCallCell {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as usize;
             let queued = jobs.get("queued").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-            let progress = Self::progress_bar(completed, total, 16);
-            if total > 0 {
-                let percent = (completed.saturating_mul(100)) / total.max(1);
+            let steps_total = jobs
+                .get("steps_total")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let steps_completed = jobs
+                .get("steps_completed")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let (progress_completed, progress_total, progress_label) = if steps_total > 0 {
+                (steps_completed, steps_total, "progress (steps)")
+            } else {
+                (completed, total, "progress (jobs)")
+            };
+            let progress = Self::progress_bar(progress_completed, progress_total, 16);
+            if progress_total > 0 {
+                let percent = (progress_completed.saturating_mul(100)) / progress_total.max(1);
                 lines.push(Line::from(vec![
                     Span::styled("│ ", dim),
-                    Span::styled("progress ", dim),
+                    Span::styled(format!("{progress_label} "), dim),
                     Span::styled(
-                        format!("{progress} {completed}/{total} ({percent}%)"),
+                        format!(
+                            "{progress} {progress_completed}/{progress_total} ({percent}%)"
+                        ),
                         text,
                     ),
                 ]));

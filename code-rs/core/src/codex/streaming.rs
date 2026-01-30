@@ -5063,6 +5063,10 @@ async fn handle_gh_run_wait(
         cancelled: usize,
         skipped: usize,
         neutral: usize,
+        steps_total: usize,
+        steps_completed: usize,
+        steps_in_progress: usize,
+        steps_queued: usize,
         running_names: Vec<String>,
         queued_names: Vec<String>,
         failed_jobs: Vec<JobFailure>,
@@ -5086,6 +5090,10 @@ async fn handle_gh_run_wait(
                 "cancelled": self.cancelled,
                 "skipped": self.skipped,
                 "neutral": self.neutral,
+                "steps_total": self.steps_total,
+                "steps_completed": self.steps_completed,
+                "steps_in_progress": self.steps_in_progress,
+                "steps_queued": self.steps_queued,
                 "running": self.running_names,
                 "queued_names": self.queued_names,
             })
@@ -5168,6 +5176,19 @@ async fn handle_gh_run_wait(
                             conclusion: conclusion.to_string(),
                             step: failed_step,
                         });
+                    }
+                }
+            }
+
+            if let Some(steps) = job.get("steps").and_then(|v| v.as_array()) {
+                summary.steps_total = summary.steps_total.saturating_add(steps.len());
+                for step in steps {
+                    let step_status = step.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                    match step_status {
+                        "completed" => summary.steps_completed += 1,
+                        "in_progress" => summary.steps_in_progress += 1,
+                        "queued" => summary.steps_queued += 1,
+                        _ => {}
                     }
                 }
             }
