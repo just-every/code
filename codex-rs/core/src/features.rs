@@ -5,14 +5,20 @@
 //! booleans through multiple types, call sites consult a single `Features`
 //! container attached to `Config`.
 
+use crate::config::CONFIG_TOML_FILE;
+use crate::config::Config;
 use crate::config::ConfigToml;
 use crate::config::profile::ConfigProfile;
+use crate::protocol::Event;
+use crate::protocol::EventMsg;
+use crate::protocol::WarningEvent;
 use codex_otel::OtelManager;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use toml::Value as TomlValue;
 
 mod legacy;
 pub(crate) use legacy::LegacyFeatureToggles;
@@ -83,6 +89,8 @@ pub enum Feature {
     WebSearchCached,
     /// Gate the execpolicy enforcement for shell/unified exec.
     ExecPolicy,
+    /// Allow the model to request approval and propose exec rules.
+    RequestRule,
     /// Enable Windows sandbox (restricted token) on Windows.
     WindowsSandbox,
     /// Use the elevated Windows sandbox pipeline (setup + runner).
@@ -93,6 +101,8 @@ pub enum Feature {
     RemoteModels,
     /// Experimental shell snapshotting.
     ShellSnapshot,
+    /// Persist rollout metadata to a local SQLite database.
+    Sqlite,
     /// Append additional AGENTS.md guidance to user instructions.
     ChildAgentsMd,
     /// Enforce UTF8 output in Powershell.
@@ -101,12 +111,18 @@ pub enum Feature {
     EnableRequestCompression,
     /// Enable collab tools.
     Collab,
-    /// Enable connectors (apps).
-    Connectors,
+    /// Enable apps.
+    Apps,
+    /// Allow prompting and installing missing MCP dependencies.
+    SkillMcpDependencyInstall,
+    /// Prompt for missing skill env var dependencies.
+    SkillEnvVarDependencyPrompt,
     /// Steer feature flag - when enabled, Enter submits immediately instead of queuing.
     Steer,
     /// Enable collaboration modes (Plan, Code, Pair Programming, Execute).
     CollaborationModes,
+    /// Enable personality selection in the TUI.
+    Personality,
     /// Use the Responses API WebSocket transport for OpenAI by default.
     ResponsesWebsockets,
 }
@@ -136,6 +152,8 @@ impl Feature {
 pub struct LegacyFeatureUsage {
     pub alias: String,
     pub feature: Feature,
+    pub summary: String,
+    pub details: Option<String>,
 }
 
 /// Holds the effective set of enabled features.
@@ -192,9 +210,12 @@ impl Features {
     }
 
     pub fn record_legacy_usage_force(&mut self, alias: &str, feature: Feature) {
+        let (summary, details) = legacy_usage_notice(alias, feature);
         self.legacy_usages.insert(LegacyFeatureUsage {
             alias: alias.to_string(),
             feature,
+            summary,
+            details,
         });
     }
 
@@ -205,10 +226,8 @@ impl Features {
         self.record_legacy_usage_force(alias, feature);
     }
 
-    pub fn legacy_feature_usages(&self) -> impl Iterator<Item = (&str, Feature)> + '_ {
-        self.legacy_usages
-            .iter()
-            .map(|usage| (usage.alias.as_str(), usage.feature))
+    pub fn legacy_feature_usages(&self) -> impl Iterator<Item = &LegacyFeatureUsage> + '_ {
+        self.legacy_usages.iter()
     }
 
     pub fn emit_metrics(&self, otel: &OtelManager) {
@@ -229,6 +248,21 @@ impl Features {
     /// Apply a table of key -> bool toggles (e.g. from TOML).
     pub fn apply_map(&mut self, m: &BTreeMap<String, bool>) {
         for (k, v) in m {
+            match k.as_str() {
+                "web_search_request" => {
+                    self.record_legacy_usage_force(
+                        "features.web_search_request",
+                        Feature::WebSearchRequest,
+                    );
+                }
+                "web_search_cached" => {
+                    self.record_legacy_usage_force(
+                        "features.web_search_cached",
+                        Feature::WebSearchCached,
+                    );
+                }
+                _ => {}
+            }
             match feature_for_key(k) {
                 Some(feat) => {
                     if k != feat.key() {
@@ -289,6 +323,42 @@ impl Features {
     }
 }
 
+fn legacy_usage_notice(alias: &str, feature: Feature) -> (String, Option<String>) {
+    let canonical = feature.key();
+    match feature {
+        Feature::WebSearchRequest | Feature::WebSearchCached => {
+            let label = match alias {
+                "web_search" => "[features].web_search",
+                "tools.web_search" => "[tools].web_search",
+                "features.web_search_request" | "web_search_request" => {
+                    "[features].web_search_request"
+                }
+                "features.web_search_cached" | "web_search_cached" => {
+                    "[features].web_search_cached"
+                }
+                _ => alias,
+            };
+            let summary = format!("`{label}` is deprecated. Use `web_search` instead.");
+            (summary, Some(web_search_details().to_string()))
+        }
+        _ => {
+            let summary = format!("`{alias}` is deprecated. Use `[features].{canonical}` instead.");
+            let details = if alias == canonical {
+                None
+            } else {
+                Some(format!(
+                    "Enable it with `--enable {canonical}` or `[features].{canonical}` in config.toml. See https://github.com/openai/codex/blob/main/docs/config.md#feature-flags for details."
+                ))
+            };
+            (summary, details)
+        }
+    }
+}
+
+fn web_search_details() -> &'static str {
+    "Set `web_search` to `\"live\"`, `\"cached\"`, or `\"disabled\"` in config.toml."
+}
+
 /// Keys accepted in `[features]` tables.
 fn feature_for_key(key: &str) -> Option<Feature> {
     for spec in FEATURES {
@@ -337,13 +407,13 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::WebSearchRequest,
         key: "web_search_request",
-        stage: Stage::Stable,
+        stage: Stage::Deprecated,
         default_enabled: false,
     },
     FeatureSpec {
         id: Feature::WebSearchCached,
         key: "web_search_cached",
-        stage: Stage::UnderDevelopment,
+        stage: Stage::Deprecated,
         default_enabled: false,
     },
     // Experimental program. Rendered in the `/experimental` menu for users.
@@ -368,6 +438,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
+        id: Feature::Sqlite,
+        key: "sqlite",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::ChildAgentsMd,
         key: "child_agents_md",
         stage: Stage::UnderDevelopment,
@@ -384,6 +460,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "exec_policy",
         stage: Stage::UnderDevelopment,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::RequestRule,
+        key: "request_rule",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::WindowsSandbox,
@@ -428,8 +510,8 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::EnableRequestCompression,
         key: "enable_request_compression",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::Collab,
@@ -438,8 +520,24 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
-        id: Feature::Connectors,
-        key: "connectors",
+        id: Feature::Apps,
+        key: "apps",
+        stage: Stage::Experimental {
+            name: "Apps",
+            menu_description: "Use a connected ChatGPT App using \"$\". Install Apps via /apps command. Restart Codex after enabling.",
+            announcement: "NEW: Use ChatGPT Apps (Connectors) in Codex via $ mentions. Enable in /experimental and restart Codex!",
+        },
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::SkillMcpDependencyInstall,
+        key: "skill_mcp_dependency_install",
+        stage: Stage::Stable,
+        default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::SkillEnvVarDependencyPrompt,
+        key: "skill_env_var_dependency_prompt",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
@@ -460,9 +558,66 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
+        id: Feature::Personality,
+        key: "personality",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::ResponsesWebsockets,
         key: "responses_websockets",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
 ];
+
+/// Push a warning event if any under-development features are enabled.
+pub fn maybe_push_unstable_features_warning(
+    config: &Config,
+    post_session_configured_events: &mut Vec<Event>,
+) {
+    if config.suppress_unstable_features_warning {
+        return;
+    }
+
+    let mut under_development_feature_keys = Vec::new();
+    if let Some(table) = config
+        .config_layer_stack
+        .effective_config()
+        .get("features")
+        .and_then(TomlValue::as_table)
+    {
+        for (key, value) in table {
+            if value.as_bool() != Some(true) {
+                continue;
+            }
+            let Some(spec) = FEATURES.iter().find(|spec| spec.key == key.as_str()) else {
+                continue;
+            };
+            if !config.features.enabled(spec.id) {
+                continue;
+            }
+            if matches!(spec.stage, Stage::UnderDevelopment) {
+                under_development_feature_keys.push(spec.key.to_string());
+            }
+        }
+    }
+
+    if under_development_feature_keys.is_empty() {
+        return;
+    }
+
+    let under_development_feature_keys = under_development_feature_keys.join(", ");
+    let config_path = config
+        .codex_home
+        .join(CONFIG_TOML_FILE)
+        .display()
+        .to_string();
+    let message = format!(
+        "Under-development features enabled: {under_development_feature_keys}. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in {config_path}."
+    );
+    post_session_configured_events.push(Event {
+        id: "".to_owned(),
+        msg: EventMsg::Warning(WarningEvent { message }),
+    });
+}
