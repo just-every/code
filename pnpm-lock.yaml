@@ -20,6 +20,10 @@ importers:
         specifier: ^5.9.2
         version: 5.9.2
 
+  codex-cli: {}
+
+  codex-rs/responses-api-proxy/npm: {}
+
   sdk/typescript:
     devDependencies:
       '@types/jest':

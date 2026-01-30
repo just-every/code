@@ -279,13 +279,37 @@ describe("Codex", () => {
     }
   }, 10000); // TODO(pakrym): remove timeout
 });
+
+/**
+ * Given a list of args to `codex` and a `key`, collects all `--config`
+ * overrides for that key.
+ */
+function collectConfigValues(args: string[] | undefined, key: string): string[] {
+  if (!args) {
+    throw new Error("args is undefined");
+  }
+
+  const values: string[] = [];
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] !== "--config") {
+      continue;
+    }
+
+    const override = args[i + 1];
+    if (override?.startsWith(`${key}=`)) {
+      values.push(override);
+    }
+  }
+  return values;
+}
+
 function expectPair(args: string[] | undefined, pair: [string, string]) {
   if (!args) {
-    throw new Error("Args is undefined");
+    throw new Error("args is undefined");
   }
-  const index = args.indexOf(pair[0]);
+  const index = args.findIndex((arg, i) => arg === pair[0] && args[i + 1] === pair[1]);
   if (index === -1) {
-    throw new Error(`Pair ${pair[0]} not found in args`);
+    throw new Error(`Pair ${pair[0]} ${pair[1]} not found in args`);
   }
   expect(args[index + 1]).toBe(pair[1]);
 }
