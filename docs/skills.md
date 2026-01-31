@@ -19,7 +19,7 @@ Skills are behind the experimental `skills` feature flag and are enabled by defa
 
 ## Where skills live
 
-- Location (v1): `~/.codex/skills/**/SKILL.md` (recursive). Hidden entries and symlinks are skipped. Only files named exactly `SKILL.md` count.
+- Location (v1): `~/.code/skills/**/SKILL.md` (recursive, also reads `~/.codex/skills/` for compatibility). Hidden entries are skipped. Symlinked directories are followed for user and repo skills (but not system skills). Only files named exactly `SKILL.md` count.
 - Sorting: rendered by name, then path for stability.
 
 ## File format
