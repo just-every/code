@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 
 import readline from "node:readline";
 
+import { CodexConfigObject, CodexConfigValue } from "./codexOptions";
 import { SandboxMode } from "./threadOptions";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,8 +25,11 @@ export type CodexExecArgs = {
 
 export class CodexExec {
   private executablePath: string;
-  constructor(executablePath: string | null = null) {
+  private configOverrides?: CodexConfigObject;
+
+  constructor(executablePath: string | null = null, configOverrides?: CodexConfigObject) {
     this.executablePath = executablePath || findCodexPath();
+    this.configOverrides = configOverrides;
   }
 
   async *run(args: CodexExecArgs): AsyncGenerator<string> {

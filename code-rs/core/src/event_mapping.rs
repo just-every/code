@@ -133,14 +133,14 @@ pub(crate) fn map_response_item_to_event_messages(
         }
 
         ResponseItem::WebSearchCall { id, action, .. } => match action {
-            WebSearchAction::Search { query } => {
+            Some(WebSearchAction::Search { query }) => {
                 let call_id = id.clone().unwrap_or_else(|| "".to_string());
                 vec![EventMsg::WebSearchComplete(WebSearchCompleteEvent {
                     call_id,
-                    query: Some(query.clone()),
+                    query: query.clone(),
                 })]
             }
-            WebSearchAction::Other => Vec::new(),
+            _ => Vec::new(),
         },
 
         // Variants that require side effects are handled by higher layers and do not emit events here.

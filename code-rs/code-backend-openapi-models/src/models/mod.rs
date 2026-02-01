@@ -6,6 +6,9 @@
 pub mod code_task_details_response;
 pub use self::code_task_details_response::CodeTaskDetailsResponse;
 
+pub mod config_file_response;
+pub use self::config_file_response::ConfigFileResponse;
+
 pub mod task_response;
 pub use self::task_response::TaskResponse;
 

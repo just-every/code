@@ -143,7 +143,7 @@ def codex_rust_crate(
     for binary, main in binaries.items():
         #binary = binary.replace("-", "_")
         sanitized_binaries.append(binary)
-        cargo_env["CARGO_BIN_EXE_" + binary] = "$(rlocationpath :%s)" % binary
+        cargo_env["CARGO_BIN_EXE_" + binary] = "$(location :%s)" % binary
 
         rust_binary(
             name = binary,
@@ -159,7 +159,7 @@ def codex_rust_crate(
     for binary_label in extra_binaries:
         sanitized_binaries.append(binary_label)
         binary = Label(binary_label).name
-        cargo_env["CARGO_BIN_EXE_" + binary] = "$(rlocationpath %s)" % binary_label
+        cargo_env["CARGO_BIN_EXE_" + binary] = "$(location %s)" % binary_label
 
     for test in native.glob(["tests/*.rs"], allow_empty = True):
         test_name = name + "-" + test.removeprefix("tests/").removesuffix(".rs").replace("/", "-")

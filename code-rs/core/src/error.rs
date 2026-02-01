@@ -119,6 +119,9 @@ pub enum CodexErr {
     #[error("{0}")]
     UsageLimitReached(UsageLimitReachedError),
 
+    #[error("{0}")]
+    ModelCap(ModelCapError),
+
     #[error("Quota exceeded. Check your plan and billing details.")]
     QuotaExceeded,
 
@@ -273,6 +276,30 @@ impl std::fmt::Display for UsageLimitReachedError {
     }
 }
 
+#[derive(Debug)]
+pub struct ModelCapError {
+    pub model: String,
+    pub reset_after_seconds: Option<u64>,
+}
+
+impl std::fmt::Display for ModelCapError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut message = format!(
+            "Model {} is at capacity. Please try a different model.",
+            self.model
+        );
+        if let Some(seconds) = self.reset_after_seconds {
+            message.push_str(&format!(
+                " Try again in {}.",
+                format_duration_short(seconds)
+            ));
+        } else {
+            message.push_str(" Try again later.");
+        }
+        write!(f, "{message}")
+    }
+}
+
 fn format_reset_duration(total_secs: u64) -> String {
     let days = total_secs / 86_400;
     let hours = (total_secs % 86_400) / 3_600;
@@ -301,6 +328,32 @@ fn format_reset_duration(total_secs: u64) -> String {
         2 => format!("{} {}", parts[0], parts[1]),
         _ => format!("{} {} {}", parts[0], parts[1], parts[2]),
     }
+}
+
+fn format_duration_short(seconds: u64) -> String {
+    if seconds < 60 {
+        return "less than a minute".to_string();
+    }
+
+    let minutes = seconds / 60;
+    let hours = minutes / 60;
+    let days = hours / 24;
+
+    if days > 0 {
+        let unit = if days == 1 { "day" } else { "days" };
+        return format!("{days} {unit}");
+    }
+    if hours > 0 {
+        let unit = if hours == 1 { "hour" } else { "hours" };
+        let remainder_minutes = minutes % 60;
+        if remainder_minutes == 0 {
+            return format!("{hours} {unit}");
+        }
+        let min_unit = if remainder_minutes == 1 { "minute" } else { "minutes" };
+        return format!("{hours} {unit} {remainder_minutes} {min_unit}");
+    }
+    let unit = if minutes == 1 { "minute" } else { "minutes" };
+    format!("{minutes} {unit}")
 }
 
 #[derive(Debug)]

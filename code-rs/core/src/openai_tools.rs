@@ -352,6 +352,18 @@ fn create_shell_tool() -> OpenAiTool {
             description: Some("Optional hard timeout in milliseconds (minimum 1,800,000 / 30 minutes). By default, commands have no hard timeout; long runs are streamed and may be backgrounded by the agent.".to_string()),
         },
     );
+    properties.insert(
+        "prefix_rule".to_string(),
+        JsonSchema::Array {
+            items: Box::new(JsonSchema::String {
+                description: None,
+                allowed_values: None,
+            }),
+            description: Some(
+                "Suggests a command prefix to persist for future sessions".to_string(),
+            ),
+        },
+    );
 
     OpenAiTool::Function(ResponsesApiTool {
         name: "shell".to_string(),
@@ -497,6 +509,16 @@ fn create_shell_tool_for_sandbox(sandbox_policy: &SandboxPolicy) -> OpenAiTool {
                 allowed_values: None,
             }),
             description: Some("The command to execute".to_string()),
+        },
+    );
+    properties.insert(
+        "prefix_rule".to_string(),
+        JsonSchema::Array {
+            items: Box::new(JsonSchema::String {
+                description: None,
+                allowed_values: None,
+            }),
+            description: Some("Suggests a command prefix to persist for future sessions".to_string()),
         },
     );
     properties.insert(

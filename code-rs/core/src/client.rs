@@ -53,6 +53,7 @@ use crate::debug_logger::DebugLogger;
 use crate::default_client::create_client;
 use crate::error::{CodexErr, RetryAfter};
 use crate::error::Result;
+use crate::error::ModelCapError;
 use crate::error::RetryLimitReachedError;
 use crate::error::UnexpectedResponseError;
 use crate::error::UsageLimitReachedError;
@@ -76,6 +77,9 @@ use std::sync::RwLock;
 
 const RESPONSES_BETA_HEADER_V1: &str = "responses=v1";
 const RESPONSES_BETA_HEADER_EXPERIMENTAL: &str = "responses=experimental";
+
+const MODEL_CAP_MODEL_HEADER: &str = "x-codex-model-cap-model";
+const MODEL_CAP_RESET_AFTER_HEADER: &str = "x-codex-model-cap-reset-after-seconds";
 
 const CODE_OPENAI_SUBAGENT_ENV: &str = "CODE_OPENAI_SUBAGENT";
 
@@ -1139,17 +1143,16 @@ impl ModelClient {
                 }
                 Ok(res) => {
                     let status = res.status();
+                    let headers = res.headers().clone();
                     // Capture x-request-id up-front in case we consume the response body later.
-                    let x_request_id = res
-                        .headers()
+                    let x_request_id = headers
                         .get("x-request-id")
                         .and_then(|v| v.to_str().ok())
                         .map(|s| s.to_string());
                     let now = Utc::now();
 
                     // Pull out Retry‑After header if present.
-                    let retry_after_hint = res
-                        .headers()
+                    let retry_after_hint = headers
                         .get(reqwest::header::RETRY_AFTER)
                         .and_then(|v| v.to_str().ok())
                         .and_then(|raw| parse_retry_after_header(raw, now));
@@ -1177,6 +1180,23 @@ impl ModelClient {
                     // Read the response body once for diagnostics across error branches.
                     let body_text = res.text().await.unwrap_or_default();
                     let body = serde_json::from_str::<ErrorResponse>(&body_text).ok();
+
+                    if status == StatusCode::TOO_MANY_REQUESTS {
+                        if let Some(model) = headers
+                            .get(MODEL_CAP_MODEL_HEADER)
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::to_string)
+                        {
+                            let reset_after_seconds = headers
+                                .get(MODEL_CAP_RESET_AFTER_HEADER)
+                                .and_then(|value| value.to_str().ok())
+                                .and_then(|value| value.parse::<u64>().ok());
+                            return Err(CodexErr::ModelCap(ModelCapError {
+                                model,
+                                reset_after_seconds,
+                            }));
+                        }
+                    }
 
                     if status == StatusCode::TOO_MANY_REQUESTS
                         && self.config.auto_switch_accounts_on_rate_limit

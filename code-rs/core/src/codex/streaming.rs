@@ -2919,6 +2919,7 @@ async fn handle_response_item(
                 workdir: action.working_directory,
                 timeout_ms: action.timeout_ms,
                 sandbox_permissions: None,
+                prefix_rule: None,
                 justification: None,
             };
             let effective_call_id = match (call_id, id) {
@@ -2970,9 +2971,13 @@ async fn handle_response_item(
             None
         }
         ResponseItem::WebSearchCall { id, action, .. } => {
-            if let WebSearchAction::Search { query } = action {
+            if let Some(WebSearchAction::Search { query }) = action {
                 let call_id = id.unwrap_or_else(|| "".to_string());
-                let event = sess.make_event_with_hint(&sub_id, EventMsg::WebSearchComplete(WebSearchCompleteEvent { call_id, query: Some(query) }), seq_hint);
+                let event = sess.make_event_with_hint(
+                    &sub_id,
+                    EventMsg::WebSearchComplete(WebSearchCompleteEvent { call_id, query }),
+                    seq_hint,
+                );
                 sess.tx_event.send(event).await.ok();
             }
             None

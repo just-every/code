@@ -134,11 +134,12 @@ pub enum ResponseItem {
     //   "action": {"type":"search","query":"weather: San Francisco, CA"}
     // }
     WebSearchCall {
-        #[serde(skip_serializing)]
+        #[serde(default, skip_serializing)]
         id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         status: Option<String>,
-        action: WebSearchAction,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action: Option<WebSearchAction>,
     },
 
     #[serde(other)]
@@ -212,7 +213,22 @@ pub struct LocalShellExecAction {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WebSearchAction {
     Search {
-        query: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        query: Option<String>,
+    },
+    OpenPage {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        url: Option<String>,
+    },
+    FindInPage {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        pattern: Option<String>,
     },
     #[serde(other)]
     Other,
@@ -278,6 +294,10 @@ pub struct ShellToolCallParams {
     pub timeout_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_permissions: Option<SandboxPermissions>,
+    /// Suggests a command prefix to persist for future sessions
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub prefix_rule: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub justification: Option<String>,
 }
@@ -396,6 +416,7 @@ mod tests {
                 workdir: Some("/tmp".to_string()),
                 timeout_ms: Some(1000),
                 sandbox_permissions: None,
+                prefix_rule: None,
                 justification: None,
             },
             params

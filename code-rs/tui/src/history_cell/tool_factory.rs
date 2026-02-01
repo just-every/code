@@ -310,6 +310,9 @@ pub(crate) fn new_completed_custom_tool_call(
     success: bool,
     result: String,
 ) -> ToolCallCell {
+    if tool_name == "gh_run_wait" {
+        return new_completed_gh_run_wait_tool_call(success, &result);
+    }
     // Special rendering for browser_* tools
     if tool_name.starts_with("browser_") {
         return new_completed_browser_tool_call(tool_name, args, duration, success, result);
@@ -391,6 +394,43 @@ pub(crate) fn new_completed_custom_tool_call(
         error_message: None,
     };
     ToolCallCell::new(state)
+}
+
+fn new_completed_gh_run_wait_tool_call(success: bool, result: &str) -> ToolCallCell {
+    let status = if success {
+        HistoryToolStatus::Success
+    } else {
+        HistoryToolStatus::Failed
+    };
+    let title = gh_run_wait_title(result, success);
+    let state = ToolCallState {
+        id: HistoryId::ZERO,
+        call_id: None,
+        status,
+        title,
+        duration: None,
+        arguments: Vec::new(),
+        result_preview: None,
+        error_message: None,
+    };
+    ToolCallCell::new(state)
+}
+
+fn gh_run_wait_title(result: &str, success: bool) -> String {
+    if let Some(line) = result
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+    {
+        if line.to_ascii_lowercase().starts_with("github actions run") {
+            return line.to_string();
+        }
+    }
+    if success {
+        "GitHub Actions run success".to_string()
+    } else {
+        "GitHub Actions run error".to_string()
+    }
 }
 
 /// Completed web_fetch tool call with markdown rendering of the `markdown` field.
