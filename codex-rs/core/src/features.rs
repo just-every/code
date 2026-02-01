@@ -101,6 +101,8 @@ pub enum Feature {
     RemoteModels,
     /// Experimental shell snapshotting.
     ShellSnapshot,
+    /// Enable runtime metrics snapshots via a manual reader.
+    RuntimeMetrics,
     /// Persist rollout metadata to a local SQLite database.
     Sqlite,
     /// Append additional AGENTS.md guidance to user instructions.
@@ -438,6 +440,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
+        id: Feature::RuntimeMetrics,
+        key: "runtime_metrics",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::Sqlite,
         key: "sqlite",
         stage: Stage::UnderDevelopment,
@@ -464,8 +472,8 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::RequestRule,
         key: "request_rule",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::WindowsSandbox,
@@ -495,11 +503,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::PowershellUtf8,
         key: "powershell_utf8",
         #[cfg(windows)]
-        stage: Stage::Experimental {
-            name: "Powershell UTF-8 support",
-            menu_description: "Enable UTF-8 output in Powershell.",
-            announcement: "Codex now supports UTF-8 output in Powershell. If you are seeing problems, disable in /experimental.",
-        },
+        stage: Stage::Stable,
         #[cfg(windows)]
         default_enabled: true,
         #[cfg(not(windows))]
@@ -554,14 +558,14 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::CollaborationModes,
         key: "collaboration_modes",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::Personality,
         key: "personality",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::ResponsesWebsockets,

@@ -23,13 +23,13 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
 use crate::version::CODEX_CLI_VERSION;
-use codex_app_server_protocol::AuthMode;
 use codex_backend_client::Client as BackendClient;
 use codex_chatgpt::connectors;
 use codex_core::config::Config;
@@ -196,8 +196,8 @@ mod skills;
 use self::skills::collect_tool_mentions;
 use self::skills::find_app_mentions;
 use self::skills::find_skill_mentions_with_tool_mentions;
+use crate::streaming::controller::PlanStreamController;
 use crate::streaming::controller::StreamController;
-use std::path::Path;
 
 use chrono::Local;
 use codex_common::approval_presets::ApprovalPreset;
@@ -225,7 +225,9 @@ struct RunningCommand {
 
 struct UnifiedExecProcessSummary {
     key: String,
+    call_id: String,
     command_display: String,
+    recent_chunks: Vec<String>,
 }
 
 struct UnifiedExecWaitState {
@@ -484,6 +486,8 @@ pub(crate) struct ChatWidget {
     rate_limit_poller: Option<JoinHandle<()>>,
     // Stream lifecycle controller
     stream_controller: Option<StreamController>,
+    // Stream lifecycle controller for proposed plan output.
+    plan_stream_controller: Option<PlanStreamController>,
     running_commands: HashMap<String, RunningCommand>,
     suppressed_exec_calls: HashSet<String>,
     skills_all: Vec<ProtocolSkillMetadata>,
@@ -515,6 +519,7 @@ pub(crate) struct ChatWidget {
     // Previous status header to restore after a transient stream retry.
     retry_status_header: Option<String>,
     thread_id: Option<ThreadId>,
+    thread_name: Option<String>,
     forked_from: Option<ThreadId>,
     frame_requester: FrameRequester,
     // Whether to include the initial welcome banner on session configured
@@ -551,6 +556,12 @@ pub(crate) struct ChatWidget {
     had_work_activity: bool,
     // Whether the current turn emitted a plan update.
     saw_plan_update_this_turn: bool,
+    // Whether the current turn emitted a proposed plan item.
+    saw_plan_item_this_turn: bool,
+    // Incremental buffer for streamed plan content.
+    plan_delta_buffer: String,
+    // True while a plan item is streaming.
+    plan_item_active: bool,
     // Status-indicator elapsed seconds captured at the last emitted final-message separator.
     //
     // This lets the separator show per-chunk work time (since the previous separator) rather than
@@ -786,6 +797,7 @@ impl ChatWidget {
         self.set_skills(None);
         self.bottom_pane.set_connectors_snapshot(None);
         self.thread_id = Some(event.session_id);
+        self.thread_name = event.thread_name.clone();
         self.forked_from = event.forked_from_id;
         self.current_rollout_path = event.rollout_path.clone();
         let initial_messages = event.initial_messages.clone();
@@ -822,6 +834,13 @@ impl ChatWidget {
             self.submit_user_message(user_message);
         }
         if !self.suppress_session_configured_redraw {
+            self.request_redraw();
+        }
+    }
+
+    fn on_thread_name_updated(&mut self, event: codex_core::protocol::ThreadNameUpdatedEvent) {
+        if self.thread_id == Some(event.thread_id) {
+            self.thread_name = event.thread_name;
             self.request_redraw();
         }
     }
@@ -886,7 +905,7 @@ impl ChatWidget {
     fn on_agent_message(&mut self, message: String) {
         // If we have a stream_controller, then the final agent message is redundant and will be a
         // duplicate of what has already been streamed.
-        if self.stream_controller.is_none() {
+        if self.stream_controller.is_none() && !message.is_empty() {
             self.handle_streaming_delta(message);
         }
         self.flush_answer_stream_with_separator();
@@ -896,6 +915,56 @@ impl ChatWidget {
 
     fn on_agent_message_delta(&mut self, delta: String) {
         self.handle_streaming_delta(delta);
+    }
+
+    fn on_plan_delta(&mut self, delta: String) {
+        if self.active_mode_kind() != ModeKind::Plan {
+            return;
+        }
+        if !self.plan_item_active {
+            self.plan_item_active = true;
+            self.plan_delta_buffer.clear();
+        }
+        self.plan_delta_buffer.push_str(&delta);
+        // Before streaming plan content, flush any active exec cell group.
+        self.flush_unified_exec_wait_streak();
+        self.flush_active_cell();
+
+        if self.plan_stream_controller.is_none() {
+            self.plan_stream_controller = Some(PlanStreamController::new(
+                self.last_rendered_width.get().map(|w| w.saturating_sub(4)),
+            ));
+        }
+        if let Some(controller) = self.plan_stream_controller.as_mut()
+            && controller.push(&delta)
+        {
+            self.app_event_tx.send(AppEvent::StartCommitAnimation);
+        }
+        self.request_redraw();
+    }
+
+    fn on_plan_item_completed(&mut self, text: String) {
+        let streamed_plan = self.plan_delta_buffer.trim().to_string();
+        let plan_text = if text.trim().is_empty() {
+            streamed_plan
+        } else {
+            text
+        };
+        self.plan_delta_buffer.clear();
+        self.plan_item_active = false;
+        self.saw_plan_item_this_turn = true;
+        if let Some(mut controller) = self.plan_stream_controller.take()
+            && let Some(cell) = controller.finalize()
+        {
+            self.add_boxed_history(cell);
+            // TODO: Replace streamed output with the final plan item text if plan streaming is
+            // removed or if we need to reconcile mismatches between streamed and final content.
+            return;
+        }
+        if plan_text.is_empty() {
+            return;
+        }
+        self.add_to_history(history_cell::new_proposed_plan(plan_text));
     }
 
     fn on_agent_reasoning_delta(&mut self, delta: String) {
@@ -944,6 +1013,11 @@ impl ChatWidget {
     fn on_task_started(&mut self) {
         self.agent_turn_running = true;
         self.saw_plan_update_this_turn = false;
+        self.saw_plan_item_this_turn = false;
+        self.plan_delta_buffer.clear();
+        self.plan_item_active = false;
+        self.plan_stream_controller = None;
+        self.otel_manager.reset_runtime_metrics();
         self.bottom_pane.clear_quit_shortcut_hint();
         self.quit_shortcut_expires_at = None;
         self.quit_shortcut_key = None;
@@ -959,7 +1033,27 @@ impl ChatWidget {
     fn on_task_complete(&mut self, last_agent_message: Option<String>, from_replay: bool) {
         // If a stream is currently active, finalize it.
         self.flush_answer_stream_with_separator();
+        if let Some(mut controller) = self.plan_stream_controller.take()
+            && let Some(cell) = controller.finalize()
+        {
+            self.add_boxed_history(cell);
+        }
         self.flush_unified_exec_wait_streak();
+        if !from_replay {
+            let runtime_metrics = self.otel_manager.runtime_metrics_summary();
+            if runtime_metrics.is_some() {
+                let elapsed_seconds = self
+                    .bottom_pane
+                    .status_widget()
+                    .map(super::status_indicator_widget::StatusIndicatorWidget::elapsed_seconds);
+                self.add_to_history(history_cell::FinalMessageSeparator::new(
+                    elapsed_seconds,
+                    runtime_metrics,
+                ));
+            }
+            self.needs_final_message_separator = false;
+            self.had_work_activity = false;
+        }
         // Mark task stopped and request redraw now that all content is in history.
         self.agent_turn_running = false;
         self.update_task_running_state();
@@ -971,7 +1065,7 @@ impl ChatWidget {
         self.request_redraw();
 
         if !from_replay && self.queued_user_messages.is_empty() {
-            self.maybe_prompt_plan_implementation(last_agent_message.as_deref());
+            self.maybe_prompt_plan_implementation();
         }
         // If there is a queued user message, send exactly one now to begin the next turn.
         self.maybe_send_next_queued_input();
@@ -983,7 +1077,7 @@ impl ChatWidget {
         self.maybe_show_pending_rate_limit_prompt();
     }
 
-    fn maybe_prompt_plan_implementation(&mut self, last_agent_message: Option<&str>) {
+    fn maybe_prompt_plan_implementation(&mut self) {
         if !self.collaboration_modes_enabled() {
             return;
         }
@@ -993,8 +1087,7 @@ impl ChatWidget {
         if self.active_mode_kind() != ModeKind::Plan {
             return;
         }
-        let has_message = last_agent_message.is_some_and(|message| !message.trim().is_empty());
-        if !has_message && !self.saw_plan_update_this_turn {
+        if !self.saw_plan_item_this_turn {
             return;
         }
         if !self.bottom_pane.no_modal_or_popup_active() {
@@ -1426,6 +1519,8 @@ impl ChatWidget {
     }
 
     fn on_exec_command_output_delta(&mut self, ev: ExecCommandOutputDeltaEvent) {
+        self.track_unified_exec_output_chunk(&ev.call_id, &ev.chunk);
+
         let Some(cell) = self
             .active_cell
             .as_mut()
@@ -1545,11 +1640,15 @@ impl ChatWidget {
             .iter_mut()
             .find(|process| process.key == key)
         {
+            existing.call_id = ev.call_id.clone();
             existing.command_display = command_display;
+            existing.recent_chunks.clear();
         } else {
             self.unified_exec_processes.push(UnifiedExecProcessSummary {
                 key,
+                call_id: ev.call_id.clone(),
                 command_display,
+                recent_chunks: Vec::new(),
             });
         }
         self.sync_unified_exec_footer();
@@ -1572,6 +1671,32 @@ impl ChatWidget {
             .map(|process| process.command_display.clone())
             .collect();
         self.bottom_pane.set_unified_exec_processes(processes);
+    }
+
+    /// Record recent stdout/stderr lines for the unified exec footer.
+    fn track_unified_exec_output_chunk(&mut self, call_id: &str, chunk: &[u8]) {
+        let Some(process) = self
+            .unified_exec_processes
+            .iter_mut()
+            .find(|process| process.call_id == call_id)
+        else {
+            return;
+        };
+
+        let text = String::from_utf8_lossy(chunk);
+        for line in text
+            .lines()
+            .map(str::trim_end)
+            .filter(|line| !line.is_empty())
+        {
+            process.recent_chunks.push(line.to_string());
+        }
+
+        const MAX_RECENT_CHUNKS: usize = 3;
+        if process.recent_chunks.len() > MAX_RECENT_CHUNKS {
+            let drop_count = process.recent_chunks.len() - MAX_RECENT_CHUNKS;
+            process.recent_chunks.drain(0..drop_count);
+        }
     }
 
     fn clear_unified_exec_processes(&mut self) {
@@ -1707,15 +1832,28 @@ impl ChatWidget {
     /// Periodic tick to commit at most one queued line to history with a small delay,
     /// animating the output.
     pub(crate) fn on_commit_tick(&mut self) {
+        let mut has_controller = false;
+        let mut all_idle = true;
         if let Some(controller) = self.stream_controller.as_mut() {
+            has_controller = true;
             let (cell, is_idle) = controller.on_commit_tick();
             if let Some(cell) = cell {
                 self.bottom_pane.hide_status_indicator();
                 self.add_boxed_history(cell);
             }
-            if is_idle {
-                self.app_event_tx.send(AppEvent::StopCommitAnimation);
+            all_idle &= is_idle;
+        }
+        if let Some(controller) = self.plan_stream_controller.as_mut() {
+            has_controller = true;
+            let (cell, is_idle) = controller.on_commit_tick();
+            if let Some(cell) = cell {
+                self.bottom_pane.hide_status_indicator();
+                self.add_boxed_history(cell);
             }
+            all_idle &= is_idle;
+        }
+        if has_controller && all_idle {
+            self.app_event_tx.send(AppEvent::StopCommitAnimation);
         }
     }
 
@@ -1765,7 +1903,10 @@ impl ChatWidget {
                     .status_widget()
                     .map(super::status_indicator_widget::StatusIndicatorWidget::elapsed_seconds)
                     .map(|current| self.worked_elapsed_from(current));
-                self.add_to_history(history_cell::FinalMessageSeparator::new(elapsed_seconds));
+                self.add_to_history(history_cell::FinalMessageSeparator::new(
+                    elapsed_seconds,
+                    None,
+                ));
                 self.needs_final_message_separator = false;
                 self.had_work_activity = false;
             } else if self.needs_final_message_separator {
@@ -2118,6 +2259,7 @@ impl ChatWidget {
             rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),
             rate_limit_poller: None,
             stream_controller: None,
+            plan_stream_controller: None,
             running_commands: HashMap::new(),
             suppressed_exec_calls: HashSet::new(),
             last_unified_wait: None,
@@ -2133,6 +2275,7 @@ impl ChatWidget {
             current_status_header: String::from("Working"),
             retry_status_header: None,
             thread_id: None,
+            thread_name: None,
             forked_from: None,
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: is_first_run,
@@ -2145,6 +2288,9 @@ impl ChatWidget {
             needs_final_message_separator: false,
             had_work_activity: false,
             saw_plan_update_this_turn: false,
+            saw_plan_item_this_turn: false,
+            plan_delta_buffer: String::new(),
+            plan_item_active: false,
             last_separator_elapsed_secs: None,
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
@@ -2258,6 +2404,7 @@ impl ChatWidget {
             rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),
             rate_limit_poller: None,
             stream_controller: None,
+            plan_stream_controller: None,
             running_commands: HashMap::new(),
             suppressed_exec_calls: HashSet::new(),
             last_unified_wait: None,
@@ -2273,8 +2420,12 @@ impl ChatWidget {
             current_status_header: String::from("Working"),
             retry_status_header: None,
             thread_id: None,
+            thread_name: None,
             forked_from: None,
             saw_plan_update_this_turn: false,
+            saw_plan_item_this_turn: false,
+            plan_delta_buffer: String::new(),
+            plan_item_active: false,
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: is_first_run,
             suppress_session_configured_redraw: false,
@@ -2387,6 +2538,7 @@ impl ChatWidget {
             rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),
             rate_limit_poller: None,
             stream_controller: None,
+            plan_stream_controller: None,
             running_commands: HashMap::new(),
             suppressed_exec_calls: HashSet::new(),
             last_unified_wait: None,
@@ -2402,6 +2554,7 @@ impl ChatWidget {
             current_status_header: String::from("Working"),
             retry_status_header: None,
             thread_id: None,
+            thread_name: None,
             forked_from: None,
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: false,
@@ -2414,6 +2567,9 @@ impl ChatWidget {
             needs_final_message_separator: false,
             had_work_activity: false,
             saw_plan_update_this_turn: false,
+            saw_plan_item_this_turn: false,
+            plan_delta_buffer: String::new(),
+            plan_item_active: false,
             last_separator_elapsed_secs: None,
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
@@ -2672,6 +2828,9 @@ impl ChatWidget {
             SlashCommand::Review => {
                 self.open_review_popup();
             }
+            SlashCommand::Rename => {
+                self.show_rename_prompt();
+            }
             SlashCommand::Model => {
                 self.open_model_popup();
             }
@@ -2873,6 +3032,17 @@ impl ChatWidget {
 
         let trimmed = args.trim();
         match cmd {
+            SlashCommand::Rename if !trimmed.is_empty() => {
+                let Some(name) = codex_core::util::normalize_thread_name(trimmed) else {
+                    self.add_error_message("Thread name cannot be empty.".to_string());
+                    return;
+                };
+                let cell = Self::rename_confirmation_cell(&name, self.thread_id);
+                self.add_boxed_history(Box::new(cell));
+                self.request_redraw();
+                self.app_event_tx
+                    .send(AppEvent::CodexOp(Op::SetThreadName { name }));
+            }
             SlashCommand::Collab | SlashCommand::Plan => {
                 let _ = trimmed;
                 self.dispatch_command(cmd);
@@ -2889,6 +3059,38 @@ impl ChatWidget {
             }
             _ => self.dispatch_command(cmd),
         }
+    }
+
+    fn show_rename_prompt(&mut self) {
+        let tx = self.app_event_tx.clone();
+        let has_name = self
+            .thread_name
+            .as_ref()
+            .is_some_and(|name| !name.is_empty());
+        let title = if has_name {
+            "Rename thread"
+        } else {
+            "Name thread"
+        };
+        let thread_id = self.thread_id;
+        let view = CustomPromptView::new(
+            title.to_string(),
+            "Type a name and press Enter".to_string(),
+            None,
+            Box::new(move |name: String| {
+                let Some(name) = codex_core::util::normalize_thread_name(&name) else {
+                    tx.send(AppEvent::InsertHistoryCell(Box::new(
+                        history_cell::new_error_event("Thread name cannot be empty.".to_string()),
+                    )));
+                    return;
+                };
+                let cell = Self::rename_confirmation_cell(&name, thread_id);
+                tx.send(AppEvent::InsertHistoryCell(Box::new(cell)));
+                tx.send(AppEvent::CodexOp(Op::SetThreadName { name }));
+            }),
+        );
+
+        self.bottom_pane.show_view(Box::new(view));
     }
 
     pub(crate) fn handle_paste(&mut self, text: String) {
@@ -3042,7 +3244,7 @@ impl ChatWidget {
         };
         let personality = self
             .config
-            .model_personality
+            .personality
             .filter(|_| self.config.features.enabled(Feature::Personality))
             .filter(|_| self.current_model_supports_personality());
         let op = Op::UserTurn {
@@ -3091,7 +3293,10 @@ impl ChatWidget {
     /// distinguish replayed events from live ones.
     fn replay_initial_messages(&mut self, events: Vec<EventMsg>) {
         for msg in events {
-            if matches!(msg, EventMsg::SessionConfigured(_)) {
+            if matches!(
+                msg,
+                EventMsg::SessionConfigured(_) | EventMsg::ThreadNameUpdated(_)
+            ) {
                 continue;
             }
             // `id: None` indicates a synthetic/fake id coming from replay.
@@ -3125,6 +3330,7 @@ impl ChatWidget {
 
         match msg {
             EventMsg::AgentMessageDelta(_)
+            | EventMsg::PlanDelta(_)
             | EventMsg::AgentReasoningDelta(_)
             | EventMsg::TerminalInteraction(_)
             | EventMsg::ExecCommandOutputDelta(_) => {}
@@ -3135,10 +3341,12 @@ impl ChatWidget {
 
         match msg {
             EventMsg::SessionConfigured(e) => self.on_session_configured(e),
+            EventMsg::ThreadNameUpdated(e) => self.on_thread_name_updated(e),
             EventMsg::AgentMessage(AgentMessageEvent { message }) => self.on_agent_message(message),
             EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { delta }) => {
                 self.on_agent_message_delta(delta)
             }
+            EventMsg::PlanDelta(event) => self.on_plan_delta(event.delta),
             EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent { delta })
             | EventMsg::AgentReasoningRawContentDelta(AgentReasoningRawContentDeltaEvent {
                 delta,
@@ -3262,11 +3470,15 @@ impl ChatWidget {
             EventMsg::ThreadRolledBack(_) => {}
             EventMsg::RawResponseItem(_)
             | EventMsg::ItemStarted(_)
-            | EventMsg::ItemCompleted(_)
             | EventMsg::AgentMessageContentDelta(_)
             | EventMsg::ReasoningContentDelta(_)
             | EventMsg::ReasoningRawContentDelta(_)
             | EventMsg::DynamicToolCallRequest(_) => {}
+            EventMsg::ItemCompleted(event) => {
+                if let codex_protocol::items::TurnItem::Plan(plan_item) = event.item {
+                    self.on_plan_item_completed(plan_item.text);
+                }
+            }
         }
     }
 
@@ -3434,6 +3646,7 @@ impl ChatWidget {
             token_info,
             total_usage,
             &self.thread_id,
+            self.thread_name.clone(),
             self.forked_from,
             self.rate_limit_snapshot.as_ref(),
             self.plan_type,
@@ -3448,7 +3661,10 @@ impl ChatWidget {
         let processes = self
             .unified_exec_processes
             .iter()
-            .map(|process| process.command_display.clone())
+            .map(|process| history_cell::UnifiedExecProcessDetails {
+                command_display: process.command_display.clone(),
+                recent_chunks: process.recent_chunks.clone(),
+            })
             .collect();
         self.add_to_history(history_cell::new_unified_exec_processes_output(processes));
     }
@@ -3484,10 +3700,12 @@ impl ChatWidget {
     fn prefetch_rate_limits(&mut self) {
         self.stop_rate_limit_poller();
 
-        if !matches!(
-            self.auth_manager.auth_cached().map(|auth| auth.mode),
-            Some(AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens)
-        ) {
+        if !self
+            .auth_manager
+            .auth_cached()
+            .as_ref()
+            .is_some_and(CodexAuth::is_chatgpt_auth)
+        {
             return;
         }
 
@@ -3500,7 +3718,7 @@ impl ChatWidget {
 
             loop {
                 if let Some(auth) = auth_manager.auth().await
-                    && matches!(auth.mode, AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens)
+                    && auth.is_chatgpt_auth()
                     && let Some(snapshot) = fetch_rate_limits(base_url.clone(), auth).await
                 {
                     app_event_tx.send(AppEvent::RateLimitSnapshotFetched(snapshot));
@@ -3662,10 +3880,7 @@ impl ChatWidget {
     }
 
     fn open_personality_popup_for_current_model(&mut self) {
-        let current_personality = self
-            .config
-            .model_personality
-            .unwrap_or(Personality::Friendly);
+        let current_personality = self.config.personality.unwrap_or(Personality::Friendly);
         let personalities = [Personality::Friendly, Personality::Pragmatic];
         let supports_personality = self.current_model_supports_personality();
 
@@ -4966,7 +5181,7 @@ impl ChatWidget {
 
     /// Set the personality in the widget's config copy.
     pub(crate) fn set_personality(&mut self, personality: Personality) {
-        self.config.model_personality = Some(personality);
+        self.config.personality = Some(personality);
     }
 
     /// Set the model in the widget's config copy and stored collaboration mode.
@@ -5114,7 +5329,7 @@ impl ChatWidget {
         }
         match self.active_mode_kind() {
             ModeKind::Plan => Some(CollaborationModeIndicator::Plan),
-            ModeKind::Code => Some(CollaborationModeIndicator::Code),
+            ModeKind::Code => None,
             ModeKind::PairProgramming => Some(CollaborationModeIndicator::PairProgramming),
             ModeKind::Execute => Some(CollaborationModeIndicator::Execute),
             ModeKind::Custom => None,
@@ -5236,6 +5451,20 @@ impl ChatWidget {
     pub(crate) fn add_error_message(&mut self, message: String) {
         self.add_to_history(history_cell::new_error_event(message));
         self.request_redraw();
+    }
+
+    fn rename_confirmation_cell(name: &str, thread_id: Option<ThreadId>) -> PlainHistoryCell {
+        let resume_cmd = codex_core::util::resume_command(Some(name), thread_id)
+            .unwrap_or_else(|| format!("codex resume {name}"));
+        let name = name.to_string();
+        let line = vec![
+            "• ".into(),
+            "Thread renamed to ".into(),
+            name.cyan(),
+            ", to resume this thread run ".into(),
+            resume_cmd.cyan(),
+        ];
+        PlainHistoryCell::new(vec![line.into()])
     }
 
     pub(crate) fn add_mcp_output(&mut self) {
@@ -5759,6 +5988,9 @@ impl ChatWidget {
         self.thread_id
     }
 
+    pub(crate) fn thread_name(&self) -> Option<String> {
+        self.thread_name.clone()
+    }
     pub(crate) fn rollout_path(&self) -> Option<PathBuf> {
         self.current_rollout_path.clone()
     }
