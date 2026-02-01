@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use code_app_server_protocol::AuthMode;
+use code_protocol::config_types::Personality as ProtocolPersonality;
 use code_protocol::openai_models::ApplyPatchToolType as ProtocolApplyPatchToolType;
 use code_protocol::openai_models::ModelInfo;
 use code_protocol::openai_models::ModelsResponse;
@@ -15,6 +16,7 @@ use reqwest::Url;
 use tokio::sync::RwLock;
 
 use crate::auth::AuthManager;
+use crate::config_types::Personality as ConfigPersonality;
 use crate::model_family::{derive_default_model_family, find_family_for_model, ModelFamily};
 use crate::model_provider_info::ModelProviderInfo;
 use crate::tool_apply_patch::ApplyPatchToolType;
@@ -82,7 +84,7 @@ impl RemoteModelsManager {
     pub async fn default_model_slug(&self, auth_mode: Option<AuthMode>) -> Option<String> {
         self.ensure_loaded_from_disk().await;
 
-        if auth_mode != Some(AuthMode::ChatGPT) {
+        if !auth_mode.is_some_and(AuthMode::is_chatgpt) {
             return None;
         }
 
@@ -141,7 +143,7 @@ impl RemoteModelsManager {
     async fn refresh_remote_models_inner(&self, stale_etag: Option<String>) {
         let auth = self.auth_manager.auth();
         let auth_mode = auth.as_ref().map(|a| a.mode);
-        if auth_mode != Some(AuthMode::ChatGPT) {
+        if !auth_mode.is_some_and(AuthMode::is_chatgpt) {
             // Only the ChatGPT backend exposes the Codex `/models` schema.
             return;
         }
@@ -173,7 +175,7 @@ impl RemoteModelsManager {
         }
 
         if let Some(auth) = auth.as_ref()
-            && auth.mode == AuthMode::ChatGPT
+            && auth.mode.is_chatgpt()
             && let Some(account_id) = auth.get_account_id()
         {
             request = request.header("chatgpt-account-id", account_id);
@@ -247,6 +249,16 @@ impl RemoteModelsManager {
     }
 
     pub async fn apply_remote_overrides(&self, model: &str, family: ModelFamily) -> ModelFamily {
+        self.apply_remote_overrides_with_personality(model, family, None)
+            .await
+    }
+
+    pub async fn apply_remote_overrides_with_personality(
+        &self,
+        model: &str,
+        family: ModelFamily,
+        personality: Option<ConfigPersonality>,
+    ) -> ModelFamily {
         self.ensure_loaded_from_disk().await;
 
         let info = {
@@ -261,7 +273,7 @@ impl RemoteModelsManager {
             return family;
         };
 
-        apply_model_info_overrides(&info, family)
+        apply_model_info_overrides_with_personality(&info, family, personality)
     }
 
     pub async fn construct_model_family(&self, model: &str) -> ModelFamily {
@@ -298,7 +310,7 @@ impl RemoteModelsManager {
             if matches!(
                 auth,
                 Some(CodexAuth {
-                    mode: AuthMode::ChatGPT,
+                    mode: AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens,
                     ..
                 })
             ) {
@@ -332,10 +344,24 @@ impl RemoteModelsManager {
     }
 }
 
-pub fn apply_model_info_overrides(info: &ModelInfo, mut family: ModelFamily) -> ModelFamily {
-    let trimmed = info.base_instructions.trim();
+pub fn apply_model_info_overrides(info: &ModelInfo, family: ModelFamily) -> ModelFamily {
+    apply_model_info_overrides_with_personality(info, family, None)
+}
+
+fn apply_model_info_overrides_with_personality(
+    info: &ModelInfo,
+    mut family: ModelFamily,
+    personality: Option<ConfigPersonality>,
+) -> ModelFamily {
+    let instructions = if info.model_messages.is_some() {
+        let mapped = personality.map(map_personality);
+        info.get_model_instructions(mapped)
+    } else {
+        info.base_instructions.clone()
+    };
+    let trimmed = instructions.trim();
     if !trimmed.is_empty() {
-        family.base_instructions = info.base_instructions.clone();
+        family.base_instructions = instructions;
     }
 
     if let Some(context_window) = info
@@ -361,6 +387,13 @@ pub fn apply_model_info_overrides(info: &ModelInfo, mut family: ModelFamily) -> 
         family.default_reasoning_effort = Some(map_reasoning_effort(effort));
     }
     family
+}
+
+fn map_personality(personality: ConfigPersonality) -> ProtocolPersonality {
+    match personality {
+        ConfigPersonality::Friendly => ProtocolPersonality::Friendly,
+        ConfigPersonality::Pragmatic => ProtocolPersonality::Pragmatic,
+    }
 }
 
 fn map_apply_patch_tool_type(tool_type: &ProtocolApplyPatchToolType) -> ApplyPatchToolType {

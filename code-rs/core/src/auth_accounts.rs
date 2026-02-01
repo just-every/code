@@ -112,7 +112,7 @@ fn next_id() -> String {
 }
 
 fn match_chatgpt_account(existing: &StoredAccount, tokens: &TokenData) -> bool {
-    if existing.mode != AuthMode::ChatGPT {
+    if !existing.mode.is_chatgpt() {
         return false;
     }
 
@@ -156,7 +156,7 @@ fn touch_account(account: &mut StoredAccount, used: bool) {
 
 fn upsert_account(mut data: AccountsFile, mut new_account: StoredAccount) -> (AccountsFile, StoredAccount) {
     let existing_idx = match new_account.mode {
-        AuthMode::ChatGPT => new_account
+        AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens => new_account
             .tokens
             .as_ref()
             .and_then(|tokens| data.accounts.iter().position(|acc| match_chatgpt_account(acc, tokens))),

@@ -7,9 +7,13 @@ use serde::Serialize;
 use strum::IntoEnumIterator;
 use strum_macros::Display;
 use strum_macros::EnumIter;
+use tracing::warn;
 use ts_rs::TS;
 
+use crate::config_types::Personality;
 use crate::config_types::Verbosity;
+
+const PERSONALITY_PLACEHOLDER: &str = "{{ personality }}";
 
 /// See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning
 #[derive(
@@ -73,6 +77,9 @@ pub struct ModelPreset {
     pub default_reasoning_effort: ReasoningEffort,
     /// Supported reasoning effort options.
     pub supported_reasoning_efforts: Vec<ReasoningEffortPreset>,
+    /// Whether this model supports personality-specific instructions.
+    #[serde(default)]
+    pub supports_personality: bool,
     /// Whether this is the default model for new users.
     pub is_default: bool,
     /// Recommended upgrade model.
@@ -180,6 +187,8 @@ pub struct ModelInfo {
     pub priority: i32,
     pub upgrade: Option<ModelInfoUpgrade>,
     pub base_instructions: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_messages: Option<ModelMessages>,
     pub supports_reasoning_summaries: bool,
     pub support_verbosity: bool,
     pub default_verbosity: Option<Verbosity>,
@@ -205,6 +214,90 @@ impl ModelInfo {
             self.context_window
                 .map(|context_window| (context_window * 9) / 10)
         })
+    }
+
+    pub fn supports_personality(&self) -> bool {
+        self.model_messages
+            .as_ref()
+            .is_some_and(ModelMessages::supports_personality)
+    }
+
+    pub fn get_model_instructions(&self, personality: Option<Personality>) -> String {
+        if let Some(model_messages) = &self.model_messages
+            && let Some(template) = &model_messages.instructions_template
+        {
+            // if we have a template, always use it
+            let personality_message = model_messages
+                .get_personality_message(personality)
+                .unwrap_or_default();
+            template.replace(PERSONALITY_PLACEHOLDER, personality_message.as_str())
+        } else if let Some(personality) = personality {
+            warn!(
+                model = %self.slug,
+                %personality,
+                "Model personality requested but model_messages is missing, falling back to base instructions."
+            );
+            self.base_instructions.clone()
+        } else {
+            self.base_instructions.clone()
+        }
+    }
+}
+
+/// A strongly-typed template for assembling model instructions and developer messages. If
+/// instructions_* is populated and valid, it will override base_instructions.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
+pub struct ModelMessages {
+    pub instructions_template: Option<String>,
+    pub instructions_variables: Option<ModelInstructionsVariables>,
+}
+
+impl ModelMessages {
+    fn has_personality_placeholder(&self) -> bool {
+        self.instructions_template
+            .as_ref()
+            .map(|spec| spec.contains(PERSONALITY_PLACEHOLDER))
+            .unwrap_or(false)
+    }
+
+    fn supports_personality(&self) -> bool {
+        self.has_personality_placeholder()
+            && self
+                .instructions_variables
+                .as_ref()
+                .is_some_and(ModelInstructionsVariables::is_complete)
+    }
+
+    pub fn get_personality_message(&self, personality: Option<Personality>) -> Option<String> {
+        self.instructions_variables
+            .as_ref()
+            .and_then(|variables| variables.get_personality_message(personality))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
+pub struct ModelInstructionsVariables {
+    pub personality_default: Option<String>,
+    pub personality_friendly: Option<String>,
+    pub personality_pragmatic: Option<String>,
+}
+
+impl ModelInstructionsVariables {
+    pub fn is_complete(&self) -> bool {
+        self.personality_default.is_some()
+            && self.personality_friendly.is_some()
+            && self.personality_pragmatic.is_some()
+    }
+
+    pub fn get_personality_message(&self, personality: Option<Personality>) -> Option<String> {
+        if let Some(personality) = personality {
+            match personality {
+                Personality::Friendly => self.personality_friendly.clone(),
+                Personality::Pragmatic => self.personality_pragmatic.clone(),
+            }
+        } else {
+            self.personality_default.clone()
+        }
     }
 }
 
@@ -232,6 +325,7 @@ pub struct ModelsResponse {
 // convert ModelInfo to ModelPreset
 impl From<ModelInfo> for ModelPreset {
     fn from(info: ModelInfo) -> Self {
+        let supports_personality = info.supports_personality();
         ModelPreset {
             id: info.slug.clone(),
             model: info.slug.clone(),
@@ -241,6 +335,7 @@ impl From<ModelInfo> for ModelPreset {
                 .default_reasoning_level
                 .unwrap_or(ReasoningEffort::None),
             supported_reasoning_efforts: info.supported_reasoning_levels.clone(),
+            supports_personality,
             is_default: false, // default is the highest priority available model
             upgrade: info.upgrade.as_ref().map(|upgrade| ModelUpgrade {
                 id: upgrade.model.clone(),

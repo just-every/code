@@ -100,6 +100,16 @@ impl GitSha {
 pub enum AuthMode {
     ApiKey,
     ChatGPT,
+    #[serde(rename = "chatgptAuthTokens")]
+    #[ts(rename = "chatgptAuthTokens")]
+    #[strum(serialize = "chatgptAuthTokens")]
+    ChatgptAuthTokens,
+}
+
+impl AuthMode {
+    pub fn is_chatgpt(self) -> bool {
+        matches!(self, AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens)
+    }
 }
 
 /// Request from the client to the server.

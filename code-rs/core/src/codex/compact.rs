@@ -31,7 +31,6 @@ use code_protocol::protocol::RolloutItem;
 use base64::Engine;
 use chrono::Utc;
 use futures::prelude::*;
-use code_app_server_protocol::AuthMode;
 use std::time::Duration;
 
 pub const SUMMARIZATION_PROMPT: &str = include_str!("../../templates/compact/prompt.md");
@@ -64,7 +63,7 @@ pub(super) async fn should_use_remote_compact_task(session: &Session) -> bool {
         .client
         .get_auth_manager()
         .and_then(|manager| manager.auth())
-        .is_some_and(|auth| auth.mode == AuthMode::ChatGPT)
+        .is_some_and(|auth| auth.mode.is_chatgpt())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -332,15 +332,16 @@ impl LoginAccountsState {
         match auth::activate_account(&self.code_home, &account_id) {
             Ok(()) => {
                 self.feedback = Some(Feedback {
-                    message: match mode {
-                        AuthMode::ChatGPT => "ChatGPT account selected".to_string(),
-                        AuthMode::ApiKey => "API key selected".to_string(),
+                    message: if mode.is_chatgpt() {
+                        "ChatGPT account selected".to_string()
+                    } else {
+                        "API key selected".to_string()
                     },
                     is_error: false,
                 });
                 self.reload_accounts();
                 self.app_event_tx
-                    .send(AppEvent::LoginUsingChatGptChanged { using_chatgpt_auth: mode == AuthMode::ChatGPT });
+                    .send(AppEvent::LoginUsingChatGptChanged { using_chatgpt_auth: mode.is_chatgpt() });
                 true
             }
             Err(err) => {
@@ -373,7 +374,7 @@ impl LoginAccountsState {
                     .active_account_id
                     .as_ref()
                     .and_then(|id| auth_accounts::find_account(&self.code_home, id).ok().flatten())
-                    .map(|acc| acc.mode == AuthMode::ChatGPT)
+                    .map(|acc| acc.mode.is_chatgpt())
                     .unwrap_or(false);
                 self.app_event_tx
                     .send(AppEvent::LoginUsingChatGptChanged { using_chatgpt_auth: using_chatgpt });
@@ -1032,7 +1033,7 @@ impl AccountRow {
         let mode = account.mode;
         let mut detail_parts: Vec<String> = Vec::new();
 
-        if let AuthMode::ChatGPT = mode {
+        if mode.is_chatgpt() {
             if let Some(plan) = account
                 .tokens
                 .as_ref()

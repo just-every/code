@@ -33,7 +33,6 @@ use crate::model_family::ModelFamily;
 use crate::openai_tools::create_tools_json_for_chat_completions_api;
 use crate::util::backoff;
 use std::sync::{Arc, Mutex};
-use code_app_server_protocol::AuthMode;
 use code_protocol::models::ContentItem;
 use code_protocol::models::ReasoningItemContent;
 use code_protocol::models::ResponseItem;
@@ -345,7 +344,7 @@ pub(crate) async fn stream_chat_completions(
         let mut req_builder = provider.create_request_builder(client, &auth).await?;
 
         if let Some(auth) = auth.as_ref() {
-            if auth.mode == AuthMode::ChatGPT {
+            if auth.mode.is_chatgpt() {
                 if let Some(account_id) = auth.get_account_id() {
                     req_builder = req_builder.header("chatgpt-account-id", account_id);
                 }

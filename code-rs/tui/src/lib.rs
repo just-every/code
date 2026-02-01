@@ -533,7 +533,7 @@ pub async fn run_main(
             AuthMode::ApiKey
         };
         if let Some(plan) = determine_migration_plan(&config, auth_mode) {
-            let should_auto_accept = matches!(auth_mode, AuthMode::ChatGPT)
+            let should_auto_accept = auth_mode.is_chatgpt()
                 && (plan.hide_key != code_common::model_presets::HIDE_GPT_5_2_CODEX_MIGRATION_PROMPT_CONFIG
                     || (plan.current.id.eq_ignore_ascii_case("gpt-5.1-codex")
                         && plan

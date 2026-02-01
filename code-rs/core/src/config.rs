@@ -1498,7 +1498,7 @@ impl Config {
         
         // Prefer ChatGPT when both ChatGPT tokens and an API key are present.
         match CodexAuth::from_code_home(code_home, AuthMode::ChatGPT, "code_cli_rs") {
-            Ok(Some(auth)) => auth.mode == AuthMode::ChatGPT,
+            Ok(Some(auth)) => auth.mode.is_chatgpt(),
             _ => false,
         }
     }

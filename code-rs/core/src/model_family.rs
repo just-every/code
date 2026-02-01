@@ -17,8 +17,10 @@ const GPT_5_2_CODEX_INSTRUCTIONS: &str = include_str!("../gpt-5.2-codex_prompt.m
 const GPT_5_2_CODEX_INSTRUCTIONS_TEMPLATE: &str = include_str!(
     "../templates/model_instructions/gpt-5.2-codex_instructions_template.md",
 );
-const PERSONALITY_FRIENDLY: &str = include_str!("../templates/personalities/friendly.md");
-const PERSONALITY_PRAGMATIC: &str = include_str!("../templates/personalities/pragmatic.md");
+const PERSONALITY_FRIENDLY: &str =
+    include_str!("../templates/personalities/gpt-5.2-codex_friendly.md");
+const PERSONALITY_PRAGMATIC: &str =
+    include_str!("../templates/personalities/gpt-5.2-codex_pragmatic.md");
 
 const CONTEXT_WINDOW_272K: u64 = 272_000;
 const CONTEXT_WINDOW_200K: u64 = 200_000;
@@ -84,17 +86,21 @@ pub(crate) fn base_instructions_override_for_personality(
     model: &str,
     personality: Option<Personality>,
 ) -> Option<String> {
-    if !model.contains("gpt-5.2-codex") {
+    if !(model.starts_with("gpt-5.2-codex")
+        || model.starts_with("bengalfox")
+        || model.starts_with("exp-codex")
+        || model.starts_with("codex-1p"))
+    {
         return None;
     }
-    let personality = personality?;
     let personality_message = match personality {
-        Personality::Friendly => PERSONALITY_FRIENDLY,
-        Personality::Pragmatic => PERSONALITY_PRAGMATIC,
+        Some(Personality::Friendly) => PERSONALITY_FRIENDLY,
+        Some(Personality::Pragmatic) => PERSONALITY_PRAGMATIC,
+        None => "",
     };
     Some(
         GPT_5_2_CODEX_INSTRUCTIONS_TEMPLATE
-            .replace("{{ personality_message }}", personality_message),
+            .replace("{{ personality }}", personality_message),
     )
 }
 

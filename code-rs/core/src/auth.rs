@@ -86,6 +86,11 @@ impl PartialEq for CodexAuth {
 
 impl CodexAuth {
     pub async fn refresh_token(&self) -> Result<String, RefreshTokenError> {
+        if self.mode == AuthMode::ChatgptAuthTokens {
+            return Err(RefreshTokenError::permanent(
+                "ChatGPT auth tokens are managed externally and cannot be refreshed.",
+            ));
+        }
         let token_data = self
             .get_current_token_data()
             .ok_or_else(|| RefreshTokenError::permanent("Token data is not available."))?;
@@ -185,6 +190,9 @@ impl CodexAuth {
                 last_refresh: Some(last_refresh),
                 ..
             }) => {
+                if self.mode == AuthMode::ChatgptAuthTokens {
+                    return Ok(tokens);
+                }
                 if last_refresh < Utc::now() - chrono::Duration::days(28) {
                     let refresh_response = tokio::time::timeout(
                         Duration::from_secs(60),
@@ -225,7 +233,7 @@ impl CodexAuth {
     pub async fn get_token(&self) -> Result<String, std::io::Error> {
         match self.mode {
             AuthMode::ApiKey => Ok(self.api_key.clone().unwrap_or_default()),
-            AuthMode::ChatGPT => {
+            AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens => {
                 let id_token = self.get_token_data().await?.access_token;
                 Ok(id_token)
             }
@@ -254,6 +262,7 @@ impl CodexAuth {
     /// Consider this private to integration tests.
     pub fn create_dummy_chatgpt_auth_for_testing() -> Self {
         let auth_dot_json = AuthDotJson {
+            auth_mode: Some(AuthMode::ChatGPT),
             openai_api_key: None,
             tokens: Some(TokenData {
                 id_token: Default::default(),
@@ -296,7 +305,22 @@ impl CodexAuth {
         last_refresh: Option<DateTime<Utc>>,
         originator: &str,
     ) -> Self {
+        Self::from_tokens_with_originator_and_mode(
+            tokens,
+            last_refresh,
+            originator,
+            AuthMode::ChatGPT,
+        )
+    }
+
+    pub fn from_tokens_with_originator_and_mode(
+        tokens: TokenData,
+        last_refresh: Option<DateTime<Utc>>,
+        originator: &str,
+        mode: AuthMode,
+    ) -> Self {
         let auth_dot_json = AuthDotJson {
+            auth_mode: Some(mode),
             openai_api_key: None,
             tokens: Some(tokens),
             last_refresh,
@@ -304,7 +328,7 @@ impl CodexAuth {
 
         Self {
             api_key: None,
-            mode: AuthMode::ChatGPT,
+            mode,
             auth_file: PathBuf::new(),
             auth_dot_json: Arc::new(Mutex::new(Some(auth_dot_json))),
             client: crate::default_client::create_client(originator),
@@ -349,6 +373,7 @@ pub fn logout(code_home: &Path) -> std::io::Result<bool> {
 /// Writes an `auth.json` that contains only the API key. Intended for CLI use.
 pub fn login_with_api_key(code_home: &Path, api_key: &str) -> std::io::Result<()> {
     let auth_dot_json = AuthDotJson {
+        auth_mode: Some(AuthMode::ApiKey),
         openai_api_key: Some(api_key.to_string()),
         tokens: None,
         last_refresh: None,
@@ -378,15 +403,16 @@ pub async fn auth_for_stored_account(
                 crate::default_client::create_client(originator),
             ))
         }
-        AuthMode::ChatGPT => {
+        AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens => {
             let mut tokens = account.tokens.clone().ok_or_else(|| {
                 std::io::Error::other("stored ChatGPT account is missing token data")
             })?;
             let mut last_refresh = account.last_refresh;
             let now = Utc::now();
-            let refresh_needed = last_refresh
-                .map(|last| last < now - chrono::Duration::days(28))
-                .unwrap_or(true);
+            let refresh_needed = account.mode == AuthMode::ChatGPT
+                && last_refresh
+                    .map(|last| last < now - chrono::Duration::days(28))
+                    .unwrap_or(true);
 
             if refresh_needed {
                 let client = crate::default_client::create_client(originator);
@@ -407,10 +433,11 @@ pub async fn auth_for_stored_account(
                                 crate::auth_accounts::find_account(code_home, &account.id)
                             {
                                 if let Some(updated_tokens) = updated.tokens {
-                                    return Ok(CodexAuth::from_tokens_with_originator(
+                                    return Ok(CodexAuth::from_tokens_with_originator_and_mode(
                                         updated_tokens,
                                         updated.last_refresh,
                                         originator,
+                                        account.mode,
                                     ));
                                 }
                             }
@@ -436,10 +463,11 @@ pub async fn auth_for_stored_account(
                 )?;
             }
 
-            Ok(CodexAuth::from_tokens_with_originator(
+            Ok(CodexAuth::from_tokens_with_originator_and_mode(
                 tokens,
                 last_refresh,
                 originator,
+                account.mode,
             ))
         }
     }
@@ -462,17 +490,19 @@ pub fn activate_account(code_home: &Path, account_id: &str) -> std::io::Result<(
                 std::io::Error::other("stored API key account is missing the key value")
             })?;
             let auth = AuthDotJson {
+                auth_mode: Some(AuthMode::ApiKey),
                 openai_api_key: Some(api_key),
                 tokens: None,
                 last_refresh: None,
             };
             write_auth_json(&auth_file, &auth)?;
         }
-        AuthMode::ChatGPT => {
+        AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens => {
             let tokens = account.tokens.clone().ok_or_else(|| {
                 std::io::Error::other("stored ChatGPT account is missing token data")
             })?;
             let auth = AuthDotJson {
+                auth_mode: Some(account.mode),
                 openai_api_key: None,
                 tokens: Some(tokens),
                 last_refresh: account.last_refresh,
@@ -515,10 +545,47 @@ fn load_auth(
     };
 
     let AuthDotJson {
+        auth_mode,
         openai_api_key: auth_json_api_key,
         tokens,
         last_refresh,
     } = auth_dot_json;
+
+    let mut effective_preference = preferred_auth_method;
+    if let Some(mode) = auth_mode {
+        match mode {
+            AuthMode::ApiKey => {
+                let Some(api_key) = auth_json_api_key.as_ref() else {
+                    return Err(std::io::Error::other(
+                        "auth.json requests API key auth but no API key is stored",
+                    ));
+                };
+                return Ok(Some(CodexAuth::from_api_key_with_client(api_key, client)));
+            }
+            AuthMode::ChatgptAuthTokens => {
+                let Some(tokens) = tokens.clone() else {
+                    return Err(std::io::Error::other(
+                        "auth.json requests ChatGPT auth tokens but token data is missing",
+                    ));
+                };
+                return Ok(Some(CodexAuth {
+                    api_key: None,
+                    mode: AuthMode::ChatgptAuthTokens,
+                    auth_file,
+                    auth_dot_json: Arc::new(Mutex::new(Some(AuthDotJson {
+                        auth_mode: Some(AuthMode::ChatgptAuthTokens),
+                        openai_api_key: None,
+                        tokens: Some(tokens),
+                        last_refresh,
+                    }))),
+                    client,
+                }));
+            }
+            AuthMode::ChatGPT => {
+                effective_preference = AuthMode::ChatGPT;
+            }
+        }
+    }
 
     // If the auth.json has an API key, decide whether to use it.
     if let Some(api_key) = &auth_json_api_key {
@@ -539,7 +606,7 @@ fn load_auth(
                 // When tokens are present, honor the caller's preference strictly:
                 // - If the caller prefers API key, use it.
                 // - Otherwise, prefer ChatGPT and ignore the API key.
-                if preferred_auth_method == AuthMode::ApiKey {
+                if effective_preference == AuthMode::ApiKey {
                     return Ok(Some(CodexAuth::from_api_key_with_client(api_key, client)));
                 }
                 // else: fall through to ChatGPT auth
@@ -561,6 +628,7 @@ fn load_auth(
         mode: AuthMode::ChatGPT,
         auth_file,
         auth_dot_json: Arc::new(Mutex::new(Some(AuthDotJson {
+            auth_mode: Some(AuthMode::ChatGPT),
             openai_api_key: None,
             tokens,
             last_refresh,
@@ -785,6 +853,9 @@ fn summarize_body(body: &str) -> String {
 /// Expected structure for $CODEX_HOME/auth.json.
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct AuthDotJson {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_mode: Option<AuthMode>,
+
     #[serde(rename = "OPENAI_API_KEY")]
     pub openai_api_key: Option<String>,
 
@@ -896,6 +967,7 @@ mod tests {
         let auth_dot_json = guard.as_ref().expect("AuthDotJson should exist");
         assert_eq!(
             &AuthDotJson {
+                auth_mode: Some(AuthMode::ChatGPT),
                 openai_api_key: None,
                 tokens: Some(TokenData {
                     id_token: IdTokenInfo {
@@ -948,6 +1020,7 @@ mod tests {
         let auth_dot_json = guard.as_ref().expect("AuthDotJson should exist");
         assert_eq!(
             &AuthDotJson {
+                auth_mode: Some(AuthMode::ChatGPT),
                 openai_api_key: None,
                 tokens: Some(TokenData {
                     id_token: IdTokenInfo {
@@ -1022,6 +1095,7 @@ mod tests {
     fn logout_removes_auth_file() -> Result<(), std::io::Error> {
         let dir = tempdir()?;
         let auth_dot_json = AuthDotJson {
+            auth_mode: Some(AuthMode::ApiKey),
             openai_api_key: Some("sk-test-key".to_string()),
             tokens: None,
             last_refresh: None,
@@ -1118,6 +1192,7 @@ mod tests {
         };
 
         let cached_auth = AuthDotJson {
+            auth_mode: Some(AuthMode::ChatGPT),
             openai_api_key: None,
             tokens: Some(cached_tokens.clone()),
             last_refresh: None,
@@ -1131,6 +1206,7 @@ mod tests {
         };
 
         let rotated_auth = AuthDotJson {
+            auth_mode: Some(AuthMode::ChatGPT),
             openai_api_key: None,
             tokens: Some(rotated_tokens.clone()),
             last_refresh: Some(Utc::now()),

@@ -370,6 +370,8 @@ impl BottomPaneView<'_> for RequestUserInputView {
                 q.options.as_ref(),
             ))
             .unwrap_or(("No questions", "", None));
+        let is_secret = self.current_question().is_some_and(|q| q.is_secret);
+        let mask_secret = |value: &str| "*".repeat(value.chars().count());
 
         let mut y = inner.y;
         let progress = if question_count > 0 {
@@ -476,6 +478,11 @@ impl BottomPaneView<'_> for RequestUserInputView {
                         .current_answer()
                         .map(|answer| answer.freeform.trim_end())
                         .unwrap_or("");
+                    let other_value = if is_secret && !other_value.is_empty() {
+                        mask_secret(other_value)
+                    } else {
+                        other_value.to_string()
+                    };
                     let other_label = if is_selected && !other_value.is_empty() {
                         format!("Other: {other_value}")
                     } else {
@@ -496,11 +503,16 @@ impl BottomPaneView<'_> for RequestUserInputView {
                     .current_answer()
                     .map(|a| a.freeform.as_str())
                     .unwrap_or("");
+                let display_text = if is_secret && !text.is_empty() {
+                    mask_secret(text)
+                } else {
+                    text.to_string()
+                };
                 let placeholder = "Type your answer…";
-                let display = if text.is_empty() {
+                let display = if display_text.is_empty() {
                     Line::from(placeholder).dim()
                 } else {
-                    Line::from(text.to_string())
+                    Line::from(display_text)
                 };
                 Paragraph::new(display)
                     .wrap(Wrap { trim: true })

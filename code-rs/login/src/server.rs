@@ -14,6 +14,7 @@ use crate::pkce::PkceCodes;
 use crate::pkce::generate_pkce;
 use base64::Engine;
 use chrono::Utc;
+use code_app_server_protocol::AuthMode;
 use code_core::auth::AuthDotJson;
 use code_core::auth::get_auth_file;
 use code_core::token_data::TokenData;
@@ -485,6 +486,7 @@ pub(crate) async fn persist_tokens_async(
         let tokens_for_store = tokens.clone();
         let last_refresh = Utc::now();
         let auth = AuthDotJson {
+            auth_mode: Some(AuthMode::ChatGPT),
             openai_api_key: api_key,
             tokens: Some(tokens),
             last_refresh: Some(last_refresh),

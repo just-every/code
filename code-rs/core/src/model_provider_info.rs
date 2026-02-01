@@ -8,7 +8,6 @@
 
 use crate::CodexAuth;
 use crate::error::CodexErr;
-use code_app_server_protocol::AuthMode;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -306,13 +305,10 @@ impl ModelProviderInfo {
     }
 
     pub(crate) fn get_full_url(&self, auth: &Option<CodexAuth>) -> String {
-        let default_base_url = if matches!(
-            auth,
-            Some(CodexAuth {
-                mode: AuthMode::ChatGPT,
-                ..
-            })
-        ) {
+        let default_base_url = if auth
+            .as_ref()
+            .is_some_and(|auth| auth.mode.is_chatgpt())
+        {
             "https://chatgpt.com/backend-api/codex"
         } else {
             "https://api.openai.com/v1"

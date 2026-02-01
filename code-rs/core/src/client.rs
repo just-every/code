@@ -78,6 +78,8 @@ use std::sync::RwLock;
 const RESPONSES_BETA_HEADER_V1: &str = "responses=v1";
 const RESPONSES_BETA_HEADER_EXPERIMENTAL: &str = "responses=experimental";
 
+const WEB_SEARCH_ELIGIBLE_HEADER: &str = "x-oai-web-search-eligible";
+
 const MODEL_CAP_MODEL_HEADER: &str = "x-codex-model-cap-model";
 const MODEL_CAP_RESET_AFTER_HEADER: &str = "x-codex-model-cap-reset-after-seconds";
 
@@ -546,7 +548,7 @@ impl ModelClient {
         };
 
         let text_template = match (auth_mode, want_format, verbosity) {
-            (Some(AuthMode::ChatGPT), None, _) => None,
+            (Some(mode), None, _) if mode.is_chatgpt() => None,
             (_, Some(fmt), _) => Some(crate::client_common::Text {
                 verbosity: effective_verbosity.into(),
                 format: Some(fmt),
@@ -648,12 +650,13 @@ impl ModelClient {
 
             req_builder = attach_openai_subagent_header(req_builder);
             req_builder = attach_codex_beta_features_header(req_builder, &self.config);
+            req_builder = attach_web_search_eligible_header(req_builder, &self.config);
             req_builder = req_builder
                 .header("conversation_id", session_id_str.clone())
                 .header("session_id", session_id_str.clone());
 
             if let Some(auth) = auth.as_ref()
-                && auth.mode == AuthMode::ChatGPT
+                && auth.mode.is_chatgpt()
                 && let Some(account_id) = auth.get_account_id()
             {
                 req_builder = req_builder.header("chatgpt-account-id", account_id);
@@ -900,7 +903,7 @@ impl ModelClient {
         };
 
         let text_template = match (auth_mode, want_format, verbosity) {
-            (Some(AuthMode::ChatGPT), None, _) => None,
+            (Some(mode), None, _) if mode.is_chatgpt() => None,
             (_, Some(fmt), _) => Some(crate::client_common::Text {
                 verbosity: effective_verbosity.into(),
                 format: Some(fmt),
@@ -1025,6 +1028,7 @@ impl ModelClient {
 
             req_builder = attach_openai_subagent_header(req_builder);
             req_builder = attach_codex_beta_features_header(req_builder, &self.config);
+            req_builder = attach_web_search_eligible_header(req_builder, &self.config);
 
             req_builder = req_builder
                 // Send `conversation_id`/`session_id` so the server can hit the prompt-cache.
@@ -1034,7 +1038,7 @@ impl ModelClient {
                 .json(&payload_json);
 
             if let Some(auth) = auth.as_ref()
-                && auth.mode == AuthMode::ChatGPT
+                && auth.mode.is_chatgpt()
                 && let Some(account_id) = auth.get_account_id()
             {
                 req_builder = req_builder.header("chatgpt-account-id", account_id);
@@ -1531,6 +1535,10 @@ impl ModelClient {
         self.config.model_explicit
     }
 
+    pub fn model_personality(&self) -> Option<crate::config_types::Personality> {
+        self.config.model_personality
+    }
+
     /// Returns the currently configured model family.
     #[allow(dead_code)]
     pub fn get_model_family(&self) -> ModelFamily {
@@ -1603,9 +1611,10 @@ impl ModelClient {
 
             request = attach_openai_subagent_header(request);
             request = attach_codex_beta_features_header(request, &self.config);
+            request = attach_web_search_eligible_header(request, &self.config);
 
             if let Some(auth) = auth.as_ref()
-                && auth.mode == AuthMode::ChatGPT
+                && auth.mode.is_chatgpt()
                 && let Some(account_id) = auth.get_account_id()
             {
                 request = request.header("chatgpt-account-id", account_id);
@@ -1739,6 +1748,26 @@ fn attach_codex_beta_features_header(
     }
 
     builder.header("x-codex-beta-features", value)
+}
+
+fn attach_web_search_eligible_header(
+    builder: reqwest::RequestBuilder,
+    config: &Config,
+) -> reqwest::RequestBuilder {
+    let has_header = builder
+        .try_clone()
+        .and_then(|builder| builder.build().ok())
+        .map_or(false, |req| req.headers().contains_key(WEB_SEARCH_ELIGIBLE_HEADER));
+    if has_header {
+        return builder;
+    }
+
+    let value = if config.tools_web_search_request {
+        "true"
+    } else {
+        "false"
+    };
+    builder.header(WEB_SEARCH_ELIGIBLE_HEADER, HeaderValue::from_static(value))
 }
 
 fn codex_beta_features_header_value(config: &Config) -> Option<HeaderValue> {

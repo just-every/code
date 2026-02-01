@@ -10,7 +10,7 @@ pub(crate) fn account_display_label(account: &StoredAccount) -> String {
         let trimmed = label.trim();
         if !trimmed.is_empty() {
             match account.mode {
-                AuthMode::ChatGPT => {
+                AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens => {
                     let default_email = account
                         .tokens
                         .as_ref()
@@ -30,7 +30,7 @@ pub(crate) fn account_display_label(account: &StoredAccount) -> String {
     }
 
     match account.mode {
-        AuthMode::ChatGPT => account
+        AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens => account
             .tokens
             .as_ref()
             .and_then(|tokens| tokens.id_token.email.clone())
@@ -53,7 +53,7 @@ pub(crate) fn key_suffix(text: &str) -> String {
 /// Returns an ordering priority for accounts. ChatGPT accounts should appear first.
 pub(crate) fn account_mode_priority(mode: AuthMode) -> u8 {
     match mode {
-        AuthMode::ChatGPT => 0,
+        AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens => 0,
         AuthMode::ApiKey => 1,
     }
 }

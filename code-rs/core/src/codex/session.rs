@@ -480,7 +480,7 @@ impl Session {
                     .and_then(|mgr| mgr.auth())
                     .map(|auth| auth.mode);
 
-                let default_model_slug = if auth_mode == Some(code_app_server_protocol::AuthMode::ChatGPT) {
+                let default_model_slug = if auth_mode.is_some_and(code_app_server_protocol::AuthMode::is_chatgpt) {
                     crate::config::GPT_5_CODEX_MEDIUM_MODEL
                 } else {
                     crate::config::OPENAI_DEFAULT_MODEL
@@ -506,9 +506,16 @@ impl Session {
                 .unwrap_or(configured_model.as_str());
             let base_family = find_family_for_model(model_slug)
                 .unwrap_or_else(|| derive_default_model_family(model_slug));
+            let personality = self.client.model_personality();
 
             let family = if let Some(remote) = self.remote_models_manager.as_ref() {
-                remote.apply_remote_overrides(model_slug, base_family).await
+                remote
+                    .apply_remote_overrides_with_personality(
+                        model_slug,
+                        base_family,
+                        personality,
+                    )
+                    .await
             } else {
                 base_family
             };
@@ -1419,7 +1426,8 @@ impl Session {
             .get_auth_manager()
             .and_then(|manager| manager.auth())
             .map(|auth| auth.mode);
-        let sanitize_encrypted_reasoning = !matches!(current_auth_mode, Some(AuthMode::ChatGPT));
+        let sanitize_encrypted_reasoning =
+            !current_auth_mode.is_some_and(AuthMode::is_chatgpt);
 
         if sanitize_encrypted_reasoning {
             let mut stripped = 0usize;

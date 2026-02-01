@@ -216,6 +216,9 @@ pub enum WebSearchAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         query: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        queries: Option<Vec<String>>,
     },
     OpenPage {
         #[serde(default, skip_serializing_if = "Option::is_none")]

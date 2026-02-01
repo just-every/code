@@ -133,12 +133,10 @@ pub(crate) fn map_response_item_to_event_messages(
         }
 
         ResponseItem::WebSearchCall { id, action, .. } => match action {
-            Some(WebSearchAction::Search { query }) => {
+            Some(WebSearchAction::Search { query, queries }) => {
                 let call_id = id.clone().unwrap_or_else(|| "".to_string());
-                vec![EventMsg::WebSearchComplete(WebSearchCompleteEvent {
-                    call_id,
-                    query: query.clone(),
-                })]
+                let query = web_search_query(query, queries);
+                vec![EventMsg::WebSearchComplete(WebSearchCompleteEvent { call_id, query })]
             }
             _ => Vec::new(),
         },
@@ -166,6 +164,26 @@ fn extract_tagged_json<'a>(text: &'a str, open: &str, close: &str) -> Option<&'a
 
 fn parse_json(fragment: &str) -> Option<JsonValue> {
     serde_json::from_str(fragment).ok()
+}
+
+fn web_search_query(query: &Option<String>, queries: &Option<Vec<String>>) -> Option<String> {
+    if let Some(value) = query.clone().filter(|q| !q.is_empty()) {
+        return Some(value);
+    }
+
+    let items = queries.as_ref();
+    let first = items
+        .and_then(|queries| queries.first())
+        .cloned()
+        .unwrap_or_default();
+    if first.is_empty() {
+        return None;
+    }
+    if items.is_some_and(|queries| queries.len() > 1) {
+        Some(format!("{first} ..."))
+    } else {
+        Some(first)
+    }
 }
 
 #[cfg(test)]

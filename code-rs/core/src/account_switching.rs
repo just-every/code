@@ -25,7 +25,7 @@ impl RateLimitSwitchState {
     ) {
         self.tried_accounts.insert(account_id.to_string());
 
-        if mode == AuthMode::ChatGPT {
+        if mode.is_chatgpt() {
             self.limited_chatgpt_accounts
                 .insert(account_id.to_string());
         }
@@ -58,7 +58,7 @@ struct CandidateScore {
 
 fn account_has_credentials(account: &auth_accounts::StoredAccount) -> bool {
     match account.mode {
-        AuthMode::ChatGPT => account.tokens.is_some(),
+        AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens => account.tokens.is_some(),
         AuthMode::ApiKey => account.openai_api_key.is_some(),
     }
 }
@@ -110,7 +110,7 @@ pub(crate) fn select_next_account_id(
 
     let mut chatgpt_accounts: Vec<&auth_accounts::StoredAccount> = accounts
         .iter()
-        .filter(|acc| acc.mode == AuthMode::ChatGPT)
+        .filter(|acc| acc.mode.is_chatgpt())
         .filter(|acc| account_has_credentials(acc))
         .collect();
     let mut api_key_accounts: Vec<&auth_accounts::StoredAccount> = accounts

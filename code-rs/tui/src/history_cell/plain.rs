@@ -847,7 +847,7 @@ pub(crate) fn new_status_output(
                             .unwrap_or_else(|| "????".to_string());
                     lines.push(Line::from(format!("  • Method: API key (…{suffix})")));
                 }
-                AuthMode::ChatGPT => {
+                AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens => {
                     let account_id = auth
                         .get_account_id()
                         .unwrap_or_else(|| "unknown".to_string());

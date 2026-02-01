@@ -2971,8 +2971,9 @@ async fn handle_response_item(
             None
         }
         ResponseItem::WebSearchCall { id, action, .. } => {
-            if let Some(WebSearchAction::Search { query }) = action {
+            if let Some(WebSearchAction::Search { query, queries }) = action {
                 let call_id = id.unwrap_or_else(|| "".to_string());
+                let query = web_search_query(&query, &queries);
                 let event = sess.make_event_with_hint(
                     &sub_id,
                     EventMsg::WebSearchComplete(WebSearchCompleteEvent { call_id, query }),
@@ -2985,6 +2986,26 @@ async fn handle_response_item(
         ResponseItem::Other => None,
     };
     Ok(output)
+}
+
+fn web_search_query(query: &Option<String>, queries: &Option<Vec<String>>) -> Option<String> {
+    if let Some(value) = query.clone().filter(|q| !q.is_empty()) {
+        return Some(value);
+    }
+
+    let items = queries.as_ref();
+    let first = items
+        .and_then(|queries| queries.first())
+        .cloned()
+        .unwrap_or_default();
+    if first.is_empty() {
+        return None;
+    }
+    if items.is_some_and(|queries| queries.len() > 1) {
+        Some(format!("{first} ..."))
+    } else {
+        Some(first)
+    }
 }
 
 // Helper utilities for agent output/progress management
@@ -3148,7 +3169,7 @@ async fn handle_request_user_input(
     use code_protocol::request_user_input::RequestUserInputArgs;
     use code_protocol::request_user_input::RequestUserInputEvent;
 
-    let args: RequestUserInputArgs = match serde_json::from_str(&arguments) {
+    let mut args: RequestUserInputArgs = match serde_json::from_str(&arguments) {
         Ok(args) => args,
         Err(err) => {
             return ResponseInputItem::FunctionCallOutput {
@@ -3169,6 +3190,24 @@ async fn handle_request_user_input(
                 success: Some(false),
             },
         };
+    }
+
+    let missing_options = args
+        .questions
+        .iter()
+        .any(|question| question.options.as_ref().map_or(true, Vec::is_empty));
+    if missing_options {
+        return ResponseInputItem::FunctionCallOutput {
+            call_id: ctx.call_id.clone(),
+            output: FunctionCallOutputPayload {
+                content: "request_user_input requires non-empty options for every question"
+                    .to_string(),
+                success: Some(false),
+            },
+        };
+    }
+    for question in &mut args.questions {
+        question.is_other = true;
     }
 
     let rx_response = match sess.register_pending_user_input(ctx.sub_id.clone()) {

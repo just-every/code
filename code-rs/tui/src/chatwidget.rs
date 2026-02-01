@@ -8769,7 +8769,7 @@ impl ChatWidget<'_> {
 
         let account_type = account
             .map(|acc| match acc.mode {
-                McpAuthMode::ChatGPT => "ChatGPT account",
+                McpAuthMode::ChatGPT | McpAuthMode::ChatgptAuthTokens => "ChatGPT account",
                 McpAuthMode::ApiKey => "API key",
             })
             .unwrap_or("Unknown account");
@@ -11015,15 +11015,6 @@ impl ChatWidget<'_> {
             pending.call_id
         );
 
-        let display_text = raw.trim();
-        if !display_text.is_empty() {
-            let key = Self::order_key_successor(pending.anchor_key);
-            let state = history_cell::new_user_prompt(display_text.to_string());
-            let _ =
-                self.history_insert_plain_state_with_key(state, key, "request_user_input_answer");
-            self.restore_reasoning_in_progress_if_streaming();
-        }
-
         let response = serde_json::from_str::<RequestUserInputResponse>(&raw).unwrap_or_else(|_| {
             let question_count = pending.questions.len();
             let mut lines: Vec<String> = raw
@@ -11055,6 +11046,16 @@ impl ChatWidget<'_> {
             RequestUserInputResponse { answers }
         });
 
+        let display_text =
+            Self::format_request_user_input_display(&pending.questions, &response);
+        if !display_text.trim().is_empty() {
+            let key = Self::order_key_successor(pending.anchor_key);
+            let state = history_cell::new_user_prompt(display_text);
+            let _ =
+                self.history_insert_plain_state_with_key(state, key, "request_user_input_answer");
+            self.restore_reasoning_in_progress_if_streaming();
+        }
+
         if let Err(e) = self.code_op_tx.send(Op::UserInputAnswer {
             id: pending.turn_id,
             response,
@@ -11066,6 +11067,40 @@ impl ChatWidget<'_> {
         self.bottom_pane
             .update_status_text("waiting for model".to_string());
         self.request_redraw();
+    }
+
+    fn format_request_user_input_display(
+        questions: &[code_protocol::request_user_input::RequestUserInputQuestion],
+        response: &code_protocol::request_user_input::RequestUserInputResponse,
+    ) -> String {
+        let mut lines = Vec::new();
+        for question in questions {
+            let answer: &[String] = response
+                .answers
+                .get(&question.id)
+                .map(|a| a.answers.as_slice())
+                .unwrap_or(&[]);
+            let value = answer.first().map(String::as_str).unwrap_or("");
+            let value = if value.trim().is_empty() {
+                "(skipped)"
+            } else if question.is_secret {
+                "[hidden]"
+            } else {
+                value
+            };
+
+            if questions.len() == 1 {
+                lines.push(value.to_string());
+            } else {
+                let header = question.header.trim();
+                if header.is_empty() {
+                    lines.push(value.to_string());
+                } else {
+                    lines.push(format!("{header}: {value}"));
+                }
+            }
+        }
+        lines.join("\n")
     }
 
     pub(crate) fn on_request_user_input_answer(
@@ -11089,30 +11124,8 @@ impl ChatWidget<'_> {
 
         self.bottom_pane.close_request_user_input_view();
 
-        let display_text = {
-            let mut lines = Vec::new();
-            for question in &pending.questions {
-                let answer: &[String] = response
-                    .answers
-                    .get(&question.id)
-                    .map(|a| a.answers.as_slice())
-                    .unwrap_or(&[]);
-                let value = answer.first().map(String::as_str).unwrap_or("");
-                let value = if value.trim().is_empty() { "(skipped)" } else { value };
-
-                if pending.questions.len() == 1 {
-                    lines.push(value.to_string());
-                } else {
-                    let header = question.header.trim();
-                    if header.is_empty() {
-                        lines.push(value.to_string());
-                    } else {
-                        lines.push(format!("{header}: {value}"));
-                    }
-                }
-            }
-            lines.join("\n")
-        };
+        let display_text =
+            Self::format_request_user_input_display(&pending.questions, &response);
 
         if !display_text.trim().is_empty() {
             let key = Self::order_key_successor(pending.anchor_key);

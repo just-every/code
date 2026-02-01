@@ -51,6 +51,26 @@ pub enum Verbosity {
     High,
 }
 
+#[derive(
+    Debug,
+    Serialize,
+    Deserialize,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Display,
+    TS,
+    JsonSchema,
+    EnumIter,
+)]
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
+pub enum Personality {
+    Friendly,
+    Pragmatic,
+}
+
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Default, Serialize, Display, TS)]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
