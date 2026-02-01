@@ -25,7 +25,7 @@ export type RunStreamedResult = StreamedTurn;
 /** An input to send to the agent. */
 export type Input = string;
 
-/** Respesent a thread of conversation with the agent. One thread can have multiple consecutive turns. */
+/** Represent a thread of conversation with the agent. One thread can have multiple consecutive turns. */
 export class Thread {
   private _exec: CodexExec;
   private _options: CodexOptions;
