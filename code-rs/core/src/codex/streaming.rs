@@ -5970,6 +5970,18 @@ mod resolve_read_only_tests {
     }
 }
 
+#[cfg(test)]
+mod resolve_agent_command_for_check_tests {
+    use super::resolve_agent_command_for_check;
+
+    #[test]
+    fn external_models_use_cli_for_command_checks() {
+        let (cmd, is_builtin) = resolve_agent_command_for_check("claude-opus-4.5", None);
+        assert_eq!(cmd, "claude");
+        assert!(!is_builtin, "Claude should not be treated as a built-in family");
+    }
+}
+
 fn parse_container_exec_arguments(
     arguments: String,
     sess: &Session,
@@ -6361,6 +6373,52 @@ pub(crate) async fn handle_agent_tool(
     }
 }
 
+fn resolve_agent_command_for_check(
+    model: &str,
+    cfg: Option<&crate::config_types::AgentConfig>,
+) -> (String, bool) {
+    let spec = agent_model_spec(model)
+        .or_else(|| cfg.and_then(|c| agent_model_spec(&c.name)))
+        .or_else(|| cfg.and_then(|c| agent_model_spec(&c.command)));
+
+    let cfg_trimmed = cfg.map(|c| {
+        let (base, _) = split_command_and_args(&c.command);
+        let trimmed = base.trim();
+        if trimmed.is_empty() {
+            c.command.trim().to_string()
+        } else {
+            trimmed.to_string()
+        }
+    });
+
+    if let Some(spec) = spec {
+        let is_builtin_family = matches!(spec.family, "code" | "codex" | "cloud");
+        let uses_default_cli = cfg_trimmed
+            .as_ref()
+            .map(|cmd| cmd.is_empty() || cmd.eq_ignore_ascii_case(spec.cli))
+            .unwrap_or(true);
+
+        if uses_default_cli {
+            return (spec.cli.to_string(), is_builtin_family);
+        }
+    }
+
+    if let Some(cmd) = cfg_trimmed {
+        if !cmd.is_empty() {
+            return (cmd, false);
+        }
+    }
+
+    let m = model.to_lowercase();
+    match m.as_str() {
+        "code" | "codex" | "cloud" => ("coder".to_string(), true),
+        "claude" => ("claude".to_string(), false),
+        "gemini" => ("gemini".to_string(), false),
+        "qwen" => ("qwen".to_string(), false),
+        other => (other.to_string(), false),
+    }
+}
+
 pub(crate) async fn handle_run_agent(
     sess: &Session,
     ctx: &ToolCallCtx,
@@ -6431,6 +6489,7 @@ pub(crate) async fn handle_run_agent(
             }
 
             // Collect requested models from the `models` field.
+            let explicit_models = params.models.iter().any(|model| !model.trim().is_empty());
             let raw_models: Vec<String> = params.models.clone();
 
             // Split comma-delimited strings, trim whitespace, and deduplicate case-insensitively.
@@ -6465,46 +6524,6 @@ pub(crate) async fn handle_run_agent(
 
             models.sort_by(|a, b| a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase()));
             models.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
-
-            // Helper: derive the command to check for a given model/config pair.
-            fn resolve_command_for_check(model: &str, cfg: Option<&crate::config_types::AgentConfig>) -> (String, bool) {
-                let spec = agent_model_spec(model)
-                    .or_else(|| cfg.and_then(|c| agent_model_spec(&c.name)))
-                    .or_else(|| cfg.and_then(|c| agent_model_spec(&c.command)));
-
-                let cfg_trimmed = cfg.map(|c| {
-                    let (base, _) = split_command_and_args(&c.command);
-                    let trimmed = base.trim();
-                    if trimmed.is_empty() { c.command.trim().to_string() } else { trimmed.to_string() }
-                });
-
-                if let Some(spec) = spec {
-                    let is_builtin_family = matches!(spec.family, "code" | "codex" | "cloud");
-                    let uses_default_cli = cfg_trimmed
-                        .as_ref()
-                        .map(|cmd| cmd.is_empty() || cmd.eq_ignore_ascii_case(spec.cli))
-                        .unwrap_or(true);
-
-                    if is_builtin_family && uses_default_cli {
-                        return (spec.cli.to_string(), true);
-                    }
-                }
-
-                if let Some(cmd) = cfg_trimmed {
-                    if !cmd.is_empty() {
-                        return (cmd, false);
-                    }
-                }
-
-                let m = model.to_lowercase();
-                match m.as_str() {
-                    "code" | "codex" | "cloud" => ("coder".to_string(), true),
-                    "claude" => ("claude".to_string(), false),
-                    "gemini" => ("gemini".to_string(), false),
-                    "qwen" => ("qwen".to_string(), false),
-                    other => (other.to_string(), false),
-                }
-            }
 
             // Helper: PATH lookup to determine if a command exists.
             fn command_exists(cmd: &str) -> bool {
@@ -6568,7 +6587,8 @@ pub(crate) async fn handle_run_agent(
                         continue; // Skip disabled agents
                     }
 
-                    let (cmd_to_check, is_builtin) = resolve_command_for_check(&model, Some(config));
+                    let (cmd_to_check, is_builtin) =
+                        resolve_agent_command_for_check(&model, Some(config));
                     if !is_builtin && !command_exists(&cmd_to_check) {
                         skipped.push(format!("{} (missing: {})", model, cmd_to_check));
                         continue;
@@ -6600,7 +6620,7 @@ pub(crate) async fn handle_run_agent(
                     agent_labels.push((agent_ids.last().cloned().unwrap(), label));
                 } else {
                     // Use default configuration for unknown agents
-                    let (cmd_to_check, is_builtin) = resolve_command_for_check(&model, None);
+                    let (cmd_to_check, is_builtin) = resolve_agent_command_for_check(&model, None);
                     if !is_builtin && !command_exists(&cmd_to_check) {
                         skipped.push(format!("{} (missing: {})", model, cmd_to_check));
                         continue;
@@ -6625,8 +6645,55 @@ pub(crate) async fn handle_run_agent(
                 }
             }
 
-            // If nothing runnable remains, fall back to a single built‑in Codex agent.
+            // If nothing runnable remains, only fall back to a built‑in Codex agent when
+            // the caller did not explicitly request models.
             if agent_ids.is_empty() {
+                if explicit_models {
+                    let mut response_map = serde_json::Map::new();
+                    response_map.insert(
+                        "batch_id".to_string(),
+                        serde_json::Value::String(batch_id.clone()),
+                    );
+                    response_map.insert(
+                        "status".to_string(),
+                        serde_json::Value::String("failed".to_string()),
+                    );
+                    let message = if skipped.is_empty() {
+                        "No runnable agents matched the requested models.".to_string()
+                    } else {
+                        format!(
+                            "No runnable agents matched the requested models. Skipped: {}",
+                            skipped.join(", ")
+                        )
+                    };
+                    response_map.insert(
+                        "message".to_string(),
+                        serde_json::Value::String(message),
+                    );
+                    response_map.insert(
+                        "skipped".to_string(),
+                        if skipped.is_empty() {
+                            serde_json::Value::Null
+                        } else {
+                            serde_json::Value::Array(
+                                skipped
+                                    .iter()
+                                    .cloned()
+                                    .map(serde_json::Value::String)
+                                    .collect(),
+                            )
+                        },
+                    );
+                    let response = serde_json::Value::Object(response_map);
+                    return ResponseInputItem::FunctionCallOutput {
+                        call_id: call_id_clone,
+                        output: FunctionCallOutputPayload {
+                            content: response.to_string(),
+                            success: Some(false),
+                        },
+                    };
+                }
+
                 let read_only = resolve_agent_read_only(params.write, params.read_only, None);
                 let agent_id = manager
                     .create_agent(
