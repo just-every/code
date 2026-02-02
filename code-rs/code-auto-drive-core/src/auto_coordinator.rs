@@ -435,7 +435,7 @@ mod tests {
     use super::*;
     use anyhow::anyhow;
     use code_core::agent_defaults::DEFAULT_AGENT_NAMES;
-    use code_core::error::RetryLimitReachedError;
+    use code_core::error::{RetryLimitReachedError, UsageLimitReachedError};
     use serde_json::json;
     use std::time::Duration;
 
@@ -826,6 +826,23 @@ mod tests {
                 assert!(e.to_string().contains("Quota exceeded"));
             }
             other => panic!("expected fatal quota decision, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn usage_limit_without_reset_is_fatal() {
+        let err = anyhow!(CodexErr::UsageLimitReached(UsageLimitReachedError {
+            plan_type: None,
+            resets_in_seconds: None,
+        }));
+        match classify_model_error(&err) {
+            RetryDecision::Fatal(e) => {
+                assert!(
+                    e.to_string().to_lowercase().contains("usage limit"),
+                    "fatal error should mention usage limit"
+                );
+            }
+            other => panic!("expected fatal usage limit decision, got {other:?}"),
         }
     }
 
@@ -2469,9 +2486,7 @@ pub(crate) fn classify_model_error(error: &anyhow::Error) -> RetryDecision {
                         reason: "usage limit reached".to_string(),
                     };
                 }
-                return RetryDecision::RetryAfterBackoff {
-                    reason: "usage limit reached".to_string(),
-                };
+                return RetryDecision::Fatal(anyhow!(error.to_string()));
             }
             CodexErr::UsageNotIncluded => {
                 return RetryDecision::Fatal(anyhow!(error.to_string()));
