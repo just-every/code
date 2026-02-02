@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.57] - 2026-02-02
+
+- TUI/GH: show gh_run_wait summary output after completion. (816aae9c)
+- TUI/GH: trim redundant title lines in gh_run_wait previews for cleaner display. (816aae9c)
+
 ## [0.6.56] - 2026-02-02
 
 - Auto Drive: stop cleanly on usage limit without resetting state. (66abab5f)
