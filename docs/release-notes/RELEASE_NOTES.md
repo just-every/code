@@ -1,12 +1,10 @@
-## @just-every/code v0.6.55
+## @just-every/code v0.6.56
 
-This release focuses on Plan mode usability, skills discovery, and better runtime visibility.
+This release improves Auto Drive limit handling and agent model selection.
 
 ### Changes
-- TUI/Plan: enable Plan mode with streamed plan items and clearer prompts.
-- Skills: load skills from .agents/skills with clearer lookup guidance.
-- CLI/Logs: show runtime metrics in console and include output in /ps.
-- File Search: support multi-root walks and keep search rooted to the active session CWD.
+- Auto Drive: stop cleanly on usage limit without resetting state.
+- Core/Agent: honor requested agent models during runs.
 
 ### Install
 ```
@@ -14,4 +12,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.54...v0.6.55
+Compare: https://github.com/just-every/code/compare/v0.6.55...v0.6.56

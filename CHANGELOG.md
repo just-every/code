@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.56] - 2026-02-02
+
+- Auto Drive: stop cleanly on usage limit without resetting state. (66abab5f)
+- Core/Agent: honor requested agent models during runs. (e1eafd17)
+
 ## [0.6.55] - 2026-02-02
 
 - TUI/Plan: enable Plan mode with streamed plan items and clearer prompts. (30ed29a7, ec4a2d07, 3dd9a37e)
