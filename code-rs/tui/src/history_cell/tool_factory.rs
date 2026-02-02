@@ -403,6 +403,39 @@ fn new_completed_gh_run_wait_tool_call(success: bool, result: &str) -> ToolCallC
         HistoryToolStatus::Failed
     };
     let title = gh_run_wait_title(result, success);
+    let result_preview = {
+        let trimmed = result.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            let mut lines = trimmed
+                .lines()
+                .map(|line| line.trim_end())
+                .collect::<Vec<_>>();
+            if let Some(first_non_empty) = lines.iter().position(|line| !line.trim().is_empty()) {
+                if lines[first_non_empty].trim().eq_ignore_ascii_case(title.trim()) {
+                    lines.remove(first_non_empty);
+                }
+            }
+            while lines.first().is_some_and(|line| line.trim().is_empty()) {
+                lines.remove(0);
+            }
+            let remaining = lines.join("\n");
+            if remaining.trim().is_empty() {
+                None
+            } else {
+                let preview_lines = build_preview_lines(&remaining, true);
+                let preview_strings = preview_lines
+                    .iter()
+                    .map(line_to_plain_text)
+                    .collect::<Vec<_>>();
+                Some(ToolResultPreview {
+                    lines: preview_strings,
+                    truncated: false,
+                })
+            }
+        }
+    };
     let state = ToolCallState {
         id: HistoryId::ZERO,
         call_id: None,
@@ -410,7 +443,7 @@ fn new_completed_gh_run_wait_tool_call(success: bool, result: &str) -> ToolCallC
         title,
         duration: None,
         arguments: Vec::new(),
-        result_preview: None,
+        result_preview,
         error_message: None,
     };
     ToolCallCell::new(state)
