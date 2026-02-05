@@ -12,6 +12,13 @@ body:
         1. Search existing issues for similar features. If you find one, 👍 it rather than opening a new one.
         2. Please be aware that this feature may be automatically implemented through our Issue Triage - if this happens you will receive a reply to this issue with information on how to run it. We'd really appreciate any feedback on the implementation as it helps us improve the feature for everyone!
 
+  - type: input
+    id: variant
+    attributes:
+      label: What variant of Codex are you using?
+      description: (e.g., App, IDE Extension, CLI, Web)
+    validations:
+      required: true
   - type: textarea
     id: feature
     attributes:

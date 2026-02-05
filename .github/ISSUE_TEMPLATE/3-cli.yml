@@ -1,5 +1,5 @@
-name: 🪲 Bug Report
-description: Report an issue that should be fixed
+name: 💻 CLI Bug
+description: Report an issue in the Codex CLI
 labels:
   - bug
   - needs triage
@@ -12,8 +12,6 @@ body:
         If you need help or support using Code, and are not reporting a bug, please post on [code/discussions](https://github.com/just-every/code/discussions), where you can ask questions or engage with others on ideas for how to improve Code.
 
         Make sure you are running the [latest](https://npmjs.com/package/@just-every/code) version of the Code CLI. The bug you are experiencing may already have been fixed.
-
-        Please try to include as much information as possible.
 
   - type: input
     id: version
@@ -30,7 +28,7 @@ body:
     attributes:
       label: What platform is your computer?
       description: |
-        For MacOS and Linux: copy the output of `uname -mprs`
+        For macOS and Linux: copy the output of `uname -mprs`
         For Windows: copy the output of `"$([Environment]::OSVersion | ForEach-Object VersionString) $(if ([Environment]::Is64BitOperatingSystem) { "x64" } else { "x86" })"` in the PowerShell console
   - type: input
     id: terminal
