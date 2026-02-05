@@ -174,17 +174,29 @@ mod tests {
 
     static ORIGINATOR_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
+    fn set_originator_env(value: &str) {
+        unsafe {
+            std::env::set_var(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR, value);
+        }
+    }
+
+    fn remove_originator_env() {
+        unsafe {
+            std::env::remove_var(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR);
+        }
+    }
+
     fn with_originator_env_cleared<F: FnOnce()>(f: F) {
         let _lock = ORIGINATOR_ENV_LOCK.lock().expect("originator env lock");
         let previous = std::env::var(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR).ok();
-        std::env::remove_var(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR);
+        remove_originator_env();
         f();
         match previous {
             Some(value) => {
-                std::env::set_var(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR, value);
+                set_originator_env(&value);
             }
             None => {
-                std::env::remove_var(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR);
+                remove_originator_env();
             }
         }
     }
@@ -196,14 +208,14 @@ mod tests {
     {
         let _lock = ORIGINATOR_ENV_LOCK.lock().expect("originator env lock");
         let previous = std::env::var(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR).ok();
-        std::env::remove_var(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR);
+        remove_originator_env();
         f().await;
         match previous {
             Some(value) => {
-                std::env::set_var(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR, value);
+                set_originator_env(&value);
             }
             None => {
-                std::env::remove_var(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR);
+                remove_originator_env();
             }
         }
     }
