@@ -2657,8 +2657,8 @@ mod tests {
             .env("http_proxy", &proxy_url)
             .env("https_proxy", &proxy_url)
             .env("all_proxy", &proxy_url)
-            .env("NO_PROXY", "")
-            .env("no_proxy", "")
+            .env("NO_PROXY", "example.invalid")
+            .env("no_proxy", "example.invalid")
             .output()
             .expect("spawn child test");
 
