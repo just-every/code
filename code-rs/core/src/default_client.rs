@@ -168,11 +168,52 @@ fn is_sandboxed() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::future::Future;
+    use std::sync::LazyLock;
+    use std::sync::Mutex;
+
+    static ORIGINATOR_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    fn with_originator_env_cleared<F: FnOnce()>(f: F) {
+        let _lock = ORIGINATOR_ENV_LOCK.lock().expect("originator env lock");
+        let previous = std::env::var(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR).ok();
+        std::env::remove_var(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR);
+        f();
+        match previous {
+            Some(value) => {
+                std::env::set_var(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR, value);
+            }
+            None => {
+                std::env::remove_var(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR);
+            }
+        }
+    }
+
+    async fn with_originator_env_cleared_async<F, Fut>(f: F)
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        let _lock = ORIGINATOR_ENV_LOCK.lock().expect("originator env lock");
+        let previous = std::env::var(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR).ok();
+        std::env::remove_var(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR);
+        f().await;
+        match previous {
+            Some(value) => {
+                std::env::set_var(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR, value);
+            }
+            None => {
+                std::env::remove_var(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR);
+            }
+        }
+    }
 
     #[test]
     fn test_get_code_user_agent() {
-        let user_agent = get_code_user_agent(None);
-        assert!(user_agent.starts_with("code_cli_rs/"));
+        with_originator_env_cleared(|| {
+            let user_agent = get_code_user_agent(None);
+            assert!(user_agent.starts_with(&format!("{DEFAULT_ORIGINATOR}/")));
+        });
     }
 
     #[tokio::test]
@@ -183,54 +224,59 @@ mod tests {
         use wiremock::matchers::method;
         use wiremock::matchers::path;
 
-        let originator = "test_originator";
-        let client = create_client(originator);
+        with_originator_env_cleared_async(|| async {
+            let originator = "test_originator";
+            let client = create_client(originator);
 
-        // Spin up a local mock server and capture a request.
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/"))
-            .respond_with(ResponseTemplate::new(200))
-            .mount(&server)
-            .await;
+            // Spin up a local mock server and capture a request.
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/"))
+                .respond_with(ResponseTemplate::new(200))
+                .mount(&server)
+                .await;
 
-        let resp = client
-            .get(server.uri())
-            .send()
-            .await
-            .expect("failed to send request");
-        assert!(resp.status().is_success());
+            let resp = client
+                .get(server.uri())
+                .send()
+                .await
+                .expect("failed to send request");
+            assert!(resp.status().is_success());
 
-        let requests = server
-            .received_requests()
-            .await
-            .expect("failed to fetch received requests");
-        assert!(!requests.is_empty());
-        let headers = &requests[0].headers;
+            let requests = server
+                .received_requests()
+                .await
+                .expect("failed to fetch received requests");
+            assert!(!requests.is_empty());
+            let headers = &requests[0].headers;
 
-        // originator header is set to the provided value
-        let originator_header = headers
-            .get("originator")
-            .expect("originator header missing");
-        assert_eq!(originator_header.to_str().unwrap(), originator);
+            // originator header is set to the provided value
+            let originator_header = headers
+                .get("originator")
+                .expect("originator header missing");
+            assert_eq!(originator_header.to_str().unwrap(), originator);
 
-        // User-Agent matches the computed Codex UA for that originator
-        let expected_ua = get_code_user_agent(Some(originator));
-        let ua_header = headers
-            .get("user-agent")
-            .expect("user-agent header missing");
-        assert_eq!(ua_header.to_str().unwrap(), expected_ua);
+            // User-Agent matches the computed Codex UA for that originator
+            let expected_ua = get_code_user_agent(Some(originator));
+            let ua_header = headers
+                .get("user-agent")
+                .expect("user-agent header missing");
+            assert_eq!(ua_header.to_str().unwrap(), expected_ua);
+        })
+        .await;
     }
 
     #[test]
     #[cfg(target_os = "macos")]
     fn test_macos() {
         use regex_lite::Regex;
-        let user_agent = get_code_user_agent(None);
-        let re = Regex::new(
-            r"^code_cli_rs/\d+\.\d+\.\d+ \(Mac OS \d+\.\d+\.\d+; (x86_64|arm64)\) (\S+)$",
-        )
-        .unwrap();
-        assert!(re.is_match(&user_agent));
+        with_originator_env_cleared(|| {
+            let user_agent = get_code_user_agent(None);
+            let re = Regex::new(
+                r"^code_cli_rs/\d+\.\d+\.\d+ \(Mac OS \d+\.\d+\.\d+; (x86_64|arm64)\) (\S+)$",
+            )
+            .unwrap();
+            assert!(re.is_match(&user_agent));
+        });
     }
 }
