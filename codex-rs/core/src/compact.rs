@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::ModelProviderInfo;
 use crate::Prompt;
+use crate::client::ModelClientSession;
 use crate::client_common::ResponseEvent;
 use crate::codex::Session;
 use crate::codex::TurnContext;
@@ -60,8 +61,8 @@ pub(crate) async fn run_compact_task(
     input: Vec<UserInput>,
 ) {
     let start_event = EventMsg::TurnStarted(TurnStartedEvent {
-        model_context_window: turn_context.client.get_model_context_window(),
-        collaboration_mode_kind: turn_context.collaboration_mode_kind,
+        model_context_window: turn_context.model_context_window(),
+        collaboration_mode_kind: turn_context.collaboration_mode.mode,
     });
     sess.send_event(&turn_context, start_event).await;
     run_compact_task_inner(sess.clone(), turn_context, input).await;
@@ -85,8 +86,12 @@ async fn run_compact_task_inner(
 
     let mut truncated_count = 0usize;
 
-    let max_retries = turn_context.client.get_provider().stream_max_retries();
+    let max_retries = turn_context.provider.stream_max_retries();
     let mut retries = 0;
+    let turn_metadata_header = turn_context.resolve_turn_metadata_header().await;
+    let mut client_session = sess.services.model_client.new_session();
+    // Reuse one client session so turn-scoped state (sticky routing, websocket append tracking)
+    // survives retries within this compact turn.
 
     // TODO: If we need to guarantee the persisted mode always matches the prompt used for this
     // turn, capture it in TurnContext at creation time. Using SessionConfiguration here avoids
@@ -97,11 +102,11 @@ async fn run_compact_task_inner(
         cwd: turn_context.cwd.clone(),
         approval_policy: turn_context.approval_policy,
         sandbox_policy: turn_context.sandbox_policy.clone(),
-        model: turn_context.client.get_model(),
+        model: turn_context.model_info.slug.clone(),
         personality: turn_context.personality,
         collaboration_mode: Some(collaboration_mode),
-        effort: turn_context.client.get_reasoning_effort(),
-        summary: turn_context.client.get_reasoning_summary(),
+        effort: turn_context.reasoning_effort,
+        summary: turn_context.reasoning_summary,
         user_instructions: turn_context.user_instructions.clone(),
         developer_instructions: turn_context.developer_instructions.clone(),
         final_output_json_schema: turn_context.final_output_json_schema.clone(),
@@ -119,7 +124,14 @@ async fn run_compact_task_inner(
             personality: turn_context.personality,
             ..Default::default()
         };
-        let attempt_result = drain_to_completed(&sess, turn_context.as_ref(), &prompt).await;
+        let attempt_result = drain_to_completed(
+            &sess,
+            turn_context.as_ref(),
+            &mut client_session,
+            turn_metadata_header.as_deref(),
+            &prompt,
+        )
+        .await;
 
         match attempt_result {
             Ok(()) => {
@@ -311,6 +323,7 @@ fn build_compacted_history_with_limit(
                 text: message.clone(),
             }],
             end_turn: None,
+            phase: None,
         });
     }
 
@@ -325,6 +338,7 @@ fn build_compacted_history_with_limit(
         role: "user".to_string(),
         content: vec![ContentItem::InputText { text: summary_text }],
         end_turn: None,
+        phase: None,
     });
 
     history
@@ -333,10 +347,20 @@ fn build_compacted_history_with_limit(
 async fn drain_to_completed(
     sess: &Session,
     turn_context: &TurnContext,
+    client_session: &mut ModelClientSession,
+    turn_metadata_header: Option<&str>,
     prompt: &Prompt,
 ) -> CodexResult<()> {
-    let mut client_session = turn_context.client.new_session();
-    let mut stream = client_session.stream(prompt).await?;
+    let mut stream = client_session
+        .stream(
+            prompt,
+            &turn_context.model_info,
+            &turn_context.otel_manager,
+            turn_context.reasoning_effort,
+            turn_context.reasoning_summary,
+            turn_metadata_header,
+        )
+        .await?;
     loop {
         let maybe_event = stream.next().await;
         let Some(event) = maybe_event else {
@@ -414,6 +438,7 @@ mod tests {
                     text: "ignored".to_string(),
                 }],
                 end_turn: None,
+                phase: None,
             },
             ResponseItem::Message {
                 id: Some("user".to_string()),
@@ -422,6 +447,7 @@ mod tests {
                     text: "first".to_string(),
                 }],
                 end_turn: None,
+                phase: None,
             },
             ResponseItem::Other,
         ];
@@ -442,6 +468,7 @@ mod tests {
                         .to_string(),
                 }],
                 end_turn: None,
+            phase: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -450,6 +477,7 @@ mod tests {
                     text: "<ENVIRONMENT_CONTEXT>cwd=/tmp</ENVIRONMENT_CONTEXT>".to_string(),
                 }],
                 end_turn: None,
+            phase: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -458,6 +486,7 @@ mod tests {
                     text: "real user message".to_string(),
                 }],
                 end_turn: None,
+            phase: None,
             },
         ];
 
@@ -543,6 +572,7 @@ mod tests {
                     text: marker.clone(),
                 }],
                 end_turn: None,
+                phase: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -551,6 +581,7 @@ mod tests {
                     text: "real user message".to_string(),
                 }],
                 end_turn: None,
+                phase: None,
             },
         ];
 

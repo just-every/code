@@ -471,7 +471,7 @@ pub struct Tui {
     #[serde(default = "default_true")]
     pub show_tooltips: bool,
 
-    /// Start the TUI in the specified collaboration mode (plan/execute/etc.).
+    /// Start the TUI in the specified collaboration mode (plan/default).
     /// Defaults to unset.
     #[serde(default)]
     pub experimental_mode: Option<ModeKind>,
@@ -486,6 +486,12 @@ pub struct Tui {
     /// scrollback in terminal multiplexers like Zellij that follow the xterm spec.
     #[serde(default)]
     pub alternate_screen: AltScreenMode,
+
+    /// Ordered list of status line item identifiers.
+    ///
+    /// When set, the TUI renders the selected items as the status line.
+    #[serde(default)]
+    pub status_line: Option<Vec<String>>,
 }
 
 const fn default_true() -> bool {
