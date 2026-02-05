@@ -92,7 +92,11 @@ pub fn supported_reasoning_efforts_for_model(model: &str) -> &'static [Reasoning
         return GPT5_1_EFFORTS;
     }
 
-    if lower.starts_with("gpt-5.2") || lower.starts_with("test-gpt-5.2") {
+    if lower.starts_with("gpt-5.2")
+        || lower.starts_with("test-gpt-5.2")
+        || lower.starts_with("gpt-5.3")
+        || lower.starts_with("test-gpt-5.3")
+    {
         return GPT5_2_EFFORTS;
     }
 
@@ -162,6 +166,12 @@ mod tests {
     #[test]
     fn gpt5_2_supports_xhigh() {
         let clamped = clamp_reasoning_effort_for_model("gpt-5.2", ReasoningEffort::XHigh);
+        assert_eq!(clamped, ReasoningEffort::XHigh);
+    }
+
+    #[test]
+    fn gpt5_3_supports_xhigh() {
+        let clamped = clamp_reasoning_effort_for_model("gpt-5.3", ReasoningEffort::XHigh);
         assert_eq!(clamped, ReasoningEffort::XHigh);
     }
 }

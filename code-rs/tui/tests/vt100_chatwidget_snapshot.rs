@@ -2574,7 +2574,7 @@ fn agents_toggle_claude_opus_persists_via_slash_command() {
     let overlay_initial = normalize_output(render_chat_widget_to_vt100(&mut harness, 100, 28));
     assert!(overlay_initial.contains("Agents"), "Agents overlay did not open");
 
-    harness.show_agent_editor("claude-opus-4.5");
+    harness.show_agent_editor("claude-opus-4.6");
 
     let editor_frame = normalize_output(render_chat_widget_to_vt100(&mut harness, 100, 28));
     let editor_lower = editor_frame.to_lowercase();
@@ -2593,7 +2593,7 @@ fn agents_toggle_claude_opus_persists_via_slash_command() {
 
     let overview_after_save = normalize_output(render_chat_widget_to_vt100(&mut harness, 100, 28));
     let overview_lower = overview_after_save.to_lowercase();
-    assert!(overview_lower.contains("claude-opus-4.5"));
+    assert!(overview_lower.contains("claude-opus-4.6"));
     assert!(overview_lower.contains("disabled"));
 
     harness.send_key(make_key(KeyCode::Esc, KeyModifiers::NONE));
@@ -2603,7 +2603,7 @@ fn agents_toggle_claude_opus_persists_via_slash_command() {
     harness.send_key(make_key(KeyCode::Down, KeyModifiers::NONE));
     let overlay_reopen = normalize_output(render_chat_widget_to_vt100(&mut harness, 100, 28));
     let reopen_lower = overlay_reopen.to_lowercase();
-    assert!(reopen_lower.contains("claude-opus-4.5"));
+    assert!(reopen_lower.contains("claude-opus-4.6"));
     assert!(reopen_lower.contains("disabled"));
 }
 

@@ -87,6 +87,7 @@ pub(crate) fn base_instructions_override_for_personality(
     personality: Option<Personality>,
 ) -> Option<String> {
     if !(model.starts_with("gpt-5.2-codex")
+        || model.starts_with("gpt-5.3-codex")
         || model.starts_with("bengalfox")
         || model.starts_with("exp-codex")
         || model.starts_with("codex-1p"))
@@ -251,6 +252,18 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             max_output_tokens: Some(MAX_OUTPUT_DEFAULT),
             truncation_policy: TruncationPolicy::Tokens(10_000),
         )
+    } else if slug.starts_with("gpt-5.3-codex") {
+        // Same defaults as gpt-5.2-codex.
+        model_family!(
+            slug, slug,
+            supports_reasoning_summaries: true,
+            base_instructions: GPT_5_2_CODEX_INSTRUCTIONS.to_string(),
+            apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
+            supports_parallel_tool_calls: true,
+            context_window: Some(CONTEXT_WINDOW_272K),
+            max_output_tokens: Some(MAX_OUTPUT_DEFAULT),
+            truncation_policy: TruncationPolicy::Tokens(10_000),
+        )
     } else if slug.starts_with("bengalfox") {
         model_family!(
             slug, slug,
@@ -261,6 +274,18 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             context_window: Some(CONTEXT_WINDOW_272K),
             max_output_tokens: Some(MAX_OUTPUT_DEFAULT),
             truncation_policy: TruncationPolicy::Tokens(10_000),
+        )
+    } else if slug.starts_with("gpt-5.3") {
+        model_family!(
+            slug, "gpt-5.3",
+            supports_reasoning_summaries: true,
+            base_instructions: GPT_5_2_INSTRUCTIONS.to_string(),
+            apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
+            default_reasoning_effort: Some(ReasoningEffort::Medium),
+            supports_parallel_tool_calls: true,
+            context_window: Some(CONTEXT_WINDOW_272K),
+            max_output_tokens: Some(MAX_OUTPUT_DEFAULT),
+            truncation_policy: TruncationPolicy::Bytes(10_000),
         )
     } else if slug.starts_with("gpt-5.2") {
         model_family!(

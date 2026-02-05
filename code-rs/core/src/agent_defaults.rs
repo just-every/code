@@ -36,7 +36,7 @@ pub const DEFAULT_AGENT_NAMES: &[&str] = &[
     // Frontline for moderate/challenging tasks
     "code-gpt-5.2",
     "code-gpt-5.2-codex",
-    "claude-opus-4.5",
+    "claude-opus-4.6",
     "gemini-3-pro",
     // Straightforward / cost-aware
     "code-gpt-5.1-codex-mini",
@@ -150,7 +150,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         is_frontline: false,
     },
     AgentModelSpec {
-        slug: "claude-opus-4.5",
+        slug: "claude-opus-4.6",
         family: "claude",
         cli: "claude",
         read_only_args: CLAUDE_OPUS_READ_ONLY,
@@ -158,7 +158,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         model_args: &["--model", "opus"],
         description: "Higher-capacity Claude model for complex reasoning; use when you want the strongest Claude.",
         enabled_by_default: true,
-        aliases: &["claude-opus", "claude-opus-4.1"],
+        aliases: &["claude-opus", "claude-opus-4.1", "claude-opus-4.5"],
         gating_env: None,
         is_frontline: true,
     },

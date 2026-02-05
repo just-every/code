@@ -5983,7 +5983,7 @@ mod resolve_agent_command_for_check_tests {
 
     #[test]
     fn external_models_use_cli_for_command_checks() {
-        let (cmd, is_builtin) = resolve_agent_command_for_check("claude-opus-4.5", None);
+        let (cmd, is_builtin) = resolve_agent_command_for_check("claude-opus-4.6", None);
         assert_eq!(cmd, "claude");
         assert!(!is_builtin, "Claude should not be treated as a built-in family");
     }

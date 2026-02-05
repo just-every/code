@@ -19,7 +19,7 @@ instructions = "Preamble added to this agent’s prompt"
 Field recap: `name` (slug/alias), `command` (absolute paths ok), `args*` (RO/RW lists override base), `env`, `read_only`, `enabled`, optional `description` and `instructions`.
 
 ### Built-in defaults
-If no `[[agents]]` are configured, Code advertises built-ins (gated by env `CODE_ENABLE_CLOUD_AGENT_MODEL` for cloud variants): `code-gpt-5.2`, `code-gpt-5.2-codex`, `claude-opus-4.5`, `gemini-3-pro`, `code-gpt-5.1-codex-mini`, `claude-sonnet-4.5`, `gemini-3-flash`, `claude-haiku-4.5`, `qwen-3-coder`, `cloud-gpt-5.1-codex-max`. Built-ins strip any user `--model/-m` flags to avoid conflicts and inject their own.
+If no `[[agents]]` are configured, Code advertises built-ins (gated by env `CODE_ENABLE_CLOUD_AGENT_MODEL` for cloud variants): `code-gpt-5.2`, `code-gpt-5.2-codex`, `claude-opus-4.6`, `gemini-3-pro`, `code-gpt-5.1-codex-mini`, `claude-sonnet-4.5`, `gemini-3-flash`, `claude-haiku-4.5`, `qwen-3-coder`, `cloud-gpt-5.1-codex-max`. Built-ins strip any user `--model/-m` flags to avoid conflicts and inject their own.
 
 Tip: `gemini` resolves to `gemini-3-flash` (fast/cheap). Use `gemini-3-pro` when you want the higher-capacity Gemini option.
 
@@ -28,7 +28,7 @@ Tip: `gemini` resolves to `gemini-3-flash` (fast/cheap). Use `gemini-3-pro` when
 [[subagents.commands]]
 name = "plan"                     # slash name (/plan, /solve, /code, or custom)
 read_only = true                  # default plan/solve=true, code=false
-agents = ["code-gpt-5.2-codex", "claude-opus-4.5"]  # falls back to enabled agents or built-ins
+agents = ["code-gpt-5.2-codex", "claude-opus-4.6"]  # falls back to enabled agents or built-ins
 orchestrator_instructions = "Guidance for Code before spawning agents"
 agent_instructions = "Preamble added to each spawned agent"
 ```
@@ -84,7 +84,7 @@ enabled = true
 [[subagents.commands]]
 name = "context"
 read_only = true
-agents = ["code-gpt-5.2-codex", "claude-opus-4.5"]
+agents = ["code-gpt-5.2-codex", "claude-opus-4.6"]
 orchestrator_instructions = "Have each agent summarize the most relevant files and tests."
 agent_instructions = "Return paths plus 1–2 sentence rationale; do not edit files."
 ```

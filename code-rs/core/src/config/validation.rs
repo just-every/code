@@ -148,7 +148,11 @@ pub(crate) fn upgrade_legacy_model_slugs(cfg: &mut ConfigToml) {
 }
 
 fn upgrade_legacy_model_slug(slug: &str) -> Option<String> {
-    if slug.starts_with("gpt-5.2") || slug.starts_with("test-gpt-5.2") {
+    if slug.starts_with("gpt-5.2")
+        || slug.starts_with("test-gpt-5.2")
+        || slug.starts_with("gpt-5.3")
+        || slug.starts_with("test-gpt-5.3")
+    {
         return None;
     }
 
@@ -168,9 +172,10 @@ fn upgrade_legacy_model_slug(slug: &str) -> Option<String> {
         return Some(format!("gpt-5.1-codex{rest}"));
     }
 
-    // Upgrade Anthropic Opus 4.1 to 4.5
-    if slug.eq_ignore_ascii_case("claude-opus-4.1") {
-        return Some("claude-opus-4.5".to_string());
+    // Upgrade Anthropic Opus 4.1/4.5 to 4.6
+    if slug.eq_ignore_ascii_case("claude-opus-4.1") || slug.eq_ignore_ascii_case("claude-opus-4.5")
+    {
+        return Some("claude-opus-4.6".to_string());
     }
 
     // Upgrade Gemini 2.5 Pro to Gemini 3 Pro (or preview alias)
