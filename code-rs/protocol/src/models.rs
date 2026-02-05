@@ -168,15 +168,12 @@ impl From<ResponseInputItem> for ResponseItem {
             }
             ResponseInputItem::McpToolCallOutput { call_id, result } => Self::FunctionCallOutput {
                 call_id,
-                output: FunctionCallOutputPayload {
-                    success: Some(result.is_ok()),
-                    content: result.map_or_else(
-                        |tool_call_err| format!("err: {tool_call_err:?}"),
-                        |result| {
-                            serde_json::to_string(&result)
-                                .unwrap_or_else(|e| format!("JSON serialization error: {e}"))
-                        },
-                    ),
+                output: match result {
+                    Ok(result) => FunctionCallOutputPayload::from(&result),
+                    Err(tool_call_err) => FunctionCallOutputPayload {
+                        content: format!("err: {tool_call_err:?}"),
+                        success: Some(false),
+                    },
                 },
             },
             ResponseInputItem::CustomToolCallOutput { call_id, output } => {
@@ -305,28 +302,78 @@ pub struct ShellToolCallParams {
     pub justification: Option<String>,
 }
 
+/// Responses API compatible content items that can be returned by a tool call.
+/// This is a subset of ContentItem with the types we support as function call outputs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum FunctionCallOutputContentItem {
+    // Do not rename, these are serialized and used directly in the responses API.
+    InputText { text: String },
+    // Do not rename, these are serialized and used directly in the responses API.
+    InputImage { image_url: String },
+}
+
+/// Converts structured function-call output content into plain text for
+/// human-readable surfaces.
+///
+/// This conversion is intentionally lossy:
+/// - only `input_text` items are included
+/// - image items are ignored
+pub fn function_call_output_content_items_to_text(
+    content_items: &[FunctionCallOutputContentItem],
+) -> Option<String> {
+    let text_segments = content_items
+        .iter()
+        .filter_map(|item| match item {
+            FunctionCallOutputContentItem::InputText { text } if !text.trim().is_empty() => {
+                Some(text.as_str())
+            }
+            FunctionCallOutputContentItem::InputText { .. }
+            | FunctionCallOutputContentItem::InputImage { .. } => None,
+        })
+        .collect::<Vec<_>>();
+
+    if text_segments.is_empty() {
+        None
+    } else {
+        Some(text_segments.join("\n"))
+    }
+}
+
+impl From<crate::dynamic_tools::DynamicToolCallOutputContentItem>
+    for FunctionCallOutputContentItem
+{
+    fn from(item: crate::dynamic_tools::DynamicToolCallOutputContentItem) -> Self {
+        match item {
+            crate::dynamic_tools::DynamicToolCallOutputContentItem::InputText { text } => {
+                Self::InputText { text }
+            }
+            crate::dynamic_tools::DynamicToolCallOutputContentItem::InputImage { image_url } => {
+                Self::InputImage { image_url }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, TS)]
 pub struct FunctionCallOutputPayload {
     pub content: String,
     pub success: Option<bool>,
 }
 
-// The Responses API expects two *different* shapes depending on success vs failure:
-//   • success → output is a plain string (no nested object)
-//   • failure → output is an object { content, success:false }
-// The upstream TypeScript CLI implements this by special‑casing the serialize path.
-// We replicate that behavior with a manual Serialize impl.
+// The Responses API accepts either a plain string or an array of structured
+// content items for `function_call_output.output`. We choose the array form when
+// `content` holds a serialized `FunctionCallOutputContentItem` list.
+// The `success` flag remains internal metadata and is never serialized.
 
 impl Serialize for FunctionCallOutputPayload {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        // The upstream TypeScript CLI always serializes `output` as a *plain string* regardless
-        // of whether the function call succeeded or failed. The boolean is purely informational
-        // for local bookkeeping and is NOT sent to the OpenAI endpoint. Sending the nested object
-        // form `{ content, success:false }` triggers the 400 we are still seeing. Mirror the JS CLI
-        // exactly: always emit a bare string.
+        if let Some(content_items) = try_parse_content_items(&self.content) {
+            return content_items.serialize(serializer);
+        }
 
         serializer.serialize_str(&self.content)
     }
@@ -337,11 +384,95 @@ impl<'de> Deserialize<'de> for FunctionCallOutputPayload {
     where
         D: Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
-        Ok(FunctionCallOutputPayload {
-            content: s,
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum OutputWire {
+            Text(String),
+            Items(Vec<FunctionCallOutputContentItem>),
+        }
+
+        let payload = match OutputWire::deserialize(deserializer)? {
+            OutputWire::Text(content) => FunctionCallOutputPayload {
+                content,
+                success: None,
+            },
+            OutputWire::Items(items) => FunctionCallOutputPayload {
+                content: serde_json::to_string(&items).unwrap_or_default(),
+                success: None,
+            },
+        };
+
+        Ok(payload)
+    }
+}
+
+impl FunctionCallOutputPayload {
+    pub fn from_content_items(content_items: Vec<FunctionCallOutputContentItem>) -> Self {
+        let content = serde_json::to_string(&content_items).unwrap_or_default();
+        Self {
+            content,
             success: None,
-        })
+        }
+    }
+
+    pub fn content_items(&self) -> Option<Vec<FunctionCallOutputContentItem>> {
+        try_parse_content_items(&self.content)
+    }
+}
+
+impl From<&CallToolResult> for FunctionCallOutputPayload {
+    fn from(call_tool_result: &CallToolResult) -> Self {
+        let CallToolResult {
+            content,
+            structured_content,
+            is_error,
+            ..
+        } = call_tool_result;
+
+        let is_success = is_error != &Some(true);
+
+        if let Some(structured_content) = structured_content
+            && !structured_content.is_null()
+        {
+            match serde_json::to_string(structured_content) {
+                Ok(serialized_structured_content) => {
+                    return FunctionCallOutputPayload {
+                        content: serialized_structured_content,
+                        success: Some(is_success),
+                    };
+                }
+                Err(err) => {
+                    return FunctionCallOutputPayload {
+                        content: err.to_string(),
+                        success: Some(false),
+                    };
+                }
+            }
+        }
+
+        let serialized_content = match serde_json::to_string(content) {
+            Ok(serialized_content) => serialized_content,
+            Err(err) => {
+                return FunctionCallOutputPayload {
+                    content: err.to_string(),
+                    success: Some(false),
+                };
+            }
+        };
+
+        let content_items = convert_mcp_content_to_items(content);
+        let payload = match content_items {
+            Some(content_items) => FunctionCallOutputPayload::from_content_items(content_items),
+            None => FunctionCallOutputPayload {
+                content: serialized_content,
+                success: Some(is_success),
+            },
+        };
+
+        FunctionCallOutputPayload {
+            success: Some(is_success),
+            ..payload
+        }
     }
 }
 
@@ -360,6 +491,59 @@ impl std::ops::Deref for FunctionCallOutputPayload {
     fn deref(&self) -> &Self::Target {
         &self.content
     }
+}
+
+fn try_parse_content_items(content: &str) -> Option<Vec<FunctionCallOutputContentItem>> {
+    serde_json::from_str::<Vec<FunctionCallOutputContentItem>>(content).ok()
+}
+
+fn convert_mcp_content_to_items(
+    contents: &[mcp_types::ContentBlock],
+) -> Option<Vec<FunctionCallOutputContentItem>> {
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "type")]
+    enum McpContent {
+        #[serde(rename = "text")]
+        Text { text: String },
+        #[serde(rename = "image")]
+        Image {
+            data: String,
+            #[serde(rename = "mimeType", alias = "mime_type")]
+            mime_type: Option<String>,
+        },
+        #[serde(other)]
+        Unknown,
+    }
+
+    let mut saw_image = false;
+    let mut items = Vec::with_capacity(contents.len());
+
+    for content in contents {
+        let value = match serde_json::to_value(content) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+
+        let item = match serde_json::from_value::<McpContent>(value.clone()) {
+            Ok(McpContent::Text { text }) => FunctionCallOutputContentItem::InputText { text },
+            Ok(McpContent::Image { data, mime_type }) => {
+                saw_image = true;
+                let image_url = if data.starts_with("data:") {
+                    data
+                } else {
+                    let mime_type = mime_type.unwrap_or_else(|| "application/octet-stream".into());
+                    format!("data:{mime_type};base64,{data}")
+                };
+                FunctionCallOutputContentItem::InputImage { image_url }
+            }
+            Ok(McpContent::Unknown) | Err(_) => FunctionCallOutputContentItem::InputText {
+                text: serde_json::to_string(&value).unwrap_or_else(|_| "<content>".to_string()),
+            },
+        };
+        items.push(item);
+    }
+
+    if saw_image { Some(items) } else { None }
 }
 
 // (Moved event mapping logic into codex-core to avoid coupling protocol to UI-facing events.)

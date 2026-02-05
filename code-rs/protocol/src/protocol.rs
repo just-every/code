@@ -448,6 +448,12 @@ impl SandboxPolicy {
                                 subpaths.push(top_level_git);
                             }
                         }
+                        for subdir in [".agents", ".codex"] {
+                            let top_level = writable_root.join(subdir);
+                            if top_level.is_dir() {
+                                subpaths.push(top_level);
+                            }
+                        }
                         WritableRoot {
                             root: writable_root,
                             read_only_subpaths: subpaths,

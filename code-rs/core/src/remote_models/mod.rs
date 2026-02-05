@@ -391,6 +391,7 @@ fn apply_model_info_overrides_with_personality(
 
 fn map_personality(personality: ConfigPersonality) -> ProtocolPersonality {
     match personality {
+        ConfigPersonality::None => ProtocolPersonality::None,
         ConfigPersonality::Friendly => ProtocolPersonality::Friendly,
         ConfigPersonality::Pragmatic => ProtocolPersonality::Pragmatic,
     }

@@ -753,8 +753,9 @@ async fn on_dynamic_tool_call_response(
         Err(err) => {
             error!("request failed: {err:?}");
             let fallback = CoreDynamicToolResponse {
-                call_id: call_id.clone(),
-                output: "dynamic tool request failed".to_string(),
+                content_items: vec![code_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputText {
+                    text: "dynamic tool request failed".to_string(),
+                }],
                 success: false,
             };
             if let Err(err) = conversation
@@ -779,8 +780,11 @@ async fn on_dynamic_tool_call_response(
     });
 
     let response = CoreDynamicToolResponse {
-        call_id: call_id.clone(),
-        output: response.output,
+        content_items: vec![
+            code_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputText {
+                text: response.output,
+            },
+        ],
         success: response.success,
     };
     if let Err(err) = conversation

@@ -94,6 +94,7 @@ pub(crate) fn base_instructions_override_for_personality(
         return None;
     }
     let personality_message = match personality {
+        Some(Personality::None) => "",
         Some(Personality::Friendly) => PERSONALITY_FRIENDLY,
         Some(Personality::Pragmatic) => PERSONALITY_PRAGMATIC,
         None => "",

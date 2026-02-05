@@ -255,9 +255,12 @@ async fn run_code_tool_session_inner(
                     }
                     EventMsg::DynamicToolCallRequest(ev) => {
                         let response = DynamicToolResponse {
-                            call_id: ev.call_id.clone(),
-                            output: "dynamic tools are not supported in MCP tool sessions"
-                                .to_string(),
+                            content_items: vec![
+                                code_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputText {
+                                    text: "dynamic tools are not supported in MCP tool sessions"
+                                        .to_string(),
+                                },
+                            ],
                             success: false,
                         };
                         if let Err(err) = codex
