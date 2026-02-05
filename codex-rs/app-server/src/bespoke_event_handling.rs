@@ -88,6 +88,7 @@ use codex_core::protocol::TurnDiffEvent;
 use codex_core::review_format::format_review_findings_block;
 use codex_core::review_prompts;
 use codex_protocol::ThreadId;
+use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem as CoreDynamicToolCallOutputContentItem;
 use codex_protocol::dynamic_tools::DynamicToolResponse as CoreDynamicToolResponse;
 use codex_protocol::plan_tool::UpdatePlanArgs;
 use codex_protocol::protocol::ReviewOutputEvent;
@@ -351,8 +352,9 @@ pub(crate) async fn apply_bespoke_event_handling(
                     .submit(Op::DynamicToolResponse {
                         id: call_id.clone(),
                         response: CoreDynamicToolResponse {
-                            call_id,
-                            output: "dynamic tool calls require api v2".to_string(),
+                            content_items: vec![CoreDynamicToolCallOutputContentItem::InputText {
+                                text: "dynamic tool calls require api v2".to_string(),
+                            }],
                             success: false,
                         },
                     })
@@ -1841,12 +1843,11 @@ mod tests {
     use codex_core::protocol::RateLimitWindow;
     use codex_core::protocol::TokenUsage;
     use codex_core::protocol::TokenUsageInfo;
+    use codex_protocol::mcp::CallToolResult;
     use codex_protocol::plan_tool::PlanItemArg;
     use codex_protocol::plan_tool::StepStatus;
-    use mcp_types::CallToolResult;
-    use mcp_types::ContentBlock;
-    use mcp_types::TextContent;
     use pretty_assertions::assert_eq;
+    use rmcp::model::Content;
     use serde_json::Value as JsonValue;
     use std::collections::HashMap;
     use std::time::Duration;
@@ -2374,15 +2375,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_construct_mcp_tool_call_end_notification_success() {
-        let content = vec![ContentBlock::TextContent(TextContent {
-            annotations: None,
-            text: "{\"resources\":[]}".to_string(),
-            r#type: "text".to_string(),
-        })];
+        let content = vec![
+            serde_json::to_value(Content::text("{\"resources\":[]}"))
+                .expect("content should serialize"),
+        ];
         let result = CallToolResult {
             content: content.clone(),
             is_error: Some(false),
             structured_content: None,
+            meta: None,
         };
 
         let end_event = McpToolCallEndEvent {

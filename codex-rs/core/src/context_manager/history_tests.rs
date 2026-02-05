@@ -3,6 +3,7 @@ use crate::truncate;
 use crate::truncate::TruncationPolicy;
 use codex_git::GhostCommit;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::LocalShellAction;
@@ -24,6 +25,7 @@ fn assistant_msg(text: &str) -> ResponseItem {
             text: text.to_string(),
         }],
         end_turn: None,
+        phase: None,
     }
 }
 
@@ -43,6 +45,7 @@ fn user_msg(text: &str) -> ResponseItem {
             text: text.to_string(),
         }],
         end_turn: None,
+        phase: None,
     }
 }
 
@@ -54,6 +57,21 @@ fn user_input_text_msg(text: &str) -> ResponseItem {
             text: text.to_string(),
         }],
         end_turn: None,
+        phase: None,
+    }
+}
+
+fn function_call_output(call_id: &str, content: &str) -> ResponseItem {
+    ResponseItem::FunctionCallOutput {
+        call_id: call_id.to_string(),
+        output: FunctionCallOutputPayload::from_text(content.to_string()),
+    }
+}
+
+fn custom_tool_call_output(call_id: &str, output: &str) -> ResponseItem {
+    ResponseItem::CustomToolCallOutput {
+        call_id: call_id.to_string(),
+        output: output.to_string(),
     }
 }
 
@@ -97,6 +115,7 @@ fn filters_non_api_messages() {
             text: "ignored".to_string(),
         }],
         end_turn: None,
+        phase: None,
     };
     let reasoning = reasoning_msg("thinking...");
     h.record_items([&system, &reasoning, &ResponseItem::Other], policy);
@@ -127,6 +146,7 @@ fn filters_non_api_messages() {
                     text: "hi".to_string()
                 }],
                 end_turn: None,
+                phase: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -135,6 +155,7 @@ fn filters_non_api_messages() {
                     text: "hello".to_string()
                 }],
                 end_turn: None,
+                phase: None,
             }
         ]
     );
@@ -163,6 +184,63 @@ fn non_last_reasoning_tokens_ignore_entries_after_last_user() {
 }
 
 #[test]
+fn trailing_codex_generated_tokens_stop_at_first_non_generated_item() {
+    let earlier_output = function_call_output("call-earlier", "earlier output");
+    let trailing_function_output = function_call_output("call-tail-1", "tail function output");
+    let trailing_custom_output = custom_tool_call_output("call-tail-2", "tail custom output");
+    let history = create_history_with_items(vec![
+        earlier_output,
+        user_msg("boundary item"),
+        trailing_function_output.clone(),
+        trailing_custom_output.clone(),
+    ]);
+    let expected_tokens = estimate_item_token_count(&trailing_function_output)
+        .saturating_add(estimate_item_token_count(&trailing_custom_output));
+
+    assert_eq!(
+        history.get_trailing_codex_generated_items_tokens(),
+        expected_tokens
+    );
+}
+
+#[test]
+fn trailing_codex_generated_tokens_exclude_function_call_tail() {
+    let history = create_history_with_items(vec![ResponseItem::FunctionCall {
+        id: None,
+        name: "not-generated".to_string(),
+        arguments: "{}".to_string(),
+        call_id: "call-tail".to_string(),
+    }]);
+
+    assert_eq!(history.get_trailing_codex_generated_items_tokens(), 0);
+}
+
+#[test]
+fn total_token_usage_includes_only_trailing_codex_generated_items() {
+    let non_trailing_output = function_call_output("call-before-message", "not trailing");
+    let trailing_assistant = assistant_msg("assistant boundary");
+    let trailing_output = custom_tool_call_output("tool-tail", "trailing output");
+    let mut history = create_history_with_items(vec![
+        non_trailing_output,
+        user_msg("boundary"),
+        trailing_assistant,
+        trailing_output.clone(),
+    ]);
+    history.update_token_info(
+        &TokenUsage {
+            total_tokens: 100,
+            ..Default::default()
+        },
+        None,
+    );
+
+    assert_eq!(
+        history.get_total_token_usage(true),
+        100 + estimate_item_token_count(&trailing_output)
+    );
+}
+
+#[test]
 fn get_history_for_prompt_drops_ghost_commits() {
     let items = vec![ResponseItem::GhostSnapshot {
         ghost_commit: GhostCommit::new("ghost-1".to_string(), None, Vec::new(), Vec::new()),
@@ -183,10 +261,7 @@ fn remove_first_item_removes_matching_output_for_function_call() {
         },
         ResponseItem::FunctionCallOutput {
             call_id: "call-1".to_string(),
-            output: FunctionCallOutputPayload {
-                content: "ok".to_string(),
-                ..Default::default()
-            },
+            output: FunctionCallOutputPayload::from_text("ok".to_string()),
         },
     ];
     let mut h = create_history_with_items(items);
@@ -199,10 +274,7 @@ fn remove_first_item_removes_matching_call_for_output() {
     let items = vec![
         ResponseItem::FunctionCallOutput {
             call_id: "call-2".to_string(),
-            output: FunctionCallOutputPayload {
-                content: "ok".to_string(),
-                ..Default::default()
-            },
+            output: FunctionCallOutputPayload::from_text("ok".to_string()),
         },
         ResponseItem::FunctionCall {
             id: None,
@@ -217,16 +289,38 @@ fn remove_first_item_removes_matching_call_for_output() {
 }
 
 #[test]
+fn remove_last_item_removes_matching_call_for_output() {
+    let items = vec![
+        user_msg("before tool call"),
+        ResponseItem::FunctionCall {
+            id: None,
+            name: "do_it".to_string(),
+            arguments: "{}".to_string(),
+            call_id: "call-delete-last".to_string(),
+        },
+        ResponseItem::FunctionCallOutput {
+            call_id: "call-delete-last".to_string(),
+            output: FunctionCallOutputPayload::from_text("ok".to_string()),
+        },
+    ];
+    let mut h = create_history_with_items(items);
+
+    assert!(h.remove_last_item());
+    assert_eq!(h.raw_items(), vec![user_msg("before tool call")]);
+}
+
+#[test]
 fn replace_last_turn_images_replaces_tool_output_images() {
     let items = vec![
         user_input_text_msg("hi"),
         ResponseItem::FunctionCallOutput {
             call_id: "call-1".to_string(),
             output: FunctionCallOutputPayload {
-                content: "ok".to_string(),
-                content_items: Some(vec![FunctionCallOutputContentItem::InputImage {
-                    image_url: "data:image/png;base64,AAA".to_string(),
-                }]),
+                body: FunctionCallOutputBody::ContentItems(vec![
+                    FunctionCallOutputContentItem::InputImage {
+                        image_url: "data:image/png;base64,AAA".to_string(),
+                    },
+                ]),
                 success: Some(true),
             },
         },
@@ -242,10 +336,11 @@ fn replace_last_turn_images_replaces_tool_output_images() {
             ResponseItem::FunctionCallOutput {
                 call_id: "call-1".to_string(),
                 output: FunctionCallOutputPayload {
-                    content: "ok".to_string(),
-                    content_items: Some(vec![FunctionCallOutputContentItem::InputText {
-                        text: "Invalid image".to_string(),
-                    }]),
+                    body: FunctionCallOutputBody::ContentItems(vec![
+                        FunctionCallOutputContentItem::InputText {
+                            text: "Invalid image".to_string(),
+                        },
+                    ]),
                     success: Some(true),
                 },
             },
@@ -262,6 +357,7 @@ fn replace_last_turn_images_does_not_touch_user_images() {
             image_url: "data:image/png;base64,AAA".to_string(),
         }],
         end_turn: None,
+        phase: None,
     }];
     let mut history = create_history_with_items(items.clone());
 
@@ -286,10 +382,7 @@ fn remove_first_item_handles_local_shell_pair() {
         },
         ResponseItem::FunctionCallOutput {
             call_id: "call-3".to_string(),
-            output: FunctionCallOutputPayload {
-                content: "ok".to_string(),
-                ..Default::default()
-            },
+            output: FunctionCallOutputPayload::from_text("ok".to_string()),
         },
     ];
     let mut h = create_history_with_items(items);
@@ -455,10 +548,7 @@ fn normalization_retains_local_shell_outputs() {
         },
         ResponseItem::FunctionCallOutput {
             call_id: "shell-1".to_string(),
-            output: FunctionCallOutputPayload {
-                content: "Total output lines: 1\n\nok".to_string(),
-                ..Default::default()
-            },
+            output: FunctionCallOutputPayload::from_text("Total output lines: 1\n\nok".to_string()),
         },
     ];
 
@@ -478,9 +568,8 @@ fn record_items_truncates_function_call_output_content() {
     let item = ResponseItem::FunctionCallOutput {
         call_id: "call-100".to_string(),
         output: FunctionCallOutputPayload {
-            content: long_output.clone(),
+            body: FunctionCallOutputBody::Text(long_output.clone()),
             success: Some(true),
-            ..Default::default()
         },
     };
 
@@ -489,16 +578,15 @@ fn record_items_truncates_function_call_output_content() {
     assert_eq!(history.items.len(), 1);
     match &history.items[0] {
         ResponseItem::FunctionCallOutput { output, .. } => {
-            assert_ne!(output.content, long_output);
+            let content = output.text_content().unwrap_or_default();
+            assert_ne!(content, long_output);
             assert!(
-                output.content.contains("tokens truncated"),
-                "expected token-based truncation marker, got {}",
-                output.content
+                content.contains("tokens truncated"),
+                "expected token-based truncation marker, got {content}"
             );
             assert!(
-                output.content.contains("tokens truncated"),
-                "expected truncation marker, got {}",
-                output.content
+                content.contains("tokens truncated"),
+                "expected truncation marker, got {content}"
             );
         }
         other => panic!("unexpected history item: {other:?}"),
@@ -543,9 +631,8 @@ fn record_items_respects_custom_token_limit() {
     let item = ResponseItem::FunctionCallOutput {
         call_id: "call-custom-limit".to_string(),
         output: FunctionCallOutputPayload {
-            content: long_output,
+            body: FunctionCallOutputBody::Text(long_output),
             success: Some(true),
-            ..Default::default()
         },
     };
 
@@ -555,7 +642,11 @@ fn record_items_respects_custom_token_limit() {
         ResponseItem::FunctionCallOutput { output, .. } => output,
         other => panic!("unexpected history item: {other:?}"),
     };
-    assert!(stored.content.contains("tokens truncated"));
+    assert!(
+        stored
+            .text_content()
+            .is_some_and(|content| content.contains("tokens truncated"))
+    );
 }
 
 fn assert_truncated_message_matches(message: &str, line: &str, expected_removed: usize) {
@@ -677,10 +768,7 @@ fn normalize_adds_missing_output_for_function_call() {
             },
             ResponseItem::FunctionCallOutput {
                 call_id: "call-x".to_string(),
-                output: FunctionCallOutputPayload {
-                    content: "aborted".to_string(),
-                    ..Default::default()
-                },
+                output: FunctionCallOutputPayload::from_text("aborted".to_string()),
             },
         ]
     );
@@ -754,10 +842,7 @@ fn normalize_adds_missing_output_for_local_shell_call_with_id() {
             },
             ResponseItem::FunctionCallOutput {
                 call_id: "shell-1".to_string(),
-                output: FunctionCallOutputPayload {
-                    content: "aborted".to_string(),
-                    ..Default::default()
-                },
+                output: FunctionCallOutputPayload::from_text("aborted".to_string()),
             },
         ]
     );
@@ -768,10 +853,7 @@ fn normalize_adds_missing_output_for_local_shell_call_with_id() {
 fn normalize_removes_orphan_function_call_output() {
     let items = vec![ResponseItem::FunctionCallOutput {
         call_id: "orphan-1".to_string(),
-        output: FunctionCallOutputPayload {
-            content: "ok".to_string(),
-            ..Default::default()
-        },
+        output: FunctionCallOutputPayload::from_text("ok".to_string()),
     }];
     let mut h = create_history_with_items(items);
 
@@ -808,10 +890,7 @@ fn normalize_mixed_inserts_and_removals() {
         // Orphan output that should be removed
         ResponseItem::FunctionCallOutput {
             call_id: "c2".to_string(),
-            output: FunctionCallOutputPayload {
-                content: "ok".to_string(),
-                ..Default::default()
-            },
+            output: FunctionCallOutputPayload::from_text("ok".to_string()),
         },
         // Will get an inserted custom tool output
         ResponseItem::CustomToolCall {
@@ -850,10 +929,7 @@ fn normalize_mixed_inserts_and_removals() {
             },
             ResponseItem::FunctionCallOutput {
                 call_id: "c1".to_string(),
-                output: FunctionCallOutputPayload {
-                    content: "aborted".to_string(),
-                    ..Default::default()
-                },
+                output: FunctionCallOutputPayload::from_text("aborted".to_string()),
             },
             ResponseItem::CustomToolCall {
                 id: None,
@@ -880,10 +956,7 @@ fn normalize_mixed_inserts_and_removals() {
             },
             ResponseItem::FunctionCallOutput {
                 call_id: "s1".to_string(),
-                output: FunctionCallOutputPayload {
-                    content: "aborted".to_string(),
-                    ..Default::default()
-                },
+                output: FunctionCallOutputPayload::from_text("aborted".to_string()),
             },
         ]
     );
@@ -910,10 +983,7 @@ fn normalize_adds_missing_output_for_function_call_inserts_output() {
             },
             ResponseItem::FunctionCallOutput {
                 call_id: "call-x".to_string(),
-                output: FunctionCallOutputPayload {
-                    content: "aborted".to_string(),
-                    ..Default::default()
-                },
+                output: FunctionCallOutputPayload::from_text("aborted".to_string()),
             },
         ]
     );
@@ -960,10 +1030,7 @@ fn normalize_adds_missing_output_for_local_shell_call_with_id_panics_in_debug() 
 fn normalize_removes_orphan_function_call_output_panics_in_debug() {
     let items = vec![ResponseItem::FunctionCallOutput {
         call_id: "orphan-1".to_string(),
-        output: FunctionCallOutputPayload {
-            content: "ok".to_string(),
-            ..Default::default()
-        },
+        output: FunctionCallOutputPayload::from_text("ok".to_string()),
     }];
     let mut h = create_history_with_items(items);
     h.normalize_history();
@@ -994,10 +1061,7 @@ fn normalize_mixed_inserts_and_removals_panics_in_debug() {
         },
         ResponseItem::FunctionCallOutput {
             call_id: "c2".to_string(),
-            output: FunctionCallOutputPayload {
-                content: "ok".to_string(),
-                ..Default::default()
-            },
+            output: FunctionCallOutputPayload::from_text("ok".to_string()),
         },
         ResponseItem::CustomToolCall {
             id: None,

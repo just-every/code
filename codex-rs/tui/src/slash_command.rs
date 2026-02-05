@@ -33,6 +33,7 @@ pub enum SlashCommand {
     Diff,
     Mention,
     Status,
+    DebugConfig,
     Mcp,
     Apps,
     Logout,
@@ -63,6 +64,7 @@ impl SlashCommand {
             SlashCommand::Mention => "mention a file",
             SlashCommand::Skills => "use skills to improve how Codex performs specific tasks",
             SlashCommand::Status => "show current session configuration and token usage",
+            SlashCommand::DebugConfig => "show config layers and requirement sources for debugging",
             SlashCommand::Ps => "list background terminals",
             SlashCommand::Model => "choose what model and reasoning effort to use",
             SlashCommand::Personality => "choose a communication style for Codex",
@@ -87,6 +89,14 @@ impl SlashCommand {
         self.into()
     }
 
+    /// Whether this command supports inline args (for example `/review ...`).
+    pub fn supports_inline_args(self) -> bool {
+        matches!(
+            self,
+            SlashCommand::Review | SlashCommand::Rename | SlashCommand::Plan
+        )
+    }
+
     /// Whether this command can be run while a task is in progress.
     pub fn available_during_task(self) -> bool {
         match self {
@@ -103,12 +113,14 @@ impl SlashCommand {
             | SlashCommand::ElevateSandbox
             | SlashCommand::Experimental
             | SlashCommand::Review
+            | SlashCommand::Plan
             | SlashCommand::Logout => false,
             SlashCommand::Diff
             | SlashCommand::Rename
             | SlashCommand::Mention
             | SlashCommand::Skills
             | SlashCommand::Status
+            | SlashCommand::DebugConfig
             | SlashCommand::Ps
             | SlashCommand::Mcp
             | SlashCommand::Apps
@@ -117,7 +129,6 @@ impl SlashCommand {
             | SlashCommand::Exit => true,
             SlashCommand::Rollout => true,
             SlashCommand::TestApproval => true,
-            SlashCommand::Plan => true,
             SlashCommand::Collab => true,
             SlashCommand::Agent => true,
         }
