@@ -80,6 +80,11 @@ const RESPONSES_BETA_HEADER_EXPERIMENTAL: &str = "responses=experimental";
 
 const WEB_SEARCH_ELIGIBLE_HEADER: &str = "x-oai-web-search-eligible";
 
+// Sticky-routing token captured at the start of a turn. When present, it must
+// be replayed on every subsequent request within the same turn (retries,
+// continuations, websocket reconnects).
+const X_CODEX_TURN_STATE_HEADER: &str = "x-codex-turn-state";
+
 const MODEL_CAP_MODEL_HEADER: &str = "x-codex-model-cap-model";
 const MODEL_CAP_RESET_AFTER_HEADER: &str = "x-codex-model-cap-reset-after-seconds";
 
@@ -563,6 +568,7 @@ impl ModelClient {
         let model_slug = request_model;
         let session_id = prompt.session_id_override.unwrap_or(self.session_id);
         let session_id_str = session_id.to_string();
+        let turn_state: Arc<OnceLock<String>> = Arc::new(OnceLock::new());
         let mut attempt = 0;
         let max_retries = self.provider.request_max_retries();
         let mut request_id = String::new();
@@ -651,6 +657,9 @@ impl ModelClient {
             req_builder = attach_openai_subagent_header(req_builder);
             req_builder = attach_codex_beta_features_header(req_builder, &self.config);
             req_builder = attach_web_search_eligible_header(req_builder, &self.config);
+            if let Some(state) = turn_state.get() {
+                req_builder = req_builder.header(X_CODEX_TURN_STATE_HEADER, state);
+            }
             req_builder = req_builder
                 .header("conversation_id", session_id_str.clone())
                 .header("session_id", session_id_str.clone());
@@ -709,6 +718,24 @@ impl ModelClient {
             match connect {
                 Ok((mut ws_stream, response)) => {
                     let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent>>(1600);
+
+                    if let Some(value) = response
+                        .headers()
+                        .get(X_CODEX_TURN_STATE_HEADER)
+                        .and_then(|value| value.to_str().ok())
+                    {
+                        if let Some(existing) = turn_state.get()
+                            && existing != value
+                        {
+                            warn!(
+                                existing,
+                                new = value,
+                                "received unexpected x-codex-turn-state during websocket connect"
+                            );
+                        } else {
+                            let _ = turn_state.set(value.to_string());
+                        }
+                    }
 
                     if let Some(snapshot) = parse_rate_limit_snapshot(response.headers()) {
                         debug!(
@@ -857,6 +884,7 @@ impl ModelClient {
 
         // Use non-stored turns on all paths for stability.
         let store = false;
+        let turn_state: Arc<OnceLock<String>> = Arc::new(OnceLock::new());
 
         let request_model = prompt
             .model_override
@@ -1029,6 +1057,9 @@ impl ModelClient {
             req_builder = attach_openai_subagent_header(req_builder);
             req_builder = attach_codex_beta_features_header(req_builder, &self.config);
             req_builder = attach_web_search_eligible_header(req_builder, &self.config);
+            if let Some(state) = turn_state.get() {
+                req_builder = req_builder.header(X_CODEX_TURN_STATE_HEADER, state);
+            }
 
             req_builder = req_builder
                 // Send `conversation_id`/`session_id` so the server can hit the prompt-cache.
@@ -1081,6 +1112,24 @@ impl ModelClient {
 
             match res {
                 Ok(resp) if resp.status().is_success() => {
+                    if let Some(value) = resp
+                        .headers()
+                        .get(X_CODEX_TURN_STATE_HEADER)
+                        .and_then(|value| value.to_str().ok())
+                    {
+                        if let Some(existing) = turn_state.get()
+                            && existing != value
+                        {
+                            warn!(
+                                existing,
+                                new = value,
+                                "received unexpected x-codex-turn-state during responses request"
+                            );
+                        } else {
+                            let _ = turn_state.set(value.to_string());
+                        }
+                    }
+
                     // Log successful response initiation
                     if let Ok(logger) = self.debug_logger.lock() {
                         let _ = logger.append_response_event(
@@ -1148,6 +1197,22 @@ impl ModelClient {
                 Ok(res) => {
                     let status = res.status();
                     let headers = res.headers().clone();
+                    if let Some(value) = headers
+                        .get(X_CODEX_TURN_STATE_HEADER)
+                        .and_then(|value| value.to_str().ok())
+                    {
+                        if let Some(existing) = turn_state.get()
+                            && existing != value
+                        {
+                            warn!(
+                                existing,
+                                new = value,
+                                "received unexpected x-codex-turn-state during responses request"
+                            );
+                        } else {
+                            let _ = turn_state.set(value.to_string());
+                        }
+                    }
                     // Capture x-request-id up-front in case we consume the response body later.
                     let x_request_id = headers
                         .get("x-request-id")
