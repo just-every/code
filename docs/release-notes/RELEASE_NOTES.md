@@ -1,14 +1,19 @@
-## @just-every/code v0.6.57
-This release improves the TUI display for GitHub Actions wait summaries.
+## @just-every/code v0.6.58
+This release adds core logging configurability, richer tool output support, and sandboxing updates.
 
 ### Changes
-- TUI/GH: show gh_run_wait summary output after completion.
-- TUI/GH: trim redundant title lines in gh_run_wait previews for cleaner display.
+- Core: add configurable log_dir for logs.
+- App Server/Core: allow text + image content items for dynamic tool outputs.
+- Skills: support live updates to skills.
+- Linux Sandbox: add bubblewrap support for isolation.
 
 ### Install
-```sh
+```
 npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.56...v0.6.57
+### Thanks
+Thanks to @zemaj and @owenlin0 for contributions!
+
+Compare: https://github.com/just-every/code/compare/v0.6.57...v0.6.58
