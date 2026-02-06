@@ -1,11 +1,12 @@
-## @just-every/code v0.6.58
-This release adds core logging configurability, richer tool output support, and sandboxing updates.
+## @just-every/code v0.6.59
+
+This release adds new model options, improves TUI controls, and expands app-server connectivity.
 
 ### Changes
-- Core: add configurable log_dir for logs.
-- App Server/Core: allow text + image content items for dynamic tool outputs.
-- Skills: support live updates to skills.
-- Linux Sandbox: add bubblewrap support for isolation.
+- Models: add gpt-5.3-codex and bump Claude Opus to 4.6.
+- TUI: add sortable resume picker with created/updated toggle.
+- TUI: add /statusline command for interactive status line configuration.
+- App Server: add websocket transport support and send beta header.
 
 ### Install
 ```
@@ -14,6 +15,4 @@ code
 ```
 
 ### Thanks
-Thanks to @zemaj and @owenlin0 for contributions!
-
-Compare: https://github.com/just-every/code/compare/v0.6.57...v0.6.58
+Thanks to @MatthewZeng and @NoahJorgensen for contributions!
