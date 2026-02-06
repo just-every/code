@@ -77,6 +77,7 @@ use std::sync::RwLock;
 
 const RESPONSES_BETA_HEADER_V1: &str = "responses=v1";
 const RESPONSES_BETA_HEADER_EXPERIMENTAL: &str = "responses=experimental";
+const RESPONSES_WEBSOCKETS_BETA_HEADER: &str = "responses_websockets=2026-02-04";
 
 const WEB_SEARCH_ELIGIBLE_HEADER: &str = "x-oai-web-search-eligible";
 
@@ -700,6 +701,12 @@ impl ModelClient {
                     )
                 })?;
             ws_request.headers_mut().extend(ws_headers);
+            // The Responses API websocket wire requires its own beta token (distinct from
+            // `responses=v1` / `responses=experimental`).
+            ws_request.headers_mut().insert(
+                reqwest::header::HeaderName::from_static("openai-beta"),
+                HeaderValue::from_static(RESPONSES_WEBSOCKETS_BETA_HEADER),
+            );
 
             // Wrap the normal /responses request payload in the WebSocket envelope.
             let mut ws_payload = serde_json::Map::new();

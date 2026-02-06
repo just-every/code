@@ -485,26 +485,30 @@ impl ModelSelectionView {
     }
 
     fn model_rank(model: &str) -> u8 {
-        if model.eq_ignore_ascii_case("gpt-5.2-codex") {
+        if model.eq_ignore_ascii_case("gpt-5.3-codex") {
             0
-        } else if model.eq_ignore_ascii_case("gpt-5.2") {
+        } else if model.eq_ignore_ascii_case("gpt-5.2-codex") {
             1
-        } else if model.eq_ignore_ascii_case("gpt-5.1-codex-max") {
+        } else if model.eq_ignore_ascii_case("gpt-5.2") {
             2
-        } else if model.eq_ignore_ascii_case("gpt-5.1-codex") {
+        } else if model.eq_ignore_ascii_case("gpt-5.1-codex-max") {
             3
-        } else if model.eq_ignore_ascii_case("gpt-5.1-codex-mini") {
+        } else if model.eq_ignore_ascii_case("gpt-5.1-codex") {
             4
-        } else if model.eq_ignore_ascii_case("gpt-5.1") {
+        } else if model.eq_ignore_ascii_case("gpt-5.1-codex-mini") {
             5
-        } else {
+        } else if model.eq_ignore_ascii_case("gpt-5.1") {
             6
+        } else {
+            7
         }
     }
 
     fn model_description(model: &str) -> Option<&'static str> {
-        if model.eq_ignore_ascii_case("gpt-5.2-codex") {
+        if model.eq_ignore_ascii_case("gpt-5.3-codex") {
             Some("Latest frontier agentic coding model.")
+        } else if model.eq_ignore_ascii_case("gpt-5.2-codex") {
+            Some("Frontier agentic coding model.")
         } else if model.eq_ignore_ascii_case("gpt-5.2") {
             Some("Latest frontier model with improvements across knowledge, reasoning, and coding.")
         } else if model.eq_ignore_ascii_case("gpt-5.1-codex-max") {
