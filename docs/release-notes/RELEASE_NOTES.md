@@ -1,18 +1,15 @@
-## @just-every/code v0.6.59
-
-This release adds new model options, improves TUI controls, and expands app-server connectivity.
+## @just-every/code v0.6.60
+This release tightens version compatibility handling for more predictable upgrades.
 
 ### Changes
-- Models: add gpt-5.3-codex and bump Claude Opus to 4.6.
-- TUI: add sortable resume picker with created/updated toggle.
-- TUI: add /statusline command for interactive status line configuration.
-- App Server: add websocket transport support and send beta header.
+- Core/Version: enforce minimum wire-compatible version and derive it from the announcement tip.
+- Core/Version: strip punctuation when scanning minimum semver for wire compatibility.
+- Core/Provider: clamp the OpenAI version header for stability.
 
 ### Install
-```
+```bash
 npm install -g @just-every/code@latest
 code
 ```
 
-### Thanks
-Thanks to @MatthewZeng and @NoahJorgensen for contributions!
+Compare: https://github.com/just-every/code/compare/v0.6.59...v0.6.60

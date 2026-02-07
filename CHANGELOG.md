@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.60] - 2026-02-07
+
+- Core/Version: enforce minimum wire-compatible version and derive it from the announcement tip. (a058583f, e52d8212)
+- Core/Version: strip punctuation when scanning minimum semver for wire compatibility. (56445598)
+- Core/Provider: clamp the OpenAI version header for stability. (95bf1d51)
+
 ## [0.6.59] - 2026-02-06
 
 - Models: add gpt-5.3-codex and bump Claude Opus to 4.6. (3b45488a)
