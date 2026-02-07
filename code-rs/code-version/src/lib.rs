@@ -40,7 +40,7 @@ fn extract_max_semver(input: &'static str) -> Option<&'static str> {
 
     for token in input.split_whitespace() {
         let candidate = token.trim_matches(|ch: char| {
-            !(ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '+' | 'v'))
+            !(ch.is_ascii_alphanumeric() || matches!(ch, '-' | '+' | 'v'))
         });
         if candidate.is_empty() {
             continue;
@@ -126,6 +126,12 @@ mod tests {
     fn extract_max_semver_picks_highest_semver() {
         let input = "v0.98.0 preview and later 0.102.1 with regex ^0\\.0\\.0$";
         assert_eq!(extract_max_semver(input), Some("0.102.1"));
+    }
+
+    #[test]
+    fn extract_max_semver_strips_sentence_punctuation() {
+        let input = "Upgrade to 0.99.0. Then 0.98.1.";
+        assert_eq!(extract_max_semver(input), Some("0.99.0"));
     }
 
     #[test]
