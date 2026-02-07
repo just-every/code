@@ -427,12 +427,7 @@ fn map_truncation_policy(
     }
 }
 
-/// Convert the build's version triple into a whole semver string.
+/// Build a client version string that remains wire-compatible with hosted models.
 fn format_client_version_to_whole() -> String {
-    format!(
-        "{}.{}.{}",
-        env!("CARGO_PKG_VERSION_MAJOR"),
-        env!("CARGO_PKG_VERSION_MINOR"),
-        env!("CARGO_PKG_VERSION_PATCH")
-    )
+    code_version::wire_compatible_version().to_string()
 }

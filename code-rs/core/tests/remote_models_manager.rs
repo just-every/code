@@ -66,6 +66,14 @@ fn auth_manager_chatgpt() -> std::sync::Arc<AuthManager> {
     AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing())
 }
 
+fn query_param(url: &str, key: &str) -> Option<String> {
+    let (_, query) = url.split_once('?')?;
+    query.split('&').find_map(|part| {
+        let (k, v) = part.split_once('=')?;
+        (k == key).then(|| v.to_string())
+    })
+}
+
 #[tokio::test]
 async fn refresh_remote_models_uses_cache_when_fresh() {
     if skip_if_no_network() {
@@ -103,9 +111,12 @@ async fn refresh_remote_models_uses_cache_when_fresh() {
 
     let requests = server.received_requests().await.expect("requests");
     assert_eq!(requests.len(), 1);
-    assert!(
-        requests[0].url.as_str().contains("client_version="),
-        "expected client_version query param"
+    let request_url = requests[0].url.as_str();
+    let client_version = query_param(request_url, "client_version").expect("client_version query param");
+    assert_eq!(
+        client_version,
+        code_version::wire_compatible_version(),
+        "expected client_version query param in {request_url}"
     );
 
     // Second refresh should hit the fresh in-memory snapshot and avoid the network.
