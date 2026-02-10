@@ -161,6 +161,14 @@ fn discover_skills_under_root(root: &Path, scope: SkillScope, outcome: &mut Skil
         return;
     }
 
+    // Follow symlinked directories for user and repo skills.
+    // System skills are managed by the tool itself, so symlinks are not followed.
+    let follow_symlinks = matches!(scope, SkillScope::User | SkillScope::Repo);
+
+    // Track visited directories to prevent infinite loops from circular symlinks.
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    visited.insert(root.clone());
+
     let mut queue: VecDeque<PathBuf> = VecDeque::from([root]);
     while let Some(dir) = queue.pop_front() {
         let entries = match fs::read_dir(&dir) {
@@ -187,11 +195,39 @@ fn discover_skills_under_root(root: &Path, scope: SkillScope, outcome: &mut Skil
             };
 
             if file_type.is_symlink() {
+                if !follow_symlinks {
+                    continue;
+                }
+
+                // Resolve the symlink to determine what it points to.
+                let metadata = match fs::metadata(&path) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        error!("failed to stat skills entry {} (symlink): {e:#}", path.display());
+                        continue;
+                    }
+                };
+
+                if metadata.is_dir() {
+                    // Canonicalize to detect cycles.
+                    if let Ok(resolved) = normalize_path(&path) {
+                        if visited.insert(resolved.clone()) {
+                            queue.push_back(resolved);
+                        }
+                    }
+                }
+                // Symlinked files are not followed - only symlinked directories.
                 continue;
             }
 
             if file_type.is_dir() {
-                queue.push_back(path);
+                if let Ok(resolved) = normalize_path(&path) {
+                    if visited.insert(resolved.clone()) {
+                        queue.push_back(resolved);
+                    }
+                } else {
+                    queue.push_back(path);
+                }
                 continue;
             }
 
@@ -281,4 +317,93 @@ fn extract_frontmatter(contents: &str) -> Option<String> {
     }
 
     Some(frontmatter_lines.join("\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Cross-platform directory symlink helper.
+    #[cfg(unix)]
+    fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(src, dst)
+    }
+
+    #[cfg(windows)]
+    fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_dir(src, dst)
+    }
+
+    fn write_skill(dir: &Path, name: &str, description: &str) -> PathBuf {
+        let skill_dir = dir.join(name);
+        fs::create_dir_all(&skill_dir).unwrap();
+        let skill_file = skill_dir.join("SKILL.md");
+        fs::write(
+            &skill_file,
+            format!("---\nname: {name}\ndescription: {description}\n---\n\n# Body\n"),
+        )
+        .unwrap();
+        skill_file
+    }
+
+    #[test]
+    fn follows_symlinked_directory_for_user_scope() {
+        let temp = TempDir::new().unwrap();
+        let skills_root = temp.path().join("skills");
+        fs::create_dir_all(&skills_root).unwrap();
+
+        // Create a skill in a separate directory
+        let shared = TempDir::new().unwrap();
+        write_skill(shared.path(), "shared-skill", "A shared skill");
+
+        // Symlink the shared directory into skills root
+        symlink_dir(shared.path(), &skills_root.join("shared")).unwrap();
+
+        let mut outcome = SkillLoadOutcome::default();
+        discover_skills_under_root(&skills_root, SkillScope::User, &mut outcome);
+
+        assert_eq!(outcome.skills.len(), 1);
+        assert_eq!(outcome.skills[0].name, "shared-skill");
+    }
+
+    #[test]
+    fn ignores_symlinked_directory_for_system_scope() {
+        let temp = TempDir::new().unwrap();
+        let skills_root = temp.path().join("skills");
+        fs::create_dir_all(&skills_root).unwrap();
+
+        // Create a skill in a separate directory
+        let shared = TempDir::new().unwrap();
+        write_skill(shared.path(), "shared-skill", "A shared skill");
+
+        // Symlink the shared directory into skills root
+        symlink_dir(shared.path(), &skills_root.join("shared")).unwrap();
+
+        let mut outcome = SkillLoadOutcome::default();
+        discover_skills_under_root(&skills_root, SkillScope::System, &mut outcome);
+
+        assert_eq!(outcome.skills.len(), 0, "System scope should ignore symlinks");
+    }
+
+    #[test]
+    fn handles_circular_symlink_without_infinite_loop() {
+        let temp = TempDir::new().unwrap();
+        let skills_root = temp.path().join("skills");
+        let cycle_dir = skills_root.join("cycle");
+        fs::create_dir_all(&cycle_dir).unwrap();
+
+        // Create a circular symlink
+        symlink_dir(&cycle_dir, &cycle_dir.join("loop")).unwrap();
+
+        // Also add a real skill to verify we still find it
+        write_skill(&cycle_dir, "real-skill", "A real skill");
+
+        let mut outcome = SkillLoadOutcome::default();
+        discover_skills_under_root(&skills_root, SkillScope::User, &mut outcome);
+
+        // Should find the real skill and not infinite loop
+        assert_eq!(outcome.skills.len(), 1);
+        assert_eq!(outcome.skills[0].name, "real-skill");
+    }
 }
