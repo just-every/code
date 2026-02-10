@@ -81,10 +81,12 @@ pub async fn run_main(
             format!("error parsing -c overrides: {e}"),
         )
     })?;
-    let config = Config::load_with_cli_overrides(cli_kv_overrides, ConfigOverrides::default())
-        .map_err(|e| {
-            std::io::Error::new(ErrorKind::InvalidData, format!("error loading config: {e}"))
-        })?;
+    let mut config_overrides = ConfigOverrides::default();
+    config_overrides.code_linux_sandbox_exe = code_linux_sandbox_exe.clone();
+
+    let config = Config::load_with_cli_overrides(cli_kv_overrides, config_overrides).map_err(|e| {
+        std::io::Error::new(ErrorKind::InvalidData, format!("error loading config: {e}"))
+    })?;
 
     // Task: process incoming messages.
     let processor_handle = tokio::spawn({
